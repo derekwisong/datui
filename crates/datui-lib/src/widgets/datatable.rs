@@ -9924,6 +9924,34 @@ mod tests {
             "the values the conflict hides, read at the type that file wrote"
         );
 
+        // The same two checks at the budget that reads no values at all: the footers
+        // were read when the dataset opened, so there is nothing left to pay for.
+        let metadata = crate::data_quality::compute_data_quality(
+            &lf,
+            Some(7),
+            &DataQualityPlan {
+                scope: QualityScope::WholeSource,
+                compute: QualityCompute::Metadata,
+                ..DataQualityPlan::default()
+            },
+            Some(&source),
+            false,
+        )
+        .unwrap();
+        assert_eq!(metadata.evaluated_rows, 0, "no value was read");
+        assert_eq!(
+            metadata
+                .observations
+                .iter()
+                .map(|observation| (observation.kind, observation.affected_rows))
+                .collect::<Vec<_>>(),
+            vec![
+                (ObservationKind::Absent, 2),
+                (ObservationKind::TypeConflict, 2),
+            ],
+            "both are reported without reading a value"
+        );
+
         // The drill-in is the files themselves: an absent cell has no value to filter.
         let scope = absent.evidence_scope().expect("a scope, not a predicate");
         assert_eq!(scope, QualityScope::SourceFiles(vec![3]));

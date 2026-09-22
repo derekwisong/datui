@@ -356,9 +356,17 @@ pub enum FolderFormat {
 /// What [`FolderFormat`] the data files directly in `dir` amount to.
 ///
 /// One level only, and no file is opened: this reads names, exactly as the rest of
-/// this module does. It is bounded by [`MAX_ENTRIES_PER_DIR`] like every other
-/// listing here, so a folder of two hundred thousand files costs a directory read and
-/// nothing per file beyond it.
+/// this module does. A folder of two hundred thousand files costs a directory read
+/// and nothing per file beyond it — the entry's own type comes back with the name, so
+/// there is no `stat` to bound.
+///
+/// Deliberately *not* bounded by [`MAX_ENTRIES_PER_DIR`], unlike every listing in this
+/// module. The files this returns are not a menu to show, they are the table to read:
+/// stopping at five thousand of a folder's six thousand CSVs would open it with a row
+/// count, a schema union and every aggregate quietly computed over a subset, and the
+/// `take` running before the sort would drop whichever file the directory read
+/// happened to return last. The Parquet route this mirrors hands the folder to a scan
+/// that enumerates it, with no cap either.
 pub fn folder_format(dir: &Path) -> FolderFormat {
     let Ok(iter) = std::fs::read_dir(dir) else {
         return FolderFormat::Deeper;
@@ -368,7 +376,7 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
     let mut files = Vec::new();
     let mut mixed = false;
     let mut partitioned = false;
-    for entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
+    for entry in iter.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;

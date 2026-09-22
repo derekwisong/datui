@@ -3306,6 +3306,37 @@ fn test_rows_that_cannot_be_measured_are_not_located_on_the_mount_table() {
     );
 }
 
+/// The files a folder reads as are all of them, not a listing's worth.
+///
+/// Every other listing in `discover` stops at `MAX_ENTRIES_PER_DIR`, because a listing
+/// is a menu and five thousand rows is more than anyone reads. These files are not a
+/// menu — they are the table — so a cap here would open a folder of six thousand CSVs
+/// with a row count, a schema union and every aggregate computed over an arbitrary
+/// five thousand of them, and say nothing about it.
+#[test]
+fn test_a_folder_is_read_as_every_file_in_it() {
+    let tmp = TempDir::new().unwrap();
+    let folder = tmp.path().join("exports");
+    fs::create_dir(&folder).unwrap();
+    // One more than the listing cap, so a prefix and the whole thing differ.
+    let want = datui::discover::MAX_ENTRIES_PER_DIR + 1;
+    for i in 0..want {
+        fs::write(folder.join(format!("part-{i:05}.csv")), b"a\n1\n").unwrap();
+    }
+
+    match datui::discover::folder_format(&folder) {
+        datui::discover::FolderFormat::One(format, files) => {
+            assert_eq!(format, datui::FileFormat::Csv);
+            assert_eq!(
+                files.len(),
+                want,
+                "the folder holds {want} files and every one of them is the table"
+            );
+        }
+        other => panic!("a folder of CSVs reads as CSVs, not {other:?}"),
+    }
+}
+
 /// What a folder holds is what picks the reader for it.
 ///
 /// The judgement the open path makes before choosing between the Parquet hive scan

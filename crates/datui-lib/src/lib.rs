@@ -9639,6 +9639,63 @@ impl App {
                 && !path_str.contains('*')
                 && !path_str.contains("**");
             if !is_single_file {
+                // What the folder holds picks the reader. A directory used to go
+                // straight to the Parquet scan whatever was in it, so a folder of
+                // `.json.gz` was opened by seeking each file's last four bytes for a
+                // `PAR1` that was never going to be there — the files were fine, the
+                // reader was never asked to be the right one.
+                if path.is_dir() {
+                    match crate::discover::folder_format(path) {
+                        // Flat and Parquet: the scan below is already right for it.
+                        crate::discover::FolderFormat::One(FileFormat::Parquet, _) => {}
+                        // Partitions, or an empty folder. The files are a level down
+                        // under `key=value` and only the hive scan walks a tree — but
+                        // hive partitioning is a Parquet-only capability in the reader
+                        // datui uses (`HiveOptions::new_disabled()` is hard-coded for
+                        // CSV and NDJSON), so partitions of anything else cannot be
+                        // read as one table here. Saying which files they are beats
+                        // Parquet's complaint that they do not end with `PAR1`.
+                        crate::discover::FolderFormat::Deeper => {
+                            if let crate::discover::FolderFormat::One(found, files) =
+                                crate::discover::hive_leaf_format(path)
+                                && found != FileFormat::Parquet
+                            {
+                                // The extension rather than the format's own name: it
+                                // is what is on the files the user can see.
+                                let named = files
+                                    .first()
+                                    .and_then(|f| crate::discover::data_extension(f))
+                                    .unwrap_or_else(|| format!("{found:?}").to_lowercase());
+                                return Err(color_eyre::eyre::eyre!(
+                                    "{} is partitioned into key=value folders of .{} \
+                                     files. datui reads hive partitioning for Parquet \
+                                     only — open one partition instead.",
+                                    path.display(),
+                                    named
+                                ));
+                            }
+                        }
+                        crate::discover::FolderFormat::One(found, files) => {
+                            // Read as the files themselves, through the same readers a
+                            // list of files typed on the command line goes through. An
+                            // explicit `--format` is the user's own answer and outranks
+                            // what the names say.
+                            let nested = OpenOptions {
+                                hive: false,
+                                format: Some(options.format.unwrap_or(found)),
+                                ..options.clone()
+                            };
+                            return Self::build_lazyframe_from_paths_with(cloud, &files, &nested);
+                        }
+                        crate::discover::FolderFormat::NotOneTable => {
+                            return Err(color_eyre::eyre::eyre!(
+                                "{} does not hold one kind of data file, so there is \
+                                 no single table to read. Open a file inside it instead.",
+                                path.display()
+                            ));
+                        }
+                    }
+                }
                 let use_parquet_hive = path.is_dir()
                     || path_str.contains(".parquet")
                     || path_str.contains("*.parquet");

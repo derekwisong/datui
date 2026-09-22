@@ -61,31 +61,41 @@ pub fn render(
     let data_area = datatable_layout.content_area;
     let sort_area = datatable_layout.sidebar_area.unwrap_or_default();
 
+    let evidence_label = app.quality_evidence_label.clone();
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
-            if state.is_drilled_down()
-                && let Some(ref key_values) = state.drilled_down_group_key
-            {
+            let breadcrumb_text = if state.is_drilled_down() {
+                state.drilled_down_group_key.as_ref().map(|key_values| {
+                    let empty_vec = Vec::new();
+                    let key_columns = state
+                        .drilled_down_group_key_columns
+                        .as_ref()
+                        .unwrap_or(&empty_vec);
+                    let breadcrumb_parts: Vec<String> = key_columns
+                        .iter()
+                        .zip(key_values.iter())
+                        .map(|(col, val)| format!("{}={}", col, val))
+                        .collect();
+                    format!(
+                        "{} Group: {} (Press Esc to go back)",
+                        crate::glyphs::get().arrow_left,
+                        breadcrumb_parts.join(" | ")
+                    )
+                })
+            } else {
+                evidence_label.map(|label| {
+                    format!(
+                        "{} Data Quality / {label} (Esc back to result)",
+                        crate::glyphs::get().arrow_left
+                    )
+                })
+            };
+            if let Some(breadcrumb_text) = breadcrumb_text {
                 let breadcrumb_layout = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(3), Constraint::Fill(1)])
                     .split(data_area);
-
-                let empty_vec = Vec::new();
-                let key_columns = state
-                    .drilled_down_group_key_columns
-                    .as_ref()
-                    .unwrap_or(&empty_vec);
-                let breadcrumb_parts: Vec<String> = key_columns
-                    .iter()
-                    .zip(key_values.iter())
-                    .map(|(col, val)| format!("{}={}", col, val))
-                    .collect();
-                let breadcrumb_text = format!(
-                    "← Group: {} (Press Esc to go back)",
-                    breadcrumb_parts.join(" | ")
-                );
 
                 Block::default()
                     .borders(Borders::ALL)

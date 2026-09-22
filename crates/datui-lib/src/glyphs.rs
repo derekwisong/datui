@@ -76,6 +76,8 @@ pub struct Glyphs {
     pub arrow_right: &'static str,
     /// Between the steps of a location trail: `cloud › Azure › datui-test`.
     pub trail: &'static str,
+    /// Eight compact levels for inline charts (lowest to highest).
+    pub mini_bars: &'static [&'static str; 8],
     /// The home-screen wordmark, three rows of box drawing. `None` when the terminal
     /// cannot draw it, and the one-line title bar is used instead.
     pub wordmark: Option<&'static [&'static str]>,
@@ -112,6 +114,7 @@ const UNICODE: Glyphs = Glyphs {
     arrow_left: "←",
     arrow_right: "→",
     trail: "›",
+    mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
     wordmark: Some(&["╺┳┓┏━┓╺┳╸╻ ╻╻", " ┃┃┣━┫ ┃ ┃ ┃┃", "╺┻┛╹ ╹ ╹ ┗━┛╹"]),
 };
 
@@ -143,6 +146,7 @@ const ASCII: Glyphs = Glyphs {
     arrow_left: "<",
     arrow_right: ">",
     trail: ">",
+    mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
     wordmark: None,
 };
 

@@ -1,0 +1,25 @@
+Data Quality profiles the selected scope. Nothing scans values until you run the visible plan.
+
+Enter: Run the plan, inspect an observation, or open exact matching rows
+e: Edit scope, grain, compute budget, comparison and explicit time roles
+Enter on Scope: Enter view, source, rows START..END, files 1,3, partition COLUMN=VALUE, or time COLUMN=START..END
+PgUp / PgDn on Scope: Scroll the numbered source-file inventory
+p: Show the detailed access plan
+1 / 2 / 3 / 4: Overview / Columns / Segments / Trends
+[ / ]: Choose a column in Segments or Trends
+m: Choose the measurement in Segments or Trends
+b: Use the highlighted segment as the comparison baseline without rescanning
+j / k or Down / Up: Move through fields or results
+r: Rerun with a new sample seed
+Tab: Move between the result and Analysis tools
+Esc: Cancel editing, return one level, or close Analysis
+? / F1: Show or hide this help
+
+Every result states how many rows were eligible and evaluated and whether it is exact, sampled, estimated or metadata-only. Temporal meanings are used only after you assign a role to a column.
+Dataset-grain sampling selects without replacement from a bounded prefix of at most 50,000 rows; eligible rows may be unknown. File, partition, chunk, and window sampling reads the full selected scope, keeps up to 50,000 seeded rows per segment, and requires confirmation. A per-segment budget multiplies by the number of segments, so a run that would keep more than 500,000 rows or 512 MiB is refused rather than trimmed; narrow the scope or lower the budget.
+Time-window grain offers 1h, 1d, 1w and 1mo on each assigned time role. A window starts on the calendar boundary for its width, so weeks start on Monday, and is cut at the same place whether the run sampled or scanned it.
+Scope can be the current view, loaded source, view row range, selected source files, source partition value, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
+Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
+
+Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.
+For exact null, empty, whitespace, non-finite, constant, and category-variant observations, Enter from the detail opens a temporary row view. Esc returns to the same observation. Sampled observations explain when an exact row view needs a full run.

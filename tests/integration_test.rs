@@ -726,6 +726,7 @@ fn test_startup_buffer_race_does_not_lose_rows() {
 /// path got in commit e4d65e3.
 #[test]
 fn test_stale_background_events_are_ignored() {
+    use datui::data_quality::{DataQualityResults, QualityPrecision};
     use datui::statistics::AnalysisResults;
 
     common::ensure_sample_data();
@@ -781,6 +782,530 @@ fn test_stale_background_events_are_ignored() {
     assert!(
         app.analysis_modal.correlation_results.is_none(),
         "stale BackgroundCorrelationReady should not write correlation_results"
+    );
+
+    app.analysis_modal.data_quality_results = None;
+    app.event(&AppEvent::BackgroundDataQualityReady {
+        generation: stale_gen,
+        results: DataQualityResults {
+            total_rows: Some(999_999),
+            evaluated_rows: 1,
+            precision: QualityPrecision::Sampled,
+            sample_seed: 1,
+            columns: vec![],
+            observations: vec![],
+            segments: vec![],
+            temporal: vec![],
+            identity: None,
+            category_variants: vec![],
+        },
+    });
+    assert!(
+        app.analysis_modal.data_quality_results.is_none(),
+        "stale BackgroundDataQualityReady should not write data-quality results"
+    );
+}
+
+#[test]
+fn test_data_quality_plan_runs_in_background_and_opens_overview() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityPage;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    app.analysis_modal.data_quality_plan.sample_seed = 7_119;
+
+    app.analysis_modal.focus = AnalysisFocus::Main;
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    assert!(!app.is_busy());
+
+    app.analysis_modal
+        .data_quality_results
+        .as_mut()
+        .unwrap()
+        .observations
+        .push(datui::data_quality::QualityObservation {
+            kind: datui::data_quality::ObservationKind::Nulls,
+            column: "example".to_string(),
+            affected_rows: 1,
+            evaluated_rows: 10,
+            fact: "1 null row".to_string(),
+            normalized_category: None,
+        });
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let area = Rect::new(0, 0, 80, 24);
+    let mut detail_buffer = Buffer::empty(area);
+    app.render(area, &mut detail_buffer);
+    assert!(
+        detail_buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .contains("OBSERVATION")
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.data_quality_observation_detail);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+
+    for area in [
+        Rect::new(0, 0, 120, 32),
+        Rect::new(0, 0, 80, 24),
+        Rect::new(0, 0, 50, 18),
+    ] {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            screen.contains("Data Quality"),
+            "quality breadcrumb should survive a {width}x{height} layout",
+            width = area.width,
+            height = area.height
+        );
+    }
+
+    for page in [
+        QualityPage::Columns,
+        QualityPage::Segments,
+        QualityPage::Trends,
+    ] {
+        app.analysis_modal.set_quality_page(page);
+        for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 50, 18)] {
+            let mut buffer = Buffer::empty(area);
+            app.render(area, &mut buffer);
+            let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+            assert!(screen.contains("Data Quality"));
+            if page != QualityPage::Trends {
+                assert!(screen.contains("Null"));
+            }
+        }
+    }
+
+    // Every remaining page and popup must say its own piece at each width, so a
+    // clipped label or a screen that renders nothing at all fails here.
+    for (page, expected) in [
+        (QualityPage::Plan, "Latency threshold"),
+        (QualityPage::Scope, "ELIGIBLE ROWS"),
+        (QualityPage::TimeRoles, "Semantic role"),
+        (QualityPage::Detail, "Provenance:"),
+    ] {
+        app.analysis_modal.set_quality_page(page);
+        for area in [
+            Rect::new(0, 0, 120, 32),
+            Rect::new(0, 0, 80, 24),
+            Rect::new(0, 0, 50, 18),
+        ] {
+            let mut buffer = Buffer::empty(area);
+            app.render(area, &mut buffer);
+            let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+            assert!(
+                screen.contains(expected),
+                "{expected:?} should survive a {}x{} layout",
+                area.width,
+                area.height
+            );
+        }
+    }
+
+    // Once a run exists the sidebar reports what it measured, not a second copy
+    // of the planned access already on the plan strip.
+    app.analysis_modal.set_quality_page(QualityPage::Overview);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("MEASURED"), "sidebar should report the run");
+    assert!(screen.contains("eligible"));
+
+    app.analysis_modal.set_quality_page(QualityPage::Plan);
+    for (popup, expected) in [
+        ("access", "Estimate basis"),
+        ("confirm", "remote writes are 0 B."),
+    ] {
+        app.analysis_modal.data_quality_show_access = popup == "access";
+        app.analysis_modal.data_quality_confirm_run = popup == "confirm";
+        let area = Rect::new(0, 0, 120, 32);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains(expected), "{popup} popup should not clip");
+    }
+    app.analysis_modal.data_quality_show_access = false;
+    app.analysis_modal.data_quality_confirm_run = false;
+
+    app.analysis_modal.set_quality_page(QualityPage::Segments);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('b'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.comparison,
+        datui::data_quality::QualityComparison::Baseline
+    );
+    assert!(
+        app.analysis_modal
+            .data_quality_plan
+            .baseline_segment
+            .is_some()
+    );
+    assert!(!app.is_busy());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('m'),
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(']'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_metric,
+        datui::data_quality::QualityMetric::EmptyRate
+    );
+    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('4'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
+
+    // Enter on a highlighted column must open that column, not the first one.
+    app.analysis_modal.set_quality_page(QualityPage::Columns);
+    app.analysis_modal.data_quality_table_state.select(Some(3));
+    let fourth = app
+        .analysis_modal
+        .data_quality_results
+        .as_ref()
+        .unwrap()
+        .columns[3]
+        .name
+        .clone();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Detail);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains(&fourth),
+        "Detail should open the highlighted column {fourth}"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Columns);
+    assert_eq!(
+        app.analysis_modal.data_quality_table_state.selected(),
+        Some(3),
+        "returning from Detail should land back on the same column"
+    );
+
+    app.analysis_modal.close();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_from_cache);
+    assert_eq!(app.analysis_modal.data_quality_plan.sample_seed, 7_119);
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert!(!app.is_busy());
+
+    let column = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .schema
+        .iter_names()
+        .next()
+        .unwrap()
+        .to_string();
+    let original_view = app.data_table_state.as_ref().unwrap().len_generation();
+    let results = app.analysis_modal.data_quality_results.as_mut().unwrap();
+    results.precision = datui::data_quality::QualityPrecision::Exact;
+    results.observations = vec![datui::data_quality::QualityObservation {
+        kind: datui::data_quality::ObservationKind::Nulls,
+        column,
+        affected_rows: 0,
+        evaluated_rows: results.evaluated_rows,
+        fact: "matching rows".to_string(),
+        normalized_category: None,
+    }];
+    app.analysis_modal.set_quality_page(QualityPage::Overview);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.active);
+    let area = Rect::new(0, 0, 80, 24);
+    let mut evidence_buffer = Buffer::empty(area);
+    app.render(area, &mut evidence_buffer);
+    assert!(
+        evidence_buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .contains("Esc back to result")
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.active);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.active);
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().len_generation(),
+        original_view
+    );
+
+    app.analysis_modal.close();
+    let state = app.data_table_state.as_mut().unwrap();
+    state.defer_collect = true;
+    state.reverse();
+    state.defer_collect = false;
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.data_quality_from_cache);
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+}
+
+#[test]
+fn test_data_quality_scope_editor_runs_selected_view_rows() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::{QualityPage, QualityScope};
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    key(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    app.analysis_modal.focus = AnalysisFocus::Main;
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 50, 18)] {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains("ELIGIBLE ROWS"));
+    }
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 0..3");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    assert!(app.analysis_modal.data_quality_scope_error.is_some());
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 2..3");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.scope,
+        QualityScope::ViewRows { start: 2, end: 3 }
+    );
+    assert!(!app.analysis_modal.data_quality_editing);
+    let next = key(&mut app, KeyCode::Enter);
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal
+            .data_quality_results
+            .as_ref()
+            .unwrap()
+            .total_rows,
+        Some(2)
+    );
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Right);
+    assert_ne!(
+        app.analysis_modal.data_quality_plan.grain,
+        datui::data_quality::QualityGrain::Dataset
+    );
+    key(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.grain,
+        datui::data_quality::QualityGrain::Dataset
+    );
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 1..1");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 2..3");
+    key(&mut app, KeyCode::Enter);
+    assert!(key(&mut app, KeyCode::Enter).is_none());
+    assert!(app.analysis_modal.data_quality_from_cache);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+}
+
+#[test]
+fn test_data_quality_source_file_scope_uses_loaded_file_order() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityScope;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "region=one", df!("id" => &[1i32, 2]).unwrap());
+    write_parquet(dir.path(), "region=two", df!("id" => &[3i32, 4]).unwrap());
+    let (mut app, rx, _) = open_local_dataset_with_channel(dir.path());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    app.analysis_modal.focus = AnalysisFocus::Main;
+    app.analysis_modal.data_quality_plan.scope = QualityScope::SourceFiles(vec![2]);
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.total_rows, Some(2));
+    assert_eq!(results.evaluated_rows, 2);
+    let id = results
+        .columns
+        .iter()
+        .find(|column| column.name == "id")
+        .unwrap();
+    assert_eq!(id.min.as_deref(), Some("3"));
+    assert_eq!(id.max.as_deref(), Some("4"));
+
+    app.analysis_modal.data_quality_plan.scope = QualityScope::WholeSource;
+    app.analysis_modal.data_quality_plan.sample_rows = 1;
+    app.event(&AppEvent::AnalysisDataQualityCompute);
+    drain_events(&mut app, &rx);
+    let sampled = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(sampled.total_rows, None);
+    assert_eq!(sampled.evaluated_rows, 1);
+    assert_eq!(
+        sampled.precision,
+        datui::data_quality::QualityPrecision::Sampled
+    );
+
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
+    app.event(&AppEvent::AnalysisDataQualityCompute);
+    drain_events(&mut app, &rx);
+    let full = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(full.total_rows, Some(4));
+    assert_eq!(full.evaluated_rows, 4);
+
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Sample;
+    app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::File;
+    app.event(&AppEvent::AnalysisDataQualityCompute);
+    drain_events(&mut app, &rx);
+    let by_file = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(by_file.total_rows, Some(4));
+    assert_eq!(by_file.evaluated_rows, 2);
+    assert_eq!(by_file.segments.len(), 2);
+    assert!(
+        by_file
+            .segments
+            .iter()
+            .all(|segment| segment.total_rows == Some(2) && segment.evaluated_rows == 1)
     );
 }
 

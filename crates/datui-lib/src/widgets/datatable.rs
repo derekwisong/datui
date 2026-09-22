@@ -60,6 +60,7 @@ fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
 pub struct DataTableState {
     pub lf: LazyFrame,
     original_lf: LazyFrame,
+    original_schema: Arc<Schema>,
     /// What the sidebar filters and sort are applied to: the active query's result (DSL,
     /// SQL or fuzzy), the last pivot/melt, or `original_lf` when there is none. The
     /// pipeline is original → query/reshape (`base_lf`) → filters → sort (`lf`) → column
@@ -563,6 +564,7 @@ impl DataTableState {
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
             original_lf: lf.clone(),
+            original_schema: schema.clone(),
             base_lf: lf.clone(),
             lf,
             df: None,
@@ -671,6 +673,7 @@ impl DataTableState {
         };
         Ok(Self {
             original_lf: lf.clone(),
+            original_schema: schema.clone(),
             base_lf: lf.clone(),
             lf,
             df: None,
@@ -752,6 +755,7 @@ impl DataTableState {
         self.original_lf = lf.clone();
         self.base_lf = lf.clone();
         self.schema = lf.clone().collect_schema()?;
+        self.original_schema = self.schema.clone();
         self.lf = lf.clone();
         Ok(())
     }
@@ -3666,6 +3670,160 @@ impl DataTableState {
             .collect()
     }
 
+    /// Frame and optional row-to-file map used by the data-quality worker. The hidden
+    /// scan index is projected only while it still identifies source files; the worker
+    /// replaces it with file names before profiling and never exposes it as user data.
+    pub(crate) fn data_quality_scan(
+        &self,
+    ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
+        let known_files =
+            !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
+        let source = if self.can_name_source_files() {
+            Some(crate::data_quality::QualitySourceContext {
+                file_names: self.drift_files.clone(),
+                file_starts: self.drift_file_starts.clone(),
+                row_index_column: crate::schema_union::DRIFT_COLUMN.to_string(),
+            })
+        } else if self.is_pristine() && known_files {
+            Some(crate::data_quality::QualitySourceContext {
+                file_names: self.drift_files.clone(),
+                file_starts: self.drift_file_starts.clone(),
+                row_index_column: "__datui_quality_row".to_string(),
+            })
+        } else {
+            None
+        };
+        let mut expressions = self.binary_stub_exprs();
+        if self.can_name_source_files() {
+            expressions.push(col(crate::schema_union::DRIFT_COLUMN));
+        }
+        let lf = self.lf.clone().select(expressions);
+        let lf = if source
+            .as_ref()
+            .is_some_and(|mapping| mapping.row_index_column == "__datui_quality_row")
+        {
+            lf.with_row_index("__datui_quality_row", None)
+        } else {
+            lf
+        };
+        (lf, source)
+    }
+
+    /// Source-level profiling starts from the loaded scan, independent of the
+    /// current query, filters, sort, and column projection. Schema projection is
+    /// deferred to the background worker so opening the plan performs no I/O.
+    pub(crate) fn data_quality_source_scan(
+        &self,
+    ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
+        let known_files =
+            !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
+        let source = if known_files {
+            Some(crate::data_quality::QualitySourceContext {
+                file_names: self.drift_files.clone(),
+                file_starts: self.drift_file_starts.clone(),
+                row_index_column: if self.drift_at_open {
+                    crate::schema_union::DRIFT_COLUMN.to_string()
+                } else {
+                    "__datui_quality_row".to_string()
+                },
+            })
+        } else {
+            None
+        };
+        (self.original_lf.clone(), source)
+    }
+
+    pub(crate) fn quality_source_file_count(&self) -> usize {
+        if self.drift_files.len() == self.drift_file_starts.len() {
+            self.drift_files.len()
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn quality_source_file_names(&self) -> &[String] {
+        if self.quality_source_file_count() > 0 {
+            &self.drift_files
+        } else {
+            &[]
+        }
+    }
+
+    pub(crate) fn quality_temporal_columns(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> Vec<String> {
+        let schema = if scope.uses_source() {
+            &self.original_schema
+        } else {
+            &self.schema
+        };
+        schema
+            .iter()
+            .filter(|(name, dtype)| {
+                name.as_str() != crate::schema_union::DRIFT_COLUMN && dtype.is_temporal()
+            })
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
+    /// Build a temporary filtered table without changing the current pipeline. The
+    /// caller keeps this state to restore its query, filters, sort, and buffer.
+    pub(crate) fn quality_evidence_view(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+        predicate: Expr,
+    ) -> Result<Self> {
+        let options = crate::OpenOptions {
+            pages_lookahead: Some(self.pages_lookahead),
+            pages_lookback: Some(self.pages_lookback),
+            max_buffered_rows: Some(self.max_buffered_rows),
+            max_buffered_mb: Some(self.max_buffered_mb),
+            row_numbers: self.row_numbers,
+            row_start_index: self.row_start_index,
+            polars_streaming: self.polars_streaming,
+            ..crate::OpenOptions::default()
+        };
+        let (lf, schema) = if scope.uses_source() {
+            let mut lf = self.query_source();
+            let source = if matches!(scope, crate::data_quality::QualityScope::SourceFiles(_)) {
+                lf = lf.with_row_index("__datui_quality_row", None);
+                Some(crate::data_quality::QualitySourceContext {
+                    file_names: self.drift_files.clone(),
+                    file_starts: self.drift_file_starts.clone(),
+                    row_index_column: "__datui_quality_row".to_string(),
+                })
+            } else {
+                None
+            };
+            let lf = crate::data_quality::apply_quality_scope(lf, scope, source.as_ref())?;
+            let lf = if source.is_some() {
+                lf.drop(by_name(["__datui_quality_row"], false, false))
+            } else {
+                lf
+            };
+            (lf, self.original_schema.clone())
+        } else {
+            (
+                crate::data_quality::apply_quality_scope(self.visible_lf(), scope, None)?,
+                self.schema.clone(),
+            )
+        };
+        let mut view = Self::from_schema_and_lazyframe(
+            schema,
+            lf.filter(predicate),
+            &options,
+            self.partition_columns.clone(),
+        )?;
+        if !scope.uses_source() {
+            view.column_order = self.column_order.clone();
+            view.locked_columns_count = self.locked_columns_count;
+        }
+        view.visible_rows = self.visible_rows;
+        view.remote_source = self.remote_source;
+        Ok(view)
+    }
+
     pub fn prepare_async_collect(
         &mut self,
         num_rows_override: Option<usize>,
@@ -4271,6 +4429,7 @@ impl DataTableState {
         self.column_order
             .retain(|name| dataset.schema.contains(name.as_str()));
         self.schema = dataset.schema.clone();
+        self.original_schema = self.schema.clone();
         // The scan is built at a schema, and the one this dataset opened with has never
         // heard of the columns that just arrived. Left in place, the first windowed
         // page read asks it for a column it does not have and the table stops showing
@@ -4645,6 +4804,7 @@ impl DataTableState {
         // `text_schema` keeps the columns in their places, so the order the user
         // arranged still names every one of them and still means what it did.
         self.schema = view.schema.clone();
+        self.original_schema = self.schema.clone();
         self.drift_groups = Arc::new(view.groups.clone());
         self.groups_at_open = self.drift_groups.clone();
         self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
@@ -4818,6 +4978,30 @@ impl DataTableState {
         self.observed_bytes_per_row.unwrap_or_else(|| {
             estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_widths)
         })
+    }
+
+    /// Best available in-memory width estimate for one logical row.
+    ///
+    /// Data Quality uses this only for a preflight estimate and labels the result as
+    /// approximate. Buffer planning uses the same source so the two surfaces do not
+    /// disagree about the shape of the current view.
+    pub fn estimated_row_bytes(&self) -> usize {
+        self.bytes_per_row()
+    }
+
+    /// Number of source files known to participate in the pristine dataset scan.
+    /// Returns `None` after a query or reshape has broken the row-to-file mapping.
+    pub fn source_file_count(&self) -> Option<usize> {
+        if !self.is_pristine() {
+            return None;
+        }
+        if !self.drift_files.is_empty() {
+            return Some(self.drift_files.len());
+        }
+        if let Some(remote) = &self.remote_files {
+            return Some(remote.urls.len());
+        }
+        Some(1)
     }
 
     /// Rows the `max_buffered_mb` budget allows a buffer, never fewer than a screen;
@@ -6290,7 +6474,7 @@ struct RowNumbersParams {
 /// Placeholder shown in the table for binary columns. Their values (often large blobs, e.g.
 /// raw document bytes) are never read into the display buffer — only this stub is — which keeps
 /// scrolling and jump-to-end fast. The real bytes remain in `lf` for export/analysis.
-const BINARY_STUB: &str = "‹binary›";
+pub(crate) const BINARY_STUB: &str = "‹binary›";
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
 /// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
@@ -10161,6 +10345,79 @@ mod tests {
         state.query(String::new());
         assert!(state.remote_window());
         assert_eq!(state.num_rows_if_valid(), Some(100));
+    }
+
+    #[test]
+    fn quality_source_scope_ignores_current_query_and_evidence_matches_scope() {
+        let lf = df!("a" => &[1i32, 2, 3, 4]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.drift_files = vec!["first.parquet".into(), "second.parquet".into()];
+        state.drift_file_starts = vec![0, 2];
+        state.query("select a where a > 2".to_string());
+        let (current, _) = state.data_quality_scan();
+        let (source, context) = state.data_quality_source_scan();
+        let source =
+            crate::data_quality::prepare_source_quality_scan(source, context.as_ref()).unwrap();
+        assert_eq!(current.collect().unwrap().height(), 2);
+        assert_eq!(source.collect().unwrap().height(), 4);
+        assert_eq!(state.quality_source_file_count(), 2);
+        let (raw, mapping) = state.data_quality_source_scan();
+        let indexed =
+            crate::data_quality::prepare_source_quality_scan(raw, mapping.as_ref()).unwrap();
+        let first_file = crate::data_quality::apply_quality_scope(
+            indexed,
+            &crate::data_quality::QualityScope::SourceFiles(vec![1]),
+            mapping.as_ref(),
+        )
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(first_file.height(), 2);
+        assert_eq!(
+            first_file.column("a").unwrap().i32().unwrap().get(0),
+            Some(1)
+        );
+
+        let evidence = state
+            .quality_evidence_view(
+                &crate::data_quality::QualityScope::WholeSource,
+                col("a").eq(lit(1)),
+            )
+            .unwrap();
+        assert_eq!(evidence.visible_lf().collect().unwrap().height(), 1);
+        let bounded = state
+            .quality_evidence_view(
+                &crate::data_quality::QualityScope::FirstRows(1),
+                col("a").eq(lit(4)),
+            )
+            .unwrap();
+        assert_eq!(bounded.visible_lf().collect().unwrap().height(), 0);
+        let file_evidence = state
+            .quality_evidence_view(
+                &crate::data_quality::QualityScope::SourceFiles(vec![1]),
+                col("a").eq(lit(1)),
+            )
+            .unwrap();
+        assert_eq!(file_evidence.visible_lf().collect().unwrap().height(), 1);
+    }
+
+    #[test]
+    fn source_time_roles_can_use_columns_hidden_by_current_query() {
+        let lf = df!("a" => &[1i32, 2], "event" => &[20_000i32, 20_001])
+            .unwrap()
+            .lazy()
+            .with_columns([col("event").cast(DataType::Date)]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.query("select a".to_string());
+        assert!(
+            state
+                .quality_temporal_columns(&crate::data_quality::QualityScope::CurrentView)
+                .is_empty()
+        );
+        assert_eq!(
+            state.quality_temporal_columns(&crate::data_quality::QualityScope::WholeSource),
+            vec!["event"]
+        );
     }
 
     #[test]

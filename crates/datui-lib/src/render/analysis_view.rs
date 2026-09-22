@@ -3,7 +3,7 @@
 
 use crate::analysis_modal::{self, AnalysisModal};
 use crate::render::context::RenderContext;
-use crate::widgets::analysis;
+use crate::widgets::{analysis, data_quality};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph, Widget};
 
@@ -14,7 +14,9 @@ pub fn render(
     app: &mut crate::App,
     ctx: &RenderContext,
 ) {
-    if let Some(ref progress) = app.analysis_modal.computing {
+    if let Some(ref progress) = app.analysis_modal.computing
+        && app.analysis_modal.selected_tool != Some(analysis_modal::AnalysisTool::DataQuality)
+    {
         let percent = if progress.total > 0 {
             (progress.current as u16).saturating_mul(100) / progress.total as u16
         } else {
@@ -57,6 +59,39 @@ pub fn render(
                 buf,
             );
     } else if let Some(state) = &app.data_table_state {
+        if app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
+            let plan = app.analysis_modal.data_quality_plan.clone();
+            let results = app.analysis_modal.data_quality_results.clone();
+            let config = data_quality::DataQualityWidgetConfig {
+                state,
+                plan: &plan,
+                results: results.as_ref(),
+                from_cache: app.analysis_modal.data_quality_from_cache,
+                metric: app.analysis_modal.data_quality_metric,
+                column_index: app.analysis_modal.data_quality_column_index,
+                page: app.analysis_modal.data_quality_page,
+                editing: app.analysis_modal.data_quality_editing,
+                plan_field: app.analysis_modal.data_quality_plan_field,
+                scope_input: &app.analysis_modal.data_quality_scope_input,
+                scope_error: app.analysis_modal.data_quality_scope_error.as_deref(),
+                scope_file_offset: app.analysis_modal.data_quality_scope_file_offset,
+                show_access: app.analysis_modal.data_quality_show_access,
+                observation_detail: app.analysis_modal.data_quality_observation_detail,
+                confirm_run: app.analysis_modal.data_quality_confirm_run,
+                running: app.analysis_modal.computing.is_some(),
+                focus: app.analysis_modal.focus,
+                theme: &app.theme,
+            };
+            Clear.render(area, buf);
+            data_quality::render(
+                config,
+                &mut app.analysis_modal.data_quality_table_state,
+                &mut app.analysis_modal.sidebar_state,
+                area,
+                buf,
+            );
+            return;
+        }
         let context = state.get_analysis_context();
         Clear.render(area, buf);
         let column_offset = match app.analysis_modal.selected_tool {
@@ -69,6 +104,7 @@ pub fn render(
             Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                 app.analysis_modal.correlation_column_offset
             }
+            Some(analysis_modal::AnalysisTool::DataQuality) => 0,
             None => 0,
         };
 
@@ -130,6 +166,10 @@ pub fn help_title_and_text(modal: &AnalysisModal) -> (String, String) {
             Some(analysis_modal::AnalysisTool::CorrelationMatrix) => (
                 "Correlation Matrix Help".to_string(),
                 crate::help_strings::analysis_correlation_matrix().to_string(),
+            ),
+            Some(analysis_modal::AnalysisTool::DataQuality) => (
+                "Data Quality Help".to_string(),
+                crate::help_strings::analysis_data_quality().to_string(),
             ),
             None => (
                 "Analysis Help".to_string(),

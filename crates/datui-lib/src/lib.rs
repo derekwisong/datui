@@ -49,6 +49,7 @@ mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
 pub mod config;
+pub mod data_quality;
 pub mod discover;
 pub mod error_display;
 pub mod event_pump;
@@ -4538,6 +4539,8 @@ pub enum AppEvent {
     AnalysisDistributionCompute,
     /// Run correlation matrix (deferred so progress overlay can show first).
     AnalysisCorrelationCompute,
+    /// Run the configured data-quality plan off the UI thread.
+    AnalysisDataQualityCompute,
     /// Background task completed: describe/statistics results.
     BackgroundDescribeReady {
         generation: u64,
@@ -4552,6 +4555,11 @@ pub enum AppEvent {
     BackgroundCorrelationReady {
         generation: u64,
         results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: data-quality profile.
+    BackgroundDataQualityReady {
+        generation: u64,
+        results: crate::data_quality::DataQualityResults,
     },
     /// Background task completed: buffer data collected.
     /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
@@ -5524,6 +5532,13 @@ impl LenCount {
     }
 }
 
+struct QualityCacheEntry {
+    dataset_generation: u64,
+    view_generation: u64,
+    plan: data_quality::DataQualityPlan,
+    results: data_quality::DataQualityResults,
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
@@ -5590,6 +5605,9 @@ pub struct App {
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
     pub analysis_modal: AnalysisModal,
+    quality_cache: Vec<QualityCacheEntry>,
+    quality_evidence_return: Option<Box<DataTableState>>,
+    pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
@@ -5738,6 +5756,146 @@ pub struct App {
 }
 
 impl App {
+    fn open_quality_evidence(&mut self) {
+        let Some(observation) = self
+            .analysis_modal
+            .data_quality_results
+            .as_ref()
+            .filter(|results| results.precision == data_quality::QualityPrecision::Exact)
+            .and_then(|results| {
+                self.analysis_modal
+                    .data_quality_table_state
+                    .selected()
+                    .and_then(|index| results.observations.get(index))
+            })
+        else {
+            return;
+        };
+        let Some(predicate) = observation.evidence_predicate() else {
+            return;
+        };
+        let label = format!("{} / {}", observation.kind.label(), observation.column);
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let scope = self
+            .analysis_modal
+            .data_quality_last_plan
+            .as_ref()
+            .map(|plan| &plan.scope)
+            .unwrap_or(&self.analysis_modal.data_quality_plan.scope);
+        let view = match state.quality_evidence_view(scope, predicate) {
+            Ok(view) => view,
+            Err(error) => {
+                self.error_modal
+                    .show(format!("Cannot open matching rows: {error}"));
+                return;
+            }
+        };
+        if let Some(original) = self.data_table_state.replace(view) {
+            self.quality_evidence_return = Some(Box::new(original));
+            self.quality_evidence_label = Some(label);
+            self.analysis_modal.active = false;
+            self.collect_inflight = None;
+            self.spawn_async_collect("Loading matching rows...");
+        }
+    }
+
+    fn return_from_quality_evidence(&mut self, reopen_analysis: bool) -> bool {
+        let Some(original) = self.quality_evidence_return.take() else {
+            return false;
+        };
+        self.task_generation = self.task_generation.wrapping_add(1);
+        self.collect_inflight = None;
+        self.len_count_inflight = None;
+        self.data_table_state = Some(*original);
+        self.quality_evidence_label = None;
+        self.analysis_modal.active = reopen_analysis;
+        self.busy = false;
+        self.status_message = None;
+        true
+    }
+
+    fn restore_recent_quality_plan(&mut self) {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return;
+        };
+        if self.analysis_modal.data_quality_plan != data_quality::DataQualityPlan::default() {
+            return;
+        }
+        if let Some(cached) = self.quality_cache.iter().find(|entry| {
+            entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+        }) {
+            self.analysis_modal.data_quality_plan = cached.plan.clone();
+        }
+    }
+
+    fn clear_quality_result_if_plan_changed(&mut self) {
+        if self.analysis_modal.data_quality_results.is_some()
+            && self.analysis_modal.data_quality_last_plan.as_ref()
+                != Some(&self.analysis_modal.data_quality_plan)
+        {
+            self.analysis_modal.data_quality_results = None;
+            self.analysis_modal.data_quality_last_plan = None;
+            self.analysis_modal.data_quality_from_cache = false;
+        }
+    }
+
+    fn restore_cached_quality(&mut self) -> bool {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return false;
+        };
+        let plan = &self.analysis_modal.data_quality_plan;
+        let Some(cached) = self.quality_cache.iter().find(|entry| {
+            entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+                && &entry.plan == plan
+        }) else {
+            return false;
+        };
+        self.analysis_modal.data_quality_results = Some(cached.results.clone());
+        self.analysis_modal.data_quality_last_plan = Some(plan.clone());
+        self.analysis_modal.data_quality_from_cache = true;
+        self.analysis_modal
+            .set_quality_page(data_quality::QualityPage::Overview);
+        true
+    }
+
+    fn cache_quality_result(&mut self, results: &data_quality::DataQualityResults) {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return;
+        };
+        let plan = self.analysis_modal.data_quality_plan.clone();
+        self.quality_cache.retain(|entry| {
+            !(entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+                && entry.plan == plan)
+        });
+        self.quality_cache.insert(
+            0,
+            QualityCacheEntry {
+                dataset_generation: self.dataset_generation,
+                view_generation,
+                plan,
+                results: results.clone(),
+            },
+        );
+        self.quality_cache.truncate(4);
+    }
+
     /// Returns true when the app is busy (background work in progress).
     pub fn is_busy(&self) -> bool {
         self.busy
@@ -5782,7 +5940,18 @@ impl App {
             && (key.code == KeyCode::Char('q')
                 || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
         let home = ctrl && key.code == KeyCode::Char('o');
-        quit || home || self.confirmation_modal.active || self.input_mode == InputMode::Home
+        let cancel_quality = self.analysis_modal.active
+            && self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
+            && self.analysis_modal.computing.is_some()
+            && key.code == KeyCode::Esc;
+        let leave_quality_evidence = self.quality_evidence_return.is_some()
+            && self.input_mode == InputMode::Normal
+            && key.code == KeyCode::Esc;
+        quit || home
+            || cancel_quality
+            || leave_quality_evidence
+            || self.confirmation_modal.active
+            || self.input_mode == InputMode::Home
     }
 
     /// Whether a key may act while the app is busy. `App::handle` gates on this; the main
@@ -6207,6 +6376,9 @@ impl App {
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
+        self.quality_cache.clear();
+        self.quality_evidence_return = None;
+        self.quality_evidence_label = None;
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -6706,6 +6878,9 @@ impl App {
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
             analysis_modal: AnalysisModal::new(),
+            quality_cache: Vec::new(),
+            quality_evidence_return: None,
+            quality_evidence_label: None,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -7344,6 +7519,9 @@ impl App {
     }
 
     pub fn enter_home(&mut self) {
+        if self.return_from_quality_evidence(false) {
+            self.analysis_modal.close();
+        }
         self.abandon_load();
         self.home.status = None;
         self.home.folds = self.cache.load_folds();
@@ -9556,6 +9734,17 @@ impl App {
             return Some(AppEvent::Exit);
         }
 
+        if event.code == KeyCode::Esc
+            && self.input_mode == InputMode::Normal
+            && !self.analysis_modal.active
+            && !self.error_modal.active
+            && !self.success_modal.active
+            && !self.confirmation_modal.active
+            && self.return_from_quality_evidence(true)
+        {
+            return None;
+        }
+
         // F1 opens help first so no other branch (e.g. Editing) can consume it.
         if event.code == KeyCode::F(1) {
             self.open_help_overlay();
@@ -11296,6 +11485,483 @@ impl App {
         }
 
         if self.analysis_modal.active {
+            if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
+                && self.analysis_modal.view == analysis_modal::AnalysisView::Main
+            {
+                use crate::data_quality::QualityPage;
+
+                if (self.analysis_modal.data_quality_confirm_run
+                    || self.analysis_modal.data_quality_show_access
+                    || self.analysis_modal.data_quality_observation_detail)
+                    && !matches!(event.code, KeyCode::Esc | KeyCode::Enter)
+                {
+                    return None;
+                }
+
+                if self.analysis_modal.data_quality_page == QualityPage::Scope
+                    && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                {
+                    match event.code {
+                        KeyCode::Esc => {
+                            self.analysis_modal.set_quality_page(QualityPage::Plan);
+                            self.analysis_modal.data_quality_plan_field = 0;
+                        }
+                        KeyCode::Enter => {
+                            let input = self.analysis_modal.data_quality_scope_input.value();
+                            match data_quality::QualityScope::parse_command(input) {
+                                Ok(scope) => {
+                                    let file_count = self
+                                        .data_table_state
+                                        .as_ref()
+                                        .map(|state| state.quality_source_file_count())
+                                        .unwrap_or(0);
+                                    if let data_quality::QualityScope::SourceFiles(indices) = &scope
+                                        && indices.iter().any(|index| *index > file_count)
+                                    {
+                                        self.analysis_modal.data_quality_scope_error = Some(
+                                            format!(
+                                                "File number exceeds source inventory ({file_count})"
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    self.analysis_modal.data_quality_plan.scope = scope;
+                                    self.analysis_modal.data_quality_plan.baseline_segment = None;
+                                    self.analysis_modal.data_quality_scope_error = None;
+                                    self.analysis_modal.set_quality_page(QualityPage::Plan);
+                                    self.analysis_modal.data_quality_editing = false;
+                                    self.analysis_modal.data_quality_plan_before_edit = None;
+                                    self.analysis_modal.data_quality_plan_field = 0;
+                                    self.clear_quality_result_if_plan_changed();
+                                }
+                                Err(error) => {
+                                    self.analysis_modal.data_quality_scope_error =
+                                        Some(error.to_string());
+                                }
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            let count = self
+                                .data_table_state
+                                .as_ref()
+                                .map(|state| state.quality_source_file_count())
+                                .unwrap_or(0);
+                            self.analysis_modal.data_quality_scope_file_offset = self
+                                .analysis_modal
+                                .data_quality_scope_file_offset
+                                .saturating_add(8)
+                                .min(count.saturating_sub(1));
+                        }
+                        KeyCode::PageUp => {
+                            self.analysis_modal.data_quality_scope_file_offset = self
+                                .analysis_modal
+                                .data_quality_scope_file_offset
+                                .saturating_sub(8);
+                        }
+                        _ => {
+                            let _ = self
+                                .analysis_modal
+                                .data_quality_scope_input
+                                .handle_key(event, None);
+                            self.analysis_modal.data_quality_scope_error = None;
+                        }
+                    }
+                    return None;
+                }
+
+                if self.analysis_modal.data_quality_editing
+                    && matches!(
+                        event.code,
+                        KeyCode::Char('e' | '1' | '2' | '3' | '4' | 'r' | 'b' | 'm' | '[' | ']')
+                            | KeyCode::Tab
+                    )
+                {
+                    return None;
+                }
+
+                match event.code {
+                    KeyCode::Esc if self.analysis_modal.computing.is_some() => {
+                        self.task_generation = self.task_generation.wrapping_add(1);
+                        self.analysis_modal.computing = None;
+                        self.analysis_modal.data_quality_results = None;
+                        self.status_message = Some("Data-quality run cancelled".to_string());
+                        self.busy = false;
+                        return None;
+                    }
+                    KeyCode::Esc if self.analysis_modal.data_quality_show_access => {
+                        self.analysis_modal.data_quality_show_access = false;
+                        return None;
+                    }
+                    KeyCode::Esc if self.analysis_modal.data_quality_observation_detail => {
+                        self.analysis_modal.data_quality_observation_detail = false;
+                        return None;
+                    }
+                    KeyCode::Enter if self.analysis_modal.data_quality_show_access => {
+                        self.analysis_modal.data_quality_show_access = false;
+                        return None;
+                    }
+                    KeyCode::Enter if self.analysis_modal.data_quality_observation_detail => {
+                        self.open_quality_evidence();
+                        if self.analysis_modal.active && !self.error_modal.active {
+                            self.analysis_modal.data_quality_observation_detail = false;
+                        }
+                        return None;
+                    }
+                    KeyCode::Esc if self.analysis_modal.data_quality_confirm_run => {
+                        self.analysis_modal.data_quality_confirm_run = false;
+                        return None;
+                    }
+                    KeyCode::Esc
+                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles =>
+                    {
+                        if let Some(plan) = self.analysis_modal.data_quality_plan_before_edit.take()
+                        {
+                            self.analysis_modal.data_quality_plan = plan;
+                        }
+                        self.analysis_modal.set_quality_page(QualityPage::Plan);
+                        self.analysis_modal.data_quality_editing = false;
+                        self.analysis_modal.data_quality_plan_field = 4;
+                        return None;
+                    }
+                    KeyCode::Esc if self.analysis_modal.data_quality_editing => {
+                        if let Some(plan) = self.analysis_modal.data_quality_plan_before_edit.take()
+                        {
+                            self.analysis_modal.data_quality_plan = plan;
+                        }
+                        self.analysis_modal.data_quality_editing = false;
+                        return None;
+                    }
+                    KeyCode::Esc
+                        if !matches!(self.analysis_modal.data_quality_page, QualityPage::Plan) =>
+                    {
+                        self.analysis_modal.set_quality_page(QualityPage::Plan);
+                        return None;
+                    }
+                    KeyCode::Char('p') => {
+                        self.analysis_modal.data_quality_show_access =
+                            !self.analysis_modal.data_quality_show_access;
+                        return None;
+                    }
+                    KeyCode::Char('e') => {
+                        self.analysis_modal.data_quality_plan_before_edit =
+                            Some(self.analysis_modal.data_quality_plan.clone());
+                        self.analysis_modal.set_quality_page(QualityPage::Plan);
+                        self.analysis_modal.data_quality_editing = true;
+                        self.analysis_modal.data_quality_plan_field = 0;
+                        return None;
+                    }
+                    KeyCode::Char('1') => {
+                        self.analysis_modal.set_quality_page(QualityPage::Overview);
+                        return None;
+                    }
+                    KeyCode::Char('2') => {
+                        self.analysis_modal.set_quality_page(QualityPage::Columns);
+                        self.analysis_modal
+                            .data_quality_table_state
+                            .select(Some(self.analysis_modal.data_quality_column_index));
+                        return None;
+                    }
+                    KeyCode::Char('3') => {
+                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
+                            self.analysis_modal.data_quality_column_index = self
+                                .analysis_modal
+                                .data_quality_table_state
+                                .selected()
+                                .unwrap_or(0);
+                        }
+                        self.analysis_modal.set_quality_page(QualityPage::Segments);
+                        return None;
+                    }
+                    KeyCode::Char('4') => {
+                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
+                            self.analysis_modal.data_quality_column_index = self
+                                .analysis_modal
+                                .data_quality_table_state
+                                .selected()
+                                .unwrap_or(0);
+                        }
+                        self.analysis_modal.set_quality_page(QualityPage::Trends);
+                        return None;
+                    }
+                    KeyCode::Char('m')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Segments | QualityPage::Trends
+                        ) =>
+                    {
+                        self.analysis_modal.cycle_quality_metric();
+                        return None;
+                    }
+                    KeyCode::Char('b')
+                        if self.analysis_modal.data_quality_page == QualityPage::Segments
+                            && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        if let Some(mut results) = self.analysis_modal.data_quality_results.take() {
+                            if let Some(label) = self
+                                .analysis_modal
+                                .data_quality_table_state
+                                .selected()
+                                .and_then(|index| results.segments.get(index))
+                                .map(|segment| segment.label.clone())
+                            {
+                                self.analysis_modal.data_quality_plan.comparison =
+                                    crate::data_quality::QualityComparison::Baseline;
+                                self.analysis_modal.data_quality_plan.baseline_segment =
+                                    Some(label);
+                                results.compare_segments(&self.analysis_modal.data_quality_plan);
+                                self.cache_quality_result(&results);
+                                self.analysis_modal.data_quality_last_plan =
+                                    Some(self.analysis_modal.data_quality_plan.clone());
+                            }
+                            self.analysis_modal.data_quality_results = Some(results);
+                        }
+                        return None;
+                    }
+                    KeyCode::Char('[') | KeyCode::Char(']')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Segments | QualityPage::Trends
+                        ) =>
+                    {
+                        let count = self
+                            .analysis_modal
+                            .data_quality_results
+                            .as_ref()
+                            .map(|results| results.columns.len())
+                            .unwrap_or(0);
+                        self.analysis_modal
+                            .cycle_quality_column(count, event.code == KeyCode::Char(']'));
+                        return None;
+                    }
+                    KeyCode::Char('r') => {
+                        self.analysis_modal.recalculate();
+                        self.analysis_modal.data_quality_plan.sample_seed =
+                            self.analysis_modal.random_seed;
+                        self.analysis_modal.data_quality_results = None;
+                        self.analysis_modal.data_quality_from_cache = false;
+                        if self
+                            .analysis_modal
+                            .data_quality_plan
+                            .requires_confirmation()
+                        {
+                            self.analysis_modal.set_quality_page(QualityPage::Plan);
+                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+                            self.analysis_modal.data_quality_confirm_run = true;
+                            return None;
+                        }
+                        self.analysis_modal.computing = Some(AnalysisProgress {
+                            phase: "Profiling data quality".to_string(),
+                            current: 0,
+                            total: 1,
+                        });
+                        self.busy = true;
+                        return Some(AppEvent::AnalysisDataQualityCompute);
+                    }
+                    KeyCode::Enter
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
+                            self.analysis_modal.set_quality_page(QualityPage::Plan);
+                            self.analysis_modal.data_quality_editing = false;
+                            self.analysis_modal.data_quality_plan_field = 4;
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.clear_quality_result_if_plan_changed();
+                        } else if self.analysis_modal.data_quality_editing
+                            && self.analysis_modal.data_quality_plan_field == 0
+                        {
+                            self.analysis_modal.data_quality_scope_input =
+                                crate::widgets::text_input::TextInput::new()
+                                    .with_theme(&self.theme);
+                            self.analysis_modal
+                                .data_quality_scope_input
+                                .set_value(self.analysis_modal.data_quality_plan.scope.command());
+                            self.analysis_modal
+                                .data_quality_scope_input
+                                .set_focused(true);
+                            self.analysis_modal.data_quality_scope_error = None;
+                            self.analysis_modal.data_quality_scope_file_offset = 0;
+                            self.analysis_modal.set_quality_page(QualityPage::Scope);
+                        } else if self.analysis_modal.data_quality_editing
+                            && self.analysis_modal.data_quality_plan_field == 4
+                        {
+                            self.analysis_modal.set_quality_page(QualityPage::TimeRoles);
+                            self.analysis_modal.data_quality_editing = true;
+                            self.analysis_modal.data_quality_plan_field = 0;
+                        } else if self.analysis_modal.data_quality_editing {
+                            self.analysis_modal.data_quality_editing = false;
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.clear_quality_result_if_plan_changed();
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Plan {
+                            if self.analysis_modal.data_quality_results.is_some()
+                                && self.analysis_modal.data_quality_last_plan.as_ref()
+                                    == Some(&self.analysis_modal.data_quality_plan)
+                            {
+                                self.analysis_modal.set_quality_page(QualityPage::Overview);
+                                return None;
+                            }
+                            if self.restore_cached_quality() {
+                                return None;
+                            }
+                            if self
+                                .analysis_modal
+                                .data_quality_plan
+                                .requires_confirmation()
+                                && !self.analysis_modal.data_quality_confirm_run
+                            {
+                                self.analysis_modal.data_quality_confirm_run = true;
+                                return None;
+                            }
+                            self.analysis_modal.data_quality_confirm_run = false;
+                            self.analysis_modal.data_quality_results = None;
+                            self.analysis_modal.data_quality_from_cache = false;
+                            self.analysis_modal.computing = Some(AnalysisProgress {
+                                phase: "Profiling data quality".to_string(),
+                                current: 0,
+                                total: 1,
+                            });
+                            self.busy = true;
+                            return Some(AppEvent::AnalysisDataQualityCompute);
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
+                            self.analysis_modal.data_quality_observation_detail = self
+                                .analysis_modal
+                                .data_quality_results
+                                .as_ref()
+                                .is_some_and(|results| {
+                                    self.analysis_modal
+                                        .data_quality_table_state
+                                        .selected()
+                                        .is_some_and(|index| index < results.observations.len())
+                                });
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Columns {
+                            self.analysis_modal
+                                .set_quality_column_page(QualityPage::Detail);
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Detail {
+                            self.analysis_modal
+                                .set_quality_column_page(QualityPage::Columns);
+                        }
+                        return None;
+                    }
+                    KeyCode::Down | KeyCode::Char('j')
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        if self.analysis_modal.data_quality_editing {
+                            let max_field = if self.analysis_modal.data_quality_page
+                                == QualityPage::TimeRoles
+                            {
+                                crate::data_quality::TemporalRole::ALL.len() - 1
+                            } else {
+                                5
+                            };
+                            self.analysis_modal.data_quality_plan_field =
+                                (self.analysis_modal.data_quality_plan_field + 1).min(max_field);
+                        } else {
+                            let rows = self.analysis_modal.quality_row_count();
+                            self.analysis_modal.next_row(rows);
+                        }
+                        return None;
+                    }
+                    KeyCode::Up | KeyCode::Char('k')
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        if self.analysis_modal.data_quality_editing {
+                            self.analysis_modal.data_quality_plan_field = self
+                                .analysis_modal
+                                .data_quality_plan_field
+                                .saturating_sub(1);
+                        } else {
+                            self.analysis_modal.previous_row();
+                        }
+                        return None;
+                    }
+                    KeyCode::Left | KeyCode::Char('h')
+                        if self.analysis_modal.data_quality_editing =>
+                    {
+                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
+                            let columns = self
+                                .data_table_state
+                                .as_ref()
+                                .map(|state| {
+                                    state.quality_temporal_columns(
+                                        &self.analysis_modal.data_quality_plan.scope,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            self.analysis_modal.cycle_quality_time_role(
+                                self.analysis_modal.data_quality_plan_field,
+                                &columns,
+                                false,
+                            );
+                        } else {
+                            let partitions = self
+                                .data_table_state
+                                .as_ref()
+                                .and_then(|state| state.partition_columns.clone())
+                                .unwrap_or_default();
+                            self.analysis_modal.adjust_quality_plan(false, &partitions);
+                        }
+                        return None;
+                    }
+                    KeyCode::Right | KeyCode::Char('l')
+                        if self.analysis_modal.data_quality_editing =>
+                    {
+                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
+                            let columns = self
+                                .data_table_state
+                                .as_ref()
+                                .map(|state| {
+                                    state.quality_temporal_columns(
+                                        &self.analysis_modal.data_quality_plan.scope,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            self.analysis_modal.cycle_quality_time_role(
+                                self.analysis_modal.data_quality_plan_field,
+                                &columns,
+                                true,
+                            );
+                        } else {
+                            let partitions = self
+                                .data_table_state
+                                .as_ref()
+                                .and_then(|state| state.partition_columns.clone())
+                                .unwrap_or_default();
+                            self.analysis_modal.adjust_quality_plan(true, &partitions);
+                        }
+                        return None;
+                    }
+                    KeyCode::PageDown
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        let rows = self.analysis_modal.quality_row_count();
+                        self.analysis_modal.page_down(rows, 10);
+                        return None;
+                    }
+                    KeyCode::PageUp
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        self.analysis_modal.page_up(10);
+                        return None;
+                    }
+                    KeyCode::Home
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        self.analysis_modal.data_quality_table_state.select(Some(0));
+                        return None;
+                    }
+                    KeyCode::End
+                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        let rows = self.analysis_modal.quality_row_count();
+                        if rows > 0 {
+                            self.analysis_modal
+                                .data_quality_table_state
+                                .select(Some(rows - 1));
+                        }
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
             match event.code {
                 KeyCode::Esc => {
                     if self.analysis_modal.show_help {
@@ -11353,6 +12019,7 @@ impl App {
                             self.busy = true;
                             return Some(AppEvent::AnalysisCorrelationCompute);
                         }
+                        Some(analysis_modal::AnalysisTool::DataQuality) => {}
                         None => {}
                     }
                 }
@@ -11420,6 +12087,10 @@ impl App {
                                 });
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisCorrelationCompute);
+                            }
+                            Some(analysis_modal::AnalysisTool::DataQuality) => {
+                                self.restore_recent_quality_plan();
+                                self.restore_cached_quality();
                             }
                             _ => {}
                         }
@@ -11503,6 +12174,7 @@ impl App {
                                                     );
                                                 }
                                         }
+                                        Some(analysis_modal::AnalysisTool::DataQuality) => {}
                                         None => {}
                                     }
                                 }
@@ -11601,6 +12273,7 @@ impl App {
                                             );
                                         }
                                 }
+                                Some(analysis_modal::AnalysisTool::DataQuality) => {}
                                 None => {}
                             }
                         }
@@ -11670,6 +12343,7 @@ impl App {
                                             );
                                         }
                                 }
+                                Some(analysis_modal::AnalysisTool::DataQuality) => {}
                                 None => {}
                             }
                         }
@@ -11702,6 +12376,7 @@ impl App {
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                         }
+                        Some(analysis_modal::AnalysisTool::DataQuality) => {}
                         None => {}
                     }
                 }
@@ -11738,6 +12413,9 @@ impl App {
                                     self.analysis_modal.correlation_table_state.select(Some(0));
                                     self.analysis_modal.selected_correlation = Some((0, 0));
                                 }
+                                Some(analysis_modal::AnalysisTool::DataQuality) => {
+                                    self.analysis_modal.data_quality_table_state.select(Some(0));
+                                }
                                 None => {}
                             }
                         }
@@ -11748,7 +12426,7 @@ impl App {
                 {
                     match self.analysis_modal.focus {
                         analysis_modal::AnalysisFocus::Sidebar => {
-                            self.analysis_modal.sidebar_state.select(Some(2));
+                            self.analysis_modal.sidebar_state.select(Some(3));
                             // Last tool
                         }
                         analysis_modal::AnalysisFocus::DistributionSelector => {
@@ -11790,6 +12468,14 @@ impl App {
                                                     Some((max_rows - 1, max_rows - 1));
                                             }
                                         }
+                                }
+                                Some(analysis_modal::AnalysisTool::DataQuality) => {
+                                    let rows = self.analysis_modal.quality_row_count();
+                                    if rows > 0 {
+                                        self.analysis_modal
+                                            .data_quality_table_state
+                                            .select(Some(rows - 1));
+                                    }
                                 }
                                 None => {}
                             }
@@ -13265,7 +13951,10 @@ impl App {
             }
             KeyCode::Char('a') => {
                 // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
-                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                if self.data_table_state.is_some()
+                    && self.input_mode == InputMode::Normal
+                    && self.quality_evidence_return.is_none()
+                {
                     self.analysis_modal.open();
                 }
                 None
@@ -14455,6 +15144,82 @@ impl App {
                 }
                 None
             }
+            AppEvent::AnalysisDataQualityCompute => {
+                if let Some(state) = &self.data_table_state {
+                    let plan = self.analysis_modal.data_quality_plan.clone();
+                    let source_scope = plan.scope.uses_source();
+                    let (lf, source, cached_rows) = if source_scope {
+                        let (lf, source) = state.data_quality_source_scan();
+                        (lf, source, None)
+                    } else {
+                        let (lf, source) = state.data_quality_scan();
+                        let rows = state.num_rows_if_valid().map(|rows| match &plan.scope {
+                            data_quality::QualityScope::CurrentView => rows,
+                            data_quality::QualityScope::FirstRows(limit) => rows.min(*limit),
+                            data_quality::QualityScope::ViewRows { start, end } => {
+                                rows.min(*end).saturating_sub(start.saturating_sub(1))
+                            }
+                            _ => unreachable!(),
+                        });
+                        (lf, source, rows)
+                    };
+                    let streaming = state.polars_streaming;
+                    self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
+                        let lf = if source_scope {
+                            match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
+                                Ok(lf) => lf,
+                                Err(error) => {
+                                    let _ = tx.send(AppEvent::BackgroundError {
+                                        generation: task_gen,
+                                        message: format!("{error}"),
+                                    });
+                                    return;
+                                }
+                            }
+                        } else {
+                            lf
+                        };
+                        let lf = match data_quality::apply_quality_scope(
+                            lf,
+                            &plan.scope,
+                            source.as_ref(),
+                        ) {
+                            Ok(lf) => lf,
+                            Err(error) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: task_gen,
+                                    message: format!("{error}"),
+                                });
+                                return;
+                            }
+                        };
+                        match crate::data_quality::compute_data_quality(
+                            &lf,
+                            cached_rows,
+                            &plan,
+                            source.as_ref(),
+                            streaming,
+                        ) {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundDataQualityReady {
+                                    generation: task_gen,
+                                    results,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: task_gen,
+                                    message: format!("{error}"),
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    self.analysis_modal.computing = None;
+                    self.busy = false;
+                }
+                None
+            }
             AppEvent::BackgroundLenReady {
                 len_generation,
                 num_rows,
@@ -14685,6 +15450,28 @@ impl App {
             } => {
                 if *generation == self.task_generation {
                     self.analysis_modal.correlation_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                }
+                None
+            }
+            AppEvent::BackgroundDataQualityReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation
+                    && self.analysis_modal.active
+                    && self.analysis_modal.selected_tool
+                        == Some(analysis_modal::AnalysisTool::DataQuality)
+                {
+                    self.cache_quality_result(results);
+                    self.analysis_modal.data_quality_last_plan =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal.data_quality_results = Some(results.clone());
+                    self.analysis_modal.data_quality_from_cache = false;
+                    self.analysis_modal
+                        .set_quality_page(crate::data_quality::QualityPage::Overview);
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;

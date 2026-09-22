@@ -1,4 +1,9 @@
+use crate::data_quality::{
+    DataQualityPlan, DataQualityResults, QUALITY_WINDOW_WIDTHS, QualityComparison, QualityCompute,
+    QualityGrain, QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
+};
 use crate::statistics::{AnalysisResults, DistributionType};
+use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +20,7 @@ pub enum AnalysisTool {
     Describe, // Column describe table
     DistributionAnalysis, // Distribution analysis table
     CorrelationMatrix,    // Correlation matrix
+    DataQuality,          // Multi-scale quality profile
 }
 
 /// Progress state for the analysis progress overlay (display only).
@@ -50,6 +56,7 @@ pub struct AnalysisModal {
     pub describe_results: Option<AnalysisResults>,
     pub distribution_results: Option<AnalysisResults>,
     pub correlation_results: Option<AnalysisResults>,
+    pub data_quality_results: Option<DataQualityResults>,
     /// When Some, show progress overlay (phase, current/total); in-progress data lives in App.
     pub computing: Option<AnalysisProgress>,
     pub show_help: bool,
@@ -63,6 +70,22 @@ pub struct AnalysisModal {
     pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
     pub distribution_selector_state: TableState,             // For distribution selector list
     pub histogram_scale: HistogramScale,                     // Scale for histogram (linear or log)
+    pub data_quality_page: QualityPage,
+    pub data_quality_plan: DataQualityPlan,
+    pub data_quality_table_state: TableState,
+    pub data_quality_editing: bool,
+    pub data_quality_plan_field: usize,
+    pub data_quality_scope_input: TextInput,
+    pub data_quality_scope_error: Option<String>,
+    pub data_quality_scope_file_offset: usize,
+    pub data_quality_show_access: bool,
+    pub data_quality_observation_detail: bool,
+    pub data_quality_confirm_run: bool,
+    pub data_quality_plan_before_edit: Option<DataQualityPlan>,
+    pub data_quality_last_plan: Option<DataQualityPlan>,
+    pub data_quality_from_cache: bool,
+    pub data_quality_metric: QualityMetric,
+    pub data_quality_column_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -98,6 +121,23 @@ impl AnalysisModal {
         self.describe_results = None;
         self.distribution_results = None;
         self.correlation_results = None;
+        self.data_quality_results = None;
+        self.data_quality_page = QualityPage::Plan;
+        self.data_quality_plan = DataQualityPlan::default();
+        self.data_quality_table_state.select(Some(0));
+        self.data_quality_editing = false;
+        self.data_quality_plan_field = 0;
+        self.data_quality_scope_input = TextInput::new();
+        self.data_quality_scope_error = None;
+        self.data_quality_scope_file_offset = 0;
+        self.data_quality_show_access = false;
+        self.data_quality_observation_detail = false;
+        self.data_quality_confirm_run = false;
+        self.data_quality_plan_before_edit = None;
+        self.data_quality_last_plan = None;
+        self.data_quality_from_cache = false;
+        self.data_quality_metric = QualityMetric::NullRate;
+        self.data_quality_column_index = 0;
         // Generate initial random seed (use 0 if system time is before UNIX_EPOCH)
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -122,6 +162,20 @@ impl AnalysisModal {
         self.describe_results = None;
         self.distribution_results = None;
         self.correlation_results = None;
+        self.data_quality_results = None;
+        self.data_quality_page = QualityPage::Plan;
+        self.data_quality_editing = false;
+        self.data_quality_scope_input = TextInput::new();
+        self.data_quality_scope_error = None;
+        self.data_quality_scope_file_offset = 0;
+        self.data_quality_show_access = false;
+        self.data_quality_observation_detail = false;
+        self.data_quality_confirm_run = false;
+        self.data_quality_plan_before_edit = None;
+        self.data_quality_last_plan = None;
+        self.data_quality_from_cache = false;
+        self.data_quality_metric = QualityMetric::NullRate;
+        self.data_quality_column_index = 0;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -130,6 +184,7 @@ impl AnalysisModal {
             Some(AnalysisTool::Describe) => self.describe_results.as_ref(),
             Some(AnalysisTool::DistributionAnalysis) => self.distribution_results.as_ref(),
             Some(AnalysisTool::CorrelationMatrix) => self.correlation_results.as_ref(),
+            Some(AnalysisTool::DataQuality) => None,
             None => None,
         }
     }
@@ -156,6 +211,7 @@ impl AnalysisModal {
                 0 => AnalysisTool::Describe,
                 1 => AnalysisTool::DistributionAnalysis,
                 2 => AnalysisTool::CorrelationMatrix,
+                3 => AnalysisTool::DataQuality,
                 _ => AnalysisTool::Describe,
             });
             self.focus = AnalysisFocus::Main;
@@ -164,7 +220,7 @@ impl AnalysisModal {
 
     pub fn next_tool(&mut self) {
         if let Some(current) = self.sidebar_state.selected() {
-            let next = (current + 1).min(2);
+            let next = (current + 1).min(3);
             self.sidebar_state.select(Some(next));
         }
     }
@@ -266,6 +322,216 @@ impl AnalysisModal {
             .as_nanos() as u64;
     }
 
+    pub fn quality_row_count(&self) -> usize {
+        let Some(results) = self.data_quality_results.as_ref() else {
+            return 0;
+        };
+        match self.data_quality_page {
+            QualityPage::Plan => 6,
+            QualityPage::Scope => 0,
+            QualityPage::TimeRoles => TemporalRole::ALL.len(),
+            QualityPage::Overview => results.observations.len(),
+            QualityPage::Columns | QualityPage::Detail => results.columns.len(),
+            QualityPage::Segments => results.segments.len(),
+            QualityPage::Trends => results.temporal.len(),
+        }
+    }
+
+    pub fn set_quality_page(&mut self, page: QualityPage) {
+        self.data_quality_page = page;
+        self.data_quality_observation_detail = false;
+        self.data_quality_table_state.select(Some(0));
+    }
+
+    /// Move between the column lens and its detail without losing which column
+    /// the user was looking at.
+    pub fn set_quality_column_page(&mut self, page: QualityPage) {
+        // Detail moves the same selection with Up/Down, so capture it from there
+        // too or navigating inside Detail is lost on the way back.
+        if matches!(
+            self.data_quality_page,
+            QualityPage::Columns | QualityPage::Detail
+        ) {
+            self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
+        }
+        self.set_quality_page(page);
+        self.data_quality_table_state
+            .select(Some(self.data_quality_column_index));
+    }
+
+    pub fn cycle_quality_metric(&mut self) {
+        let current = QualityMetric::ALL
+            .iter()
+            .position(|metric| *metric == self.data_quality_metric)
+            .unwrap_or(0);
+        self.data_quality_metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
+    }
+
+    pub fn cycle_quality_column(&mut self, count: usize, forward: bool) {
+        if count == 0 {
+            self.data_quality_column_index = 0;
+        } else if forward {
+            self.data_quality_column_index = (self.data_quality_column_index + 1) % count;
+        } else {
+            self.data_quality_column_index = (self.data_quality_column_index + count - 1) % count;
+        }
+    }
+
+    pub fn adjust_quality_plan(&mut self, forward: bool, partition_columns: &[String]) {
+        match self.data_quality_plan_field {
+            0 => {
+                let mut choices = vec![
+                    QualityScope::CurrentView,
+                    QualityScope::WholeSource,
+                    QualityScope::FirstRows(10_000),
+                    QualityScope::FirstRows(1_000_000),
+                ];
+                // A scope typed into the editor is not a preset. Keep it in the
+                // cycle so the arrows move from where the user is rather than
+                // silently jumping to the first preset.
+                if !choices.contains(&self.data_quality_plan.scope) {
+                    choices.insert(0, self.data_quality_plan.scope.clone());
+                }
+                let current = choices
+                    .iter()
+                    .position(|choice| choice == &self.data_quality_plan.scope)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % choices.len()
+                } else {
+                    (current + choices.len() - 1) % choices.len()
+                };
+                self.data_quality_plan.scope = choices[next].clone();
+                self.data_quality_plan.baseline_segment = None;
+            }
+            1 => {
+                let mut choices = vec![QualityGrain::Dataset, QualityGrain::File];
+                choices.extend(
+                    partition_columns
+                        .iter()
+                        .cloned()
+                        .map(QualityGrain::Partition),
+                );
+                choices.push(QualityGrain::RowChunks(1_000_000));
+                // Two roles can name one column; offering its widths twice would
+                // trap the forward cycle among the duplicates, so list it once.
+                let mut window_columns: Vec<String> = Vec::new();
+                for assignment in &self.data_quality_plan.temporal_roles {
+                    if !window_columns.contains(&assignment.column) {
+                        window_columns.push(assignment.column.clone());
+                    }
+                }
+                choices.extend(window_columns.into_iter().flat_map(|column| {
+                    QUALITY_WINDOW_WIDTHS
+                        .iter()
+                        .map(move |every| QualityGrain::TimeWindows {
+                            column: column.clone(),
+                            every: (*every).to_string(),
+                        })
+                }));
+                // Likewise for a grain whose time role has since been unassigned.
+                if !choices.contains(&self.data_quality_plan.grain) {
+                    choices.insert(0, self.data_quality_plan.grain.clone());
+                }
+                let current = choices
+                    .iter()
+                    .position(|choice| choice == &self.data_quality_plan.grain)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % choices.len()
+                } else if current == 0 {
+                    choices.len() - 1
+                } else {
+                    current - 1
+                };
+                self.data_quality_plan.grain = choices[next].clone();
+                self.data_quality_plan.baseline_segment = None;
+            }
+            2 => {
+                self.data_quality_plan.compute = match (self.data_quality_plan.compute, forward) {
+                    (QualityCompute::Metadata, true) | (QualityCompute::Sample, false) => {
+                        QualityCompute::Sample
+                    }
+                    (QualityCompute::Sample, true) | (QualityCompute::Full, false) => {
+                        QualityCompute::Full
+                    }
+                    (QualityCompute::Full, true) => QualityCompute::Metadata,
+                    (QualityCompute::Metadata, false) => QualityCompute::Full,
+                };
+            }
+            3 => {
+                self.data_quality_plan.comparison =
+                    match (self.data_quality_plan.comparison, forward) {
+                        (QualityComparison::None, true) | (QualityComparison::Previous, false) => {
+                            QualityComparison::Previous
+                        }
+                        (QualityComparison::Previous, true)
+                        | (QualityComparison::Baseline, false) => QualityComparison::Baseline,
+                        (QualityComparison::Baseline, true) => QualityComparison::None,
+                        (QualityComparison::None, false) => QualityComparison::Baseline,
+                    };
+                if self.data_quality_plan.comparison != QualityComparison::Baseline {
+                    self.data_quality_plan.baseline_segment = None;
+                }
+            }
+            5 => {
+                let choices = [None, Some(3_600), Some(86_400), Some(604_800)];
+                let current = choices
+                    .iter()
+                    .position(|choice| *choice == self.data_quality_plan.latency_threshold_seconds)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % choices.len()
+                } else if current == 0 {
+                    choices.len() - 1
+                } else {
+                    current - 1
+                };
+                self.data_quality_plan.latency_threshold_seconds = choices[next];
+            }
+            _ => {}
+        }
+    }
+
+    pub fn cycle_quality_time_role(
+        &mut self,
+        role_index: usize,
+        columns: &[String],
+        forward: bool,
+    ) {
+        let Some(role) = TemporalRole::ALL.get(role_index).copied() else {
+            return;
+        };
+        let current = self
+            .data_quality_plan
+            .temporal_roles
+            .iter()
+            .find(|assignment| assignment.role == role)
+            .and_then(|assignment| columns.iter().position(|name| name == &assignment.column))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let choices = columns.len() + 1;
+        let next = if forward {
+            (current + 1) % choices
+        } else if current == 0 {
+            choices - 1
+        } else {
+            current - 1
+        };
+        self.data_quality_plan
+            .temporal_roles
+            .retain(|assignment| assignment.role != role);
+        if next > 0 {
+            self.data_quality_plan
+                .temporal_roles
+                .push(TemporalRoleAssignment {
+                    role,
+                    column: columns[next - 1].clone(),
+                    timezone: None,
+                });
+        }
+    }
+
     pub fn next_row(&mut self, max_rows: usize) {
         if self.focus == AnalysisFocus::Sidebar {
             self.next_tool();
@@ -296,6 +562,11 @@ impl AnalysisModal {
                     self.selected_correlation = Some((next_row, col));
                     self.correlation_table_state.select(Some(next_row));
                 }
+            }
+            Some(AnalysisTool::DataQuality) => {
+                let current = self.data_quality_table_state.selected().unwrap_or(0);
+                self.data_quality_table_state
+                    .select(Some((current + 1).min(max_rows.saturating_sub(1))));
             }
             None => {}
         }
@@ -332,6 +603,11 @@ impl AnalysisModal {
                     self.correlation_table_state.select(Some(prev_row));
                 }
             }
+            Some(AnalysisTool::DataQuality) => {
+                let current = self.data_quality_table_state.selected().unwrap_or(0);
+                self.data_quality_table_state
+                    .select(Some(current.saturating_sub(1)));
+            }
             None => {}
         }
     }
@@ -362,6 +638,11 @@ impl AnalysisModal {
                     self.correlation_table_state.select(Some(next_row));
                 }
             }
+            Some(AnalysisTool::DataQuality) => {
+                let current = self.data_quality_table_state.selected().unwrap_or(0);
+                self.data_quality_table_state
+                    .select(Some((current + page_size).min(max_rows.saturating_sub(1))));
+            }
             None => {}
         }
     }
@@ -391,6 +672,11 @@ impl AnalysisModal {
                     self.selected_correlation = Some((prev_row, col));
                     self.correlation_table_state.select(Some(prev_row));
                 }
+            }
+            Some(AnalysisTool::DataQuality) => {
+                let current = self.data_quality_table_state.selected().unwrap_or(0);
+                self.data_quality_table_state
+                    .select(Some(current.saturating_sub(page_size)));
             }
             None => {}
         }
@@ -505,5 +791,26 @@ impl AnalysisModal {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod quality_scope_tests {
+    use super::*;
+
+    #[test]
+    fn scope_choices_wrap_without_changing_grain() {
+        let mut modal = AnalysisModal::new();
+        modal.data_quality_plan_field = 0;
+        modal.adjust_quality_plan(true, &[]);
+        assert_eq!(modal.data_quality_plan.scope, QualityScope::WholeSource);
+        modal.adjust_quality_plan(false, &[]);
+        assert_eq!(modal.data_quality_plan.scope, QualityScope::CurrentView);
+        modal.adjust_quality_plan(false, &[]);
+        assert_eq!(
+            modal.data_quality_plan.scope,
+            QualityScope::FirstRows(1_000_000)
+        );
+        assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
     }
 }

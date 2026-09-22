@@ -72,6 +72,10 @@ pub fn analysis_correlation_matrix() -> &'static str {
     include_help!("analysis_correlation_matrix")
 }
 
+pub fn analysis_data_quality() -> &'static str {
+    include_help!("analysis_data_quality")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

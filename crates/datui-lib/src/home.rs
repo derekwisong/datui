@@ -1247,6 +1247,11 @@ fn apply_known_facts(
             if kind == EntryKind::Directory {
                 row.cols = facts.cols;
                 row.cols_sampled = facts.cols_sampled;
+                // And the size, for the same reason and from the same record:
+                // `downgrade_to_directory` keeps the total it summed precisely so this
+                // can come back, and without it the folder read `15 parquet · 72
+                // columns · 4.2 MB` once and lost the size for good.
+                row.size = row.size.or(Some(facts.size));
                 if !facts.columns.is_empty() {
                     row.columns = facts.columns.clone();
                 }
@@ -2704,6 +2709,7 @@ mod known_facts_tests {
             // and never read back out of it.
             assert_eq!(row.cols, Some(72), "{path:?}");
             assert_eq!(row.columns, vec!["lat".to_string()], "{path:?}");
+            assert_eq!(row.size, Some(4096), "{path:?}");
         }
     }
 

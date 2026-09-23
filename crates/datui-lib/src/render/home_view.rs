@@ -789,16 +789,23 @@ fn entry_line<'a>(
     let named_source = crate::source::split_source_id(&path_text).0;
     let described = entry.label();
     let kind = match entry.kind {
-        // A count beats the word for the place it is in: `12 parquet` says more about a
-        // prefix than `prefix` does. A bucket nothing has peeked into has no count, so
-        // it keeps the word — which is the row it is right for.
-        // Only when there is data to count. A prefix holding nothing but sub-prefixes
-        // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
-        // inside an object store the service's own word is the right one.
-        EntryKind::Directory if !entry.holds.formats.is_empty() => described.as_ref(),
-        EntryKind::Directory => place_kind
-            .or_else(|| crate::home::object_place_label(&entry.path))
-            .unwrap_or(described.as_ref()),
+        // A count beats the generic word for the place a row is in: `12 parquet` says
+        // more about a prefix than `prefix` does. Not the *curated* word, though —
+        // `dataset` and `project` are what a source calls a place it names, and that is
+        // the only thing marking it as one.
+        //
+        // Only when there is data to count, or a prefix holding nothing but
+        // sub-prefixes would flip from `prefix` to `dir` the moment its peek landed.
+        //
+        // The same order the details pane takes, or the row and the pane beside it
+        // disagree about one folder.
+        EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
+            (Some(curated), _) => curated,
+            (None, false) => described.as_ref(),
+            (None, true) => {
+                crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
+            }
+        },
         _ => described.as_ref(),
     };
     // Two stores can hold the same bucket and key, so a row from one that is named in
@@ -1399,6 +1406,41 @@ mod tests {
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+        }
+    }
+
+    /// The row and the pane beside it say the same word about one folder. They are two
+    /// renderers with the same question to answer, and answering it in two orders is
+    /// how a list says `12 parquet` while the pane says `dataset`.
+    #[test]
+    fn the_row_and_the_pane_agree_on_what_a_folder_is() {
+        let ctx = RenderContext::for_test();
+        let mut entry = row("s3://bucket/occurrence", EntryKind::Directory);
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        for curated in [None, Some("dataset"), Some("project")] {
+            let line = entry_line(&entry, false, 40, false, None, "", None, curated, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("");
+            let pane: String = preview_head(&entry, curated, 60, &ctx)
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect();
+            let word = curated.unwrap_or("12 parquet");
+            assert!(
+                pane.contains(word),
+                "the pane {pane:?} does not name it {word:?}"
+            );
+            assert!(
+                line.contains(word),
+                "the row {line:?} does not name it {word:?}"
+            );
         }
     }
 

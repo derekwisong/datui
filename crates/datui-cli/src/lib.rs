@@ -62,8 +62,13 @@ impl FileFormat {
 
     /// Every format, for the places that have to consider all of them.
     ///
-    /// Kept in step with the enum by `every_format_is_listed`, which matches on a
-    /// variant exhaustively: adding one stops that test compiling until it is here.
+    /// Written out, and so able to fall behind the enum. `every_format_is_listed`
+    /// matches a variant exhaustively, so adding one stops that test compiling — which
+    /// is a reminder at the right moment rather than a guarantee, since the author
+    /// could extend the match and leave this list short. What that would cost is
+    /// bounded: `from_name` answers `None` for the new format, and every caller reads
+    /// `None` as "not Parquet", which is the direction that leaves counts off a folder
+    /// rather than giving it another format's.
     pub const ALL: [Self; 10] = [
         Self::Parquet,
         Self::Csv,
@@ -513,8 +518,9 @@ mod format_tests {
     use super::FileFormat;
 
     /// `ALL` is the list `from_name` searches, so a format missing from it cannot be
-    /// read back from a stored name. The match below is exhaustive: a new variant does
-    /// not compile until it is written here, and writing it here is the reminder.
+    /// read back from a stored name. The match below is exhaustive, so a new variant
+    /// does not compile until it is written here — the reminder to add it to `ALL`,
+    /// which nothing can enforce outright.
     #[test]
     fn every_format_is_listed() {
         fn listed(f: FileFormat) -> bool {

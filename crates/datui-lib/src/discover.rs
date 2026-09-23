@@ -1143,14 +1143,22 @@ fn enrich_dataset(entry: &mut Entry) {
         let sampled = sample_footers(&files);
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
         if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&names) {
-            entry.columns = union_of(&names);
+            // Whether the folder is one table is asked of everything under it, because
+            // that is what opening it would union. What it *holds* is the files the
+            // label counts — the ones directly inside — and a downgraded row is never
+            // opened as one table, so a union spanning the subtree would be a set of
+            // columns nothing produces. Three more footers, on a folder being
+            // downgraded, to say `2 parquet` and mean those two.
+            let own = sample_footers(&direct_children(&files, &entry.path));
+            let own_names: Vec<Vec<String>> = own.iter().map(column_names).collect();
+            entry.columns = union_of(&own_names);
             // Three footers out of a folder too large to read every one of, so the
             // column count that comes out of them is a floor and says so.
             entry.cols_sampled = true;
             // The columns a reader sees, from the schema rather than by splitting leaf
             // paths on a dot: a column named `user.id` and a struct `user` with a field
             // `id` are not the same thing, and a string cannot tell them apart.
-            let top = union_of(&sampled.iter().map(top_level_names).collect::<Vec<_>>());
+            let top = union_of(&own.iter().map(top_level_names).collect::<Vec<_>>());
             downgrade_to_directory(entry, (!top.is_empty()).then_some(top.len()));
             return;
         }
@@ -1187,6 +1195,13 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut top_level: Vec<String> = Vec::new();
     let mut seen_top_level = std::collections::HashSet::new();
     let mut per_file: Vec<Vec<String>> = Vec::with_capacity(files.len());
+    // The same two, restricted to the folder's own files. A folder the footers downgrade
+    // is never opened as one table, so a union spanning the subtree would be a set of
+    // columns nothing produces — and the label beside it counts only what is inside.
+    let mut own_columns: Vec<String> = Vec::new();
+    let mut own_seen = std::collections::HashSet::new();
+    let mut own_top_level: Vec<String> = Vec::new();
+    let mut own_seen_top = std::collections::HashSet::new();
     let mut cost = Cost::default();
     let mut uncompressed = 0u64;
     let mut row_groups = 0usize;
@@ -1209,6 +1224,20 @@ fn enrich_dataset(entry: &mut Entry) {
         // The columns a reader sees, not the leaves the footer names: see
         // [`crate::schema_union::top_level_columns`].
         per_file.push(crate::schema_union::top_level_columns(&names));
+        // And the same again for this folder's own files, which is what a downgraded
+        // row is labelled from: `2 parquet` must mean those two.
+        if file.parent() == Some(entry.path.as_path()) {
+            for name in &names {
+                if own_seen.insert(name.clone()) {
+                    own_columns.push(name.clone());
+                }
+            }
+            for name in top_level_names(&meta) {
+                if own_seen_top.insert(name.clone()) {
+                    own_top_level.push(name);
+                }
+            }
+        }
         let mut per_file = Cost::default();
         physical_facts(&meta, &mut per_file);
         uncompressed += per_file.uncompressed.unwrap_or(0);
@@ -1232,9 +1261,12 @@ fn enrich_dataset(entry: &mut Entry) {
         // Nothing here is one table's shape, but the names are what the folder holds,
         // and searching the home screen by column should still find the folder that
         // has one.
-        entry.columns = columns;
+        entry.columns = own_columns;
         entry.cols_sampled = false;
-        downgrade_to_directory(entry, (!top_level.is_empty()).then_some(top_level.len()));
+        downgrade_to_directory(
+            entry,
+            (!own_top_level.is_empty()).then_some(own_top_level.len()),
+        );
         return;
     }
 
@@ -1246,6 +1278,15 @@ fn enrich_dataset(entry: &mut Entry) {
     cost.row_groups = (row_groups > 0).then_some(row_groups);
     cost.partitions = entry.cost.partitions.take();
     entry.cost = cost;
+}
+
+/// The files of `dir` itself, out of a walk that went below it.
+fn direct_children(files: &[PathBuf], dir: &Path) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|f| f.parent() == Some(dir))
+        .cloned()
+        .collect()
 }
 
 /// The footers at the ends and the middle of a folder too large to read every one of.
@@ -2073,6 +2114,13 @@ mod classification_tests {
             "a union over these is not one table"
         );
         assert_eq!(entry.rows, None);
+        // And the width beside `2 parquet` is those two files. The check is asked of
+        // everything under the folder, because that is what opening it would union;
+        // a downgraded row is never opened as one, so reporting the subtree's union
+        // would be a set of columns nothing produces.
+        assert_eq!(entry.label(), "2 parquet");
+        assert_eq!(entry.cols, Some(2), "id and ts");
+        assert_eq!(entry.columns, vec!["id".to_string(), "ts".to_string()]);
     }
 
     /// A hive tree of CSV is still laid out, whatever its rows cannot say. The layout

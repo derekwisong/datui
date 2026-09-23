@@ -1065,6 +1065,7 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
 /// feeds is a budget, and a row too few leaves a blank line where a row too many draws
 /// over the bottom of the pane.
 fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
+    use unicode_width::UnicodeWidthStr;
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     if width == 0 {
         return 1;
@@ -1072,7 +1073,9 @@ fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     let mut rows = 1;
     let mut used = 0;
     for word in text.split_inclusive(' ') {
-        let len = word.chars().count();
+        // Cells, not characters: the pane wraps by what a glyph occupies, and a
+        // skipped file can be named in a script where one character is two cells.
+        let len = UnicodeWidthStr::width(word);
         if used + len > width && used > 0 {
             rows += 1;
             used = 0;
@@ -1575,6 +1578,14 @@ mod tests {
         );
         // A single word longer than the pane wraps inside itself.
         assert_eq!(wrapped_rows(&line(&"x".repeat(25)), 10), 3);
+        // Cells, not characters. Three glyphs of two cells each do not fit in five,
+        // and counting characters would say they do — a skipped file can be named in
+        // a script where that is true of every letter.
+        assert_eq!(
+            wrapped_rows(&line("漢字漢"), 5),
+            2,
+            "three characters, six cells"
+        );
     }
 
     /// A label describes and a name identifies, so on a screen too narrow for both the

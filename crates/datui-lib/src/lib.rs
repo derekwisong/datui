@@ -9955,8 +9955,10 @@ impl App {
                     // The home screen asks `reads_many_files` before it offers a folder
                     // as one dataset, so a format that is refused here and offered there
                     // would be a promise nothing keeps. Asserted rather than restated:
-                    // the two must name the same formats, and adding one to the arm
-                    // without the predicate fails every debug run.
+                    // adding a format to this arm without the predicate fails every
+                    // debug run. The other direction — dropping one from the predicate
+                    // and not from here — this cannot see, and would hide a folder
+                    // datui can read rather than promise one it cannot.
                     debug_assert!(
                         effective_format.is_none_or(|f| !f.reads_many_files()),
                         "this arm and FileFormat::reads_many_files must agree"

@@ -297,6 +297,20 @@ pub fn has_parquet_magic(path: &Path) -> bool {
         && &tail == b"PAR1"
 }
 
+/// Whether a path names a Parquet file: by its extension, or by sitting as a part file
+/// with no extension inside a `.parquet` folder.
+///
+/// Not [`is_parquet_key`], which also answers "does this count toward what a folder
+/// holds" and so says no to a writer's own name. `_manifest.parquet` is a file somebody
+/// may open and the listing shows it; reading its footer is a different question from
+/// whether it makes the folder around it a dataset.
+pub fn is_parquet_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+        || is_parquet_key(&folder_and_name(path))
+}
+
 /// Whether a path looks like something datui can open.
 ///
 /// Its name, or its place: a part file with no extension inside a `.parquet` folder is
@@ -636,6 +650,10 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     // `docs/`. Refusing a dataset is the worse direction, and a rule per case is what
     // #275 exists to stop. The label stops deciding what `Enter` does in phase 3, and
     // the question goes with it.
+    // Deterministic now rather than occasional, which is the cost of the whole listing:
+    // a source tree with a `cfg=debug/` in it reads `hive` on every pass, and `enrich`
+    // then walks it to depth four looking for footers. Left alone all the same — see
+    // above for the two majorities that refused real hive roots instead.
     if partitions > 0 && partitions >= data_files {
         return EntryKind::Hive;
     }
@@ -1121,10 +1139,7 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if entry.kind != EntryKind::File {
         return;
     }
-    // The same name test the folder routes make: a part file with no extension inside
-    // a `.parquet` folder is Parquet, and was the one shape that reported no rows at
-    // all while the folder above it reported them for every file in it.
-    if !is_parquet_key(&folder_and_name(&entry.path)) {
+    if !is_parquet_path(&entry.path) {
         return;
     }
     if !is_regular_file(&entry.path) {
@@ -1330,7 +1345,7 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
-        } else if is_parquet_key(&folder_and_name(&path)) && is_regular_file(&path) {
+        } else if is_parquet_path(&path) && is_regular_file(&path) {
             return Some(path);
         }
     }
@@ -1374,7 +1389,7 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 
     let file_path = match entry.kind {
         EntryKind::File => {
-            if !is_parquet_key(&folder_and_name(&entry.path)) {
+            if !is_parquet_path(&entry.path) {
                 return None;
             }
             entry.path.clone()
@@ -1477,6 +1492,37 @@ mod classification_tests {
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A Parquet file whose name begins with `_` is still a Parquet file. It does not
+    /// count toward what the folder around it holds — that is what `is_bookkeeping` is
+    /// for — but the listing shows it, `Enter` opens it, and the row beside it must say
+    /// how many rows it has rather than nothing at all.
+    #[test]
+    fn a_parquet_file_named_like_a_writers_file_is_still_measured() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "_2024_sales.parquet", &["id", "amount"]);
+
+        let mut entry = Entry {
+            path: dir.path().join("_2024_sales.parquet"),
+            kind: EntryKind::File,
+            name: "_2024_sales.parquet".into(),
+            size: None,
+            modified: None,
+            rows: None,
+            cols: None,
+            cols_sampled: false,
+            columns: Vec::new(),
+            cost: Cost::default(),
+        };
+        enrich(&mut entry);
+        assert_eq!(entry.rows, Some(1), "its footer was read");
+        assert_eq!(entry.cols, Some(2));
+        assert!(schema_preview(&entry).is_some(), "and the pane shows it");
+
+        // And it still does not make the folder around it a dataset.
+        assert!(is_bookkeeping("_2024_sales.parquet"));
+        assert_eq!(classify_directory(dir.path()), EntryKind::Directory);
     }
 
     /// Part files with no extension inside a `.parquet` folder are data by where they

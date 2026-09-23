@@ -262,7 +262,8 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .filter(|r| r.kind == EntryKind::File)
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
-    let (kind, holds) = crate::cloud_browse::look_at_listing(&folders, &objects);
+    let (kind, holds) =
+        crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects);
     let what = match kind {
         EntryKind::Hive => "all partitions",
         EntryKind::MultiFile => "all files",

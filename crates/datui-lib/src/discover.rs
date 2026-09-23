@@ -1149,12 +1149,14 @@ fn enrich_dataset(entry: &mut Entry) {
             // opened as one table, so a union spanning the subtree would be a set of
             // columns nothing produces. Three more footers, on a folder being
             // downgraded, to say `2 parquet` and mean those two.
-            let own = sample_footers(&direct_children(&files, &entry.path));
+            let own_files = direct_children(&files, &entry.path);
+            let own = sample_footers(&own_files);
             let own_names: Vec<Vec<String>> = own.iter().map(column_names).collect();
             entry.columns = union_of(&own_names);
-            // Three footers out of a folder too large to read every one of, so the
-            // column count that comes out of them is a floor and says so.
-            entry.cols_sampled = true;
+            // A floor only when a footer was left unread. The folder is past the
+            // counting budget, but its *own* files may be three of the seventy — and
+            // then `5+ cols` claims a sample that did not happen.
+            entry.cols_sampled = own.len() < own_files.len();
             // The columns a reader sees, from the schema rather than by splitting leaf
             // paths on a dot: a column named `user.id` and a struct `user` with a field
             // `id` are not the same thing, and a string cannot tell them apart.
@@ -2089,6 +2091,35 @@ mod classification_tests {
             Some("3 parquet · 1 folder")
         );
         assert_eq!(entry.rows, Some(23), "and opening it reads all of them");
+    }
+
+    /// A folder past the counting budget whose *own* files were all read says an exact
+    /// width. The budget is about the subtree; three files at the top are three
+    /// footers, and `5+ cols` claims a sample that did not happen.
+    #[test]
+    fn a_width_is_a_floor_only_when_a_footer_went_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id", "ts"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        for i in 0..MAX_FOOTERS_PER_DATASET + 6 {
+            write(
+                &archive,
+                &format!("old-{i:03}.parquet"),
+                &["wholly", "different"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory, "not one table");
+        assert_eq!(entry.label(), "3 parquet");
+        assert_eq!(entry.cols, Some(2), "id and ts");
+        assert!(
+            !entry.cols_sampled,
+            "all three of its own footers were read"
+        );
     }
 
     /// And the files under it are what the one-table test is asked about, since they

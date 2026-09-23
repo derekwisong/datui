@@ -702,7 +702,7 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    let (kind, mut holds) = look_at_listing(&folders, &objects);
+    let (kind, mut holds) = look_at_listing(&prefix, &folders, &objects);
     // One page of at most `PEEK_KEYS`. A prefix with more behind it counted what it saw
     // and says so, the way a local folder past `MAX_ENTRIES_PER_DIR` does: `100+
     // parquet`, not an exact hundred nobody could have counted.
@@ -828,12 +828,13 @@ pub fn classify_listing(
     folders: &[String],
     objects: &[(String, u64)],
 ) -> crate::discover::EntryKind {
-    look_at_listing(folders, objects).0
+    look_at_listing("", folders, objects).0
 }
 
 /// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
 /// gives them for a local folder. A prefix's row is labelled from the second.
 pub fn look_at_listing(
+    prefix: &str,
     folders: &[String],
     objects: &[(String, u64)],
 ) -> (crate::discover::EntryKind, crate::discover::Holds) {
@@ -906,6 +907,7 @@ pub fn look_at_listing(
     // console's folder placeholder, and without one there is no folder it stands for.
     // It is a file nothing can read, which is what the local route calls it — not a
     // writer's own, which is what naming it under `skipped` would say.
+    let here = prefix.trim_matches('/');
     let orphan_markers: Vec<String> = objects
         .iter()
         .filter(|(key, size)| {
@@ -914,6 +916,10 @@ pub fn look_at_listing(
                 && is_empty_marker(&name, *size)
                 && !crate::discover::is_bookkeeping(&name)
                 && !folders.iter().any(|f| last(f) == name)
+                // Not the folder's own marker. A console makes a folder by writing a
+                // zero-byte object at its key, and listing that folder returns it: it
+                // stands for the prefix being listed, not for anything in it.
+                && !(!here.is_empty() && key.trim_matches('/') == here)
         })
         .map(|(key, _)| last(key))
         .collect();
@@ -2080,11 +2086,21 @@ mod tests {
         .iter()
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
-        let holds = look_at_listing(&folders, &objects).1;
+        let holds = look_at_listing("out", &folders, &objects).1;
         assert_eq!(
             holds.line(true).as_deref(),
             Some("2 parquet · 1 not read · 1 skipped (_temporary)")
         );
+
+        // The folder's own marker stands for the prefix being listed, not for
+        // anything in it: a console makes a folder by writing a zero-byte object at
+        // its key, and listing that folder hands it straight back.
+        let own_marker: Vec<(String, u64)> = [("out", 0u64), ("out/a.parquet", 100)]
+            .iter()
+            .map(|(k, s)| ((*k).to_string(), *s))
+            .collect();
+        let holds = look_at_listing("out/", &[], &own_marker).1;
+        assert_eq!(holds.line(true).as_deref(), Some("1 parquet"));
         // Whether a key counts as data and whether it is worth a row are two questions.
         // `_manifest.parquet` is a writer's own file and still something to open, and
         // the local listing has always shown its equivalent.

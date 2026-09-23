@@ -903,11 +903,13 @@ fn entry_line<'a>(
     // narrowest width that draws meta leaves the name nothing to be cut into. Its head
     // is the identifying part, so the tail goes and the marks that fell in it go with
     // it — the same shape the name's own truncation takes.
+    let mut note_was_cut = false;
     let shown_column = matched_column.map(|column| {
         let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
         if column.chars().count() <= room || room <= 1 {
             column.to_string()
         } else {
+            note_was_cut = true;
             column.chars().take(room - 1).collect::<String>() + glyphs::get().ellipsis
         }
     });
@@ -1035,7 +1037,12 @@ fn entry_line<'a>(
             // character no longer on screen cannot be highlighted.
             let shown = shown_column.as_deref().unwrap_or(column);
             let mut positions = crate::home::substring_positions(filter, column);
-            let kept = shown.chars().count().saturating_sub(1);
+            // One less when the last character is the ellipsis standing for the rest,
+            // and not otherwise: an uncut note keeps the mark on its final letter.
+            let kept = shown
+                .chars()
+                .count()
+                .saturating_sub(usize::from(note_was_cut));
             positions.retain(|p| *p < kept);
             spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
         }
@@ -1763,6 +1770,32 @@ mod tests {
                  out, at {width}"
             );
         }
+
+        // An uncut note keeps the mark on its last letter. The subtraction that makes
+        // room for the ellipsis applies only where there is one.
+        let marks = |width: usize| -> Vec<String> {
+            entry_line(
+                &short,
+                false,
+                width,
+                true,
+                Some("amount"),
+                "amount",
+                None,
+                None,
+                &ctx,
+            )
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+            .map(|s| s.content.to_string())
+            .collect()
+        };
+        assert_eq!(
+            marks(200).join(""),
+            "amount",
+            "every letter of the match is marked when the note is whole"
+        );
 
         // A label under a named source is still a label. The path carrying a source id
         // is a different question from the cell showing one, and a peeked prefix under

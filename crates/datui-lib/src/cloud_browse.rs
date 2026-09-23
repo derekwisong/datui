@@ -811,6 +811,11 @@ async fn kind_from_footers(
 /// A folder's kind from what one listing of it shows, by the rules a local folder is
 /// classified by, except that only Parquet counts as data: it is the one format a
 /// prefix of files is read in place as.
+///
+/// One page of the listing, capped at `PEEK_KEYS`, where the local route reads up to
+/// `MAX_ENTRIES_PER_DIR`. So the two answer alike for a prefix that fits in a page, and
+/// a larger one is still decided by whichever keys came back first. Moving verification
+/// to the row under the cursor is #275 phase 6's.
 pub fn classify_listing(
     folders: &[String],
     objects: &[(String, u64)],
@@ -889,9 +894,10 @@ pub fn classify_listing(
         return EntryKind::Iceberg;
     }
     let seen = counted.len() + present.len();
-    // The majority the local route asks for too, so one `notes=old` among twenty
-    // ordinary prefixes is not a hive root on either.
-    if partitions > 0 && partitions >= files.len() && partitions * 2 >= seen {
+    // Against the other prefixes, not everything present, the way the local route
+    // measures it: a hive root may sit beside a README and a LICENSE and still be one,
+    // while one `notes=old` among twenty ordinary prefixes is not.
+    if partitions > 0 && partitions >= files.len() && partitions * 2 >= counted.len() {
         return EntryKind::Hive;
     }
     if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {

@@ -9969,7 +9969,9 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                // Only `None` is left: `reads_many_files` turned the rest away above.
+                // `reads_many_files` turned these away above; they are spelled out
+                // rather than left to a catch-all so that adding a format still has to
+                // decide here, and the guard and this arm keep the same answer.
                 Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
                     if !paths.is_empty() && !path.exists() {
                         return Err(std::io::Error::new(

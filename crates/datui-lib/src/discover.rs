@@ -537,6 +537,7 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     };
 
     let mut partitions = 0usize;
+    let mut folders = 0usize;
     let mut data_files = 0usize;
     let mut seen = 0usize;
     // A multi-file dataset is homogeneous by definition; a folder that merely
@@ -547,7 +548,9 @@ pub fn classify_directory(path: &Path) -> EntryKind {
 
     // Bounded where the entries come from rather than after they are counted: a
     // Hadoop-style output directory is a `.crc` per data file, and skipping those before
-    // the count would let the walk run to twice the cap.
+    // the count would let the walk run to twice the cap. The cap is a cost bound and not
+    // a correctness one either way — a folder past it is decided by whichever entries
+    // came back first, whether they were data or a writer's own.
     for entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
         let entry_path = entry.path();
         let name = entry.file_name();
@@ -571,10 +574,19 @@ pub fn classify_directory(path: &Path) -> EntryKind {
             Err(_) => (entry_path.is_dir(), is_regular_file(&entry_path)),
         };
         if is_dir {
+            folders += 1;
             if is_partition_dir(&entry_path) {
                 partitions += 1;
             }
-        } else if let Some(found) = data_format(&entry_path).filter(|_| is_file) {
+        } else if let Some(found) = data_format(&entry_path)
+            .or_else(|| {
+                // A part file with no extension inside a `.parquet` folder, as Spark
+                // and GBIF write them: data by where it sits rather than by its name.
+                // The cloud route has always counted these; this one had not.
+                is_parquet_key(&entry_path.to_string_lossy()).then_some(crate::FileFormat::Parquet)
+            })
+            .filter(|_| is_file)
+        {
             data_files += 1;
             match format {
                 None => format = Some(found),
@@ -585,10 +597,13 @@ pub fn classify_directory(path: &Path) -> EntryKind {
         seen += 1;
     }
 
-    // The same majority the `multi` arm asks for. Without it one `notes=old` among
-    // twenty ordinary subfolders is a hive root, which the probe used to hide by
-    // stopping before it and now finds every time.
-    if partitions > 0 && partitions >= data_files && partitions * 2 >= seen {
+    // Measured against the other *folders*, not the whole listing. A hive root is a
+    // folder whose subfolders are partitions, and it may have any number of sidecars:
+    // `year=2021/` and `year=2022/` beside a README, a LICENSE and some notes is an
+    // ordinary young dataset, and a majority over everything present would refuse it.
+    // What the test is for is the other direction — one `notes=old` among twenty
+    // ordinary subfolders, which the old probe hid by stopping before it.
+    if partitions > 0 && partitions >= data_files && partitions * 2 >= folders {
         return EntryKind::Hive;
     }
 
@@ -1445,6 +1460,58 @@ mod classification_tests {
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A hive root may sit beside as many sidecars as it likes. Two partitions and
+    /// three notes files is an ordinary young dataset, and measuring the partitions
+    /// against everything present rather than against the other folders refused it.
+    #[test]
+    fn a_hive_root_is_one_beside_its_readme() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("year=2021")).unwrap();
+        std::fs::create_dir_all(dir.path().join("year=2022")).unwrap();
+        for note in ["README.md", "notes.md", "LICENSE.md"] {
+            std::fs::write(dir.path().join(note), b"x").unwrap();
+        }
+
+        let folders = ["out/year=2021/", "out/year=2022/"].map(str::to_string);
+        let objects: Vec<(String, u64)> = ["out/README.md", "out/notes.md", "out/LICENSE.md"]
+            .iter()
+            .map(|k| ((*k).to_string(), 12u64))
+            .collect();
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&folders, &objects),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
+    }
+
+    /// Part files with no extension inside a `.parquet` folder are data by where they
+    /// sit. The cloud route has always counted them; the local one said `dir`.
+    #[test]
+    fn extensionless_part_files_are_data_on_both_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = dir.path().join("occurrence.parquet");
+        std::fs::create_dir_all(&table).unwrap();
+        std::fs::write(table.join("000001"), b"PAR1").unwrap();
+        std::fs::write(table.join("000002"), b"PAR1").unwrap();
+
+        let objects: Vec<(String, u64)> = [
+            "gbif/occurrence.parquet/000001",
+            "gbif/occurrence.parquet/000002",
+        ]
+        .iter()
+        .map(|k| ((*k).to_string(), 10u64))
+        .collect();
+
+        assert_eq!(
+            classify_directory(&table),
+            crate::cloud_browse::classify_listing(&[], &objects),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(&table), EntryKind::MultiFile);
     }
 
     /// One `key=value` among twenty ordinary subfolders is not a hive root. The probe

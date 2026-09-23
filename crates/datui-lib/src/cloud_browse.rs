@@ -833,8 +833,7 @@ pub fn classify_listing(
         .filter(|(key, size)| {
             let name = last(key);
             !name.is_empty()
-                && !name.starts_with('.')
-                && !is_job_file(&name)
+                && !crate::discover::is_bookkeeping(&name)
                 && !is_empty_marker(&name, *size)
                 && !(*size == 0 && folders.iter().any(|f| last(f) == name))
         })
@@ -1023,15 +1022,6 @@ pub fn is_refusal(error: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
-/// Files that jobs leave beside their output, and markers that stand in for folders.
-/// Neither is data, and neither is worth a row.
-pub fn is_job_file(name: &str) -> bool {
-    name == "_SUCCESS"
-        || name.starts_with("_committed_")
-        || name.starts_with("_started_")
-        || name.ends_with("_$folder$")
-}
-
 /// An empty object with no extension: a marker some tool left for a folder, whether or
 /// not the folder still has anything in it (`yellow/year=2032` beside no `year=2032/`).
 /// Nothing datui opens is both empty and nameless.
@@ -1111,7 +1101,7 @@ async fn list_level(
         // offering it as openable would be offering a zero-byte file. So is an empty
         // object named like a folder beside it, or like the folder being listed.
         if name.is_empty()
-            || is_job_file(&name)
+            || crate::discover::is_bookkeeping(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
             || is_empty_marker(&name, object.size)
             || (object.size == 0 && location.trim_end_matches('/') == prefix)
@@ -1175,7 +1165,7 @@ async fn list_azure_objects(
         let location = object.location.as_ref().to_string();
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         if name.is_empty()
-            || is_job_file(&name)
+            || crate::discover::is_bookkeeping(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
             || is_empty_marker(&name, object.size)
             || (object.size == 0 && location.trim_end_matches('/') == prefix)
@@ -1939,10 +1929,15 @@ mod tests {
             "_committed_123",
             "_started_123",
             "yellow_$folder$",
+            "_metadata.json",
+            ".crc",
         ] {
-            assert!(is_job_file(name), "{name}");
+            assert!(
+                crate::discover::is_bookkeeping(name),
+                "{name} is a writer's own file"
+            );
         }
-        assert!(!is_job_file("part-0000.parquet"));
+        assert!(!crate::discover::is_bookkeeping("part-0000.parquet"));
         assert!(is_empty_marker("year=2032", 0));
         assert!(!is_empty_marker("year=2032", 10));
         assert!(!is_empty_marker("empty.csv", 0));

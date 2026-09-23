@@ -1403,7 +1403,7 @@ fn public_data_quirks() {
     assert!(
         spark
             .iter()
-            .all(|r| !cloud_browse::is_job_file(&r.name) && !r.name.starts_with('_')),
+            .all(|r| !datui::discover::is_bookkeeping(&r.name)),
         "{:?}",
         spark.iter().map(|r| &r.name).collect::<Vec<_>>()
     );

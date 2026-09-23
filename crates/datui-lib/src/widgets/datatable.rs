@@ -1744,7 +1744,7 @@ impl DataTableState {
                     .file_name()
                     .map(|n| n.to_string_lossy())
                     .as_deref()
-                    .is_some_and(crate::schema_union::is_bookkeeping);
+                    .is_some_and(crate::discover::is_bookkeeping);
             if child.is_dir() {
                 let (below, deferred) = Self::collect_parquet_files_counting(
                     &child,

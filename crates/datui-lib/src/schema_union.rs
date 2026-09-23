@@ -273,17 +273,6 @@ impl SkippedFiles {
     }
 }
 
-/// Whether a path segment is a writer's own rather than anybody's data.
-///
-/// A leading `_` or `.` is the convention Hive, Spark, Delta and Hudi share. It is not
-/// the whole answer — Iceberg keeps its log in a plain `metadata/` folder, and the next
-/// format will do something else again — which is why this is only half the test. The
-/// other half asks where the file is rather than what it is called: see
-/// [`SkippedFiles`].
-pub fn is_bookkeeping(segment: &str) -> bool {
-    segment.starts_with(['_', '.'])
-}
-
 /// Agreement a folder's files must exceed to be read as one table.
 ///
 /// Every folder measured whose files are one table scored 1.0, and every folder of

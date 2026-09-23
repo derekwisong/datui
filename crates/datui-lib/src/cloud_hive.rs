@@ -198,7 +198,7 @@ pub async fn list_dataset_files(
         key.strip_prefix(prefix)
             .unwrap_or("")
             .split('/')
-            .any(crate::schema_union::is_bookkeeping)
+            .any(crate::discover::is_bookkeeping)
     };
     // What counts as data under this prefix, whether or not a glob then narrows it.
     // The narrowing is deliberately not part of this: the skipped-file counts are built

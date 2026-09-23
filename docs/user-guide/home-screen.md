@@ -481,7 +481,7 @@ long you have used it:
 | directories promoted to sections by a recent | 8 |
 | entries listed from one directory | 5,000 |
 | subdirectories inspected per listing | 64 |
-| files opened to classify a directory | 8 |
+| entries read to classify a directory | 5,000 |
 | files read to count a multi-file dataset | 64 |
 | datasets measured at once | 12, only ones on screen |
 | network directories probed at once | 4 |

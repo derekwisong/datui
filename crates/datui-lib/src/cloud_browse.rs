@@ -839,7 +839,7 @@ pub fn classify_listing(
         .collect();
     let partitions = counted
         .iter()
-        .filter(|f| matches!(last(f).find('='), Some(i) if i > 0))
+        .filter(|f| crate::discover::is_partition_name(&last(f)))
         .count();
     // Everything in this prefix that is not a marker or a writer's own file: what the
     // local route calls `seen`, and what the majority below is measured against.

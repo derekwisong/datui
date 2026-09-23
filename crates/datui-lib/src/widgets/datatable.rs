@@ -1760,7 +1760,7 @@ impl DataTableState {
                 // the folder above can see that it is.
                 passed_over += deferred;
             } else if !bookkeeping
-                && crate::discover::is_parquet_key(&Self::folder_and_name(&child))
+                && crate::discover::is_parquet_key(&crate::discover::folder_and_name(&child))
             {
                 // The same test the cloud listing uses, so a folder is the same table
                 // wherever it is read from. It gets the folder and the name rather than
@@ -1798,19 +1798,6 @@ impl DataTableState {
             skipped.count(!holds_data);
         }
         (holds_data, 0)
-    }
-
-    /// A path as the shared Parquet test wants it: the folder and the file, joined with
-    /// a forward slash whatever the platform used.
-    ///
-    /// That test knows two shapes, and one of them — `occurrence.parquet/part-00001` —
-    /// is only visible when the folder comes with the name.
-    fn folder_and_name(path: &Path) -> String {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        match path.parent().and_then(|p| p.file_name()) {
-            Some(folder) => format!("{}/{name}", folder.to_string_lossy()),
-            None => name.into_owned(),
-        }
     }
 
     /// Every Parquet file under `dir`, and what the footers of the ones worth reading

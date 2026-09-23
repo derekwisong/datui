@@ -342,7 +342,7 @@ pub fn data_format(path: &Path) -> Option<crate::FileFormat> {
 /// A whole path would reach it with backslashes on Windows, which it does not split on,
 /// so `occurrence.parquet\000001` would arrive as one name that contains a dot and be
 /// read as an ordinary file. The same reason `DataTableState::folder_and_name` exists.
-fn folder_and_name(path: &Path) -> String {
+pub(crate) fn folder_and_name(path: &Path) -> String {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     match path.parent().and_then(|p| p.file_name()) {
         Some(folder) => format!("{}/{name}", folder.to_string_lossy()),
@@ -362,7 +362,19 @@ fn folder_and_name(path: &Path) -> String {
 /// cloud listing knew three more names. A folder whose ninth entry is `_metadata.json`
 /// answered `multi` locally and `dir` in a bucket for no better reason than that.
 pub fn is_bookkeeping(name: &str) -> bool {
+    // A `key=value` name is a partition wherever it appears, whatever it starts with.
+    // Spark and Hive partition on internal columns — `_date=2024-01-01`, `_c0=…` — and
+    // reading those as a writer's own files loses the whole dataset.
+    if is_partition_name(name) {
+        return false;
+    }
     name.starts_with(['_', '.']) || name.ends_with("_$folder$")
+}
+
+/// Whether a name is a hive partition (`year=2024`): `key=value`, with a non-empty key.
+/// The value may be empty in practice.
+pub fn is_partition_name(name: &str) -> bool {
+    matches!(name.find('='), Some(i) if i > 0)
 }
 
 /// What the data files sitting directly in a folder say about how to read it.
@@ -515,11 +527,7 @@ fn first_partition(dir: &Path) -> Option<PathBuf> {
 fn is_partition_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|n| {
-            // `key=value`, with a non-empty key. The value may be empty in practice.
-            matches!(n.find('='), Some(i) if i > 0)
-        })
-        .unwrap_or(false)
+        .is_some_and(is_partition_name)
 }
 
 /// Classify a directory without walking it.
@@ -1545,6 +1553,28 @@ mod classification_tests {
         );
     }
 
+    /// A partition is a partition whatever it starts with. Spark and Hive partition on
+    /// internal columns — `_date=2024-01-01`, `_c0=…` — and reading those as a writer's
+    /// own files loses the whole dataset.
+    #[test]
+    fn a_partition_named_like_a_writers_file_is_still_a_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folders = Vec::new();
+        for day in ["2024-01-01", "2024-01-02", "2024-01-03"] {
+            std::fs::create_dir_all(dir.path().join(format!("_date={day}"))).unwrap();
+            folders.push(format!("events/_date={day}/"));
+        }
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&folders, &[]),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
+        assert!(!is_bookkeeping("_date=2024-01-01"));
+        assert!(is_bookkeeping("_temporary"));
+    }
+
     /// A prefix a writer made for itself is not a folder somebody put data in, on
     /// either route. `_temporary/` counted toward the majority in a bucket and not
     /// locally, so the same folder came back two different kinds.
@@ -1607,8 +1637,10 @@ mod classification_tests {
                 "a folder of .{ext} has no reader that takes a list"
             );
         }
-        // The ones that do are unaffected.
-        for ext in ["parquet", "csv", "json", "avro"] {
+        // The ones that do are unaffected — every arm the multi-path open handles.
+        for ext in [
+            "parquet", "csv", "json", "jsonl", "ndjson", "arrow", "ipc", "feather", "avro", "orc",
+        ] {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(format!("a.{ext}")), b"x").unwrap();
             std::fs::write(dir.path().join(format!("b.{ext}")), b"x").unwrap();

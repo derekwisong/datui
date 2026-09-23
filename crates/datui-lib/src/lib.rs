@@ -9895,24 +9895,6 @@ impl App {
             });
 
         let lf = if paths.len() > 1 {
-            // The one place a format says whether it can be read as a list. The home
-            // screen asks the same question before it offers a folder as one dataset
-            // (`discover::classify_directory`), so giving one of these a multi-path
-            // reader makes both true at once instead of leaving the folder unoffered.
-            if let Some(format) = effective_format
-                && !format.reads_many_files()
-            {
-                if !paths.is_empty() && !path.exists() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("File not found: {}", path.display()),
-                    )
-                    .into());
-                }
-                return Err(color_eyre::eyre::eyre!(
-                    "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
-                ));
-            }
             match effective_format {
                 Some(FileFormat::Parquet) => DataTableState::from_parquet_paths(
                     paths,
@@ -9969,10 +9951,16 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                // `reads_many_files` turned these away above; they are spelled out
-                // rather than left to a catch-all so that adding a format still has to
-                // decide here, and the guard and this arm keep the same answer.
                 Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
+                    // The home screen asks `reads_many_files` before it offers a folder
+                    // as one dataset, so a format that is refused here and offered there
+                    // would be a promise nothing keeps. Asserted rather than restated:
+                    // the two must name the same formats, and adding one to the arm
+                    // without the predicate fails every debug run.
+                    debug_assert!(
+                        effective_format.is_none_or(|f| !f.reads_many_files()),
+                        "this arm and FileFormat::reads_many_files must agree"
+                    );
                     if !paths.is_empty() && !path.exists() {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::NotFound,

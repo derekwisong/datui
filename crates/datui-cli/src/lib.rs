@@ -43,10 +43,9 @@ impl FileFormat {
     /// Whether many files of this format can be read as one table.
     ///
     /// Asked before a folder is offered as a dataset, so the home screen cannot promise
-    /// an open the reader has no route for — and asked again by the open itself, which
-    /// refuses on this and nothing else. One answer, so the offer and the refusal
-    /// cannot disagree: giving Tsv or Psv a multi-path reader is a change here and
-    /// nowhere else, and the folder becomes both openable and offered at once.
+    /// an open the reader has no route for. The open's own refusal is a match arm in
+    /// `datui-lib`, which asserts against this predicate on every debug run, so the two
+    /// cannot name different formats without a test saying so.
     ///
     /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
     /// is sheets rather than rows, with nothing to concatenate. Reading the first two

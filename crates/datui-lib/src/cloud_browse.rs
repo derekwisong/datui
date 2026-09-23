@@ -894,10 +894,9 @@ pub fn classify_listing(
         return EntryKind::Iceberg;
     }
     let seen = counted.len() + present.len();
-    // Against the other prefixes, not everything present, the way the local route
-    // measures it: a hive root may sit beside a README and a LICENSE and still be one,
-    // while one `notes=old` among twenty ordinary prefixes is not.
-    if partitions > 0 && partitions >= files.len() && partitions * 2 >= counted.len() {
+    // The local route's rule, unchanged: see `discover::classify_directory` for why a
+    // majority here refuses real hive roots.
+    if partitions > 0 && partitions >= files.len() {
         return EntryKind::Hive;
     }
     if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {

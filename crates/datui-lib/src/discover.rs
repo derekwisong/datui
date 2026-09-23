@@ -1068,12 +1068,11 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
         };
         if is_dir {
             subdirs.push(path);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("parquet"))
-            .unwrap_or(false)
-        {
+        } else if is_parquet_key(&folder_and_name(&path)) {
+            // The same test the classifier and the open path make, so a folder offered
+            // as a dataset is one whose files this can find. Extensionless part files
+            // inside a `.parquet` folder were classified `multi` and then measured at
+            // nothing: `? rows` and an empty schema pane, for ever.
             files.push(path);
             if files.len() >= MAX_NAMES_PER_DIR {
                 break;
@@ -1505,6 +1504,47 @@ mod classification_tests {
         assert_eq!(classify_directory(&table), EntryKind::MultiFile);
     }
 
+    /// And a folder offered as a dataset is one whose files can be counted. The same
+    /// name test decides both, or the row promises a dataset and shows `?` rows and an
+    /// empty schema for the rest of the session.
+    #[test]
+    fn extensionless_part_files_are_measured_not_just_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = dir.path().join("occurrence.parquet");
+        std::fs::create_dir_all(&table).unwrap();
+        // Named as GBIF and Spark leave them: no extension, inside a `.parquet` folder.
+        write(&table, "000001", &["id", "species"]);
+        write(&table, "000002", &["id", "species"]);
+
+        let entry = measured(&table);
+        assert_eq!(entry.kind, EntryKind::MultiFile);
+        assert_eq!(entry.rows, Some(2), "both footers were read");
+        assert_eq!(entry.cols, Some(2));
+    }
+
+    /// One `key=value` prefix among files datui does not read is a hive root on both
+    /// routes. It is not much of one — but the local route has always said so, and the
+    /// cloud route disagreeing was the divergence. Pinned rather than left to be
+    /// rediscovered: #275 phase 3 takes the consequence off the label.
+    #[test]
+    fn one_partition_beside_files_datui_cannot_read_answers_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("notes=old")).unwrap();
+        for note in ["README.md", "LICENSE", "logo.png"] {
+            std::fs::write(dir.path().join(note), b"x").unwrap();
+        }
+        let objects: Vec<(String, u64)> = ["out/README.md", "out/LICENSE", "out/logo.png"]
+            .iter()
+            .map(|k| ((*k).to_string(), 12u64))
+            .collect();
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&["out/notes=old/".to_string()], &objects),
+            "the two routes answer the same folder alike"
+        );
+    }
+
     /// A prefix a writer made for itself is not a folder somebody put data in, on
     /// either route. `_temporary/` counted toward the majority in a bucket and not
     /// locally, so the same folder came back two different kinds.
@@ -1538,6 +1578,7 @@ mod classification_tests {
     /// Named like data and impossible to read: a FIFO blocks whoever opens it until a
     /// writer appears, and a broken symlink opens as nothing. `folder_format` has always
     /// skipped both; the listing now agrees.
+    #[cfg(unix)]
     #[test]
     fn a_name_with_nothing_behind_it_is_not_a_data_file() {
         let dir = tempfile::tempdir().unwrap();

@@ -763,7 +763,7 @@ fn enrich_dataset(entry: &mut Entry) {
         // them costs.
         let sampled = sample_footers(&files);
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
-        if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&names) {
+        if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&names, &files) {
             entry.columns = union_of(&names);
             downgrade_to_directory(entry);
             return;
@@ -841,7 +841,7 @@ fn enrich_dataset(entry: &mut Entry) {
     //
     // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
     // and a hive folder's files hold the same table by construction.
-    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_one_table(&per_file) {
+    if entry.kind == EntryKind::MultiFile && !one_table(&per_file, &files) {
         entry.size = Some(bytes);
         // Nothing here is one table's shape, but the names are what the folder holds,
         // and searching the home screen by column should still find the folder that
@@ -884,12 +884,72 @@ fn sample_footers(files: &[PathBuf]) -> Vec<crate::widgets::info::ParquetMetadat
 ///
 /// Fewer than two readable footers decide nothing, and the folder keeps the kind its
 /// names suggested.
-fn agree_on_a_schema(sampled: &[Vec<String>]) -> bool {
+fn agree_on_a_schema(sampled: &[Vec<String>], files: &[PathBuf]) -> bool {
     let per_file: Vec<Vec<String>> = sampled
         .iter()
         .map(|names| crate::schema_union::top_level_columns(names))
         .collect();
-    per_file.len() < 2 || crate::schema_union::is_one_table(&per_file)
+    per_file.len() < 2 || one_table(&per_file, files)
+}
+
+/// Whether a folder's Parquet files hold one table.
+///
+/// Two questions, because the columns alone answer only the first. Files that share
+/// too little are separate tables whatever they are called. Files that share a great
+/// deal but are not nested — each holding columns the others lack — are either one
+/// table that drifted or separate tables that share their measures, and no count of
+/// shared columns separates those: a dataset grown from ten columns to fifty with one
+/// dropped along the way and two rollups of one source at different grains give the
+/// same evidence in the same proportion (#274).
+///
+/// So the filenames answer the second, where they are evidence rather than convention:
+/// a dataset is written as a series and a set of tables is written as a list of names.
+/// Asked only of a folder that is not nested, so no dataset that merely grew can be
+/// demoted by what its files are called.
+fn one_table(per_file: &[Vec<String>], files: &[PathBuf]) -> bool {
+    crate::schema_union::is_one_table(per_file)
+        && (crate::schema_union::is_nested(per_file) || names_are_a_series(files))
+}
+
+/// Whether a folder's filenames are one series rather than a list of separate names.
+///
+/// Every run of digits becomes `#`, and the names are a series when what is left is the
+/// same for all of them: `part-00000` beside `part-00001`, or `2024-01-01` beside
+/// `2024-01-02`, are one dataset written a file at a time. `by_block` beside `daily` is
+/// two things that were each named.
+///
+/// Not a list of the conventions writers use, which is a list that is never finished —
+/// the test is whether the names differ only where a counter or a date would, and it
+/// knows none of them by name. Basenames only: a file's directory is the partitioning,
+/// which says nothing about what was written into it.
+pub(crate) fn names_are_a_series(files: &[PathBuf]) -> bool {
+    let mut series: Option<String> = None;
+    for file in files {
+        let Some(stem) = file.file_stem().and_then(|s| s.to_str()) else {
+            // A name that cannot be read is not evidence. This test only ever demotes,
+            // so an unreadable one leaves the folder the kind its columns gave it.
+            return true;
+        };
+        let mut shape = String::with_capacity(stem.len());
+        let mut in_digits = false;
+        for ch in stem.chars() {
+            if ch.is_ascii_digit() {
+                if !in_digits {
+                    shape.push('#');
+                    in_digits = true;
+                }
+            } else {
+                shape.push(ch);
+                in_digits = false;
+            }
+        }
+        match &series {
+            None => series = Some(shape),
+            Some(first) if *first != shape => return false,
+            Some(_) => {}
+        }
+    }
+    true
 }
 
 /// A folder whose files turned out to be separate tables is a place to look inside.
@@ -1380,6 +1440,70 @@ mod classification_tests {
         };
         enrich(&mut entry);
         entry
+    }
+
+    /// The shape the columns cannot decide, kept as one table by its names. A dataset
+    /// that grew from ten columns to fifty and dropped one along the way gives the same
+    /// evidence as two rollups of one source: a file holding a column the widest lacks,
+    /// and most of its columns shared. Its files are a series, so it stays a dataset —
+    /// which is what makes the names, and not a tighter measure over the columns, the
+    /// thing that separates the two (#274).
+    #[test]
+    fn a_dataset_that_drifted_is_still_one_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let grown: Vec<String> = (0..50).map(|i| format!("c{i}")).collect();
+        let grown: Vec<&str> = grown.iter().map(String::as_str).collect();
+        // The oldest file: ten of the columns, one of them since dropped.
+        let mut oldest: Vec<&str> = grown[..10].to_vec();
+        oldest[9] = "legacy";
+
+        write(dir.path(), "part-00000.parquet", &oldest);
+        write(dir.path(), "part-00001.parquet", &grown);
+
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::MultiFile,
+            "a series of part files is a dataset, whatever one of them dropped"
+        );
+        assert_eq!(entry.rows, Some(2), "and its rows are still summed");
+    }
+
+    /// Names are asked about only when the columns are not nested. A dataset whose
+    /// files are perfectly nested is one table however they are named, so growth can
+    /// never be demoted by a filename.
+    #[test]
+    fn nested_files_are_one_table_however_they_are_named() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "circuits.parquet", &["id", "ts"]);
+        write(dir.path(), "drivers.parquet", &["id", "ts", "fee", "qty"]);
+
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::MultiFile,
+            "one file's columns contain the other's, which only growth produces"
+        );
+    }
+
+    #[test]
+    fn a_series_is_names_that_differ_only_where_a_counter_would() {
+        let series = |names: &[&str]| {
+            names_are_a_series(&names.iter().map(PathBuf::from).collect::<Vec<_>>())
+        };
+        assert!(series(&["part-00000.parquet", "part-00001.parquet"]));
+        assert!(series(&["2024-01-01.parquet", "2024-01-02.parquet"]));
+        assert!(series(&["data.parquet"]), "one file is a series of one");
+        assert!(
+            series(&["a/part-1.parquet", "b/part-2.parquet"]),
+            "the directory is the partitioning, not the name"
+        );
+        assert!(!series(&["by_block.parquet", "daily.parquet"]));
+        assert!(!series(&["circuits.parquet", "drivers.parquet"]));
+        assert!(
+            !series(&["part-1.parquet", "part-1-v2.parquet"]),
+            "a suffix is not a counter"
+        );
     }
 
     /// Two rollups of one source at different grains, which share every measure and

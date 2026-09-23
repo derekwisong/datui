@@ -801,7 +801,17 @@ async fn kind_from_footers(
     if per_file.len() < 2 {
         return None;
     }
-    Some(if crate::schema_union::is_one_table(&per_file) {
+    // The same two questions a local folder is asked: whether the columns agree, and,
+    // when they agree without being nested, whether the names are a series. See
+    // `discover::one_table`.
+    let names: Vec<std::path::PathBuf> = parquet
+        .iter()
+        .map(|(key, _)| std::path::PathBuf::from(key))
+        .collect();
+    let one_table = crate::schema_union::is_one_table(&per_file)
+        && (crate::schema_union::is_nested(&per_file)
+            || crate::discover::names_are_a_series(&names));
+    Some(if one_table {
         crate::discover::EntryKind::MultiFile
     } else {
         crate::discover::EntryKind::Directory

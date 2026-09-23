@@ -205,13 +205,18 @@ would union things that share no columns. So the footers decide: datui compares
 the columns of the folder's files, and a folder whose files do not agree is left
 as a directory to look inside.
 
-Agreeing means one file's columns are contained in another's. That is what a
-dataset that gained a column over time looks like — the older files hold a
-subset of the newer ones — so a folder can grow from five columns to fifty and
-still be one table. Files that each hold columns the others lack are a different
-shape: two rollups of one source at different grains, say, share every measure
-and differ only in the columns that say what a row is. Those are separate
-tables, however much they share.
+Sharing most of their columns is not enough either. Two rollups of one source at
+different grains — one row per block beside one row per day — carry the same
+measures and differ only in the columns that say what a row is, which looks
+exactly like a dataset that gained columns over time. When the files share a
+great deal but each holds a column the others lack, datui asks the filenames:
+files that differ only where a counter or a date would, `part-00000` beside
+`part-00001`, are one dataset written a file at a time, and files that were each
+given a name, `by_block` beside `daily`, are separate tables.
+
+The names are asked about only in that case. A folder whose files are nested —
+each one's columns contained in another's, which is what growth leaves behind —
+is one table however its files are named.
 
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not

@@ -297,22 +297,14 @@ pub fn is_bookkeeping(segment: &str) -> bool {
 /// exactly on it, and they are two tables.
 pub const ONE_TABLE_AGREEMENT: f64 = 0.5;
 
-/// How much a folder's files agree on a schema: the least agreement between any file
-/// and the widest one.
+/// How much a folder's files agree on a schema: the least overlap between any file and
+/// the widest one, over the smaller of the two column counts.
 ///
-/// Containment is what growth looks like. A dataset that gains a column over time
-/// leaves its older files holding a subset of its newer ones' columns, so a file
-/// contained in the widest scores 1.0 however many were added — where a Jaccard ratio
-/// falls far enough that a real dataset grown from five columns to fifty lands below a
-/// folder of unrelated tables that share a key.
-///
-/// A file *not* contained in the widest is a different shape. Growth never produces it:
-/// it means two files each hold columns the other lacks, which is what separate tables
-/// stored side by side look like. Such a file is scored over the union instead, so the
-/// columns neither file explains count against it. Measuring only containment missed
-/// this — two rollups of one source at different grains share every measure and differ
-/// only in their grain columns, and scoring 17 of the narrower file's 20 columns
-/// against its own width called them one table (#274).
+/// Containment rather than overlap, because gaining a column is what a dataset does
+/// over time. An older file's columns are then a subset of a newer one's and this stays
+/// 1.0 however many were added, where a Jaccard ratio falls — far enough that a real
+/// dataset which grew from five columns to fifty scores below a folder of unrelated
+/// tables that share a key. Measured, not supposed: see the tests below.
 ///
 /// Against the widest file rather than every pair, which is O(n²) and unaffordable at
 /// twenty thousand files. Exact whenever one file's columns contain every other file's,
@@ -333,12 +325,13 @@ pub fn column_agreement(files: &[Vec<String>]) -> f64 {
         .iter()
         .map(|file| {
             let file: std::collections::BTreeSet<&str> = file.iter().map(String::as_str).collect();
-            // A file with no columns tells us nothing either way, and is contained in
-            // everything — which is the answer, and needs no width to divide by.
-            if file.is_subset(&widest) {
+            let smaller = file.len().min(widest.len());
+            if smaller == 0 {
+                // A file with no columns tells us nothing either way, and dividing by
+                // its width would say it disagrees with everything.
                 return 1.0;
             }
-            file.intersection(&widest).count() as f64 / file.union(&widest).count() as f64
+            file.intersection(&widest).count() as f64 / smaller as f64
         })
         .fold(1.0, f64::min)
 }
@@ -347,6 +340,25 @@ pub fn column_agreement(files: &[Vec<String>]) -> f64 {
 /// by side.
 pub fn is_one_table(files: &[Vec<String>]) -> bool {
     column_agreement(files) > ONE_TABLE_AGREEMENT
+}
+
+/// Whether every file's columns are contained in the widest file's.
+///
+/// This is the shape growth produces, and only growth: an older file holds a subset of
+/// what a newer one gained, however many columns that is. A file holding a column the
+/// widest lacks did not come from growth — it is either a dataset that drifted, where
+/// a column was renamed or dropped along the way, or separate tables that share their
+/// measures. [`column_agreement`] cannot tell those apart, and deliberately does not
+/// try: both score alike, and the names of the files are what say which it is. See
+/// `discover::names_are_a_series`.
+pub fn is_nested(files: &[Vec<String>]) -> bool {
+    let Some(widest) = files.iter().max_by_key(|f| f.len()) else {
+        return true;
+    };
+    let widest: std::collections::BTreeSet<&str> = widest.iter().map(String::as_str).collect();
+    files
+        .iter()
+        .all(|file| file.iter().all(|name| widest.contains(name.as_str())))
 }
 
 /// The top-level column names in a list of Parquet leaf paths.
@@ -1690,15 +1702,8 @@ mod tests {
                 cols(&[&["a", "b", "c", "d", "e"], &["a", "b", "c", "d", "f"]]),
             ),
             (
-                // Tolerated in proportion to the table's width: the renamed column is
-                // one the other file lacks, so the folder is judged on how much of it
-                // the rename leaves standing. See
-                // [`a_rename_is_ambiguous_in_a_narrow_table`] for where that runs out.
                 "a column renamed",
-                cols(&[
-                    &["id", "ts", "amount", "fee", "qty", "px", "side", "venue"],
-                    &["id", "ts", "amt", "fee", "qty", "px", "side", "venue"],
-                ]),
+                cols(&[&["id", "ts", "amount"], &["id", "ts", "amt"]]),
             ),
             ("one file", cols(&[&["a", "b"]])),
             ("no files", Vec::new()),
@@ -1719,45 +1724,6 @@ mod tests {
             (
                 "tables sharing a key",
                 cols(&[&["id", "a", "b"], &["id", "x", "y"], &["id", "p", "q"]]),
-            ),
-            (
-                // Two rollups of one source at different grains, the columns read from
-                // the footers of a folder holding `by_block.parquet` beside
-                // `daily.parquet`. Every measure is shared and only the grain differs,
-                // so seventeen of the narrower file's twenty columns are in the wider
-                // one — which a containment-only measure scored 0.85 and called one
-                // table (#274). The three it does not have are the tell.
-                "two rollups at different grains",
-                cols(&[
-                    &[
-                        "height",
-                        "date",
-                        "time",
-                        "hash",
-                        "unique_addresses",
-                        "tx_count",
-                        "tx_value_total",
-                        "tx_value_avg",
-                        "tx_fee_total",
-                        "tx_fee_avg",
-                    ],
-                    &[
-                        "date",
-                        "num_blocks",
-                        "first_block",
-                        "last_block",
-                        "unique_addresses",
-                        "tx_count",
-                        "tx_value_total",
-                        "tx_value_avg",
-                        "tx_value_p10",
-                        "tx_value_p90",
-                        "tx_fee_total",
-                        "tx_fee_avg",
-                        "tx_fee_p10",
-                        "tx_fee_p90",
-                    ],
-                ]),
             ),
             (
                 // A season of Formula 1 as six tables in one folder, the columns read
@@ -1861,27 +1827,12 @@ mod tests {
         assert!(column_agreement(&grown) > column_agreement(&unrelated));
     }
 
-    /// Two tables joined on a key are two tables. Neither contains the other, so the
-    /// columns neither explains count against the pair and it scores a quarter — where
-    /// measuring the shared columns against the narrower file's own width left it
-    /// exactly on the threshold, close enough that only `>` rather than `>=` kept it
-    /// out.
+    /// Two tables joined on a key land exactly on the threshold, because half of the
+    /// narrower one is shared. They are still two tables.
     #[test]
     fn two_tables_sharing_a_key_are_not_one_table() {
         let files = cols(&[&["id", "name"], &["id", "customer_id", "amount"]]);
-        assert_eq!(column_agreement(&files), 0.25);
-        assert!(!is_one_table(&files));
-    }
-
-    /// Where the measure runs out. A rename leaves each file holding a column the other
-    /// lacks, and in a three-column table that is a third of it — the same evidence, in
-    /// the same proportion, that two small tables sharing a key give. Nothing in the
-    /// column names separates them, so this folder is read as two tables and `→` goes
-    /// inside it. Asserted rather than left to be discovered.
-    #[test]
-    fn a_rename_is_ambiguous_in_a_narrow_table() {
-        let files = cols(&[&["id", "ts", "amount"], &["id", "ts", "amt"]]);
-        assert_eq!(column_agreement(&files), 0.5);
+        assert_eq!(column_agreement(&files), ONE_TABLE_AGREEMENT);
         assert!(!is_one_table(&files));
     }
 

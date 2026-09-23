@@ -1939,33 +1939,146 @@ mod tests {
         assert_eq!(probe_url(&minio), None, "a custom endpoint is not probed");
     }
 
+    /// The listing helpers every test below shares: a prefix's sub-prefixes and its
+    /// objects, in the shapes `look_at_listing` takes.
+    fn folders(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    fn objects(names: &[(&str, u64)]) -> Vec<(String, u64)> {
+        names.iter().map(|(n, s)| (n.to_string(), *s)).collect()
+    }
+
+    #[test]
+    fn the_prefix_being_listed_is_not_something_it_holds() {
+        // A console makes a folder by writing a zero-byte object at its key, and
+        // listing that folder hands the key straight back. It stands for the prefix
+        // being listed rather than for anything in it, and each of the three counts
+        // missed it in its own way before it was dropped once, up front.
+        let holds = look_at_listing(
+            "out/sub/",
+            &folders(&[]),
+            &objects(&[("out/sub/", 0), ("out/sub/a.parquet", 5)]),
+        )
+        .1;
+        assert_eq!(holds.formats, vec![("parquet".to_string(), 1)]);
+        assert_eq!(holds.not_read, 0, "the prefix is not a file it cannot read");
+        assert_eq!(holds.skipped, 0);
+        assert_eq!(holds.folders, 0);
+    }
+
+    #[test]
+    fn sub_prefixes_count_against_a_prefix_being_one_table() {
+        // Two Parquet objects under ten sub-prefixes is a place to look inside, which
+        // is what the local route calls it. Leaving the prefixes out of `seen` made the
+        // majority a formality and the same folder answered `dir` on disk and `multi`
+        // in a bucket.
+        let subs: Vec<String> = (0..10).map(|i| format!("out/sub{i}/")).collect();
+        let (kind, holds) = look_at_listing(
+            "out/",
+            &subs,
+            &objects(&[("out/a.parquet", 5), ("out/b.parquet", 5)]),
+        );
+        assert_eq!(kind, crate::discover::EntryKind::Directory);
+        assert_eq!(holds.label(), "2 parquet");
+        assert_eq!(holds.folders, 10);
+    }
+
+    #[test]
+    fn a_consoles_folder_placeholder_is_not_also_a_file_it_cannot_read() {
+        // `out/sub/` made by a console is a zero-byte object at `out/sub` and a prefix
+        // `out/sub/`. The listing reports both; they are one folder.
+        let holds = look_at_listing("out/", &folders(&["out/sub/"]), &objects(&[("out/sub", 0)])).1;
+        assert_eq!(holds.folders, 1);
+        assert_eq!(holds.not_read, 0, "the placeholder is the folder itself");
+        assert_eq!(holds.label(), "dir");
+    }
+
+    #[test]
+    fn an_emr_folder_marker_beside_a_partition_is_a_writers_own_file() {
+        // Legacy s3n and EMR write `<name>_$folder$` beside every prefix, so a hive
+        // table's markers are named `year=2024_$folder$`. A partition test that only
+        // looks for an `=` calls those data, and the pane then reports one file datui
+        // cannot read per partition.
+        let holds = look_at_listing(
+            "out/",
+            &folders(&["out/year=2024/", "out/year=2025/"]),
+            &objects(&[("out/year=2024_$folder$", 0), ("out/year=2025_$folder$", 0)]),
+        )
+        .1;
+        assert_eq!(holds.not_read, 0);
+        assert_eq!(holds.partitions, 2);
+        assert_eq!(holds.skipped, 2);
+    }
+
+    #[test]
+    fn partitions_carry_a_prefix_only_while_they_are_the_most_of_it() {
+        // The boundary the rule turns on, which neither route had a test for: as many
+        // partitions as data files is a hive root with a few files beside it, one more
+        // data file than partitions is a folder that happens to hold a `key=value`.
+        let parts = folders(&["out/year=2024/", "out/year=2025/"]);
+        let two = objects(&[("out/a.parquet", 5), ("out/b.parquet", 5)]);
+        assert_eq!(
+            look_at_listing("out/", &parts, &two).0,
+            crate::discover::EntryKind::Hive,
+            "two partitions against two files"
+        );
+        let three = objects(&[
+            ("out/a.parquet", 5),
+            ("out/b.parquet", 5),
+            ("out/c.parquet", 5),
+        ]);
+        assert_ne!(
+            look_at_listing("out/", &parts, &three).0,
+            crate::discover::EntryKind::Hive,
+            "one more file than partitions"
+        );
+    }
+
+    #[test]
+    fn two_formats_that_tie_are_named_in_the_same_order_every_time() {
+        // Commonest first, and by name where two tie — otherwise the line reads in
+        // whatever order the store listed the keys, and the same prefix says `2 json ·
+        // 2 csv` on one visit and `2 csv · 2 json` on the next.
+        let holds = look_at_listing(
+            "out/",
+            &folders(&[]),
+            &objects(&[
+                ("out/a.json", 5),
+                ("out/b.json", 5),
+                ("out/y.csv", 5),
+                ("out/z.csv", 5),
+            ]),
+        )
+        .1;
+        assert_eq!(holds.line(false).unwrap(), "2 csv · 2 json");
+        assert_eq!(holds.label(), "mixed");
+    }
+
     #[test]
     fn a_folder_is_classified_by_one_page_of_its_listing() {
         use crate::discover::EntryKind;
-        let folders = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        let files = |names: &[(&str, u64)]| {
-            names
-                .iter()
-                .map(|(n, s)| (n.to_string(), *s))
-                .collect::<Vec<_>>()
-        };
+        // Each listing under the prefix it is a listing of. The prefix is only read to
+        // drop the prefix's own key, which `the_prefix_being_listed_is_not_something_it_holds`
+        // is about — but a prefix that is not the parent of the keys beside it is a
+        // fixture describing a listing no store would return.
         assert_eq!(
             look_at_listing(
-                "t/",
+                "v1.0/btc/blocks/",
                 &folders(&[
                     "v1.0/btc/blocks/date=2009-01-03/",
                     "v1.0/btc/blocks/date=2009-01-09/"
                 ]),
-                &files(&[("v1.0/btc/blocks/_SUCCESS", 0)]),
+                &objects(&[("v1.0/btc/blocks/_SUCCESS", 0)]),
             )
             .0,
             EntryKind::Hive
         );
         assert_eq!(
             look_at_listing(
-                "t/",
+                "gbif/occurrence.parquet/",
                 &folders(&[]),
-                &files(&[
+                &objects(&[
                     ("gbif/occurrence.parquet/000001", 10),
                     ("gbif/occurrence.parquet/000002", 10)
                 ]),
@@ -1976,9 +2089,9 @@ mod tests {
         );
         assert_eq!(
             look_at_listing(
-                "t/",
+                "a/",
                 &folders(&[]),
-                &files(&[("a/x.csv", 5), ("a/y.csv", 5)])
+                &objects(&[("a/x.csv", 5), ("a/y.csv", 5)])
             )
             .0,
             EntryKind::Directory,
@@ -1986,15 +2099,15 @@ mod tests {
         );
         assert_eq!(
             look_at_listing(
-                "t/",
+                "a/",
                 &folders(&["a/by_year/", "a/by_station/"]),
-                &files(&[])
+                &objects(&[])
             )
             .0,
             EntryKind::Directory
         );
         assert_eq!(
-            look_at_listing("t/", &folders(&["a/b/"]), &files(&[("a/one.parquet", 5)])).0,
+            look_at_listing("a/", &folders(&["a/b/"]), &objects(&[("a/one.parquet", 5)])).0,
             EntryKind::Directory,
             "one file is a file to open, not a dataset"
         );
@@ -2005,14 +2118,7 @@ mod tests {
     #[test]
     fn a_lake_table_is_not_a_folder_of_parquet_files() {
         use crate::discover::EntryKind;
-        let folders = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        let files = |names: &[(&str, u64)]| {
-            names
-                .iter()
-                .map(|(n, s)| (n.to_string(), *s))
-                .collect::<Vec<_>>()
-        };
-        let parts = files(&[
+        let parts = objects(&[
             ("t/part-00000.parquet", 10),
             ("t/part-00001.parquet", 10),
             ("t/part-00002.parquet", 10),
@@ -2027,7 +2133,7 @@ mod tests {
             EntryKind::Hudi
         );
         assert_eq!(
-            look_at_listing("t/", &folders(&["t/metadata/", "t/data/"]), &files(&[])).0,
+            look_at_listing("t/", &folders(&["t/metadata/", "t/data/"]), &objects(&[])).0,
             EntryKind::Iceberg
         );
 
@@ -2046,7 +2152,7 @@ mod tests {
             look_at_listing(
                 "t/",
                 &folders(&["t/metadata/", "t/data/"]),
-                &files(&[("t/README.md", 20)])
+                &objects(&[("t/README.md", 20)])
             )
             .0,
             EntryKind::Iceberg,

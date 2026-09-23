@@ -1511,6 +1511,49 @@ mod template_rollback_tests {
     }
 }
 
+#[cfg(all(test, feature = "cloud"))]
+mod peek_answer_tests {
+    use crate::discover::{EntryKind, Holds};
+
+    fn counted(format: &str, n: usize) -> Holds {
+        Holds {
+            formats: vec![(format.to_string(), n)],
+            ..Default::default()
+        }
+    }
+
+    /// A peek is worth a listing rebuild when its answer changes what a row draws, and
+    /// a rebuild reads the dataset index on the thread drawing the frame — so the test
+    /// is what reaches the row, not what the peek decided.
+    #[test]
+    fn a_peek_that_only_found_folders_is_not_worth_a_rebuild() {
+        let worth = crate::App::peek_tells_a_row_something;
+
+        // Nothing counted and nothing decided: the row would fall back to the word for
+        // the place and redraw the same.
+        assert!(!worth(&(EntryKind::Directory, Holds::default())));
+        // A prefix of sub-prefixes and a writer's own files. Still no data to count,
+        // still the same row.
+        assert!(!worth(&(
+            EntryKind::Directory,
+            Holds {
+                folders: 12,
+                skipped: 3,
+                ..Default::default()
+            }
+        )));
+
+        // Only Parquet is read in place, so a prefix of twelve CSV objects stays a
+        // `Directory` — and it is still `12 csv`, which is the label the row draws.
+        // Dropping it left every CSV prefix in a bucket reading `prefix` for the
+        // session.
+        assert!(worth(&(EntryKind::Directory, counted("csv", 12))));
+        // And the kinds that decide something say it whether they counted or not.
+        assert!(worth(&(EntryKind::Hive, Holds::default())));
+        assert!(worth(&(EntryKind::MultiFile, counted("parquet", 40))));
+    }
+}
+
 #[cfg(test)]
 mod text_input_flows;
 
@@ -7980,6 +8023,22 @@ impl App {
         self.home_refresh();
     }
 
+    /// Whether a peek's answer changes anything a row draws.
+    ///
+    /// Every answer that tells a row something, not only the ones that change the kind:
+    /// a prefix of twelve CSV objects is a `Directory` — only Parquet is read in place —
+    /// and it is still `12 csv`, which is the count the row is labelled from.
+    ///
+    /// An answer that says neither is dropped, because each send costs a listing
+    /// rebuild, and that reads the dataset index on the thread drawing the frame. Data
+    /// files and nothing else, because that is what the row renders: with none,
+    /// `entry_line` falls back to the word for the place, so a prefix holding only
+    /// sub-prefixes would have bought twelve rebuilds and changed no row.
+    #[cfg(feature = "cloud")]
+    fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
+        answer.0 != discover::EntryKind::Directory || !answer.1.formats.is_empty()
+    }
+
     /// Look inside the folders a cloud listing returned, a few at a time, so the ones
     /// that are datasets say `hive` or `multi` and open as one. One small listing
     /// request per folder, and at most `PEEKS_PER_LISTING` of them per listing; each
@@ -8021,19 +8080,8 @@ impl App {
             // rebuild per folder.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                // Every answer that tells a row something, not only the ones that
-                // change the kind: a prefix of twelve CSV objects is a `Directory` —
-                // only Parquet is read in place — and it is still `12 csv`, which is
-                // the count the row is labelled from.
-                //
-                // An answer that says neither is dropped, because each send costs a
-                // listing rebuild, and that reads the dataset index on the thread
-                // drawing the frame. Data files and nothing else, because that is what
-                // the row renders: with none, `entry_line` falls back to the word for
-                // the place, so a prefix holding only sub-prefixes would have bought
-                // twelve rebuilds and changed no row.
                 if let Ok((folder, Ok(answer))) = joined
-                    && (answer.0 != discover::EntryKind::Directory || !answer.1.formats.is_empty())
+                    && Self::peek_tells_a_row_something(&answer)
                 {
                     found.push((folder, answer));
                 }

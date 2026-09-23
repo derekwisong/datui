@@ -2642,6 +2642,99 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 }
 
 #[cfg(test)]
+mod holds_flow_tests {
+    use super::*;
+
+    fn counted(n: usize) -> crate::discover::Holds {
+        crate::discover::Holds {
+            formats: vec![("parquet".to_string(), n)],
+            ..Default::default()
+        }
+    }
+
+    /// The claim `peek_cloud_folders` stakes before its answers arrive, so a rebuild in
+    /// the meantime does not ask the store again: a `Directory` that counted nothing.
+    fn in_flight() -> (EntryKind, crate::discover::Holds) {
+        (EntryKind::Directory, crate::discover::Holds::default())
+    }
+
+    #[test]
+    fn a_claim_staked_before_a_peek_lands_keeps_the_count_a_row_already_has() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        let path = root.join("orders");
+        let mut row = Entry::for_test(&path, "orders");
+        row.kind = EntryKind::Directory;
+        // Restored from the facts cache on the way in, which is the only reason a
+        // remote row has a count before anything peeked at it.
+        row.holds = counted(15);
+
+        let mut home = HomeState::default();
+        home.probed.insert(root.clone(), vec![row]);
+        home.cloud_kinds.insert(path, in_flight());
+        home.apply_cloud_kinds(&root);
+
+        assert_eq!(
+            home.probed[&root][0].holds.label(),
+            "15 parquet",
+            "the placeholder erased a count the row already had"
+        );
+    }
+
+    #[test]
+    fn a_peeks_answer_replaces_the_count_a_row_had() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        let path = root.join("orders");
+        let mut row = Entry::for_test(&path, "orders");
+        row.kind = EntryKind::Directory;
+        row.holds = counted(15);
+
+        let mut home = HomeState::default();
+        home.probed.insert(root.clone(), vec![row]);
+        home.cloud_kinds
+            .insert(path, (EntryKind::MultiFile, counted(40)));
+        home.apply_cloud_kinds(&root);
+
+        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
+        assert_eq!(home.probed[&root][0].kind, EntryKind::MultiFile);
+    }
+
+    #[test]
+    fn a_measurement_that_counted_nothing_keeps_the_count_a_row_already_has() {
+        let path = std::path::PathBuf::from("/data/warehouse/orders");
+        let mut row = Entry::for_test(&path, "orders");
+        row.kind = EntryKind::Directory;
+        row.holds = counted(15);
+
+        let mut home = HomeState::default();
+        home.sections.push(Section {
+            title: "Here".to_string(),
+            subtitle: None,
+            rows: vec![row],
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+        });
+        // A measurement of a file carries no `holds`, and the same struct measures both.
+        home.enriched.insert(
+            path,
+            Measured {
+                kind: Some(EntryKind::Directory),
+                ..Default::default()
+            },
+        );
+        home.apply_measurements();
+
+        assert_eq!(
+            home.sections[0].rows[0].holds.label(),
+            "15 parquet",
+            "a measurement with nothing to say erased the label"
+        );
+    }
+}
+
+#[cfg(test)]
 mod known_facts_tests {
     use super::*;
     use crate::cache::DatasetFacts;

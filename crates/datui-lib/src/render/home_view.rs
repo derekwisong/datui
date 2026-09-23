@@ -903,7 +903,6 @@ fn entry_line<'a>(
     // narrowest width that draws meta leaves the name nothing to be cut into. Its head
     // is the identifying part, so the tail goes and the marks that fell in it go with
     // it — the same shape the name's own truncation takes.
-    let mut note_was_cut = false;
     // The ellipsis is one character in the Unicode set and three in the ASCII one, so
     // the room it takes is asked for rather than assumed. Assuming one made the cut
     // note two characters longer than it was allowed under `unicode = never`, which
@@ -911,17 +910,26 @@ fn entry_line<'a>(
     // the fix for it.
     let ellipsis = glyphs::get().ellipsis;
     let ellipsis_len = ellipsis.chars().count();
-    let shown_column = matched_column.map(|column| {
+    // The note as it will be drawn, and with it how many of those characters are the
+    // note rather than the ellipsis standing for the rest. The draw site needs that
+    // number to drop the marks the cut left behind, and carrying it from here is the
+    // point: subtracting an ellipsis there means knowing its length in two places, and
+    // the two only agree in one of the glyph sets.
+    let shown_column: Option<(String, usize)> = matched_column.map(|column| {
         let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
-        if column.chars().count() <= room || room <= ellipsis_len {
-            column.to_string()
+        let whole = column.chars().count();
+        if whole <= room || room <= ellipsis_len {
+            (column.to_string(), whole)
         } else {
-            note_was_cut = true;
-            column.chars().take(room - ellipsis_len).collect::<String>() + ellipsis
+            let kept = room - ellipsis_len;
+            (
+                column.chars().take(kept).collect::<String>() + ellipsis,
+                kept,
+            )
         }
     });
     let kind_cell = match &shown_column {
-        Some(column) => format!(" ·{column}"),
+        Some((column, _)) => format!(" ·{column}"),
         None => kind_cell,
     };
     let (kind_cell, kind_is_chip) = if fits(&kind_cell) {
@@ -1045,16 +1053,14 @@ fn entry_line<'a>(
         Some(column) => {
             spans.push(Span::styled(" ·".to_string(), kind_style));
             // The note as it was cut to fit, and the marks the cut left standing: a
-            // character no longer on screen cannot be highlighted.
-            let shown = shown_column.as_deref().unwrap_or(column);
+            // character no longer on screen cannot be highlighted. `kept` counts the
+            // note's own characters, so an uncut note keeps the mark on its final
+            // letter and a cut one puts none on the ellipsis.
+            let (shown, kept) = match &shown_column {
+                Some((shown, kept)) => (shown.as_str(), *kept),
+                None => (column, column.chars().count()),
+            };
             let mut positions = crate::home::substring_positions(filter, column);
-            // One less when the last character is the ellipsis standing for the rest,
-            // and not otherwise: an uncut note keeps the mark on its final letter.
-            let kept =
-                shown
-                    .chars()
-                    .count()
-                    .saturating_sub(if note_was_cut { ellipsis_len } else { 0 });
             positions.retain(|p| *p < kept);
             spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
         }
@@ -2016,6 +2022,72 @@ mod tests {
         assert!(text(Some(&[])).contains("source not found: lab"));
         // Inside a source the trail already says which, so nothing is added.
         assert!(!text(None).contains("lab"));
+    }
+
+    /// Where the meta columns begin, in cells. Everything left of them is the name
+    /// half of the row, and it is one width for every row on screen or the columns are
+    /// not columns.
+    fn meta_offset(line: &Line) -> usize {
+        // The meta text is second from the end; the last span carries the tint to the
+        // edge.
+        let spans = &line.spans[..line.spans.len().saturating_sub(2)];
+        spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum()
+    }
+
+    #[test]
+    fn a_column_note_on_a_row_from_a_source_leaves_the_meta_columns_alone() {
+        let ctx = RenderContext::for_test();
+        let known = ["prod".to_string()];
+        // The same row in every way but the source id, so the only thing that can
+        // move the meta columns is the cell the id goes in.
+        let mut plain = Entry::for_test(
+            std::path::Path::new("s3://bucket/sales.parquet"),
+            "sales.parquet",
+        );
+        plain.kind = EntryKind::Unknown;
+        let mut sourced = Entry::for_test(
+            std::path::Path::new("s3://prod@bucket/sales.parquet"),
+            "sales.parquet",
+        );
+        sourced.kind = EntryKind::Unknown;
+
+        // Two cells hold this row's note: the source id, which is as long as somebody's
+        // configuration and so is cut when it stops fitting, and the column that put
+        // the row in the list. Only one of them is drawn. Cutting the other moved the
+        // meta columns of this row and no other — the columns coming unstuck on the one
+        // row a search was about.
+        for width in 6..=30usize {
+            let with_note = entry_line(
+                &sourced,
+                false,
+                width,
+                true,
+                Some("customer_identifier"),
+                "cust",
+                Some(&known),
+                None,
+                &ctx,
+            );
+            let without = entry_line(
+                &plain,
+                false,
+                width,
+                true,
+                Some("customer_identifier"),
+                "cust",
+                Some(&[]),
+                None,
+                &ctx,
+            );
+            assert_eq!(
+                meta_offset(&with_note),
+                meta_offset(&without),
+                "at {width} cells the source id moved the meta columns"
+            );
+        }
     }
 
     /// The row's spans, as (text, is_highlighted) pairs.

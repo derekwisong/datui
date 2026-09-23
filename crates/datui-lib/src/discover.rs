@@ -230,6 +230,13 @@ impl Holds {
             && self.folders == 0
             && self.skipped == 0
             && self.not_read == 0
+            // Every field, including the two that are counted elsewhere as well: a
+            // partition is a folder and a skipped name is one of `skipped`, so on both
+            // routes today these are implied. This is a `skip_serializing_if` and the
+            // guard that stops a placeholder erasing a row's count, and neither should
+            // turn on an invariant two other functions have to keep.
+            && self.partitions == 0
+            && self.skipped_names.is_empty()
             // A listing cut short before it found anything still says something: that
             // what it found is not all there is. Without this the row falls back to its
             // kind and reads `dir`, where `label` would have said `dir+`.
@@ -564,13 +571,20 @@ pub(crate) fn folder_and_name(path: &Path) -> String {
 /// cloud listing knew three more names. A folder whose ninth entry is `_metadata.json`
 /// answered `multi` locally and `dir` in a bucket for no better reason than that.
 pub fn is_bookkeeping(name: &str) -> bool {
+    // The `_$folder$` marker is asked about first, because it is a suffix and the
+    // folder it stands in for can itself be a partition: legacy s3n and EMR write
+    // `year=2024_$folder$` beside `year=2024/`, and a partition test looking only for
+    // an `=` calls that marker data.
+    if name.ends_with("_$folder$") {
+        return true;
+    }
     // A `key=value` name is a partition wherever it appears, whatever it starts with.
     // Spark and Hive partition on internal columns — `_date=2024-01-01`, `_c0=…` — and
     // reading those as a writer's own files loses the whole dataset.
     if is_partition_name(name) {
         return false;
     }
-    name.starts_with(['_', '.']) || name.ends_with("_$folder$")
+    name.starts_with(['_', '.'])
 }
 
 /// Whether a name is a hive partition (`year=2024`): `key=value`, with a non-empty key.
@@ -1161,13 +1175,16 @@ fn enrich_dataset(entry: &mut Entry) {
             // Whether the folder is one table is asked of everything under it, because
             // that is what opening it would union. What it *holds* is the files the
             // label counts — the ones directly inside — and a downgraded row is never
-            // opened as one table, so a union spanning the subtree would be a set of
-            // columns nothing produces. Three more footers, on a folder being
-            // downgraded, to say `2 parquet` and mean those two.
+            // opened as one table, so a *count* spanning the subtree would be a width
+            // nothing produces. Three more footers, on a folder being downgraded, to
+            // say `2 parquet` and mean those two.
             let own_files = direct_children(&files, &entry.path);
             let own = sample_footers(&own_files);
-            let own_names: Vec<Vec<String>> = own.iter().map(column_names).collect();
-            entry.columns = union_of(&own_names);
+            // The names, though, are every one sampled under it, the same as the arm
+            // below: they are the home screen's search index, and a folder is found by
+            // a column that looking inside it will reach. Narrowing these to the direct
+            // children made a big folder unfindable by a column a small one is found by.
+            entry.columns = union_of(&names);
             // A floor only when a footer was left unread. The folder is past the
             // counting budget, but its *own* files may be three of the seventy — and
             // then `5+ cols` claims a sample that did not happen.
@@ -1212,12 +1229,11 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut top_level: Vec<String> = Vec::new();
     let mut seen_top_level = std::collections::HashSet::new();
     let mut per_file: Vec<Vec<String>> = Vec::with_capacity(files.len());
-    // The same two, restricted to the folder's own files. A folder the footers downgrade
-    // is never opened as one table, so a union spanning the subtree would be a set of
-    // columns nothing produces — and the label beside it counts only what is inside.
-    let mut own_columns: Vec<String> = Vec::new();
+    // The width and the size, restricted to the folder's own files. A folder the footers
+    // downgrade is never opened as one table, so a *count* spanning the subtree would be
+    // a width nothing produces — and the label beside it counts only what is inside. The
+    // column names stay the subtree's: they are the search index, not the label.
     let mut own_bytes = 0u64;
-    let mut own_seen = std::collections::HashSet::new();
     let mut own_top_level: Vec<String> = Vec::new();
     let mut own_seen_top = std::collections::HashSet::new();
     let mut cost = Cost::default();
@@ -1250,11 +1266,6 @@ fn enrich_dataset(entry: &mut Entry) {
         bytes += file_bytes;
         if file.parent() == Some(entry.path.as_path()) {
             own_bytes += file_bytes;
-            for name in &names {
-                if own_seen.insert(name.clone()) {
-                    own_columns.push(name.clone());
-                }
-            }
             for name in top_level_names(&meta) {
                 if own_seen_top.insert(name.clone()) {
                     own_top_level.push(name);
@@ -2165,6 +2176,133 @@ mod classification_tests {
         );
     }
 
+    #[test]
+    fn a_big_folder_is_still_found_by_a_column_one_level_down() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id", "ts"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        for i in 0..MAX_FOOTERS_PER_DATASET + 6 {
+            write(
+                &archive,
+                &format!("old-{i:03}.parquet"),
+                &["wholly", "different"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory);
+        // The label and the width are the three files directly inside.
+        assert_eq!(entry.label(), "3 parquet");
+        assert_eq!(entry.cols, Some(2), "id and ts");
+        // The names are not: they are the home screen's search index, and `wholly` has
+        // to reach the folder that holds one whether the folder was small enough to
+        // read every footer or, as here, too big and sampled instead. Narrowing these
+        // to the folder's own files made the answer depend on the folder's size.
+        assert!(
+            entry.columns.contains(&"wholly".to_string()),
+            "{:?}",
+            entry.columns
+        );
+        assert!(entry.columns.contains(&"id".to_string()));
+    }
+
+    #[test]
+    fn a_width_over_a_folders_own_files_is_a_floor_when_there_are_too_many() {
+        let dir = tempfile::tempdir().unwrap();
+        // Past the footer budget with the folder's *own* files, and no two of them one
+        // table, so the downgrade samples its own files as well and says so. Every file
+        // gets its own column, because which three get sampled is `read_dir` order.
+        for i in 0..MAX_FOOTERS_PER_DATASET + 6 {
+            write(
+                dir.path(),
+                &format!("f-{i:03}.parquet"),
+                &[&format!("c{i}")],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory, "not one table");
+        assert_eq!(entry.label(), "70 parquet");
+        assert!(
+            entry.cols_sampled,
+            "three of seventy footers were read, so the width is a floor"
+        );
+    }
+
+    #[test]
+    fn a_folder_read_as_one_table_is_sized_by_everything_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id", "ts"]);
+        write(dir.path(), "b.parquet", &["id", "ts"]);
+        let more = dir.path().join("more");
+        std::fs::create_dir_all(&more).unwrap();
+        write(&more, "c.parquet", &["id", "ts"]);
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile, "one table");
+        // `Enter` unions the subtree, so the size and the rows beside it are the
+        // subtree's — the opposite of a downgraded folder, whose numbers are its own
+        // files because it is never opened as one table.
+        let all: u64 = [
+            dir.path().join("a.parquet"),
+            dir.path().join("b.parquet"),
+            more.join("c.parquet"),
+        ]
+        .iter()
+        .map(|p| std::fs::metadata(p).unwrap().len())
+        .sum();
+        assert_eq!(entry.size, Some(all));
+        assert_eq!(entry.rows, Some(3));
+    }
+
+    #[test]
+    fn nothing_counted_is_the_only_thing_holds_calls_empty() {
+        // `is_empty` stops a peek's answer reaching a row and keeps a `Holds` out of
+        // the cache, so anything it calls empty is thrown away. Asked of each field on
+        // its own, because the contract is the function's and not its callers': both
+        // routes happen to set `folders` beside `partitions` and `skipped` beside
+        // `skipped_names` today, which is exactly the kind of agreement that stops
+        // holding one refactor later.
+        assert!(Holds::default().is_empty());
+        let one = |f: fn(&mut Holds)| {
+            let mut h = Holds::default();
+            f(&mut h);
+            h
+        };
+        for (what, holds) in [
+            ("a data file", one(|h| h.formats.push(("csv".into(), 1)))),
+            ("a folder", one(|h| h.folders = 1)),
+            ("a partition", one(|h| h.partitions = 1)),
+            ("a file it cannot read", one(|h| h.not_read = 1)),
+            ("a writer's own file", one(|h| h.skipped = 1)),
+            (
+                "the name of one",
+                one(|h| h.skipped_names.push("_SUCCESS".into())),
+            ),
+            ("a listing cut short", one(|h| h.truncated = true)),
+        ] {
+            assert!(!holds.is_empty(), "{what} is something to say");
+        }
+    }
+
+    #[test]
+    fn a_folder_marker_is_bookkeeping_even_beside_a_partition() {
+        // Legacy s3n and EMR write a zero-byte `<name>_$folder$` object beside every
+        // prefix. Where the prefix is a partition the marker carries the `=` too, so a
+        // partition test that only looks for one calls the marker data and the pane
+        // reports one unreadable file per partition.
+        assert!(is_bookkeeping("year=2024_$folder$"));
+        assert!(is_bookkeeping("alpha_$folder$"));
+        assert!(!is_bookkeeping("year=2024"), "the partition itself is data");
+        assert!(
+            !is_bookkeeping("_date=2024-01-01"),
+            "Spark partitions on internal columns"
+        );
+    }
+
     /// And the files under it are what the one-table test is asked about, since they
     /// are what the union would hold.
     #[test]
@@ -2348,7 +2486,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(&table),
-            crate::cloud_browse::look_at_listing("out/", &[], &objects).0,
+            crate::cloud_browse::look_at_listing("gbif/occurrence.parquet/", &[], &objects).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(&table), EntryKind::MultiFile);
@@ -2428,7 +2566,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::look_at_listing("out/", &folders, &[]).0,
+            crate::cloud_browse::look_at_listing("events/", &folders, &[]).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
@@ -2555,7 +2693,7 @@ mod classification_tests {
             keys.push((format!("jolpica/2000/{part}.parquet"), 100));
         }
         keys.sort();
-        let cloud = crate::cloud_browse::look_at_listing("out/", &[], &keys).0;
+        let cloud = crate::cloud_browse::look_at_listing("jolpica/2000/", &[], &keys).0;
 
         assert_eq!(local, cloud, "the two routes answer the same folder alike");
         assert_eq!(local, EntryKind::MultiFile);
@@ -3090,6 +3228,12 @@ mod classification_tests {
             "drivers.parquet",
             &["driver_id", "code", "nationality"],
         );
+        // And one a level down, so "every column its files have" is a claim about more
+        // than the folder's own: the row's width is its own files, its names are
+        // everything under it, and a fixture with no subfolder cannot tell those apart.
+        let seasons = dir.path().join("seasons");
+        std::fs::create_dir_all(&seasons).unwrap();
+        write(&seasons, "2024.parquet", &["season_year", "round"]);
 
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::Directory);
@@ -3100,6 +3244,8 @@ mod classification_tests {
             "driver_id",
             "code",
             "nationality",
+            "season_year",
+            "round",
         ] {
             assert!(
                 entry.columns.iter().any(|c| c == column),

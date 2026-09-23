@@ -210,6 +210,11 @@ impl Holds {
             // that — it found none among the entries it read, and more files can
             // unmake it, which is what separates this from `mixed`.
             [] => format!("dir{more}"),
+            // The `+` hedges the whole claim, not only the number: past the cap a
+            // second format may be among the entries that were not read, so `5000+
+            // parquet` and `mixed` are both answers this folder can give depending on
+            // the order it came back in. What is certain is that five thousand Parquet
+            // files are in there.
             [(name, count)] => format!("{count}{more} {name}"),
             // No `+`: `mixed` is not a count, and more files cannot unmake it. The
             // pane's line carries the qualifier on each number it does report.
@@ -800,7 +805,10 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
             holds.skipped += 1;
             // The first few by name, not the first few the filesystem returned: a line
             // in the pane that reads differently on two runs of the same folder is the
-            // order-dependence this module just spent a release removing.
+            // order-dependence this module just spent a release removing. Past
+            // `MAX_ENTRIES_PER_DIR` it is the first few by name *of what was read*, and
+            // where the walk stopped is the filesystem's order again — which the `+` on
+            // every count beside them says.
             if holds.skipped_names.last().is_none_or(|last| &name < last)
                 || holds.skipped_names.len() < SKIPPED_NAMES_SHOWN
             {
@@ -1777,8 +1785,9 @@ mod classification_tests {
 
     /// A format's name is not an extension, and the one place that stores a name has
     /// to read it back with the inverse of what wrote it. `excel` is a name no
-    /// extension spells, so parsing it as one answers `None` — and `None` here means
-    /// "unrecognised", which the caller reads as "count it".
+    /// extension spells, so parsing it as one answers `None` — and `None` there means
+    /// "not Parquet", which leaves a folder's counts off rather than filling them from
+    /// whatever Parquet is under it.
     #[test]
     fn a_format_name_round_trips_only_through_from_name() {
         use crate::FileFormat;

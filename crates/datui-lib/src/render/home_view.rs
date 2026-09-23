@@ -783,11 +783,12 @@ fn entry_line<'a>(
     // bucket rather than as a directory.
     let path_text = entry.path.to_string_lossy();
     let named_source = crate::source::split_source_id(&path_text).0;
+    let described = entry.label();
     let kind = match entry.kind {
         EntryKind::Directory => place_kind
             .or_else(|| crate::home::object_place_label(&entry.path))
-            .unwrap_or_else(|| entry.kind.label()),
-        _ => entry.kind.label(),
+            .unwrap_or(described.as_ref()),
+        _ => described.as_ref(),
     };
     // Two stores can hold the same bucket and key, so a row from one that is named in
     // its URL says which, where a kind would otherwise go. A recent whose source has
@@ -1054,14 +1055,19 @@ fn preview_head(
         };
         facts.push(("source", source.label().to_string(), style));
     }
+    let described = entry.label();
     let kind = match entry.kind {
         EntryKind::Directory => place_kind
             .or_else(|| crate::home::object_place_label(&entry.path))
-            .unwrap_or_else(|| entry.kind.label()),
-        _ => entry.kind.label(),
+            .unwrap_or(described.as_ref()),
+        _ => described.as_ref(),
     };
     if !kind.is_empty() {
         facts.push(("kind", kind.to_string(), plain));
+    }
+    // What one listing of it found, beside what the label boiled that down to.
+    if let Some(line) = entry.holds.line() {
+        facts.push(("holds", line, plain));
     }
     if let Some(rows) = entry.rows {
         facts.push(("rows", discover::format_rows(rows), plain));
@@ -1335,6 +1341,7 @@ mod tests {
             cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
+            holds: Default::default(),
         }
     }
 

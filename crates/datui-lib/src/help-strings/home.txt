@@ -5,8 +5,9 @@ NAVIGATION
   ↑ / ↓             Move the selection (Ctrl+P / Ctrl+N as well)
   Ctrl+↑ / Ctrl+↓   Previous or next section
   ← / →             Collapse or expand a section; the choice is remembered.
-                    → on a folder labelled hive, multi, delta, iceberg or hudi
-                    goes inside it, so one partition or one file can be reached
+                    → on a folder datui offers as one dataset, or on a lake
+                    table, goes inside it instead, so one partition or one file
+                    can be reached
   PgUp / PgDn       Move ten rows
 
   Every letter types into the filter, so none is a key here: "json" finds json.
@@ -14,9 +15,15 @@ NAVIGATION
                     where the cursor is: "recent" under Recent, "name" under a
                     directory, or size / modified / rows once chosen.
   Enter             Open the dataset, enter the directory, source or bucket, or
-                    fold the section. A folder labelled hive or multi opens as
-                    one dataset; one labelled delta, iceberg or hudi is a lake
-                    table datui does not read yet, and Enter goes inside it
+                    fold the section. A hive folder, or one whose files hold the
+                    same table, opens as one dataset; one labelled delta, iceberg
+                    or hudi is a lake table datui does not read yet, and Enter
+                    goes inside it
+
+  A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
+  a count and a format ("12 parquet"), "mixed" for more than one format, or
+  "dir" for no data files. The details pane carries the whole tally, including
+  the files skipped as a writer's own.
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
   Ctrl+R            List again what is on screen: every cloud source, the one

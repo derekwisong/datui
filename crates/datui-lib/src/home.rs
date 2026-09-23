@@ -773,7 +773,9 @@ pub struct Listing {
 pub fn look_into(entry: &Entry) -> Entry {
     let mut probe = entry.clone();
     if probe.kind == EntryKind::Unknown && probe.path.is_dir() {
-        probe.kind = discover::classify_directory(&probe.path);
+        let (kind, holds) = discover::look_at_directory(&probe.path);
+        probe.kind = kind;
+        probe.holds = holds;
     }
     discover::enrich(&mut probe);
     probe.size = probe.size.or(entry.size);
@@ -1249,6 +1251,12 @@ fn apply_known_facts(
             && let Some(kind) = facts.kind
         {
             row.kind = kind;
+            // What it holds comes back with the kind: both are what looking into the
+            // folder produced, and a row restored without it would say `dir` about a
+            // folder of fifteen Parquet files.
+            if row.holds == Default::default() {
+                row.holds = facts.holds.clone();
+            }
         }
     }
 }
@@ -1274,6 +1282,7 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             cols_sampled: entry.cols_sampled,
             columns: entry.columns.clone(),
             kind: Some(entry.kind),
+            holds: entry.holds.clone(),
             classified_by: crate::discover::CLASSIFIER_VERSION,
             // The source is where it is *now*, not where it was when measured: a
             // path can move between mounts, and a stale answer to "will this be
@@ -2436,6 +2445,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
+        holds: Default::default(),
     }
 }
 
@@ -2456,6 +2466,7 @@ fn bucket_entry(url: &Path) -> Entry {
 
 /// Build an entry for a path that is already known (a recent), classifying it.
 fn entry_for_path(path: &Path, remote: bool) -> Entry {
+    let mut holds = discover::Holds::default();
     // Classifying reads the directory, and stat'ing gives size and mtime. Both touch
     // the filesystem, so a remote entry is listed by name alone until its probe lands.
     let kind = if remote {
@@ -2469,7 +2480,9 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
             EntryKind::Unknown
         }
     } else if path.is_dir() {
-        discover::classify_directory(path)
+        let (kind, found) = discover::look_at_directory(path);
+        holds = found;
+        kind
     } else {
         EntryKind::File
     };
@@ -2487,6 +2500,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
+        holds,
     };
     if !remote && let Ok(meta) = std::fs::metadata(path) {
         if meta.is_file() {
@@ -2608,6 +2622,7 @@ mod known_facts_tests {
             kind: Some(EntryKind::MultiFile),
             classified_by,
             cost: Default::default(),
+            holds: Default::default(),
         };
         let unprobed = || {
             let mut row = Entry::directory(&remote);

@@ -1455,6 +1455,7 @@ fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
         cols_sampled: false,
         columns: columns.iter().map(|c| c.to_string()).collect(),
         cost: Default::default(),
+        holds: Default::default(),
     }
 }
 
@@ -1536,6 +1537,7 @@ fn test_remembered_facts_are_used_only_for_the_same_bytes() {
             columns: vec!["customer_id".into()],
             kind: Some(EntryKind::File),
             classified_by: datui::discover::CLASSIFIER_VERSION,
+            holds: Default::default(),
             cost: Default::default(),
         },
     )]);
@@ -1598,6 +1600,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
             columns: vec!["vwap".into(), "ticker".into()],
             kind: Some(EntryKind::Hive),
             classified_by: datui::discover::CLASSIFIER_VERSION,
+            holds: Default::default(),
             cost: Default::default(),
         },
     )]);
@@ -1670,6 +1673,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
             columns: vec!["stale".into()],
             kind: Some(EntryKind::File),
             classified_by: datui::discover::CLASSIFIER_VERSION,
+            holds: Default::default(),
             cost: Default::default(),
         },
     )]);
@@ -1722,6 +1726,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
         cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
+        holds: Default::default(),
     }
 }
 
@@ -3482,6 +3487,7 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
         columns: vec!["circuit_id".into(), "driver_id".into()],
         kind: Some(EntryKind::Directory),
         classified_by: datui::discover::CLASSIFIER_VERSION,
+        holds: Default::default(),
         cost: Default::default(),
     };
     assert_eq!(

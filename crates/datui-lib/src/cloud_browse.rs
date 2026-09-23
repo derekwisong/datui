@@ -1136,6 +1136,7 @@ async fn list_level(
             cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
+            holds: Default::default(),
         });
     }
 
@@ -1164,6 +1165,7 @@ async fn list_level(
             cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
+            holds: Default::default(),
         });
     }
 
@@ -1228,6 +1230,7 @@ async fn list_azure_objects(
             cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
+            holds: Default::default(),
         });
     }
     Ok(rows)

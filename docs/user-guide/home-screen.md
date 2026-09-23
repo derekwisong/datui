@@ -188,10 +188,31 @@ and other formats that need a scan to count show neither. Below the counts,
 the pane lists the full schema of a Parquet dataset, each type in the color the
 table uses.
 
+### What a row's label says
+
+A folder's label says what is directly inside it, from one listing:
+
+| Label | Means |
+|---|---|
+| `hive` | It has a `key=value` child folder |
+| `delta` `iceberg` `hudi` | The format's marker is present |
+| `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
+| `mixed` | Data files of more than one format |
+| `dir` | No data file directly inside |
+| `…` | Nothing has looked into it yet |
+
+A folder larger than the listing cap counts what it read and says so: `5000+
+parquet`. The details pane carries the whole tally on a `holds` line — `12
+parquet · 2 csv · 3 folders · 4 skipped (_SUCCESS, .crc)` — so the files that
+were passed over are named rather than silently missing.
+
+A label describes; it does not promise what <kbd>Enter</kbd> will do. A folder of
+fifteen unrelated tables reads `15 parquet` and is still a place to look inside.
+
 ### When a folder is one dataset
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
-hold the same table is `multi`. Both open with <kbd>Enter</kbd> as a single
+hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single
 dataset, and <kbd>→</kbd> goes inside one instead, to reach a single partition or
 a single file. That is the way to look at the files when the label is wrong.
 <kbd>Esc</kbd> comes back out; in a bucket the first row inside,

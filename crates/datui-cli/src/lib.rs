@@ -40,6 +40,26 @@ impl FileFormat {
             .and_then(Self::from_extension)
     }
 
+    /// The format's name, as a row on the home screen says it: `12 parquet`, `3 csv`.
+    ///
+    /// Lowercase and singular, because it is counted beside a number and read as a
+    /// noun. One name per format rather than per extension: `.ipc`, `.arrow` and
+    /// `.feather` are `arrow`, which is what a reader has to know about them.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Parquet => "parquet",
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Psv => "psv",
+            Self::Json => "json",
+            Self::Jsonl => "jsonl",
+            Self::Arrow => "arrow",
+            Self::Avro => "avro",
+            Self::Orc => "orc",
+            Self::Excel => "excel",
+        }
+    }
+
     /// Whether many files of this format can be read as one table.
     ///
     /// Asked before a folder is offered as a dataset, so the home screen cannot promise

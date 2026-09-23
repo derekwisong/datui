@@ -277,9 +277,10 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .to_string();
     let mut entry = Entry::directory(&folder_dataset_url(dir));
     entry.kind = kind;
-    // What the listing you are looking at holds, which is the whole of it — where the
-    // folder's own row upstairs was counted from one page of a peek and may say `100+`.
-    // Two numbers about one folder, and this is the one that counted everything.
+    // What the listing you are looking at holds. Not the same tally as the folder's own
+    // row upstairs: that one was counted from one page of a peek and may say `100+`,
+    // and this one is counted from rows a listing has already dropped its markers from,
+    // so it reports fewer skipped. Two views of one folder, each true of what it saw.
     entry.holds = holds;
     entry.name = format!("{name} ({what})");
     Some(entry)

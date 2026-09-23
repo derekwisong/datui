@@ -1044,35 +1044,32 @@ fn enrich_dataset(entry: &mut Entry) {
     // the subtree; measuring only the top would promise three files and open
     // twenty-three, and would ask `is_one_table` about three files while unioning all
     // twenty-three. The `holds` line names the folder that explains the difference.
-    // Whether the footers below are this folder's own shape, or something else's.
-    //
-    // A hive root holds no data itself, so what it is made of is what its partitions
-    // hold — one spine down, the same one a hive scan reads its schema from. A tree of
-    // `year=2024/` CSV with one stray `snapshot.parquet` dropped into it reported that
-    // single file's rows as the dataset's, and a partition of two formats is not a
-    // Parquet dataset either. Only a spine that settles nothing leaves the question
-    // open, and there the walk has nothing better to go on.
-    let reads_as_parquet = match entry.kind {
-        EntryKind::Hive => matches!(
-            hive_leaf_format(&entry.path),
-            FolderFormat::One(crate::FileFormat::Parquet, _) | FolderFormat::Deeper
-        ),
-        _ => entry
-            .holds
-            .one_format()
-            .and_then(crate::FileFormat::from_extension)
-            .is_none_or(|f| f == crate::FileFormat::Parquet),
-    };
-    if !reads_as_parquet {
-        entry.size = None;
-        return;
-    }
 
     // The partition layout comes from directory names, so it is knowable even for a
     // dataset far too large to count the rows of — which is exactly the dataset whose
     // shape you most want described before opening it.
     if entry.kind == EntryKind::Hive {
         entry.cost.partitions = partition_layout(&entry.path);
+    }
+
+    // Whether the footers below are this folder's own shape, or something else's. A
+    // folder's own format is counted exactly, so this is exact for one.
+    //
+    // Not asked of a hive root, whose data is down in the partitions and whose format
+    // can only be sampled. One spine tells the two cases apart in neither direction: a
+    // CSV tree with a stray `snapshot.parquet` in the sampled partition and a Parquet
+    // tree with a stray `notes.csv` in it both come back `NotOneTable`, and refusing
+    // both blanks a dataset that opens perfectly. A stray file in a CSV hive tree is
+    // still counted as the dataset's, which #275 phase 4 settles by making the tree
+    // readable in its own format.
+    let reads_as_parquet = entry
+        .holds
+        .one_format()
+        .and_then(crate::FileFormat::from_name)
+        .is_none_or(|f| f == crate::FileFormat::Parquet);
+    if !reads_as_parquet {
+        entry.size = None;
+        return;
     }
 
     // The stat'ed size of a dataset directory is its own inode: a couple of hundred
@@ -1674,6 +1671,36 @@ mod classification_tests {
         assert!(data_format(Path::new("notes")).is_none());
     }
 
+    /// A format's name is not an extension, and the one place that stores a name has
+    /// to read it back with the inverse of what wrote it. `excel` is a name no
+    /// extension spells, so parsing it as one answers `None` — and `None` here means
+    /// "unrecognised", which the caller reads as "count it".
+    #[test]
+    fn a_format_name_round_trips_only_through_from_name() {
+        use crate::FileFormat;
+        for format in [
+            FileFormat::Parquet,
+            FileFormat::Csv,
+            FileFormat::Tsv,
+            FileFormat::Psv,
+            FileFormat::Json,
+            FileFormat::Jsonl,
+            FileFormat::Arrow,
+            FileFormat::Avro,
+            FileFormat::Orc,
+            FileFormat::Excel,
+        ] {
+            assert_eq!(
+                FileFormat::from_name(format.name()),
+                Some(format),
+                "{} is a name",
+                format.name()
+            );
+        }
+        assert_eq!(FileFormat::from_extension("excel"), None);
+        assert_eq!(FileFormat::from_name("xlsx"), None);
+    }
+
     /// A compression suffix is how a file is stored, not what it holds, on both routes.
     #[test]
     fn a_compressed_name_reads_as_the_format_under_it() {
@@ -1926,27 +1953,48 @@ mod classification_tests {
         assert_eq!(entry.rows, None);
     }
 
-    /// A hive root holds no data itself, so what it is made of is what its partitions
-    /// hold. A tree of CSV with one stray Parquet dropped into it reported that single
-    /// file's rows as the dataset's.
+    /// A hive tree of CSV is still laid out, whatever its rows cannot say. The layout
+    /// is directory names — no footers, no opens — and it is the thing you most want
+    /// before opening a dataset too large to count.
     #[test]
-    fn a_hive_root_is_described_by_what_its_partitions_hold() {
+    fn a_hive_tree_of_another_format_is_still_laid_out() {
         let dir = tempfile::tempdir().unwrap();
         for year in ["year=2024", "year=2025"] {
             let part = dir.path().join(year);
             std::fs::create_dir_all(&part).unwrap();
             std::fs::write(part.join("data.csv"), b"id\n1\n").unwrap();
         }
-        // Somebody's export, dropped in beside the data.
-        write(&dir.path().join("year=2024"), "snapshot.parquet", &["id"]);
+        // One stray data file at the root, which is what makes its format known.
+        std::fs::write(dir.path().join("summary.csv"), b"id\n1\n").unwrap();
 
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::Hive);
-        assert_eq!(
-            entry.rows, None,
-            "one stray Parquet is not this dataset's row count"
+        assert!(entry.cost.partitions.is_some(), "the layout is named");
+        assert_eq!(entry.rows, None, "and nothing is invented about its rows");
+    }
+
+    /// A hive dataset is described whatever odd file is lying in a partition. One
+    /// spine cannot tell a Parquet tree with a stray CSV in it from a CSV tree with a
+    /// stray Parquet, and blanking a dataset that opens perfectly is the worse of the
+    /// two mistakes.
+    #[test]
+    fn a_hive_dataset_is_described_despite_a_stray_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for year in ["year=2024", "year=2025"] {
+            let part = dir.path().join(year);
+            std::fs::create_dir_all(&part).unwrap();
+            write(&part, "data.parquet", &["id"]);
+        }
+        // Somebody's notes, dropped in beside the data.
+        std::fs::write(dir.path().join("year=2024/notes.csv"), b"x").unwrap();
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Hive);
+        assert_eq!(entry.rows, Some(2), "the dataset is still counted");
+        assert!(
+            entry.cost.partitions.is_some(),
+            "and its layout still named"
         );
-        assert_eq!(entry.cols, None);
     }
 
     /// A folder is described by its own files, not by what is under them. The footer

@@ -1112,8 +1112,10 @@ fn preview_head(
     if !kind.is_empty() {
         facts.push(("kind", kind.to_string(), plain));
     }
-    // What one listing of it found, beside what the label boiled that down to.
-    if let Some(line) = entry.holds.line() {
+    // What one listing of it found, when that is more than the label already said. A
+    // folder of one format with nothing else in it boils down to itself, and printing
+    // `kind  12 parquet` above `holds  12 parquet` says it twice.
+    if let Some(line) = entry.holds.line().filter(|line| line != kind) {
         facts.push(("holds", line, plain));
     }
     if let Some(rows) = entry.rows {

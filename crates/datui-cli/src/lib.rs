@@ -60,6 +60,26 @@ impl FileFormat {
         }
     }
 
+    /// The format a [`FileFormat::name`] names, for a name that was stored rather than
+    /// carried. The inverse of that method, and the only way back: a name is not an
+    /// extension, so `from_extension` cannot read one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Parquet,
+            Self::Csv,
+            Self::Tsv,
+            Self::Psv,
+            Self::Json,
+            Self::Jsonl,
+            Self::Arrow,
+            Self::Avro,
+            Self::Orc,
+            Self::Excel,
+        ]
+        .into_iter()
+        .find(|f| f.name() == name)
+    }
+
     /// Whether many files of this format can be read as one table.
     ///
     /// Asked before a folder is offered as a dataset, so the home screen cannot promise

@@ -790,6 +790,10 @@ fn entry_line<'a>(
     let path_text = entry.path.to_string_lossy();
     let named_source = crate::source::split_source_id(&path_text).0;
     let described = entry.label();
+    // Whether the cell ends up holding the curated word rather than a label. Only one
+    // arm below reaches for it, and a row whose *path* is curated but whose kind sends
+    // it elsewhere — a `multi` prefix in a public source — is carrying a label.
+    let mut shows_curated = false;
     let kind = match entry.kind {
         // A count beats the generic word for the place a row is in: `12 parquet` says
         // more about a prefix than `prefix` does. Not the *curated* word, though —
@@ -802,7 +806,10 @@ fn entry_line<'a>(
         // The same order the details pane takes, or the row and the pane beside it
         // disagree about one folder.
         EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
-            (Some(curated), _) => curated,
+            (Some(curated), _) => {
+                shows_curated = true;
+                curated
+            }
             (None, false) => described.as_ref(),
             (None, true) => {
                 crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
@@ -881,8 +888,10 @@ fn entry_line<'a>(
     //
     // Nor the curated word. `dataset` and `project` are what a source calls a place it
     // names, and the match above prefers them to the count for that reason; dropping
-    // them here would take away the one thing marking a curated row.
-    let is_label = matched_column.is_none() && !shows_source && place_kind.is_none();
+    // them here would take away the one thing marking a curated row. Asked of the cell
+    // and not of the path, the same as the source id: a `multi` row under a public
+    // source has a curated path and a count in its cell, and a count gives way.
+    let is_label = matched_column.is_none() && !shows_source && !shows_curated;
     let (kind_cell, kind_is_chip) = if !is_label
         || name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
             > 1
@@ -1587,6 +1596,38 @@ mod tests {
                 curated(width).contains("dataset"),
                 "at {width}: {}",
                 curated(width)
+            );
+        }
+
+        // And a row whose *path* is curated but whose kind never reaches for the word
+        // is carrying a label, which gives way like any other. Only a `Directory` row
+        // consults `place_kind`; a `multi` prefix in a public source does not.
+        let mut curated_multi = row("s3://bucket/occurrence", EntryKind::MultiFile);
+        curated_multi.size = Some(4096);
+        curated_multi.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        let with_curated_path = |width: usize| -> usize {
+            let line = entry_line(
+                &curated_multi,
+                false,
+                width,
+                true,
+                None,
+                "",
+                None,
+                Some("dataset"),
+                &ctx,
+            );
+            offset_of_meta(line, &curated_multi)
+        };
+        for width in [20usize, 22, 24, 30] {
+            assert_eq!(
+                with_curated_path(width),
+                meta_starts_at(&short, width),
+                "a count under a curated path still gives way at {width}"
             );
         }
 

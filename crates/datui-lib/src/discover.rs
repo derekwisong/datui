@@ -1586,7 +1586,7 @@ pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 /// Bounded on both breadth and depth so a hive dataset with thousands of partitions
 /// costs the same as one with three.
 fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
-    if depth > 4 {
+    if depth > MAX_WALK_DEPTH {
         return None;
     }
     let mut subdirs = Vec::new();

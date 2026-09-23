@@ -848,6 +848,7 @@ fn entry_line<'a>(
         matched_column.is_none() && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
     let kind_cell = match matched_column {
         Some(column) => format!(" ·{column}"),
+        // `shown_column` below may cut this; both are written from the same string.
         None if kind.is_empty() => String::new(),
         None if kind_is_chip => format!("  {kind} "),
         None => format!(" {kind}"),
@@ -896,6 +897,23 @@ fn entry_line<'a>(
     let is_label = matched_column.is_none() && !shows_source && !shows_curated;
     let fits = |cell: &str| {
         name_width.saturating_sub(2 + place_cell.chars().count() + cell.chars().count() + 1) > 1
+    };
+    // A column note says why the row is in the list and may not go, but it is as long
+    // as somebody's column name: `transaction_amount` is twenty cells, which at the
+    // narrowest width that draws meta leaves the name nothing to be cut into. Its head
+    // is the identifying part, so the tail goes and the marks that fell in it go with
+    // it — the same shape the name's own truncation takes.
+    let shown_column = matched_column.map(|column| {
+        let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
+        if column.chars().count() <= room || room <= 1 {
+            column.to_string()
+        } else {
+            column.chars().take(room - 1).collect::<String>() + glyphs::get().ellipsis
+        }
+    });
+    let kind_cell = match &shown_column {
+        Some(column) => format!(" ·{column}"),
+        None => kind_cell,
     };
     let (kind_cell, kind_is_chip) = if fits(&kind_cell) {
         (kind_cell, kind_is_chip)
@@ -1013,8 +1031,13 @@ fn entry_line<'a>(
     match matched_column {
         Some(column) => {
             spans.push(Span::styled(" ·".to_string(), kind_style));
-            let positions = crate::home::substring_positions(filter, column);
-            spans.extend(highlight_spans(column, &positions, kind_style, hit_style));
+            // The note as it was cut to fit, and the marks the cut left standing: a
+            // character no longer on screen cannot be highlighted.
+            let shown = shown_column.as_deref().unwrap_or(column);
+            let mut positions = crate::home::substring_positions(filter, column);
+            let kept = shown.chars().count().saturating_sub(1);
+            positions.retain(|p| *p < kept);
+            spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
         }
         None if kind_is_chip => {
             // One cell of the row's own background, then the chip.
@@ -1797,6 +1820,12 @@ mod tests {
                 noted(&short, width),
                 "a matched row is drawn by its note, whatever its label would say, \
                  at {width}"
+            );
+            // And the note itself is cut to fit, not left to push the columns out.
+            assert_eq!(
+                noted(&short, width),
+                meta_starts_at(&short, width),
+                "a column note too long for the row is cut, at {width}"
             );
         }
     }

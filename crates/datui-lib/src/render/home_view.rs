@@ -836,6 +836,21 @@ fn entry_line<'a>(
     };
     let place_cell = format!("{place} ");
 
+    // A label counts now — `5000+ parquet` is thirteen characters where `iceberg` was
+    // seven — and on a narrow screen it can leave the name nothing to be truncated
+    // into, which puts the meta columns out of their alignment and clips them. The name
+    // is what identifies a row and the label only describes it, so the label goes; the
+    // details pane still has it. The test is the one truncation already makes, so there
+    // is no width here to pick.
+    let (kind_cell, kind_is_chip) = if name_width
+        .saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
+        > 1
+    {
+        (kind_cell, kind_is_chip)
+    } else {
+        (String::new(), false)
+    };
+
     // Positions are taken from the untruncated name, because that is what matched.
     // Truncation then shifts them, and dropping the ones that fall outside is exactly
     // right: a character no longer on screen cannot be highlighted.
@@ -1342,6 +1357,47 @@ mod tests {
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+        }
+    }
+
+    /// A label describes and a name identifies, so on a screen too narrow for both the
+    /// label goes. Before this a `5000+ parquet` chip left the name nothing to be
+    /// truncated into and shoved the size and modified columns out of alignment.
+    #[test]
+    fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
+        let ctx = RenderContext::for_test();
+        let mut entry = row("/data/exports", crate::discover::EntryKind::MultiFile);
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(entry.label(), "5000+ parquet");
+
+        // Where the meta columns begin: everything drawn before them. It must not
+        // depend on how long a row's label is, or the columns stop lining up.
+        let meta_starts_at = |entry: &Entry, width: usize| -> usize {
+            let line = entry_line(entry, false, width, true, None, "", None, None, &ctx);
+            let spans = line.spans;
+            spans[..spans.len() - 1]
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum()
+        };
+
+        let mut short = row("/data/exports", crate::discover::EntryKind::Directory);
+        short.holds = crate::discover::Holds {
+            formats: vec![("csv".to_string(), 2)],
+            ..Default::default()
+        };
+        assert_eq!(short.label(), "2 csv");
+
+        for width in [22usize, 24, 30, 48, 100] {
+            assert_eq!(
+                meta_starts_at(&entry, width),
+                meta_starts_at(&short, width),
+                "the meta columns must start in the same place at {width}"
+            );
         }
     }
 

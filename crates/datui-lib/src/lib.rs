@@ -8021,10 +8021,11 @@ impl App {
             // rebuild per folder.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                if let Ok((folder, Ok(kind))) = joined
-                    && kind.0 != discover::EntryKind::Directory
-                {
-                    found.push((folder, kind));
+                // Every answer, not only the ones that change the kind. A prefix of
+                // twelve CSV objects is a `Directory` — only Parquet is read in place —
+                // and it is still `12 csv`, which is the count the row is labelled from.
+                if let Ok((folder, Ok(answer))) = joined {
+                    found.push((folder, answer));
                 }
                 if found.len() >= PEEKS_AT_ONCE {
                     let _ = tx.send(AppEvent::HomeCloudKinds {

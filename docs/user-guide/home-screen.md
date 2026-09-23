@@ -203,7 +203,7 @@ A folder's label says what is directly inside it, from one listing:
 
 A folder larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12
-parquet · 2 csv · 3 folders · 4 skipped (_SUCCESS, .crc)` — so the files that
+parquet · 2 csv · 3 folders · 4 skipped (.crc, _SUCCESS)` — so the files that
 were passed over are named rather than silently missing.
 
 A label describes; it does not promise what <kbd>Enter</kbd> will do. A folder of

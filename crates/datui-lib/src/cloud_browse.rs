@@ -702,7 +702,11 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    let (kind, holds) = look_at_listing(&folders, &objects);
+    let (kind, mut holds) = look_at_listing(&folders, &objects);
+    // One page of at most `PEEK_KEYS`. A prefix with more behind it counted what it saw
+    // and says so, the way a local folder past `MAX_ENTRIES_PER_DIR` does: `100+
+    // parquet`, not an exact hundred nobody could have counted.
+    holds.truncated = page.page_token.is_some();
     if kind != crate::discover::EntryKind::MultiFile {
         return Ok((kind, holds));
     }

@@ -2217,8 +2217,12 @@ impl HomeState {
                 row.kind = *kind;
                 // The label is what the peek counted, not the kind it decided: a prefix
                 // of twelve Parquet objects reads `12 parquet` in a bucket for the same
-                // reason it does on disk.
-                row.holds = holds.clone();
+                // reason it does on disk. Only when there is something to say — a claim
+                // staked before the answer arrives carries no count, and must not erase
+                // one the row already has.
+                if !holds.is_empty() {
+                    row.holds = holds.clone();
+                }
             }
         }
     }

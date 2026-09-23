@@ -515,7 +515,13 @@ fn is_partition_dir(path: &Path) -> bool {
 /// first few entries. A probe makes the answer depend on the order the filesystem hands
 /// entries back: a folder of eight Parquet files followed by `_metadata.json` answered
 /// `multi` locally, where a bucket listing the same folder sorts the JSON first and
-/// answered `dir`. One listing is also what the count already costs.
+/// answered `dir`.
+///
+/// It costs more than the probe did: a plain directory row is enriched with nothing, so
+/// its listing is read for this alone, and a folder of five thousand entries is read
+/// whole where eight used to settle it. Local only — a row on a network share is not
+/// classified at all (`network_check`) — and one `getdents` walk with no `stat` per
+/// entry, which is the cheapest shape a correct answer has.
 pub fn classify_directory(path: &Path) -> EntryKind {
     // Before anything is counted: a lake table's data files genuinely do agree on a
     // schema, so every rule below says "one table" and is right about the schema and
@@ -536,7 +542,10 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     let mut format: Option<crate::FileFormat> = None;
     let mut mixed_formats = false;
 
-    for entry in iter.flatten() {
+    // Bounded where the entries come from rather than after they are counted: a
+    // Hadoop-style output directory is a `.crc` per data file, and skipping those before
+    // the count would let the walk run to twice the cap.
+    for entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
         let entry_path = entry.path();
         let name = entry.file_name();
         // The markers and job files tools leave beside their output, by the one test
@@ -547,16 +556,22 @@ pub fn classify_directory(path: &Path) -> EntryKind {
         // The type the directory read already returned, rather than a `stat` per entry:
         // this walks the whole listing now, and on a share every stat is a round trip.
         // A symlink still gets one, because `d_type` cannot say what is on the far end.
-        let is_dir = match entry.file_type() {
-            Ok(kind) if kind.is_symlink() => entry_path.is_dir(),
-            Ok(kind) => kind.is_dir(),
-            Err(_) => entry_path.is_dir(),
+        //
+        // A regular file rather than "not a directory", the test `folder_format` makes:
+        // a FIFO named `a.csv` blocks whoever opens it until a writer appears, and a
+        // broken symlink named `b.csv` opens as nothing. Counting either as data offers
+        // a folder that cannot be read.
+        let kind = entry.file_type();
+        let (is_dir, is_file) = match kind {
+            Ok(kind) if kind.is_symlink() => (entry_path.is_dir(), is_regular_file(&entry_path)),
+            Ok(kind) => (kind.is_dir(), kind.is_file()),
+            Err(_) => (entry_path.is_dir(), is_regular_file(&entry_path)),
         };
         if is_dir {
             if is_partition_dir(&entry_path) {
                 partitions += 1;
             }
-        } else if let Some(found) = data_format(&entry_path) {
+        } else if let Some(found) = data_format(&entry_path).filter(|_| is_file) {
             data_files += 1;
             match format {
                 None => format = Some(found),
@@ -565,9 +580,6 @@ pub fn classify_directory(path: &Path) -> EntryKind {
             }
         }
         seen += 1;
-        if seen >= MAX_ENTRIES_PER_DIR {
-            break;
-        }
     }
 
     if partitions > 0 && partitions >= data_files {
@@ -1400,6 +1412,51 @@ mod classification_tests {
         std::fs::write(dir.path().join("a.arrow"), b"x").unwrap();
         std::fs::write(dir.path().join("b.ipc"), b"x").unwrap();
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A prefix a writer made for itself is not a folder somebody put data in, on
+    /// either route. `_temporary/` counted toward the majority in a bucket and not
+    /// locally, so the same folder came back two different kinds.
+    #[test]
+    fn a_writers_own_folder_is_skipped_on_both_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "part-00000.parquet", &["id"]);
+        write(dir.path(), "part-00001.parquet", &["id"]);
+        std::fs::create_dir_all(dir.path().join("_temporary")).unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::create_dir_all(dir.path().join("archive")).unwrap();
+
+        let local = classify_directory(dir.path());
+        let folders: Vec<String> = ["out/_temporary/", "out/notes/", "out/archive/"]
+            .iter()
+            .map(|f| (*f).to_string())
+            .collect();
+        let objects: Vec<(String, u64)> = [
+            ("out/part-00000.parquet", 100u64),
+            ("out/part-00001.parquet", 100),
+        ]
+        .iter()
+        .map(|(k, s)| ((*k).to_string(), *s))
+        .collect();
+        let cloud = crate::cloud_browse::classify_listing(&folders, &objects);
+
+        assert_eq!(local, cloud, "the two routes answer the same folder alike");
+        assert_eq!(local, EntryKind::MultiFile);
+    }
+
+    /// Named like data and impossible to read: a FIFO blocks whoever opens it until a
+    /// writer appears, and a broken symlink opens as nothing. `folder_format` has always
+    /// skipped both; the listing now agrees.
+    #[test]
+    fn a_name_with_nothing_behind_it_is_not_a_data_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone.csv"), dir.path().join("a.csv")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone.csv"), dir.path().join("b.csv")).unwrap();
+        assert_eq!(
+            classify_directory(dir.path()),
+            EntryKind::Directory,
+            "two broken symlinks are not a dataset"
+        );
     }
 
     /// A folder is offered as one dataset only when its format can be read as many

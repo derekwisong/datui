@@ -823,7 +823,16 @@ pub fn classify_listing(
             .unwrap_or("")
             .to_string()
     };
-    let partitions = folders
+    // Prefixes a writer made for itself are not folders anybody put data in, by the
+    // same test the objects get. `_temporary/` beside two Parquet files counted toward
+    // the majority and tipped a folder the local route called one dataset. The lake
+    // markers below still look at every prefix — `_delta_log` is exactly the name this
+    // skips, and it is a specification rather than a stray.
+    let counted: Vec<&String> = folders
+        .iter()
+        .filter(|f| !crate::discover::is_bookkeeping(&last(f)))
+        .collect();
+    let partitions = counted
         .iter()
         .filter(|f| matches!(last(f).find('='), Some(i) if i > 0))
         .count();
@@ -868,7 +877,7 @@ pub fn classify_listing(
     if partitions > 0 && partitions >= files.len() {
         return EntryKind::Hive;
     }
-    let seen = folders.len() + files.len();
+    let seen = counted.len() + files.len();
     if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
         EntryKind::MultiFile
     } else {
@@ -1030,7 +1039,7 @@ pub fn is_refusal(error: &str) -> bool {
 /// anything here to open", which decides whether a row is shown at all. A leading `_` is
 /// enough for the first and not for the second: `_manifest.parquet` is a real object
 /// somebody may want to look at, and the local listing has always shown its equivalent.
-fn is_marker(name: &str) -> bool {
+pub fn is_marker(name: &str) -> bool {
     name == "_SUCCESS"
         || name.starts_with("_committed_")
         || name.starts_with("_started_")

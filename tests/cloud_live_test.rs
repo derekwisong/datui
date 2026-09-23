@@ -1403,7 +1403,7 @@ fn public_data_quirks() {
     assert!(
         spark
             .iter()
-            .all(|r| !datui::discover::is_bookkeeping(&r.name)),
+            .all(|r| !datui::cloud_browse::is_marker(&r.name)),
         "{:?}",
         spark.iter().map(|r| &r.name).collect::<Vec<_>>()
     );

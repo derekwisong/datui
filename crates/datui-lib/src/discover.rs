@@ -1055,18 +1055,21 @@ fn enrich_dataset(entry: &mut Entry) {
     // Whether the footers below are this folder's own shape, or something else's. A
     // folder's own format is counted exactly, so this is exact for one.
     //
-    // Not asked of a hive root, whose data is down in the partitions and whose format
-    // can only be sampled. One spine tells the two cases apart in neither direction: a
-    // CSV tree with a stray `snapshot.parquet` in the sampled partition and a Parquet
-    // tree with a stray `notes.csv` in it both come back `NotOneTable`, and refusing
-    // both blanks a dataset that opens perfectly. A stray file in a CSV hive tree is
-    // still counted as the dataset's, which #275 phase 4 settles by making the tree
-    // readable in its own format.
-    let reads_as_parquet = entry
-        .holds
-        .one_format()
-        .and_then(crate::FileFormat::from_name)
-        .is_none_or(|f| f == crate::FileFormat::Parquet);
+    // Not asked of a hive root at all. Its own files are strays beside the partitions —
+    // a `schema.json` or a `manifest.csv` left at the top — so its counted format is
+    // not its data's, and one such file would blank the whole dataset. Its data is down
+    // in the partitions, where the format can only be sampled, and one spine tells the
+    // two cases apart in neither direction: a CSV tree with a stray `snapshot.parquet`
+    // in the sampled partition and a Parquet tree with a stray `notes.csv` in it both
+    // come back `NotOneTable`. A stray Parquet in a CSV tree is still counted as the
+    // dataset's, which #275 phase 4 settles by making the tree readable in its own
+    // format.
+    let reads_as_parquet = entry.kind == EntryKind::Hive
+        || entry
+            .holds
+            .one_format()
+            .and_then(crate::FileFormat::from_name)
+            .is_none_or(|f| f == crate::FileFormat::Parquet);
     if !reads_as_parquet {
         entry.size = None;
         return;
@@ -1964,13 +1967,33 @@ mod classification_tests {
             std::fs::create_dir_all(&part).unwrap();
             std::fs::write(part.join("data.csv"), b"id\n1\n").unwrap();
         }
-        // One stray data file at the root, which is what makes its format known.
+        // A stray data file at the root, which is a hive root's ordinary furniture.
         std::fs::write(dir.path().join("summary.csv"), b"id\n1\n").unwrap();
 
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::Hive);
         assert!(entry.cost.partitions.is_some(), "the layout is named");
         assert_eq!(entry.rows, None, "and nothing is invented about its rows");
+    }
+
+    /// A hive root's own files are strays beside the partitions — a `schema.json` or a
+    /// `manifest.csv` left at the top — so its counted format is not its data's, and
+    /// asking it would blank the whole dataset for one such file.
+    #[test]
+    fn a_hive_dataset_is_described_despite_a_stray_file_at_its_root() {
+        let dir = tempfile::tempdir().unwrap();
+        for year in ["year=2024", "year=2025"] {
+            let part = dir.path().join(year);
+            std::fs::create_dir_all(&part).unwrap();
+            write(&part, "data.parquet", &["id"]);
+        }
+        std::fs::write(dir.path().join("schema.json"), b"{}").unwrap();
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Hive);
+        assert_eq!(entry.holds.one_format(), Some("json"), "its own only file");
+        assert_eq!(entry.rows, Some(2), "and the dataset is still counted");
+        assert_eq!(entry.cols, Some(1));
     }
 
     /// A hive dataset is described whatever odd file is lying in a partition. One

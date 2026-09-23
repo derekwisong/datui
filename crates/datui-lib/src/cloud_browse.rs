@@ -851,6 +851,20 @@ pub fn look_at_listing(
     // the majority and tipped a folder the local route called one dataset. The lake
     // markers below still look at every prefix — `_delta_log` is exactly the name this
     // skips, and it is a specification rather than a stray.
+    // The prefix's own key, before anything counts it. A console makes a folder by
+    // writing a zero-byte object at its key, and listing that folder hands it straight
+    // back: it stands for the prefix being listed, not for anything in it. Dropped once,
+    // here, because the three counts below each missed it in their own way — `.` in the
+    // name carried it past `is_empty_marker` into `not_read`, and a `_temporary/` prefix
+    // reported itself under `skipped`.
+    let here = prefix.trim_matches('/');
+    let objects: Vec<(String, u64)> = objects
+        .iter()
+        .filter(|(key, size)| !(*size == 0 && !here.is_empty() && key.trim_matches('/') == here))
+        .cloned()
+        .collect();
+    let objects = objects.as_slice();
+
     let counted: Vec<&String> = folders
         .iter()
         .filter(|f| !crate::discover::is_bookkeeping(&last(f)))
@@ -907,7 +921,6 @@ pub fn look_at_listing(
     // console's folder placeholder, and without one there is no folder it stands for.
     // It is a file nothing can read, which is what the local route calls it — not a
     // writer's own, which is what naming it under `skipped` would say.
-    let here = prefix.trim_matches('/');
     let orphan_markers: Vec<String> = objects
         .iter()
         .filter(|(key, size)| {
@@ -916,10 +929,6 @@ pub fn look_at_listing(
                 && is_empty_marker(&name, *size)
                 && !crate::discover::is_bookkeeping(&name)
                 && !folders.iter().any(|f| last(f) == name)
-                // Not the folder's own marker. A console makes a folder by writing a
-                // zero-byte object at its key, and listing that folder returns it: it
-                // stands for the prefix being listed, not for anything in it.
-                && !(!here.is_empty() && key.trim_matches('/') == here)
         })
         .map(|(key, _)| last(key))
         .collect();
@@ -2101,6 +2110,22 @@ mod tests {
             .collect();
         let holds = look_at_listing("out/", &[], &own_marker).1;
         assert_eq!(holds.line(true).as_deref(), Some("1 parquet"));
+
+        // However it is spelled. A dot in the prefix name carries its key past the
+        // empty-marker test, and a prefix named like a writer's own file would
+        // otherwise report itself under `skipped`.
+        for (prefix, key) in [("v1.0/", "v1.0"), ("out/_temporary/", "out/_temporary")] {
+            let objects: Vec<(String, u64)> =
+                [(key.to_string(), 0u64), (format!("{key}/a.parquet"), 100)]
+                    .into_iter()
+                    .collect();
+            let holds = look_at_listing(prefix, &[], &objects).1;
+            assert_eq!(
+                holds.line(true).as_deref(),
+                Some("1 parquet"),
+                "{prefix} counted its own key"
+            );
+        }
         // Whether a key counts as data and whether it is worth a row are two questions.
         // `_manifest.parquet` is a writer's own file and still something to open, and
         // the local listing has always shown its equivalent.

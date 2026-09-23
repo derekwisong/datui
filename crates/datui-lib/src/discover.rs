@@ -1201,6 +1201,7 @@ fn enrich_dataset(entry: &mut Entry) {
     // is never opened as one table, so a union spanning the subtree would be a set of
     // columns nothing produces — and the label beside it counts only what is inside.
     let mut own_columns: Vec<String> = Vec::new();
+    let mut own_bytes = 0u64;
     let mut own_seen = std::collections::HashSet::new();
     let mut own_top_level: Vec<String> = Vec::new();
     let mut own_seen_top = std::collections::HashSet::new();
@@ -1229,6 +1230,9 @@ fn enrich_dataset(entry: &mut Entry) {
         // And the same again for this folder's own files, which is what a downgraded
         // row is labelled from: `2 parquet` must mean those two.
         if file.parent() == Some(entry.path.as_path()) {
+            if let Ok(m) = std::fs::metadata(file) {
+                own_bytes += m.len();
+            }
             for name in &names {
                 if own_seen.insert(name.clone()) {
                     own_columns.push(name.clone());
@@ -1259,7 +1263,10 @@ fn enrich_dataset(entry: &mut Entry) {
     // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
     // and a hive folder's files hold the same table by construction.
     if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_one_table(&per_file) {
-        entry.size = Some(bytes);
+        // Its own files' bytes, not the subtree's. The label counts what is directly
+        // inside and so do the columns beside it; a size summed over a different set of
+        // files is a third number on one row measured against neither of the other two.
+        entry.size = Some(own_bytes);
         // Nothing here is one table's shape, but the names are what the folder holds,
         // and searching the home screen by column should still find the folder that
         // has one.
@@ -2159,6 +2166,14 @@ mod classification_tests {
         assert_eq!(entry.label(), "2 parquet");
         assert_eq!(entry.cols, Some(2), "id and ts");
         assert_eq!(entry.columns, vec!["id".to_string(), "ts".to_string()]);
+
+        // And the size is those two files, not the subtree's: three numbers on one row
+        // measured over three different sets of files is no row at all.
+        let own: u64 = ["a.parquet", "b.parquet"]
+            .iter()
+            .map(|n| std::fs::metadata(dir.path().join(n)).unwrap().len())
+            .sum();
+        assert_eq!(entry.size, Some(own));
     }
 
     /// A hive tree of CSV is still laid out, whatever its rows cannot say. The layout

@@ -1022,6 +1022,21 @@ pub fn is_refusal(error: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
+/// A key that stands for something other than data a user could open: the receipts a job
+/// leaves behind, and the marker some tools write in place of a folder.
+///
+/// Narrower than [`crate::discover::is_bookkeeping`] on purpose. That one answers "does
+/// this count as data", which decides a folder's kind; this one answers "is there
+/// anything here to open", which decides whether a row is shown at all. A leading `_` is
+/// enough for the first and not for the second: `_manifest.parquet` is a real object
+/// somebody may want to look at, and the local listing has always shown its equivalent.
+fn is_marker(name: &str) -> bool {
+    name == "_SUCCESS"
+        || name.starts_with("_committed_")
+        || name.starts_with("_started_")
+        || name.ends_with("_$folder$")
+}
+
 /// An empty object with no extension: a marker some tool left for a folder, whether or
 /// not the folder still has anything in it (`yellow/year=2032` beside no `year=2032/`).
 /// Nothing datui opens is both empty and nameless.
@@ -1101,7 +1116,7 @@ async fn list_level(
         // offering it as openable would be offering a zero-byte file. So is an empty
         // object named like a folder beside it, or like the folder being listed.
         if name.is_empty()
-            || crate::discover::is_bookkeeping(&name)
+            || is_marker(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
             || is_empty_marker(&name, object.size)
             || (object.size == 0 && location.trim_end_matches('/') == prefix)
@@ -1165,7 +1180,7 @@ async fn list_azure_objects(
         let location = object.location.as_ref().to_string();
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         if name.is_empty()
-            || crate::discover::is_bookkeeping(&name)
+            || is_marker(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
             || is_empty_marker(&name, object.size)
             || (object.size == 0 && location.trim_end_matches('/') == prefix)
@@ -1938,6 +1953,15 @@ mod tests {
             );
         }
         assert!(!crate::discover::is_bookkeeping("part-0000.parquet"));
+        // Whether a key counts as data and whether it is worth a row are two questions.
+        // `_manifest.parquet` is a writer's own file and still something to open, and
+        // the local listing has always shown its equivalent.
+        assert!(crate::discover::is_bookkeeping("_manifest.parquet"));
+        assert!(!is_marker("_manifest.parquet"));
+        assert!(!is_marker("_2024_sales.csv"));
+        for name in ["_SUCCESS", "_committed_1", "_started_1", "yellow_$folder$"] {
+            assert!(is_marker(name), "{name} stands for no data at all");
+        }
         assert!(is_empty_marker("year=2032", 0));
         assert!(!is_empty_marker("year=2032", 10));
         assert!(!is_empty_marker("empty.csv", 0));

@@ -12,7 +12,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// File extensions datui can open, used to tell a dataset from an ordinary file.
 /// Compression suffixes that may follow a data extension (`sales.csv.gz`).
 const COMPRESSION_EXTENSIONS: &[&str] = &["gz", "bz2", "xz", "zst", "zstd"];
 
@@ -61,7 +60,12 @@ pub enum EntryKind {
 /// So the kind is restored only when the build that wrote it classified the way this one
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
-pub const CLASSIFIER_VERSION: u32 = 2;
+///
+/// 3: one listing instead of a probe of the first eight entries, formats instead of
+/// extension strings, and one bookkeeping predicate. A folder of `.arrow` beside `.ipc`
+/// was `dir` and is now one dataset; a folder whose ninth entry decided it was answered
+/// by whatever the filesystem returned first (#275, phase 1).
+pub const CLASSIFIER_VERSION: u32 = 3;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -540,7 +544,15 @@ pub fn classify_directory(path: &Path) -> EntryKind {
         if is_bookkeeping(&name.to_string_lossy()) {
             continue;
         }
-        if entry_path.is_dir() {
+        // The type the directory read already returned, rather than a `stat` per entry:
+        // this walks the whole listing now, and on a share every stat is a round trip.
+        // A symlink still gets one, because `d_type` cannot say what is on the far end.
+        let is_dir = match entry.file_type() {
+            Ok(kind) if kind.is_symlink() => entry_path.is_dir(),
+            Ok(kind) => kind.is_dir(),
+            Err(_) => entry_path.is_dir(),
+        };
+        if is_dir {
             if is_partition_dir(&entry_path) {
                 partitions += 1;
             }
@@ -562,10 +574,15 @@ pub fn classify_directory(path: &Path) -> EntryKind {
         return EntryKind::Hive;
     }
 
+    // Require a format that can actually be read as many files. Without this the home
+    // screen offers a folder of `.tsv` or `.xlsx` as one dataset and the open refuses
+    // it — the same "offered but unreadable" the one vocabulary exists to stop, one
+    // layer up.
+    let readable_as_one = format.is_some_and(crate::FileFormat::reads_many_files);
     // Require homogeneity *and* that data is what this directory is mostly for.
     // Without the majority test, any folder with a couple of stray CSVs in it would
     // be offered as a dataset, which is worse than useless: it hides the folder.
-    let homogeneous = data_files > 1 && !mixed_formats;
+    let homogeneous = data_files > 1 && !mixed_formats && readable_as_one;
     let mostly_data = data_files * 2 >= seen;
     if homogeneous && mostly_data {
         EntryKind::MultiFile
@@ -589,9 +606,9 @@ const ICEBERG_METADATA_PROBE: usize = 64;
 /// finished. These three are a different thing — a declared format with a specified
 /// layout, where the marker is part of the spec.
 ///
-/// Named directly rather than found by walking the listing, because a table with sixty
-/// data files would not show its log within the probe limit, and which entries a
-/// directory read returns first is not something to depend on.
+/// Named directly rather than found by walking the listing: three `join` tests answer it
+/// whatever the folder holds, where a walk pays for every entry of a table with a hundred
+/// thousand data files to find one name it already knows.
 fn lake_table(path: &Path) -> Option<EntryKind> {
     if path.join("_delta_log").is_dir() {
         return Some(EntryKind::Delta);
@@ -1385,6 +1402,35 @@ mod classification_tests {
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
     }
 
+    /// A folder is offered as one dataset only when its format can be read as many
+    /// files. `.tsv`, `.psv` and Excel have a single-file reader and nothing that takes
+    /// a list, so offering them puts the refusal one keystroke later instead of not
+    /// making the promise.
+    #[test]
+    fn a_format_that_cannot_be_read_as_many_is_not_offered_as_one() {
+        for ext in ["tsv", "psv", "xlsx", "xlsb"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(format!("a.{ext}")), b"x").unwrap();
+            std::fs::write(dir.path().join(format!("b.{ext}")), b"x").unwrap();
+            assert_eq!(
+                classify_directory(dir.path()),
+                EntryKind::Directory,
+                "a folder of .{ext} has no reader that takes a list"
+            );
+        }
+        // The ones that do are unaffected.
+        for ext in ["parquet", "csv", "json", "avro"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(format!("a.{ext}")), b"x").unwrap();
+            std::fs::write(dir.path().join(format!("b.{ext}")), b"x").unwrap();
+            assert_eq!(
+                classify_directory(dir.path()),
+                EntryKind::MultiFile,
+                ".{ext} reads as many files"
+            );
+        }
+    }
+
     /// The readdir-order bug: eight Parquet files and a ninth entry that is a writer's
     /// own file. A probe of the first eight entries never saw the JSON and said `multi`;
     /// a bucket listing sorts `_metadata.json` first and said `dir`. Same folder, two
@@ -1873,7 +1919,7 @@ mod classification_tests {
     /// The log is named rather than looked for, so a table's own data files cannot
     /// crowd it out of the listing however many of them there are.
     #[test]
-    fn a_lake_table_is_recognized_past_the_probe_limit() {
+    fn a_lake_table_is_recognized_among_its_data_files() {
         let dir = tempfile::tempdir().unwrap();
         for part in 0..32 {
             write(dir.path(), &format!("part-{part:03}.parquet"), &["id"]);

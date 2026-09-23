@@ -40,6 +40,20 @@ impl FileFormat {
             .and_then(Self::from_extension)
     }
 
+    /// Whether many files of this format can be read as one table.
+    ///
+    /// Asked before a folder is offered as a dataset, so the home screen cannot promise
+    /// an open the reader has no route for. These three are the arm that refuses a list
+    /// of paths outright: Tsv and Psv have a single-file reader and no multi-path one,
+    /// and an Excel workbook is sheets rather than rows with nothing to concatenate.
+    /// It answers for the same formats that arm names, so the two cannot drift.
+    ///
+    /// Giving Tsv and Psv a multi-path reader is #275 phase 4's ("never refuse"), and
+    /// this predicate turns true on its own when they get one.
+    pub fn reads_many_files(self) -> bool {
+        !matches!(self, Self::Tsv | Self::Psv | Self::Excel)
+    }
+
     /// Parse format from extension string (e.g. "parquet", "csv").
     ///
     /// The one place an extension becomes a format. Everything that asks whether a name

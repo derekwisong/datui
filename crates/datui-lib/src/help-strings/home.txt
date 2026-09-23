@@ -19,17 +19,17 @@ NAVIGATION
                     same table, opens as one dataset; one labelled delta, iceberg
                     or hudi is a lake table datui does not read yet, and Enter
                     goes inside it
-
-  A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
-  a count and a format ("12 parquet"), "mixed" for more than one format, or
-  "dir" for no data files. The details pane carries the whole tally, including
-  the files skipped as a writer's own.
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
   Ctrl+R            List again what is on screen: every cloud source, the one
                     you are in, or the bucket or directory
   Esc               Back out one layer: the filter, the directory, then the data
   Ctrl+C            Quit
+
+  A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
+  a count and a format ("12 parquet"), "mixed" for more than one format, or
+  "dir" for no data files. The details pane carries the whole tally, including
+  the files skipped as a writer's own.
 
 FINDING
   (type)            Filter by name or column; matching is fuzzy, so "sal" finds

@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder labelled `hive`, `multi`, `delta`, `iceberg` or `hudi`, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder datui offers as one dataset, or on a lake table, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -445,8 +445,9 @@ billed for, so they are not fetched until you open one.
 
 Folders are looked inside, a few at a time, once each listing lands: one small
 listing request per folder, for at most 48 of them. A folder of `key=value`
-partitions is then labelled `hive`, and a folder of Parquet files whose schemas
-agree `multi`, like a local one — see
+partitions is then labelled `hive`, and every other folder by what it holds —
+`12 parquet`, `3 csv`, `dir` — like a local one. A folder of Parquet files whose
+schemas agree is offered as one dataset; see
 [When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
 one reads the footers of up to three of the folder's files, a few kilobytes each;
 nothing else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd>

@@ -1044,9 +1044,26 @@ fn enrich_dataset(entry: &mut Entry) {
     // the subtree; measuring only the top would promise three files and open
     // twenty-three, and would ask `is_one_table` about three files while unioning all
     // twenty-three. The `holds` line names the folder that explains the difference.
-    if entry.kind == EntryKind::MultiFile
-        && entry.holds.one_format().is_some_and(|f| f != "parquet")
-    {
+    // Whether the footers below are this folder's own shape, or something else's.
+    //
+    // A hive root holds no data itself, so what it is made of is what its partitions
+    // hold — one spine down, the same one a hive scan reads its schema from. A tree of
+    // `year=2024/` CSV with one stray `snapshot.parquet` dropped into it reported that
+    // single file's rows as the dataset's, and a partition of two formats is not a
+    // Parquet dataset either. Only a spine that settles nothing leaves the question
+    // open, and there the walk has nothing better to go on.
+    let reads_as_parquet = match entry.kind {
+        EntryKind::Hive => matches!(
+            hive_leaf_format(&entry.path),
+            FolderFormat::One(crate::FileFormat::Parquet, _) | FolderFormat::Deeper
+        ),
+        _ => entry
+            .holds
+            .one_format()
+            .and_then(crate::FileFormat::from_extension)
+            .is_none_or(|f| f == crate::FileFormat::Parquet),
+    };
+    if !reads_as_parquet {
         entry.size = None;
         return;
     }
@@ -1907,6 +1924,29 @@ mod classification_tests {
             "a union over these is not one table"
         );
         assert_eq!(entry.rows, None);
+    }
+
+    /// A hive root holds no data itself, so what it is made of is what its partitions
+    /// hold. A tree of CSV with one stray Parquet dropped into it reported that single
+    /// file's rows as the dataset's.
+    #[test]
+    fn a_hive_root_is_described_by_what_its_partitions_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        for year in ["year=2024", "year=2025"] {
+            let part = dir.path().join(year);
+            std::fs::create_dir_all(&part).unwrap();
+            std::fs::write(part.join("data.csv"), b"id\n1\n").unwrap();
+        }
+        // Somebody's export, dropped in beside the data.
+        write(&dir.path().join("year=2024"), "snapshot.parquet", &["id"]);
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Hive);
+        assert_eq!(
+            entry.rows, None,
+            "one stray Parquet is not this dataset's row count"
+        );
+        assert_eq!(entry.cols, None);
     }
 
     /// A folder is described by its own files, not by what is under them. The footer

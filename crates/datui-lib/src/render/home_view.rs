@@ -1103,10 +1103,13 @@ fn preview_head(
         // Only when there is data to count. A prefix holding nothing but sub-prefixes
         // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
         // inside an object store the service's own word is the right one.
-        EntryKind::Directory if !entry.holds.formats.is_empty() => described.as_ref(),
-        EntryKind::Directory => place_kind
-            .or_else(|| crate::home::object_place_label(&entry.path))
-            .unwrap_or(described.as_ref()),
+        EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
+            (Some(curated), _) => curated,
+            (None, false) => described.as_ref(),
+            (None, true) => {
+                crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
+            }
+        },
         _ => described.as_ref(),
     };
     if !kind.is_empty() {
@@ -1115,7 +1118,12 @@ fn preview_head(
     // What one listing of it found, when that is more than the label already said. A
     // folder of one format with nothing else in it boils down to itself, and printing
     // `kind  12 parquet` above `holds  12 parquet` says it twice.
-    if let Some(line) = entry.holds.line().filter(|line| line != kind) {
+    // Without the partition count when the `partitions` fact below carries one: they
+    // count the same thing under different caps — five thousand entries here against
+    // five hundred and twelve there — and two adjacent numbers that ought to agree and
+    // do not are worse than one.
+    let line = entry.holds.line(entry.cost.partitions.is_none());
+    if let Some(line) = line.filter(|line| line != kind) {
         facts.push(("holds", line, plain));
     }
     if let Some(rows) = entry.rows {

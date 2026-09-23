@@ -192,7 +192,7 @@ impl Holds {
 
     /// The `holds` line in the details pane: every format, the folders, and what was
     /// skipped, with a few of the skipped names so the convention is recognisable.
-    pub fn line(&self) -> Option<String> {
+    pub fn line(&self, with_partitions: bool) -> Option<String> {
         let more = if self.truncated { "+" } else { "" };
         let mut parts: Vec<String> = self
             .formats
@@ -206,7 +206,7 @@ impl Holds {
             let word = if plain == 1 { "folder" } else { "folders" };
             parts.push(format!("{plain}{more} {word}"));
         }
-        if self.partitions > 0 {
+        if with_partitions && self.partitions > 0 {
             let word = if self.partitions == 1 {
                 "partition"
             } else {
@@ -219,7 +219,7 @@ impl Holds {
             // ellipsis rather than reading as all of them.
             let mut names = self.skipped_names.join(", ");
             if self.skipped > self.skipped_names.len() && !names.is_empty() {
-                names.push_str(", …");
+                names.push_str(&format!(", {}", crate::glyphs::get().ellipsis));
             }
             parts.push(if names.is_empty() {
                 format!("{}{more} skipped", self.skipped)
@@ -1065,11 +1065,14 @@ fn enrich_dataset(entry: &mut Entry) {
     // dataset's, which #275 phase 4 settles by making the tree readable in its own
     // format.
     let reads_as_parquet = entry.kind == EntryKind::Hive
-        || entry
-            .holds
-            .one_format()
-            .and_then(crate::FileFormat::from_name)
-            .is_none_or(|f| f == crate::FileFormat::Parquet);
+        || match entry.holds.one_format() {
+            // No single format to object with: nothing counted, or more than one kind.
+            None => true,
+            // A name this build cannot read back is not Parquet as far as anything here
+            // knows. Leaving the counts off a folder is the mistake that can be undone
+            // by opening it; giving it another format's numbers is not.
+            Some(name) => crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet),
+        };
     if !reads_as_parquet {
         entry.size = None;
         return;
@@ -1681,18 +1684,7 @@ mod classification_tests {
     #[test]
     fn a_format_name_round_trips_only_through_from_name() {
         use crate::FileFormat;
-        for format in [
-            FileFormat::Parquet,
-            FileFormat::Csv,
-            FileFormat::Tsv,
-            FileFormat::Psv,
-            FileFormat::Json,
-            FileFormat::Jsonl,
-            FileFormat::Arrow,
-            FileFormat::Avro,
-            FileFormat::Orc,
-            FileFormat::Excel,
-        ] {
+        for format in FileFormat::ALL {
             assert_eq!(
                 FileFormat::from_name(format.name()),
                 Some(format),
@@ -1770,7 +1762,7 @@ mod classification_tests {
         let entry = measured(dir.path());
         assert_eq!(entry.label(), "mixed", "two formats is two formats");
         assert_eq!(
-            entry.holds.line().as_deref(),
+            entry.holds.line(true).as_deref(),
             Some("3 parquet · 1 csv · 1 folder · 2 skipped (.part.crc, _SUCCESS)"),
             "and the pane says what the label boiled down"
         );
@@ -1787,7 +1779,7 @@ mod classification_tests {
         }
         let entry = measured(dir.path());
         assert_eq!(entry.label(), "12 parquet");
-        assert_eq!(entry.holds.line().as_deref(), Some("12 parquet"));
+        assert_eq!(entry.holds.line(true).as_deref(), Some("12 parquet"));
 
         // A folder with nothing in it datui reads is a place to look inside.
         let plain = tempfile::tempdir().unwrap();
@@ -1863,8 +1855,14 @@ mod classification_tests {
             truncated: false,
         };
         assert_eq!(
-            holds.line().as_deref(),
-            Some("12 parquet · 2 folders · 3 partitions · 10 skipped (.crc, _SUCCESS, …)")
+            holds.line(true).as_deref(),
+            Some("12 parquet · 2 folders · 3 partitions · 10 skipped (.crc, _SUCCESS, …)"),
+            "and without the partitions when the layout line below will carry them"
+        );
+
+        assert_eq!(
+            holds.line(false).as_deref(),
+            Some("12 parquet · 2 folders · 10 skipped (.crc, _SUCCESS, …)")
         );
 
         let floor = Holds {
@@ -1872,7 +1870,7 @@ mod classification_tests {
             ..holds
         };
         assert_eq!(
-            floor.line().as_deref(),
+            floor.line(true).as_deref(),
             Some("12+ parquet · 2+ folders · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)")
         );
     }
@@ -1927,7 +1925,10 @@ mod classification_tests {
             "3 parquet",
             "three files are directly inside"
         );
-        assert_eq!(entry.holds.line().as_deref(), Some("3 parquet · 1 folder"));
+        assert_eq!(
+            entry.holds.line(true).as_deref(),
+            Some("3 parquet · 1 folder")
+        );
         assert_eq!(entry.rows, Some(23), "and opening it reads all of them");
     }
 

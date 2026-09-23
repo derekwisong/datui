@@ -60,24 +60,28 @@ impl FileFormat {
         }
     }
 
+    /// Every format, for the places that have to consider all of them.
+    ///
+    /// Kept in step with the enum by `every_format_is_listed`, which matches on a
+    /// variant exhaustively: adding one stops that test compiling until it is here.
+    pub const ALL: [Self; 10] = [
+        Self::Parquet,
+        Self::Csv,
+        Self::Tsv,
+        Self::Psv,
+        Self::Json,
+        Self::Jsonl,
+        Self::Arrow,
+        Self::Avro,
+        Self::Orc,
+        Self::Excel,
+    ];
+
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
     /// carried. The inverse of that method, and the only way back: a name is not an
     /// extension, so `from_extension` cannot read one.
     pub fn from_name(name: &str) -> Option<Self> {
-        [
-            Self::Parquet,
-            Self::Csv,
-            Self::Tsv,
-            Self::Psv,
-            Self::Json,
-            Self::Jsonl,
-            Self::Arrow,
-            Self::Avro,
-            Self::Orc,
-            Self::Excel,
-        ]
-        .into_iter()
-        .find(|f| f.name() == name)
+        Self::ALL.into_iter().find(|f| f.name() == name)
     }
 
     /// Whether many files of this format can be read as one table.
@@ -501,5 +505,35 @@ mod tests {
             FileFormat::from_path(Path::new("file.NDJSON")),
             Some(FileFormat::Jsonl)
         );
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::FileFormat;
+
+    /// `ALL` is the list `from_name` searches, so a format missing from it cannot be
+    /// read back from a stored name. The match below is exhaustive: a new variant does
+    /// not compile until it is written here, and writing it here is the reminder.
+    #[test]
+    fn every_format_is_listed() {
+        fn listed(f: FileFormat) -> bool {
+            match f {
+                FileFormat::Parquet
+                | FileFormat::Csv
+                | FileFormat::Tsv
+                | FileFormat::Psv
+                | FileFormat::Json
+                | FileFormat::Jsonl
+                | FileFormat::Arrow
+                | FileFormat::Avro
+                | FileFormat::Orc
+                | FileFormat::Excel => FileFormat::ALL.contains(&f),
+            }
+        }
+        for format in FileFormat::ALL {
+            assert!(listed(format), "{format:?}");
+            assert_eq!(FileFormat::from_name(format.name()), Some(format));
+        }
     }
 }

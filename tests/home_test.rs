@@ -2879,7 +2879,7 @@ fn test_a_folder_row_is_labelled_by_what_the_pass_counted() {
         .expect("the row is still listed");
     assert_eq!(row.label(), "3 csv", "the label is what the pass counted");
     assert_eq!(
-        row.holds.line().as_deref(),
+        row.holds.line(true).as_deref(),
         Some("3 csv · 1 skipped (_SUCCESS)"),
         "and the pane has the whole tally"
     );

@@ -1916,7 +1916,7 @@ fn partitioned_cloud_folders_are_hive_datasets() {
         holds.one_format(),
         Some("parquet"),
         "and the row says what is in there: {:?}",
-        holds.line()
+        holds.line(true)
     );
     let headers = open_url(&format!("{parts}/"), &config).expect("the part files open as one");
     assert!(headers.iter().any(|h| h == "gbifid"), "{headers:?}");
@@ -2018,7 +2018,7 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
     let (kind, holds) = runtime
         .block_on(cloud_browse::peek_kind(parts, &config))
         .expect("peeking a public prefix");
-    println!("{parts} -> {kind:?} {:?}", holds.line());
+    println!("{parts} -> {kind:?} {:?}", holds.line(true));
     assert_eq!(
         kind,
         datui::discover::EntryKind::MultiFile,

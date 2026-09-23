@@ -1127,6 +1127,47 @@ fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     rows
 }
 
+/// As many of a schema's columns as `room` rows will hold, and how many that was.
+///
+/// Counted as they are built, because a schema line wraps too — `created_at
+/// datetime[μs, America/New_York]` is past the forty cells the pane has. Taking a
+/// column per row draws the tail past the bottom and sends the `… N more` line over
+/// the edge with it, which is the loss the count exists to report.
+fn schema_lines(
+    schema: &[(String, polars::prelude::DataType)],
+    name_w: usize,
+    width: usize,
+    room: usize,
+    ctx: &RenderContext,
+) -> (usize, Vec<Line<'static>>) {
+    let g = glyphs::get();
+    let mut lines = Vec::new();
+    let mut used = 0;
+    for (name, dtype) in schema {
+        let mut display = name.clone();
+        if display.chars().count() > name_w {
+            display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
+        }
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{display:<name_w$}  "),
+                Style::default().fg(ctx.text_secondary),
+            ),
+            Span::styled(
+                format!("{dtype}"),
+                Style::default().fg(type_color(dtype, ctx)),
+            ),
+        ]);
+        let takes = wrapped_rows(&line, width);
+        if used + takes > room {
+            break;
+        }
+        used += takes;
+        lines.push(line);
+    }
+    (lines.len(), lines)
+}
+
 /// One `key   value` line, with the value carrying the emphasis.
 fn fact_line(
     key: &str,
@@ -1420,25 +1461,11 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // more` as if nothing had been lost.
             let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
             let room = (area.height as usize).saturating_sub(drawn + 1);
-            for (name, dtype) in schema.iter().take(room) {
-                let mut display = name.clone();
-                if display.chars().count() > name_w {
-                    display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
-                }
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{display:<name_w$}  "),
-                        Style::default().fg(ctx.text_secondary),
-                    ),
-                    Span::styled(
-                        format!("{dtype}"),
-                        Style::default().fg(type_color(dtype, ctx)),
-                    ),
-                ]));
-            }
-            if schema.len() > room {
+            let (shown, mut schema_lines) = schema_lines(&schema, name_w, width, room, ctx);
+            lines.append(&mut schema_lines);
+            if schema.len() > shown {
                 lines.push(Line::from(Span::styled(
-                    format!("{} {} more", g.ellipsis, schema.len() - room),
+                    format!("{} {} more", g.ellipsis, schema.len() - shown),
                     Style::default().fg(ctx.dimmed),
                 )));
             }
@@ -1596,6 +1623,31 @@ mod tests {
             meta_columns(&big).contains('?'),
             "a hive dataset still says ?"
         );
+    }
+
+    /// A schema line wraps too, so the budget counts the rows they take rather than
+    /// one per column. Taking a column per row draws the tail past the bottom of the
+    /// pane and sends the `… N more` line over the edge with it — the loss the count
+    /// exists to report.
+    #[test]
+    fn a_wrapping_schema_line_is_paid_for_at_its_real_height() {
+        use polars::prelude::DataType;
+        let ctx = RenderContext::for_test();
+        // Forty cells is what the pane has; this type alone is past it.
+        let long = (0..6).fold(DataType::Int64, |inner, _| DataType::List(Box::new(inner)));
+        assert!(
+            format!("{long}").chars().count() > 18,
+            "a type past the pane's forty cells beside a name: {long}"
+        );
+        let schema: Vec<(String, DataType)> = (0..10)
+            .map(|i| (format!("created_at_{i}"), long.clone()))
+            .collect();
+
+        let (shown, lines) = schema_lines(&schema, 22, 40, 6, &ctx);
+        let rows: usize = lines.iter().map(|l| wrapped_rows(l, 40)).sum();
+        assert!(rows <= 6, "{rows} rows drawn into six: {shown} columns");
+        assert!(shown < 6, "each column takes more than one row: {shown}");
+        assert!(shown > 0, "and at least one still fits");
     }
 
     /// The pane word-wraps, so a row count taken by dividing the width into the length

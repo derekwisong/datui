@@ -144,6 +144,11 @@ pub struct Holds {
     /// `key=value` subdirectories, which are also counted in `folders`.
     #[serde(default)]
     pub partitions: usize,
+    /// Files datui has no reader for: a README, a script, a notebook. Neither data nor
+    /// a writer's own, and without a count of their own they were in nothing — a folder
+    /// of twenty of them read `dir` with no line at all, the same as an empty one.
+    #[serde(default)]
+    pub not_read: usize,
     /// Entries skipped as a writer's own, and the first few by name for the pane.
     #[serde(default)]
     pub skipped: usize,
@@ -187,7 +192,7 @@ impl Holds {
     /// into. A folder that was looked into and found empty is not this — it has no
     /// formats either, and `dir` is the right word for both.
     pub fn is_empty(&self) -> bool {
-        self.formats.is_empty() && self.folders == 0 && self.skipped == 0
+        self.formats.is_empty() && self.folders == 0 && self.skipped == 0 && self.not_read == 0
     }
 
     /// The `holds` line in the details pane: every format, the folders, and what was
@@ -205,6 +210,9 @@ impl Holds {
         if plain > 0 {
             let word = if plain == 1 { "folder" } else { "folders" };
             parts.push(format!("{plain}{more} {word}"));
+        }
+        if self.not_read > 0 {
+            parts.push(format!("{}{more} not read", self.not_read));
         }
         if with_partitions && self.partitions > 0 {
             let word = if self.partitions == 1 {
@@ -808,6 +816,8 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 Some(first) if first != found => mixed_formats = true,
                 Some(_) => {}
             }
+        } else if is_file {
+            holds.not_read += 1;
         }
         seen += 1;
     }
@@ -1781,10 +1791,16 @@ mod classification_tests {
         assert_eq!(entry.label(), "12 parquet");
         assert_eq!(entry.holds.line(true).as_deref(), Some("12 parquet"));
 
-        // A folder with nothing in it datui reads is a place to look inside.
+        // A folder with nothing in it datui reads is a place to look inside — and the
+        // pane still says how many files are in there. Without a count of their own
+        // they were in nothing, and twenty of them read like an empty folder.
         let plain = tempfile::tempdir().unwrap();
-        std::fs::write(plain.path().join("README.md"), b"x").unwrap();
-        assert_eq!(measured(plain.path()).label(), "dir");
+        for i in 0..20 {
+            std::fs::write(plain.path().join(format!("note{i}.md")), b"x").unwrap();
+        }
+        let plain = measured(plain.path());
+        assert_eq!(plain.label(), "dir");
+        assert_eq!(plain.holds.line(true).as_deref(), Some("20 not read"));
     }
 
     /// A row nothing has looked into has only its kind to go on, and a hive root or a
@@ -1850,19 +1866,22 @@ mod classification_tests {
             // the three twice.
             folders: 5,
             partitions: 3,
+            not_read: 7,
             skipped: 10,
             skipped_names: vec![".crc".into(), "_SUCCESS".into()],
             truncated: false,
         };
         assert_eq!(
             holds.line(true).as_deref(),
-            Some("12 parquet · 2 folders · 3 partitions · 10 skipped (.crc, _SUCCESS, …)"),
+            Some(
+                "12 parquet · 2 folders · 7 not read · 3 partitions · 10 skipped (.crc, _SUCCESS, …)"
+            ),
             "and without the partitions when the layout line below will carry them"
         );
 
         assert_eq!(
             holds.line(false).as_deref(),
-            Some("12 parquet · 2 folders · 10 skipped (.crc, _SUCCESS, …)")
+            Some("12 parquet · 2 folders · 7 not read · 10 skipped (.crc, _SUCCESS, …)")
         );
 
         let floor = Holds {
@@ -1871,7 +1890,9 @@ mod classification_tests {
         };
         assert_eq!(
             floor.line(true).as_deref(),
-            Some("12+ parquet · 2+ folders · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)")
+            Some(
+                "12+ parquet · 2+ folders · 7+ not read · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)"
+            )
         );
     }
 

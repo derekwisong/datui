@@ -921,6 +921,8 @@ pub fn look_at_listing(
             .collect(),
         folders: counted.len(),
         partitions,
+        // Present, not a writer's own, and not named as anything datui reads.
+        not_read: present.len() - files.len(),
         skipped,
         skipped_names,
         truncated: false,

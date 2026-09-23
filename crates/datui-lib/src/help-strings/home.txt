@@ -28,8 +28,9 @@ NAVIGATION
 
   A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
   a count and a format ("12 parquet"), "mixed" for more than one format, or
-  "dir" for no data files. The details pane carries the whole tally, including
-  the files skipped as a writer's own.
+  "dir" for no data files. The details pane carries the whole tally: every file
+  in the folder is counted, as data, as one datui has no reader for, or as a
+  writer's own, and the last of those are named.
 
 FINDING
   (type)            Filter by name or column; matching is fuzzy, so "sal" finds

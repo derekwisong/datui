@@ -1205,13 +1205,16 @@ fn apply_known_facts(
     //
     // Tested before the fingerprint below rather than after, because that fingerprint
     // is a file's: a listing gives a directory no size, so `same_bytes` is never true
-    // for one. A directory's own mtime is what it has, and it moves when a file is
-    // added or removed, which is when this answer could change.
+    // for one — which is why it is measured against the size the *listing* gave, not
+    // the one this block may put back. A directory's own mtime is what it has, and it
+    // moves when a file is added or removed, which is when this answer could change.
     //
     // Gated on the classifier, because a kind is a judgement where everything else
     // here is a measurement. `is_one_table`'s answer is the most version-sensitive
     // judgement datui makes — #234 introduced it and #243 changed what it runs over —
     // so a build that decided differently does not get to speak here.
+    // What the listing itself knew, before anything below restores a size onto the row.
+    let listed_size = row.size;
     if !remote
         && matches!(row.kind, EntryKind::Unknown | EntryKind::MultiFile)
         && facts.classified_by == crate::discover::CLASSIFIER_VERSION
@@ -1260,7 +1263,7 @@ fn apply_known_facts(
     }
 
     if !remote {
-        let same_bytes = row.size.map(|s| s == facts.size).unwrap_or(false)
+        let same_bytes = listed_size.map(|s| s == facts.size).unwrap_or(false)
             && row
                 .modified
                 .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
@@ -2681,7 +2684,9 @@ mod known_facts_tests {
             let facts = DatasetFacts {
                 mtime: 0,
                 size: 4096,
-                rows: None,
+                // A row count a folder's record has no business carrying, to prove
+                // the gate below still turns it away.
+                rows: Some(999),
                 cols: Some(72),
                 cols_sampled: false,
                 columns: vec!["lat".to_string()],
@@ -2703,13 +2708,20 @@ mod known_facts_tests {
             apply_known_facts(&mut row, &index, remote);
             assert_eq!(row.kind, EntryKind::Directory, "{path:?}");
             assert_eq!(row.label(), "15 parquet", "{path:?}");
-            assert_eq!(row.rows, None, "{path:?}");
             // And the shape beside it. A directory has no size for the fingerprint
             // below to match on, so without this the count was written to the record
             // and never read back out of it.
             assert_eq!(row.cols, Some(72), "{path:?}");
             assert_eq!(row.columns, vec!["lat".to_string()], "{path:?}");
             assert_eq!(row.size, Some(4096), "{path:?}");
+            // And restoring that size must not open the file-only gate below it: a
+            // record carrying a row count for a folder would otherwise be let through,
+            // and `unmeasured_visible` skips a row that has one for ever after. Only
+            // locally — a remote row is never measured here at all, so the record is
+            // all it will ever have and it takes the whole of it.
+            if !remote {
+                assert_eq!(row.rows, None, "{path:?}");
+            }
         }
     }
 

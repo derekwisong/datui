@@ -61,11 +61,15 @@ pub enum EntryKind {
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
 ///
+/// 4: a folder's row carries what one listing of it found, beside its kind, and the two
+/// are restored together — a record written by 3 carries the kind and not the count, and
+/// a row given a kind from the cache is never looked into again (#275, phase 2).
+///
 /// 3: one listing instead of a probe of the first eight entries, formats instead of
 /// extension strings, and one bookkeeping predicate. A folder of `.arrow` beside `.ipc`
 /// was `dir` and is now one dataset; a folder whose ninth entry decided it was answered
 /// by whatever the filesystem returned first (#275, phase 1).
-pub const CLASSIFIER_VERSION: u32 = 3;
+pub const CLASSIFIER_VERSION: u32 = 4;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -708,7 +712,6 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     let mut data_files = 0usize;
     let mut seen = 0usize;
     let mut counts: Vec<(crate::FileFormat, usize)> = Vec::new();
-    let mut entries = 0usize;
     // A multi-file dataset is homogeneous by definition; a folder that merely
     // contains two different spreadsheets is not one. Compared as formats rather than
     // as extensions, so `.ipc` beside `.arrow` is one kind of thing and not two.
@@ -720,12 +723,18 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     // the count would let the walk run to twice the cap. The cap is a cost bound and not
     // a correctness one either way — a folder past it is decided by whichever entries
     // came back first, whether they were data or a writer's own.
-    for entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
+    // One past the cap, so "there is more" is known without paying to process it —
+    // the same shape `scan_dir_bounded` uses, and the reason a folder of exactly five
+    // thousand entries is a total rather than a floor.
+    for (entries, entry) in iter.flatten().take(MAX_ENTRIES_PER_DIR + 1).enumerate() {
+        if entries >= MAX_ENTRIES_PER_DIR {
+            holds.truncated = true;
+            break;
+        }
         let entry_path = entry.path();
         let name = entry.file_name();
         // The markers and job files tools leave beside their output, by the one test
         // every route makes.
-        entries += 1;
         let name = name.to_string_lossy().into_owned();
         if is_bookkeeping(&name) {
             holds.skipped += 1;
@@ -786,7 +795,6 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     }
 
     holds.partitions = partitions;
-    holds.truncated = entries >= MAX_ENTRIES_PER_DIR;
     // Commonest first, and by name where two formats tie, so the line reads the same
     // way twice running.
     counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(b.0.name())));
@@ -1043,7 +1051,11 @@ fn enrich_dataset(entry: &mut Entry) {
             // Three footers out of a folder too large to read every one of, so the
             // column count that comes out of them is a floor and says so.
             entry.cols_sampled = true;
-            downgrade_to_directory(entry);
+            // The columns a reader sees, from the schema rather than by splitting leaf
+            // paths on a dot: a column named `user.id` and a struct `user` with a field
+            // `id` are not the same thing, and a string cannot tell them apart.
+            let top = union_of(&sampled.iter().map(top_level_names).collect::<Vec<_>>());
+            downgrade_to_directory(entry, (!top.is_empty()).then_some(top.len()));
             return;
         }
         // Still worth knowing the shape, even when the row count is out of reach.
@@ -1126,7 +1138,7 @@ fn enrich_dataset(entry: &mut Entry) {
         // has one.
         entry.columns = columns;
         entry.cols_sampled = false;
-        downgrade_to_directory(entry);
+        downgrade_to_directory(entry, (!top_level.is_empty()).then_some(top_level.len()));
         return;
     }
 
@@ -1174,14 +1186,15 @@ fn agree_on_a_schema(sampled: &[Vec<String>]) -> bool {
 /// A folder whose files turned out to be separate tables is a place to look inside.
 ///
 /// Its row count would be the sum of unrelated things, so it is not reported. The column
-/// count is: it is the union of what the folder's files hold, which is a true answer to
-/// "what is in here" even when "how many rows" has none. A folder of fifteen tables
-/// reads `15 parquet · 72 columns` and no row count, which is what it is.
-fn downgrade_to_directory(entry: &mut Entry) {
+/// count is: the union of what the folder's files hold is a true answer to "what is in
+/// here" even when "how many rows" has none, so a folder of fifteen tables reads
+/// `15 parquet · 72 columns` and no row count. Passed in rather than derived from
+/// `columns`, which names leaves: see [`top_level_names`] for why a leaf path cannot be
+/// split back into the columns a reader sees.
+fn downgrade_to_directory(entry: &mut Entry, cols: Option<usize>) {
     entry.kind = EntryKind::Directory;
     entry.rows = None;
-    entry.cols = (!entry.columns.is_empty())
-        .then(|| crate::schema_union::top_level_columns(&entry.columns).len());
+    entry.cols = cols;
     entry.cost = Cost {
         partitions: entry.cost.partitions.take(),
         ..Cost::default()
@@ -1722,6 +1735,25 @@ mod classification_tests {
 
         let unlooked = Entry::new(PathBuf::from("/nowhere"), EntryKind::Unknown);
         assert_eq!(unlooked.label(), "");
+    }
+
+    /// A folder of exactly the cap is a total, not a floor. `5000+` claims there is
+    /// more; saying so about a folder that was read whole is a lie in the direction
+    /// nobody can check.
+    #[test]
+    fn a_folder_read_whole_does_not_claim_there_is_more() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..MAX_ENTRIES_PER_DIR {
+            std::fs::write(dir.path().join(format!("f{i:05}.csv")), b"x").unwrap();
+        }
+        let holds = look_at_directory(dir.path()).1;
+        assert!(!holds.truncated, "every entry was read");
+        assert_eq!(holds.label(), format!("{MAX_ENTRIES_PER_DIR} csv"));
+
+        std::fs::write(dir.path().join("one-more.csv"), b"x").unwrap();
+        let holds = look_at_directory(dir.path()).1;
+        assert!(holds.truncated, "and now there is more than was read");
+        assert!(holds.label().contains('+'));
     }
 
     /// The same folder read twice reads the same. Skipped names come back in whatever

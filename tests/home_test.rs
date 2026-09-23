@@ -2834,6 +2834,57 @@ fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
     );
 }
 
+/// The whole way to the screen: a listing makes an `Unknown` row, the classify pass
+/// looks into it, and the label the row carries is what that pass counted. Every other
+/// test for the label calls the counting function itself, which is the path no user
+/// takes — the counts reached the cache and stopped there.
+#[test]
+fn test_a_folder_row_is_labelled_by_what_the_pass_counted() {
+    let tmp = TempDir::new().unwrap();
+    let folder = tmp.path().join("exports");
+    std::fs::create_dir_all(&folder).unwrap();
+    for name in ["a.csv", "b.csv", "c.csv"] {
+        touch(&folder, name);
+    }
+    std::fs::write(folder.join("_SUCCESS"), b"").unwrap();
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let unlooked = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.path == folder)
+        .expect("the folder is listed")
+        .clone();
+    assert_eq!(unlooked.kind, datui::discover::EntryKind::Unknown);
+
+    // What the background pass does with it, and what it hands back.
+    let probe = datui::home::look_into(&unlooked);
+    home.enriched.insert(
+        folder.clone(),
+        datui::home::measured_from(&probe, &unlooked),
+    );
+    home.apply_measurements();
+
+    let row = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.path == folder)
+        .expect("the row is still listed");
+    assert_eq!(row.label(), "3 csv", "the label is what the pass counted");
+    assert_eq!(
+        row.holds.line().as_deref(),
+        Some("3 csv · 1 skipped (_SUCCESS)"),
+        "and the pane has the whole tally"
+    );
+}
+
 #[test]
 fn test_applying_a_measurement_puts_the_layout_on_the_row() {
     use datui::discover::Cost;
@@ -2855,6 +2906,7 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
             size: Some(100),
             columns: vec!["a".into()],
             kind: None,
+            holds: Default::default(),
             cost: Cost {
                 codec: Some("snappy".into()),
                 row_groups: Some(3),
@@ -3176,7 +3228,8 @@ fn test_partitioned_cloud_folders_are_labelled_and_open_whole() {
     );
     // Every folder is to be peeked at, once.
     assert_eq!(home.cloud_folders_to_peek(&btc, 48).len(), 2);
-    home.cloud_kinds.insert(blocks.clone(), EntryKind::Hive);
+    home.cloud_kinds
+        .insert(blocks.clone(), (EntryKind::Hive, Default::default()));
     home.apply_cloud_kinds(&btc);
     assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
     assert_eq!(home.probed[&btc][1].kind, EntryKind::Directory);
@@ -3543,7 +3596,7 @@ fn test_a_folder_of_separate_tables_offers_no_whole_folder_row() {
 
     // Once the peek has read footers and found separate tables, it must not.
     home.cloud_kinds
-        .insert(exports.clone(), EntryKind::Directory);
+        .insert(exports.clone(), (EntryKind::Directory, Default::default()));
     home.rebuild(&[], &[]);
     assert!(
         !home.sections[0].rows[0].name.contains("all files"),

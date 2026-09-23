@@ -630,7 +630,7 @@ const PEEK_KEYS: usize = 100;
 pub async fn peek_kind(
     url: &str,
     config: &CloudConfig,
-) -> Result<crate::discover::EntryKind, String> {
+) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
     let resolved = {
         let (url, config) = (url.to_string(), config.clone());
         tokio::task::spawn_blocking(move || crate::cloud_sources::resolve(&url, &config))
@@ -650,7 +650,7 @@ pub async fn peek_kind(
 
 async fn peek_page(
     resolved: &crate::cloud_sources::Resolved,
-) -> Result<crate::discover::EntryKind, String> {
+) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
     use object_store::list::{PaginatedListOptions, PaginatedListStore};
     let (store, prefix): (std::sync::Arc<dyn PaginatedListStore>, String) =
         if let Some((account, container, key)) = crate::source::azure_parts(&resolved.url) {
@@ -702,14 +702,18 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    let kind = classify_listing(&folders, &objects);
+    let (kind, holds) = look_at_listing(&folders, &objects);
     if kind != crate::discover::EntryKind::MultiFile {
-        return Ok(kind);
+        return Ok((kind, holds));
     }
     // The listing said these files share an extension. Whether they are one table is a
     // question only their footers answer, and the objects just listed carry the sizes
-    // that make reading a footer a single ranged request.
-    Ok(verified_kind(resolved, &objects).await.unwrap_or(kind))
+    // that make reading a footer a single ranged request. What the prefix holds is
+    // unchanged by the answer: the count is a count either way.
+    Ok((
+        verified_kind(resolved, &objects).await.unwrap_or(kind),
+        holds,
+    ))
 }
 
 /// Parquet footers read to decide whether a folder is one table.
@@ -820,6 +824,15 @@ pub fn classify_listing(
     folders: &[String],
     objects: &[(String, u64)],
 ) -> crate::discover::EntryKind {
+    look_at_listing(folders, objects).0
+}
+
+/// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
+/// gives them for a local folder. A prefix's row is labelled from the second.
+pub fn look_at_listing(
+    folders: &[String],
+    objects: &[(String, u64)],
+) -> (crate::discover::EntryKind, crate::discover::Holds) {
     use crate::discover::EntryKind;
     let last = |key: &str| {
         key.trim_end_matches('/')
@@ -867,16 +880,50 @@ pub fn classify_listing(
                 || crate::discover::is_parquet_key(key)
         })
         .collect();
+    // What the prefix holds, counted the way a local listing counts it: data files by
+    // format, the prefixes beside them, and the markers passed over. Only Parquet is
+    // read in place, but the label says what is there either way.
+    let mut counts: Vec<(&'static str, usize)> = Vec::new();
+    for key in &files {
+        let name = last(key);
+        let format = crate::discover::data_format(std::path::Path::new(name.as_str()))
+            .map(|f| f.name())
+            .unwrap_or("parquet");
+        match counts.iter_mut().find(|(f, _)| *f == format) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((format, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let mut skipped_names: Vec<String> = objects
+        .iter()
+        .map(|(key, _)| last(key))
+        .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
+        .collect();
+    skipped_names.sort();
+    let skipped = skipped_names.len();
+    skipped_names.truncate(4);
+    let holds = crate::discover::Holds {
+        formats: counts
+            .into_iter()
+            .map(|(f, n)| (f.to_string(), n))
+            .collect(),
+        folders: counted.len(),
+        partitions,
+        skipped,
+        skipped_names,
+        truncated: false,
+    };
     // A lake table first: its data files genuinely agree on a schema, so every rule
     // below says "one table" and is right about the schema and wrong about the rows.
     // The markers are prefixes in the listing that already happened, so this costs
     // nothing.
     let folder = |name: &str| folders.iter().any(|f| last(f) == name);
     if folder("_delta_log") {
-        return EntryKind::Delta;
+        return (EntryKind::Delta, holds);
     }
     if folder(".hoodie") {
-        return EntryKind::Hudi;
+        return (EntryKind::Hudi, holds);
     }
     let parquet = files
         .iter()
@@ -891,19 +938,20 @@ pub fn classify_listing(
     // browsable, where a real Iceberg table read as one table is wrong about the rows.
     // A README beside them does not disqualify it.
     if folder("metadata") && folder("data") && parquet == 0 {
-        return EntryKind::Iceberg;
+        return (EntryKind::Iceberg, holds);
     }
     let seen = counted.len() + present.len();
     // The local route's rule, unchanged: see `discover::classify_directory` for why a
     // majority here refuses real hive roots.
     if partitions > 0 && partitions >= files.len() {
-        return EntryKind::Hive;
+        return (EntryKind::Hive, holds);
     }
-    if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
+    let kind = if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
         EntryKind::MultiFile
     } else {
         EntryKind::Directory
-    }
+    };
+    (kind, holds)
 }
 
 /// Split a `gs://` or `s3://` URL into its bucket and the prefix inside it.

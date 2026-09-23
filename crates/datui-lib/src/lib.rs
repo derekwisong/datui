@@ -4736,7 +4736,10 @@ pub enum AppEvent {
     /// What peeking inside some folders of a cloud listing found: the ones that are
     /// partitioned or Parquet datasets.
     HomeCloudKinds {
-        kinds: Vec<(PathBuf, crate::discover::EntryKind)>,
+        kinds: Vec<(
+            PathBuf,
+            (crate::discover::EntryKind, crate::discover::Holds),
+        )>,
     },
     /// A cloud listing was refused, with the service's reason.
     HomeProbeFailed {
@@ -7995,9 +7998,10 @@ impl App {
         }
         // Claimed now, so a rebuild before the answers arrive does not ask again.
         for folder in &folders {
-            self.home
-                .cloud_kinds
-                .insert(folder.clone(), discover::EntryKind::Directory);
+            self.home.cloud_kinds.insert(
+                folder.clone(),
+                (discover::EntryKind::Directory, Default::default()),
+            );
         }
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
@@ -8018,7 +8022,7 @@ impl App {
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
                 if let Ok((folder, Ok(kind))) = joined
-                    && kind != discover::EntryKind::Directory
+                    && kind.0 != discover::EntryKind::Directory
                 {
                     found.push((folder, kind));
                 }
@@ -15032,7 +15036,7 @@ impl App {
             AppEvent::HomeCloudKinds { kinds } => {
                 let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
                 for (folder, kind) in kinds {
-                    self.home.cloud_kinds.insert(folder.clone(), *kind);
+                    self.home.cloud_kinds.insert(folder.clone(), kind.clone());
                 }
                 for root in roots {
                     self.home.apply_cloud_kinds(&root);

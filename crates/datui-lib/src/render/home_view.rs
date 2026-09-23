@@ -873,9 +873,11 @@ fn entry_line<'a>(
     // A label counts now — `5000+ parquet` is thirteen characters where `iceberg` was
     // seven — and on a narrow screen it can leave the name nothing to be truncated
     // into, which puts the meta columns out of their alignment and clips them. The name
-    // is what identifies a row and the label only describes it, so the label goes; the
-    // details pane still has it. The test is the one truncation already makes, so there
-    // is no width here to pick.
+    // is what identifies a row and the label only describes it, so the label goes. It
+    // goes for good at these widths — the details pane is not drawn below a hundred and
+    // two columns, and this fires far below that — which is the trade a screen with
+    // room for one of the two forces. The test is the one truncation already makes, so
+    // there is no width here to pick.
     //
     // Only a label. A column note says *why this row is in the list*, and the draw site
     // writes it from `matched_column` rather than from this cell, so blanking the cell
@@ -1328,7 +1330,18 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 .max()
                 .unwrap_or(0)
                 .min(22);
-            let room = (area.height as usize).saturating_sub(lines.len() + 1);
+            // The rows the lines so far will *occupy*, not how many there are: the
+            // pane wraps, and a fact longer than its width takes two rows. Counting
+            // lines drew the tail of the schema past the bottom and reported `… N
+            // more` as if nothing had been lost.
+            let drawn: usize = lines
+                .iter()
+                .map(|line| {
+                    let cells: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    cells.max(1).div_ceil(width.max(1))
+                })
+                .sum();
+            let room = (area.height as usize).saturating_sub(drawn + 1);
             for (name, dtype) in schema.iter().take(room) {
                 let mut display = name.clone();
                 if display.chars().count() > name_w {

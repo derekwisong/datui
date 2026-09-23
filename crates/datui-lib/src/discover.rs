@@ -163,6 +163,30 @@ pub struct Holds {
 /// How many skipped names are kept for the pane. Enough to recognise the convention.
 pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
 
+/// How much of one of those names. A Hadoop output folder's `.crc` files sort first and
+/// are named for the file they check — `.part-00000-<uuid>-c000.snappy.parquet.crc`, some
+/// seventy characters — so four of them are a paragraph of UUID in a pane whose other
+/// facts are one line each. Both ends are kept, because both say what it is and the
+/// middle is the part that is nobody's business.
+const SKIPPED_NAME_WIDTH: usize = 24;
+
+/// A name cut to `width`, keeping both ends and marking the middle.
+fn shorten(name: &str, width: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= width {
+        return name.to_string();
+    }
+    let ellipsis = crate::glyphs::get().ellipsis;
+    let room = width.saturating_sub(ellipsis.chars().count());
+    let head = room.div_ceil(2);
+    let tail = room - head;
+    format!(
+        "{}{ellipsis}{}",
+        chars[..head].iter().collect::<String>(),
+        chars[chars.len() - tail..].iter().collect::<String>()
+    )
+}
+
 impl Holds {
     /// Data files of every format.
     pub fn data_files(&self) -> usize {
@@ -227,7 +251,12 @@ impl Holds {
         if self.skipped > 0 {
             // The names are the first few, so a list shorter than the count ends in an
             // ellipsis rather than reading as all of them.
-            let mut names = self.skipped_names.join(", ");
+            let mut names = self
+                .skipped_names
+                .iter()
+                .map(|n| shorten(n, SKIPPED_NAME_WIDTH))
+                .collect::<Vec<_>>()
+                .join(", ");
             if self.skipped > self.skipped_names.len() && !names.is_empty() {
                 names.push_str(&format!(", {}", crate::glyphs::get().ellipsis));
             }
@@ -1860,6 +1889,39 @@ mod classification_tests {
         assert!(holds.is_empty(), "and its label is the format's own name");
         let entry = measured(dir.path());
         assert_eq!(entry.label(), "delta");
+    }
+
+    /// A name too long for the pane keeps both ends. A Hadoop output folder's `.crc`
+    /// files sort first and are named for the file they check, so four of them
+    /// unabridged are a paragraph of UUID beside facts that are one line each.
+    #[test]
+    fn a_long_skipped_name_keeps_both_ends() {
+        let holds = Holds {
+            formats: vec![("parquet".to_string(), 2)],
+            skipped: 2,
+            skipped_names: vec![
+                ".part-00000-8f3a91c2-7b4d-4e19-a6f0-c1d2e3f4a5b6-c000.snappy.parquet.crc"
+                    .to_string(),
+                "_SUCCESS".to_string(),
+            ],
+            ..Default::default()
+        };
+        let line = holds.line(true).expect("a line");
+        assert!(line.contains("_SUCCESS"), "{line}");
+        assert!(
+            line.contains(".part-00000"),
+            "the head says what it is: {line}"
+        );
+        assert!(line.contains("parquet.crc"), "and the tail: {line}");
+        assert!(
+            !line.contains("8f3a91c2"),
+            "the middle is nobody's business: {line}"
+        );
+        assert!(
+            line.chars().count() < 80,
+            "{} chars: {line}",
+            line.chars().count()
+        );
     }
 
     /// The pane never presents the first few skipped names as all of them, and a count

@@ -928,12 +928,16 @@ fn entry_line<'a>(
         (kind_cell, kind_is_chip)
     } else if is_label {
         (String::new(), false)
-    } else if shows_source {
+    } else if shows_source && matched_column.is_none() {
         // A source id and a `source not found:` are as long as somebody's
         // configuration, and this cell may not go — so it is cut to the longest that
         // leaves the name room, which is the same test read backwards. The curated
         // word is not cut: it is one of two words, `dataset` or `project`, and `d…t`
         // says nothing at all where the whole of it still fits in eight cells.
+        //
+        // And not when a column matched, because then the cell is the note and the
+        // draw site writes that from `shown_column`: cutting the cell here would leave
+        // the two disagreeing about the width, which is how the columns come unstuck.
         let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2);
         (crate::discover::shorten(&kind_cell, room), false)
     } else {

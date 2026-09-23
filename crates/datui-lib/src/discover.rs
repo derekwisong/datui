@@ -1244,10 +1244,12 @@ fn enrich_dataset(entry: &mut Entry) {
         per_file.push(crate::schema_union::top_level_columns(&names));
         // And the same again for this folder's own files, which is what a downgraded
         // row is labelled from: `2 parquet` must mean those two.
+        // One stat, feeding both totals: on a share each is a round trip, and a folder
+        // of sixty-four files directly inside would have paid twice for every one.
+        let file_bytes = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+        bytes += file_bytes;
         if file.parent() == Some(entry.path.as_path()) {
-            if let Ok(m) = std::fs::metadata(file) {
-                own_bytes += m.len();
-            }
+            own_bytes += file_bytes;
             for name in &names {
                 if own_seen.insert(name.clone()) {
                     own_columns.push(name.clone());
@@ -1266,9 +1268,6 @@ fn enrich_dataset(entry: &mut Entry) {
         if cost.codec.is_none() {
             cost.codec = per_file.codec;
         }
-        if let Ok(m) = std::fs::metadata(file) {
-            bytes += m.len();
-        }
     }
     // The footers are read by now, so whether these files are one table is known
     // rather than guessed. A folder of separate tables is a place to look inside: its
@@ -1285,7 +1284,11 @@ fn enrich_dataset(entry: &mut Entry) {
         // Nothing here is one table's shape, but the names are what the folder holds,
         // and searching the home screen by column should still find the folder that
         // has one.
-        entry.columns = own_columns;
+        // The count is the folder's own files, which is what the label names. The column
+        // *names* are every one under it: they are the home screen's search index, and
+        // "which of these has a `txinwitness`?" is answered by the folder that has one
+        // anywhere, which is where looking inside will find it.
+        entry.columns = columns;
         entry.cols_sampled = false;
         downgrade_to_directory(
             entry,
@@ -1854,7 +1857,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::classify_listing(&[], &objects),
+            crate::cloud_browse::look_at_listing("out/", &[], &objects).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
@@ -2191,7 +2194,10 @@ mod classification_tests {
         // would be a set of columns nothing produces.
         assert_eq!(entry.label(), "2 parquet");
         assert_eq!(entry.cols, Some(2), "id and ts");
-        assert_eq!(entry.columns, vec!["id".to_string(), "ts".to_string()]);
+        // The names are every column under the folder, because they are what the home
+        // screen searches: the folder does hold a `wholly`, one level down.
+        assert!(entry.columns.contains(&"wholly".to_string()));
+        assert!(entry.columns.contains(&"id".to_string()));
 
         // And the size is those two files, not the subtree's: three numbers on one row
         // measured over three different sets of files is no row at all.
@@ -2342,7 +2348,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(&table),
-            crate::cloud_browse::classify_listing(&[], &objects),
+            crate::cloud_browse::look_at_listing("out/", &[], &objects).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(&table), EntryKind::MultiFile);
@@ -2402,7 +2408,8 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::classify_listing(&["out/notes=old/".to_string()], &objects),
+            crate::cloud_browse::look_at_listing("out/", &["out/notes=old/".to_string()], &objects)
+                .0,
             "the two routes answer the same folder alike"
         );
     }
@@ -2421,7 +2428,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::classify_listing(&folders, &[]),
+            crate::cloud_browse::look_at_listing("out/", &folders, &[]).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
@@ -2453,7 +2460,7 @@ mod classification_tests {
         .iter()
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
-        let cloud = crate::cloud_browse::classify_listing(&folders, &objects);
+        let cloud = crate::cloud_browse::look_at_listing("out/", &folders, &objects).0;
 
         assert_eq!(local, cloud, "the two routes answer the same folder alike");
         assert_eq!(local, EntryKind::MultiFile);
@@ -2548,7 +2555,7 @@ mod classification_tests {
             keys.push((format!("jolpica/2000/{part}.parquet"), 100));
         }
         keys.sort();
-        let cloud = crate::cloud_browse::classify_listing(&[], &keys);
+        let cloud = crate::cloud_browse::look_at_listing("out/", &[], &keys).0;
 
         assert_eq!(local, cloud, "the two routes answer the same folder alike");
         assert_eq!(local, EntryKind::MultiFile);
@@ -2589,7 +2596,7 @@ mod classification_tests {
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
         assert_eq!(
-            crate::cloud_browse::classify_listing(&[], &keys),
+            crate::cloud_browse::look_at_listing("out/", &[], &keys).0,
             EntryKind::MultiFile,
             "and the same in a bucket"
         );

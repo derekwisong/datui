@@ -816,21 +816,6 @@ async fn kind_from_footers(
     })
 }
 
-/// A folder's kind from what one listing of it shows, by the rules a local folder is
-/// classified by, except that only Parquet counts as data: it is the one format a
-/// prefix of files is read in place as.
-///
-/// One page of the listing, capped at `PEEK_KEYS`, where the local route reads up to
-/// `MAX_ENTRIES_PER_DIR`. So the two answer alike for a prefix that fits in a page, and
-/// a larger one is still decided by whichever keys came back first. Moving verification
-/// to the row under the cursor is #275 phase 6's.
-pub fn classify_listing(
-    folders: &[String],
-    objects: &[(String, u64)],
-) -> crate::discover::EntryKind {
-    look_at_listing("", folders, objects).0
-}
-
 /// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
 /// gives them for a local folder. A prefix's row is labelled from the second.
 pub fn look_at_listing(
@@ -1965,37 +1950,51 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            classify_listing(
+            look_at_listing(
+                "t/",
                 &folders(&[
                     "v1.0/btc/blocks/date=2009-01-03/",
                     "v1.0/btc/blocks/date=2009-01-09/"
                 ]),
                 &files(&[("v1.0/btc/blocks/_SUCCESS", 0)]),
-            ),
+            )
+            .0,
             EntryKind::Hive
         );
         assert_eq!(
-            classify_listing(
+            look_at_listing(
+                "t/",
                 &folders(&[]),
                 &files(&[
                     ("gbif/occurrence.parquet/000001", 10),
                     ("gbif/occurrence.parquet/000002", 10)
                 ]),
-            ),
+            )
+            .0,
             EntryKind::MultiFile,
             "part files with no extension"
         );
         assert_eq!(
-            classify_listing(&folders(&[]), &files(&[("a/x.csv", 5), ("a/y.csv", 5)])),
+            look_at_listing(
+                "t/",
+                &folders(&[]),
+                &files(&[("a/x.csv", 5), ("a/y.csv", 5)])
+            )
+            .0,
             EntryKind::Directory,
             "CSV cannot be read in place as one table"
         );
         assert_eq!(
-            classify_listing(&folders(&["a/by_year/", "a/by_station/"]), &files(&[])),
+            look_at_listing(
+                "t/",
+                &folders(&["a/by_year/", "a/by_station/"]),
+                &files(&[])
+            )
+            .0,
             EntryKind::Directory
         );
         assert_eq!(
-            classify_listing(&folders(&["a/b/"]), &files(&[("a/one.parquet", 5)])),
+            look_at_listing("t/", &folders(&["a/b/"]), &files(&[("a/one.parquet", 5)])).0,
             EntryKind::Directory,
             "one file is a file to open, not a dataset"
         );
@@ -2020,39 +2019,41 @@ mod tests {
         ]);
 
         assert_eq!(
-            classify_listing(&folders(&["t/_delta_log/"]), &parts),
+            look_at_listing("t/", &folders(&["t/_delta_log/"]), &parts).0,
             EntryKind::Delta
         );
         assert_eq!(
-            classify_listing(&folders(&["t/.hoodie/"]), &parts),
+            look_at_listing("t/", &folders(&["t/.hoodie/"]), &parts).0,
             EntryKind::Hudi
         );
         assert_eq!(
-            classify_listing(&folders(&["t/metadata/", "t/data/"]), &files(&[])),
+            look_at_listing("t/", &folders(&["t/metadata/", "t/data/"]), &files(&[])).0,
             EntryKind::Iceberg
         );
 
         // The plain name alone is not the marker.
         assert_eq!(
-            classify_listing(&folders(&["t/metadata/"]), &parts),
+            look_at_listing("t/", &folders(&["t/metadata/"]), &parts).0,
             EntryKind::MultiFile,
             "a folder called metadata beside part files is not an Iceberg table"
         );
         assert_eq!(
-            classify_listing(&folders(&["t/metadata/", "t/data/"]), &parts),
+            look_at_listing("t/", &folders(&["t/metadata/", "t/data/"]), &parts).0,
             EntryKind::MultiFile,
             "an Iceberg root holds its data under data/, not beside it"
         );
         assert_eq!(
-            classify_listing(
+            look_at_listing(
+                "t/",
                 &folders(&["t/metadata/", "t/data/"]),
                 &files(&[("t/README.md", 20)])
-            ),
+            )
+            .0,
             EntryKind::Iceberg,
             "but something else beside them does not disqualify it"
         );
         assert_eq!(
-            classify_listing(&folders(&[]), &parts),
+            look_at_listing("t/", &folders(&[]), &parts).0,
             EntryKind::MultiFile,
             "and a folder of part files with no log is still one table"
         );

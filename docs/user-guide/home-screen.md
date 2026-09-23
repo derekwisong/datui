@@ -198,7 +198,7 @@ A folder's label says what is directly inside it, from one listing:
 | `delta` `iceberg` `hudi` | The format's marker is present |
 | `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
 | `mixed` | Data files of more than one format |
-| `dir` | No data file directly inside |
+| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found* |
 | `…` | Nothing has looked into it yet |
 
 A folder larger than the listing cap counts what it read and says so: `5000+

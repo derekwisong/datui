@@ -894,13 +894,23 @@ fn entry_line<'a>(
     // and not of the path, the same as the source id: a `multi` row under a public
     // source has a curated path and a count in its cell, and a count gives way.
     let is_label = matched_column.is_none() && !shows_source && !shows_curated;
-    let (kind_cell, kind_is_chip) = if !is_label
-        || name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
-            > 1
-    {
+    let fits = |cell: &str| {
+        name_width.saturating_sub(2 + place_cell.chars().count() + cell.chars().count() + 1) > 1
+    };
+    let (kind_cell, kind_is_chip) = if fits(&kind_cell) {
         (kind_cell, kind_is_chip)
-    } else {
+    } else if is_label {
         (String::new(), false)
+    } else if shows_source {
+        // A source id and a `source not found:` are as long as somebody's
+        // configuration, and this cell may not go — so it is cut to the longest that
+        // leaves the name room, which is the same test read backwards. The curated
+        // word is not cut: it is one of two words, `dataset` or `project`, and `d…t`
+        // says nothing at all where the whole of it still fits in eight cells.
+        let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2);
+        (crate::discover::shorten(&kind_cell, room), false)
+    } else {
+        (kind_cell, kind_is_chip)
     };
 
     // Positions are taken from the untruncated name, because that is what matched.
@@ -1044,6 +1054,39 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
 }
 
 /// One `key   value` line, with the value carrying the emphasis.
+/// How many rows a line takes once the pane has wrapped it.
+///
+/// Word-wrapped, the way `Wrap { trim: false }` does it: a word that will not fit goes
+/// whole to the next row, so dividing the width into the length is a floor and not an
+/// answer — and the one line this is asked about, `holds`, is a list of words.
+///
+/// A space at the end of a row is counted, where the renderer drops it, so this errs
+/// one high on a line that happens to break there. Which way it errs matters: what it
+/// feeds is a budget, and a row too few leaves a blank line where a row too many draws
+/// over the bottom of the pane.
+fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if width == 0 {
+        return 1;
+    }
+    let mut rows = 1;
+    let mut used = 0;
+    for word in text.split_inclusive(' ') {
+        let len = word.chars().count();
+        if used + len > width && used > 0 {
+            rows += 1;
+            used = 0;
+        }
+        used += len;
+        // A single word longer than the pane wraps inside itself.
+        while used > width {
+            rows += 1;
+            used -= width;
+        }
+    }
+    rows
+}
+
 fn fact_line(
     key: &str,
     value: String,
@@ -1334,13 +1377,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // pane wraps, and a fact longer than its width takes two rows. Counting
             // lines drew the tail of the schema past the bottom and reported `… N
             // more` as if nothing had been lost.
-            let drawn: usize = lines
-                .iter()
-                .map(|line| {
-                    let cells: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-                    cells.max(1).div_ceil(width.max(1))
-                })
-                .sum();
+            let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
             let room = (area.height as usize).saturating_sub(drawn + 1);
             for (name, dtype) in schema.iter().take(room) {
                 let mut display = name.clone();
@@ -1520,6 +1557,26 @@ mod tests {
         );
     }
 
+    /// The pane word-wraps, so a row count taken by dividing the width into the length
+    /// is a floor: a word that will not fit goes whole to the next row. The schema list
+    /// is drawn in what is left, and under-counting drew its tail past the bottom while
+    /// `… N more` reported nothing lost.
+    #[test]
+    fn a_wrapped_line_is_counted_by_the_rows_it_takes() {
+        let line = |text: &str| Line::from(vec![Span::raw(text.to_string())]);
+        assert_eq!(wrapped_rows(&line("short"), 40), 1);
+        // Five four-letter words at a width of six. Dividing twenty-four characters
+        // into six says four rows; each row can hold one word and the two cells left
+        // beside it are cells no word can use, so it takes five.
+        assert_eq!(
+            wrapped_rows(&line("aaaa aaaa aaaa aaaa aaaa"), 6),
+            5,
+            "the room left at the end of a row is room a word cannot use"
+        );
+        // A single word longer than the pane wraps inside itself.
+        assert_eq!(wrapped_rows(&line(&"x".repeat(25)), 10), 3);
+    }
+
     /// A label describes and a name identifies, so on a screen too narrow for both the
     /// label goes. Before this a `5000+ parquet` chip left the name nothing to be
     /// truncated into and shoved the size and modified columns out of alignment.
@@ -1641,6 +1698,35 @@ mod tests {
                 with_curated_path(width),
                 meta_starts_at(&short, width),
                 "a count under a curated path still gives way at {width}"
+            );
+        }
+
+        // A cell the guard may not drop is cut instead. A `source not found:` is as
+        // long as somebody's configuration, and a name with nothing left to be cut
+        // into is the misalignment all of this is for.
+        let mut gone = row("s3://averylongsourcename@bucket/exports", EntryKind::File);
+        gone.size = Some(4096);
+        let known: [String; 1] = ["other".to_string()];
+        let missing = |width: usize| -> usize {
+            let line = entry_line(
+                &gone,
+                false,
+                width,
+                true,
+                None,
+                "",
+                Some(&known),
+                None,
+                &ctx,
+            );
+            offset_of_meta(line, &gone)
+        };
+        for width in [22usize, 24, 30, 48] {
+            assert_eq!(
+                missing(width),
+                meta_starts_at(&short, width),
+                "a warning too long for the row is cut, not left to push the columns \
+                 out, at {width}"
             );
         }
 

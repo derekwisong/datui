@@ -171,7 +171,7 @@ pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
 const SKIPPED_NAME_WIDTH: usize = 24;
 
 /// A name cut to `width`, keeping both ends and marking the middle.
-fn shorten(name: &str, width: usize) -> String {
+pub(crate) fn shorten(name: &str, width: usize) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= width {
         return name.to_string();
@@ -206,7 +206,10 @@ impl Holds {
     pub fn label(&self) -> String {
         let more = if self.truncated { "+" } else { "" };
         match self.formats.as_slice() {
-            [] => "dir".to_string(),
+            // `dir` says there is no data file inside. A listing cut short cannot say
+            // that — it found none among the entries it read, and more files can
+            // unmake it, which is what separates this from `mixed`.
+            [] => format!("dir{more}"),
             [(name, count)] => format!("{count}{more} {name}"),
             // No `+`: `mixed` is not a count, and more files cannot unmake it. The
             // pane's line carries the qualifier on each number it does report.
@@ -1889,6 +1892,32 @@ mod classification_tests {
         assert!(holds.is_empty(), "and its label is the format's own name");
         let entry = measured(dir.path());
         assert_eq!(entry.label(), "delta");
+    }
+
+    /// A listing cut short cannot say there is no data in a folder, only that it found
+    /// none among the entries it read. `mixed` needs no such qualifier — more files
+    /// cannot unmake it — and `dir` does, because they can.
+    #[test]
+    fn a_cut_short_listing_does_not_claim_a_folder_is_empty() {
+        let seen = Holds {
+            skipped: 5000,
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(seen.label(), "dir+");
+
+        let whole = Holds {
+            skipped: 3,
+            ..Default::default()
+        };
+        assert_eq!(whole.label(), "dir");
+
+        let mixed = Holds {
+            formats: vec![("parquet".to_string(), 3), ("csv".to_string(), 2)],
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(mixed.label(), "mixed", "more files cannot unmake it");
     }
 
     /// A name too long for the pane keeps both ends. A Hadoop output folder's `.crc`

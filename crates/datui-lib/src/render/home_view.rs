@@ -90,8 +90,10 @@ fn meta_columns(entry: &Entry) -> String {
         (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
         // `?` says a count is out of reach. A folder that is not one table has no row
         // count to be out of reach — a sum over unrelated tables is not a number — so
-        // it shows its width alone rather than claiming there is a figure somewhere.
-        (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{times} {c}{more}"),
+        // it shows its width alone. Named, not multiplied: `× 72` in a column whose
+        // neighbours read `1.2M × 72` is an operator with nothing on its left, and a
+        // bare `72` reads as a row count.
+        (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more} cols"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
         _ => String::new(),
     };
@@ -1480,11 +1482,12 @@ mod tests {
     fn a_folder_of_separate_tables_shows_its_width_without_a_question_mark() {
         let mut folder = row("/data/consolidated", EntryKind::Directory);
         folder.cols = Some(72);
-        assert!(meta_columns(&folder).contains("72"));
+        let shape = meta_columns(&folder);
+        assert!(shape.contains("72 cols"), "{shape}");
+        assert!(!shape.contains('?'), "{shape}");
         assert!(
-            !meta_columns(&folder).contains('?'),
-            "{}",
-            meta_columns(&folder)
+            !shape.contains(glyphs::get().times),
+            "an operator with nothing on its left: {shape}"
         );
 
         let mut big = row("/data/events", EntryKind::Hive);

@@ -902,9 +902,10 @@ pub fn look_at_listing(
     // Prefixes as well as objects: `_temporary/` is a writer's own folder and is
     // counted as skipped on disk, so a Spark output prefix must not read `2 parquet`
     // here and `2 parquet · 1 skipped (_temporary)` there.
-    // A console's folder placeholder with no prefix beside it is in no other count —
-    // `present` drops it and it is not a writer's own name — and the pane promises
-    // every object is in one of them.
+    // An empty object with no dot and no prefix beside it: `present` drops it as a
+    // console's folder placeholder, and without one there is no folder it stands for.
+    // It is a file nothing can read, which is what the local route calls it — not a
+    // writer's own, which is what naming it under `skipped` would say.
     let orphan_markers: Vec<String> = objects
         .iter()
         .filter(|(key, size)| {
@@ -924,9 +925,11 @@ pub fn look_at_listing(
         .map(|(key, _)| last(key))
         .chain(folders.iter().map(|f| last(f)))
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
-        .chain(orphan_markers)
         .collect();
     skipped_names.sort();
+    // An object and a prefix of the same name are one thing named twice: the listing
+    // reports both, and the dedupe above only catches the zero-byte spelling of it.
+    skipped_names.dedup();
     let skipped = skipped_names.len();
     skipped_names.truncate(crate::discover::SKIPPED_NAMES_SHOWN);
     let holds = crate::discover::Holds {
@@ -936,8 +939,9 @@ pub fn look_at_listing(
             .collect(),
         folders: counted.len(),
         partitions,
-        // Present, not a writer's own, and not named as anything datui reads.
-        not_read: present.len() - files.len(),
+        // Present, not a writer's own, and not named as anything datui reads — plus
+        // the empty placeholders standing for no folder, which `present` dropped.
+        not_read: present.len() - files.len() + orphan_markers.len(),
         skipped,
         skipped_names,
         truncated: false,
@@ -2062,6 +2066,25 @@ mod tests {
             );
         }
         assert!(!crate::discover::is_bookkeeping("part-0000.parquet"));
+
+        // One thing named twice — the object and the prefix — is one skipped entry,
+        // and an empty object standing for no folder is a file nothing can read, which
+        // is what the local route calls it.
+        let folders = ["out/_temporary/".to_string()];
+        let objects: Vec<(String, u64)> = [
+            ("out/_temporary", 12u64),
+            ("out/NOTES", 0),
+            ("out/a.parquet", 100),
+            ("out/b.parquet", 100),
+        ]
+        .iter()
+        .map(|(k, s)| ((*k).to_string(), *s))
+        .collect();
+        let holds = look_at_listing(&folders, &objects).1;
+        assert_eq!(
+            holds.line(true).as_deref(),
+            Some("2 parquet · 1 not read · 1 skipped (_temporary)")
+        );
         // Whether a key counts as data and whether it is worth a row are two questions.
         // `_manifest.parquet` is a writer's own file and still something to open, and
         // the local listing has always shown its equivalent.

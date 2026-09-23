@@ -194,7 +194,7 @@ A folder's label says what is directly inside it, from one listing:
 
 | Label | Means |
 |---|---|
-| `hive` | It has at least as many `key=value` child folders as data files |
+| `hive` | It has a `key=value` child folder, and at least as many of those as data files |
 | `delta` `iceberg` `hudi` | The format's marker is present |
 | `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
 | `mixed` | Data files of more than one format |
@@ -203,9 +203,9 @@ A folder's label says what is directly inside it, from one listing:
 
 A folder larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12
-parquet · 2 csv · 3 folders · 5 not read · 4 skipped (.crc, _SUCCESS)` — every
+parquet · 2 csv · 3 folders · 5 not read · 4 skipped (.crc, _SUCCESS, …)` — every
 file in the folder is in one of those counts, and the ones passed over as a
-writer's own are named.
+writer's own are named, the first four of them.
 
 A label describes; it does not promise what <kbd>Enter</kbd> will do. A folder of
 fifteen unrelated tables reads `15 parquet` and is still a place to look inside.

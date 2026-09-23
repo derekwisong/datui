@@ -818,7 +818,11 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 Some(first) if first != found => mixed_formats = true,
                 Some(_) => {}
             }
-        } else if is_file {
+        } else {
+            // Everything else in the listing: a file with no reader, and a name with
+            // nothing behind it — a FIFO, a socket, a broken symlink. Named like data
+            // or not, none of them can be read, and the pane says every entry is in
+            // one of these counts.
             holds.not_read += 1;
         }
         seen += 1;
@@ -2235,6 +2239,29 @@ mod classification_tests {
 
         assert_eq!(local, cloud, "the two routes answer the same folder alike");
         assert_eq!(local, EntryKind::MultiFile);
+    }
+
+    /// Every entry is in exactly one count, including the ones with nothing behind
+    /// them. A FIFO and a broken symlink named like data are not data and are not a
+    /// writer's own; without a count they were in nothing, and the pane said `1 csv`
+    /// about a folder of three entries.
+    #[cfg(unix)]
+    #[test]
+    fn every_entry_is_in_one_count() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.csv"), b"id\n1\n").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("broken.csv")).unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"x").unwrap();
+        std::fs::write(dir.path().join("_SUCCESS"), b"").unwrap();
+
+        let holds = look_at_directory(dir.path()).1;
+        assert_eq!(holds.data_files(), 1);
+        assert_eq!(holds.not_read, 2, "the note and the broken link");
+        assert_eq!(holds.skipped, 1);
+        assert_eq!(
+            holds.line(true).as_deref(),
+            Some("1 csv · 2 not read · 1 skipped (_SUCCESS)")
+        );
     }
 
     /// Named like data and impossible to read: a FIFO blocks whoever opens it until a

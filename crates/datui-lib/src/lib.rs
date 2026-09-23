@@ -8028,10 +8028,12 @@ impl App {
                 //
                 // An answer that says neither is dropped, because each send costs a
                 // listing rebuild, and that reads the dataset index on the thread
-                // drawing the frame. A bucket page of empty prefixes did no work
-                // before this branch and must not start doing twelve rebuilds of it.
+                // drawing the frame. Data files and nothing else, because that is what
+                // the row renders: with none, `entry_line` falls back to the word for
+                // the place, so a prefix holding only sub-prefixes would have bought
+                // twelve rebuilds and changed no row.
                 if let Ok((folder, Ok(answer))) = joined
-                    && (answer.0 != discover::EntryKind::Directory || !answer.1.is_empty())
+                    && (answer.0 != discover::EntryKind::Directory || !answer.1.formats.is_empty())
                 {
                     found.push((folder, answer));
                 }

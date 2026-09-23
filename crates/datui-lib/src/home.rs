@@ -1234,31 +1234,16 @@ fn apply_known_facts(
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
-            // And, for a folder that is *not* a dataset, the width the footers gave it.
-            // The fingerprint below is a file's — a listing gives a directory no size,
-            // so `same_bytes` is never true for one — and without this a folder of
-            // separate tables read `15 parquet · 72 columns` in the session that
-            // measured it and a blank shape in every session after, though the record
-            // still held the number.
-            //
-            // Only that kind, and never the row count. `unmeasured_visible` skips a
-            // row that has one, so restoring a count here would stop a `hive` or a
-            // `multi` folder ever being measured again — and its size and its codec,
-            // which nothing else fills in, would go blank instead. A folder of
-            // separate tables has no row count to restore: a sum over unrelated tables
-            // is not a number, and `downgrade_to_directory` leaves it `None`.
-            if kind == EntryKind::Directory {
-                row.cols = facts.cols;
-                row.cols_sampled = facts.cols_sampled;
-                // And the size, for the same reason and from the same record:
-                // `downgrade_to_directory` keeps the total it summed precisely so this
-                // can come back, and without it the folder read `15 parquet · 72
-                // columns · 4.2 MB` once and lost the size for good.
-                row.size = row.size.or(Some(facts.size));
-                if !facts.columns.is_empty() {
-                    row.columns = facts.columns.clone();
-                }
-            }
+            // The kind and the count, and nothing measured. Both of those come from
+            // the folder's *names*, which is what a directory's mtime is a fingerprint
+            // for: it moves when an entry is added, removed or renamed. What the
+            // footers said — the width, the size, the column names — can change with
+            // no entry added or removed at all, by one file being rewritten in place,
+            // and a directory mtime cannot see that. `same_bytes` below is the
+            // fingerprint for those, it is a file's, and a folder has no size to offer
+            // it; so a folder of separate tables shows its width in the session that
+            // measured it and not after. That is the honest end of a weak key, and
+            // #275 phase 6 gives it a real one by verifying under the cursor.
         }
     }
 
@@ -2708,19 +2693,16 @@ mod known_facts_tests {
             apply_known_facts(&mut row, &index, remote);
             assert_eq!(row.kind, EntryKind::Directory, "{path:?}");
             assert_eq!(row.label(), "15 parquet", "{path:?}");
-            // And the shape beside it. A directory has no size for the fingerprint
-            // below to match on, so without this the count was written to the record
-            // and never read back out of it.
-            assert_eq!(row.cols, Some(72), "{path:?}");
-            assert_eq!(row.columns, vec!["lat".to_string()], "{path:?}");
-            assert_eq!(row.size, Some(4096), "{path:?}");
-            // And restoring that size must not open the file-only gate below it: a
-            // record carrying a row count for a folder would otherwise be let through,
-            // and `unmeasured_visible` skips a row that has one for ever after. Only
+            // And nothing the footers said. A directory's mtime moves when an entry
+            // is added, removed or renamed; a file rewritten in place moves nothing,
+            // and the width, the size and the column names all change with it. Only
             // locally — a remote row is never measured here at all, so the record is
             // all it will ever have and it takes the whole of it.
             if !remote {
                 assert_eq!(row.rows, None, "{path:?}");
+                assert_eq!(row.cols, None, "{path:?}");
+                assert_eq!(row.size, None, "{path:?}");
+                assert!(row.columns.is_empty(), "{path:?}");
             }
         }
     }

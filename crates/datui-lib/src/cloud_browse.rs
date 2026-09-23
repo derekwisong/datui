@@ -905,7 +905,7 @@ pub fn look_at_listing(
     // A console's folder placeholder with no prefix beside it is in no other count —
     // `present` drops it and it is not a writer's own name — and the pane promises
     // every object is in one of them.
-    let orphan_markers = objects
+    let orphan_markers: Vec<String> = objects
         .iter()
         .filter(|(key, size)| {
             let name = last(key);
@@ -914,7 +914,8 @@ pub fn look_at_listing(
                 && !crate::discover::is_bookkeeping(&name)
                 && !folders.iter().any(|f| last(f) == name)
         })
-        .count();
+        .map(|(key, _)| last(key))
+        .collect();
     let mut skipped_names: Vec<String> = objects
         .iter()
         // A zero-byte object beside a prefix of the same name is that prefix, written
@@ -923,9 +924,10 @@ pub fn look_at_listing(
         .map(|(key, _)| last(key))
         .chain(folders.iter().map(|f| last(f)))
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
+        .chain(orphan_markers)
         .collect();
     skipped_names.sort();
-    let skipped = skipped_names.len() + orphan_markers;
+    let skipped = skipped_names.len();
     skipped_names.truncate(crate::discover::SKIPPED_NAMES_SHOWN);
     let holds = crate::discover::Holds {
         formats: counts

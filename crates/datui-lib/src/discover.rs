@@ -226,7 +226,14 @@ impl Holds {
     /// into. A folder that was looked into and found empty is not this — it has no
     /// formats either, and `dir` is the right word for both.
     pub fn is_empty(&self) -> bool {
-        self.formats.is_empty() && self.folders == 0 && self.skipped == 0 && self.not_read == 0
+        self.formats.is_empty()
+            && self.folders == 0
+            && self.skipped == 0
+            && self.not_read == 0
+            // A listing cut short before it found anything still says something: that
+            // what it found is not all there is. Without this the row falls back to its
+            // kind and reads `dir`, where `label` would have said `dir+`.
+            && !self.truncated
     }
 
     /// The `holds` line in the details pane: every format, the folders, and what was
@@ -1970,6 +1977,16 @@ mod classification_tests {
             ..Default::default()
         };
         assert_eq!(whole.label(), "dir");
+
+        // And a listing cut short before it found anything at all still says so: it is
+        // not an empty tally, or the row falls back to its kind and reads `dir`.
+        let nothing_yet = Holds {
+            truncated: true,
+            ..Default::default()
+        };
+        assert!(!nothing_yet.is_empty());
+        assert_eq!(nothing_yet.label(), "dir+");
+        assert!(Holds::default().is_empty());
 
         let mixed = Holds {
             formats: vec![("parquet".to_string(), 3), ("csv".to_string(), 2)],

@@ -1206,16 +1206,15 @@ fn apply_known_facts(
     //
     // Tested before the fingerprint below rather than after, because that fingerprint
     // is a file's: a listing gives a directory no size, so `same_bytes` is never true
-    // for one — which is why it is measured against the size the *listing* gave, not
-    // the one this block may put back. A directory's own mtime is what it has, and it
-    // moves when a file is added or removed, which is when this answer could change.
+    // for one. A directory's own mtime is what it has, and it moves when a file is
+    // added or removed, which is when this answer could change. Nothing here writes a
+    // size back onto the row, and nothing should: the fingerprint below would then be
+    // comparing a cached size with itself.
     //
     // Gated on the classifier, because a kind is a judgement where everything else
     // here is a measurement. `is_one_table`'s answer is the most version-sensitive
     // judgement datui makes — #234 introduced it and #243 changed what it runs over —
     // so a build that decided differently does not get to speak here.
-    // What the listing itself knew, before anything below restores a size onto the row.
-    let listed_size = row.size;
     if !remote
         && matches!(row.kind, EntryKind::Unknown | EntryKind::MultiFile)
         && facts.classified_by == crate::discover::CLASSIFIER_VERSION
@@ -1249,7 +1248,7 @@ fn apply_known_facts(
     }
 
     if !remote {
-        let same_bytes = listed_size.map(|s| s == facts.size).unwrap_or(false)
+        let same_bytes = row.size.map(|s| s == facts.size).unwrap_or(false)
             && row
                 .modified
                 .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())

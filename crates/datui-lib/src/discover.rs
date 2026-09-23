@@ -156,7 +156,7 @@ pub struct Holds {
 }
 
 /// How many skipped names are kept for the pane. Enough to recognise the convention.
-const SKIPPED_NAMES_SHOWN: usize = 4;
+pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
 
 impl Holds {
     /// Data files of every format.
@@ -207,12 +207,25 @@ impl Holds {
             };
             parts.push(format!("{}{more} {word}", self.folders));
         }
-        if self.skipped > 0 {
-            let names = self.skipped_names.join(", ");
-            parts.push(if names.is_empty() {
-                format!("{} skipped", self.skipped)
+        if self.partitions > 0 {
+            let word = if self.partitions == 1 {
+                "partition"
             } else {
-                format!("{} skipped ({names})", self.skipped)
+                "partitions"
+            };
+            parts.push(format!("{}{more} {word}", self.partitions));
+        }
+        if self.skipped > 0 {
+            // The names are the first few, so a list shorter than the count ends in an
+            // ellipsis rather than reading as all of them.
+            let mut names = self.skipped_names.join(", ");
+            if self.skipped > self.skipped_names.len() && !names.is_empty() {
+                names.push_str(", …");
+            }
+            parts.push(if names.is_empty() {
+                format!("{}{more} skipped", self.skipped)
+            } else {
+                format!("{}{more} skipped ({names})", self.skipped)
             });
         }
         (!parts.is_empty()).then(|| parts.join(" · "))
@@ -698,14 +711,13 @@ pub fn classify_directory(path: &Path) -> EntryKind {
 /// that is wrong about the first is still true about the second.
 pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     let mut holds = Holds::default();
-    // Before anything is counted: a lake table's data files genuinely do agree on a
-    // schema, so every rule below says "one table" and is right about the schema and
-    // wrong about the rows.
-    if let Some(lake) = lake_table(path) {
-        return (lake, holds);
-    }
+    // A lake table's data files genuinely do agree on a schema, so every rule below
+    // says "one table" and is right about the schema and wrong about the rows. Decided
+    // before the counting settles anything, and after the listing all the same: a Delta
+    // root still holds files, and its pane says how many, the way a bucket's does.
+    let lake = lake_table(path);
     let Ok(iter) = std::fs::read_dir(path) else {
-        return (EntryKind::Directory, holds);
+        return (lake.unwrap_or(EntryKind::Directory), holds);
     };
 
     let mut partitions = 0usize;
@@ -811,6 +823,10 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     // `docs/`. Refusing a dataset is the worse direction, and a rule per case is what
     // #275 exists to stop. The label stops deciding what `Enter` does in phase 3, and
     // the question goes with it.
+    if let Some(lake) = lake {
+        return (lake, holds);
+    }
+
     // Deterministic now rather than occasional, which is the cost of the whole listing:
     // a source tree with a `cfg=debug/` in it reads `hive` on every pass, and `enrich`
     // then walks it to depth four looking for footers. Left alone all the same — see
@@ -984,6 +1000,10 @@ fn sort_entries(entries: &mut [Entry]) {
     });
 }
 
+/// How far below a folder the footer walk goes. A hive dataset partitioned by year,
+/// month, day and hour is four; past this the files belong to something else.
+const MAX_WALK_DEPTH: u8 = 4;
+
 /// Upper bound on Parquet footers read to size a multi-file or hive dataset.
 ///
 /// Two partitions is cheap; five thousand is not, and a home screen that stalls on
@@ -1011,18 +1031,6 @@ pub fn enrich(entry: &mut Entry) {
 
 /// Sum footers across a bounded set of Parquet files under `entry`.
 fn enrich_dataset(entry: &mut Entry) {
-    // A folder of JSON is not described by Parquet found under it. The footer walk
-    // recurses, which is right for a hive root — its data is down in the partitions —
-    // and wrong for a folder whose own files are the dataset: `6 json` reported the
-    // sixty-one columns of the Parquet in its subfolders, which is a true count of
-    // something the row does not name.
-    if entry.kind == EntryKind::MultiFile
-        && entry.holds.one_format().is_some_and(|f| f != "parquet")
-    {
-        entry.size = None;
-        return;
-    }
-
     // The partition layout comes from directory names, so it is knowable even for a
     // dataset far too large to count the rows of — which is exactly the dataset whose
     // shape you most want described before opening it.
@@ -1036,8 +1044,20 @@ fn enrich_dataset(entry: &mut Entry) {
     // leave it behind to be read as an answer.
     entry.size = None;
 
+    // A folder is measured by the files it is labelled from — the ones directly inside
+    // it — and a hive root by the tree below it, because that is where a hive dataset's
+    // data is. The walk used to recurse for both, so `3 parquet` beside an `archive/`
+    // of a hundred more reported the rows, columns and size of all hundred and three,
+    // and a folder of JSON reported the columns of the Parquet under it.
+    // Starting at the cap means the walk stops after this level, since it descends by
+    // one and gives up past it.
+    let start_depth = if entry.kind == EntryKind::Hive {
+        0
+    } else {
+        MAX_WALK_DEPTH
+    };
     let mut files = Vec::new();
-    collect_parquet_files(&entry.path, 0, &mut files);
+    collect_parquet_files(&entry.path, start_depth, &mut files);
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
         // Whether these are one table is still worth asking, and it does not need
         // every footer: three files spread across the folder answer it. Without this a
@@ -1242,7 +1262,7 @@ const MAX_NAMES_PER_DIR: usize = 20_000;
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
 /// once the cap is exceeded so a huge dataset costs the same as a small one.
 fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
-    if depth > 4 || out.len() > MAX_FOOTERS_PER_DATASET {
+    if depth > MAX_WALK_DEPTH || out.len() > MAX_FOOTERS_PER_DATASET {
         return;
     }
     let Ok(iter) = std::fs::read_dir(dir) else {
@@ -1756,6 +1776,50 @@ mod classification_tests {
         assert!(holds.label().contains('+'));
     }
 
+    /// A lake table is a folder too, and its pane says what is in it. The cloud route
+    /// counted before it checked the markers; this one returned before it counted.
+    #[test]
+    fn a_lake_table_says_what_is_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("_delta_log")).unwrap();
+        write(dir.path(), "part-00000.parquet", &["id"]);
+        write(dir.path(), "part-00001.parquet", &["id"]);
+
+        let (kind, holds) = look_at_directory(dir.path());
+        assert_eq!(kind, EntryKind::Delta);
+        assert_eq!(
+            holds.line().as_deref(),
+            Some("2 parquet · 1 skipped (_delta_log)")
+        );
+    }
+
+    /// The pane never presents the first few skipped names as all of them, and a count
+    /// that is a floor says so wherever it appears.
+    #[test]
+    fn a_tally_does_not_claim_more_than_it_counted() {
+        let holds = Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            folders: 3,
+            partitions: 3,
+            skipped: 10,
+            skipped_names: vec![".crc".into(), "_SUCCESS".into()],
+            truncated: false,
+        };
+        assert_eq!(
+            holds.line().as_deref(),
+            Some("12 parquet · 3 folders · 3 partitions · 10 skipped (.crc, _SUCCESS, …)")
+        );
+
+        let floor = Holds {
+            truncated: true,
+            ..holds
+        };
+        assert_eq!(
+            floor.line().as_deref(),
+            Some("12+ parquet · 3+ folders · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)")
+        );
+    }
+
     /// The same folder read twice reads the same. Skipped names come back in whatever
     /// order the filesystem holds them, so the pane takes the first few *by name*.
     #[test]
@@ -1781,6 +1845,27 @@ mod classification_tests {
             "the first four by name, of five"
         );
         assert_eq!(first.skipped, 5);
+    }
+
+    /// Including when what is under them is Parquet too. A folder of three Parquet
+    /// files beside an `archive/` of a hundred more is `3 parquet`, and the counts
+    /// beside that label are those three files.
+    #[test]
+    fn a_parquet_folder_is_measured_by_its_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        for i in 0..20 {
+            write(&archive, &format!("old-{i}.parquet"), &["id", "legacy"]);
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.label(), "3 parquet");
+        assert_eq!(entry.rows, Some(3), "three files, one row each");
+        assert_eq!(entry.cols, Some(1), "and not the archive's columns");
     }
 
     /// A folder is described by its own files, not by what is under them. The footer

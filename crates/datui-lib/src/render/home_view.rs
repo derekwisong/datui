@@ -842,9 +842,16 @@ fn entry_line<'a>(
     // is what identifies a row and the label only describes it, so the label goes; the
     // details pane still has it. The test is the one truncation already makes, so there
     // is no width here to pick.
-    let (kind_cell, kind_is_chip) = if name_width
-        .saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
-        > 1
+    //
+    // Only a label. A column note says *why this row is in the list*, and the draw site
+    // writes it from `matched_column` rather than from this cell, so blanking the cell
+    // would hand the name a budget the note then overruns — the misalignment this
+    // exists to stop, one column wider. And `source not found:` is a warning the pane
+    // does not carry, so dropping it leaves a broken recent looking like a working one.
+    let is_label = matched_column.is_none() && !missing_source;
+    let (kind_cell, kind_is_chip) = if !is_label
+        || name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
+            > 1
     {
         (kind_cell, kind_is_chip)
     } else {
@@ -1367,6 +1374,9 @@ mod tests {
     fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
         let ctx = RenderContext::for_test();
         let mut entry = row("/data/exports", crate::discover::EntryKind::MultiFile);
+        // Real metadata, so the meta columns are a string the offset can be found by.
+        entry.size = Some(4096);
+        entry.rows = Some(12);
         entry.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 5000)],
             truncated: true,
@@ -1376,16 +1386,28 @@ mod tests {
 
         // Where the meta columns begin: everything drawn before them. It must not
         // depend on how long a row's label is, or the columns stop lining up.
-        let meta_starts_at = |entry: &Entry, width: usize| -> usize {
-            let line = entry_line(entry, false, width, true, None, "", None, None, &ctx);
-            let spans = line.spans;
-            spans[..spans.len() - 1]
+        let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
+            let meta = meta_columns(entry);
+            let at = line
+                .spans
+                .iter()
+                .position(|s| s.content == meta)
+                .expect("the meta columns are drawn");
+            line.spans[..at]
                 .iter()
                 .map(|s| s.content.chars().count())
                 .sum()
         };
+        let meta_starts_at = |entry: &Entry, width: usize| -> usize {
+            let line = entry_line(entry, false, width, true, None, "", None, None, &ctx);
+            offset_of_meta(line, entry)
+        };
 
-        let mut short = row("/data/exports", crate::discover::EntryKind::Directory);
+        // The same kind, so only the label's length differs: a `Directory` row carries
+        // a trailing slash and would be a character wider for a reason of its own.
+        let mut short = row("/data/exports", crate::discover::EntryKind::MultiFile);
+        short.size = Some(4096);
+        short.rows = Some(12);
         short.holds = crate::discover::Holds {
             formats: vec![("csv".to_string(), 2)],
             ..Default::default()
@@ -1397,6 +1419,32 @@ mod tests {
                 meta_starts_at(&entry, width),
                 meta_starts_at(&short, width),
                 "the meta columns must start in the same place at {width}"
+            );
+        }
+
+        // A column note is not a label: it says why the row is in the list, and the
+        // draw site writes it from `matched_column` rather than from the cell, so
+        // blanking the cell would hand the name a budget the note then overruns.
+        let noted = |entry: &Entry, width: usize| -> usize {
+            let line = entry_line(
+                entry,
+                false,
+                width,
+                true,
+                Some("transaction_amount"),
+                "",
+                None,
+                None,
+                &ctx,
+            );
+            offset_of_meta(line, entry)
+        };
+        for width in [20usize, 24, 30, 48] {
+            assert_eq!(
+                noted(&entry, width),
+                noted(&short, width),
+                "a matched row is drawn by its note, whatever its label would say, \
+                 at {width}"
             );
         }
     }

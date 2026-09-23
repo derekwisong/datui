@@ -399,7 +399,7 @@ pub struct DatasetFacts {
     /// Restored beside `kind` and gated by the same classifier version: both are what
     /// looking into the folder produced, and a build that classified differently
     /// counted differently too.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::discover::Holds::is_empty")]
     pub holds: crate::discover::Holds,
 }
 

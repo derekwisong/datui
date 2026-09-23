@@ -262,7 +262,7 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .filter(|r| r.kind == EntryKind::File)
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
-    let kind = crate::cloud_browse::classify_listing(&folders, &objects);
+    let (kind, holds) = crate::cloud_browse::look_at_listing(&folders, &objects);
     let what = match kind {
         EntryKind::Hive => "all partitions",
         EntryKind::MultiFile => "all files",
@@ -277,6 +277,9 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .to_string();
     let mut entry = Entry::directory(&folder_dataset_url(dir));
     entry.kind = kind;
+    // The same count the folder's own row carries: this row is the other door to the
+    // same open, and reading `multi` beside a `12 parquet` row names nothing.
+    entry.holds = holds;
     entry.name = format!("{name} ({what})");
     Some(entry)
 }

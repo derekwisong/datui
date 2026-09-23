@@ -899,14 +899,18 @@ pub fn look_at_listing(
         }
     }
     counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    // Prefixes as well as objects: `_temporary/` is a writer's own folder and is
+    // counted as skipped on disk, so a Spark output prefix must not read `2 parquet`
+    // here and `2 parquet · 1 skipped (_temporary)` there.
     let mut skipped_names: Vec<String> = objects
         .iter()
         .map(|(key, _)| last(key))
+        .chain(folders.iter().map(|f| last(f)))
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
         .collect();
     skipped_names.sort();
     let skipped = skipped_names.len();
-    skipped_names.truncate(4);
+    skipped_names.truncate(crate::discover::SKIPPED_NAMES_SHOWN);
     let holds = crate::discover::Holds {
         formats: counts
             .into_iter()

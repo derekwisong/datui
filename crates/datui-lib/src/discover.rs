@@ -1984,7 +1984,9 @@ mod classification_tests {
             line.contains(".part-00000"),
             "the head says what it is: {line}"
         );
-        assert!(line.contains("parquet.crc"), "and the tail: {line}");
+        // The tail, as much of it as the ellipsis leaves: it takes three characters of
+        // the twenty-four in the ASCII glyph set and one in the Unicode one.
+        assert!(line.contains(".crc"), "and the tail: {line}");
         assert!(
             !line.contains("8f3a91c2"),
             "the middle is nobody's business: {line}"
@@ -2011,17 +2013,22 @@ mod classification_tests {
             skipped_names: vec![".crc".into(), "_SUCCESS".into()],
             truncated: false,
         };
+        // The ellipsis is the glyph set's: one character, or three where the terminal
+        // cannot draw it.
+        let e = crate::glyphs::get().ellipsis;
         assert_eq!(
-            holds.line(true).as_deref(),
-            Some(
-                "12 parquet · 2 folders · 7 not read · 3 partitions · 10 skipped (.crc, _SUCCESS, …)"
-            ),
-            "and without the partitions when the layout line below will carry them"
+            holds.line(true),
+            Some(format!(
+                "12 parquet · 2 folders · 7 not read · 3 partitions · 10 skipped (.crc, _SUCCESS, {e})"
+            ))
         );
 
         assert_eq!(
-            holds.line(false).as_deref(),
-            Some("12 parquet · 2 folders · 7 not read · 10 skipped (.crc, _SUCCESS, …)")
+            holds.line(false),
+            Some(format!(
+                "12 parquet · 2 folders · 7 not read · 10 skipped (.crc, _SUCCESS, {e})"
+            )),
+            "and without the partitions when the layout line below will carry them"
         );
 
         let floor = Holds {
@@ -2029,10 +2036,10 @@ mod classification_tests {
             ..holds
         };
         assert_eq!(
-            floor.line(true).as_deref(),
-            Some(
-                "12+ parquet · 2+ folders · 7+ not read · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)"
-            )
+            floor.line(true),
+            Some(format!(
+                "12+ parquet · 2+ folders · 7+ not read · 3+ partitions · 10+ skipped (.crc, _SUCCESS, {e})"
+            ))
         );
     }
 

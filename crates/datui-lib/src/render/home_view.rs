@@ -904,13 +904,20 @@ fn entry_line<'a>(
     // is the identifying part, so the tail goes and the marks that fell in it go with
     // it — the same shape the name's own truncation takes.
     let mut note_was_cut = false;
+    // The ellipsis is one character in the Unicode set and three in the ASCII one, so
+    // the room it takes is asked for rather than assumed. Assuming one made the cut
+    // note two characters longer than it was allowed under `unicode = never`, which
+    // collapsed the name's budget — the misalignment this is all for, reached through
+    // the fix for it.
+    let ellipsis = glyphs::get().ellipsis;
+    let ellipsis_len = ellipsis.chars().count();
     let shown_column = matched_column.map(|column| {
         let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
-        if column.chars().count() <= room || room <= 1 {
+        if column.chars().count() <= room || room <= ellipsis_len {
             column.to_string()
         } else {
             note_was_cut = true;
-            column.chars().take(room - 1).collect::<String>() + glyphs::get().ellipsis
+            column.chars().take(room - ellipsis_len).collect::<String>() + ellipsis
         }
     });
     let kind_cell = match &shown_column {
@@ -1039,10 +1046,11 @@ fn entry_line<'a>(
             let mut positions = crate::home::substring_positions(filter, column);
             // One less when the last character is the ellipsis standing for the rest,
             // and not otherwise: an uncut note keeps the mark on its final letter.
-            let kept = shown
-                .chars()
-                .count()
-                .saturating_sub(usize::from(note_was_cut));
+            let kept =
+                shown
+                    .chars()
+                    .count()
+                    .saturating_sub(if note_was_cut { ellipsis_len } else { 0 });
             positions.retain(|p| *p < kept);
             spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
         }
@@ -1083,7 +1091,6 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
     ])
 }
 
-/// One `key   value` line, with the value carrying the emphasis.
 /// How many rows a line takes once the pane has wrapped it.
 ///
 /// Word-wrapped, the way `Wrap { trim: false }` does it: a word that will not fit goes
@@ -1120,6 +1127,7 @@ fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     rows
 }
 
+/// One `key   value` line, with the value carrying the emphasis.
 fn fact_line(
     key: &str,
     value: String,

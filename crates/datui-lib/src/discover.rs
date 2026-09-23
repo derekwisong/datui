@@ -298,8 +298,13 @@ pub fn has_parquet_magic(path: &Path) -> bool {
 }
 
 /// Whether a path looks like something datui can open.
+///
+/// Its name, or its place: a part file with no extension inside a `.parquet` folder is
+/// Parquet, as Spark and GBIF write them. Every route that asks what a name means asks
+/// here — the listing, the search, `~` input, the counts and the schema pane — because
+/// the one that did not was always the one that disagreed.
 pub fn is_data_file(path: &Path) -> bool {
-    data_extension(path).is_some()
+    data_extension(path).is_some() || is_parquet_key(&folder_and_name(path))
 }
 
 /// The extension that says what a file *is*, with any compression suffix walked past.
@@ -541,11 +546,15 @@ fn is_partition_dir(path: &Path) -> bool {
 /// It costs more than the probe did: a plain directory row is enriched with nothing, so
 /// its listing is read for this alone, and a folder of five thousand entries is read
 /// whole where eight used to settle it — six hundred times the entries, for the worst
-/// row, and `look_into_batch` walks a batch of sixteen of them one at a time. That includes rows on a network mount, which
-/// `unclassified_visible` does look into — `network_check` gates listing a directory
-/// you have browsed into, not classifying the rows of one. The cost is one `getdents`
-/// walk with no `stat` per entry, which is the cheapest shape a correct answer has, and
-/// capping it lower again would put the order-dependence back exactly where the folders
+/// row, and `look_into_batch` walks a batch of sixteen of them one at a time.
+///
+/// That includes rows on a network mount: `network_check` gates listing a directory you
+/// have browsed into, not classifying the rows of one. It is one `getdents` walk, with
+/// a `stat` only for a symlink, since `d_type` cannot say what is on the far end of one
+/// — so a directory of symlinks is the expensive case. `home_open_selected` makes the
+/// call on the thread reading keys; every other caller is on a worker.
+///
+/// Capping it lower again would put the order-dependence back exactly where the folders
 /// are biggest.
 pub fn classify_directory(path: &Path) -> EntryKind {
     // Before anything is counted: a lake table's data files genuinely do agree on a
@@ -603,10 +612,8 @@ pub fn classify_directory(path: &Path) -> EntryKind {
                 partitions += 1;
             }
         } else if let Some(found) = data_format(&entry_path)
+            // Data by where it sits rather than by its name: see [`is_data_file`].
             .or_else(|| {
-                // A part file with no extension inside a `.parquet` folder, as Spark
-                // and GBIF write them: data by where it sits rather than by its name.
-                // The cloud route has always counted these; this one had not.
                 is_parquet_key(&folder_and_name(&entry_path)).then_some(crate::FileFormat::Parquet)
             })
             .filter(|_| is_file)
@@ -1367,13 +1374,7 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 
     let file_path = match entry.kind {
         EntryKind::File => {
-            let is_parquet = entry
-                .path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("parquet"))
-                .unwrap_or(false);
-            if !is_parquet {
+            if !is_parquet_key(&folder_and_name(&entry.path)) {
                 return None;
             }
             entry.path.clone()
@@ -1526,20 +1527,16 @@ mod classification_tests {
              for a full read of files already read"
         );
 
-        // Browsing into the folder: each part file is a Parquet file in its own right.
-        let mut part = Entry {
-            path: table.join("000001"),
-            kind: EntryKind::File,
-            name: "000001".into(),
-            size: None,
-            modified: None,
-            rows: None,
-            cols: None,
-            cols_sampled: false,
-            columns: Vec::new(),
-            cost: Cost::default(),
-        };
-        enrich(&mut part);
+        // → goes inside a folder labelled `multi`, so the listing has to show the files
+        // the label was counted from — and each is a Parquet file in its own right.
+        let mut listed = scan_dir(&table);
+        assert_eq!(
+            listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["000001", "000002"],
+            "the folder the label promises is not an empty listing"
+        );
+        let part = listed.first_mut().expect("a part file is listed");
+        enrich(part);
         assert_eq!(part.rows, Some(1), "a part file counts its own rows");
         assert_eq!(part.cols, Some(2));
     }

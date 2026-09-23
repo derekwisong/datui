@@ -1674,10 +1674,7 @@ impl DataTableState {
         for entry in entries.flatten() {
             let child = entry.path();
             if child.is_file() {
-                if child
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
-                {
+                if crate::discover::is_parquet_key(&crate::discover::folder_and_name(&child)) {
                     return Some(child);
                 }
             } else if child.is_dir()

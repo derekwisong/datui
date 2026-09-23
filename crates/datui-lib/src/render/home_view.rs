@@ -773,13 +773,7 @@ fn entry_line<'a>(
     };
 
     let mut name = entry.name.clone();
-    // A row nothing has looked into is still a place: a listing only ever puts a
-    // directory on one, and a remote row that is not a data file by name is a prefix.
-    // Saying so up front keeps the name from changing shape a frame later when the
-    // label lands — the `…` beside it already carries the part that is not known.
-    if entry.kind == EntryKind::Directory
-        || (entry.kind == EntryKind::Unknown && !crate::discover::is_data_file(&entry.path))
-    {
+    if shows_as_a_place(entry) {
         name.push('/');
     }
     // A column hit takes the place of the kind label: both are a short note about
@@ -1302,11 +1296,85 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         .render(area, buf);
 }
 
+/// Whether a row's name is drawn with a trailing slash.
+///
+/// A row nothing has looked into is still a place: a listing datui made itself only ever
+/// puts a directory on one, so `project.old` and `v1.2` keep their slash however many
+/// dots are in the name. A remote row — a bucket, an HTTP URL, a path on a share — is
+/// the one nothing can stat, and there the name is all there is — so a name with an extension is a file even when it is one datui does not
+/// read (`export.txt`), and everything else is a prefix.
+///
+/// Said up front so the name does not change shape a frame later when the label lands;
+/// the `…` beside it already carries the part that is not known.
+fn shows_as_a_place(entry: &Entry) -> bool {
+    if entry.kind == EntryKind::Directory {
+        return true;
+    }
+    if entry.kind != EntryKind::Unknown {
+        return false;
+    }
+    !crate::home::is_remote_path(&entry.path)
+        || (!crate::discover::is_data_file(&entry.path) && entry.path.extension().is_none())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::discover::Entry;
     use crate::home::Section;
+
+    fn row(path: &str, kind: crate::discover::EntryKind) -> Entry {
+        Entry {
+            path: std::path::PathBuf::from(path),
+            kind,
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            size: None,
+            modified: None,
+            rows: None,
+            cols: None,
+            cols_sampled: false,
+            columns: Vec::new(),
+            cost: Default::default(),
+        }
+    }
+
+    /// A dot in a folder's name does not make it a file. A local row nothing has looked
+    /// into came from a listing that saw a directory, so the name is not the evidence.
+    #[test]
+    fn a_local_folder_keeps_its_slash_however_its_name_is_spelled() {
+        for name in ["project.old", "v1.2", "site.com", "datui.git", "plain"] {
+            let entry = row(&format!("/home/derek/{name}"), EntryKind::Unknown);
+            assert!(
+                shows_as_a_place(&entry),
+                "{name} is a folder the listing saw"
+            );
+        }
+    }
+
+    /// Remote, the name is all there is. One with an extension is a file even when it
+    /// is one datui does not read, and one without is a prefix.
+    #[test]
+    fn a_remote_row_is_read_as_a_prefix_only_when_its_name_is_not_a_file() {
+        // A path on a network mount takes the same branch, but whether one *is* a
+        // network mount is a question about this machine's mount table, so the two
+        // URL schemes are what a test can say.
+        for prefix in ["s3://bucket", "https://host"] {
+            for name in ["export.txt", "part-00000.parquet", "notes.md"] {
+                assert!(
+                    !shows_as_a_place(&row(&format!("{prefix}/{name}"), EntryKind::Unknown)),
+                    "{prefix}/{name} is named like a file"
+                );
+            }
+        }
+        for prefix in ["s3://bucket", "https://host"] {
+            for name in ["exports", "2024", "raw"] {
+                assert!(
+                    shows_as_a_place(&row(&format!("{prefix}/{name}"), EntryKind::Unknown)),
+                    "{prefix}/{name} is a prefix"
+                );
+            }
+        }
+    }
 
     fn header_width(section: &Section, width: usize) -> usize {
         let ctx = RenderContext::for_test();

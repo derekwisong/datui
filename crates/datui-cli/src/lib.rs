@@ -40,7 +40,31 @@ impl FileFormat {
             .and_then(Self::from_extension)
     }
 
+    /// Whether many files of this format can be read as one table.
+    ///
+    /// Asked before a folder is offered as a dataset, so the home screen cannot promise
+    /// an open the reader has no route for. The open's own refusal is a match arm in
+    /// `datui-lib`, which asserts against this predicate on every debug run, so the two
+    /// cannot name different formats without a test saying so.
+    ///
+    /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
+    /// is sheets rather than rows, with nothing to concatenate. Reading the first two
+    /// as a list is #275 phase 4's ("never refuse").
+    pub fn reads_many_files(self) -> bool {
+        !matches!(self, Self::Tsv | Self::Psv | Self::Excel)
+    }
+
     /// Parse format from extension string (e.g. "parquet", "csv").
+    ///
+    /// The one place an extension becomes a format. Everything that asks whether a name
+    /// is data — the home screen, the search, `~` path input, the CLI and the cloud
+    /// listings — asks here, so no route can offer a file another route cannot open.
+    ///
+    /// `.txt` is deliberately absent. It was listed as data and had no reader, so a
+    /// `README.txt` was offered on the home screen and refused when opened. Giving it
+    /// one is worse: a README beside two Parquet files would make the folder two
+    /// formats and stop it opening at all. A genuinely tabular `.txt` opens with
+    /// `--format csv`.
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_lowercase().as_str() {
             "parquet" => Some(Self::Parquet),

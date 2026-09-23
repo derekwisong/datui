@@ -9952,6 +9952,17 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
+                    // The home screen asks `reads_many_files` before it offers a folder
+                    // as one dataset, so a format that is refused here and offered there
+                    // would be a promise nothing keeps. Asserted rather than restated:
+                    // adding a format to this arm without the predicate fails every
+                    // debug run. The other direction — dropping one from the predicate
+                    // and not from here — this cannot see, and would hide a folder
+                    // datui can read rather than promise one it cannot.
+                    debug_assert!(
+                        effective_format.is_none_or(|f| !f.reads_many_files()),
+                        "this arm and FileFormat::reads_many_files must agree"
+                    );
                     if !paths.is_empty() && !path.exists() {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::NotFound,

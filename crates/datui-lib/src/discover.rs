@@ -12,20 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// File extensions datui can open, used to tell a dataset from an ordinary file.
-const DATA_EXTENSIONS: &[&str] = &[
-    "parquet", "csv", "tsv", "txt", "json", "ndjson", "jsonl", "ipc", "arrow", "feather", "avro",
-    "orc", "xlsx", "xls", "xlsm",
-];
-
 /// Compression suffixes that may follow a data extension (`sales.csv.gz`).
 const COMPRESSION_EXTENSIONS: &[&str] = &["gz", "bz2", "xz", "zst", "zstd"];
-
-/// How many directory entries to inspect before deciding whether a directory is a
-/// hive dataset. A hive root's children are all `key=value`, so the answer is
-/// apparent immediately — and enumerating every partition of a large dataset is
-/// exactly the stall this cap exists to prevent.
-const HIVE_PROBE_LIMIT: usize = 8;
 
 /// Upper bound on entries read from a single directory, so a pathological directory
 /// cannot hang the UI.
@@ -72,7 +60,12 @@ pub enum EntryKind {
 /// So the kind is restored only when the build that wrote it classified the way this one
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
-pub const CLASSIFIER_VERSION: u32 = 2;
+///
+/// 3: one listing instead of a probe of the first eight entries, formats instead of
+/// extension strings, and one bookkeeping predicate. A folder of `.arrow` beside `.ipc`
+/// was `dir` and is now one dataset; a folder whose ninth entry decided it was answered
+/// by whatever the filesystem returned first (#275, phase 1).
+pub const CLASSIFIER_VERSION: u32 = 3;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -259,7 +252,7 @@ pub fn is_parquet_key(key: &str) -> bool {
         Some((folder, name)) => (folder, name),
         None => ("", key),
     };
-    if name.starts_with(['_', '.']) {
+    if is_bookkeeping(name) {
         return false;
     }
     if name.to_ascii_lowercase().ends_with(".parquet") {
@@ -304,9 +297,28 @@ pub fn has_parquet_magic(path: &Path) -> bool {
         && &tail == b"PAR1"
 }
 
+/// Whether a path names a Parquet file: by its extension, or by sitting as a part file
+/// with no extension inside a `.parquet` folder.
+///
+/// Not [`is_parquet_key`], which also answers "does this count toward what a folder
+/// holds" and so says no to a writer's own name. `_manifest.parquet` is a file somebody
+/// may open and the listing shows it; reading its footer is a different question from
+/// whether it makes the folder around it a dataset.
+pub fn is_parquet_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+        || is_parquet_key(&folder_and_name(path))
+}
+
 /// Whether a path looks like something datui can open.
+///
+/// Its name, or its place: a part file with no extension inside a `.parquet` folder is
+/// Parquet, as Spark and GBIF write them. Every route that asks what a name means asks
+/// here — the listing, the search, `~` input, the counts and the schema pane — because
+/// the one that did not was always the one that disagreed.
 pub fn is_data_file(path: &Path) -> bool {
-    data_extension(path).is_some()
+    data_extension(path).is_some() || is_parquet_key(&folder_and_name(path))
 }
 
 /// The extension that says what a file *is*, with any compression suffix walked past.
@@ -330,9 +342,58 @@ pub fn data_extension(path: &Path) -> Option<String> {
     if COMPRESSION_EXTENSIONS.contains(&parts[idx]) && idx > 1 {
         idx -= 1;
     }
-    DATA_EXTENSIONS
-        .contains(&parts[idx])
-        .then(|| parts[idx].to_string())
+    crate::FileFormat::from_extension(parts[idx]).map(|_| parts[idx].to_string())
+}
+
+/// The format a file's name says it holds, compression suffix walked past.
+///
+/// The question every listing actually asks. Named extensions are not formats: `.ipc`,
+/// `.arrow` and `.feather` are one format under three names, and a folder holding two
+/// of them is one kind of thing. Asking [`crate::FileFormat`] rather than a list of its
+/// own is what keeps the home screen from offering a file the reader has no route for,
+/// which is how `.txt` came to be listed and refused and `.psv` readable and invisible.
+pub fn data_format(path: &Path) -> Option<crate::FileFormat> {
+    crate::FileFormat::from_extension(&data_extension(path)?)
+}
+
+/// The two path segments `is_parquet_key` needs, as it splits them.
+///
+/// A whole path would reach it with backslashes on Windows, which it does not split on,
+/// so `occurrence.parquet\000001` would arrive as one name that contains a dot and be
+/// read as an ordinary file. The same reason `DataTableState::folder_and_name` exists.
+pub(crate) fn folder_and_name(path: &Path) -> String {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    match path.parent().and_then(|p| p.file_name()) {
+        Some(folder) => format!("{}/{name}", folder.to_string_lossy()),
+        None => name.into_owned(),
+    }
+}
+
+/// Whether a listing entry is bookkeeping rather than data.
+///
+/// The one convention datui knows, and the only one: a leading `_` or `.`, which every
+/// engine in the table uses for the files it leaves beside its output — `_SUCCESS`,
+/// `_committed_*`, `_started_*`, `_metadata.json`, `.crc` — and the `_$folder$` marker
+/// some tools write to stand in for a folder in a flat store.
+///
+/// One predicate rather than the five that had drifted apart: a local listing skipped
+/// dotfiles and the literal `_SUCCESS`, a local open skipped both prefixes, and the
+/// cloud listing knew three more names. A folder whose ninth entry is `_metadata.json`
+/// answered `multi` locally and `dir` in a bucket for no better reason than that.
+pub fn is_bookkeeping(name: &str) -> bool {
+    // A `key=value` name is a partition wherever it appears, whatever it starts with.
+    // Spark and Hive partition on internal columns — `_date=2024-01-01`, `_c0=…` — and
+    // reading those as a writer's own files loses the whole dataset.
+    if is_partition_name(name) {
+        return false;
+    }
+    name.starts_with(['_', '.']) || name.ends_with("_$folder$")
+}
+
+/// Whether a name is a hive partition (`year=2024`): `key=value`, with a non-empty key.
+/// The value may be empty in practice.
+pub fn is_partition_name(name: &str) -> bool {
+    matches!(name.find('='), Some(i) if i > 0)
 }
 
 /// What the data files sitting directly in a folder say about how to read it.
@@ -384,8 +445,8 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
             continue;
         };
         // A table format's own files are not the table's, and a dotfile is nobody's.
-        // The same test the footer walk makes, so the two agree on what is data.
-        if name.starts_with('.') || crate::schema_union::is_bookkeeping(name) {
+        // The same test every other route makes, so they agree on what is data.
+        if is_bookkeeping(name) {
             continue;
         }
         // The type the directory read already returned, rather than a `stat` per
@@ -405,13 +466,7 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
             partitioned |= is_partition_dir(&path);
             continue;
         }
-        let Some(extension) = data_extension(&path) else {
-            continue;
-        };
-        // Named as data but datui has no reader for it — `.txt`, say. It is not a
-        // candidate rather than a contradiction: a README beside a dataset is the
-        // ordinary case, and the Info panel already counts what was not read.
-        let Some(found) = crate::FileFormat::from_extension(&extension) else {
+        let Some(found) = data_format(&path) else {
             continue;
         };
         match format {
@@ -491,18 +546,30 @@ fn first_partition(dir: &Path) -> Option<PathBuf> {
 fn is_partition_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|n| {
-            // `key=value`, with a non-empty key. The value may be empty in practice.
-            matches!(n.find('='), Some(i) if i > 0)
-        })
-        .unwrap_or(false)
+        .is_some_and(is_partition_name)
 }
 
 /// Classify a directory without walking it.
 ///
-/// Reads at most [`HIVE_PROBE_LIMIT`] entries: enough to see whether the children
-/// are `key=value` partitions or data files, and never enough to stall on a large
-/// dataset.
+/// Reads one listing, bounded by [`MAX_ENTRIES_PER_DIR`] rather than by a probe of the
+/// first few entries. A probe makes the answer depend on the order the filesystem hands
+/// entries back: a folder of eight Parquet files followed by `_metadata.json` answered
+/// `multi` locally, where a bucket listing the same folder sorts the JSON first and
+/// answered `dir`.
+///
+/// It costs more than the probe did: a plain directory row is enriched with nothing, so
+/// its listing is read for this alone, and a folder of five thousand entries is read
+/// whole where eight used to settle it — six hundred times the entries, for the worst
+/// row, and `look_into_batch` walks a batch of sixteen of them one at a time.
+///
+/// That includes rows on a network mount: `network_check` gates listing a directory you
+/// have browsed into, not classifying the rows of one. It is one `getdents` walk, with
+/// a `stat` only for a symlink, since `d_type` cannot say what is on the far end of one
+/// — so a directory of symlinks is the expensive case. `home_open_selected` makes the
+/// call on the thread reading keys; every other caller is on a worker.
+///
+/// Capping it lower again would put the order-dependence back exactly where the folders
+/// are biggest.
 pub fn classify_directory(path: &Path) -> EntryKind {
     // Before anything is counted: a lake table's data files genuinely do agree on a
     // schema, so every rule below says "one table" and is right about the schema and
@@ -518,43 +585,88 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     let mut data_files = 0usize;
     let mut seen = 0usize;
     // A multi-file dataset is homogeneous by definition; a folder that merely
-    // contains two different spreadsheets is not one.
-    let mut extension: Option<String> = None;
-    let mut mixed_extensions = false;
+    // contains two different spreadsheets is not one. Compared as formats rather than
+    // as extensions, so `.ipc` beside `.arrow` is one kind of thing and not two.
+    let mut format: Option<crate::FileFormat> = None;
+    let mut mixed_formats = false;
 
-    for entry in iter.flatten() {
+    // Bounded where the entries come from rather than after they are counted: a
+    // Hadoop-style output directory is a `.crc` per data file, and skipping those before
+    // the count would let the walk run to twice the cap. The cap is a cost bound and not
+    // a correctness one either way — a folder past it is decided by whichever entries
+    // came back first, whether they were data or a writer's own.
+    for entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
         let entry_path = entry.path();
         let name = entry.file_name();
-        // Skip dotfiles and the marker files data tools leave lying around.
-        if name.to_string_lossy().starts_with('.') || name == "_SUCCESS" {
+        // The markers and job files tools leave beside their output, by the one test
+        // every route makes.
+        if is_bookkeeping(&name.to_string_lossy()) {
             continue;
         }
-        if entry_path.is_dir() {
+        // The type the directory read already returned, rather than a `stat` per entry:
+        // this walks the whole listing now, and on a share every stat is a round trip.
+        // A symlink still gets one, because `d_type` cannot say what is on the far end.
+        //
+        // A regular file rather than "not a directory", the test `folder_format` makes:
+        // a FIFO named `a.csv` blocks whoever opens it until a writer appears, and a
+        // broken symlink named `b.csv` opens as nothing. Counting either as data offers
+        // a folder that cannot be read.
+        let followed = |path: &Path| {
+            // One `stat`, not two: what is on the far end is one question, and asking
+            // it twice is a second round trip on a share.
+            std::fs::metadata(path).map_or((false, false), |m| (m.is_dir(), m.is_file()))
+        };
+        let (is_dir, is_file) = match entry.file_type() {
+            Ok(kind) if kind.is_symlink() => followed(&entry_path),
+            Ok(kind) => (kind.is_dir(), kind.is_file()),
+            Err(_) => followed(&entry_path),
+        };
+        if is_dir {
             if is_partition_dir(&entry_path) {
                 partitions += 1;
             }
-        } else if let Some(ext) = data_extension(&entry_path) {
+        } else if let Some(found) = data_format(&entry_path)
+            // Data by where it sits rather than by its name: see [`is_data_file`].
+            .or_else(|| {
+                is_parquet_key(&folder_and_name(&entry_path)).then_some(crate::FileFormat::Parquet)
+            })
+            .filter(|_| is_file)
+        {
             data_files += 1;
-            match (&extension, Some(ext)) {
-                (None, Some(e)) => extension = Some(e),
-                (Some(current), Some(e)) if *current != e => mixed_extensions = true,
-                _ => {}
+            match format {
+                None => format = Some(found),
+                Some(first) if first != found => mixed_formats = true,
+                Some(_) => {}
             }
         }
         seen += 1;
-        if seen >= HIVE_PROBE_LIMIT {
-            break;
-        }
     }
 
+    // Unchanged from before the probe went, deliberately. Reading the whole listing
+    // makes one `notes=old` among twenty ordinary subfolders a hive root every time
+    // rather than only when it came back first, and two attempts at a majority to rule
+    // that out each refused a real hive root instead — against everything present, one
+    // with a README beside it; against the other folders, one with a `scripts/` and a
+    // `docs/`. Refusing a dataset is the worse direction, and a rule per case is what
+    // #275 exists to stop. The label stops deciding what `Enter` does in phase 3, and
+    // the question goes with it.
+    // Deterministic now rather than occasional, which is the cost of the whole listing:
+    // a source tree with a `cfg=debug/` in it reads `hive` on every pass, and `enrich`
+    // then walks it to depth four looking for footers. Left alone all the same — see
+    // above for the two majorities that refused real hive roots instead.
     if partitions > 0 && partitions >= data_files {
         return EntryKind::Hive;
     }
 
+    // Require a format that can actually be read as many files. Without this the home
+    // screen offers a folder of `.tsv` or `.xlsx` as one dataset and the open refuses
+    // it — the same "offered but unreadable" the one vocabulary exists to stop, one
+    // layer up.
+    let readable_as_one = format.is_some_and(crate::FileFormat::reads_many_files);
     // Require homogeneity *and* that data is what this directory is mostly for.
     // Without the majority test, any folder with a couple of stray CSVs in it would
     // be offered as a dataset, which is worse than useless: it hides the folder.
-    let homogeneous = data_files > 1 && !mixed_extensions;
+    let homogeneous = data_files > 1 && !mixed_formats && readable_as_one;
     let mostly_data = data_files * 2 >= seen;
     if homogeneous && mostly_data {
         EntryKind::MultiFile
@@ -578,9 +690,9 @@ const ICEBERG_METADATA_PROBE: usize = 64;
 /// finished. These three are a different thing — a declared format with a specified
 /// layout, where the marker is part of the spec.
 ///
-/// Named directly rather than found by walking the listing, because a table with sixty
-/// data files would not show its log within the probe limit, and which entries a
-/// directory read returns first is not something to depend on.
+/// Named directly rather than found by walking the listing: three `join` tests answer it
+/// whatever the folder holds, where a walk pays for every entry of a table with a hundred
+/// thousand data files to find one name it already knows.
 fn lake_table(path: &Path) -> Option<EntryKind> {
     if path.join("_delta_log").is_dir() {
         return Some(EntryKind::Delta);
@@ -975,7 +1087,7 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
             .file_name()
             .map(|n| n.to_string_lossy())
             .as_deref()
-            .is_some_and(crate::schema_union::is_bookkeeping)
+            .is_some_and(crate::discover::is_bookkeeping)
         {
             continue;
         }
@@ -990,12 +1102,11 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
         };
         if is_dir {
             subdirs.push(path);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("parquet"))
-            .unwrap_or(false)
-        {
+        } else if is_parquet_key(&folder_and_name(&path)) {
+            // The same test the classifier and the open path make, so a folder offered
+            // as a dataset is one whose files this can find. Extensionless part files
+            // inside a `.parquet` folder were classified `multi` and then measured at
+            // nothing: `? rows` and an empty schema pane, for ever.
             files.push(path);
             if files.len() >= MAX_NAMES_PER_DIR {
                 break;
@@ -1028,13 +1139,7 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if entry.kind != EntryKind::File {
         return;
     }
-    let is_parquet = entry
-        .path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("parquet"))
-        .unwrap_or(false);
-    if !is_parquet {
+    if !is_parquet_path(&entry.path) {
         return;
     }
     if !is_regular_file(&entry.path) {
@@ -1240,13 +1345,7 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("parquet"))
-            .unwrap_or(false)
-            && is_regular_file(&path)
-        {
+        } else if is_parquet_path(&path) && is_regular_file(&path) {
             return Some(path);
         }
     }
@@ -1290,13 +1389,7 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 
     let file_path = match entry.kind {
         EntryKind::File => {
-            let is_parquet = entry
-                .path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("parquet"))
-                .unwrap_or(false);
-            if !is_parquet {
+            if !is_parquet_path(&entry.path) {
                 return None;
             }
             entry.path.clone()
@@ -1327,6 +1420,360 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 mod classification_tests {
     use super::*;
     use polars::prelude::*;
+
+    /// Every extension the home screen offers has a reader behind it, and every
+    /// extension a reader knows is offered. The two lists had drifted: `.psv` and
+    /// `.xlsb` opened but were invisible, and `.txt` was listed and then refused.
+    #[test]
+    fn what_is_offered_and_what_opens_are_one_list() {
+        for ext in [
+            "parquet", "csv", "tsv", "psv", "json", "jsonl", "ndjson", "arrow", "ipc", "feather",
+            "avro", "orc", "xls", "xlsx", "xlsm", "xlsb",
+        ] {
+            let named = PathBuf::from(format!("sales.{ext}"));
+            assert!(
+                data_format(&named).is_some(),
+                ".{ext} opens, so the home screen must offer it"
+            );
+        }
+        // Offered and unreadable was the other half of the same drift.
+        assert!(
+            data_format(Path::new("README.txt")).is_none(),
+            "a README is not a dataset"
+        );
+        assert!(data_format(Path::new("notes")).is_none());
+    }
+
+    /// A compression suffix is how a file is stored, not what it holds, on both routes.
+    #[test]
+    fn a_compressed_name_reads_as_the_format_under_it() {
+        assert_eq!(
+            data_format(Path::new("sales.csv.gz")),
+            Some(crate::FileFormat::Csv)
+        );
+        assert_eq!(
+            data_format(Path::new("events.json.zst")),
+            Some(crate::FileFormat::Json)
+        );
+    }
+
+    /// `.ipc`, `.arrow` and `.feather` are one format under three names, so a folder
+    /// holding two of them is one kind of thing rather than a mixture.
+    #[test]
+    fn one_format_under_several_names_is_not_a_mixture() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.arrow"), b"x").unwrap();
+        std::fs::write(dir.path().join("b.ipc"), b"x").unwrap();
+        assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A README is neither a marker nor data. Locally it counts toward the majority
+    /// and does not disqualify the folder; the cloud route counted it as data and
+    /// answered `dir` where the local one said `multi`.
+    #[test]
+    fn a_file_datui_does_not_read_does_not_disqualify_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id"]);
+        write(dir.path(), "b.parquet", &["id"]);
+        std::fs::write(dir.path().join("README.txt"), b"notes").unwrap();
+
+        let objects: Vec<(String, u64)> = [
+            ("out/a.parquet", 100u64),
+            ("out/b.parquet", 100),
+            ("out/README.txt", 12),
+        ]
+        .iter()
+        .map(|(k, s)| ((*k).to_string(), *s))
+        .collect();
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&[], &objects),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A Parquet file whose name begins with `_` is still a Parquet file. It does not
+    /// count toward what the folder around it holds — that is what `is_bookkeeping` is
+    /// for — but the listing shows it, `Enter` opens it, and the row beside it must say
+    /// how many rows it has rather than nothing at all.
+    #[test]
+    fn a_parquet_file_named_like_a_writers_file_is_still_measured() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "_2024_sales.parquet", &["id", "amount"]);
+
+        let mut entry = Entry {
+            path: dir.path().join("_2024_sales.parquet"),
+            kind: EntryKind::File,
+            name: "_2024_sales.parquet".into(),
+            size: None,
+            modified: None,
+            rows: None,
+            cols: None,
+            cols_sampled: false,
+            columns: Vec::new(),
+            cost: Cost::default(),
+        };
+        enrich(&mut entry);
+        assert_eq!(entry.rows, Some(1), "its footer was read");
+        assert_eq!(entry.cols, Some(2));
+        assert!(schema_preview(&entry).is_some(), "and the pane shows it");
+
+        // And it still does not make the folder around it a dataset.
+        assert!(is_bookkeeping("_2024_sales.parquet"));
+        assert_eq!(classify_directory(dir.path()), EntryKind::Directory);
+    }
+
+    /// Part files with no extension inside a `.parquet` folder are data by where they
+    /// sit. The cloud route has always counted them; the local one said `dir`.
+    #[test]
+    fn extensionless_part_files_are_data_on_both_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = dir.path().join("occurrence.parquet");
+        std::fs::create_dir_all(&table).unwrap();
+        std::fs::write(table.join("000001"), b"PAR1").unwrap();
+        std::fs::write(table.join("000002"), b"PAR1").unwrap();
+
+        let objects: Vec<(String, u64)> = [
+            "gbif/occurrence.parquet/000001",
+            "gbif/occurrence.parquet/000002",
+        ]
+        .iter()
+        .map(|k| ((*k).to_string(), 10u64))
+        .collect();
+
+        assert_eq!(
+            classify_directory(&table),
+            crate::cloud_browse::classify_listing(&[], &objects),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(&table), EntryKind::MultiFile);
+    }
+
+    /// And a folder offered as a dataset is one whose files can be counted. The same
+    /// name test decides both, or the row promises a dataset and shows `?` rows and an
+    /// empty schema for the rest of the session.
+    #[test]
+    fn extensionless_part_files_are_measured_not_just_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = dir.path().join("occurrence.parquet");
+        std::fs::create_dir_all(&table).unwrap();
+        // Named as GBIF and Spark leave them: no extension, inside a `.parquet` folder.
+        write(&table, "000001", &["id", "species"]);
+        write(&table, "000002", &["id", "species"]);
+
+        let entry = measured(&table);
+        assert_eq!(entry.kind, EntryKind::MultiFile);
+        assert_eq!(entry.rows, Some(2), "both footers were read");
+        assert_eq!(entry.cols, Some(2));
+        assert!(
+            schema_preview(&entry).is_some(),
+            "and the schema pane shows what those footers said, rather than asking \
+             for a full read of files already read"
+        );
+
+        // → goes inside a folder labelled `multi`, so the listing has to show the files
+        // the label was counted from — and each is a Parquet file in its own right.
+        let mut listed = scan_dir(&table);
+        assert_eq!(
+            listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["000001", "000002"],
+            "the folder the label promises is not an empty listing"
+        );
+        let part = listed.first_mut().expect("a part file is listed");
+        enrich(part);
+        assert_eq!(part.rows, Some(1), "a part file counts its own rows");
+        assert_eq!(part.cols, Some(2));
+    }
+
+    /// One `key=value` prefix among files datui does not read is a hive root on both
+    /// routes. It is not much of one — but the local route has always said so, and the
+    /// cloud route disagreeing was the divergence. Pinned rather than left to be
+    /// rediscovered: #275 phase 3 takes the consequence off the label.
+    #[test]
+    fn one_partition_beside_files_datui_cannot_read_answers_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("notes=old")).unwrap();
+        for note in ["README.md", "LICENSE", "logo.png"] {
+            std::fs::write(dir.path().join(note), b"x").unwrap();
+        }
+        let objects: Vec<(String, u64)> = ["out/README.md", "out/LICENSE", "out/logo.png"]
+            .iter()
+            .map(|k| ((*k).to_string(), 12u64))
+            .collect();
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&["out/notes=old/".to_string()], &objects),
+            "the two routes answer the same folder alike"
+        );
+    }
+
+    /// A partition is a partition whatever it starts with. Spark and Hive partition on
+    /// internal columns — `_date=2024-01-01`, `_c0=…` — and reading those as a writer's
+    /// own files loses the whole dataset.
+    #[test]
+    fn a_partition_named_like_a_writers_file_is_still_a_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folders = Vec::new();
+        for day in ["2024-01-01", "2024-01-02", "2024-01-03"] {
+            std::fs::create_dir_all(dir.path().join(format!("_date={day}"))).unwrap();
+            folders.push(format!("events/_date={day}/"));
+        }
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&folders, &[]),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
+        assert!(!is_bookkeeping("_date=2024-01-01"));
+        assert!(is_bookkeeping("_temporary"));
+    }
+
+    /// A prefix a writer made for itself is not a folder somebody put data in, on
+    /// either route. `_temporary/` counted toward the majority in a bucket and not
+    /// locally, so the same folder came back two different kinds.
+    #[test]
+    fn a_writers_own_folder_is_skipped_on_both_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "part-00000.parquet", &["id"]);
+        write(dir.path(), "part-00001.parquet", &["id"]);
+        std::fs::create_dir_all(dir.path().join("_temporary")).unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::create_dir_all(dir.path().join("archive")).unwrap();
+
+        let local = classify_directory(dir.path());
+        let folders: Vec<String> = ["out/_temporary/", "out/notes/", "out/archive/"]
+            .iter()
+            .map(|f| (*f).to_string())
+            .collect();
+        let objects: Vec<(String, u64)> = [
+            ("out/part-00000.parquet", 100u64),
+            ("out/part-00001.parquet", 100),
+        ]
+        .iter()
+        .map(|(k, s)| ((*k).to_string(), *s))
+        .collect();
+        let cloud = crate::cloud_browse::classify_listing(&folders, &objects);
+
+        assert_eq!(local, cloud, "the two routes answer the same folder alike");
+        assert_eq!(local, EntryKind::MultiFile);
+    }
+
+    /// Named like data and impossible to read: a FIFO blocks whoever opens it until a
+    /// writer appears, and a broken symlink opens as nothing. `folder_format` has always
+    /// skipped both; the listing now agrees.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_with_nothing_behind_it_is_not_a_data_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone.csv"), dir.path().join("a.csv")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone.csv"), dir.path().join("b.csv")).unwrap();
+        assert_eq!(
+            classify_directory(dir.path()),
+            EntryKind::Directory,
+            "two broken symlinks are not a dataset"
+        );
+    }
+
+    /// A folder is offered as one dataset only when its format can be read as many
+    /// files. `.tsv`, `.psv` and Excel have a single-file reader and nothing that takes
+    /// a list, so offering them puts the refusal one keystroke later instead of not
+    /// making the promise.
+    #[test]
+    fn a_format_that_cannot_be_read_as_many_is_not_offered_as_one() {
+        for ext in ["tsv", "psv", "xlsx", "xlsb"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(format!("a.{ext}")), b"x").unwrap();
+            std::fs::write(dir.path().join(format!("b.{ext}")), b"x").unwrap();
+            assert_eq!(
+                classify_directory(dir.path()),
+                EntryKind::Directory,
+                "a folder of .{ext} has no reader that takes a list"
+            );
+        }
+        // The ones that do are unaffected — every arm the multi-path open handles.
+        for ext in [
+            "parquet", "csv", "json", "jsonl", "ndjson", "arrow", "ipc", "feather", "avro", "orc",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(format!("a.{ext}")), b"x").unwrap();
+            std::fs::write(dir.path().join(format!("b.{ext}")), b"x").unwrap();
+            assert_eq!(
+                classify_directory(dir.path()),
+                EntryKind::MultiFile,
+                ".{ext} reads as many files"
+            );
+        }
+    }
+
+    /// The readdir-order bug: eight Parquet files and a ninth entry that is a writer's
+    /// own file. A probe of the first eight entries never saw the JSON and said `multi`;
+    /// a bucket listing sorts `_metadata.json` first and said `dir`. Same folder, two
+    /// answers, decided by the order the filesystem happened to return.
+    #[test]
+    fn a_writers_own_file_is_skipped_whatever_order_it_is_listed_in() {
+        let dir = tempfile::tempdir().unwrap();
+        for part in 0..8 {
+            write(dir.path(), &format!("{part}.parquet"), &["season"]);
+        }
+        std::fs::write(dir.path().join("_metadata.json"), b"{}").unwrap();
+
+        let local = classify_directory(dir.path());
+        // The same folder as a bucket lists it: lexicographic, so the JSON comes first.
+        let mut keys: Vec<(String, u64)> = vec![("jolpica/2000/_metadata.json".into(), 2)];
+        for part in 0..8 {
+            keys.push((format!("jolpica/2000/{part}.parquet"), 100));
+        }
+        keys.sort();
+        let cloud = crate::cloud_browse::classify_listing(&[], &keys);
+
+        assert_eq!(local, cloud, "the two routes answer the same folder alike");
+        assert_eq!(local, EntryKind::MultiFile);
+    }
+
+    /// The files a job leaves beside its output are skipped on every route, not just
+    /// the two names each route happened to know.
+    #[test]
+    fn job_files_are_skipped_on_every_route() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "part-00000.parquet", &["id"]);
+        write(dir.path(), "part-00001.parquet", &["id"]);
+        for marker in [
+            "_SUCCESS",
+            "_committed_1727",
+            "_committed_1728",
+            "_started_1727",
+            ".part.crc",
+        ] {
+            std::fs::write(dir.path().join(marker), b"").unwrap();
+        }
+        assert_eq!(
+            classify_directory(dir.path()),
+            EntryKind::MultiFile,
+            "five markers beside two data files do not outvote them"
+        );
+
+        let keys: Vec<(String, u64)> = [
+            ("out/_SUCCESS", 0u64),
+            ("out/_committed_1727", 12),
+            ("out/_committed_1728", 12),
+            ("out/_started_1727", 12),
+            ("out/.part.crc", 8),
+            ("out/part-00000.parquet", 100),
+            ("out/part-00001.parquet", 100),
+        ]
+        .iter()
+        .map(|(k, s)| ((*k).to_string(), *s))
+        .collect();
+        assert_eq!(
+            crate::cloud_browse::classify_listing(&[], &keys),
+            EntryKind::MultiFile,
+            "and the same in a bucket"
+        );
+    }
 
     /// Write `columns` as a one-row Parquet file named `name` under `dir`.
     fn write(dir: &Path, name: &str, columns: &[&str]) {
@@ -1747,12 +2194,12 @@ mod classification_tests {
         );
     }
 
-    /// The log is named rather than looked for, because a table with more data files
-    /// than the probe reads would not show it.
+    /// The log is named rather than looked for, so a table's own data files cannot
+    /// crowd it out of the listing however many of them there are.
     #[test]
-    fn a_lake_table_is_recognized_past_the_probe_limit() {
+    fn a_lake_table_is_recognized_among_its_data_files() {
         let dir = tempfile::tempdir().unwrap();
-        for part in 0..HIVE_PROBE_LIMIT * 4 {
+        for part in 0..32 {
             write(dir.path(), &format!("part-{part:03}.parquet"), &["id"]);
         }
         std::fs::create_dir_all(dir.path().join("_delta_log")).unwrap();

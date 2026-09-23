@@ -1401,9 +1401,10 @@ fn public_data_quirks() {
         ))
         .expect("a partition lists");
     assert!(
-        spark
-            .iter()
-            .all(|r| !cloud_browse::is_job_file(&r.name) && !r.name.starts_with('_')),
+        // `is_marker` rather than a leading-underscore test: a `_`-prefixed name that is
+        // not a marker — `_manifest.parquet`, `_common_metadata` — is a real object
+        // somebody may open, and the listing is meant to show it.
+        spark.iter().all(|r| !cloud_browse::is_marker(&r.name)),
         "{:?}",
         spark.iter().map(|r| &r.name).collect::<Vec<_>>()
     );

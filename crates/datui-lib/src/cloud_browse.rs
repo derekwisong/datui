@@ -811,6 +811,11 @@ async fn kind_from_footers(
 /// A folder's kind from what one listing of it shows, by the rules a local folder is
 /// classified by, except that only Parquet counts as data: it is the one format a
 /// prefix of files is read in place as.
+///
+/// One page of the listing, capped at `PEEK_KEYS`, where the local route reads up to
+/// `MAX_ENTRIES_PER_DIR`. So the two answer alike for a prefix that fits in a page, and
+/// a larger one is still decided by whichever keys came back first. Moving verification
+/// to the row under the cursor is #275 phase 6's.
 pub fn classify_listing(
     folders: &[String],
     objects: &[(String, u64)],
@@ -823,22 +828,44 @@ pub fn classify_listing(
             .unwrap_or("")
             .to_string()
     };
-    let partitions = folders
+    // Prefixes a writer made for itself are not folders anybody put data in, by the
+    // same test the objects get. `_temporary/` beside two Parquet files counted toward
+    // the majority and tipped a folder the local route called one dataset. The lake
+    // markers below still look at every prefix — `_delta_log` is exactly the name this
+    // skips, and it is a specification rather than a stray.
+    let counted: Vec<&String> = folders
         .iter()
-        .filter(|f| matches!(last(f).find('='), Some(i) if i > 0))
+        .filter(|f| !crate::discover::is_bookkeeping(&last(f)))
+        .collect();
+    let partitions = counted
+        .iter()
+        .filter(|f| crate::discover::is_partition_name(&last(f)))
         .count();
-    // Data, not the markers and job files tools leave beside it.
-    let files: Vec<&String> = objects
+    // Everything in this prefix that is not a marker or a writer's own file: what the
+    // local route calls `seen`, and what the majority below is measured against.
+    let present: Vec<&String> = objects
         .iter()
         .filter(|(key, size)| {
             let name = last(key);
             !name.is_empty()
-                && !name.starts_with('.')
-                && !is_job_file(&name)
+                && !crate::discover::is_bookkeeping(&name)
                 && !is_empty_marker(&name, *size)
                 && !(*size == 0 && folders.iter().any(|f| last(f) == name))
         })
         .map(|(key, _)| key)
+        .collect();
+    // Of those, the ones named as something datui reads. A `README.md` beside two
+    // Parquet files is neither a marker nor data, and counting it as data made this
+    // route answer `dir` where the local one said `multi` — the same folder, two
+    // answers, which is what one vocabulary is for.
+    let files: Vec<&&String> = present
+        .iter()
+        .filter(|key| {
+            // Or a part file with no extension inside a `.parquet` folder, which is
+            // data by where it sits rather than by what it is called.
+            crate::discover::data_format(std::path::Path::new(key.as_str())).is_some()
+                || crate::discover::is_parquet_key(key)
+        })
         .collect();
     // A lake table first: its data files genuinely agree on a schema, so every rule
     // below says "one table" and is right about the schema and wrong about the rows.
@@ -866,10 +893,12 @@ pub fn classify_listing(
     if folder("metadata") && folder("data") && parquet == 0 {
         return EntryKind::Iceberg;
     }
+    let seen = counted.len() + present.len();
+    // The local route's rule, unchanged: see `discover::classify_directory` for why a
+    // majority here refuses real hive roots.
     if partitions > 0 && partitions >= files.len() {
         return EntryKind::Hive;
     }
-    let seen = folders.len() + files.len();
     if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
         EntryKind::MultiFile
     } else {
@@ -1023,9 +1052,15 @@ pub fn is_refusal(error: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
-/// Files that jobs leave beside their output, and markers that stand in for folders.
-/// Neither is data, and neither is worth a row.
-pub fn is_job_file(name: &str) -> bool {
+/// A key that stands for something other than data a user could open: the receipts a job
+/// leaves behind, and the marker some tools write in place of a folder.
+///
+/// Narrower than [`crate::discover::is_bookkeeping`] on purpose. That one answers "does
+/// this count as data", which decides a folder's kind; this one answers "is there
+/// anything here to open", which decides whether a row is shown at all. A leading `_` is
+/// enough for the first and not for the second: `_manifest.parquet` is a real object
+/// somebody may want to look at, and the local listing has always shown its equivalent.
+pub fn is_marker(name: &str) -> bool {
     name == "_SUCCESS"
         || name.starts_with("_committed_")
         || name.starts_with("_started_")
@@ -1111,7 +1146,7 @@ async fn list_level(
         // offering it as openable would be offering a zero-byte file. So is an empty
         // object named like a folder beside it, or like the folder being listed.
         if name.is_empty()
-            || is_job_file(&name)
+            || is_marker(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
             || is_empty_marker(&name, object.size)
             || (object.size == 0 && location.trim_end_matches('/') == prefix)
@@ -1175,7 +1210,7 @@ async fn list_azure_objects(
         let location = object.location.as_ref().to_string();
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         if name.is_empty()
-            || is_job_file(&name)
+            || is_marker(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
             || is_empty_marker(&name, object.size)
             || (object.size == 0 && location.trim_end_matches('/') == prefix)
@@ -1939,10 +1974,24 @@ mod tests {
             "_committed_123",
             "_started_123",
             "yellow_$folder$",
+            "_metadata.json",
+            ".crc",
         ] {
-            assert!(is_job_file(name), "{name}");
+            assert!(
+                crate::discover::is_bookkeeping(name),
+                "{name} is a writer's own file"
+            );
         }
-        assert!(!is_job_file("part-0000.parquet"));
+        assert!(!crate::discover::is_bookkeeping("part-0000.parquet"));
+        // Whether a key counts as data and whether it is worth a row are two questions.
+        // `_manifest.parquet` is a writer's own file and still something to open, and
+        // the local listing has always shown its equivalent.
+        assert!(crate::discover::is_bookkeeping("_manifest.parquet"));
+        assert!(!is_marker("_manifest.parquet"));
+        assert!(!is_marker("_2024_sales.csv"));
+        for name in ["_SUCCESS", "_committed_1", "_started_1", "yellow_$folder$"] {
+            assert!(is_marker(name), "{name} stands for no data at all");
+        }
         assert!(is_empty_marker("year=2032", 0));
         assert!(!is_empty_marker("year=2032", 10));
         assert!(!is_empty_marker("empty.csv", 0));

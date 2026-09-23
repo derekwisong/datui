@@ -252,7 +252,7 @@ pub fn is_parquet_key(key: &str) -> bool {
         Some((folder, name)) => (folder, name),
         None => ("", key),
     };
-    if name.starts_with(['_', '.']) {
+    if is_bookkeeping(name) {
         return false;
     }
     if name.to_ascii_lowercase().ends_with(".parquet") {
@@ -519,9 +519,12 @@ fn is_partition_dir(path: &Path) -> bool {
 ///
 /// It costs more than the probe did: a plain directory row is enriched with nothing, so
 /// its listing is read for this alone, and a folder of five thousand entries is read
-/// whole where eight used to settle it. Local only — a row on a network share is not
-/// classified at all (`network_check`) — and one `getdents` walk with no `stat` per
-/// entry, which is the cheapest shape a correct answer has.
+/// whole where eight used to settle it. That includes rows on a network mount, which
+/// `unclassified_visible` does look into — `network_check` gates listing a directory
+/// you have browsed into, not classifying the rows of one. The cost is one `getdents`
+/// walk with no `stat` per entry, which is the cheapest shape a correct answer has, and
+/// capping it lower again would put the order-dependence back exactly where the folders
+/// are biggest.
 pub fn classify_directory(path: &Path) -> EntryKind {
     // Before anything is counted: a lake table's data files genuinely do agree on a
     // schema, so every rule below says "one table" and is right about the schema and
@@ -582,7 +585,10 @@ pub fn classify_directory(path: &Path) -> EntryKind {
         seen += 1;
     }
 
-    if partitions > 0 && partitions >= data_files {
+    // The same majority the `multi` arm asks for. Without it one `notes=old` among
+    // twenty ordinary subfolders is a hive root, which the probe used to hide by
+    // stopping before it and now finds every time.
+    if partitions > 0 && partitions >= data_files && partitions * 2 >= seen {
         return EntryKind::Hive;
     }
 
@@ -1412,6 +1418,55 @@ mod classification_tests {
         std::fs::write(dir.path().join("a.arrow"), b"x").unwrap();
         std::fs::write(dir.path().join("b.ipc"), b"x").unwrap();
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A README is neither a marker nor data. Locally it counts toward the majority
+    /// and does not disqualify the folder; the cloud route counted it as data and
+    /// answered `dir` where the local one said `multi`.
+    #[test]
+    fn a_file_datui_does_not_read_does_not_disqualify_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id"]);
+        write(dir.path(), "b.parquet", &["id"]);
+        std::fs::write(dir.path().join("README.txt"), b"notes").unwrap();
+
+        let objects: Vec<(String, u64)> = [
+            ("out/a.parquet", 100u64),
+            ("out/b.parquet", 100),
+            ("out/README.txt", 12),
+        ]
+        .iter()
+        .map(|(k, s)| ((*k).to_string(), *s))
+        .collect();
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&[], &objects),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// One `key=value` among twenty ordinary subfolders is not a hive root. The probe
+    /// used to hide this by stopping before it; reading the whole listing finds it
+    /// every time, so the majority test the `multi` arm makes is asked here too.
+    #[test]
+    fn one_partition_among_many_folders_is_not_a_hive_root() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            std::fs::create_dir_all(dir.path().join(format!("folder{i}"))).unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("notes=old")).unwrap();
+
+        let mut folders: Vec<String> = (0..20).map(|i| format!("out/folder{i}/")).collect();
+        folders.push("out/notes=old/".to_string());
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            crate::cloud_browse::classify_listing(&folders, &[]),
+            "the two routes answer the same folder alike"
+        );
+        assert_eq!(classify_directory(dir.path()), EntryKind::Directory);
     }
 
     /// A prefix a writer made for itself is not a folder somebody put data in, on

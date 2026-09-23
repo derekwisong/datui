@@ -836,8 +836,9 @@ pub fn classify_listing(
         .iter()
         .filter(|f| matches!(last(f).find('='), Some(i) if i > 0))
         .count();
-    // Data, not the markers and job files tools leave beside it.
-    let files: Vec<&String> = objects
+    // Everything in this prefix that is not a marker or a writer's own file: what the
+    // local route calls `seen`, and what the majority below is measured against.
+    let present: Vec<&String> = objects
         .iter()
         .filter(|(key, size)| {
             let name = last(key);
@@ -847,6 +848,19 @@ pub fn classify_listing(
                 && !(*size == 0 && folders.iter().any(|f| last(f) == name))
         })
         .map(|(key, _)| key)
+        .collect();
+    // Of those, the ones named as something datui reads. A `README.md` beside two
+    // Parquet files is neither a marker nor data, and counting it as data made this
+    // route answer `dir` where the local one said `multi` — the same folder, two
+    // answers, which is what one vocabulary is for.
+    let files: Vec<&&String> = present
+        .iter()
+        .filter(|key| {
+            // Or a part file with no extension inside a `.parquet` folder, which is
+            // data by where it sits rather than by what it is called.
+            crate::discover::data_format(std::path::Path::new(key.as_str())).is_some()
+                || crate::discover::is_parquet_key(key)
+        })
         .collect();
     // A lake table first: its data files genuinely agree on a schema, so every rule
     // below says "one table" and is right about the schema and wrong about the rows.
@@ -874,10 +888,12 @@ pub fn classify_listing(
     if folder("metadata") && folder("data") && parquet == 0 {
         return EntryKind::Iceberg;
     }
-    if partitions > 0 && partitions >= files.len() {
+    let seen = counted.len() + present.len();
+    // The majority the local route asks for too, so one `notes=old` among twenty
+    // ordinary prefixes is not a hive root on either.
+    if partitions > 0 && partitions >= files.len() && partitions * 2 >= seen {
         return EntryKind::Hive;
     }
-    let seen = counted.len() + files.len();
     if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
         EntryKind::MultiFile
     } else {

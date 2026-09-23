@@ -1401,9 +1401,7 @@ fn public_data_quirks() {
         ))
         .expect("a partition lists");
     assert!(
-        spark
-            .iter()
-            .all(|r| !datui::cloud_browse::is_marker(&r.name)),
+        spark.iter().all(|r| !cloud_browse::is_marker(&r.name)),
         "{:?}",
         spark.iter().map(|r| &r.name).collect::<Vec<_>>()
     );

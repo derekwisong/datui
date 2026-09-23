@@ -9895,6 +9895,24 @@ impl App {
             });
 
         let lf = if paths.len() > 1 {
+            // The one place a format says whether it can be read as a list. The home
+            // screen asks the same question before it offers a folder as one dataset
+            // (`discover::classify_directory`), so giving one of these a multi-path
+            // reader makes both true at once instead of leaving the folder unoffered.
+            if let Some(format) = effective_format
+                && !format.reads_many_files()
+            {
+                if !paths.is_empty() && !path.exists() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("File not found: {}", path.display()),
+                    )
+                    .into());
+                }
+                return Err(color_eyre::eyre::eyre!(
+                    "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
+                ));
+            }
             match effective_format {
                 Some(FileFormat::Parquet) => DataTableState::from_parquet_paths(
                     paths,
@@ -9951,6 +9969,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
+                // Only `None` is left: `reads_many_files` turned the rest away above.
                 Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
                     if !paths.is_empty() && !path.exists() {
                         return Err(std::io::Error::new(

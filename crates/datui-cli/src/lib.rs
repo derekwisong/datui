@@ -43,13 +43,14 @@ impl FileFormat {
     /// Whether many files of this format can be read as one table.
     ///
     /// Asked before a folder is offered as a dataset, so the home screen cannot promise
-    /// an open the reader has no route for. These three are the arm that refuses a list
-    /// of paths outright: Tsv and Psv have a single-file reader and no multi-path one,
-    /// and an Excel workbook is sheets rather than rows with nothing to concatenate.
-    /// It answers for the same formats that arm names, so the two cannot drift.
+    /// an open the reader has no route for — and asked again by the open itself, which
+    /// refuses on this and nothing else. One answer, so the offer and the refusal
+    /// cannot disagree: giving Tsv or Psv a multi-path reader is a change here and
+    /// nowhere else, and the folder becomes both openable and offered at once.
     ///
-    /// Giving Tsv and Psv a multi-path reader is #275 phase 4's ("never refuse"), and
-    /// this predicate turns true on its own when they get one.
+    /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
+    /// is sheets rather than rows, with nothing to concatenate. Reading the first two
+    /// as a list is #275 phase 4's ("never refuse").
     pub fn reads_many_files(self) -> bool {
         !matches!(self, Self::Tsv | Self::Psv | Self::Excel)
     }

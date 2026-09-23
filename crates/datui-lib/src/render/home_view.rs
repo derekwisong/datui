@@ -777,8 +777,12 @@ fn entry_line<'a>(
     // directory on one, and a remote row that is not a data file by name is a prefix.
     // Saying so up front keeps the name from changing shape a frame later when the
     // label lands — the `…` beside it already carries the part that is not known.
+    // A name with an extension is a file even when it is one datui does not read: a
+    // remote `export.txt` is not a prefix, and nothing here can stat it to find out.
+    let named_like_a_file =
+        crate::discover::is_data_file(&entry.path) || entry.path.extension().is_some();
     if entry.kind == EntryKind::Directory
-        || (entry.kind == EntryKind::Unknown && !crate::discover::is_data_file(&entry.path))
+        || (entry.kind == EntryKind::Unknown && !named_like_a_file)
     {
         name.push('/');
     }

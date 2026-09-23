@@ -540,7 +540,8 @@ fn is_partition_dir(path: &Path) -> bool {
 ///
 /// It costs more than the probe did: a plain directory row is enriched with nothing, so
 /// its listing is read for this alone, and a folder of five thousand entries is read
-/// whole where eight used to settle it. That includes rows on a network mount, which
+/// whole where eight used to settle it — six hundred times the entries, for the worst
+/// row, and `look_into_batch` walks a batch of sixteen of them one at a time. That includes rows on a network mount, which
 /// `unclassified_visible` does look into — `network_check` gates listing a directory
 /// you have browsed into, not classifying the rows of one. The cost is one `getdents`
 /// walk with no `stat` per entry, which is the cheapest shape a correct answer has, and
@@ -1113,13 +1114,10 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if entry.kind != EntryKind::File {
         return;
     }
-    let is_parquet = entry
-        .path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("parquet"))
-        .unwrap_or(false);
-    if !is_parquet {
+    // The same name test the folder routes make: a part file with no extension inside
+    // a `.parquet` folder is Parquet, and was the one shape that reported no rows at
+    // all while the folder above it reported them for every file in it.
+    if !is_parquet_key(&folder_and_name(&entry.path)) {
         return;
     }
     if !is_regular_file(&entry.path) {
@@ -1325,13 +1323,7 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("parquet"))
-            .unwrap_or(false)
-            && is_regular_file(&path)
-        {
+        } else if is_parquet_key(&folder_and_name(&path)) && is_regular_file(&path) {
             return Some(path);
         }
     }
@@ -1528,6 +1520,28 @@ mod classification_tests {
         assert_eq!(entry.kind, EntryKind::MultiFile);
         assert_eq!(entry.rows, Some(2), "both footers were read");
         assert_eq!(entry.cols, Some(2));
+        assert!(
+            schema_preview(&entry).is_some(),
+            "and the schema pane shows what those footers said, rather than asking \
+             for a full read of files already read"
+        );
+
+        // Browsing into the folder: each part file is a Parquet file in its own right.
+        let mut part = Entry {
+            path: table.join("000001"),
+            kind: EntryKind::File,
+            name: "000001".into(),
+            size: None,
+            modified: None,
+            rows: None,
+            cols: None,
+            cols_sampled: false,
+            columns: Vec::new(),
+            cost: Cost::default(),
+        };
+        enrich(&mut part);
+        assert_eq!(part.rows, Some(1), "a part file counts its own rows");
+        assert_eq!(part.cols, Some(2));
     }
 
     /// One `key=value` prefix among files datui does not read is a hive root on both

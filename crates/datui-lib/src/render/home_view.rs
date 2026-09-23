@@ -91,7 +91,7 @@ fn meta_columns(entry: &Entry) -> String {
         // `?` says a count is out of reach. A folder that is not one table has no row
         // count to be out of reach — a sum over unrelated tables is not a number — so
         // it shows its width alone rather than claiming there is a figure somewhere.
-        (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more}"),
+        (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{times} {c}{more}"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
         _ => String::new(),
     };
@@ -792,7 +792,10 @@ fn entry_line<'a>(
         // A count beats the word for the place it is in: `12 parquet` says more about a
         // prefix than `prefix` does. A bucket nothing has peeked into has no count, so
         // it keeps the word — which is the row it is right for.
-        EntryKind::Directory if !entry.holds.is_empty() => described.as_ref(),
+        // Only when there is data to count. A prefix holding nothing but sub-prefixes
+        // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
+        // inside an object store the service's own word is the right one.
+        EntryKind::Directory if !entry.holds.formats.is_empty() => described.as_ref(),
         EntryKind::Directory => place_kind
             .or_else(|| crate::home::object_place_label(&entry.path))
             .unwrap_or(described.as_ref()),
@@ -1089,7 +1092,10 @@ fn preview_head(
     }
     let described = entry.label();
     let kind = match entry.kind {
-        EntryKind::Directory if !entry.holds.is_empty() => described.as_ref(),
+        // Only when there is data to count. A prefix holding nothing but sub-prefixes
+        // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
+        // inside an object store the service's own word is the right one.
+        EntryKind::Directory if !entry.holds.formats.is_empty() => described.as_ref(),
         EntryKind::Directory => place_kind
             .or_else(|| crate::home::object_place_label(&entry.path))
             .unwrap_or(described.as_ref()),

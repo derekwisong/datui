@@ -1229,6 +1229,17 @@ fn apply_known_facts(
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
+            // And so does what the footers said. The fingerprint below is a file's — a
+            // listing gives a directory no size, so `same_bytes` is never true for one
+            // — and without this a folder of separate tables read `15 parquet` with 72
+            // columns in the session that measured it and a blank shape in every
+            // session after, though the record still held the number.
+            row.rows = facts.rows;
+            row.cols = facts.cols;
+            row.cols_sampled = facts.cols_sampled;
+            if !facts.columns.is_empty() {
+                row.columns = facts.columns.clone();
+            }
         }
     }
 
@@ -2655,9 +2666,9 @@ mod known_facts_tests {
                 mtime: 0,
                 size: 4096,
                 rows: None,
-                cols: None,
+                cols: Some(72),
                 cols_sampled: false,
-                columns: Vec::new(),
+                columns: vec!["lat".to_string()],
                 kind: Some(EntryKind::MultiFile),
                 classified_by: crate::discover::CLASSIFIER_VERSION,
                 holds: holds.clone(),
@@ -2666,12 +2677,19 @@ mod known_facts_tests {
             let mut row = Entry::directory(&path);
             row.kind = EntryKind::Unknown;
             row.modified = Some(std::time::UNIX_EPOCH);
-            row.size = Some(4096);
+            // No size, which is what a listing gives a directory — and what makes the
+            // byte fingerprint below unable to speak for one.
+            assert_eq!(row.size, None);
             let index = std::collections::HashMap::from([(path.clone(), facts)]);
 
             apply_known_facts(&mut row, &index, remote);
             assert_eq!(row.kind, EntryKind::MultiFile, "{path:?}");
             assert_eq!(row.label(), "15 parquet", "{path:?}");
+            // And the shape beside it. A directory has no size for the fingerprint
+            // below to match on, so without this the count was written to the record
+            // and never read back out of it.
+            assert_eq!(row.cols, Some(72), "{path:?}");
+            assert_eq!(row.columns, vec!["lat".to_string()], "{path:?}");
         }
     }
 

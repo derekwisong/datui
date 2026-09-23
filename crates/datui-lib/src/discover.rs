@@ -1033,6 +1033,24 @@ pub fn enrich(entry: &mut Entry) {
 
 /// Sum footers across a bounded set of Parquet files under `entry`.
 fn enrich_dataset(entry: &mut Entry) {
+    // A folder of JSON is not described by the Parquet under it. The walk below
+    // recurses — it has to, because that is what opening the folder reads — so for a
+    // folder whose own files are a format this cannot count, every number it produced
+    // belonged to something the row does not name: `6 json` reported the sixty-one
+    // columns of the Parquet in its subfolders.
+    //
+    // A folder of Parquet with more Parquet beneath it is the opposite case and keeps
+    // the walk. The counts are a promise about what `Enter` gives, and `Enter` reads
+    // the subtree; measuring only the top would promise three files and open
+    // twenty-three, and would ask `is_one_table` about three files while unioning all
+    // twenty-three. The `holds` line names the folder that explains the difference.
+    if entry.kind == EntryKind::MultiFile
+        && entry.holds.one_format().is_some_and(|f| f != "parquet")
+    {
+        entry.size = None;
+        return;
+    }
+
     // The partition layout comes from directory names, so it is knowable even for a
     // dataset far too large to count the rows of — which is exactly the dataset whose
     // shape you most want described before opening it.
@@ -1046,20 +1064,8 @@ fn enrich_dataset(entry: &mut Entry) {
     // leave it behind to be read as an answer.
     entry.size = None;
 
-    // A folder is measured by the files it is labelled from — the ones directly inside
-    // it — and a hive root by the tree below it, because that is where a hive dataset's
-    // data is. The walk used to recurse for both, so `3 parquet` beside an `archive/`
-    // of a hundred more reported the rows, columns and size of all hundred and three,
-    // and a folder of JSON reported the columns of the Parquet under it.
-    // Starting at the cap means the walk stops after this level, since it descends by
-    // one and gives up past it.
-    let start_depth = if entry.kind == EntryKind::Hive {
-        0
-    } else {
-        MAX_WALK_DEPTH
-    };
     let mut files = Vec::new();
-    collect_parquet_files(&entry.path, start_depth, &mut files);
+    collect_parquet_files(&entry.path, 0, &mut files);
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
         // Whether these are one table is still worth asking, and it does not need
         // every footer: three files spread across the folder answer it. Without this a
@@ -1851,14 +1857,16 @@ mod classification_tests {
         assert_eq!(first.skipped, 5);
     }
 
-    /// Including when what is under them is Parquet too. A folder of three Parquet
-    /// files beside an `archive/` of a hundred more is `3 parquet`, and the counts
-    /// beside that label are those three files.
+    /// The label counts what is directly inside; the numbers beside it are a promise
+    /// about what `Enter` gives, and `Enter` reads the subtree. Measuring only the top
+    /// would promise three files and open twenty-three — and would ask `is_one_table`
+    /// about three files while unioning all twenty-three, which is the union the
+    /// downgrade exists to prevent. The `holds` line names the folder that explains it.
     #[test]
-    fn a_parquet_folder_is_measured_by_its_own_files() {
+    fn a_folders_numbers_are_what_opening_it_gives() {
         let dir = tempfile::tempdir().unwrap();
         for name in ["a.parquet", "b.parquet", "c.parquet"] {
-            write(dir.path(), name, &["id"]);
+            write(dir.path(), name, &["id", "legacy"]);
         }
         let archive = dir.path().join("archive");
         std::fs::create_dir_all(&archive).unwrap();
@@ -1867,9 +1875,38 @@ mod classification_tests {
         }
 
         let entry = measured(dir.path());
-        assert_eq!(entry.label(), "3 parquet");
-        assert_eq!(entry.rows, Some(3), "three files, one row each");
-        assert_eq!(entry.cols, Some(1), "and not the archive's columns");
+        assert_eq!(
+            entry.label(),
+            "3 parquet",
+            "three files are directly inside"
+        );
+        assert_eq!(entry.holds.line().as_deref(), Some("3 parquet · 1 folder"));
+        assert_eq!(entry.rows, Some(23), "and opening it reads all of them");
+    }
+
+    /// And the files under it are what the one-table test is asked about, since they
+    /// are what the union would hold.
+    #[test]
+    fn a_table_hidden_under_a_folder_still_downgrades_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet"] {
+            write(dir.path(), name, &["id", "ts"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        write(
+            &archive,
+            "other.parquet",
+            &["wholly", "different", "columns"],
+        );
+
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::Directory,
+            "a union over these is not one table"
+        );
+        assert_eq!(entry.rows, None);
     }
 
     /// A folder is described by its own files, not by what is under them. The footer

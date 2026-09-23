@@ -8021,10 +8021,18 @@ impl App {
             // rebuild per folder.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                // Every answer, not only the ones that change the kind. A prefix of
-                // twelve CSV objects is a `Directory` — only Parquet is read in place —
-                // and it is still `12 csv`, which is the count the row is labelled from.
-                if let Ok((folder, Ok(answer))) = joined {
+                // Every answer that tells a row something, not only the ones that
+                // change the kind: a prefix of twelve CSV objects is a `Directory` —
+                // only Parquet is read in place — and it is still `12 csv`, which is
+                // the count the row is labelled from.
+                //
+                // An answer that says neither is dropped, because each send costs a
+                // listing rebuild, and that reads the dataset index on the thread
+                // drawing the frame. A bucket page of empty prefixes did no work
+                // before this branch and must not start doing twelve rebuilds of it.
+                if let Ok((folder, Ok(answer))) = joined
+                    && (answer.0 != discover::EntryKind::Directory || !answer.1.is_empty())
+                {
                     found.push((folder, answer));
                 }
                 if found.len() >= PEEKS_AT_ONCE {

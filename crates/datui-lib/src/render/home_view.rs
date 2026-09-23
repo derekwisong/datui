@@ -876,7 +876,11 @@ fn entry_line<'a>(
     // Not a source id or a `source not found:` either: two stores can hold the same
     // bucket and key, and that chip is the only thing that says which this row came
     // from. Asked of what the cell holds, not of what the path carries.
-    let is_label = matched_column.is_none() && !shows_source;
+    //
+    // Nor the curated word. `dataset` and `project` are what a source calls a place it
+    // names, and the match above prefers them to the count for that reason; dropping
+    // them here would take away the one thing marking a curated row.
+    let is_label = matched_column.is_none() && !shows_source && place_kind.is_none();
     let (kind_cell, kind_is_chip) = if !is_label
         || name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
             > 1
@@ -1543,6 +1547,43 @@ mod tests {
                 meta_starts_at(&entry, width),
                 meta_starts_at(&short, width),
                 "the meta columns must start in the same place at {width}"
+            );
+        }
+
+        // The curated word is not a label to give up. `dataset` and `project` are what
+        // a source calls a place it names, and the only thing marking a curated row.
+        let mut named = row("s3://bucket/occurrence", EntryKind::Directory);
+        named.size = Some(4096);
+        named.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        let curated = |width: usize| -> String {
+            entry_line(
+                &named,
+                false,
+                width,
+                true,
+                None,
+                "",
+                None,
+                Some("dataset"),
+                &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+        };
+        // Narrow enough that the guard fires: the word is eight cells with its space,
+        // so anything at or under fourteen leaves the name nothing to be cut into.
+        for width in [10usize, 12, 14, 22, 30] {
+            assert!(
+                curated(width).contains("dataset"),
+                "at {width}: {}",
+                curated(width)
             );
         }
 

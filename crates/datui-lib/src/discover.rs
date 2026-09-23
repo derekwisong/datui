@@ -184,6 +184,8 @@ impl Holds {
         match self.formats.as_slice() {
             [] => "dir".to_string(),
             [(name, count)] => format!("{count}{more} {name}"),
+            // No `+`: `mixed` is not a count, and more files cannot unmake it. The
+            // pane's line carries the qualifier on each number it does report.
             _ => "mixed".to_string(),
         }
     }

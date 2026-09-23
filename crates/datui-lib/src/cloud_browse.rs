@@ -902,6 +902,19 @@ pub fn look_at_listing(
     // Prefixes as well as objects: `_temporary/` is a writer's own folder and is
     // counted as skipped on disk, so a Spark output prefix must not read `2 parquet`
     // here and `2 parquet · 1 skipped (_temporary)` there.
+    // A console's folder placeholder with no prefix beside it is in no other count —
+    // `present` drops it and it is not a writer's own name — and the pane promises
+    // every object is in one of them.
+    let orphan_markers = objects
+        .iter()
+        .filter(|(key, size)| {
+            let name = last(key);
+            !name.is_empty()
+                && is_empty_marker(&name, *size)
+                && !crate::discover::is_bookkeeping(&name)
+                && !folders.iter().any(|f| last(f) == name)
+        })
+        .count();
     let mut skipped_names: Vec<String> = objects
         .iter()
         // A zero-byte object beside a prefix of the same name is that prefix, written
@@ -912,7 +925,7 @@ pub fn look_at_listing(
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
         .collect();
     skipped_names.sort();
-    let skipped = skipped_names.len();
+    let skipped = skipped_names.len() + orphan_markers;
     skipped_names.truncate(crate::discover::SKIPPED_NAMES_SHOWN);
     let holds = crate::discover::Holds {
         formats: counts

@@ -559,6 +559,17 @@ pub(crate) fn folder_and_name(path: &Path) -> String {
     }
 }
 
+/// Commonest first, and by name where two formats tie, so the line reads the same way
+/// twice running.
+///
+/// Named rather than written inline because `read_dir` order is exactly what it exists
+/// to remove, and a fixture on disk cannot pin an order that depends on it: the tie is
+/// the whole point and only a caller choosing the input order can put one there. The
+/// cloud route sorts its own counts the same way over `&'static str`.
+fn order_formats(counts: &mut [(crate::FileFormat, usize)]) {
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(b.0.name())));
+}
+
 /// Whether a listing entry is bookkeeping rather than data.
 ///
 /// The one convention datui knows, and the only one: a leading `_` or `.`, which every
@@ -890,9 +901,7 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     }
 
     holds.partitions = partitions;
-    // Commonest first, and by name where two formats tie, so the line reads the same
-    // way twice running.
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(b.0.name())));
+    order_formats(&mut counts);
     holds.formats = counts
         .into_iter()
         .map(|(f, n)| (f.name().to_string(), n))
@@ -2286,6 +2295,58 @@ mod classification_tests {
         ] {
             assert!(!holds.is_empty(), "{what} is something to say");
         }
+    }
+
+    #[test]
+    fn formats_that_tie_are_ordered_by_name_whatever_order_they_arrived_in() {
+        use crate::FileFormat;
+        // Given in the order that is wrong on both counts, so neither clause of the
+        // comparison can be the one doing nothing. Without the tie-break a folder of
+        // two CSV and two JSON reads `2 csv · 2 json` on one pass and `2 json · 2 csv`
+        // on the next, which is the `read_dir` order this release exists to remove.
+        let mut counts = vec![
+            (FileFormat::Json, 2),
+            (FileFormat::Csv, 2),
+            (FileFormat::Parquet, 5),
+        ];
+        order_formats(&mut counts);
+        assert_eq!(
+            counts,
+            vec![
+                (FileFormat::Parquet, 5),
+                (FileFormat::Csv, 2),
+                (FileFormat::Json, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn partitions_carry_a_folder_only_while_they_are_the_most_of_it() {
+        // The boundary the local rule turns on, and the twin of the cloud route's
+        // `partitions_carry_a_prefix_only_while_they_are_the_most_of_it`. Every folder
+        // on disk goes through this one.
+        let laid_out = |strays: usize| {
+            let dir = tempfile::tempdir().unwrap();
+            for year in ["year=2024", "year=2025"] {
+                let part = dir.path().join(year);
+                std::fs::create_dir_all(&part).unwrap();
+                write(&part, "data.parquet", &["id"]);
+            }
+            for i in 0..strays {
+                write(dir.path(), &format!("stray-{i}.parquet"), &["id"]);
+            }
+            classify_directory(dir.path())
+        };
+        assert_eq!(
+            laid_out(2),
+            EntryKind::Hive,
+            "two partitions against two files beside them"
+        );
+        assert_ne!(
+            laid_out(3),
+            EntryKind::Hive,
+            "one more file than partitions is a folder that holds a key=value"
+        );
     }
 
     #[test]

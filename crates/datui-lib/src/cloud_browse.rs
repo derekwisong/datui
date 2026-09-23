@@ -702,11 +702,7 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    let (kind, mut holds) = look_at_listing(&prefix, &folders, &objects);
-    // One page of at most `PEEK_KEYS`. A prefix with more behind it counted what it saw
-    // and says so, the way a local folder past `MAX_ENTRIES_PER_DIR` does: `100+
-    // parquet`, not an exact hundred nobody could have counted.
-    holds.truncated = page.page_token.is_some();
+    let (kind, holds) = look_at_page(&prefix, &folders, &objects, page.page_token.is_some());
     if kind != crate::discover::EntryKind::MultiFile {
         return Ok((kind, holds));
     }
@@ -818,6 +814,23 @@ async fn kind_from_footers(
 
 /// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
 /// gives them for a local folder. A prefix's row is labelled from the second.
+/// One page of a listing, and whether the store said there is another.
+///
+/// Split from the request that fetched it so the `+` can be tested: `peek_page` builds
+/// its store from a URL and cannot be handed one. A prefix with more behind it counted
+/// what it saw and says so, the way a local folder past `MAX_ENTRIES_PER_DIR` does:
+/// `100+ parquet`, not an exact hundred nobody could have counted.
+fn look_at_page(
+    prefix: &str,
+    folders: &[String],
+    objects: &[(String, u64)],
+    more: bool,
+) -> (crate::discover::EntryKind, crate::discover::Holds) {
+    let (kind, mut holds) = look_at_listing(prefix, folders, objects);
+    holds.truncated = more;
+    (kind, holds)
+}
+
 pub fn look_at_listing(
     prefix: &str,
     folders: &[String],
@@ -972,7 +985,12 @@ pub fn look_at_listing(
     if folder("metadata") && folder("data") && parquet == 0 {
         return (EntryKind::Iceberg, holds);
     }
-    let seen = counted.len() + present.len();
+    // Everything the listing reported that is not a writer's own file, which is what
+    // the local route counts: its `else` arm puts a stray it cannot read into `not_read`
+    // and still counts it as seen. The orphan markers are exactly that stray — dropped
+    // from `present` because they are empty — so leaving them out here made a folder of
+    // two Parquet files and five of them `dir` on disk and `multi` in a bucket.
+    let seen = counted.len() + present.len() + orphan_markers.len();
     // The local route's rule, unchanged: see `discover::classify_directory` for why a
     // majority here refuses real hive roots.
     if partitions > 0 && partitions >= files.len() {
@@ -2032,6 +2050,67 @@ mod tests {
             look_at_listing("out/", &parts, &three).0,
             crate::discover::EntryKind::Hive,
             "one more file than partitions"
+        );
+    }
+
+    #[test]
+    fn a_stray_it_cannot_read_counts_against_a_prefix_the_way_it_does_on_disk() {
+        // A zero-byte object with no dot and no prefix of its name beside it: not a
+        // console's placeholder, because there is nothing it could stand for. The local
+        // route puts such a stray in `not_read` and still counts it among what it saw,
+        // which is what the majority is measured against. Leaving these out of `seen`
+        // made two Parquet files among five of them one table in a bucket and a place
+        // to look inside on disk.
+        let (kind, holds) = look_at_listing(
+            "yellow/",
+            &folders(&[]),
+            &objects(&[
+                ("yellow/a.parquet", 5),
+                ("yellow/b.parquet", 5),
+                ("yellow/year=2028", 0),
+                ("yellow/year=2029", 0),
+                ("yellow/year=2030", 0),
+                ("yellow/year=2031", 0),
+                ("yellow/year=2032", 0),
+            ]),
+        );
+        assert_eq!(holds.not_read, 5);
+        assert_eq!(
+            kind,
+            crate::discover::EntryKind::Directory,
+            "five it cannot read outvote two it can"
+        );
+    }
+
+    #[test]
+    fn a_prefix_with_another_page_behind_it_says_so() {
+        let keys: Vec<(String, u64)> = (0..100)
+            .map(|i| (format!("out/part-{i:05}.parquet"), 100u64))
+            .collect();
+        // The page is all datui asked for, so the count is a floor and the label says
+        // it. Without the `+` a hundred is an exact hundred nobody counted.
+        let holds = look_at_page("out/", &folders(&[]), &keys, true).1;
+        assert!(holds.truncated);
+        assert_eq!(holds.label(), "100+ parquet");
+        // And the last page counts what is there.
+        let holds = look_at_page("out/", &folders(&[]), &keys, false).1;
+        assert!(!holds.truncated);
+        assert_eq!(holds.label(), "100 parquet");
+    }
+
+    #[test]
+    fn a_pane_never_lists_more_skipped_names_than_it_promised() {
+        // The names are there so the convention is recognisable, not so the pane holds
+        // a paragraph of them. Thirty `.crc` objects is an ordinary Spark output.
+        let keys: Vec<(String, u64)> = (0..30)
+            .map(|i| (format!("out/.part-{i:05}.parquet.crc"), 8u64))
+            .collect();
+        let holds = look_at_listing("out/", &folders(&[]), &keys).1;
+        assert_eq!(holds.skipped, 30, "all of them are counted");
+        assert_eq!(
+            holds.skipped_names.len(),
+            crate::discover::SKIPPED_NAMES_SHOWN,
+            "but only a few are named"
         );
     }
 

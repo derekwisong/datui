@@ -1522,19 +1522,24 @@ mod peek_answer_tests {
         }
     }
 
-    /// A peek is worth a listing rebuild when its answer changes what a row draws, and
-    /// a rebuild reads the dataset index on the thread drawing the frame — so the test
-    /// is what reaches the row, not what the peek decided.
+    /// A peek is worth a listing rebuild when its answer reaches the screen, and a
+    /// rebuild reads the dataset index on the thread drawing the frame — so the test is
+    /// what the answer says, not what the peek decided. The screen is the row *and* the
+    /// details pane beside it, which draws the whole `holds` line.
     #[test]
-    fn a_peek_that_only_found_folders_is_not_worth_a_rebuild() {
+    fn a_peek_is_worth_a_rebuild_when_its_answer_says_anything() {
         let worth = crate::App::peek_tells_a_row_something;
 
-        // Nothing counted and nothing decided: the row would fall back to the word for
-        // the place and redraw the same.
+        // The claim staked before the answers arrive: nothing counted, nothing decided.
+        // The only thing there is no reason to send.
         assert!(!worth(&(EntryKind::Directory, Holds::default())));
-        // A prefix of sub-prefixes and a writer's own files. Still no data to count,
-        // still the same row.
-        assert!(!worth(&(
+
+        // Only Parquet is read in place, so a prefix of twelve CSV objects stays a
+        // `Directory` — and it is still `12 csv`, which is the label the row draws.
+        assert!(worth(&(EntryKind::Directory, counted("csv", 12))));
+        // A prefix of sub-prefixes and a writer's own files draws no label of its own,
+        // but the pane has `12 folders · 3 skipped` to say, and says it on disk.
+        assert!(worth(&(
             EntryKind::Directory,
             Holds {
                 folders: 12,
@@ -1542,14 +1547,34 @@ mod peek_answer_tests {
                 ..Default::default()
             }
         )));
+        // A README and two PDFs: nothing datui reads, which is itself the answer.
+        assert!(worth(&(
+            EntryKind::Directory,
+            Holds {
+                not_read: 3,
+                ..Default::default()
+            }
+        )));
+        // A listing cut short carries the `+` that separates `dir+` from `dir`.
+        assert!(worth(&(
+            EntryKind::Directory,
+            Holds {
+                truncated: true,
+                ..Default::default()
+            }
+        )));
 
-        // Only Parquet is read in place, so a prefix of twelve CSV objects stays a
-        // `Directory` — and it is still `12 csv`, which is the label the row draws.
-        // Dropping it left every CSV prefix in a bucket reading `prefix` for the
-        // session.
-        assert!(worth(&(EntryKind::Directory, counted("csv", 12))));
-        // And the kinds that decide something say it whether they counted or not.
-        assert!(worth(&(EntryKind::Hive, Holds::default())));
+        // And the kinds that decide something say it whether they counted or not — a
+        // partitioned lake table has no data file at its root, so its `Holds` is empty
+        // and the kind is the whole of the answer.
+        for kind in [
+            EntryKind::Hive,
+            EntryKind::Delta,
+            EntryKind::Iceberg,
+            EntryKind::Hudi,
+        ] {
+            assert!(worth(&(kind, Holds::default())), "{kind:?} decides the row");
+        }
         assert!(worth(&(EntryKind::MultiFile, counted("parquet", 40))));
     }
 }
@@ -8030,13 +8055,16 @@ impl App {
     /// and it is still `12 csv`, which is the count the row is labelled from.
     ///
     /// An answer that says neither is dropped, because each send costs a listing
-    /// rebuild, and that reads the dataset index on the thread drawing the frame. Data
-    /// files and nothing else, because that is what the row renders: with none,
-    /// `entry_line` falls back to the word for the place, so a prefix holding only
-    /// sub-prefixes would have bought twelve rebuilds and changed no row.
+    /// rebuild, and that reads the dataset index on the thread drawing the frame.
+    ///
+    /// "Says something" is `Holds::is_empty`, not the formats alone. The row is not the
+    /// only thing an answer reaches: the details pane draws the whole `holds` line, so
+    /// a prefix of a README and two PDFs has `3 not read` to report, and a listing cut
+    /// short at one page has the `+` that makes it `dir+`. Testing the formats dropped
+    /// both, and the same folder on disk said both things.
     #[cfg(feature = "cloud")]
     fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
-        answer.0 != discover::EntryKind::Directory || !answer.1.formats.is_empty()
+        answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
     }
 
     /// Look inside the folders a cloud listing returned, a few at a time, so the ones

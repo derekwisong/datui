@@ -30,10 +30,10 @@ NAVIGATION
   a count and a format ("12 parquet"), "mixed" for more than one format, or
   "dir" for no data files. The details pane carries the whole tally: every file
   in the folder is counted, as data, as one datui has no reader for, or as one
-  it passed over — a name beginning with "_" or ".", which is where every engine
-  puts its own files and where a repository puts .git. A "key=value" name is a
-  partition whatever it begins with, so those are not passed over. The skipped
-  are named, the first four of them.
+  it passed over — a name beginning with "_" or "." or ending "_$folder$", which
+  is where every engine puts its own files and where a repository puts .git. A
+  "key=value" name is a partition whatever it begins with, so those are not
+  passed over. The skipped are named, the first four of them.
 
 FINDING
   (type)            Filter by name or column; matching is fuzzy, so "sal" finds

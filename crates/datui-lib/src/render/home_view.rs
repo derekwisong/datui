@@ -918,14 +918,16 @@ fn entry_line<'a>(
     let shown_column: Option<(String, usize)> = matched_column.map(|column| {
         let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
         let whole = column.chars().count();
-        if whole <= room || room <= ellipsis_len {
-            (column.to_string(), whole)
-        } else {
-            let kept = room - ellipsis_len;
-            (
+        // Cut only where a letter survives the ellipsis: `checked_sub` rather than a
+        // test of `room` against the ellipsis, so the subtraction cannot be reached
+        // without room for it. `…` is one character and `...` is three, which made the
+        // difference between a guard and a panic under `unicode = never`.
+        match room.checked_sub(ellipsis_len) {
+            Some(kept) if kept > 0 && whole > room => (
                 column.chars().take(kept).collect::<String>() + ellipsis,
                 kept,
-            )
+            ),
+            _ => (column.to_string(), whole),
         }
     });
     let kind_cell = match &shown_column {
@@ -2035,6 +2037,84 @@ mod tests {
             .iter()
             .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
             .sum()
+    }
+
+    #[test]
+    fn the_pane_does_not_say_what_a_folder_holds_twice() {
+        let mut entry = Entry::for_test(std::path::Path::new("/data/consolidated"), "consolidated");
+        entry.kind = EntryKind::Directory;
+        // A folder of one format and nothing else: the label and the line are the same
+        // words, and `kind  12 parquet` above `holds  12 parquet` says it twice.
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        let text = preview_text(&entry, 60);
+        assert!(text.contains("12 parquet"), "{text}");
+        assert_eq!(
+            text.matches("12 parquet").count(),
+            1,
+            "the label and the line are the same words: {text}"
+        );
+
+        // With anything else beside them the line says more than the label, and both
+        // belong.
+        entry.holds.folders = 3;
+        let text = preview_text(&entry, 60);
+        assert!(text.contains("holds"), "{text}");
+        assert!(text.contains("3 folders"), "{text}");
+    }
+
+    #[test]
+    fn no_mark_ever_lands_on_a_cut_notes_ellipsis() {
+        // The note says why a row is in the list, and the marks say which letters
+        // matched. The ellipsis standing for the rest of the note matched nothing, so a
+        // mark on it is the row claiming a hit it does not have. `kept` counts the
+        // note's own characters and the marks stop there — this is what says so, since
+        // the comparison between the two rows below cannot see a change that moves
+        // both of them.
+        let ctx = RenderContext::for_test();
+        let entry = Entry::for_test(std::path::Path::new("/tmp/x"), "x");
+        let g = glyphs::get();
+        for width in 1..=40usize {
+            let line = entry_line(
+                &entry,
+                false,
+                width,
+                false,
+                Some("transaction_amount_usd"),
+                "usd",
+                Some(&[]),
+                None,
+                &ctx,
+            );
+            let marked: String = line
+                .spans
+                .iter()
+                .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+                .map(|s| s.content.to_string())
+                .collect();
+            assert!(
+                !marked.contains(g.ellipsis),
+                "at {width} cells a mark landed on the cut note's ellipsis: {marked:?}"
+            );
+            // And a note cut down to nothing but the ellipsis is not a note. Where
+            // there is no room for a letter beside it the whole note stays and the name
+            // gives way instead, the same reasoning that keeps `dataset` from becoming
+            // `d…t`.
+            let note: String = line
+                .spans
+                .iter()
+                .skip_while(|s| s.content != " ·")
+                .skip(1)
+                .map(|s| s.content.to_string())
+                .collect();
+            assert_ne!(
+                note.trim_end(),
+                g.ellipsis,
+                "at {width} cells the note was cut down to an ellipsis and said nothing"
+            );
+        }
     }
 
     #[test]

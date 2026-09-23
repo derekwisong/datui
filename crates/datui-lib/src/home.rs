@@ -277,8 +277,9 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .to_string();
     let mut entry = Entry::directory(&folder_dataset_url(dir));
     entry.kind = kind;
-    // The same count the folder's own row carries: this row is the other door to the
-    // same open, and reading `multi` beside a `12 parquet` row names nothing.
+    // What the listing you are looking at holds, which is the whole of it — where the
+    // folder's own row upstairs was counted from one page of a peek and may say `100+`.
+    // Two numbers about one folder, and this is the one that counted everything.
     entry.holds = holds;
     entry.name = format!("{name} ({what})");
     Some(entry)
@@ -1229,16 +1230,25 @@ fn apply_known_facts(
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
-            // And so does what the footers said. The fingerprint below is a file's — a
-            // listing gives a directory no size, so `same_bytes` is never true for one
-            // — and without this a folder of separate tables read `15 parquet` with 72
-            // columns in the session that measured it and a blank shape in every
-            // session after, though the record still held the number.
-            row.rows = facts.rows;
-            row.cols = facts.cols;
-            row.cols_sampled = facts.cols_sampled;
-            if !facts.columns.is_empty() {
-                row.columns = facts.columns.clone();
+            // And, for a folder that is *not* a dataset, the width the footers gave it.
+            // The fingerprint below is a file's — a listing gives a directory no size,
+            // so `same_bytes` is never true for one — and without this a folder of
+            // separate tables read `15 parquet · 72 columns` in the session that
+            // measured it and a blank shape in every session after, though the record
+            // still held the number.
+            //
+            // Only that kind, and never the row count. `unmeasured_visible` skips a
+            // row that has one, so restoring a count here would stop a `hive` or a
+            // `multi` folder ever being measured again — and its size and its codec,
+            // which nothing else fills in, would go blank instead. A folder of
+            // separate tables has no row count to restore: a sum over unrelated tables
+            // is not a number, and `downgrade_to_directory` leaves it `None`.
+            if kind == EntryKind::Directory {
+                row.cols = facts.cols;
+                row.cols_sampled = facts.cols_sampled;
+                if !facts.columns.is_empty() {
+                    row.columns = facts.columns.clone();
+                }
             }
         }
     }
@@ -2669,7 +2679,9 @@ mod known_facts_tests {
                 cols: Some(72),
                 cols_sampled: false,
                 columns: vec!["lat".to_string()],
-                kind: Some(EntryKind::MultiFile),
+                // A folder of separate tables: the kind the footers settled on, its
+                // width, and no row count, because a sum over them is not a number.
+                kind: Some(EntryKind::Directory),
                 classified_by: crate::discover::CLASSIFIER_VERSION,
                 holds: holds.clone(),
                 cost: Default::default(),
@@ -2683,14 +2695,52 @@ mod known_facts_tests {
             let index = std::collections::HashMap::from([(path.clone(), facts)]);
 
             apply_known_facts(&mut row, &index, remote);
-            assert_eq!(row.kind, EntryKind::MultiFile, "{path:?}");
+            assert_eq!(row.kind, EntryKind::Directory, "{path:?}");
             assert_eq!(row.label(), "15 parquet", "{path:?}");
+            assert_eq!(row.rows, None, "{path:?}");
             // And the shape beside it. A directory has no size for the fingerprint
             // below to match on, so without this the count was written to the record
             // and never read back out of it.
             assert_eq!(row.cols, Some(72), "{path:?}");
             assert_eq!(row.columns, vec!["lat".to_string()], "{path:?}");
         }
+    }
+
+    /// A dataset's own counts are not restored beside its kind. `unmeasured_visible`
+    /// skips a row that already has a row count, so restoring one would stop a `hive`
+    /// or a `multi` folder ever being measured again — and its size and its codec,
+    /// which nothing else fills in, would be blank for the rest of the session.
+    #[test]
+    fn a_datasets_counts_are_measured_rather_than_restored() {
+        let path = std::path::PathBuf::from("/data/warehouse/events");
+        let facts = DatasetFacts {
+            mtime: 0,
+            size: 4096,
+            rows: Some(1_200_000),
+            cols: Some(58),
+            cols_sampled: false,
+            columns: vec!["ts".to_string()],
+            kind: Some(EntryKind::MultiFile),
+            classified_by: crate::discover::CLASSIFIER_VERSION,
+            holds: crate::discover::Holds {
+                formats: vec![("parquet".to_string(), 15)],
+                ..Default::default()
+            },
+            cost: Default::default(),
+        };
+        let mut row = Entry::directory(&path);
+        row.kind = EntryKind::Unknown;
+        row.modified = Some(std::time::UNIX_EPOCH);
+        let index = std::collections::HashMap::from([(path.clone(), facts)]);
+
+        apply_known_facts(&mut row, &index, false);
+        assert_eq!(row.kind, EntryKind::MultiFile, "the kind comes back");
+        assert_eq!(row.label(), "15 parquet", "and what it holds");
+        assert_eq!(
+            row.rows, None,
+            "but not the count: the measuring pass skips a row that has one"
+        );
+        assert_eq!(row.cols, None);
     }
 
     /// A kind recorded by a build that classified differently is not restored.

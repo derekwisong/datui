@@ -807,10 +807,17 @@ fn entry_line<'a>(
     let missing_source = named_source
         .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k == id)));
     let missing_note = named_source.map(|id| format!("source not found: {id}"));
+    // Whether the cell ends up holding the source id or the warning rather than a
+    // label. The path having an id is not the same question: a peeked prefix under a
+    // named source has both, and its label is a label.
+    let mut shows_source = true;
     let kind: &str = match (named_source, kind, known_sources) {
         (Some(_), "", Some(_)) if missing_source => missing_note.as_deref().unwrap_or(""),
         (Some(id), "", Some(_)) => id,
-        _ => kind,
+        _ => {
+            shows_source = false;
+            kind
+        }
     };
     // Nothing has looked into this row yet, and it has nothing else to say for itself.
     // An ellipsis says so and claims nothing: the word `dir` was a claim, and a blank
@@ -859,9 +866,10 @@ fn entry_line<'a>(
     // would hand the name a budget the note then overruns — the misalignment this
     // exists to stop, one column wider. And `source not found:` is a warning the pane
     // does not carry, so dropping it leaves a broken recent looking like a working one.
-    // Not a source id either: two stores can hold the same bucket and key, and that
-    // chip is the only thing that says which this row came from.
-    let is_label = matched_column.is_none() && !missing_source && named_source.is_none();
+    // Not a source id or a `source not found:` either: two stores can hold the same
+    // bucket and key, and that chip is the only thing that says which this row came
+    // from. Asked of what the cell holds, not of what the path carries.
+    let is_label = matched_column.is_none() && !shows_source;
     let (kind_cell, kind_is_chip) = if !is_label
         || name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
             > 1
@@ -1483,6 +1491,39 @@ mod tests {
                 meta_starts_at(&entry, width),
                 meta_starts_at(&short, width),
                 "the meta columns must start in the same place at {width}"
+            );
+        }
+
+        // A label under a named source is still a label. The path carrying a source id
+        // is a different question from the cell showing one, and a peeked prefix under
+        // `s3://prod@bucket` has both.
+        let mut named = row("s3://prod@bucket/exports", EntryKind::MultiFile);
+        named.size = Some(4096);
+        named.rows = Some(12);
+        named.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12000)],
+            ..Default::default()
+        };
+        let sources = ["prod".to_string()];
+        let offset = |width: usize| -> usize {
+            let line = entry_line(
+                &named,
+                false,
+                width,
+                true,
+                None,
+                "",
+                Some(&sources),
+                None,
+                &ctx,
+            );
+            offset_of_meta(line, &named)
+        };
+        for width in [22usize, 24, 30] {
+            assert_eq!(
+                offset(width),
+                meta_starts_at(&short, width),
+                "a label under a named source gives way like any other, at {width}"
             );
         }
 

@@ -88,6 +88,10 @@ fn meta_columns(entry: &Entry) -> String {
     let more = if entry.cols_sampled { "+" } else { "" };
     let shape = match (entry.rows, entry.cols) {
         (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
+        // `?` says a count is out of reach. A folder that is not one table has no row
+        // count to be out of reach — a sum over unrelated tables is not a number — so
+        // it shows its width alone rather than claiming there is a figure somewhere.
+        (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more}"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
         _ => String::new(),
     };
@@ -785,6 +789,10 @@ fn entry_line<'a>(
     let named_source = crate::source::split_source_id(&path_text).0;
     let described = entry.label();
     let kind = match entry.kind {
+        // A count beats the word for the place it is in: `12 parquet` says more about a
+        // prefix than `prefix` does. A bucket nothing has peeked into has no count, so
+        // it keeps the word — which is the row it is right for.
+        EntryKind::Directory if !entry.holds.is_empty() => described.as_ref(),
         EntryKind::Directory => place_kind
             .or_else(|| crate::home::object_place_label(&entry.path))
             .unwrap_or(described.as_ref()),
@@ -848,7 +856,9 @@ fn entry_line<'a>(
     // would hand the name a budget the note then overruns — the misalignment this
     // exists to stop, one column wider. And `source not found:` is a warning the pane
     // does not carry, so dropping it leaves a broken recent looking like a working one.
-    let is_label = matched_column.is_none() && !missing_source;
+    // Not a source id either: two stores can hold the same bucket and key, and that
+    // chip is the only thing that says which this row came from.
+    let is_label = matched_column.is_none() && !missing_source && named_source.is_none();
     let (kind_cell, kind_is_chip) = if !is_label
         || name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1)
             > 1
@@ -1079,6 +1089,7 @@ fn preview_head(
     }
     let described = entry.label();
     let kind = match entry.kind {
+        EntryKind::Directory if !entry.holds.is_empty() => described.as_ref(),
         EntryKind::Directory => place_kind
             .or_else(|| crate::home::object_place_label(&entry.path))
             .unwrap_or(described.as_ref()),
@@ -1365,6 +1376,53 @@ mod tests {
             cost: Default::default(),
             holds: Default::default(),
         }
+    }
+
+    /// A count says more about a prefix than the word `prefix` does, and a bucket that
+    /// nothing has peeked into keeps the word, which is the row it is right for.
+    #[test]
+    fn a_cloud_prefix_is_labelled_by_what_it_holds() {
+        let ctx = RenderContext::for_test();
+        let drawn = |entry: &Entry| -> String {
+            entry_line(entry, false, 40, false, None, "", None, None, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+
+        let mut prefix = row("s3://bucket/exports", EntryKind::Directory);
+        assert!(drawn(&prefix).contains("prefix"), "{}", drawn(&prefix));
+
+        prefix.holds = crate::discover::Holds {
+            formats: vec![("csv".to_string(), 12)],
+            ..Default::default()
+        };
+        let text = drawn(&prefix);
+        assert!(text.contains("12 csv"), "{text}");
+        assert!(!text.contains("prefix"), "{text}");
+    }
+
+    /// A row count that is out of reach says `?`. A folder that is not one table has
+    /// none to be out of reach, and must not read like a dataset too big to count.
+    #[test]
+    fn a_folder_of_separate_tables_shows_its_width_without_a_question_mark() {
+        let mut folder = row("/data/consolidated", EntryKind::Directory);
+        folder.cols = Some(72);
+        assert!(meta_columns(&folder).contains("72"));
+        assert!(
+            !meta_columns(&folder).contains('?'),
+            "{}",
+            meta_columns(&folder)
+        );
+
+        let mut big = row("/data/events", EntryKind::Hive);
+        big.cols = Some(72);
+        assert!(
+            meta_columns(&big).contains('?'),
+            "a hive dataset still says ?"
+        );
     }
 
     /// A label describes and a name identifies, so on a screen too narrow for both the

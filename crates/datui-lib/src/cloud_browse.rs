@@ -904,6 +904,9 @@ pub fn look_at_listing(
     // here and `2 parquet · 1 skipped (_temporary)` there.
     let mut skipped_names: Vec<String> = objects
         .iter()
+        // A zero-byte object beside a prefix of the same name is that prefix, written
+        // by a console: counted once, under the prefix, as the local route counts it.
+        .filter(|(key, size)| !(*size == 0 && folders.iter().any(|f| last(f) == last(key))))
         .map(|(key, _)| last(key))
         .chain(folders.iter().map(|f| last(f)))
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))

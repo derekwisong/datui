@@ -199,13 +199,12 @@ impl Holds {
             .iter()
             .map(|(name, count)| format!("{count}{more} {name}"))
             .collect();
-        if self.folders > 0 {
-            let word = if self.folders == 1 {
-                "folder"
-            } else {
-                "folders"
-            };
-            parts.push(format!("{}{more} {word}", self.folders));
+        // Partitions are folders too, and counted in `folders`; naming both would count
+        // them twice. What is left is the folders that are not partitions.
+        let plain = self.folders.saturating_sub(self.partitions);
+        if plain > 0 {
+            let word = if plain == 1 { "folder" } else { "folders" };
+            parts.push(format!("{plain}{more} {word}"));
         }
         if self.partitions > 0 {
             let word = if self.partitions == 1 {
@@ -711,13 +710,20 @@ pub fn classify_directory(path: &Path) -> EntryKind {
 /// that is wrong about the first is still true about the second.
 pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     let mut holds = Holds::default();
-    // A lake table's data files genuinely do agree on a schema, so every rule below
-    // says "one table" and is right about the schema and wrong about the rows. Decided
-    // before the counting settles anything, and after the listing all the same: a Delta
-    // root still holds files, and its pane says how many, the way a bucket's does.
-    let lake = lake_table(path);
+    // Before anything is counted: a lake table's data files genuinely do agree on a
+    // schema, so every rule below says "one table" and is right about the schema and
+    // wrong about the rows.
+    //
+    // And before the listing, which it does not need: three `join` tests answer it, and
+    // counting would walk up to `MAX_ENTRIES_PER_DIR` entries of every table in a
+    // warehouse, on every pass, for a `holds` line beside a table whose files `enrich`
+    // then refuses to read. A prefix in a bucket does carry one, because the listing it
+    // is counted from had already been paid for.
+    if let Some(lake) = lake_table(path) {
+        return (lake, holds);
+    }
     let Ok(iter) = std::fs::read_dir(path) else {
-        return (lake.unwrap_or(EntryKind::Directory), holds);
+        return (EntryKind::Directory, holds);
     };
 
     let mut partitions = 0usize;
@@ -823,10 +829,6 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     // `docs/`. Refusing a dataset is the worse direction, and a rule per case is what
     // #275 exists to stop. The label stops deciding what `Enter` does in phase 3, and
     // the question goes with it.
-    if let Some(lake) = lake {
-        return (lake, holds);
-    }
-
     // Deterministic now rather than occasional, which is the cost of the whole listing:
     // a source tree with a `cfg=debug/` in it reads `hive` on every pass, and `enrich`
     // then walks it to depth four looking for footers. Left alone all the same — see
@@ -1776,10 +1778,11 @@ mod classification_tests {
         assert!(holds.label().contains('+'));
     }
 
-    /// A lake table is a folder too, and its pane says what is in it. The cloud route
-    /// counted before it checked the markers; this one returned before it counted.
+    /// A lake table is answered by three `join` tests and costs no listing. Counting
+    /// one would walk every table in a warehouse on every pass, for a line beside a
+    /// table whose files `enrich` then refuses to read anyway.
     #[test]
-    fn a_lake_table_says_what_is_in_it() {
+    fn a_lake_table_is_not_counted() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("_delta_log")).unwrap();
         write(dir.path(), "part-00000.parquet", &["id"]);
@@ -1787,10 +1790,9 @@ mod classification_tests {
 
         let (kind, holds) = look_at_directory(dir.path());
         assert_eq!(kind, EntryKind::Delta);
-        assert_eq!(
-            holds.line().as_deref(),
-            Some("2 parquet · 1 skipped (_delta_log)")
-        );
+        assert!(holds.is_empty(), "and its label is the format's own name");
+        let entry = measured(dir.path());
+        assert_eq!(entry.label(), "delta");
     }
 
     /// The pane never presents the first few skipped names as all of them, and a count
@@ -1799,7 +1801,9 @@ mod classification_tests {
     fn a_tally_does_not_claim_more_than_it_counted() {
         let holds = Holds {
             formats: vec![("parquet".to_string(), 12)],
-            folders: 3,
+            // Five subdirectories, three of them partitions: naming both would count
+            // the three twice.
+            folders: 5,
             partitions: 3,
             skipped: 10,
             skipped_names: vec![".crc".into(), "_SUCCESS".into()],
@@ -1807,7 +1811,7 @@ mod classification_tests {
         };
         assert_eq!(
             holds.line().as_deref(),
-            Some("12 parquet · 3 folders · 3 partitions · 10 skipped (.crc, _SUCCESS, …)")
+            Some("12 parquet · 2 folders · 3 partitions · 10 skipped (.crc, _SUCCESS, …)")
         );
 
         let floor = Holds {
@@ -1816,7 +1820,7 @@ mod classification_tests {
         };
         assert_eq!(
             floor.line().as_deref(),
-            Some("12+ parquet · 3+ folders · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)")
+            Some("12+ parquet · 2+ folders · 3+ partitions · 10+ skipped (.crc, _SUCCESS, …)")
         );
     }
 

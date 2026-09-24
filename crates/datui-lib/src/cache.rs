@@ -287,6 +287,17 @@ impl CacheManager {
         });
     }
 
+    /// Forget several recently opened paths at once: every recent under one place.
+    pub fn forget_recents(&self, paths: &[std::path::PathBuf]) {
+        let targets: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let _ = self.update_history_file("recents", |recents| {
+            recents.retain(|p| !targets.contains(p));
+        });
+    }
+
     /// Forget every recently opened path, leaving other caches alone.
     pub fn clear_recents(&self) {
         let _ = self.update_history_file("recents", |recents| recents.clear());

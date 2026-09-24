@@ -513,6 +513,7 @@ mod classify_batch_tests {
                 folded_by_default: false,
                 remote_root: None,
                 waiting: false,
+                grouped_by_place: false,
             }],
         }
     }
@@ -5892,6 +5893,8 @@ pub struct App {
     home_search_inflight: bool,
     /// Set while the confirmation modal is asking about forgetting every recent.
     pending_clear_recents: bool,
+    /// The place whose recents the confirmation modal is asking about forgetting.
+    pending_forget_place: Option<PathBuf>,
     /// Why the last open failed, shown on the home screen when the error is dismissed
     /// and there is nothing to fall back to.
     last_load_error: Option<String>,
@@ -7194,6 +7197,7 @@ impl App {
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
+            pending_forget_place: None,
             home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
@@ -7916,7 +7920,9 @@ impl App {
                         .unwrap_or_else(|_| entry.path.clone())
                         == target
                 }
-                home::Row::Header { .. } => false,
+                home::Row::Header { .. } | home::Row::Place { .. } | home::Row::More { .. } => {
+                    false
+                }
             }) {
                 self.home.selected = idx;
             }
@@ -7958,6 +7964,17 @@ impl App {
     /// forgetting it there would either do nothing or imply a deletion datui is not
     /// going to perform.
     fn home_forget_selected(&mut self) {
+        // A place row stands for every recent under it. Forgetting them all is one
+        // keystroke from forgetting one, so it asks first, the way Shift+Delete does.
+        if let Some(home::Row::Place { path, held, .. }) = self.home.selected_row() {
+            self.pending_forget_place = Some(path.clone());
+            self.confirmation_modal.show(format!(
+                "Forget {held} recently opened {} under {}?",
+                if held == 1 { "dataset" } else { "datasets" },
+                home::display_path(&path)
+            ));
+            return;
+        }
         let section_title = self
             .home
             .selected_section()
@@ -8002,6 +8019,11 @@ impl App {
     /// Collapsing moves the cursor to the header, so the section the user just folded
     /// is what stays selected rather than whatever row happens to fall into place.
     fn home_collapse(&mut self, collapse: bool) {
+        // The listing browsed into is the whole screen. It never folds, and the fold
+        // must not be remembered for its path either — see `set_collapsed`.
+        if self.home.browsing.is_some() {
+            return;
+        }
         let Some(section) = self.home.selected_section() else {
             return;
         };
@@ -8183,6 +8205,11 @@ impl App {
     /// where the folder was: a cloud prefix simply could not be descended into until
     /// there was a listing to descend with.
     fn selected_folder_to_enter(&self) -> Option<PathBuf> {
+        // A place under `RECENT` is a directory to go inside, and → is one of its two
+        // doors. It has no entry to ask about, so it is answered before one is looked for.
+        if let Some(home::Row::Place { path, .. }) = self.home.selected_row() {
+            return home::place_is_browsable(&path).then_some(path);
+        }
         let entry = self.home.selected_entry()?;
         if self.selection_opens_the_whole_folder() {
             return None;
@@ -8251,6 +8278,26 @@ impl App {
     /// Open the highlighted entry: toggle a section, descend into a directory, or
     /// load a dataset.
     fn home_open_selected(&mut self) -> Option<AppEvent> {
+        match self.home.selected_row() {
+            // Into the directory or prefix the recents under it live in: the way back
+            // to a place found by hand, now that recents no longer make roots.
+            Some(home::Row::Place { path, .. }) => {
+                if home::place_is_browsable(&path) {
+                    self.home_browse_into(path);
+                } else {
+                    self.home.status = Some(
+                        "An HTTP server has no listing to browse. Open a file under it".into(),
+                    );
+                }
+                return None;
+            }
+            // The rest of `RECENT`, for the session.
+            Some(home::Row::More { .. }) => {
+                self.home.recent_expanded = true;
+                return None;
+            }
+            _ => {}
+        }
         if self.home.selection_is_header() {
             if let Some(section) = self.home.selected_section() {
                 self.home.toggle_collapsed(section);
@@ -10371,6 +10418,15 @@ impl App {
                             self.home.status = Some("Recents forgotten".into());
                             return None;
                         }
+                        if let Some(place) = self.pending_forget_place.take() {
+                            self.confirmation_modal.hide();
+                            let paths = self.home.recents_in(&place);
+                            self.cache.forget_recents(&paths);
+                            self.home_refresh();
+                            self.home.status =
+                                Some(format!("Forgot {}", home::display_path(&place)));
+                            return None;
+                        }
                         // User confirmed overwrite: chart export first, then dataframe export
                         if let Some((path, format, title, width, height)) =
                             self.pending_chart_export.take()
@@ -10421,6 +10477,7 @@ impl App {
                         }
                     } else {
                         self.pending_clear_recents = false;
+                        self.pending_forget_place = None;
                         // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
                         if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                             self.chart_export_modal.reopen_with_path(&path, format);
@@ -10438,6 +10495,7 @@ impl App {
                     // Disarmed on every exit from the modal, so a declined confirmation
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
+                    self.pending_forget_place = None;
                     // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
                     if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                         self.chart_export_modal.reopen_with_path(&path, format);
@@ -17599,9 +17657,11 @@ impl Widget for &mut App {
             // look, not a dataset, and counting it makes the figure a lie — and so
             // does counting a folder nothing has looked into yet, which in a fresh
             // listing is every folder in it.
+            // Past the cap on RECENT: a dataset the `more` row stands for is listed,
+            // and the header above it counts it.
             let datasets = self
                 .home
-                .visible()
+                .listed()
                 .iter()
                 .filter(|r| {
                     // Not the row that opens the folder being browsed. Its kind is the

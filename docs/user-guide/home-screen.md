@@ -11,9 +11,12 @@ open it.
   ┃┃┣━┫ ┃ ┃ ┃┃   ~/work/analysis
  ╺┻┛╹ ╹ ╹ ┗━┛╹
  › ▏  filter and search
- ▾ RECENT  2  ────────────────────────────────────────────────────────────
- ▎ ◦ sales  hive                            2.4M × 18    340 MB    2d
-   ◦ customers.parquet                       89k × 12      4 MB    1w
+ ▾ RECENT  3  ────────────────────────────────────────────────────────────
+   /mnt/data/warehouse/                                              nfs4
+ ▎   ⇅ sales  hive                          2.4M × 18    340 MB    2d
+     ⇅ customers.parquet                     89k × 12      4 MB    1w
+   ~/exports/
+     ◦ q3.csv                                          1.2 GB    3h
  ▾ /mnt/data  2  ──────────────────────────────────── nfs4 · configured
    ⇅ events  hive                            1.1M × 9    120 MB    3h
    ⇅ lookup.parquet                           980 × 4      8 KB   2mo
@@ -35,15 +38,15 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any folder <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any folder <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
+| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen, ignoring what is cached |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or hide a cloud source |
+| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, then directory, then to the data you had open |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
@@ -58,24 +61,41 @@ Datasets are grouped by where they came from, in this order:
 
 | Section | Contents | Starts |
 |---|---|---|
-| `RECENT` | Datasets you have opened, newest first | open |
+| `RECENT` | Datasets you have opened, grouped under the directory or prefix each lives in | open |
 | current directory | Where you launched datui | open |
 | `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | open |
 | configured directories | `[data] directories`, in the order listed | open |
-| directories of recent datasets | The 8 most recent | folded |
 | `ELSEWHERE` | Directories from your desktop's recent-files list | folded |
 | `Found` | Datasets below the current directory, while you are typing | |
 
 A folded section shows how many rows it hides. Filtering keeps the grouping, so
 a match always shows which section it came from.
 
+### Recent
+
+Every dataset you have opened sits under a **place row**: the directory or
+bucket prefix it lives in, newest place first. The place row names the path and,
+on a network share or in an object store, what it is on. A sort orders the rows
+inside each place and never flattens the section.
+
+| On a place row | Does |
+|---|---|
+| <kbd>Enter</kbd> or <kbd>→</kbd> | Browse the place, as it would a directory. <kbd>Esc</kbd> comes back |
+| <kbd>Delete</kbd> | Forget every recent under it, after confirming |
+
+Whole places are shown until they take a third of the list, and always at least
+one. What is left is one row, `… 13 more in 5 places`; <kbd>Enter</kbd> on it
+shows the whole section for the session. The count on the header is the true
+count. A filter matches anywhere in `RECENT`, past the cap.
+
 ### Adding a directory
 
-Opening a dataset adds its directory to the list, so a place only has to be
-found by hand once (<kbd>~</kbd>, type the path, open something). Directories
-gathered this way disappear when they hold nothing.
+Opening a dataset puts its directory under `RECENT` as a place, so a place only
+has to be found by hand once (<kbd>~</kbd>, type the path, open something).
+<kbd>Enter</kbd> on the place row takes you back there.
 
-To keep a place listed even when empty or unmounted, name it in the config:
+To keep a place listed as a section of its own, even when empty or unmounted,
+name it in the config:
 
 ```toml
 [data]

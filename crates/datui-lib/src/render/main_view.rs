@@ -181,7 +181,10 @@ pub fn home_control_keys(
             // alongside would cost eleven more columns and be the first thing lost. ←
             // still folds, and says so on every other row.
             keys.push((g.arrow_right, "Inside"));
-        } else {
+        } else if browsing == Browse::Listing {
+            // Only the root listing has sections to fold. The listing browsed into is
+            // the whole screen, never folds, and a chip saying otherwise is a promise
+            // the keys do not keep.
             keys.push((g.updown_lr, "Fold"));
         }
         keys.push(("^↑↓", "Section"));
@@ -322,6 +325,21 @@ mod tests {
             elsewhere.contains(&(g.updown_lr, "Fold")),
             "both arrows fold: {elsewhere:?}"
         );
+    }
+
+    /// While browsing, the one section on screen never folds, so the bar does not say
+    /// it does.
+    #[test]
+    fn home_bar_offers_fold_only_on_the_root_listing() {
+        let g = crate::glyphs::get();
+        let has_fold = |b| {
+            home_control_keys(false, b, false, false, false)
+                .iter()
+                .any(|(key, _)| *key == g.updown_lr)
+        };
+        assert!(has_fold(Browse::Listing));
+        assert!(!has_fold(Browse::AtStart));
+        assert!(!has_fold(Browse::BelowStart));
     }
 
     #[test]

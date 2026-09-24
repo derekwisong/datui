@@ -271,8 +271,18 @@ fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
         .filter(|r| r.kind == EntryKind::File)
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
-    let (kind, holds) =
-        crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects);
+    // Each route asked in its own vocabulary. Feeding a local listing to the cloud
+    // classifier got two answers wrong in opposite directions: `scan_dir` drops dotted
+    // names, so `.hoodie` never reached it and a local Hudi table came back
+    // `MultiFile` — the door then read its tombstones, two keystrokes after the row
+    // above said datui does not read Hudi tables. And the cloud Iceberg rule is the
+    // looser of the two on purpose, name-shape only, so a plain folder holding `data/`
+    // beside `metadata/` was refused as a lake table it is not.
+    let (kind, holds) = if is_object_store_url(dir) {
+        crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects)
+    } else {
+        crate::discover::look_at_directory(dir)
+    };
     // What the row says it opens, not whether it opens: a hive folder is read through
     // its partitions and everything else through its files.
     let what = if kind == EntryKind::Hive {
@@ -280,13 +290,14 @@ fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
     } else {
         "all files"
     };
+    // `file_name` rather than splitting on `/`: at the filesystem root there is no last
+    // component and the row was named `" (all files)"`, and on Windows the separator is
+    // not the one a split would look for.
     let text = dir.to_string_lossy();
-    let name = text
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or("")
-        .to_string();
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| text.to_string());
     let mut entry = Entry::directory(&folder_dataset_url(dir));
     entry.kind = kind;
     // What the listing you are looking at holds. Not the same tally as the folder's own

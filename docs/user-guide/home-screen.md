@@ -231,12 +231,19 @@ while a filter is typed it steps out of the way, and it comes back when the
 filter is cleared. A folder with nothing in it has no such row.
 
 What datui can then *read* is a narrower question than what it will open, and
-this release has not finished widening it. A folder of one format, and a hive
-tree of Parquet, read as one table. A folder holding more than one kind of data
-file says so and does not read. A folder whose data is in subfolders reads only
-if that data is Parquet. And a `delta`, `iceberg` or `hudi` root is refused by
-this row as well as by <kbd>Enter</kbd> on the folder above it, for the reason
-below.
+this release has not finished widening it.
+
+On disk, a folder of one format and a hive tree of Parquet read as one table; a
+folder holding more than one kind of data file says so and does not read; and a
+folder whose data is in subfolders reads only if that data is Parquet.
+
+In a bucket, only Parquet is read in place. A prefix holding CSV, JSON or
+anything else says what it holds and does not read — it does not report a
+problem with your credentials, which is what it used to do. A prefix whose data
+is a level down is tried, since the files below it may be Parquet.
+
+A `delta`, `iceberg` or `hudi` root is refused by this row on both routes, as it
+is by <kbd>Enter</kbd> on the folder above it, for the reason below.
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
 hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single

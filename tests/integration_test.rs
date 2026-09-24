@@ -7342,3 +7342,145 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
         "→ went inside without needing to know what it is first"
     );
 }
+
+/// Each route's folders are classified in that route's vocabulary.
+///
+/// The door used to ask the cloud classifier about a local folder, which got two
+/// answers wrong in opposite directions. `scan_dir` drops dotted names, so `.hoodie`
+/// never reached it and a local Hudi table came back `MultiFile` — the door then read
+/// its tombstones, two keystrokes after the row above said datui does not read Hudi
+/// tables yet. And the cloud Iceberg rule is the looser of the two on purpose, names
+/// only, so a plain folder holding `data/` beside `metadata/` was refused as a lake
+/// table it is not: the second door closing on a false verdict, which is the whole
+/// thing phase 3 exists to stop.
+#[test]
+fn test_the_door_reads_a_local_folder_with_the_local_rules() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    // A Hudi table: the marker is a dotted name.
+    let trips = tmp.path().join("trips");
+    std::fs::create_dir_all(trips.join(".hoodie")).unwrap();
+    std::fs::write(trips.join(".hoodie").join("hoodie.properties"), b"x").unwrap();
+    let mut frame = polars::prelude::DataFrame::new(
+        1,
+        vec![polars::prelude::Column::new("id".into(), &[1i32])],
+    )
+    .unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        let file = std::fs::File::create(trips.join(part)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    // And a plain folder that merely looks like an Iceberg table by its names.
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(project.join("data")).unwrap();
+    std::fs::create_dir_all(project.join("metadata")).unwrap();
+    std::fs::write(project.join("data").join("a.parquet"), b"x").unwrap();
+    std::fs::write(project.join("metadata").join("notes.md"), b"x").unwrap();
+
+    let door_kind = |dir: &std::path::Path| {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.enter_home();
+        app.home.browsing = Some(dir.to_path_buf());
+        app.home.rebuild(&[], &[]);
+        app.home
+            .visible()
+            .iter()
+            .find_map(|r| match r {
+                datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder => {
+                    Some(entry.kind)
+                }
+                _ => None,
+            })
+            .expect("the folder carries the row")
+    };
+
+    assert_eq!(
+        door_kind(&trips),
+        datui::discover::EntryKind::Hudi,
+        "a dotted marker is not in the listing, so only the local rule can see it"
+    );
+    assert_eq!(
+        door_kind(&project),
+        datui::discover::EntryKind::Directory,
+        "two folder names are not an Iceberg table: the local rule wants a \
+         .metadata.json in one of them"
+    );
+}
+
+/// A prefix in an object store is scanned as Parquet whatever is in it, so a prefix of
+/// CSV used to answer "Could not read from S3. Check credentials and URL" — a false
+/// statement about a login that is fine. The door made that reachable: this row used to
+/// exist only where the listing had already found Parquet.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
+    use datui::discover::{Entry, EntryKind};
+    use std::path::{Path, PathBuf};
+
+    let exports = PathBuf::from("s3://bucket/exports");
+    let object = |name: &str| {
+        let mut entry = Entry::directory(&exports.join(name));
+        entry.name = name.to_string();
+        entry.kind = EntryKind::File;
+        entry.size = Some(1_000);
+        entry
+    };
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.network_check = |_| true;
+    app.home.probe_ready(
+        exports.clone(),
+        vec![object("a.csv"), object("b.csv"), object("c.csv")],
+    );
+    app.home.browsing = Some(exports);
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the prefix carries the row");
+    app.home.selected = row;
+
+    assert!(
+        app.event(&key(KeyCode::Enter)).is_none(),
+        "it must not send a scan that can only fail"
+    );
+    let said = app.home.status.clone().unwrap_or_default();
+    assert!(said.contains("3 csv"), "it says what is there: {said:?}");
+    assert!(
+        !said.to_lowercase().contains("credential"),
+        "and does not blame a login that is fine: {said:?}"
+    );
+
+    // A prefix whose data is a level down still tries: the files below it may be
+    // Parquet, and nothing here has looked.
+    let nested = PathBuf::from("s3://bucket/warehouse");
+    let mut folder = Entry::directory(Path::new("s3://bucket/warehouse/by_year"));
+    folder.name = "by_year".to_string();
+    app.home.probe_ready(nested.clone(), vec![folder]);
+    app.home.browsing = Some(nested);
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the prefix carries the row");
+    app.home.selected = row;
+    assert!(
+        matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        "nothing counted directly inside is not a reason to refuse"
+    );
+}

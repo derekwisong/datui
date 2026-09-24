@@ -8235,6 +8235,25 @@ impl App {
                 ));
                 return None;
             }
+            // A prefix in an object store is scanned as Parquet whatever is in it —
+            // every cloud path returns before the folder-format dispatch is reached —
+            // so a prefix of CSV answers "Could not read from S3. Check credentials and
+            // URL", which is a false statement about the user's login. The door made
+            // that reachable: the row used to exist only where the listing had already
+            // found Parquet. What it holds is counted and on screen, so saying so costs
+            // no request. #275 phase 4 is where these read.
+            if home::is_object_store_url(&entry.path)
+                && !entry.holds.formats.is_empty()
+                && !entry.holds.formats.iter().any(|(name, _)| {
+                    crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet)
+                })
+            {
+                self.home.status = Some(format!(
+                    "this prefix holds {} — datui reads a folder in an object store as Parquet only. Open one of the files below instead.",
+                    entry.holds.label()
+                ));
+                return None;
+            }
             // `hive: true` is what puts the open on the local folder route at all:
             // without it a directory is `Unsupported file type`. The cloud route
             // returns before it is read.

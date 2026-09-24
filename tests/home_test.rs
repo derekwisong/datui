@@ -3913,3 +3913,25 @@ fn test_an_azure_account_place_gets_no_door() {
         "an account is not a folder: its children are containers and it has no URL"
     );
 }
+
+/// The door is named after the folder, at every path a folder can have.
+///
+/// Built by splitting the path on `/`, the filesystem root — which has no last
+/// component — produced a row called `" (all files)"`, and on Windows, where the
+/// separator is not the one a split looks for, a local folder would have been named
+/// with the whole of its path.
+#[test]
+fn test_the_door_is_named_after_the_folder_even_at_the_root() {
+    let mut home = HomeState {
+        browsing: Some(std::path::PathBuf::from("/")),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    let door = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.opens_whole_folder)
+        .expect("the root is a folder like any other");
+    assert_eq!(door.name, "/ (all files)", "got {:?}", door.name);
+}

@@ -507,6 +507,7 @@ mod classify_batch_tests {
             sections: vec![home::Section {
                 title: "SHARE".into(),
                 subtitle: None,
+                origin: None,
                 rows,
                 unavailable: false,
                 unavailable_note: None,
@@ -514,6 +515,7 @@ mod classify_batch_tests {
                 remote_root: None,
                 waiting: false,
                 grouped_by_place: false,
+                place_labels: Default::default(),
             }],
         }
     }
@@ -1592,6 +1594,102 @@ pub mod tests {
     use std::sync::Once;
 
     static INIT: Once = Once::new();
+
+    #[cfg(feature = "cloud")]
+    mod cloud_recent_facts {
+        use crate::cloud_hive::{DatasetFile, FileFooter};
+        use crate::discover::EntryKind;
+        use polars::prelude::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        fn file(key: &str, size: u64, stamp: u64) -> DatasetFile {
+            DatasetFile {
+                key: key.to_string(),
+                size,
+                stamp,
+                etag: None,
+            }
+        }
+
+        fn footer(rows: &[usize]) -> Option<FileFooter> {
+            let schema = Schema::from_iter([
+                Field::new("id".into(), DataType::Int64),
+                Field::new("amount".into(), DataType::Float64),
+            ]);
+            Some(FileFooter {
+                schema: Arc::new(schema),
+                row_group_rows: rows.to_vec(),
+                row_group_bytes: rows.iter().map(|r| r * 8).collect(),
+            })
+        }
+
+        /// What the home screen shows for a recent opened from a bucket comes from the
+        /// record the open wrote: rows, columns, the kind and what it holds, under the
+        /// URL as opened.
+        #[test]
+        fn an_open_records_what_the_home_screen_will_show() {
+            let files = vec![
+                file("sales/year=2024/part-0.parquet", 1000, 10),
+                file("sales/year=2025/part-0.parquet", 2000, 20),
+            ];
+            let read = vec![0, 1];
+            let footers = vec![footer(&[5, 7]), footer(&[8])];
+            let (path, facts) =
+                crate::App::facts_from_cloud_footers("s3://bucket/sales/", &files, &read, &footers)
+                    .expect("facts");
+            assert_eq!(path, std::path::PathBuf::from("s3://bucket/sales/"));
+            assert_eq!(facts.rows, Some(20));
+            assert_eq!(facts.cols, Some(3), "the partition column counts");
+            assert!(!facts.cols_sampled);
+            assert_eq!(facts.kind, Some(EntryKind::Hive));
+            assert_eq!(facts.holds.formats, vec![("parquet".to_string(), 2)]);
+            assert_eq!(facts.size, 3000);
+            assert_eq!(facts.mtime, 20);
+            assert_eq!(facts.classified_by, crate::discover::CLASSIFIER_VERSION);
+            assert!(facts.columns.iter().any(|c| c == "amount"));
+
+            // A flat prefix is a folder of files; one object is a file.
+            let flat = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/sales/",
+                &flat,
+                &[0, 1],
+                &[footer(&[1]), footer(&[1])],
+            )
+            .unwrap();
+            assert_eq!(facts.kind, Some(EntryKind::MultiFile));
+            let one = vec![file("sales/a.parquet", 1, 1)];
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/sales/a.parquet",
+                &one,
+                &[0],
+                &[footer(&[4])],
+            )
+            .unwrap();
+            assert_eq!(facts.kind, Some(EntryKind::File));
+            assert!(facts.holds.is_empty());
+            assert_eq!(facts.rows, Some(4));
+        }
+
+        /// A sampled read knows the columns and not the rows, and says the width is a
+        /// floor.
+        #[test]
+        fn a_sampled_read_records_columns_but_no_row_count() {
+            let files: Vec<DatasetFile> = (0..5)
+                .map(|i| file(&format!("x/p{i}.parquet"), 10, 1))
+                .collect();
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/x/",
+                &files,
+                &[0, 4],
+                &[footer(&[1]), footer(&[1])],
+            )
+            .unwrap();
+            assert_eq!(facts.rows, None);
+            assert_eq!(facts.cols, Some(2));
+            assert!(facts.cols_sampled);
+        }
+    }
 
     /// Ensures that sample data files are generated before tests run.
     /// This function uses `std::sync::Once` to ensure it only runs once,
@@ -9585,12 +9683,21 @@ impl App {
         files: &[cloud_hive::DatasetFile],
         footers: &[Option<cloud_hive::FileFooter>],
     ) {
-        if read.len() != files.len() || !footers.iter().all(Option::is_some) {
-            return;
-        }
         let Some(cache) = cache else {
             return;
         };
+        // The dataset index too, which is what the home screen reads. A dataset opened
+        // straight from a bucket used to be recorded here, by the URL it was opened as,
+        // and nowhere else — so its recent row showed no shape, no size and no label,
+        // and looked broken beside the local rows. Written before the shape, because a
+        // sampled read still says what the columns are, and the shape below wants
+        // every footer.
+        if let Some(facts) = Self::facts_from_cloud_footers(full, files, read, footers) {
+            cache.record_dataset_facts(&[facts]);
+        }
+        if read.len() != files.len() || !footers.iter().all(Option::is_some) {
+            return;
+        }
         let (cached, schemas) = cloud_hive::footers_to_cache(footers);
         cache.save_dataset_shape(
             full,
@@ -9604,6 +9711,67 @@ impl App {
                     .unwrap_or_default(),
             },
         );
+    }
+
+    /// What the home screen can say about a cloud dataset from the footers an open
+    /// read: its columns, its rows when every footer was read, its kind, and what it
+    /// holds. Keyed by the URL as opened, which is what the recents store holds.
+    ///
+    /// A remote row has no fingerprint to check, so `mtime` is the newest object's
+    /// stamp and `size` the total, for the record's own sake.
+    fn facts_from_cloud_footers(
+        full: &str,
+        files: &[cloud_hive::DatasetFile],
+        read: &[usize],
+        footers: &[Option<cloud_hive::FileFooter>],
+    ) -> Option<(PathBuf, crate::cache::DatasetFacts)> {
+        let (dataset, partition_columns) =
+            cloud_hive::dataset_schema_from_footers(files, read, footers).ok()?;
+        let columns: Vec<String> = dataset
+            .schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .collect();
+        let every_footer = read.len() == files.len() && footers.iter().all(Option::is_some);
+        let rows = every_footer.then(|| {
+            footers
+                .iter()
+                .flatten()
+                .map(|f| f.row_group_rows.iter().sum::<usize>())
+                .sum()
+        });
+        // A prefix is a folder of files; anything else is the one object it names.
+        let folder = source::is_prefix_or_glob(full);
+        let kind = if !folder {
+            discover::EntryKind::File
+        } else if !partition_columns.is_empty() {
+            discover::EntryKind::Hive
+        } else {
+            discover::EntryKind::MultiFile
+        };
+        let holds = if folder {
+            discover::Holds {
+                formats: vec![("parquet".to_string(), files.len())],
+                ..Default::default()
+            }
+        } else {
+            Default::default()
+        };
+        Some((
+            PathBuf::from(full),
+            crate::cache::DatasetFacts {
+                mtime: files.iter().map(|f| f.stamp).max().unwrap_or_default(),
+                size: files.iter().map(|f| f.size).sum(),
+                rows,
+                cols: Some(columns.len()),
+                cols_sampled: !every_footer,
+                columns,
+                kind: Some(kind),
+                classified_by: discover::CLASSIFIER_VERSION,
+                cost: Default::default(),
+                holds,
+            },
+        ))
     }
 
     fn cloud_dataset_from_footers(
@@ -17677,7 +17845,7 @@ impl Widget for &mut App {
                 .home
                 .selected_section()
                 .and_then(|i| self.home.sections.get(i))
-                .map(|s| s.subtitle.is_none())
+                .map(|s| s.grouped_by_place)
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
             let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();

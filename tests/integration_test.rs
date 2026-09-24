@@ -6430,6 +6430,121 @@ fn test_the_bar_counts_datasets_past_the_cap() {
     assert!(bar.contains("12 datasets"), "{bar:?}");
 }
 
+/// The rendered list, one string per screen row, without the control bar.
+fn list_rows(buf: &Buffer, area: Rect) -> Vec<String> {
+    (0..area.height - 1)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// With thirty list rows or more, a blank line precedes every section header but the
+/// first; below that, none. The spacers are counted against the cap and the scroll,
+/// so the selected row is always on screen.
+#[test]
+fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let recents: Vec<PathBuf> = (0..12)
+        .map(|i| {
+            let dir = tmp.path().join(format!("place{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("data.parquet");
+            std::fs::write(&path, b"x").unwrap();
+            path
+        })
+        .collect();
+    let configured = tmp.path().join("configured");
+    std::fs::write(
+        {
+            std::fs::create_dir_all(&configured).unwrap();
+            configured.join("c.parquet")
+        },
+        b"x",
+    )
+    .unwrap();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home
+        .rebuild(std::slice::from_ref(&configured), &recents);
+
+    let is_header = |line: &str| {
+        line.contains("RECENT") || line.contains("current directory") || line.contains("configured")
+    };
+    // Tall: the wordmark and prompt take the top rows; the list below has room.
+    let area = Rect::new(0, 0, 100, 50);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows = list_rows(&buf, area);
+    let headers: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_header(l))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(headers.len() >= 2, "{rows:?}");
+    for at in &headers[1..] {
+        assert!(
+            rows[at - 1].trim().is_empty(),
+            "a blank line precedes the header at {at}: {:?}",
+            rows[at - 1]
+        );
+    }
+    assert!(
+        !rows[headers[0] - 1].trim().is_empty()
+            || headers[0] == 0
+            || rows[headers[0] - 1].contains("filter"),
+        "no blank line before the first header"
+    );
+    let spacers = headers.len() - 1;
+    let list_height = app.home.view_height + spacers;
+    assert!(list_height >= 30, "{list_height}");
+    assert_eq!(
+        app.home.view_height,
+        list_height - spacers,
+        "the spacers come off the height the cap is a share of"
+    );
+
+    // The last row on screen, selected: drawn, spacers and all.
+    let last = app.home.visible().len() - 1;
+    app.home.selected = last;
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    let name = match app.home.selected_row() {
+        Some(datui::home::Row::Entry { entry, .. }) => entry.name.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        screen.contains(&name),
+        "the selected row is on screen: {screen:?}"
+    );
+
+    // Short: dense.
+    let area = Rect::new(0, 0, 100, 24);
+    app.home.selected = 0;
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows = list_rows(&buf, area);
+    let headers: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_header(l))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(headers.len() >= 2, "{rows:?}");
+    for at in &headers[1..] {
+        assert!(
+            !rows[at - 1].trim().is_empty(),
+            "no blank line before the header at {at} on a short screen"
+        );
+    }
+}
+
 /// The `… N more` row stands for the places the cap hides. `Enter` on it shows them
 /// all, and nothing is opened.
 #[test]

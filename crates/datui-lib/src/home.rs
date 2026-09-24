@@ -410,8 +410,15 @@ pub struct Root {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub title: String,
-    /// Path shown beside the title, for root sections.
+    /// How the section is doing, at the far end of the rule: the filesystem it is on,
+    /// `first 5000` for a listing cut short, what a search covered. Never why the
+    /// section exists; that is `origin`.
     pub subtitle: Option<String>,
+    /// Why a path-titled section is here — `current directory`, `configured` — as a
+    /// chip beside the count, where the eye is. It used to share the note slot at the
+    /// far right with the state, and a directory derived from a recent was drawn
+    /// exactly like a configured one with only that word to tell them apart.
+    pub origin: Option<&'static str>,
     pub rows: Vec<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
@@ -435,6 +442,10 @@ pub struct Section {
     /// Set on `RECENT`, whose rows come from anywhere; a directory's rows all live in
     /// the directory the title names.
     pub grouped_by_place: bool,
+    /// What the dataset index remembers each place to be, for the place rows of a
+    /// grouped section. Filled from the cache when the listing is built, never by
+    /// reading a place.
+    pub place_labels: std::collections::HashMap<PathBuf, String>,
 }
 
 /// Where a cloud source's listing stands.
@@ -641,6 +652,9 @@ pub enum Row<'a> {
     Place {
         section: usize,
         path: PathBuf,
+        /// What the place itself was last found to be, from the dataset index: `hive`,
+        /// `12 parquet`. Only when the index has a record for it; never from a read.
+        label: Option<String>,
         /// The filesystem it is on, or the object store's scheme.
         source: Option<String>,
         /// How many recents live there, whether or not the filter shows them.
@@ -988,6 +1002,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         sections.push(Section {
             title: source.map(|s| s.label.clone()).unwrap_or(id),
             subtitle: source.map(|s| s.note.clone()).filter(|n| !n.is_empty()),
+            origin: None,
             rows,
             unavailable: source.is_none() || failure.is_some(),
             unavailable_note: if source.is_none() {
@@ -999,6 +1014,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: source.is_some_and(|s| s.busy()),
             grouped_by_place: false,
+            place_labels: Default::default(),
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing { sections };
@@ -1051,6 +1067,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 }
             },
             subtitle: None,
+            origin: None,
             rows,
             unavailable,
             // A browsed remote place that did not answer has nothing to add; one whose
@@ -1061,6 +1078,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing { sections };
@@ -1086,9 +1104,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         })
         .collect();
     if !recent_rows.is_empty() {
+        let place_labels = place_labels(&recent_rows, known);
         sections.push(Section {
             title: HomeState::RECENT_SECTION.to_string(),
             subtitle: None,
+            origin: None,
             rows: recent_rows,
             unavailable: false,
             unavailable_note: None,
@@ -1100,6 +1120,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // a configured directory, with `recent` at the far end of the rule the
             // only thing saying why they were there. Now they are rows of this one.
             grouped_by_place: true,
+            place_labels,
         });
     }
 
@@ -1161,21 +1182,21 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         } else {
             "network".to_string()
         };
-        let mut subtitle = if root.network {
-            format!("{fstype} · {}", root.origin.note())
-        } else {
-            root.origin.note().to_string()
-        };
         // Say when the list is a prefix. A directory cut off at the cap otherwise
         // looks exactly like one that happens to hold that many things.
+        let mut state: Vec<String> = Vec::new();
         if truncated {
-            subtitle = format!("first {} · {}", discover::MAX_ENTRIES_PER_DIR, subtitle);
+            state.push(format!("first {}", discover::MAX_ENTRIES_PER_DIR));
+        }
+        if root.network {
+            state.push(fstype);
         }
         root_sections.push((
             root.origin,
             Section {
                 title: display_path(&root.path),
-                subtitle: Some(subtitle),
+                subtitle: (!state.is_empty()).then(|| state.join(" · ")),
+                origin: Some(root.origin.note()),
                 rows,
                 unavailable: !root.available || unreachable,
                 unavailable_note: None,
@@ -1183,6 +1204,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 remote_root: root.network.then(|| root.path.clone()),
                 waiting,
                 grouped_by_place: false,
+                place_labels: Default::default(),
             },
         ));
     }
@@ -1205,6 +1227,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         sections.push(Section {
             title: HomeState::CLOUD_SECTION.to_string(),
             subtitle: None,
+            origin: None,
             rows: cloud.iter().map(source_entry).collect(),
             unavailable: false,
             unavailable_note: None,
@@ -1212,6 +1235,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         });
     }
 
@@ -1221,7 +1245,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if !elsewhere.is_empty() {
         sections.push(Section {
             title: "Elsewhere".to_string(),
-            subtitle: Some("opened elsewhere".to_string()),
+            // The title says what these are; a note repeating it said nothing.
+            subtitle: None,
+            origin: None,
             rows: elsewhere,
             unavailable: false,
             unavailable_note: None,
@@ -1230,6 +1256,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         });
     }
 
@@ -1242,6 +1269,43 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     annotate(&mut sections, known, network_check, &mounts);
 
     Listing { sections }
+}
+
+/// What the dataset index remembers each of these rows' places to be.
+///
+/// A place that was itself measured on some earlier listing — as a row of its own
+/// parent, or as a dataset opened whole — has a label there, and the place row can
+/// carry it: `bitcoin/  2 parquet`. Only from a record this build's classifier would
+/// have written, and only a label that says something: `dir` is what every folder
+/// with no data files in it says, and a place holds recents, so it says nothing.
+fn place_labels(
+    rows: &[Entry],
+    known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+) -> std::collections::HashMap<PathBuf, String> {
+    let mut labels = std::collections::HashMap::new();
+    for row in rows {
+        let place = place_of(&row.path);
+        if labels.contains_key(&place) {
+            continue;
+        }
+        let Some(facts) = known.get(&place) else {
+            continue;
+        };
+        if facts.classified_by != crate::discover::CLASSIFIER_VERSION {
+            continue;
+        }
+        let Some(kind) = facts.kind else {
+            continue;
+        };
+        let mut probe = Entry::directory(&place);
+        probe.kind = kind;
+        probe.holds = facts.holds.clone();
+        let label = probe.label();
+        if !label.is_empty() && !label.starts_with("dir") {
+            labels.insert(place, label.into_owned());
+        }
+    }
+    labels
 }
 
 /// Apply a cached measurement to a row.
@@ -2093,6 +2157,7 @@ impl HomeState {
                 self.sections.push(Section {
                     title: Self::SEARCH_SECTION.to_string(),
                     subtitle: Some(subtitle),
+                    origin: None,
                     rows: cloud_rows,
                     unavailable: false,
                     unavailable_note: None,
@@ -2100,6 +2165,7 @@ impl HomeState {
                     remote_root: None,
                     waiting: false,
                     grouped_by_place: false,
+                    place_labels: Default::default(),
                 });
             }
             return;
@@ -2140,6 +2206,7 @@ impl HomeState {
         self.sections.push(Section {
             title: Self::SEARCH_SECTION.to_string(),
             subtitle: Some(subtitle),
+            origin: None,
             rows,
             unavailable: false,
             unavailable_note: None,
@@ -2147,6 +2214,7 @@ impl HomeState {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         });
     }
 
@@ -2206,12 +2274,7 @@ impl HomeState {
             // A section with nothing to show is dropped, unless it is standing in for
             // a root the user named or is currently in, where its absence would be
             // more confusing than an empty heading, or its rows are still on the way.
-            let keep_empty = section.unavailable
-                || section.waiting
-                || matches!(
-                    section.subtitle.as_deref(),
-                    Some("configured") | Some("current directory")
-                );
+            let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
             if matched.is_empty() && !(keep_empty && self.filter.is_empty()) {
                 continue;
             }
@@ -2340,6 +2403,7 @@ impl HomeState {
             out.push(Row::Place {
                 section: si,
                 path: place.clone(),
+                label: section.place_labels.get(place).cloned(),
                 // Every row in a place is on the filesystem the place is, so the first
                 // speaks for it. Filled in by `annotate` from the mount table.
                 source: rows[0].cost.source.clone(),
@@ -3035,6 +3099,7 @@ mod holds_flow_tests {
         home.sections.push(Section {
             title: "Here".to_string(),
             subtitle: None,
+            origin: None,
             rows: vec![row],
             unavailable: false,
             unavailable_note: None,
@@ -3042,6 +3107,7 @@ mod holds_flow_tests {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         });
         // A measurement of a file carries no `holds`, and the same struct measures both.
         home.enriched.insert(

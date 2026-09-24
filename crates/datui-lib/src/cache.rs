@@ -30,6 +30,19 @@ impl CacheManager {
                 cache_dir: PathBuf::from(dir),
             });
         }
+        // A test that reaches the real cache writes its fixtures into the developer's
+        // own recents, and a dozen `/tmp/.tmp*` paths were found there. Refusing here
+        // is what makes it impossible to do by accident: every test binary cargo
+        // builds lives under `target/<profile>/deps/`, and the binary someone runs
+        // never does.
+        if running_as_a_cargo_test() {
+            panic!(
+                "DATUI_CACHE_DIR is not set: a test would write to the real cache. \
+                 Call common::isolate_cache() (or take the runtime from \
+                 common::test_runtime(), which does) before building an App or a \
+                 CacheManager."
+            );
+        }
 
         let cache_dir = dirs::cache_dir()
             .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine cache directory"))?
@@ -508,6 +521,13 @@ impl DatasetShape {
     }
 }
 
+/// Whether this process is a test binary cargo built, which is where `cargo test`
+/// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`. The
+/// program itself is `target/<profile>/datui`, and an installed one is nowhere near.
+fn running_as_a_cargo_test() -> bool {
+    std::env::current_exe().is_ok_and(|exe| exe.components().any(|part| part.as_os_str() == "deps"))
+}
+
 /// Entries kept in the dataset index.
 ///
 /// Large enough to cover everywhere someone actually works, small enough that the
@@ -758,6 +778,18 @@ impl CacheManager {
         let result = work();
         let _ = FileExt::unlock(&lock);
         result
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    /// This test binary is one cargo built into `deps`, so the refusal in
+    /// `CacheManager::new` is armed here. That it is armed is the whole guarantee: a
+    /// test that reaches `new` without `DATUI_CACHE_DIR` set stops instead of writing
+    /// its fixtures into the developer's own recents.
+    #[test]
+    fn a_cargo_test_binary_is_recognized() {
+        assert!(super::running_as_a_cargo_test());
     }
 }
 

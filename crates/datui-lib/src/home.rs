@@ -1104,7 +1104,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         })
         .collect();
     if !recent_rows.is_empty() {
-        let place_labels = place_labels(&recent_rows, known);
+        let place_labels = place_labels(&recent_rows, known, network_check);
         sections.push(Section {
             title: HomeState::RECENT_SECTION.to_string(),
             subtitle: None,
@@ -1271,6 +1271,31 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     Listing { sections }
 }
 
+/// The key a record about `path` is filed under in the dataset index.
+///
+/// An open records what it learned under the URL it resolved to: `s3://bucket/x` for
+/// `s3://lab@bucket/x`, and the one `abfss://` spelling for every way an Azure path can
+/// be written. A recent is stored as it was typed. The two have to meet, or a dataset
+/// opened through a named source shows nothing under RECENT however often it is opened.
+pub fn index_key(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+        return PathBuf::from(crate::source::azure_url(&account, &container, &key));
+    }
+    match crate::source::split_source_id(&text) {
+        (Some(_), plain) => PathBuf::from(plain.into_owned()),
+        (None, _) => path.to_path_buf(),
+    }
+}
+
+/// A record about `path`, under the path itself or the key an open files it under.
+fn known_facts<'a>(
+    known: &'a std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    path: &Path,
+) -> Option<&'a crate::cache::DatasetFacts> {
+    known.get(path).or_else(|| known.get(&index_key(path)))
+}
+
 /// What the dataset index remembers each of these rows' places to be.
 ///
 /// A place that was itself measured on some earlier listing — as a row of its own
@@ -1278,9 +1303,16 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 /// carry it: `bitcoin/  2 parquet`. Only from a record this build's classifier would
 /// have written, and only a label that says something: `dir` is what every folder
 /// with no data files in it says, and a place holds recents, so it says nothing.
+///
+/// A local place is held to the same fingerprint `apply_known_facts` asks of a folder:
+/// its mtime, which moves when a file is added or removed. A record of `12 parquet`
+/// for a folder that has since lost ten would otherwise sit two rows above the live
+/// listing calling it `2 parquet`. A remote place cannot be stat'ed and is taken as
+/// recorded, as its rows are.
 fn place_labels(
     rows: &[Entry],
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    network_check: fn(&Path) -> bool,
 ) -> std::collections::HashMap<PathBuf, String> {
     let mut labels = std::collections::HashMap::new();
     for row in rows {
@@ -1288,11 +1320,21 @@ fn place_labels(
         if labels.contains_key(&place) {
             continue;
         }
-        let Some(facts) = known.get(&place) else {
+        let Some(facts) = known_facts(known, &place) else {
             continue;
         };
         if facts.classified_by != crate::discover::CLASSIFIER_VERSION {
             continue;
+        }
+        if !network_check(&place) {
+            let same_mtime = std::fs::metadata(&place)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .is_some_and(|d| d.as_secs() == facts.mtime);
+            if !same_mtime {
+                continue;
+            }
         }
         let Some(kind) = facts.kind else {
             continue;
@@ -1347,7 +1389,7 @@ fn apply_known_facts(
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
     remote: bool,
 ) {
-    let Some(facts) = known.get(&row.path) else {
+    let Some(facts) = known_facts(known, &row.path) else {
         return;
     };
 
@@ -1431,8 +1473,12 @@ fn apply_known_facts(
     row.cost = facts.cost.clone();
     row.cost.source = source;
     if remote {
-        // A remote row was never stat'ed, so these are all it has.
-        row.size = row.size.or(Some(facts.size));
+        // A remote row was never stat'ed, so these are all it has. A record with no
+        // size to give — one object's, whose open read its footer and nothing else —
+        // gives none rather than a zero.
+        if facts.size > 0 {
+            row.size = row.size.or(Some(facts.size));
+        }
         // What it was last seen to be, rather than what its name suggests. Guessing
         // here is how the same dataset ends up reading `hive` in one section and
         // something else in another.

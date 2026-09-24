@@ -83,8 +83,9 @@ what datui last found the place to be (`hive`, `12 parquet`) when it has seen
 it, and, on a network share or in an object store, what it is on. A sort orders
 the rows inside each place and never flattens the section.
 
-A dataset opened from a bucket shows the rows, columns and label the open
-learned. One nothing has measured yet shows `…` for its shape.
+A Parquet dataset opened from a bucket, as one object or as a prefix, shows the
+rows, columns and label the open learned. One nothing has measured yet shows
+`…` for its shape.
 
 | On a place row | Does |
 |---|---|

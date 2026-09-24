@@ -522,10 +522,27 @@ impl DatasetShape {
 }
 
 /// Whether this process is a test binary cargo built, which is where `cargo test`
-/// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`. The
-/// program itself is `target/<profile>/datui`, and an installed one is nowhere near.
+/// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`, or
+/// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
+/// `target/<profile>/datui`, and an installed one is nowhere near.
 fn running_as_a_cargo_test() -> bool {
-    std::env::current_exe().is_ok_and(|exe| exe.components().any(|part| part.as_os_str() == "deps"))
+    std::env::current_exe().is_ok_and(|exe| cargo_test_layout(&exe))
+}
+
+/// The directory is `deps`, and `target` is at most three levels above it. Asked of
+/// the shape rather than of any `deps` anywhere in the path, so a program installed
+/// under some `deps` directory of the user's own is not mistaken for a test.
+fn cargo_test_layout(exe: &Path) -> bool {
+    let Some(deps) = exe.parent() else {
+        return false;
+    };
+    if deps.file_name().is_none_or(|name| name != "deps") {
+        return false;
+    }
+    deps.ancestors()
+        .skip(1)
+        .take(3)
+        .any(|dir| dir.file_name().is_some_and(|name| name == "target"))
 }
 
 /// Entries kept in the dataset index.
@@ -790,6 +807,29 @@ mod harness_tests {
     #[test]
     fn a_cargo_test_binary_is_recognized() {
         assert!(super::running_as_a_cargo_test());
+    }
+
+    /// Only cargo's own layout counts. A program someone installed under a directory
+    /// called `deps` must not refuse to start with a message about the test harness.
+    #[test]
+    fn only_cargos_layout_is_a_test() {
+        use std::path::Path;
+        assert!(super::cargo_test_layout(Path::new(
+            "/home/x/src/datui/target/debug/deps/home_test-1a2b3c"
+        )));
+        assert!(super::cargo_test_layout(Path::new(
+            "/home/x/src/datui/target/x86_64-unknown-linux-gnu/release/deps/datui-1a2b"
+        )));
+        assert!(!super::cargo_test_layout(Path::new(
+            "/home/x/src/datui/target/debug/datui"
+        )));
+        assert!(!super::cargo_test_layout(Path::new("/opt/deps/bin/datui")));
+        assert!(!super::cargo_test_layout(Path::new(
+            "/home/x/deps/datui-0.4/bin/datui"
+        )));
+        assert!(!super::cargo_test_layout(Path::new(
+            "/home/x/src/datui/target/debug/examples/demo"
+        )));
     }
 }
 

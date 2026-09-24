@@ -239,10 +239,15 @@ data is in subfolders reads only if that data is Parquet; if it is not, the
 error names Parquet about a folder that has none, which is a rough edge this
 release has not reached yet.
 
-In a bucket, only Parquet is read in place. A prefix holding CSV, JSON, or
-files datui has no reader for says what it holds and does not read — it does not
-report a problem with your credentials, which is what it used to do. A prefix
-whose data is a level down is tried, since the files below it may be Parquet.
+In a bucket, only Parquet is read in place. A prefix whose files datui can see
+are not Parquet — CSV, JSON, or nothing it has a reader for — says what it holds
+and does not read, rather than reporting a problem with your credentials, which
+is what it used to do.
+
+A prefix with no data files directly inside is still tried, sub-folders and all,
+since the files below it may be Parquet and nothing has looked. If they are not,
+the read fails with that same message about credentials; widening this is
+phase 4's work, not phase 3's.
 
 A `delta`, `iceberg` or `hudi` root is refused by this row on both routes, as it
 is by <kbd>Enter</kbd> on the folder above it, for the reason below.

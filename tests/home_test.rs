@@ -4088,3 +4088,44 @@ fn test_the_door_is_named_the_way_the_title_is() {
         "tbl (all files)"
     );
 }
+
+/// The door is not one of the things the section is counting.
+///
+/// It is a way to open the folder those rows are *in*, so counting it made a folder of
+/// three files say four — in the header chip and in the `N datasets` caption, whose own
+/// comment says counting a place-to-look makes the figure a lie. It was inconsistent
+/// with itself too: under a filter the door steps out of the way, so the same count
+/// meant one thing with a filter typed and another without.
+#[test]
+fn test_the_door_is_not_counted_among_what_a_folder_holds() {
+    let tmp = TempDir::new().unwrap();
+    for name in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        touch(tmp.path(), name);
+    }
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let header_count = |home: &HomeState| {
+        home.visible()
+            .iter()
+            .find_map(|r| match r {
+                Row::Header { matches, .. } => Some(*matches),
+                _ => None,
+            })
+            .expect("a section header")
+    };
+    assert!(
+        home.sections[0].rows.iter().any(|r| r.opens_whole_folder),
+        "the door is on screen"
+    );
+    assert_eq!(header_count(&home), 3, "three files");
+
+    // And the same number once a filter removes the door, which is what made the
+    // inconsistency visible.
+    home.filter = "part".to_string();
+    assert_eq!(header_count(&home), 3);
+}

@@ -7415,129 +7415,139 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
 /// CSV used to answer "Could not read from S3. Check credentials and URL" — a false
 /// statement about a login that is fine. The door made that reachable: this row used to
 /// exist only where the listing had already found Parquet.
+///
+/// A fresh app per shape, because opening sets `busy` and the next key would be read
+/// against a screen that is no longer the home screen.
 #[cfg(feature = "cloud")]
 #[test]
 fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
     use datui::discover::{Entry, EntryKind};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    let exports = PathBuf::from("s3://bucket/exports");
-    let object = |name: &str| {
-        let mut entry = Entry::directory(&exports.join(name));
-        entry.name = name.to_string();
-        entry.kind = EntryKind::File;
-        entry.size = Some(1_000);
-        entry
-    };
+    // Press Enter on the door of a prefix holding these names, and say what happened.
+    // A name with a dot in it stands for an object, the rest for sub-prefixes.
+    fn door(prefix: &str, names: &[&str]) -> (bool, String) {
+        let place = PathBuf::from(prefix);
+        let rows: Vec<Entry> = names
+            .iter()
+            .map(|name| {
+                let mut entry = Entry::directory(&place.join(name));
+                entry.name = (*name).to_string();
+                if name.contains('.') {
+                    entry.kind = EntryKind::File;
+                    entry.size = Some(1_000);
+                }
+                entry
+            })
+            .collect();
 
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    app.enter_home();
-    app.home.network_check = |_| true;
-    app.home.probe_ready(
-        exports.clone(),
-        vec![object("a.csv"), object("b.csv"), object("c.csv")],
-    );
-    app.home.browsing = Some(exports);
-    app.home.rebuild(&[], &[]);
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.enter_home();
+        app.home.network_check = |_| true;
+        app.home.probe_ready(place.clone(), rows);
+        app.home.browsing = Some(place);
+        app.home.rebuild(&[], &[]);
+        let row = app
+            .home
+            .visible()
+            .iter()
+            .position(
+                |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+            )
+            .expect("the prefix carries the row");
+        app.home.selected = row;
+        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
+        (opened, app.home.status.clone().unwrap_or_default())
+    }
 
-    let row = app
-        .home
-        .visible()
-        .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
-        .expect("the prefix carries the row");
-    app.home.selected = row;
-
-    assert!(
-        app.event(&key(KeyCode::Enter)).is_none(),
-        "it must not send a scan that can only fail"
-    );
-    let said = app.home.status.clone().unwrap_or_default();
+    // Data files, none of them Parquet: refused, naming what is there.
+    let (opened, said) = door("s3://bucket/exports", &["a.csv", "b.csv", "c.csv"]);
+    assert!(!opened, "it must not send a scan that can only fail");
     assert!(said.contains("3 csv"), "it says what is there: {said:?}");
-    assert!(
-        !said.contains("mixed"),
-        "`mixed` is a word, not a count: {said:?}"
-    );
     assert!(
         !said.to_lowercase().contains("credential"),
         "and does not blame a login that is fine: {said:?}"
     );
 
-    // A prefix of two formats, neither of them Parquet, names both rather than saying
-    // `mixed` — which is a word, not a count, and says nothing about what is there.
-    let pair = PathBuf::from("s3://bucket/pair");
-    let mut csv = Entry::directory(Path::new("s3://bucket/pair/a.csv"));
-    csv.name = "a.csv".to_string();
-    csv.kind = EntryKind::File;
-    csv.size = Some(10);
-    let mut json = Entry::directory(Path::new("s3://bucket/pair/b.json"));
-    json.name = "b.json".to_string();
-    json.kind = EntryKind::File;
-    json.size = Some(10);
-    app.home.probe_ready(pair.clone(), vec![csv, json]);
-    app.home.browsing = Some(pair);
-    app.home.rebuild(&[], &[]);
-    let row = app
-        .home
-        .visible()
-        .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
-        .expect("the prefix carries the row");
-    app.home.selected = row;
-    assert!(app.event(&key(KeyCode::Enter)).is_none());
-    let said = app.home.status.clone().unwrap_or_default();
+    // Two formats, neither Parquet: both named. `label()` would say `mixed`, which is a
+    // word rather than a count and says nothing about what is there.
+    let (opened, said) = door("s3://bucket/pair", &["a.csv", "b.json"]);
+    assert!(!opened);
     assert!(said.contains("1 csv"), "{said:?}");
     assert!(said.contains("1 json"), "{said:?}");
+    assert!(!said.contains("mixed"), "{said:?}");
 
-    // And a prefix of files datui has no reader for at all. `holds.formats` is empty
-    // there, so a test written over the formats alone let it through and the scan came
-    // back blaming the user's credentials.
-    let docs = PathBuf::from("s3://bucket/docs");
-    let mut readme = Entry::directory(Path::new("s3://bucket/docs/README.md"));
-    readme.name = "README.md".to_string();
-    readme.kind = EntryKind::File;
-    readme.size = Some(10);
-    app.home.probe_ready(docs.clone(), vec![readme]);
-    app.home.browsing = Some(docs);
-    app.home.rebuild(&[], &[]);
-    let row = app
-        .home
-        .visible()
-        .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
-        .expect("the prefix carries the row");
-    app.home.selected = row;
-    assert!(app.event(&key(KeyCode::Enter)).is_none());
-    let said = app.home.status.clone().unwrap_or_default();
+    // Nothing datui has a reader for. `holds.formats` is empty here, so a test written
+    // over the formats alone let it through and the scan came back blaming the login.
+    let (opened, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
+    assert!(!opened);
     assert!(said.contains("nothing datui can read"), "{said:?}");
     assert!(!said.to_lowercase().contains("credential"), "{said:?}");
 
-    // A prefix whose data is a level down still tries: the files below it may be
-    // Parquet, and nothing here has looked.
-    let nested = PathBuf::from("s3://bucket/warehouse");
-    let mut folder = Entry::directory(Path::new("s3://bucket/warehouse/by_year"));
-    folder.name = "by_year".to_string();
-    app.home.probe_ready(nested.clone(), vec![folder]);
-    app.home.browsing = Some(nested);
-    app.home.rebuild(&[], &[]);
-    let row = app
-        .home
-        .visible()
-        .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
-        .expect("the prefix carries the row");
-    app.home.selected = row;
+    // Parquet opens — the one case this row existed for before any of the refusals
+    // above were written. Without this, a guard that refused everything would pass
+    // every other assertion here.
+    let (opened, _) = door("s3://bucket/parts", &["part-0.parquet", "part-1.parquet"]);
     assert!(
-        matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        opened,
+        "a prefix of Parquet is what a cloud folder reads as"
+    );
+
+    // No data files at all: tried, because the files below may be Parquet and nothing
+    // here has looked.
+    let (opened, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
+    assert!(
+        opened,
         "nothing counted directly inside is not a reason to refuse"
+    );
+
+    // Including with unreadable files beside the sub-prefixes: a README at the top says
+    // nothing about what is under `by_year/`.
+    let (opened, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
+    assert!(
+        opened,
+        "a sub-prefix may hold Parquet, and nothing here has looked"
+    );
+}
+
+/// The `N datasets` caption counts what is listed, not the way out of the folder.
+///
+/// The door's kind is the folder's, so it counts as a dataset — and it is the same
+/// dataset as the folder it opens, counted a second time, in the figure whose own
+/// comment says counting a place-to-look makes it a lie.
+#[test]
+fn test_the_caption_does_not_count_the_door_as_a_dataset() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let parts = tmp.path().join("parts");
+    std::fs::create_dir_all(&parts).unwrap();
+    let mut frame = polars::prelude::DataFrame::new(
+        1,
+        vec![polars::prelude::Column::new("id".into(), &[1i32])],
+    )
+    .unwrap();
+    for name in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        let file = std::fs::File::create(parts.join(name)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(parts);
+    app.home.rebuild(&[], &[]);
+    app.home.classify_now(16);
+
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("3 datasets"),
+        "three files, and the door is not a fourth: {bar:?}"
     );
 }

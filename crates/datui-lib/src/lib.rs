@@ -17594,9 +17594,13 @@ impl Widget for &mut App {
                 .home
                 .visible()
                 .iter()
-                .filter(
-                    |r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset()),
-                )
+                .filter(|r| {
+                    // Not the row that opens the folder being browsed. Its kind is the
+                    // folder's, so it counts as a dataset, and it is the same dataset as
+                    // the folder — the figure this comment calls a lie, counted twice.
+                    matches!(r, home::Row::Entry { entry, .. }
+                        if entry.kind.is_known_dataset() && !entry.opens_whole_folder)
+                })
                 .count();
             // State, not actions: how many datasets are listed and what order they
             // are in. The Tab key that changes it lives with the other keys.

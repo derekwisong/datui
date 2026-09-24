@@ -2157,7 +2157,15 @@ impl HomeState {
             let collapsed = self.section_folded(section);
             out.push(Row::Header {
                 section: si,
-                matches: matched.len(),
+                // What the section holds, which the door is not: it is a way to open
+                // the folder those rows are in, so counting it makes a folder of three
+                // files say four. The chip already said the right number under a
+                // filter, where the door steps out of the way, and the wrong one
+                // without — the same count meaning two things.
+                matches: matched
+                    .iter()
+                    .filter(|(e, _)| !e.opens_whole_folder)
+                    .count(),
                 collapsed,
             });
             if !collapsed {

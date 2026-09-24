@@ -12,17 +12,17 @@ open it.
  ╺┻┛╹ ╹ ╹ ┗━┛╹
  › ▏  filter and search
  ▾ RECENT  3  ────────────────────────────────────────────────────────────
-   /mnt/data/warehouse/                                              nfs4
+   /mnt/data/warehouse/  2 parquet                                   nfs4
  ▎   ⇅ sales  hive                          2.4M × 18    340 MB    2d
      ⇅ customers.parquet                     89k × 12      4 MB    1w
    ~/exports/
      ◦ q3.csv                                          1.2 GB    3h
- ▾ /mnt/data  2  ──────────────────────────────────── nfs4 · configured
-   ⇅ events  hive                            1.1M × 9    120 MB    3h
-   ⇅ lookup.parquet                           980 × 4      8 KB   2mo
- ▾ ~/work/analysis  2  ──────────────────────────────── current directory
+ ▾ ~/work/analysis  2  current directory  ───────────────────────────────
    ◦ raw_export.csv                                     1.2 GB    3h
    ◦ notes/ dir
+ ▾ /mnt/data  2  configured  ──────────────────────────────────── nfs4
+   ⇅ events  hive                            1.1M × 9    120 MB    3h
+   ⇅ lookup.parquet                           980 × 4      8 KB   2mo
  Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 ```
 
@@ -59,24 +59,33 @@ what <kbd>Esc</kbd> will do next.
 
 Datasets are grouped by where they came from, in this order:
 
-| Section | Contents | Starts |
-|---|---|---|
-| `RECENT` | Datasets you have opened, grouped under the directory or prefix each lives in | open |
-| current directory | Where you launched datui | open |
-| `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | open |
-| configured directories | `[data] directories`, in the order listed | open |
-| `ELSEWHERE` | Directories from your desktop's recent-files list | folded |
-| `Found` | Datasets below the current directory, while you are typing | |
+| Section | Contents | Chip | Starts |
+|---|---|---|---|
+| `RECENT` | Datasets you have opened, grouped under the directory or prefix each lives in | | open |
+| current directory | Where you launched datui | `current directory` | open |
+| `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
+| configured directories | `[data] directories`, in the order listed | `configured` | open |
+| `ELSEWHERE` | Directories from your desktop's recent-files list | | folded |
+| `Found` | Datasets below the current directory, while you are typing | | |
 
-A folded section shows how many rows it hides. Filtering keeps the grouping, so
-a match always shows which section it came from.
+A section titled by a path carries a chip beside its count saying why it is
+there. The note at the far end of the rule says how it is doing: the filesystem
+it is on (`nfs4`), `first 5000` for a listing cut short, `listing`, or
+`unavailable`. A folded section shows how many rows it hides. Filtering keeps
+the grouping, so a match always shows which section it came from. With thirty
+list rows or more, a blank line separates the sections.
 
 ### Recent
 
 Every dataset you have opened sits under a **place row**: the directory or
-bucket prefix it lives in, newest place first. The place row names the path and,
-on a network share or in an object store, what it is on. A sort orders the rows
-inside each place and never flattens the section.
+bucket prefix it lives in, newest place first. The place row names the path,
+what datui last found the place to be (`hive`, `12 parquet`) when it has seen
+it, and, on a network share or in an object store, what it is on. A sort orders
+the rows inside each place and never flattens the section.
+
+A Parquet dataset opened from a bucket, as one object or as a prefix, shows the
+rows, columns and label the open learned. One nothing has measured yet shows
+`…` for its shape.
 
 | On a place row | Does |
 |---|---|

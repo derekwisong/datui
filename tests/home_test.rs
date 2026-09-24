@@ -1094,6 +1094,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
         sections: vec![datui::home::Section {
             title: "/mnt/share/sets".into(),
             subtitle: Some("nfs4 · recent".into()),
+            origin: None,
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
@@ -1101,6 +1102,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
             remote_root: Some(root.clone()),
             waiting: true,
             grouped_by_place: false,
+            place_labels: Default::default(),
         }],
     });
 
@@ -1605,6 +1607,320 @@ fn test_the_dataset_index_is_disposable() {
 }
 
 #[test]
+fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
+    // The record an open writes is keyed by the URL as opened, which is what the
+    // recents store holds, so the recent row and its place carry rows, columns, the
+    // kind and the label with no request made.
+    use datui::cache::{CacheManager, DatasetFacts};
+    use datui::home::{ListingRequest, build_listing};
+
+    let tmp = TempDir::new().unwrap();
+    let cache = CacheManager::with_dir(tmp.path().join("cache"));
+    let dataset = std::path::PathBuf::from("s3://bucket/sales/");
+    let place = std::path::PathBuf::from("s3://bucket");
+    let facts = |kind, holds, rows| DatasetFacts {
+        mtime: 20,
+        size: 3000,
+        rows,
+        cols: Some(3),
+        cols_sampled: false,
+        columns: vec!["id".into(), "amount".into(), "year".into()],
+        kind: Some(kind),
+        classified_by: datui::discover::CLASSIFIER_VERSION,
+        holds,
+        cost: Default::default(),
+    };
+    let two_parquet = datui::discover::Holds {
+        formats: vec![("parquet".to_string(), 2)],
+        ..Default::default()
+    };
+    cache.record_dataset_facts(&[
+        (
+            dataset.clone(),
+            facts(EntryKind::Hive, two_parquet.clone(), Some(20)),
+        ),
+        // The bucket itself was listed on some earlier run and is in the index too.
+        (
+            place.clone(),
+            facts(EntryKind::MultiFile, two_parquet, None),
+        ),
+    ]);
+
+    let listing = build_listing(&ListingRequest {
+        config_dirs: Vec::new(),
+        recents: vec![dataset.clone()],
+        desktop_dirs: Vec::new(),
+        browsing: None,
+        probed: Default::default(),
+        unreachable: Default::default(),
+        probe_errors: Default::default(),
+        network_check: |_| true,
+        cloud: Vec::new(),
+        known: cache.load_dataset_facts(),
+    });
+    let mut home = HomeState {
+        network_check: |_| true,
+        ..Default::default()
+    };
+    home.apply_listing(listing);
+
+    let rows = home.visible();
+    let row = rows
+        .iter()
+        .find_map(|r| match r {
+            Row::Entry { entry, .. } if entry.path == dataset => Some((*entry).clone()),
+            _ => None,
+        })
+        .expect("the recent is listed: {rows:?}");
+    assert_eq!(row.rows, Some(20));
+    assert_eq!(row.cols, Some(3));
+    assert_eq!(row.kind, EntryKind::Hive);
+    assert_eq!(row.label(), "hive");
+    assert_eq!(row.columns.len(), 3);
+    assert!(
+        matches!(
+            rows.iter().find(|r| matches!(r, Row::Place { .. })),
+            Some(Row::Place { path, label: Some(label), .. })
+                if *path == place && label == "2 parquet"
+        ),
+        "the place carries what the index remembers it to be: {rows:?}"
+    );
+}
+
+#[test]
+fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() {
+    // An open records what it learned under the URL it resolved to, without the
+    // source id and in the one Azure spelling; the recent is stored as typed. They
+    // have to meet, or a dataset opened through a named source is blank under RECENT
+    // however often it is opened.
+    use datui::cache::{CacheManager, DatasetFacts};
+    use datui::home::{ListingRequest, build_listing, index_key};
+    use std::path::{Path, PathBuf};
+
+    assert_eq!(
+        index_key(Path::new("s3://lab@bucket/sales/")),
+        PathBuf::from("s3://bucket/sales/")
+    );
+    assert_eq!(
+        index_key(Path::new("https://acct.blob.core.windows.net/c/p/")),
+        PathBuf::from("abfss://c@acct.dfs.core.windows.net/p/")
+    );
+    assert_eq!(
+        index_key(Path::new("gs://bucket/x.parquet")),
+        PathBuf::from("gs://bucket/x.parquet")
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let cache = CacheManager::with_dir(tmp.path().join("cache"));
+    let facts = DatasetFacts {
+        mtime: 20,
+        size: 3000,
+        rows: Some(20),
+        cols: Some(3),
+        cols_sampled: false,
+        columns: vec!["id".into(), "amount".into(), "year".into()],
+        kind: Some(EntryKind::Hive),
+        classified_by: datui::discover::CLASSIFIER_VERSION,
+        holds: Default::default(),
+        cost: Default::default(),
+    };
+    cache.record_dataset_facts(&[
+        (PathBuf::from("s3://bucket/sales/"), facts.clone()),
+        (
+            PathBuf::from("abfss://c@acct.dfs.core.windows.net/p/"),
+            facts,
+        ),
+    ]);
+    let typed = vec![
+        PathBuf::from("s3://lab@bucket/sales/"),
+        PathBuf::from("https://acct.blob.core.windows.net/c/p/"),
+    ];
+    let listing = build_listing(&ListingRequest {
+        config_dirs: Vec::new(),
+        recents: typed.clone(),
+        desktop_dirs: Vec::new(),
+        browsing: None,
+        probed: Default::default(),
+        unreachable: Default::default(),
+        probe_errors: Default::default(),
+        network_check: |_| true,
+        cloud: Vec::new(),
+        known: cache.load_dataset_facts(),
+    });
+    let mut home = HomeState {
+        network_check: |_| true,
+        ..Default::default()
+    };
+    home.apply_listing(listing);
+    for path in &typed {
+        let row = home
+            .visible()
+            .iter()
+            .find_map(|r| match r {
+                Row::Entry { entry, .. } if entry.path == *path => Some((*entry).clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{path:?} is listed"));
+        assert_eq!(row.rows, Some(20), "{path:?}");
+        assert_eq!(row.kind, EntryKind::Hive, "{path:?}");
+    }
+}
+
+#[test]
+fn test_a_place_label_is_held_to_the_folders_mtime() {
+    // A record of `12 parquet` for a folder that has since lost ten files would sit
+    // two rows above the live listing calling it `2 parquet`. The label is shown only
+    // while the folder's mtime is the one the record was taken at.
+    use datui::cache::{CacheManager, DatasetFacts};
+    use datui::home::{ListingRequest, build_listing};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("data");
+    let dataset = touch(&dir, "a.parquet");
+    let mtime = fs::metadata(&dir)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cache = CacheManager::with_dir(tmp.path().join("cache"));
+    let record = |mtime| DatasetFacts {
+        mtime,
+        size: 0,
+        rows: None,
+        cols: None,
+        cols_sampled: false,
+        columns: Vec::new(),
+        kind: Some(EntryKind::MultiFile),
+        classified_by: datui::discover::CLASSIFIER_VERSION,
+        holds: datui::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        },
+        cost: Default::default(),
+    };
+    let label_for = |cache: &CacheManager| -> Option<String> {
+        let listing = build_listing(&ListingRequest {
+            config_dirs: Vec::new(),
+            recents: vec![dataset.clone()],
+            desktop_dirs: Vec::new(),
+            browsing: None,
+            probed: Default::default(),
+            unreachable: Default::default(),
+            probe_errors: Default::default(),
+            network_check: |_| false,
+            cloud: Vec::new(),
+            known: cache.load_dataset_facts(),
+        });
+        let mut home = HomeState::default();
+        home.apply_listing(listing);
+        home.visible().iter().find_map(|r| match r {
+            Row::Place { path, label, .. } if *path == dir => Some(label.clone()),
+            _ => None,
+        })?
+    };
+
+    cache.record_dataset_facts(&[(dir.clone(), record(mtime))]);
+    assert_eq!(label_for(&cache).as_deref(), Some("12 parquet"));
+
+    // The same record with another mtime: the folder has changed since, no label.
+    cache.record_dataset_facts(&[(dir.clone(), record(mtime.wrapping_sub(100)))]);
+    assert_eq!(label_for(&cache), None);
+}
+
+#[test]
+fn test_a_place_row_says_nothing_it_does_not_know() {
+    // No record, or a record from another classifier, or one that would only say
+    // `dir`: no label. A place row never causes a read to find one.
+    use datui::cache::{CacheManager, DatasetFacts};
+    use datui::home::{ListingRequest, build_listing};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("data");
+    let dataset = touch(&dir, "a.parquet");
+    let cache = CacheManager::with_dir(tmp.path().join("cache"));
+    cache.record_dataset_facts(&[(
+        dir.clone(),
+        DatasetFacts {
+            mtime: 0,
+            size: 0,
+            rows: None,
+            cols: None,
+            cols_sampled: false,
+            columns: Vec::new(),
+            kind: Some(EntryKind::Directory),
+            classified_by: datui::discover::CLASSIFIER_VERSION,
+            holds: Default::default(),
+            cost: Default::default(),
+        },
+    )]);
+    let listing = build_listing(&ListingRequest {
+        config_dirs: Vec::new(),
+        recents: vec![dataset],
+        desktop_dirs: Vec::new(),
+        browsing: None,
+        probed: Default::default(),
+        unreachable: Default::default(),
+        probe_errors: Default::default(),
+        network_check: |_| false,
+        cloud: Vec::new(),
+        known: cache.load_dataset_facts(),
+    });
+    let mut home = HomeState::default();
+    home.apply_listing(listing);
+    assert!(
+        home.visible()
+            .iter()
+            .any(|r| matches!(r, Row::Place { path, label: None, .. } if *path == dir)),
+        "{:?}",
+        home.visible()
+    );
+}
+
+#[test]
+fn test_origin_is_a_chip_and_the_note_is_state_only() {
+    // Why a section exists sits by the title; how it is doing sits by the rule. A
+    // configured directory with nothing in it stays listed because of the former.
+    let tmp = TempDir::new().unwrap();
+    let configured = tmp.path().join("configured");
+    fs::create_dir_all(&configured).unwrap();
+    let elsewhere = tmp.path().join("downloads");
+    touch(&elsewhere, "x.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild_with(
+        std::slice::from_ref(&configured),
+        &[],
+        std::slice::from_ref(&elsewhere),
+    );
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title == datui::home::display_path(&configured))
+        .expect("configured");
+    assert_eq!(section.origin, Some("configured"));
+    assert_eq!(section.subtitle, None, "nothing to say about a local disk");
+    assert!(
+        home.visible().iter().any(|r| matches!(
+            r,
+            Row::Header { section, .. } if home.sections[*section].origin == Some("configured")
+        )),
+        "an empty configured directory is still on screen"
+    );
+    let elsewhere = home
+        .sections
+        .iter()
+        .find(|s| s.title == "Elsewhere")
+        .expect("elsewhere");
+    assert_eq!(elsewhere.origin, None);
+    assert_eq!(
+        elsewhere.subtitle, None,
+        "the title already says what these are"
+    );
+}
+
+#[test]
 fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
     // Verifying a fingerprint means stat'ing the path, which is the call that blocks
     // on a share that has gone away. A remote row therefore trusts what was recorded
@@ -1765,6 +2081,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
         sections: vec![datui::home::Section {
             title: "TEST".into(),
             subtitle: None,
+            origin: None,
             rows,
             unavailable: false,
             unavailable_note: None,
@@ -1772,6 +2089,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         }],
     });
     home
@@ -2749,6 +3067,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
         sections: vec![datui::home::Section {
             title: "NEXT".into(),
             subtitle: None,
+            origin: None,
             rows: discover::scan_dir(next.path()),
             unavailable: false,
             unavailable_note: None,
@@ -2756,6 +3075,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         }],
     });
 

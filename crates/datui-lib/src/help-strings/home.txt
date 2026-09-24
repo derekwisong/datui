@@ -65,9 +65,11 @@ FINDING
 WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, grouped under the directory
                     or bucket prefix each lives in, newest place first. The place
-                    row names the directory and, on a share or in a store, what
-                    it is on. Whole places are shown up to a third of the list,
-                    then "… N more in M places" stands for the rest
+                    row names the directory, what datui last found it to be, and,
+                    on a share or in a store, what it is on. Whole places are
+                    shown up to a third of the list, then "… N more in M places"
+                    stands for the rest. A recent nothing has measured shows …
+                    for its shape until an open of it fills it in
   Current directory Where you launched datui
   Cloud             One row per cloud source. Enter lists its buckets
   Configured        Directories from [data] directories, in the order listed
@@ -75,6 +77,12 @@ WHERE THESE COME FROM, IN ORDER
                     Starts folded.
   Found             Datasets under the working directory, from the search that
                     typing starts. Shown only while you are typing.
+
+  A section titled by a path says why it is there in a chip beside its count:
+  "current directory" or "configured". How it is doing is the note at the far
+  end of the rule: the filesystem it is on, "first 5000" for a listing cut
+  short, "listing" or "unavailable". With thirty list rows or more, a blank
+  line separates the sections.
 
   Filtering keeps this grouping, so a match shows which root it came from, and
   a match anywhere under Recent is shown whatever the cap hides.

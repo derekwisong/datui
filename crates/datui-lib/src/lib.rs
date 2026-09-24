@@ -507,6 +507,7 @@ mod classify_batch_tests {
             sections: vec![home::Section {
                 title: "SHARE".into(),
                 subtitle: None,
+                origin: None,
                 rows,
                 unavailable: false,
                 unavailable_note: None,
@@ -514,6 +515,7 @@ mod classify_batch_tests {
                 remote_root: None,
                 waiting: false,
                 grouped_by_place: false,
+                place_labels: Default::default(),
             }],
         }
     }
@@ -1592,6 +1594,173 @@ pub mod tests {
     use std::sync::Once;
 
     static INIT: Once = Once::new();
+
+    #[cfg(feature = "cloud")]
+    mod cloud_recent_facts {
+        use crate::cloud_hive::{DatasetFile, FileFooter};
+        use crate::discover::EntryKind;
+        use polars::prelude::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        fn file(key: &str, size: u64, stamp: u64) -> DatasetFile {
+            DatasetFile {
+                key: key.to_string(),
+                size,
+                stamp,
+                etag: None,
+            }
+        }
+
+        fn footer(rows: &[usize]) -> Option<FileFooter> {
+            let schema = Schema::from_iter([
+                Field::new("id".into(), DataType::Int64),
+                Field::new("amount".into(), DataType::Float64),
+            ]);
+            Some(FileFooter {
+                schema: Arc::new(schema),
+                row_group_rows: rows.to_vec(),
+                row_group_bytes: rows.iter().map(|r| r * 8).collect(),
+            })
+        }
+
+        /// What the home screen shows for a recent opened from a bucket comes from the
+        /// record the open wrote: rows, columns, the kind and what it holds, under the
+        /// URL as opened.
+        #[test]
+        fn an_open_records_what_the_home_screen_will_show() {
+            let files = vec![
+                file("sales/year=2024/part-0.parquet", 1000, 10),
+                file("sales/year=2025/part-0.parquet", 2000, 20),
+            ];
+            let read = vec![0, 1];
+            let footers = vec![footer(&[5, 7]), footer(&[8])];
+            let (path, facts) =
+                crate::App::facts_from_cloud_footers("s3://bucket/sales/", &files, &read, &footers)
+                    .expect("facts");
+            assert_eq!(path, std::path::PathBuf::from("s3://bucket/sales/"));
+            assert_eq!(facts.rows, Some(20));
+            assert_eq!(facts.cols, Some(3), "the partition column counts");
+            assert!(!facts.cols_sampled);
+            assert_eq!(facts.kind, Some(EntryKind::Hive));
+            assert_eq!(facts.holds.formats, vec![("parquet".to_string(), 2)]);
+            assert_eq!(facts.size, 3000);
+            assert_eq!(facts.mtime, 20);
+            assert_eq!(facts.classified_by, crate::discover::CLASSIFIER_VERSION);
+            assert!(facts.columns.iter().any(|c| c == "amount"));
+
+            // A flat prefix is a folder of files; one object is a file.
+            let flat = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/sales/",
+                &flat,
+                &[0, 1],
+                &[footer(&[1]), footer(&[1])],
+            )
+            .unwrap();
+            assert_eq!(facts.kind, Some(EntryKind::MultiFile));
+            let one = vec![file("sales/a.parquet", 1, 1)];
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/sales/a.parquet",
+                &one,
+                &[0],
+                &[footer(&[4])],
+            )
+            .unwrap();
+            assert_eq!(facts.kind, Some(EntryKind::File));
+            assert!(facts.holds.is_empty());
+            assert_eq!(facts.rows, Some(4));
+        }
+
+        /// `--hive` on a prefix with no trailing slash lists the prefix's files and is a
+        /// folder; on a single object it lists that object and is a file.
+        #[test]
+        fn a_prefix_without_its_slash_is_still_a_folder() {
+            let files = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/sales",
+                &files,
+                &[0, 1],
+                &[footer(&[1]), footer(&[1])],
+            )
+            .unwrap();
+            assert_eq!(facts.kind, Some(EntryKind::MultiFile));
+            let one = vec![file("sales/a.parquet", 1, 1)];
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/sales/a.parquet",
+                &one,
+                &[0],
+                &[footer(&[1])],
+            )
+            .unwrap();
+            assert_eq!(facts.kind, Some(EntryKind::File));
+        }
+
+        /// A sampled read does not replace a whole one: the shape cache forgets a
+        /// dataset long before the index does, and a reopen reads a sample first.
+        #[test]
+        fn a_sample_never_replaces_a_whole_record() {
+            let whole = crate::cache::DatasetFacts {
+                rows: Some(20),
+                ..Default::default()
+            };
+            let sample = crate::cache::DatasetFacts {
+                rows: None,
+                cols_sampled: true,
+                ..Default::default()
+            };
+            assert!(crate::App::facts_worth_recording(None, &sample));
+            assert!(crate::App::facts_worth_recording(Some(&sample), &sample));
+            assert!(crate::App::facts_worth_recording(Some(&sample), &whole));
+            assert!(crate::App::facts_worth_recording(Some(&whole), &whole));
+            assert!(!crate::App::facts_worth_recording(Some(&whole), &sample));
+        }
+
+        /// One object opened from a bucket is recorded from the footer the open read:
+        /// its rows and columns, no size, which the row then does not show as zero.
+        #[test]
+        fn one_object_is_recorded_from_its_footer() {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = crate::cache::CacheManager::with_dir(tmp.path().to_path_buf());
+            let schema = Schema::from_iter([Field::new("id".into(), DataType::Int64)]);
+            let footer = crate::cloud_hive::ParquetFooter {
+                schema: Arc::new(schema),
+                row_group_rows: vec![3, 4],
+                column_bytes_per_row: Vec::new(),
+            };
+            crate::App::record_cloud_object_facts(Some(&cache), "s3://bucket/x.parquet", &footer);
+            let known = cache.load_dataset_facts();
+            let facts = known
+                .get(std::path::Path::new("s3://bucket/x.parquet"))
+                .expect("recorded");
+            assert_eq!(facts.rows, Some(7));
+            assert_eq!(facts.cols, Some(1));
+            assert_eq!(facts.kind, Some(EntryKind::File));
+            assert_eq!(facts.size, 0);
+            assert!(
+                facts.mtime > 0,
+                "dated, so the index does not evict it first"
+            );
+        }
+
+        /// A sampled read knows the columns and not the rows, and says the width is a
+        /// floor.
+        #[test]
+        fn a_sampled_read_records_columns_but_no_row_count() {
+            let files: Vec<DatasetFile> = (0..5)
+                .map(|i| file(&format!("x/p{i}.parquet"), 10, 1))
+                .collect();
+            let (_, facts) = crate::App::facts_from_cloud_footers(
+                "s3://bucket/x/",
+                &files,
+                &[0, 4],
+                &[footer(&[1]), footer(&[1])],
+            )
+            .unwrap();
+            assert_eq!(facts.rows, None);
+            assert_eq!(facts.cols, Some(2));
+            assert!(facts.cols_sampled);
+        }
+    }
 
     /// Ensures that sample data files are generated before tests run.
     /// This function uses `std::sync::Once` to ensure it only runs once,
@@ -9585,12 +9754,26 @@ impl App {
         files: &[cloud_hive::DatasetFile],
         footers: &[Option<cloud_hive::FileFooter>],
     ) {
-        if read.len() != files.len() || !footers.iter().all(Option::is_some) {
-            return;
-        }
         let Some(cache) = cache else {
             return;
         };
+        // The dataset index too, which is what the home screen reads. A dataset opened
+        // straight from a bucket used to be recorded here, by the URL it was opened as,
+        // and nowhere else — so its recent row showed no shape, no size and no label,
+        // and looked broken beside the local rows. Written before the shape, because a
+        // sampled read still says what the columns are, and the shape below wants
+        // every footer. A sampled read does not replace a whole one, though: the shape
+        // cache is the smaller of the two and forgets a dataset long before the index
+        // does, and a reopen that finds its shape gone reads a sample first.
+        if let Some((path, facts)) = Self::facts_from_cloud_footers(full, files, read, footers) {
+            let existing = cache.load_dataset_facts();
+            if Self::facts_worth_recording(existing.get(&path), &facts) {
+                cache.record_dataset_facts(&[(path, facts)]);
+            }
+        }
+        if read.len() != files.len() || !footers.iter().all(Option::is_some) {
+            return;
+        }
         let (cached, schemas) = cloud_hive::footers_to_cache(footers);
         cache.save_dataset_shape(
             full,
@@ -9604,6 +9787,125 @@ impl App {
                     .unwrap_or_default(),
             },
         );
+    }
+
+    /// What the home screen can say about a cloud dataset from the footers an open
+    /// read: its columns, its rows when every footer was read, its kind, and what it
+    /// holds. Keyed by the URL as opened, which is what the recents store holds.
+    ///
+    /// A remote row has no fingerprint to check, so `mtime` is the newest object's
+    /// stamp and `size` the total, for the record's own sake.
+    fn facts_from_cloud_footers(
+        full: &str,
+        files: &[cloud_hive::DatasetFile],
+        read: &[usize],
+        footers: &[Option<cloud_hive::FileFooter>],
+    ) -> Option<(PathBuf, crate::cache::DatasetFacts)> {
+        let (dataset, partition_columns) =
+            cloud_hive::dataset_schema_from_footers(files, read, footers).ok()?;
+        let columns: Vec<String> = dataset
+            .schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .collect();
+        let every_footer = read.len() == files.len() && footers.iter().all(Option::is_some);
+        let rows = every_footer.then(|| {
+            footers
+                .iter()
+                .flatten()
+                .map(|f| f.row_group_rows.iter().sum::<usize>())
+                .sum()
+        });
+        // A folder of files, unless the listing came back with the one object the URL
+        // names — which is what `--hive` on a single object gets. The trailing slash is
+        // not asked about: this route is entered for `--hive s3://bucket/sales` too.
+        let folder = !(files.len() == 1 && full.trim_end_matches('/').ends_with(&files[0].key));
+        let kind = if !folder {
+            discover::EntryKind::File
+        } else if !partition_columns.is_empty() {
+            discover::EntryKind::Hive
+        } else {
+            discover::EntryKind::MultiFile
+        };
+        let holds = if folder {
+            discover::Holds {
+                formats: vec![("parquet".to_string(), files.len())],
+                ..Default::default()
+            }
+        } else {
+            Default::default()
+        };
+        Some((
+            PathBuf::from(full),
+            crate::cache::DatasetFacts {
+                mtime: files.iter().map(|f| f.stamp).max().unwrap_or_default(),
+                size: files.iter().map(|f| f.size).sum(),
+                rows,
+                cols: Some(columns.len()),
+                cols_sampled: !every_footer,
+                columns,
+                kind: Some(kind),
+                classified_by: discover::CLASSIFIER_VERSION,
+                cost: Default::default(),
+                holds,
+            },
+        ))
+    }
+
+    /// Whether a record learned from a cloud open should replace what the index has:
+    /// anything replaces nothing, a whole read replaces anything, and a sampled read
+    /// replaces only another sample.
+    fn facts_worth_recording(
+        existing: Option<&crate::cache::DatasetFacts>,
+        new: &crate::cache::DatasetFacts,
+    ) -> bool {
+        match existing {
+            None => true,
+            Some(_) if new.rows.is_some() => true,
+            Some(old) => old.rows.is_none(),
+        }
+    }
+
+    /// What the home screen can say about one object opened from a bucket: its rows
+    /// and columns from the footer the open read, under the URL it resolved to. The
+    /// object's size is not known here — the footer is read from the tail — so the
+    /// record carries none, and the row shows none. Its `mtime` is the time of the
+    /// open: a remote record is never fingerprinted by it, and the index evicts its
+    /// oldest `mtime` first, so a zero would make these the first to go.
+    fn record_cloud_object_facts(
+        cache: Option<&crate::cache::CacheManager>,
+        full: &str,
+        footer: &cloud_hive::ParquetFooter,
+    ) {
+        let Some(cache) = cache else {
+            return;
+        };
+        let columns: Vec<String> = footer
+            .schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .collect();
+        cache.record_dataset_facts(&[(
+            PathBuf::from(full),
+            crate::cache::DatasetFacts {
+                mtime: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
+                size: 0,
+                rows: Some(footer.row_group_rows.iter().sum()),
+                cols: Some(columns.len()),
+                cols_sampled: false,
+                columns,
+                kind: Some(discover::EntryKind::File),
+                classified_by: discover::CLASSIFIER_VERSION,
+                cost: discover::Cost {
+                    row_groups: Some(footer.row_group_rows.len()),
+                    ..Default::default()
+                },
+                holds: Default::default(),
+            },
+        )]);
     }
 
     fn cloud_dataset_from_footers(
@@ -9829,6 +10131,9 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
         state.set_row_groups(&footer.row_group_rows);
+        // The commonest cloud open, and the one the dataset index never heard about:
+        // the prefix route records what it read, and this one read a footer too.
+        Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
         state.set_column_widths(footer.column_bytes_per_row);
         Ok(state)
     }
@@ -17677,7 +17982,7 @@ impl Widget for &mut App {
                 .home
                 .selected_section()
                 .and_then(|i| self.home.sections.get(i))
-                .map(|s| s.subtitle.is_none())
+                .map(|s| s.grouped_by_place)
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
             let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();

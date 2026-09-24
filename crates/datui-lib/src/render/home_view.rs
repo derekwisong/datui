@@ -79,7 +79,10 @@ fn type_color(dtype: &polars::prelude::DataType, ctx: &RenderContext) -> ratatui
 /// The three metadata columns, already padded to fixed widths so they align down the
 /// list. Empty strings where a fact is genuinely unknown — a CSV's row count cannot
 /// be had without scanning it, and inventing one would be worse than a blank.
-fn meta_columns(entry: &Entry) -> String {
+/// `unmeasured` puts an ellipsis where the shape would go: the row is a dataset
+/// nothing has read yet, and a blank there beside rows that have a shape reads as
+/// broken. The same admission the label makes for a folder nothing has looked into.
+fn meta_columns(entry: &Entry, unmeasured: bool) -> String {
     // A dataset too large to count still knows its width. Showing `? x 158` says more
     // than a blank, and the `?` is an admission rather than a guess.
     let times = glyphs::get().times;
@@ -95,6 +98,7 @@ fn meta_columns(entry: &Entry) -> String {
         // bare `72` reads as a row count.
         (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more} cols"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
+        _ if unmeasured => glyphs::get().ellipsis.to_string(),
         _ => String::new(),
     };
     let size = entry.size.map(discover::format_size).unwrap_or_default();
@@ -330,15 +334,46 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // about what is worth looking into are made from it.
     //
     // Keep a little context above the selection rather than pinning it to the edge.
-    // One drawn line per row now that the spacer is gone.
     let height = area.height as usize;
+    // With room to spare, a blank line before every header but the first. At most
+    // five sections, so at most four lines, and below thirty the list is as dense as
+    // it can be. The spacers come off the height the cap on RECENT is a share of.
+    let spaced = height >= SPACED_LIST_HEIGHT;
+    let headers = app
+        .home
+        .visible()
+        .iter()
+        .filter(|row| matches!(row, crate::home::Row::Header { .. }))
+        .count();
+    let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
     // The height first: the cap on RECENT is a share of it, and the cursor has to be
     // put back on its row before the scroll is settled from it.
-    app.home.set_view_height(height);
-    app.home.scroll = app
-        .home
-        .selected
+    app.home.set_view_height(height.saturating_sub(spacers));
+    // Where each row lands as a line, spacers counted, so the scroll is settled in
+    // lines and the selected row is on screen however many spacers sit above it.
+    let row_lines: Vec<usize> = {
+        let mut line = 0;
+        app.home
+            .visible()
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                if spaced && i > 0 && matches!(row, crate::home::Row::Header { .. }) {
+                    line += 1;
+                }
+                let at = line;
+                line += 1;
+                at
+            })
+            .collect()
+    };
+    let first_line = row_lines
+        .get(app.home.selected)
+        .copied()
+        .unwrap_or(0)
         .saturating_sub(height.saturating_sub(3).max(1));
+    // As a row index, for the passes that look into what is on screen.
+    app.home.scroll = row_lines.partition_point(|line| *line < first_line);
 
     // Nothing is read here. Rows carry whatever a worker has measured so far, and
     // the request for more is made after the frame, not during it.
@@ -459,6 +494,9 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 matches,
                 collapsed,
             } => {
+                if spaced && idx > 0 {
+                    lines.push(Line::from(""));
+                }
                 lines.push(section_header(
                     &app.home.sections[*section],
                     *matches,
@@ -508,9 +546,15 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
-            crate::home::Row::Place { path, source, .. } => {
+            crate::home::Row::Place {
+                path,
+                label,
+                source,
+                ..
+            } => {
                 lines.push(place_line(
                     path,
+                    label.as_deref(),
                     source.as_deref(),
                     selected,
                     name_width,
@@ -526,7 +570,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         }
     }
 
-    let mut body: Vec<Line> = lines.into_iter().skip(app.home.scroll).collect();
+    let mut body: Vec<Line> = lines.into_iter().skip(first_line).collect();
     body.extend(guidance);
     Paragraph::new(body).render(area, buf);
 }
@@ -534,6 +578,10 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
 /// How far a row under a place is drawn in. Two cells: enough to read as "under",
 /// not enough to cost a name its tail.
 const NEST_INDENT: usize = 2;
+
+/// The list height from which a blank line precedes every section header but the
+/// first. Below it every row is content.
+const SPACED_LIST_HEIGHT: usize = 30;
 
 /// What [`meta_columns`] draws: shape, size and age, each right-aligned in a fixed
 /// cell. A row that has no meta columns of its own is drawn to the same edge, so
@@ -557,6 +605,7 @@ fn row_width(name_width: usize, show_meta: bool) -> usize {
 /// for, spelled out once for the group rather than once per row.
 fn place_line(
     path: &std::path::Path,
+    label: Option<&str>,
     source: Option<&str>,
     selected: bool,
     name_width: usize,
@@ -595,11 +644,21 @@ fn place_line(
     if !name.ends_with('/') {
         name.push('/');
     }
-    // marker, name, at least one space, source, space. The padding is what puts the
-    // source on the right edge, and a name cut to fit still leaves it a cell of air.
+    // What the place itself is, when the dataset index remembers it: `hive`, `12
+    // parquet`. From the cache only; a place row never causes a directory read.
+    let label = label.map(|l| format!("  {l}")).unwrap_or_default();
+    // marker, name, [label,] at least one space, source, space. The padding is what
+    // puts the source on the right edge, and a name cut to fit still leaves it a cell
+    // of air. The label goes before the name is cut, since the name is the place.
     let fixed = marker.chars().count() + source.chars().count() + 1;
-    let name = truncate_start(&name, width.saturating_sub(fixed + 1).max(1));
-    let pad = width.saturating_sub(fixed + name.chars().count());
+    let room = width.saturating_sub(fixed + 1).max(1);
+    let label = if name.chars().count() + label.chars().count() <= room {
+        label
+    } else {
+        String::new()
+    };
+    let name = truncate_start(&name, room.saturating_sub(label.chars().count()).max(1));
+    let pad = width.saturating_sub(fixed + name.chars().count() + label.chars().count());
     let name_style = if selected {
         base.fg(ctx.text_secondary).add_modifier(Modifier::BOLD)
     } else {
@@ -611,6 +670,7 @@ fn place_line(
             base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
         ),
         Span::styled(name, name_style),
+        Span::styled(label, base.fg(ctx.dimmed)),
         Span::styled(" ".repeat(pad), base),
         Span::styled(source, source_style),
         Span::styled(" ", base),
@@ -709,14 +769,40 @@ fn section_header<'a>(
     } else {
         format!(" {matches} ")
     };
-    // marker, title, space, chip, space, rule, space, note, space. The title gives
-    // way to the note only down to three cells; below that the note goes instead,
-    // since a heading that is all note and no title says nothing.
+    // Why the section is here, right after the count: `current directory`,
+    // `configured`. A flat chip in the style of `hive`, since it is a word about the
+    // section the way that is a word about a row.
+    let origin = section
+        .origin
+        .map(|origin| format!(" {origin} "))
+        .unwrap_or_default();
+    let origin_cells = if origin.is_empty() {
+        0
+    } else {
+        origin.chars().count() + 1
+    };
+    // marker, title, space, chip, space, [origin, space,] rule, space, note, space.
+    // The title gives way to the note only down to three cells; below that the note
+    // goes instead, since a heading that is all note and no title says nothing. The
+    // origin chip goes before the note does: it is the shorter word and the one that
+    // says what the section is.
     let mut note = note;
-    let mut fixed =
-        marker.chars().count() + 1 + chip.chars().count() + 1 + note.chars().count() + 2;
+    let mut origin = origin;
+    let mut origin_cells = origin_cells;
+    let mut fixed = marker.chars().count()
+        + 1
+        + chip.chars().count()
+        + 1
+        + origin_cells
+        + note.chars().count()
+        + 2;
     if width.saturating_sub(fixed) < 3 {
         note = String::new();
+        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + origin_cells + 2;
+    }
+    if width.saturating_sub(fixed) < 3 {
+        origin = String::new();
+        origin_cells = 0;
         fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2;
     }
     title = truncate_start(&title, width.saturating_sub(fixed));
@@ -734,18 +820,28 @@ fn section_header<'a>(
         Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
     };
     let chip_style = Style::default().bg(ctx.controls_bg).fg(ctx.text_primary);
+    let origin_style = Style::default()
+        .bg(ctx.controls_bg)
+        .fg(ctx.accent)
+        .add_modifier(Modifier::BOLD);
     let rule_glyph = if selected { g.rule_h_focused } else { g.rule_h };
     let rule_style = Style::default().fg(if selected {
         ctx.accent
     } else {
         ctx.column_separator
     });
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(marker, Style::default().fg(ctx.accent)),
         Span::styled(title, title_style),
         Span::raw(" "),
         Span::styled(chip, chip_style),
         Span::raw(" "),
+    ];
+    if origin_cells > 0 {
+        spans.push(Span::styled(origin, origin_style));
+        spans.push(Span::raw(" "));
+    }
+    spans.extend([
         Span::styled(rule_glyph.repeat(rule_w), rule_style),
         Span::raw(" "),
         Span::styled(
@@ -757,7 +853,8 @@ fn section_header<'a>(
             }),
         ),
         Span::raw(" "),
-    ])
+    ]);
+    Line::from(spans)
 }
 
 /// Split `text` into spans, styling the characters at `positions` differently.
@@ -1242,7 +1339,22 @@ fn entry_line<'a>(
     }
     if show_meta {
         spans.push(Span::styled(" ".repeat(pad), base));
-        spans.push(Span::styled(meta_columns(entry), base.fg(ctx.dimmed)));
+        // A recent from a store or a share that nothing has measured: the probe that
+        // measures remote rows runs over roots, and a recent's place is not one, so
+        // what it shows is what an open or a listing remembered — or, until then, that
+        // nothing is known.
+        let unmeasured = indent > 0
+            && entry.rows.is_none()
+            && entry.cols.is_none()
+            && entry.kind != EntryKind::Unknown
+            && matches!(
+                locality,
+                Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
+            );
+        spans.push(Span::styled(
+            meta_columns(entry, unmeasured),
+            base.fg(ctx.dimmed),
+        ));
     }
     // Carry the reverse to the edge, so the bar is a bar and not a ragged highlight.
     spans.push(Span::styled(" ", base));
@@ -1969,7 +2081,7 @@ mod tests {
     fn a_folder_of_separate_tables_shows_its_width_without_a_question_mark() {
         let mut folder = row("/data/consolidated", EntryKind::Directory);
         folder.cols = Some(72);
-        let shape = meta_columns(&folder);
+        let shape = meta_columns(&folder, false);
         assert!(shape.contains("72 cols"), "{shape}");
         assert!(!shape.contains('?'), "{shape}");
         assert!(
@@ -1980,7 +2092,7 @@ mod tests {
         let mut big = row("/data/events", EntryKind::Hive);
         big.cols = Some(72);
         assert!(
-            meta_columns(&big).contains('?'),
+            meta_columns(&big, false).contains('?'),
             "a hive dataset still says ?"
         );
     }
@@ -2058,7 +2170,7 @@ mod tests {
         // Where the meta columns begin: everything drawn before them. It must not
         // depend on how long a row's label is, or the columns stop lining up.
         let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
-            let meta = meta_columns(entry);
+            let meta = meta_columns(entry, false);
             let at = line
                 .spans
                 .iter()
@@ -2292,6 +2404,119 @@ mod tests {
     /// A dot in a folder's name does not make it a file. A local row nothing has looked
     /// into came from a listing that saw a directory, so the name is not the evidence.
     #[test]
+    fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
+        let ctx = RenderContext::for_test();
+        let section = Section {
+            title: "/mnt/data".to_string(),
+            subtitle: Some("nfs4".to_string()),
+            origin: Some("configured"),
+            rows: Vec::new(),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+            grouped_by_place: false,
+            place_labels: Default::default(),
+        };
+        let text = |width: usize| -> String {
+            section_header(&section, 12, false, false, width, 0, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        let wide = text(80);
+        let count = wide.find(" 12 ").expect("count chip");
+        let origin = wide.find(" configured ").expect("origin chip");
+        let state = wide.find("nfs4").expect("state note");
+        assert!(count < origin && origin < state, "{wide:?}");
+        assert_eq!(wide.chars().count(), 80);
+
+        // At forty columns both chips and the note still fit beside the title.
+        let narrow = text(40);
+        assert_eq!(narrow.chars().count(), 40, "{narrow:?}");
+        assert!(
+            narrow.contains(" configured ") && narrow.contains("nfs4"),
+            "{narrow:?}"
+        );
+        assert!(narrow.contains("/mnt/data"), "{narrow:?}");
+
+        // Squeezed further: the title keeps at least three cells while the note and
+        // then the chip give way, and once both are gone the whole title is back.
+        for width in [30usize, 24, 16] {
+            let tight = text(width);
+            assert_eq!(tight.chars().count(), width, "{tight:?}");
+            assert!(tight.contains("ta"), "{width}: {tight:?}");
+        }
+        let bare = text(20);
+        assert!(bare.contains("/mnt/data"), "{bare:?}");
+        assert!(
+            !bare.contains("configured") && !bare.contains("nfs4"),
+            "{bare:?}"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_recent_from_a_store_shows_an_ellipsis_for_its_shape() {
+        let ctx = RenderContext::for_test();
+        let g = glyphs::get();
+        let mut entry = row("s3://bucket/sales/", EntryKind::MultiFile);
+        entry.cost.source = Some("s3".to_string());
+        let text = |entry: &Entry, indent: usize| -> String {
+            entry_line(entry, false, 60, true, None, "", None, None, indent, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        // Under a place, with nothing measured: the shape cell is an admission.
+        let meta = meta_columns(&entry, true);
+        assert!(text(&entry, NEST_INDENT).contains(&meta));
+        assert!(meta.contains(g.ellipsis), "{meta:?}");
+        // The same row in a directory listing, where the probe measures it, and a
+        // local row, which is measured in place: blank, as before.
+        assert!(!text(&entry, 0).contains(g.ellipsis));
+        let mut local = row("/data/sales.csv", EntryKind::File);
+        local.cost.source = Some("ext4".to_string());
+        local.size = Some(10);
+        assert!(!text(&local, NEST_INDENT).contains(g.ellipsis));
+        // Once measured, the shape.
+        entry.rows = Some(20);
+        entry.cols = Some(3);
+        assert!(!text(&entry, NEST_INDENT).contains(g.ellipsis));
+    }
+
+    #[test]
+    fn a_place_row_carries_the_label_the_index_remembers_and_drops_it_before_the_path() {
+        let ctx = RenderContext::for_test();
+        let text = |label: Option<&str>, name_width: usize| -> String {
+            place_line(
+                std::path::Path::new("/mnt/data/sets/bitcoin"),
+                label,
+                Some("nfs4"),
+                false,
+                name_width,
+                false,
+                &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+        };
+        let wide = text(Some("2 parquet"), 60);
+        assert!(wide.contains("bitcoin/  2 parquet"), "{wide:?}");
+        assert!(wide.trim_end().ends_with("nfs4"), "{wide:?}");
+        assert_eq!(wide.chars().count(), row_width(60, false));
+        // No room for both: the path stays, the label goes.
+        let tight = text(Some("2 parquet"), 22);
+        assert!(!tight.contains("parquet"), "{tight:?}");
+        assert!(tight.contains("bitcoin/"), "{tight:?}");
+        assert_eq!(tight.chars().count(), row_width(22, false));
+    }
+
+    #[test]
     fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
         // A row two cells in under a place must not push its meta columns two cells
         // to the right, or the column of shapes and sizes zigzags down RECENT. The
@@ -2306,7 +2531,7 @@ mod tests {
             truncated: true,
             ..Default::default()
         };
-        let meta = meta_columns(&entry);
+        let meta = meta_columns(&entry, false);
         let meta_at = |indent: usize, width: usize| -> usize {
             let line = entry_line(
                 &entry, false, width, true, None, "", None, None, indent, &ctx,
@@ -2354,6 +2579,7 @@ mod tests {
             assert_eq!(entry_width, row_width(name_width, true));
             let place = place_line(
                 std::path::Path::new("/data"),
+                None,
                 Some("nfs4"),
                 false,
                 name_width,
@@ -2375,6 +2601,7 @@ mod tests {
         let text = |source: Option<&str>| -> String {
             place_line(
                 std::path::Path::new("/data/x"),
+                None,
                 source,
                 false,
                 40,
@@ -2409,6 +2636,7 @@ mod tests {
         // A long path keeps its tail, which is the part that says where it is.
         let long = place_line(
             std::path::Path::new("/very/deeply/nested/place/on/a/share/somewhere/far"),
+            None,
             Some("nfs4"),
             false,
             27,
@@ -2495,6 +2723,7 @@ mod tests {
                 "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
                     .to_string(),
             ),
+            origin: None,
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
@@ -2502,6 +2731,7 @@ mod tests {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -2954,6 +3184,7 @@ mod tests {
         let section = Section {
             title: "Found".to_string(),
             subtitle: Some("x".repeat(200)),
+            origin: None,
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
@@ -2961,6 +3192,7 @@ mod tests {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            place_labels: Default::default(),
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, 0, &ctx);

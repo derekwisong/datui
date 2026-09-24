@@ -30,6 +30,19 @@ impl CacheManager {
                 cache_dir: PathBuf::from(dir),
             });
         }
+        // A test that reaches the real cache writes its fixtures into the developer's
+        // own recents, and a dozen `/tmp/.tmp*` paths were found there. Refusing here
+        // is what makes it impossible to do by accident: every test binary cargo
+        // builds lives under `target/<profile>/deps/`, and the binary someone runs
+        // never does.
+        if running_as_a_cargo_test() {
+            panic!(
+                "DATUI_CACHE_DIR is not set: a test would write to the real cache. \
+                 Call common::isolate_cache() (or take the runtime from \
+                 common::test_runtime(), which does) before building an App or a \
+                 CacheManager."
+            );
+        }
 
         let cache_dir = dirs::cache_dir()
             .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine cache directory"))?
@@ -508,6 +521,35 @@ impl DatasetShape {
     }
 }
 
+/// Whether this process is a test binary cargo built, which is where `cargo test`
+/// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`, or
+/// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
+/// `target/<profile>/datui`, and an installed one is nowhere near.
+fn running_as_a_cargo_test() -> bool {
+    std::env::current_exe()
+        .is_ok_and(|exe| cargo_test_layout(&exe, std::env::var_os("CARGO_TARGET_DIR").as_deref()))
+}
+
+/// The directory is `deps`, and it sits under a `target` at most three levels up, or
+/// under the target directory cargo was told to use. Asked of the shape rather than of
+/// any `deps` anywhere in the path, so a program installed under some `deps` directory
+/// of the user's own is not mistaken for a test.
+fn cargo_test_layout(exe: &Path, target_dir: Option<&std::ffi::OsStr>) -> bool {
+    let Some(deps) = exe.parent() else {
+        return false;
+    };
+    if deps.file_name().is_none_or(|name| name != "deps") {
+        return false;
+    }
+    if target_dir.is_some_and(|dir| exe.starts_with(dir)) {
+        return true;
+    }
+    deps.ancestors()
+        .skip(1)
+        .take(3)
+        .any(|dir| dir.file_name().is_some_and(|name| name == "target"))
+}
+
 /// Entries kept in the dataset index.
 ///
 /// Large enough to cover everywhere someone actually works, small enough that the
@@ -758,6 +800,47 @@ impl CacheManager {
         let result = work();
         let _ = FileExt::unlock(&lock);
         result
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    /// This test binary is one cargo built into `deps`, so the refusal in
+    /// `CacheManager::new` is armed here. That it is armed is the whole guarantee: a
+    /// test that reaches `new` without `DATUI_CACHE_DIR` set stops instead of writing
+    /// its fixtures into the developer's own recents.
+    #[test]
+    fn a_cargo_test_binary_is_recognized() {
+        assert!(super::running_as_a_cargo_test());
+    }
+
+    /// Only cargo's own layout counts. A program someone installed under a directory
+    /// called `deps` must not refuse to start with a message about the test harness.
+    #[test]
+    fn only_cargos_layout_is_a_test() {
+        use std::ffi::OsStr;
+        use std::path::Path;
+        let layout = |exe: &str| super::cargo_test_layout(Path::new(exe), None);
+        assert!(layout(
+            "/home/x/src/datui/target/debug/deps/home_test-1a2b3c"
+        ));
+        assert!(layout(
+            "/home/x/src/datui/target/x86_64-unknown-linux-gnu/release/deps/datui-1a2b"
+        ));
+        assert!(!layout("/home/x/src/datui/target/debug/datui"));
+        assert!(!layout("/opt/deps/bin/datui"));
+        assert!(!layout("/home/x/deps/datui-0.4/bin/datui"));
+        assert!(!layout("/home/x/src/datui/target/debug/examples/demo"));
+        // A target directory of another name, when cargo was told about it.
+        assert!(!layout("/home/x/build/datui/debug/deps/home_test-1a2b3c"));
+        assert!(super::cargo_test_layout(
+            Path::new("/home/x/build/datui/debug/deps/home_test-1a2b3c"),
+            Some(OsStr::new("/home/x/build/datui"))
+        ));
+        assert!(!super::cargo_test_layout(
+            Path::new("/home/x/build/deps/datui"),
+            Some(OsStr::new("/home/x/other"))
+        ));
     }
 }
 

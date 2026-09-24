@@ -4,7 +4,8 @@ where Ctrl+O returns you from anywhere.
 NAVIGATION
   ↑ / ↓             Move the selection (Ctrl+P / Ctrl+N as well)
   Ctrl+↑ / Ctrl+↓   Previous or next section
-  ← / →             Collapse or expand a section; the choice is remembered.
+  ← / →             Collapse or expand a section of the root listing; the
+                    choice is remembered.
                     → on any folder goes inside it instead, whatever its label,
                     so one partition or one file can always be reached. → on a
                     place row under Recent browses it

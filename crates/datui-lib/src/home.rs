@@ -1652,29 +1652,45 @@ impl HomeState {
     /// Put the cursor back on the row `key` names, if it is still on screen. Says
     /// whether it was; the cursor is clamped either way, so a cursor left past the end
     /// by rows disappearing is never left there.
+    ///
+    /// A row the cap has just hidden is still there, behind the `more` row that now
+    /// stands for it, so the cursor goes to that row rather than to whatever fell
+    /// into its index in the section below.
     pub fn reselect(&mut self, key: Option<RowKey>) -> bool {
-        let found = key.and_then(|key| {
-            self.visible().iter().position(|row| match (row, &key) {
-                (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
-                (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
-                (Row::Header { section, .. }, RowKey::Header(title))
-                | (Row::More { section, .. }, RowKey::More(title)) => self
-                    .sections
-                    .get(*section)
-                    .is_some_and(|s| s.title == *title),
-                _ => false,
-            })
+        let Some(key) = key else {
+            self.clamp_selection();
+            return false;
+        };
+        let rows = self.visible();
+        let found = rows.iter().position(|row| match (row, &key) {
+            (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
+            (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
+            (Row::Header { section, .. }, RowKey::Header(title))
+            | (Row::More { section, .. }, RowKey::More(title)) => self
+                .sections
+                .get(*section)
+                .is_some_and(|s| s.title == *title),
+            _ => false,
         });
-        match found {
-            Some(idx) => {
-                self.selected = idx;
-                true
-            }
-            None => {
-                self.clamp_selection();
-                false
-            }
+        if let Some(idx) = found {
+            self.selected = idx;
+            return true;
         }
+        let behind_the_cap = match &key {
+            RowKey::Entry(path) | RowKey::Place(path) => rows.iter().position(|row| {
+                matches!(row, Row::More { section, .. }
+                if self.sections.get(*section).is_some_and(|s| {
+                    s.grouped_by_place
+                        && s.rows.iter().any(|r| r.path == *path || place_of(&r.path) == *path)
+                }))
+            }),
+            _ => None,
+        };
+        match behind_the_cap {
+            Some(idx) => self.selected = idx,
+            None => self.clamp_selection(),
+        }
+        false
     }
 
     /// Tell the listing how tall the list is, keeping the cursor on the row it was on.

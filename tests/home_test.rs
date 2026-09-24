@@ -2339,12 +2339,10 @@ fn test_a_shorter_terminal_keeps_the_cursor_on_its_row_or_in_range() {
     home.set_view_height(8);
     assert_eq!(shown_places(&home), 1);
     assert!(
-        home.selected < home.visible().len(),
-        "{} of {}",
-        home.selected,
-        home.visible().len()
+        matches!(home.selected_row(), Some(Row::More { .. })),
+        "the row is behind the cap now, and the more row stands for it: {:?}",
+        home.selected_row()
     );
-    assert!(home.selected_row().is_some());
 }
 
 #[test]

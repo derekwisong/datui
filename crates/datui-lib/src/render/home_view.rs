@@ -835,6 +835,16 @@ fn entry_line<'a>(
             kind
         }
     };
+    // The row that opens the folder being browsed carries none of this: not a label,
+    // not the curated word a source gives the place, not the source id that stands in
+    // where a label would be. Every one of them is about the folder, and this row is
+    // the door — `bigquery (all files)  dataset` says the door is the dataset, and
+    // under a named source the cell filled with the id instead.
+    let (kind, shows_curated, shows_source) = if entry.opens_whole_folder {
+        ("", false, false)
+    } else {
+        (kind, shows_curated, shows_source)
+    };
     // Nothing has looked into this row yet, and it has nothing else to say for itself.
     // An ellipsis says so and claims nothing: the word `dir` was a claim, and a blank
     // is what a file's empty label looks like.
@@ -843,9 +853,13 @@ fn entry_line<'a>(
     } else {
         kind
     };
-    // Hive and multi-file datasets wear a flat chip; the rest stay as a word.
-    let kind_is_chip =
-        matched_column.is_none() && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
+    // Hive and multi-file datasets wear a flat chip; the rest stay as a word. Never on
+    // an empty label: the chip is drawn by taking the cell apart again below, and a
+    // dataset row can now have no label at all — the row that opens the folder being
+    // browsed. A chip made of nothing was a panic in the renderer.
+    let kind_is_chip = matched_column.is_none()
+        && !kind.is_empty()
+        && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
     let kind_cell = match matched_column {
         Some(column) => format!(" ·{column}"),
         // `shown_column` below may cut this; both are written from the same string.
@@ -1069,7 +1083,12 @@ fn entry_line<'a>(
         None if kind_is_chip => {
             // One cell of the row's own background, then the chip.
             spans.push(Span::styled(" ".to_string(), base));
-            spans.push(Span::styled(kind_cell[1..].to_string(), kind_style));
+            // The cell's own leading space, given the row's background instead of the
+            // chip's. Stripped rather than sliced: a cell with nothing in it is a
+            // panic, and whether one can reach here is a question the next change to
+            // `kind_is_chip` gets to answer wrongly.
+            let chip = kind_cell.strip_prefix(' ').unwrap_or(&kind_cell);
+            spans.push(Span::styled(chip.to_string(), kind_style));
         }
         None => spans.push(Span::styled(kind_cell.clone(), kind_style)),
     }
@@ -1261,6 +1280,10 @@ fn preview_head(
     }
     let described = entry.label();
     let kind = match entry.kind {
+        // The door into this folder carries no label, and none of the words that stand
+        // in for one: see `Entry::opens_whole_folder`. Ahead of the arm below, which
+        // reaches for the place word before it ever consults the label.
+        _ if entry.opens_whole_folder => "",
         // Only when there is data to count. A prefix holding nothing but sub-prefixes
         // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
         // inside an object store the service's own word is the right one.
@@ -1522,6 +1545,11 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
 /// Said up front so the name does not change shape a frame later when the label lands;
 /// the `…` beside it already carries the part that is not known.
 fn shows_as_a_place(entry: &Entry) -> bool {
+    // The row that opens the folder being browsed is an action, not a place: → does
+    // nothing on it, so a trailing slash offers a step that is not there.
+    if entry.opens_whole_folder {
+        return false;
+    }
     if entry.kind == EntryKind::Directory {
         return true;
     }
@@ -1551,6 +1579,7 @@ mod tests {
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         }
     }
 
@@ -1619,6 +1648,93 @@ mod tests {
     /// two separate matches, so a folder with nothing counted in it can read `prefix`
     /// on the row and `dir` in the pane — the one disagreement this is all arranged to
     /// stop, on the row a search is about.
+    /// The row that opens the folder being browsed has no label, and in a bucket a
+    /// folder of Parquet files is a kind that wears its label as a chip. The chip is
+    /// drawn by taking the cell apart again, so a chip made of nothing indexed past the
+    /// end of an empty string and brought the renderer down — on a real GCS prefix,
+    /// where CI found it and no test here had put the two together.
+    #[test]
+    fn the_row_that_opens_a_folder_draws_without_a_label() {
+        let ctx = RenderContext::for_test();
+        let mut drawn: Vec<(EntryKind, String)> = Vec::new();
+        for kind in [EntryKind::MultiFile, EntryKind::Hive, EntryKind::Directory] {
+            let mut door = row("gs://cloud-samples-data/bigquery/us-states", kind);
+            door.name = "us-states (all files)".to_string();
+            door.opens_whole_folder = true;
+            door.holds = crate::discover::Holds {
+                formats: vec![("parquet".to_string(), 9)],
+                ..Default::default()
+            };
+            assert_eq!(door.label(), "", "{kind:?}");
+
+            // Every width, because the crash was in taking the cell apart and the
+            // widths are where the cell is rewritten. Nothing here asserts a shape:
+            // drawing at all is the thing that was not happening.
+            for width in 1..=60usize {
+                let line = entry_line(&door, false, width, true, None, "", None, None, &ctx);
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert!(!text.is_empty(), "at {width} cells, {kind:?}");
+            }
+            // And with room to spare it reads as itself, with no label beside it.
+            let line = entry_line(&door, false, 40, true, None, "", None, None, &ctx);
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(text.contains("us-states (all files)"), "{kind:?}: {text:?}");
+            assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
+            drawn.push((kind, text));
+        }
+
+        // Nor does a curated place word or a source id stand in for the label it does
+        // not have. Both are about the folder; this row is the door into it, and
+        // `bigquery (all files)  dataset` says the door is the dataset.
+        let mut door = row("s3://lab@bucket/exports", EntryKind::Directory);
+        door.name = "exports (all files)".to_string();
+        door.opens_whole_folder = true;
+        let known = ["lab".to_string()];
+        let text: String = entry_line(
+            &door,
+            false,
+            60,
+            true,
+            None,
+            "",
+            Some(&known),
+            Some("dataset"),
+            &ctx,
+        )
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+        assert!(text.contains("exports (all files)"), "{text:?}");
+        assert!(
+            !text.contains("dataset"),
+            "curated word on a door: {text:?}"
+        );
+        assert!(!text.contains("lab"), "source id on a door: {text:?}");
+
+        // And the pane beside it says the same nothing. It takes the place word through
+        // a second match of its own, which is how the row and the pane come to disagree
+        // about one folder.
+        let mut door = row("s3://bucket/warehouse", EntryKind::Directory);
+        door.name = "warehouse (all files)".to_string();
+        door.opens_whole_folder = true;
+        let pane = preview_text(&door, 60);
+        assert!(pane.contains("warehouse (all files)"), "{pane}");
+        assert!(
+            !pane.contains("prefix"),
+            "the place word stood in for the label it does not have: {pane}"
+        );
+
+        // And all three draw the same row. A hive or multi-file kind wears its label as
+        // a chip, which is a space of the row's own background and then the label — so
+        // with no label, a kind that would have worn one leaves the space behind and
+        // the row sits one cell right of every other door.
+        let (_, first) = &drawn[0];
+        for (kind, text) in &drawn[1..] {
+            assert_eq!(first, text, "{kind:?} drew a different row");
+        }
+    }
+
     #[test]
     fn the_pane_calls_a_cloud_prefix_what_the_row_calls_it() {
         let ctx = RenderContext::for_test();

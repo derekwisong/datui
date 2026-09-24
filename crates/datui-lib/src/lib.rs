@@ -7753,7 +7753,6 @@ impl App {
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             known: self.cache.load_dataset_facts(),
-            cloud_kinds: self.home.cloud_kinds.clone(),
         };
 
         self.home.listing_in_flight = true;
@@ -8160,34 +8159,80 @@ impl App {
         self.home_refresh();
     }
 
-    /// The highlighted row, when it is a folder that opens as one dataset and so can be
-    /// browsed into only with →.
+    /// Whether the highlighted row is the `(all files)` row: the one that opens the
+    /// folder being browsed, and so is already inside it.
+    ///
+    /// `Enter` on it opens the folder whatever the label says, and → on it would
+    /// descend into where it already is.
+    fn selection_opens_the_whole_folder(&self) -> bool {
+        self.home
+            .selected_entry()
+            .is_some_and(|entry| entry.opens_whole_folder)
+    }
+
+    /// The highlighted row, when → goes inside it.
+    ///
+    /// Every folder, whatever its label. A label describes what is directly inside; it
+    /// no longer decides what can be reached, so the exception list this used to carry —
+    /// hive, multi and the three lake markers — is gone, and with it the folders that
+    /// had no way in because datui did not recognize how they were stored. What is left
+    /// out is what is not a folder: a file, a section header, and the row that opens the
+    /// folder you are already in.
     ///
     /// Local or remote. The split this used to carry — remote only — was never about
     /// where the folder was: a cloud prefix simply could not be descended into until
-    /// there was a listing to descend with. A local `hive` tree or folder of part files
-    /// had no way in at all, so Enter opened the whole thing, ←/→ folded the section and
-    /// the files inside were unreachable. That matters more since a folder's
-    /// classification began depending on its files' schemas: looking inside is the only
-    /// recourse when the answer is wrong.
-    fn selected_dataset_folder(&self) -> Option<PathBuf> {
+    /// there was a listing to descend with.
+    fn selected_folder_to_enter(&self) -> Option<PathBuf> {
         let entry = self.home.selected_entry()?;
-        // The row that opens the folder being browsed as one dataset, which is inside
-        // that folder already: → on it would descend into where it already is.
-        let whole_of_here = self
-            .home
-            .browsing
-            .as_deref()
-            .is_some_and(|dir| home::folder_dataset_url(dir) == entry.path);
-        // A lake table too: Enter already goes inside one, and → doing the same is what
-        // every other folder-shaped row does. Before this it folded the section, which
-        // on a cloud Delta root was a step backwards — labelled `multi`, → went inside.
-        ((matches!(
-            entry.kind,
-            discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) || entry.kind.is_lake_table())
-            && !whole_of_here)
-            .then_some(entry.path)
+        if self.selection_opens_the_whole_folder() {
+            return None;
+        }
+        (entry.kind != discover::EntryKind::File).then_some(entry.path)
+    }
+
+    /// Why a prefix in an object store cannot be read as one table, when it cannot.
+    ///
+    /// Every cloud path is scanned as Parquet — the folder-format dispatch is local
+    /// only — so a prefix of anything else comes back "Could not read from S3. Check
+    /// credentials and URL", which is a false statement about a login that is fine.
+    /// What the prefix holds is already counted and on screen, so saying so costs no
+    /// request. #275 phase 4 is where these read.
+    ///
+    /// `None` for a prefix that may yet be Parquet: one holding Parquet, and one
+    /// holding no data files at all, whose data may be a level down.
+    #[cfg(feature = "cloud")]
+    fn why_a_cloud_prefix_cannot_be_read(holds: &discover::Holds) -> Option<String> {
+        let reads_parquet =
+            |name: &str| crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet);
+        if holds.formats.iter().any(|(name, _)| reads_parquet(name)) {
+            return None;
+        }
+        match holds.formats.as_slice() {
+            // Data files, none of them Parquet. `label()` says `mixed` for more than
+            // one format, which is a word rather than a count, so the line is spelled
+            // out from the formats themselves.
+            [] => {
+                // Nothing datui has a reader for. Only a refusal when there is also
+                // nothing below: a prefix of sub-prefixes may hold Parquet a level
+                // down, and nothing here has looked.
+                (holds.not_read > 0 && holds.folders == 0).then(|| {
+                    "this prefix holds nothing datui can read — datui reads a folder in \
+                     an object store as Parquet only."
+                        .to_string()
+                })
+            }
+            formats => {
+                let held = formats
+                    .iter()
+                    .map(|(name, count)| format!("{count} {name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(format!(
+                    "this prefix holds {held} — datui reads a folder in an object store \
+                     as Parquet only. Open one of the files below instead."
+                ))
+            }
+        }
     }
 
     /// What to say when the user asks to open a lake table: datui goes inside it rather
@@ -8215,6 +8260,54 @@ impl App {
             return None;
         }
         let entry = self.home.selected_entry()?;
+        // The `(all files)` row opens the folder it names, whatever the folder is
+        // labelled. That is the whole of what it is for: the label describes, and this
+        // row is the promise that the description cannot lock you out. Sent straight to
+        // the open, because `open_what_it_is` would read the label back and send a
+        // `dir` row inside the folder it is already in.
+        if self.selection_opens_the_whole_folder() {
+            // Except a lake table, which is not a folder of Parquet files however much
+            // it looks like one: reading it as one counts tombstoned rows, every
+            // rewritten version and both sides of a compaction. `enrich` will not so
+            // much as count one for that reason, and this row offered to open it — the
+            // refusal one row above it, and #237 reached through the new door. Phase 4
+            // gives it a read that says what it is doing.
+            if let Some(format) = entry.kind.lake_name() {
+                // Not `lake_table_note`, which says "these are the files under it" —
+                // true of going inside, and this row is already inside.
+                self.home.status = Some(format!(
+                    "datui does not read {format} tables yet — open one of the files below instead"
+                ));
+                return None;
+            }
+            // A prefix in an object store is scanned as Parquet whatever is in it —
+            // every cloud path returns before the folder-format dispatch is reached —
+            // so a prefix of CSV answers "Could not read from S3. Check credentials and
+            // URL", which is a false statement about the user's login. The door made
+            // that reachable: the row used to exist only where the listing had already
+            // found Parquet. What it holds is counted and on screen, so saying so costs
+            // no request. #275 phase 4 is where these read.
+            // Not asked of a prefix the listing already calls a dataset. A hive root
+            // is read through its partitions, and one stray `manifest.csv` beside them
+            // is not what it holds — but it is the only thing in `formats`, so the
+            // refusal below saw a folder of CSV. The row one level up opens that prefix
+            // and always has; the door added to guarantee access was refusing it.
+            if home::is_object_store_url(&entry.path)
+                && !matches!(
+                    entry.kind,
+                    discover::EntryKind::Hive | discover::EntryKind::MultiFile
+                )
+                && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
+            {
+                self.home.status = Some(what);
+                return None;
+            }
+            // `hive: true` is what puts the open on the local folder route at all:
+            // without it a directory is `Unsupported file type`. The cloud route
+            // returns before it is read.
+            let folder = home::folder_dataset_url(&entry.path);
+            return Some(self.home_open_path(folder, true));
+        }
         // A row nothing has looked at is looked at before it is opened, rather than
         // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
         // openable, so without this a lake root reached this way is read as one table:
@@ -8423,7 +8516,7 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
-            KeyCode::Right => match self.selected_dataset_folder() {
+            KeyCode::Right => match self.selected_folder_to_enter() {
                 // Into a folder that opens as one dataset rather than opening it, to
                 // reach one partition or one file. This clears the filter, as browsing
                 // anywhere does.
@@ -17510,9 +17603,13 @@ impl Widget for &mut App {
                 .home
                 .visible()
                 .iter()
-                .filter(
-                    |r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset()),
-                )
+                .filter(|r| {
+                    // Not the row that opens the folder being browsed. Its kind is the
+                    // folder's, so it counts as a dataset, and it is the same dataset as
+                    // the folder — the figure this comment calls a lie, counted twice.
+                    matches!(r, home::Row::Entry { entry, .. }
+                        if entry.kind.is_known_dataset() && !entry.opens_whole_folder)
+                })
                 .count();
             // State, not actions: how many datasets are listed and what order they
             // are in. The Tab key that changes it lives with the other keys.

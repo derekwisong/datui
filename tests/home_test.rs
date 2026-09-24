@@ -291,8 +291,10 @@ fn test_filter_narrows_the_listing() {
         ..Default::default()
     };
     home.rebuild(&[], &[]);
-    assert_eq!(visible_names(&home).len(), 2);
+    // The two files, and the row that opens the folder holding them.
+    assert_eq!(visible_names(&home).len(), 3);
 
+    // The filter narrows every row alike, the second door included.
     home.filter = "sal".to_string();
     assert_eq!(visible_names(&home), vec!["sales.parquet"]);
 
@@ -312,10 +314,11 @@ fn test_selection_wraps_and_stays_in_range() {
     };
     home.rebuild(&[], &[]);
 
-    // The list is [header, a, b]; the cursor starts on the first dataset, and moving
-    // walks headers too, since reaching one is how a section gets expanded.
+    // The list is [header, the row that opens the whole folder, a, b]; the cursor
+    // starts on the first dataset, and moving walks headers too, since reaching one is
+    // how a section gets expanded.
     let total = home.visible().len();
-    assert_eq!(total, 3);
+    assert_eq!(total, 4);
     let start = home.selected;
     assert!(home.selected_entry().is_some(), "should start on a dataset");
 
@@ -845,6 +848,9 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
     home.rebuild(&[], &[]);
 
     let more = home.measure_now(2);
+    // The six files. The row that opens the folder holding them is not measured: its
+    // path is the folder's, so a measurement of it lands in the slot the folder's own
+    // row uses one level up.
     assert!(more, "with 6 rows and a budget of 2, work must remain");
     assert_eq!(home.enriched.len(), 2, "a pass spends only its budget");
 
@@ -1396,7 +1402,6 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: Default::default(),
-        cloud_kinds: Default::default(),
     };
 
     // Built on another thread entirely, then handed over.
@@ -1456,6 +1461,7 @@ fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
         columns: columns.iter().map(|c| c.to_string()).collect(),
         cost: Default::default(),
         holds: Default::default(),
+        opens_whole_folder: false,
     }
 }
 
@@ -1616,7 +1622,6 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         network_check: pretend_remote,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
-        cloud_kinds: Default::default(),
     });
 
     let mut home = HomeState {
@@ -1689,7 +1694,6 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
-        cloud_kinds: Default::default(),
     });
 
     let mut home = HomeState::default();
@@ -1727,6 +1731,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
         columns: Vec::new(),
         cost: Default::default(),
         holds: Default::default(),
+        opens_whole_folder: false,
     }
 }
 
@@ -2962,7 +2967,6 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
             ..Default::default()
         }],
         known: Default::default(),
-        cloud_kinds: Default::default(),
     });
 
     let titles: Vec<&str> = listing.sections.iter().map(|s| s.title.as_str()).collect();
@@ -3267,7 +3271,9 @@ fn test_partitioned_cloud_folders_are_labelled_and_open_whole() {
     );
     assert_eq!(home.sections[0].rows.len(), 3);
 
-    // A folder of plain subfolders gets no such row.
+    // A folder of plain subfolders gets one too. Its files are a level down, which is
+    // what `Enter` on the row reads — and which folder holds them is the question the
+    // row exists so you do not have to answer first.
     let parquet = PathBuf::from("s3://noaa-ghcn-pds/parquet");
     home.probe_ready(
         parquet.clone(),
@@ -3281,7 +3287,8 @@ fn test_partitioned_cloud_folders_are_labelled_and_open_whole() {
     );
     home.browsing = Some(parquet);
     home.rebuild(&[], &[]);
-    assert_eq!(home.sections[0].rows.len(), 2);
+    assert_eq!(home.sections[0].rows.len(), 3);
+    assert_eq!(home.sections[0].rows[0].name, "parquet (all files)");
     assert_eq!(
         datui::home::folder_dataset_url(Path::new("gs://b/x")),
         PathBuf::from("gs://b/x/")
@@ -3514,7 +3521,6 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
             network_check: |_| false,
             cloud: Vec::new(),
             known: known.into_iter().collect(),
-            cloud_kinds: Default::default(),
         };
         build_listing(&request)
             .sections
@@ -3555,13 +3561,17 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
     );
 }
 
-/// The row that opens a cloud folder as one dataset is the other door to the same
-/// open, so a folder whose footers said its files are separate tables must not offer
-/// it. Otherwise stepping inside the folder — which is what the label now invites —
-/// puts the union back on the first row.
+/// A folder whose footers said its files are separate tables still offers the row that
+/// reads them together.
+///
+/// This used to be the opposite. The peek's answer gated the row, so a folder datui
+/// judged not-one-table could not be read as one at all — the judgement made twice,
+/// once in the label and once in the door. Reading unrelated Parquet files together is
+/// a thing a user may want and every other tool allows; datui's opinion of it belongs
+/// in the label, not in what is reachable.
 #[cfg(feature = "cloud")]
 #[test]
-fn test_a_folder_of_separate_tables_offers_no_whole_folder_row() {
+fn test_a_folder_of_separate_tables_still_offers_to_read_them_together() {
     use datui::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
@@ -3594,19 +3604,21 @@ fn test_a_folder_of_separate_tables_offers_no_whole_folder_row() {
         "unpeeked, the listing offers it"
     );
 
-    // Once the peek has read footers and found separate tables, it must not.
+    // And once the peek has read footers and found separate tables, it still does: the
+    // peek decides what the folder is called, not what can be opened. The peek no
+    // longer reaches the listing at all — that plumbing went with the gate — so this
+    // half stands against the gate being put back where it was, not against the peek.
     home.cloud_kinds
         .insert(exports.clone(), (EntryKind::Directory, Default::default()));
     home.rebuild(&[], &[]);
-    assert!(
-        !home.sections[0].rows[0].name.contains("all files"),
-        "got {:?}",
-        home.sections[0].rows[0].name
+    assert_eq!(
+        home.sections[0].rows[0].name, "exports (all files)",
+        "the second door does not close on a verdict"
     );
     assert_eq!(
         home.sections[0].rows.len(),
-        3,
-        "the three objects, and no more"
+        4,
+        "the three objects, and the row that opens them together"
     );
 }
 
@@ -3642,12 +3654,12 @@ fn test_the_whole_folder_row_says_what_the_listing_holds() {
 
     let row = &home.sections[0].rows[0];
     assert_eq!(row.name, "exports (all files)");
-    assert_eq!(
-        row.label(),
-        "12 parquet",
-        "without the tally it falls back to its kind and reads `multi`"
-    );
-    assert_eq!(row.holds.data_files(), 12);
+    assert_eq!(row.holds.data_files(), 12, "the tally the pane reports");
+    // And no label. Every other label counts what is directly inside a folder; this row
+    // reads the whole of it, so a count beside it would be about a different set of
+    // files than the row is.
+    assert_eq!(row.label(), "");
+    assert!(row.opens_whole_folder);
 }
 
 /// Rows that will never be measured are not asked where they live.
@@ -3789,4 +3801,331 @@ fn test_a_folder_is_read_as_whatever_is_actually_in_it() {
         folder_format(&tmp.path().join("both")),
         FolderFormat::NotOneTable
     );
+}
+
+/// The row that opens the folder being browsed is a door, not a search result.
+///
+/// Its name carries the words `all files`, which a fuzzy filter matches for most of the
+/// alphabet: `sal` found it beside `sales.parquet`. It steps out of the way while a
+/// filter is on and comes back when the filter is cleared, and it stays first whatever
+/// the sort, because being the first row inside a folder is the whole of what it is.
+#[test]
+fn test_the_whole_folder_row_is_a_door_not_a_search_result() {
+    use datui::home::SortMode;
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "sales.parquet");
+    touch(tmp.path(), "customers.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let first = |home: &HomeState| visible_names(home).first().cloned();
+    assert!(
+        first(&home).is_some_and(|n| n.ends_with("(all files)")),
+        "got {:?}",
+        visible_names(&home)
+    );
+
+    home.filter = "sal".to_string();
+    assert_eq!(
+        visible_names(&home),
+        vec!["sales.parquet"],
+        "a filter that happens to fuzzy-match `all files` must not surface the door"
+    );
+
+    home.filter.clear();
+    assert!(first(&home).is_some_and(|n| n.ends_with("(all files)")));
+
+    // And it is not one of the things being ordered.
+    for sort in [SortMode::Size, SortMode::Rows, SortMode::Modified] {
+        home.sort = sort;
+        assert!(
+            first(&home).is_some_and(|n| n.ends_with("(all files)")),
+            "under {sort:?} the first row was {:?}",
+            visible_names(&home)
+        );
+    }
+}
+
+/// The two folders that get no door, and the reason each is not one.
+///
+/// Both are `None` returns in `whole_folder_row` that its doc comment argues for and
+/// nothing tested. An empty folder is the one place a second door leads nowhere, and a
+/// `cloud://<id>/<account>` place stands for an Azure storage account — its children
+/// are containers, and it has no URL to open.
+#[test]
+fn test_a_folder_with_nothing_in_it_gets_no_door() {
+    let tmp = TempDir::new().unwrap();
+    let empty = tmp.path().join("empty");
+    fs::create_dir_all(&empty).unwrap();
+
+    let mut home = HomeState {
+        browsing: Some(empty),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.opens_whole_folder)),
+        "a row promising to read nothing is worse than no row"
+    );
+
+    // And one with something in it does get one, so the guard above is the reason.
+    touch(tmp.path(), "a.parquet");
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    assert!(
+        home.sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.opens_whole_folder)),
+    );
+}
+
+#[cfg(feature = "cloud")]
+#[test]
+fn test_an_azure_account_place_gets_no_door() {
+    use std::path::PathBuf;
+    let account = PathBuf::from("cloud://az-default/storageaccount");
+    let mut home = HomeState {
+        network_check: |_| true,
+        browsing: Some(account.clone()),
+        ..Default::default()
+    };
+    home.probe_ready(
+        account,
+        vec![datui::discover::Entry::directory(std::path::Path::new(
+            "abfss://raw@storageaccount.dfs.core.windows.net/",
+        ))],
+    );
+    home.rebuild(&[], &[]);
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.opens_whole_folder)),
+        "an account is not a folder: its children are containers and it has no URL"
+    );
+}
+
+/// The door is named after the folder, at every path a folder can have.
+///
+/// Built by splitting the path on `/`, the filesystem root — which has no last
+/// component — produced a row called `" (all files)"`, and on Windows, where the
+/// separator is not the one a split looks for, a local folder would have been named
+/// with the whole of its path.
+#[test]
+fn test_the_door_is_named_after_the_folder_even_at_the_root() {
+    let mut home = HomeState {
+        browsing: Some(std::path::PathBuf::from("/")),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    let door = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.opens_whole_folder)
+        .expect("the root is a folder like any other");
+    assert_eq!(door.name, "/ (all files)", "got {:?}", door.name);
+}
+
+/// Stepping into a folder and back out leaves its label alone.
+///
+/// The door's path *is* the folder's — `PathBuf` compares and hashes a trailing slash
+/// away — so measuring it wrote into the slot the folder's own row uses one level up.
+/// That write carries no kind, because the door's kind did not change, and
+/// `folders_to_look_into` reads the slot being occupied as the row having been looked
+/// into. So the folder upstairs kept `Unknown`: `multi  2 parquet  2 × 1` became
+/// `multi/  …`, the pane lost its `holds` line, the caption dropped to `0 datasets`,
+/// and nothing cleared `enriched` for the rest of the session — not even Ctrl+R.
+#[test]
+fn test_stepping_into_a_folder_and_back_does_not_erase_its_label() {
+    let tmp = TempDir::new().unwrap();
+    let multi = tmp.path().join("multi");
+    fs::create_dir_all(&multi).unwrap();
+    for name in ["a.parquet", "b.parquet"] {
+        let mut frame = polars::prelude::DataFrame::new(
+            1,
+            vec![
+                polars::prelude::Column::new("id".into(), &[1i32]),
+                polars::prelude::Column::new("ts".into(), &[2i32]),
+            ],
+        )
+        .unwrap();
+        let file = fs::File::create(multi.join(name)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let mut home = HomeState {
+        browsing: Some(multi.clone()),
+        ..Default::default()
+    };
+    // Inside the folder: the door is on screen and every pass runs over it.
+    home.rebuild(&[], &[]);
+    assert!(home.sections[0].rows.iter().any(|r| r.opens_whole_folder));
+    for _ in 0..4 {
+        home.measure_now(16);
+        home.classify_now(16);
+    }
+    assert!(
+        !home.enriched.contains_key(&multi),
+        "the door must not take the folder's measurement slot"
+    );
+
+    // Back out. The folder's own row is classified and labelled as it would have been.
+    home.browsing = Some(tmp.path().to_path_buf());
+    home.rebuild(&[], &[]);
+    for _ in 0..4 {
+        home.classify_now(16);
+        home.measure_now(16);
+    }
+    let row = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.name == "multi")
+        .expect("the folder is listed");
+    assert_eq!(row.kind, EntryKind::MultiFile, "got {:?}", row.kind);
+    assert_eq!(row.label(), "2 parquet");
+}
+
+/// Nothing remote is read to build the door.
+///
+/// The rule this whole branch is built on: listing a share that has stopped answering
+/// is the call that freezes the interface, so the rows come from whatever the
+/// background probe returned. Asking `look_at_directory` for the door's kind put a
+/// `read_dir` and a `metadata` per entry back on the share, twelve lines below the
+/// comment saying it never does.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_door_on_a_share_is_built_from_the_probe_not_the_disk() {
+    let tmp = TempDir::new().unwrap();
+    let share = tmp.path().join("share");
+    fs::create_dir_all(&share).unwrap();
+    // On disk: three Parquet files. Through the probe: one CSV. A door built from disk
+    // says `3 parquet`; one built from the listing says what the listing said.
+    for name in ["a.parquet", "b.parquet", "c.parquet"] {
+        touch(&share, name);
+    }
+
+    let mut home = HomeState {
+        network_check: |_| true,
+        browsing: Some(share.clone()),
+        ..Default::default()
+    };
+    let mut stale = datui::discover::Entry::directory(&share.join("stale.csv"));
+    stale.name = "stale.csv".to_string();
+    stale.kind = EntryKind::File;
+    stale.size = Some(10);
+    home.probe_ready(share, vec![stale]);
+    home.rebuild(&[], &[]);
+
+    let door = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.opens_whole_folder)
+        .expect("the folder carries the row");
+    assert_eq!(
+        door.holds.label(),
+        "1 csv",
+        "built from the probe's rows, not from a read of the share"
+    );
+}
+
+/// The door is named the way the section title above it names the same place.
+///
+/// A source id is not part of a name — `s3://lab@bucket` is titled `bucket` — and an
+/// Azure container is named by container rather than by the long URL its last component
+/// happens to be. Both were reachable: a source with an id lists its buckets as
+/// `s3://<id>@bucket`, and an Azure account lists its containers as
+/// `abfss://<container>@<account>.dfs.core.windows.net/`.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_door_is_named_the_way_the_title_is() {
+    use std::path::PathBuf;
+    let named = |url: &str| -> String {
+        let place = PathBuf::from(url);
+        let mut home = HomeState {
+            network_check: |_| true,
+            browsing: Some(place.clone()),
+            ..Default::default()
+        };
+        let mut object = datui::discover::Entry::directory(&place.join("one.parquet"));
+        object.name = "one.parquet".to_string();
+        object.kind = EntryKind::File;
+        object.size = Some(10);
+        home.probe_ready(place, vec![object]);
+        home.rebuild(&[], &[]);
+        home.sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .find(|r| r.opens_whole_folder)
+            .map(|r| r.name.clone())
+            .expect("the place carries the row")
+    };
+
+    assert_eq!(named("s3://bucket"), "bucket (all files)");
+    assert_eq!(named("s3://lab@bucket"), "bucket (all files)");
+    assert_eq!(named("s3://lab@bucket/exports"), "exports (all files)");
+    assert_eq!(named("gs://bucket/exports/"), "exports (all files)");
+    assert_eq!(
+        named("abfss://raw@acct.dfs.core.windows.net"),
+        "raw (all files)"
+    );
+    assert_eq!(
+        named("abfss://raw@acct.dfs.core.windows.net/tbl"),
+        "tbl (all files)"
+    );
+}
+
+/// The door is not one of the things the section is counting.
+///
+/// It is a way to open the folder those rows are *in*, so counting it made a folder of
+/// three files say four — in the header chip and in the `N datasets` caption, whose own
+/// comment says counting a place-to-look makes the figure a lie. It was inconsistent
+/// with itself too: under a filter the door steps out of the way, so the same count
+/// meant one thing with a filter typed and another without.
+#[test]
+fn test_the_door_is_not_counted_among_what_a_folder_holds() {
+    let tmp = TempDir::new().unwrap();
+    for name in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        touch(tmp.path(), name);
+    }
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let header_count = |home: &HomeState| {
+        home.visible()
+            .iter()
+            .find_map(|r| match r {
+                Row::Header { matches, .. } => Some(*matches),
+                _ => None,
+            })
+            .expect("a section header")
+    };
+    assert!(
+        home.sections[0].rows.iter().any(|r| r.opens_whole_folder),
+        "the door is on screen"
+    );
+    assert_eq!(header_count(&home), 3, "three files");
+
+    // And the same number once a filter removes the door, which is what made the
+    // inconsistency visible.
+    home.filter = "part".to_string();
+    assert_eq!(header_count(&home), 3);
 }

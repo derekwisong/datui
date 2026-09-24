@@ -4826,11 +4826,14 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
         "an unlooked-at row should read `{unlooked_at_row}`:\n{unlooked_at}"
     );
 
-    // Then the rows that frame drew are looked into, and say what they are.
+    // Then the rows that frame drew are looked into, and say what they are. Asked of
+    // the rows on screen rather than the selected one: the cursor starts on the row that
+    // opens the whole folder, which is not one of the two hundred being looked into.
     pump_home(&mut app, &rx, area, &mut buf, |app| {
-        app.home
-            .selected_entry()
-            .is_some_and(|e| e.kind == datui::discover::EntryKind::Hive)
+        app.home.visible().iter().any(|row| match row {
+            datui::home::Row::Entry { entry, .. } => entry.kind == datui::discover::EntryKind::Hive,
+            datui::home::Row::Header { .. } => false,
+        })
     });
     let looked_at = text_of(&buf);
     assert!(
@@ -7063,4 +7066,502 @@ fn test_a_nested_hive_of_parquet_still_opens() {
         .as_ref()
         .expect("a nested hive of Parquet is a dataset");
     assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
+}
+
+/// Two doors, on a folder datui does not recognize as anything.
+///
+/// A folder holding a CSV and a JSON is `mixed`: no label datui has says it is one
+/// table, and before this the row could only be folded — `→` did nothing and `Enter`
+/// tried to open it as a dataset and said it could not. A folder whose storage
+/// convention datui does not know is exactly the folder a user most needs to get into,
+/// so both doors are open on it now: `→` steps inside, and the first row in there reads
+/// the whole of it.
+#[test]
+fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("exports");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("sales.csv"), b"a,b\n1,2\n").unwrap();
+    std::fs::write(folder.join("notes.json"), b"{}").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "exports"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    app.home.classify_now(8);
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.label().to_string()),
+        Some("mixed".to_string()),
+        "nothing datui knows calls this a dataset"
+    );
+
+    // The bar says the door is there, on a row no label offers as a dataset.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("Inside"), "the bar offers the key: {bar:?}");
+
+    // One key in.
+    app.event(&key(KeyCode::Right));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(folder.as_path()),
+        "→ went inside a folder datui has no name for"
+    );
+
+    // And the first row in there is the other door. (The app rebuilds the listing on
+    // the event this returns; here the same call does it on the spot.)
+    app.home.rebuild(&[], &[]);
+    let names: Vec<String> = app
+        .home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            datui::home::Row::Header { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("exports (all files)"),
+        "got {names:?}"
+    );
+}
+
+/// The `(all files)` row opens the folder it names, whatever the folder is labelled.
+///
+/// The label describes; this row is the promise that the description cannot lock you
+/// out. A `mixed` folder is the case: `open_what_it_is` reads the label back, and a
+/// `Directory` sent through it goes *inside* — which, on a row that is already inside,
+/// is nowhere.
+#[test]
+fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("sales.csv"), b"a,b\n1,2\n").unwrap();
+    std::fs::write(tmp.path().join("notes.json"), b"{}").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("every folder carries the row");
+    app.home.selected = row;
+
+    let was = app.home.browsing.clone();
+
+    // → does nothing here. This row is inside the folder it opens, so going inside is
+    // nowhere: it would re-enter the listing already on screen and lose the cursor and
+    // the filter on the way. ← / → fold, the way they do on a file row. Checked before
+    // Enter, because Enter puts the app in its loading view and the home bar is gone.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !bar.contains("Inside"),
+        "the bar offers a door to nowhere: {bar:?}"
+    );
+    app.event(&key(KeyCode::Right));
+    assert_eq!(
+        app.home.browsing, was,
+        "→ on the row that opens this folder must not re-enter it"
+    );
+    assert_eq!(
+        app.home.selected, row,
+        "and must not move the cursor off it"
+    );
+
+    // Enter opens it.
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(
+        matches!(next, Some(AppEvent::Open(..))),
+        "Enter should open the folder rather than move the cursor"
+    );
+    assert_eq!(
+        app.home.browsing, was,
+        "and did not step into the folder it is already in"
+    );
+}
+
+/// A lake table is not a folder of Parquet files, however much it looks like one.
+///
+/// Reading one as a union counts tombstoned rows, every rewritten version and both
+/// sides of a compaction. `enrich` will not so much as count a lake table for that
+/// reason, and the row above says datui does not read them yet — so the door into the
+/// folder must not quietly do it. #237, reached through the door phase 3 opens.
+#[test]
+fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let events = tmp.path().join("events");
+    std::fs::create_dir_all(events.join("_delta_log")).unwrap();
+    std::fs::write(events.join("_delta_log").join("00000000.json"), b"{}").unwrap();
+    let mut frame = polars::prelude::DataFrame::new(
+        1,
+        vec![polars::prelude::Column::new("id".into(), &[1i32])],
+    )
+    .unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        let file = std::fs::File::create(events.join(part)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(events.clone());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the folder carries the row");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Delta),
+        "the listing under it is a Delta table"
+    );
+
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(
+        next.is_none(),
+        "the door must not open a lake table as plain Parquet"
+    );
+    let said = app.home.status.clone().unwrap_or_default();
+    assert!(said.contains("Delta"), "and must say why: {said:?}");
+    assert!(
+        !said.contains("files under it"),
+        "that is what going inside says, and this row is already inside: {said:?}"
+    );
+}
+
+/// `hive: true` is what puts the open on the local folder route at all: without it a
+/// directory is `Unsupported file type`, and the whole of `folder_format`'s dispatch is
+/// behind it. The door row builds its own open, so nothing else pins the flag.
+#[test]
+fn test_the_door_opens_a_folder_by_the_folder_route() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.csv"), b"x,y\n1,2\n").unwrap();
+    std::fs::write(tmp.path().join("b.csv"), b"x,y\n3,4\n").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the folder carries the row");
+    app.home.selected = row;
+
+    match app.event(&key(KeyCode::Enter)) {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![tmp.path().to_path_buf()]);
+            assert!(
+                options.hive,
+                "without this the open is `Unsupported file type`"
+            );
+        }
+        _ => panic!("Enter on the door should open the folder"),
+    }
+}
+
+/// → goes inside a row nothing has looked into yet.
+///
+/// On a share that is most rows: `entry_for_path` calls a remote path with no data
+/// extension `Unknown`, and a listing looks into nothing. Excluding `Unknown` from the
+/// door would put the folders that cost most to reach back behind a classification —
+/// the label deciding access again, one indirection along. A remote file with an odd
+/// extension is browsed into and shows an empty listing, which `Esc` backs out of.
+#[test]
+fn test_right_goes_inside_a_row_nothing_has_looked_into() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("archive");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("one.parquet"), b"x").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "archive"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    // Deliberately not classified: this is what a listing hands over before anything
+    // has looked into it, and what every row on a share looks like.
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Unknown),
+    );
+
+    app.event(&key(KeyCode::Right));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(folder.as_path()),
+        "→ went inside without needing to know what it is first"
+    );
+}
+
+/// Each route's folders are classified in that route's vocabulary.
+///
+/// The door used to ask the cloud classifier about a local folder, which got two
+/// answers wrong in opposite directions. `scan_dir` drops dotted names, so `.hoodie`
+/// never reached it and a local Hudi table came back `MultiFile` — the door then read
+/// its tombstones, two keystrokes after the row above said datui does not read Hudi
+/// tables yet. And the cloud Iceberg rule is the looser of the two on purpose, names
+/// only, so a plain folder holding `data/` beside `metadata/` was refused as a lake
+/// table it is not: the second door closing on a false verdict, which is the whole
+/// thing phase 3 exists to stop.
+#[test]
+fn test_the_door_reads_a_local_folder_with_the_local_rules() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    // A Hudi table: the marker is a dotted name.
+    let trips = tmp.path().join("trips");
+    std::fs::create_dir_all(trips.join(".hoodie")).unwrap();
+    std::fs::write(trips.join(".hoodie").join("hoodie.properties"), b"x").unwrap();
+    let mut frame = polars::prelude::DataFrame::new(
+        1,
+        vec![polars::prelude::Column::new("id".into(), &[1i32])],
+    )
+    .unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        let file = std::fs::File::create(trips.join(part)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    // And a plain folder that merely looks like an Iceberg table by its names.
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(project.join("data")).unwrap();
+    std::fs::create_dir_all(project.join("metadata")).unwrap();
+    std::fs::write(project.join("data").join("a.parquet"), b"x").unwrap();
+    std::fs::write(project.join("metadata").join("notes.md"), b"x").unwrap();
+
+    let door_kind = |dir: &std::path::Path| {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.enter_home();
+        app.home.browsing = Some(dir.to_path_buf());
+        app.home.rebuild(&[], &[]);
+        app.home
+            .visible()
+            .iter()
+            .find_map(|r| match r {
+                datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder => {
+                    Some(entry.kind)
+                }
+                _ => None,
+            })
+            .expect("the folder carries the row")
+    };
+
+    assert_eq!(
+        door_kind(&trips),
+        datui::discover::EntryKind::Hudi,
+        "a dotted marker is not in the listing, so only the local rule can see it"
+    );
+    assert_eq!(
+        door_kind(&project),
+        datui::discover::EntryKind::Directory,
+        "two folder names are not an Iceberg table: the local rule wants a \
+         .metadata.json in one of them"
+    );
+}
+
+/// A prefix in an object store is scanned as Parquet whatever is in it, so a prefix of
+/// CSV used to answer "Could not read from S3. Check credentials and URL" — a false
+/// statement about a login that is fine. The door made that reachable: this row used to
+/// exist only where the listing had already found Parquet.
+///
+/// A fresh app per shape, because opening sets `busy` and the next key would be read
+/// against a screen that is no longer the home screen.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
+    use datui::discover::{Entry, EntryKind};
+    use std::path::PathBuf;
+
+    // Press Enter on the door of a prefix holding these names, and say what happened.
+    // A name with a dot in it stands for an object, the rest for sub-prefixes; a name
+    // with an `=` in it is a partition, the way a listing hands one over.
+    fn door(prefix: &str, names: &[&str]) -> (bool, String) {
+        let place = PathBuf::from(prefix);
+        let rows: Vec<Entry> = names
+            .iter()
+            .map(|name| {
+                let mut entry = Entry::directory(&place.join(name));
+                entry.name = (*name).to_string();
+                if name.contains('.') {
+                    entry.kind = EntryKind::File;
+                    entry.size = Some(1_000);
+                }
+                entry
+            })
+            .collect();
+
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.enter_home();
+        app.home.network_check = |_| true;
+        app.home.probe_ready(place.clone(), rows);
+        app.home.browsing = Some(place);
+        app.home.rebuild(&[], &[]);
+        let row = app
+            .home
+            .visible()
+            .iter()
+            .position(
+                |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+            )
+            .expect("the prefix carries the row");
+        app.home.selected = row;
+        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
+        (opened, app.home.status.clone().unwrap_or_default())
+    }
+
+    // Data files, none of them Parquet: refused, naming what is there.
+    let (opened, said) = door("s3://bucket/exports", &["a.csv", "b.csv", "c.csv"]);
+    assert!(!opened, "it must not send a scan that can only fail");
+    assert!(said.contains("3 csv"), "it says what is there: {said:?}");
+    assert!(
+        !said.to_lowercase().contains("credential"),
+        "and does not blame a login that is fine: {said:?}"
+    );
+
+    // Two formats, neither Parquet: both named. `label()` would say `mixed`, which is a
+    // word rather than a count and says nothing about what is there.
+    let (opened, said) = door("s3://bucket/pair", &["a.csv", "b.json"]);
+    assert!(!opened);
+    assert!(said.contains("1 csv"), "{said:?}");
+    assert!(said.contains("1 json"), "{said:?}");
+    assert!(!said.contains("mixed"), "{said:?}");
+
+    // Nothing datui has a reader for. `holds.formats` is empty here, so a test written
+    // over the formats alone let it through and the scan came back blaming the login.
+    let (opened, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
+    assert!(!opened);
+    assert!(said.contains("nothing datui can read"), "{said:?}");
+    assert!(!said.to_lowercase().contains("credential"), "{said:?}");
+
+    // Parquet opens — the one case this row existed for before any of the refusals
+    // above were written. Without this, a guard that refused everything would pass
+    // every other assertion here.
+    let (opened, _) = door("s3://bucket/parts", &["part-0.parquet", "part-1.parquet"]);
+    assert!(
+        opened,
+        "a prefix of Parquet is what a cloud folder reads as"
+    );
+
+    // No data files at all: tried, because the files below may be Parquet and nothing
+    // here has looked.
+    let (opened, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
+    assert!(
+        opened,
+        "nothing counted directly inside is not a reason to refuse"
+    );
+
+    // Including with unreadable files beside the sub-prefixes: a README at the top says
+    // nothing about what is under `by_year/`.
+    let (opened, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
+    assert!(
+        opened,
+        "a sub-prefix may hold Parquet, and nothing here has looked"
+    );
+
+    // And a hive root with one stray data file beside its partitions. `formats` holds
+    // only the stray, so a refusal reading the formats alone saw a prefix of CSV and
+    // turned away a prefix the row one level up opens — the door added to guarantee
+    // access refusing what the label already promised.
+    let (opened, said) = door(
+        "s3://bucket/events",
+        &["date=2024-01-01", "date=2024-01-02", "manifest.csv"],
+    );
+    assert!(
+        opened,
+        "a hive root is read through its partitions, not through the stray beside them: {said:?}"
+    );
+}
+
+/// The `N datasets` caption counts what is listed, not the way out of the folder.
+///
+/// The door's kind is the folder's, so it counts as a dataset — and it is the same
+/// dataset as the folder it opens, counted a second time, in the figure whose own
+/// comment says counting a place-to-look makes it a lie.
+#[test]
+fn test_the_caption_does_not_count_the_door_as_a_dataset() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let parts = tmp.path().join("parts");
+    std::fs::create_dir_all(&parts).unwrap();
+    let mut frame = polars::prelude::DataFrame::new(
+        1,
+        vec![polars::prelude::Column::new("id".into(), &[1i32])],
+    )
+    .unwrap();
+    for name in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        let file = std::fs::File::create(parts.join(name)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(parts);
+    app.home.rebuild(&[], &[]);
+    app.home.classify_now(16);
+
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("3 datasets"),
+        "three files, and the door is not a fourth: {bar:?}"
+    );
 }

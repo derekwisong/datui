@@ -1239,6 +1239,7 @@ async fn list_level(
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         });
     }
 
@@ -1268,6 +1269,7 @@ async fn list_level(
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         });
     }
 
@@ -1333,6 +1335,7 @@ async fn list_azure_objects(
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         });
     }
     Ok(rows)

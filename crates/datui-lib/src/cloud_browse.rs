@@ -702,7 +702,7 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    let (kind, holds) = look_at_page(&prefix, &folders, &objects, page.page_token.is_some());
+    let (kind, holds) = look_at_page(&prefix, &folders, &objects, page.page_token.as_deref());
     if kind != crate::discover::EntryKind::MultiFile {
         return Ok((kind, holds));
     }
@@ -812,25 +812,29 @@ async fn kind_from_footers(
     })
 }
 
-/// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
-/// gives them for a local folder. A prefix's row is labelled from the second.
-/// One page of a listing, and whether the store said there is another.
+/// One page of a listing, and the token the store returned with it.
 ///
 /// Split from the request that fetched it so the `+` can be tested: `peek_page` builds
-/// its store from a URL and cannot be handed one. A prefix with more behind it counted
-/// what it saw and says so, the way a local folder past `MAX_ENTRIES_PER_DIR` does:
-/// `100+ parquet`, not an exact hundred nobody could have counted.
+/// its store from a URL and cannot be handed one. The token comes in whole rather than
+/// already asked whether it is `Some`, because that question is the one thing here
+/// worth getting wrong: asked backwards, every single-page prefix reads `100+ parquet`
+/// and every prefix with more behind it reads an exact hundred nobody counted.
+///
+/// A prefix with more behind it counted what it saw and says so, the way a local folder
+/// past `MAX_ENTRIES_PER_DIR` does.
 fn look_at_page(
     prefix: &str,
     folders: &[String],
     objects: &[(String, u64)],
-    more: bool,
+    next_page: Option<&str>,
 ) -> (crate::discover::EntryKind, crate::discover::Holds) {
     let (kind, mut holds) = look_at_listing(prefix, folders, objects);
-    holds.truncated = more;
+    holds.truncated = next_page.is_some();
     (kind, holds)
 }
 
+/// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
+/// gives them for a local folder. A prefix's row is labelled from the second.
 pub fn look_at_listing(
     prefix: &str,
     folders: &[String],
@@ -2089,11 +2093,12 @@ mod tests {
             .collect();
         // The page is all datui asked for, so the count is a floor and the label says
         // it. Without the `+` a hundred is an exact hundred nobody counted.
-        let holds = look_at_page("out/", &folders(&[]), &keys, true).1;
+        let holds = look_at_page("out/", &folders(&[]), &keys, Some("next-page-token")).1;
         assert!(holds.truncated);
         assert_eq!(holds.label(), "100+ parquet");
-        // And the last page counts what is there.
-        let holds = look_at_page("out/", &folders(&[]), &keys, false).1;
+        // And the last page, which the store answers with no token at all, counts what
+        // is there.
+        let holds = look_at_page("out/", &folders(&[]), &keys, None).1;
         assert!(!holds.truncated);
         assert_eq!(holds.label(), "100 parquet");
     }
@@ -2111,6 +2116,24 @@ mod tests {
             holds.skipped_names.len(),
             crate::discover::SKIPPED_NAMES_SHOWN,
             "but only a few are named"
+        );
+
+        // And they are the first few *by name*, not the first few the store listed.
+        // The objects and the prefixes arrive as two runs, so without a sort the pane
+        // names a different four here than the local route names for the same folder.
+        let holds = look_at_listing(
+            "out/",
+            &folders(&["out/_temporary/"]),
+            &objects(&[("out/_SUCCESS", 0), ("out/.part.crc", 8)]),
+        )
+        .1;
+        assert_eq!(
+            holds.skipped_names,
+            vec![
+                ".part.crc".to_string(),
+                "_SUCCESS".to_string(),
+                "_temporary".to_string()
+            ]
         );
     }
 

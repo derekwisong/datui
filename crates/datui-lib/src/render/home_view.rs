@@ -2114,6 +2114,17 @@ mod tests {
                 g.ellipsis,
                 "at {width} cells the note was cut down to an ellipsis and said nothing"
             );
+            // A note that fits is not cut. The cut one is always shorter than the
+            // whole, so a drawn note as long as the column can only be the column
+            // itself — which is what catches a boundary set one cell the wrong way,
+            // where the ellipsis replaces the last letter and changes nothing else.
+            let note = note.trim_end();
+            if note.chars().count() >= "transaction_amount_usd".chars().count() {
+                assert_eq!(
+                    note, "transaction_amount_usd",
+                    "at {width} cells a note that fitted was cut anyway"
+                );
+            }
         }
     }
 

@@ -2699,6 +2699,52 @@ mod holds_flow_tests {
     }
 
     #[test]
+    fn a_peek_answers_only_the_rows_that_asked() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        // A row the listing already settled. Its path is in `cloud_kinds` — a peek was
+        // answered for it once — and it must not be read back over the top of a kind
+        // the listing was surer of.
+        let settled = root.join("sales");
+        let mut row = Entry::for_test(&settled, "sales");
+        row.kind = EntryKind::Hive;
+        row.holds = counted(40);
+
+        let mut home = HomeState::default();
+        home.probed.insert(root.clone(), vec![row]);
+        home.cloud_kinds
+            .insert(settled, (EntryKind::Directory, counted(1)));
+        home.apply_cloud_kinds(&root);
+
+        assert_eq!(home.probed[&root][0].kind, EntryKind::Hive);
+        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
+    }
+
+    #[test]
+    fn only_folders_nothing_has_looked_into_are_queued_for_a_peek() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        let mut home = HomeState::default();
+        let rows: Vec<Entry> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|n| {
+                let mut row = Entry::for_test(&root.join(n), n);
+                row.kind = EntryKind::Directory;
+                row
+            })
+            .collect();
+        home.probed.insert(root.clone(), rows);
+        // One already answered, so four are left to ask about.
+        home.cloud_kinds
+            .insert(root.join("b"), (EntryKind::MultiFile, counted(3)));
+
+        let asked = home.cloud_folders_to_peek(&root, 3);
+        assert_eq!(asked.len(), 3, "the budget is a budget");
+        assert!(
+            !asked.contains(&root.join("b")),
+            "a folder already looked into is not asked again"
+        );
+    }
+
+    #[test]
     fn a_measurement_that_counted_nothing_keeps_the_count_a_row_already_has() {
         let path = std::path::PathBuf::from("/data/warehouse/orders");
         let mut row = Entry::for_test(&path, "orders");

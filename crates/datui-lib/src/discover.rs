@@ -2495,6 +2495,35 @@ mod classification_tests {
         assert!(entry.columns.is_empty());
     }
 
+    /// The other side of the gate: a row that is a dataset but carries no count of what
+    /// is in it has nothing to object with, so it keeps every number the footers give.
+    ///
+    /// Not a folder a listing produces — `mixed` never reaches here, because a folder
+    /// of two formats is a `Directory` and `enrich` leaves those alone. It is a row
+    /// built without a listing: the cloud `(all files)` row, and any row restored with
+    /// a kind but no tally. Turning this arm away blanks every one of them.
+    #[test]
+    fn a_dataset_row_that_counted_nothing_is_still_described() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id", "ts"]);
+        write(dir.path(), "b.parquet", &["id", "ts"]);
+
+        let mut entry = Entry {
+            path: dir.path().to_path_buf(),
+            kind: EntryKind::MultiFile,
+            name: "data".into(),
+            ..Entry::for_test(dir.path(), "data")
+        };
+        entry.kind = EntryKind::MultiFile;
+        entry.holds = Holds::default();
+        assert!(entry.holds.one_format().is_none(), "nothing counted");
+
+        enrich(&mut entry);
+        assert!(entry.size.is_some(), "the footers were read");
+        assert_eq!(entry.rows, Some(2));
+        assert_eq!(entry.cols, Some(2), "id and ts");
+    }
+
     /// A Parquet file whose name begins with `_` is still a Parquet file. It does not
     /// count toward what the folder around it holds — that is what `is_bookkeeping` is
     /// for — but the listing shows it, `Enter` opens it, and the row beside it must say

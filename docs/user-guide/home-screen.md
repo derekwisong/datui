@@ -198,7 +198,7 @@ A folder's label says what is directly inside it, from one listing:
 | `delta` `iceberg` `hudi` | The format's marker is present |
 | `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
 | `mixed` | Data files of more than one format |
-| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found* |
+| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. In a bucket the word for the place is used instead: `prefix`, `bucket`, `container` |
 | `…` | Nothing has looked into it yet |
 
 A folder larger than the listing cap counts what it read and says so: `5000+
@@ -451,7 +451,9 @@ billed for, so they are not fetched until you open one.
 Folders are looked inside, a few at a time, once each listing lands: one small
 listing request per folder, for at most 48 of them. A folder of `key=value`
 partitions is then labelled `hive`, and every other folder by what it holds —
-`12 parquet`, `3 csv`, `dir` — like a local one. A folder of Parquet files whose
+`12 parquet`, `3 csv` — like a local one. A prefix with no data file directly
+inside keeps the word for the place, `prefix`, rather than becoming `dir` the
+moment the peek lands. A folder of Parquet files whose
 schemas agree is offered as one dataset; see
 [When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
 one reads the footers of up to three of the folder's files, a few kilobytes each;

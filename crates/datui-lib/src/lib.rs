@@ -1555,7 +1555,9 @@ mod peek_answer_tests {
                 ..Default::default()
             }
         )));
-        // A listing cut short carries the `+` that separates `dir+` from `dir`.
+        // A listing cut short says so. Nothing draws it on this route today — see
+        // the note on the function — but `is_empty` is one definition and this is
+        // what it says.
         assert!(worth(&(
             EntryKind::Directory,
             Holds {
@@ -8058,10 +8060,22 @@ impl App {
     /// rebuild, and that reads the dataset index on the thread drawing the frame.
     ///
     /// "Says something" is `Holds::is_empty`, not the formats alone. The row is not the
-    /// only thing an answer reaches: the details pane draws the whole `holds` line, so
-    /// a prefix of a README and two PDFs has `3 not read` to report, and a listing cut
-    /// short at one page has the `+` that makes it `dir+`. Testing the formats dropped
-    /// both, and the same folder on disk said both things.
+    /// only thing an answer reaches: the details pane draws the whole `holds` line, so a
+    /// prefix of a README and two PDFs has `3 not read` to report, and one of twelve
+    /// sub-prefixes has `12 folders`. Testing the formats dropped both, and the same
+    /// folders on disk said both things.
+    ///
+    /// The cost is real and is the reason this is not simply `true`: each send rebuilds
+    /// the listing on the thread drawing the frame, and a warehouse of forty-eight
+    /// database prefixes goes from no sends to twelve. `Holds::is_empty` is the line
+    /// because it is the same question the pane asks before drawing the line at all.
+    ///
+    /// One shape it lets through buys nothing today: a `Holds` whose only field is
+    /// `truncated`. `Holds::line` has no part to print for it, and a cloud row with no
+    /// data file keeps the word for its place rather than becoming `dir+`, so the `+`
+    /// has nowhere to land on this route. It is let through because the alternative is
+    /// a second, narrower definition of "says something" that would drift from the
+    /// first — and #275 phase 6 gives the `+` somewhere to land.
     #[cfg(feature = "cloud")]
     fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
         answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()

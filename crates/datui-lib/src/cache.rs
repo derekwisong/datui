@@ -395,6 +395,12 @@ pub struct DatasetFacts {
     /// remote dataset may not get a second chance at.
     #[serde(default)]
     pub cost: crate::discover::Cost,
+    /// What one listing of the folder found in it, which is what its label says.
+    /// Restored beside `kind` and gated by the same classifier version: both are what
+    /// looking into the folder produced, and a build that classified differently
+    /// counted differently too.
+    #[serde(default, skip_serializing_if = "crate::discover::Holds::is_empty")]
+    pub holds: crate::discover::Holds,
 }
 
 /// What an open learned about a dataset's files, kept so the next one can show its

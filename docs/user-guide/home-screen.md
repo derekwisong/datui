@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder labelled `hive`, `multi`, `delta`, `iceberg` or `hudi`, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder datui offers as one dataset, or on a lake table, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -188,10 +188,37 @@ and other formats that need a scan to count show neither. Below the counts,
 the pane lists the full schema of a Parquet dataset, each type in the color the
 table uses.
 
+### What a row's label says
+
+A folder's label says what is directly inside it, from one listing:
+
+| Label | Means |
+|---|---|
+| `hive` | It has a `key=value` child folder, and at least as many of those as data files |
+| `delta` `iceberg` `hudi` | The format's marker is present |
+| `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
+| `mixed` | Data files of more than one format |
+| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. In a bucket the word for the place is used instead: `prefix`, `bucket`, `container` |
+| `…` | Nothing has looked into it yet |
+
+A folder larger than the listing cap counts what it read and says so: `5000+
+parquet`. The details pane carries the whole tally on a `holds` line — `12
+parquet · 2 csv · 3 folders · 5 not read · 7 skipped (.crc, _SUCCESS, _committed_1727,
+_started_1727, …)` — every
+file in the folder is in one of those counts. `skipped` is a name beginning with
+`_` or `.`, or ending `_$folder$` — where every engine puts its own files, where
+a repository puts `.git`, and what s3n and EMR write to stand in for a folder. A
+`key=value` name is a partition whatever it begins with, so a dataset partitioned
+on `_date` is not skipped; a marker named after one, `year=2024_$folder$`, still
+is. The first four skipped are named.
+
+A label describes; it does not promise what <kbd>Enter</kbd> will do. A folder of
+fifteen unrelated tables reads `15 parquet` and is still a place to look inside.
+
 ### When a folder is one dataset
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
-hold the same table is `multi`. Both open with <kbd>Enter</kbd> as a single
+hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single
 dataset, and <kbd>→</kbd> goes inside one instead, to reach a single partition or
 a single file. That is the way to look at the files when the label is wrong.
 <kbd>Esc</kbd> comes back out; in a bucket the first row inside,
@@ -424,8 +451,11 @@ billed for, so they are not fetched until you open one.
 
 Folders are looked inside, a few at a time, once each listing lands: one small
 listing request per folder, for at most 48 of them. A folder of `key=value`
-partitions is then labelled `hive`, and a folder of Parquet files whose schemas
-agree `multi`, like a local one — see
+partitions is then labelled `hive`, and every other folder by what it holds —
+`12 parquet`, `3 csv` — like a local one. A prefix with no data file directly
+inside keeps the word for the place, `prefix`, rather than becoming `dir` the
+moment the peek lands. A folder of Parquet files whose
+schemas agree is offered as one dataset; see
 [When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
 one reads the footers of up to three of the folder's files, a few kilobytes each;
 nothing else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd>

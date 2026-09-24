@@ -1511,6 +1511,76 @@ mod template_rollback_tests {
     }
 }
 
+#[cfg(all(test, feature = "cloud"))]
+mod peek_answer_tests {
+    use crate::discover::{EntryKind, Holds};
+
+    fn counted(format: &str, n: usize) -> Holds {
+        Holds {
+            formats: vec![(format.to_string(), n)],
+            ..Default::default()
+        }
+    }
+
+    /// A peek is worth a listing rebuild when its answer reaches the screen, and a
+    /// rebuild reads the dataset index on the thread drawing the frame — so the test is
+    /// what the answer says, not what the peek decided. The screen is the row *and* the
+    /// details pane beside it, which draws the whole `holds` line.
+    #[test]
+    fn a_peek_is_worth_a_rebuild_when_its_answer_says_anything() {
+        let worth = crate::App::peek_tells_a_row_something;
+
+        // The claim staked before the answers arrive: nothing counted, nothing decided.
+        // The only thing there is no reason to send.
+        assert!(!worth(&(EntryKind::Directory, Holds::default())));
+
+        // Only Parquet is read in place, so a prefix of twelve CSV objects stays a
+        // `Directory` — and it is still `12 csv`, which is the label the row draws.
+        assert!(worth(&(EntryKind::Directory, counted("csv", 12))));
+        // A prefix of sub-prefixes and a writer's own files draws no label of its own,
+        // but the pane has `12 folders · 3 skipped` to say, and says it on disk.
+        assert!(worth(&(
+            EntryKind::Directory,
+            Holds {
+                folders: 12,
+                skipped: 3,
+                ..Default::default()
+            }
+        )));
+        // A README and two PDFs: nothing datui reads, which is itself the answer.
+        assert!(worth(&(
+            EntryKind::Directory,
+            Holds {
+                not_read: 3,
+                ..Default::default()
+            }
+        )));
+        // A listing cut short says so. Nothing draws it on this route today — see
+        // the note on the function — but `is_empty` is one definition and this is
+        // what it says.
+        assert!(worth(&(
+            EntryKind::Directory,
+            Holds {
+                truncated: true,
+                ..Default::default()
+            }
+        )));
+
+        // And the kinds that decide something say it whether they counted or not — a
+        // partitioned lake table has no data file at its root, so its `Holds` is empty
+        // and the kind is the whole of the answer.
+        for kind in [
+            EntryKind::Hive,
+            EntryKind::Delta,
+            EntryKind::Iceberg,
+            EntryKind::Hudi,
+        ] {
+            assert!(worth(&(kind, Holds::default())), "{kind:?} decides the row");
+        }
+        assert!(worth(&(EntryKind::MultiFile, counted("parquet", 40))));
+    }
+}
+
 #[cfg(test)]
 mod text_input_flows;
 
@@ -4736,7 +4806,10 @@ pub enum AppEvent {
     /// What peeking inside some folders of a cloud listing found: the ones that are
     /// partitioned or Parquet datasets.
     HomeCloudKinds {
-        kinds: Vec<(PathBuf, crate::discover::EntryKind)>,
+        kinds: Vec<(
+            PathBuf,
+            (crate::discover::EntryKind, crate::discover::Holds),
+        )>,
     },
     /// A cloud listing was refused, with the service's reason.
     HomeProbeFailed {
@@ -7977,6 +8050,37 @@ impl App {
         self.home_refresh();
     }
 
+    /// Whether a peek's answer changes anything a row draws.
+    ///
+    /// Every answer that tells a row something, not only the ones that change the kind:
+    /// a prefix of twelve CSV objects is a `Directory` — only Parquet is read in place —
+    /// and it is still `12 csv`, which is the count the row is labelled from.
+    ///
+    /// An answer that says neither is dropped, because each send costs a listing
+    /// rebuild, and that reads the dataset index on the thread drawing the frame.
+    ///
+    /// "Says something" is `Holds::is_empty`, not the formats alone. The row is not the
+    /// only thing an answer reaches: the details pane draws the whole `holds` line, so a
+    /// prefix of a README and two PDFs has `3 not read` to report, and one of twelve
+    /// sub-prefixes has `12 folders`. Testing the formats dropped both, and the same
+    /// folders on disk said both things.
+    ///
+    /// The cost is real and is the reason this is not simply `true`: each send rebuilds
+    /// the listing on the thread drawing the frame, and a warehouse of forty-eight
+    /// database prefixes goes from no sends to twelve. `Holds::is_empty` is the line
+    /// because it is the same question the pane asks before drawing the line at all.
+    ///
+    /// One shape it lets through buys nothing today: a `Holds` whose only field is
+    /// `truncated`. `Holds::line` has no part to print for it, and a cloud row with no
+    /// data file keeps the word for its place rather than becoming `dir+`, so the `+`
+    /// has nowhere to land on this route. It is let through because the alternative is
+    /// a second, narrower definition of "says something" that would drift from the
+    /// first — and #275 phase 6 gives the `+` somewhere to land.
+    #[cfg(feature = "cloud")]
+    fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
+        answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
+    }
+
     /// Look inside the folders a cloud listing returned, a few at a time, so the ones
     /// that are datasets say `hive` or `multi` and open as one. One small listing
     /// request per folder, and at most `PEEKS_PER_LISTING` of them per listing; each
@@ -7995,9 +8099,10 @@ impl App {
         }
         // Claimed now, so a rebuild before the answers arrive does not ask again.
         for folder in &folders {
-            self.home
-                .cloud_kinds
-                .insert(folder.clone(), discover::EntryKind::Directory);
+            self.home.cloud_kinds.insert(
+                folder.clone(),
+                (discover::EntryKind::Directory, Default::default()),
+            );
         }
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
@@ -8017,10 +8122,10 @@ impl App {
             // rebuild per folder.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                if let Ok((folder, Ok(kind))) = joined
-                    && kind != discover::EntryKind::Directory
+                if let Ok((folder, Ok(answer))) = joined
+                    && Self::peek_tells_a_row_something(&answer)
                 {
-                    found.push((folder, kind));
+                    found.push((folder, answer));
                 }
                 if found.len() >= PEEKS_AT_ONCE {
                     let _ = tx.send(AppEvent::HomeCloudKinds {
@@ -15032,7 +15137,7 @@ impl App {
             AppEvent::HomeCloudKinds { kinds } => {
                 let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
                 for (folder, kind) in kinds {
-                    self.home.cloud_kinds.insert(folder.clone(), *kind);
+                    self.home.cloud_kinds.insert(folder.clone(), kind.clone());
                 }
                 for root in roots {
                     self.home.apply_cloud_kinds(&root);

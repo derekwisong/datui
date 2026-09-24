@@ -1908,9 +1908,15 @@ fn partitioned_cloud_folders_are_hive_datasets() {
         .max()
         .expect("a snapshot");
     let parts = format!("{snapshot}/occurrence.parquet");
+    let (kind, holds) = runtime
+        .block_on(cloud_browse::peek_kind(&parts, &config))
+        .expect("peeking a public prefix");
+    assert_eq!(kind, datui::discover::EntryKind::MultiFile);
     assert_eq!(
-        runtime.block_on(cloud_browse::peek_kind(&parts, &config)),
-        Ok(datui::discover::EntryKind::MultiFile)
+        holds.one_format(),
+        Some("parquet"),
+        "and the row says what is in there: {:?}",
+        holds.line(true)
     );
     let headers = open_url(&format!("{parts}/"), &config).expect("the part files open as one");
     assert!(headers.iter().any(|h| h == "gbifid"), "{headers:?}");
@@ -2009,10 +2015,10 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
     // One GBIF snapshot: many part files, all the same table, and named `000001`
     // rather than anything ending `.parquet` — only the folder says what they are.
     let parts = "s3://gbif-open-data-us-east-1/occurrence/2026-06-01/occurrence.parquet/";
-    let kind = runtime
+    let (kind, holds) = runtime
         .block_on(cloud_browse::peek_kind(parts, &config))
         .expect("peeking a public prefix");
-    println!("{parts} -> {kind:?}");
+    println!("{parts} -> {kind:?} {:?}", holds.line(true));
     assert_eq!(
         kind,
         datui::discover::EntryKind::MultiFile,
@@ -2021,7 +2027,7 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
 
     // The prefix above them is partitioned, which is decided from names alone.
     let all = "s3://aws-public-blockchain/v1.0/btc/transactions/";
-    let kind = runtime
+    let (kind, _) = runtime
         .block_on(cloud_browse::peek_kind(all, &config))
         .expect("peeking a public prefix");
     println!("{all} -> {kind:?}");

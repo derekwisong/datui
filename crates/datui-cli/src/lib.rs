@@ -40,6 +40,55 @@ impl FileFormat {
             .and_then(Self::from_extension)
     }
 
+    /// The format's name, as a row on the home screen says it: `12 parquet`, `3 csv`.
+    ///
+    /// Lowercase and singular, because it is counted beside a number and read as a
+    /// noun. One name per format rather than per extension: `.ipc`, `.arrow` and
+    /// `.feather` are `arrow`, which is what a reader has to know about them.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Parquet => "parquet",
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Psv => "psv",
+            Self::Json => "json",
+            Self::Jsonl => "jsonl",
+            Self::Arrow => "arrow",
+            Self::Avro => "avro",
+            Self::Orc => "orc",
+            Self::Excel => "excel",
+        }
+    }
+
+    /// Every format, for the places that have to consider all of them.
+    ///
+    /// Written out, and so able to fall behind the enum. `every_format_is_listed`
+    /// matches a variant exhaustively, so adding one stops that test compiling — which
+    /// is a reminder at the right moment rather than a guarantee, since the author
+    /// could extend the match and leave this list short. What that would cost is
+    /// bounded: `from_name` answers `None` for the new format, and every caller reads
+    /// `None` as "not Parquet", which is the direction that leaves counts off a folder
+    /// rather than giving it another format's.
+    pub const ALL: [Self; 10] = [
+        Self::Parquet,
+        Self::Csv,
+        Self::Tsv,
+        Self::Psv,
+        Self::Json,
+        Self::Jsonl,
+        Self::Arrow,
+        Self::Avro,
+        Self::Orc,
+        Self::Excel,
+    ];
+
+    /// The format a [`FileFormat::name`] names, for a name that was stored rather than
+    /// carried. The inverse of that method, and the only way back: a name is not an
+    /// extension, so `from_extension` cannot read one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.name() == name)
+    }
+
     /// Whether many files of this format can be read as one table.
     ///
     /// Asked before a folder is offered as a dataset, so the home screen cannot promise
@@ -460,6 +509,50 @@ mod tests {
         assert_eq!(
             FileFormat::from_path(Path::new("file.NDJSON")),
             Some(FileFormat::Jsonl)
+        );
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::FileFormat;
+
+    /// `ALL` is the list `from_name` searches, so a format missing from it cannot be
+    /// read back from a stored name. The match below is exhaustive, so a new variant
+    /// does not compile until it is written here — the reminder to add it to `ALL`,
+    /// which nothing can enforce outright.
+    #[test]
+    fn every_format_is_listed() {
+        fn listed(f: FileFormat) -> bool {
+            match f {
+                FileFormat::Parquet
+                | FileFormat::Csv
+                | FileFormat::Tsv
+                | FileFormat::Psv
+                | FileFormat::Json
+                | FileFormat::Jsonl
+                | FileFormat::Arrow
+                | FileFormat::Avro
+                | FileFormat::Orc
+                | FileFormat::Excel => FileFormat::ALL.contains(&f),
+            }
+        }
+        for format in FileFormat::ALL {
+            assert!(listed(format), "{format:?}");
+            assert_eq!(FileFormat::from_name(format.name()), Some(format));
+        }
+
+        // And the names themselves, because they are not only labels. `Holds` keeps a
+        // format as this string and the dataset cache writes it out, so renaming one
+        // changes what every folder of that format reads *and* makes the records
+        // already on disk unreadable — `from_name` then answers `None`, which the
+        // enrich gate takes for "not Parquet" and blanks the folder's size. The round
+        // trip above holds for any string; this is what says which.
+        assert_eq!(
+            FileFormat::ALL.map(|f| f.name()),
+            [
+                "parquet", "csv", "tsv", "psv", "json", "jsonl", "arrow", "avro", "orc", "excel"
+            ]
         );
     }
 }

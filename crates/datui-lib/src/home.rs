@@ -262,7 +262,8 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .filter(|r| r.kind == EntryKind::File)
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
-    let kind = crate::cloud_browse::classify_listing(&folders, &objects);
+    let (kind, holds) =
+        crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects);
     let what = match kind {
         EntryKind::Hive => "all partitions",
         EntryKind::MultiFile => "all files",
@@ -277,6 +278,11 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .to_string();
     let mut entry = Entry::directory(&folder_dataset_url(dir));
     entry.kind = kind;
+    // What the listing you are looking at holds. Not the same tally as the folder's own
+    // row upstairs: that one was counted from one page of a peek and may say `100+`,
+    // and this one is counted from rows a listing has already dropped its markers from,
+    // so it reports fewer skipped. Two views of one folder, each true of what it saw.
+    entry.holds = holds;
     entry.name = format!("{name} ({what})");
     Some(entry)
 }
@@ -527,6 +533,10 @@ pub struct Measured {
     /// not a dataset. `None` when measuring did not change what it is, which is the
     /// ordinary case. See [`crate::discover::enrich`].
     pub kind: Option<crate::discover::EntryKind>,
+    /// What one listing of it found, which is what the row's label says. Carried for
+    /// the same reason `cost` is: the classify pass is the only thing that counts a
+    /// local folder, and a count that stops here never reaches the screen.
+    pub holds: crate::discover::Holds,
 }
 
 /// How rows are ordered within each section.
@@ -635,7 +645,7 @@ pub struct HomeState {
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// What cloud folders turned out to hold when peeked into: `hive` or `multi`.
     /// Kept for the session, so a folder is peeked at once however often it is listed.
-    pub cloud_kinds: std::collections::HashMap<PathBuf, EntryKind>,
+    pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
     /// How rows are ordered inside each section.
     pub sort: SortMode,
     /// True while a listing is being built on a worker. The previous listing stays on
@@ -754,7 +764,7 @@ pub struct ListingRequest {
     /// before anything has been read this time.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
     /// What looking inside each cloud folder found, from this session's peeks.
-    pub cloud_kinds: std::collections::HashMap<PathBuf, EntryKind>,
+    pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
 }
 
 /// What a listing pass produced.
@@ -773,7 +783,9 @@ pub struct Listing {
 pub fn look_into(entry: &Entry) -> Entry {
     let mut probe = entry.clone();
     if probe.kind == EntryKind::Unknown && probe.path.is_dir() {
-        probe.kind = discover::classify_directory(&probe.path);
+        let (kind, holds) = discover::look_at_directory(&probe.path);
+        probe.kind = kind;
+        probe.holds = holds;
     }
     discover::enrich(&mut probe);
     probe.size = probe.size.or(entry.size);
@@ -819,6 +831,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         size: probe.size.or(original.size),
         columns: probe.columns.clone(),
         kind: (probe.kind != original.kind).then_some(probe.kind),
+        holds: probe.holds.clone(),
         // The source is resolved from the live mount table on every listing, so only
         // what the file said about itself is carried forward.
         cost: crate::discover::Cost {
@@ -911,7 +924,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         #[cfg(feature = "cloud")]
         let rows = {
             let mut rows = rows;
-            if let Some(whole) = whole_folder_row(&dir, &rows, cloud_kinds.get(&dir)) {
+            if let Some(whole) =
+                whole_folder_row(&dir, &rows, cloud_kinds.get(&dir).map(|(kind, _)| kind))
+            {
                 rows.insert(0, whole);
             }
             rows
@@ -1192,7 +1207,9 @@ fn apply_known_facts(
     // Tested before the fingerprint below rather than after, because that fingerprint
     // is a file's: a listing gives a directory no size, so `same_bytes` is never true
     // for one. A directory's own mtime is what it has, and it moves when a file is
-    // added or removed, which is when this answer could change.
+    // added or removed, which is when this answer could change. Nothing here writes a
+    // size back onto the row, and nothing should: the fingerprint below would then be
+    // comparing a cached size with itself.
     //
     // Gated on the classifier, because a kind is a judgement where everything else
     // here is a measurement. `is_one_table`'s answer is the most version-sensitive
@@ -1209,6 +1226,24 @@ fn apply_known_facts(
             .is_some_and(|d| d.as_secs() == facts.mtime);
         if same_mtime {
             row.kind = kind;
+            // What it holds comes back with the kind. They are one answer: a row given
+            // its kind from the cache is never looked into again, so a count left
+            // behind is left behind for the session — the row says `dir` about a folder
+            // of fifteen Parquet files, and `enrich` goes on to describe it by whatever
+            // is in its subfolders.
+            if row.holds.is_empty() {
+                row.holds = facts.holds.clone();
+            }
+            // The kind and the count, and nothing measured. Both of those come from
+            // the folder's *names*, which is what a directory's mtime is a fingerprint
+            // for: it moves when an entry is added, removed or renamed. What the
+            // footers said — the width, the size, the column names — can change with
+            // no entry added or removed at all, by one file being rewritten in place,
+            // and a directory mtime cannot see that. `same_bytes` below is the
+            // fingerprint for those, it is a file's, and a folder has no size to offer
+            // it; so a folder of separate tables shows its width in the session that
+            // measured it and not after. That is the honest end of a weak key, and
+            // #275 phase 6 gives it a real one by verifying under the cursor.
         }
     }
 
@@ -1249,6 +1284,13 @@ fn apply_known_facts(
             && let Some(kind) = facts.kind
         {
             row.kind = kind;
+            // What it holds comes back with the kind. They are one answer: a row given
+            // its kind from the cache is never looked into again, so without this it
+            // says `dir` about a folder of fifteen Parquet files for the rest of the
+            // session — and `enrich` describes it by whatever is in its subfolders.
+            if row.holds.is_empty() {
+                row.holds = facts.holds.clone();
+            }
         }
     }
 }
@@ -1274,6 +1316,7 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             cols_sampled: entry.cols_sampled,
             columns: entry.columns.clone(),
             kind: Some(entry.kind),
+            holds: entry.holds.clone(),
             classified_by: crate::discover::CLASSIFIER_VERSION,
             // The source is where it is *now*, not where it was when measured: a
             // path can move between mounts, and a stale answer to "will this be
@@ -2187,9 +2230,17 @@ impl HomeState {
         };
         for row in rows.iter_mut() {
             if row.kind == EntryKind::Directory
-                && let Some(kind) = self.cloud_kinds.get(&row.path)
+                && let Some((kind, holds)) = self.cloud_kinds.get(&row.path)
             {
                 row.kind = *kind;
+                // The label is what the peek counted, not the kind it decided: a prefix
+                // of twelve Parquet objects reads `12 parquet` in a bucket for the same
+                // reason it does on disk. Only when there is something to say — a claim
+                // staked before the answer arrives carries no count, and must not erase
+                // one the row already has.
+                if !holds.is_empty() {
+                    row.holds = holds.clone();
+                }
             }
         }
     }
@@ -2383,6 +2434,9 @@ impl HomeState {
                     if !m.columns.is_empty() {
                         row.columns = m.columns.clone();
                     }
+                    if !m.holds.is_empty() {
+                        row.holds = m.holds.clone();
+                    }
                     // Keep the source, which came from the mount table just now; take
                     // everything else, which came from the file.
                     let source = row.cost.source.take();
@@ -2436,6 +2490,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
+        holds: Default::default(),
     }
 }
 
@@ -2456,6 +2511,7 @@ fn bucket_entry(url: &Path) -> Entry {
 
 /// Build an entry for a path that is already known (a recent), classifying it.
 fn entry_for_path(path: &Path, remote: bool) -> Entry {
+    let mut holds = discover::Holds::default();
     // Classifying reads the directory, and stat'ing gives size and mtime. Both touch
     // the filesystem, so a remote entry is listed by name alone until its probe lands.
     let kind = if remote {
@@ -2469,7 +2525,9 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
             EntryKind::Unknown
         }
     } else if path.is_dir() {
-        discover::classify_directory(path)
+        let (kind, found) = discover::look_at_directory(path);
+        holds = found;
+        kind
     } else {
         EntryKind::File
     };
@@ -2487,6 +2545,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
+        holds,
     };
     if !remote && let Ok(meta) = std::fs::metadata(path) {
         if meta.is_file() {
@@ -2583,9 +2642,246 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 }
 
 #[cfg(test)]
+mod holds_flow_tests {
+    use super::*;
+
+    fn counted(n: usize) -> crate::discover::Holds {
+        crate::discover::Holds {
+            formats: vec![("parquet".to_string(), n)],
+            ..Default::default()
+        }
+    }
+
+    /// The claim `peek_cloud_folders` stakes before its answers arrive, so a rebuild in
+    /// the meantime does not ask the store again: a `Directory` that counted nothing.
+    fn in_flight() -> (EntryKind, crate::discover::Holds) {
+        (EntryKind::Directory, crate::discover::Holds::default())
+    }
+
+    #[test]
+    fn a_claim_staked_before_a_peek_lands_keeps_the_count_a_row_already_has() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        let path = root.join("orders");
+        let mut row = Entry::for_test(&path, "orders");
+        row.kind = EntryKind::Directory;
+        // Restored from the facts cache on the way in, which is the only reason a
+        // remote row has a count before anything peeked at it.
+        row.holds = counted(15);
+
+        let mut home = HomeState::default();
+        home.probed.insert(root.clone(), vec![row]);
+        home.cloud_kinds.insert(path, in_flight());
+        home.apply_cloud_kinds(&root);
+
+        assert_eq!(
+            home.probed[&root][0].holds.label(),
+            "15 parquet",
+            "the placeholder erased a count the row already had"
+        );
+    }
+
+    #[test]
+    fn a_peeks_answer_replaces_the_count_a_row_had() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        let path = root.join("orders");
+        let mut row = Entry::for_test(&path, "orders");
+        row.kind = EntryKind::Directory;
+        row.holds = counted(15);
+
+        let mut home = HomeState::default();
+        home.probed.insert(root.clone(), vec![row]);
+        home.cloud_kinds
+            .insert(path, (EntryKind::MultiFile, counted(40)));
+        home.apply_cloud_kinds(&root);
+
+        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
+        assert_eq!(home.probed[&root][0].kind, EntryKind::MultiFile);
+    }
+
+    #[test]
+    fn a_peek_answers_only_the_rows_that_asked() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        // A row the listing already settled. Its path is in `cloud_kinds` — a peek was
+        // answered for it once — and it must not be read back over the top of a kind
+        // the listing was surer of.
+        let settled = root.join("sales");
+        let mut row = Entry::for_test(&settled, "sales");
+        row.kind = EntryKind::Hive;
+        row.holds = counted(40);
+
+        let mut home = HomeState::default();
+        home.probed.insert(root.clone(), vec![row]);
+        home.cloud_kinds
+            .insert(settled, (EntryKind::Directory, counted(1)));
+        home.apply_cloud_kinds(&root);
+
+        assert_eq!(home.probed[&root][0].kind, EntryKind::Hive);
+        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
+    }
+
+    #[test]
+    fn only_folders_nothing_has_looked_into_are_queued_for_a_peek() {
+        let root = std::path::PathBuf::from("s3://bucket/warehouse");
+        let mut home = HomeState::default();
+        let rows: Vec<Entry> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|n| {
+                let mut row = Entry::for_test(&root.join(n), n);
+                row.kind = EntryKind::Directory;
+                row
+            })
+            .collect();
+        home.probed.insert(root.clone(), rows);
+        // One already answered, so four are left to ask about.
+        home.cloud_kinds
+            .insert(root.join("b"), (EntryKind::MultiFile, counted(3)));
+
+        let asked = home.cloud_folders_to_peek(&root, 3);
+        assert_eq!(asked.len(), 3, "the budget is a budget");
+        assert!(
+            !asked.contains(&root.join("b")),
+            "a folder already looked into is not asked again"
+        );
+    }
+
+    #[test]
+    fn a_measurement_that_counted_nothing_keeps_the_count_a_row_already_has() {
+        let path = std::path::PathBuf::from("/data/warehouse/orders");
+        let mut row = Entry::for_test(&path, "orders");
+        row.kind = EntryKind::Directory;
+        row.holds = counted(15);
+
+        let mut home = HomeState::default();
+        home.sections.push(Section {
+            title: "Here".to_string(),
+            subtitle: None,
+            rows: vec![row],
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+        });
+        // A measurement of a file carries no `holds`, and the same struct measures both.
+        home.enriched.insert(
+            path,
+            Measured {
+                kind: Some(EntryKind::Directory),
+                ..Default::default()
+            },
+        );
+        home.apply_measurements();
+
+        assert_eq!(
+            home.sections[0].rows[0].holds.label(),
+            "15 parquet",
+            "a measurement with nothing to say erased the label"
+        );
+    }
+}
+
+#[cfg(test)]
 mod known_facts_tests {
     use super::*;
     use crate::cache::DatasetFacts;
+
+    /// What a folder holds comes back with its kind, on both routes.
+    ///
+    /// A row given a kind from the cache is never looked into again — `look_into` only
+    /// classifies an `Unknown`, and `unclassified_visible` skips anything else. So a
+    /// count left behind is left behind for the session: the row says `dir` about a
+    /// folder of fifteen Parquet files, and `enrich` goes on to describe it by whatever
+    /// is in its subfolders.
+    #[test]
+    fn what_a_folder_holds_is_restored_beside_its_kind() {
+        let holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 15)],
+            ..Default::default()
+        };
+        for (path, remote) in [
+            (
+                std::path::PathBuf::from("s3://bucket/warehouse/orders"),
+                true,
+            ),
+            (std::path::PathBuf::from("/data/warehouse/orders"), false),
+        ] {
+            let facts = DatasetFacts {
+                mtime: 0,
+                size: 4096,
+                // A row count a folder's record has no business carrying, to prove
+                // the gate below still turns it away.
+                rows: Some(999),
+                cols: Some(72),
+                cols_sampled: false,
+                columns: vec!["lat".to_string()],
+                // A folder of separate tables: the kind the footers settled on, its
+                // width, and no row count, because a sum over them is not a number.
+                kind: Some(EntryKind::Directory),
+                classified_by: crate::discover::CLASSIFIER_VERSION,
+                holds: holds.clone(),
+                cost: Default::default(),
+            };
+            let mut row = Entry::directory(&path);
+            row.kind = EntryKind::Unknown;
+            row.modified = Some(std::time::UNIX_EPOCH);
+            // No size, which is what a listing gives a directory — and what makes the
+            // byte fingerprint below unable to speak for one.
+            assert_eq!(row.size, None);
+            let index = std::collections::HashMap::from([(path.clone(), facts)]);
+
+            apply_known_facts(&mut row, &index, remote);
+            assert_eq!(row.kind, EntryKind::Directory, "{path:?}");
+            assert_eq!(row.label(), "15 parquet", "{path:?}");
+            // And nothing the footers said. A directory's mtime moves when an entry
+            // is added, removed or renamed; a file rewritten in place moves nothing,
+            // and the width, the size and the column names all change with it. Only
+            // locally — a remote row is never measured here at all, so the record is
+            // all it will ever have and it takes the whole of it.
+            if !remote {
+                assert_eq!(row.rows, None, "{path:?}");
+                assert_eq!(row.cols, None, "{path:?}");
+                assert_eq!(row.size, None, "{path:?}");
+                assert!(row.columns.is_empty(), "{path:?}");
+            }
+        }
+    }
+
+    /// A dataset's own counts are not restored beside its kind. `unmeasured_visible`
+    /// skips a row that already has a row count, so restoring one would stop a `hive`
+    /// or a `multi` folder ever being measured again — and its size and its codec,
+    /// which nothing else fills in, would be blank for the rest of the session.
+    #[test]
+    fn a_datasets_counts_are_measured_rather_than_restored() {
+        let path = std::path::PathBuf::from("/data/warehouse/events");
+        let facts = DatasetFacts {
+            mtime: 0,
+            size: 4096,
+            rows: Some(1_200_000),
+            cols: Some(58),
+            cols_sampled: false,
+            columns: vec!["ts".to_string()],
+            kind: Some(EntryKind::MultiFile),
+            classified_by: crate::discover::CLASSIFIER_VERSION,
+            holds: crate::discover::Holds {
+                formats: vec![("parquet".to_string(), 15)],
+                ..Default::default()
+            },
+            cost: Default::default(),
+        };
+        let mut row = Entry::directory(&path);
+        row.kind = EntryKind::Unknown;
+        row.modified = Some(std::time::UNIX_EPOCH);
+        let index = std::collections::HashMap::from([(path.clone(), facts)]);
+
+        apply_known_facts(&mut row, &index, false);
+        assert_eq!(row.kind, EntryKind::MultiFile, "the kind comes back");
+        assert_eq!(row.label(), "15 parquet", "and what it holds");
+        assert_eq!(
+            row.rows, None,
+            "but not the count: the measuring pass skips a row that has one"
+        );
+        assert_eq!(row.cols, None);
+    }
 
     /// A kind recorded by a build that classified differently is not restored.
     ///
@@ -2608,6 +2904,7 @@ mod known_facts_tests {
             kind: Some(EntryKind::MultiFile),
             classified_by,
             cost: Default::default(),
+            holds: Default::default(),
         };
         let unprobed = || {
             let mut row = Entry::directory(&remote);

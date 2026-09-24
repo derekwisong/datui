@@ -88,6 +88,12 @@ fn meta_columns(entry: &Entry) -> String {
     let more = if entry.cols_sampled { "+" } else { "" };
     let shape = match (entry.rows, entry.cols) {
         (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
+        // `?` says a count is out of reach. A folder that is not one table has no row
+        // count to be out of reach — a sum over unrelated tables is not a number — so
+        // it shows its width alone. Named, not multiplied: `× 72` in a column whose
+        // neighbours read `1.2M × 72` is an operator with nothing on its left, and a
+        // bare `72` reads as a row count.
+        (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more} cols"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
         _ => String::new(),
     };
@@ -783,11 +789,33 @@ fn entry_line<'a>(
     // bucket rather than as a directory.
     let path_text = entry.path.to_string_lossy();
     let named_source = crate::source::split_source_id(&path_text).0;
+    let described = entry.label();
+    // Whether the cell ends up holding the curated word rather than a label. Only one
+    // arm below reaches for it, and a row whose *path* is curated but whose kind sends
+    // it elsewhere — a `multi` prefix in a public source — is carrying a label.
+    let mut shows_curated = false;
     let kind = match entry.kind {
-        EntryKind::Directory => place_kind
-            .or_else(|| crate::home::object_place_label(&entry.path))
-            .unwrap_or_else(|| entry.kind.label()),
-        _ => entry.kind.label(),
+        // A count beats the generic word for the place a row is in: `12 parquet` says
+        // more about a prefix than `prefix` does. Not the *curated* word, though —
+        // `dataset` and `project` are what a source calls a place it names, and that is
+        // the only thing marking it as one.
+        //
+        // Only when there is data to count, or a prefix holding nothing but
+        // sub-prefixes would flip from `prefix` to `dir` the moment its peek landed.
+        //
+        // The same order the details pane takes, or the row and the pane beside it
+        // disagree about one folder.
+        EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
+            (Some(curated), _) => {
+                shows_curated = true;
+                curated
+            }
+            (None, false) => described.as_ref(),
+            (None, true) => {
+                crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
+            }
+        },
+        _ => described.as_ref(),
     };
     // Two stores can hold the same bucket and key, so a row from one that is named in
     // its URL says which, where a kind would otherwise go. A recent whose source has
@@ -795,10 +823,17 @@ fn entry_line<'a>(
     let missing_source = named_source
         .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k == id)));
     let missing_note = named_source.map(|id| format!("source not found: {id}"));
+    // Whether the cell ends up holding the source id or the warning rather than a
+    // label. The path having an id is not the same question: a peeked prefix under a
+    // named source has both, and its label is a label.
+    let mut shows_source = true;
     let kind: &str = match (named_source, kind, known_sources) {
         (Some(_), "", Some(_)) if missing_source => missing_note.as_deref().unwrap_or(""),
         (Some(id), "", Some(_)) => id,
-        _ => kind,
+        _ => {
+            shows_source = false;
+            kind
+        }
     };
     // Nothing has looked into this row yet, and it has nothing else to say for itself.
     // An ellipsis says so and claims nothing: the word `dir` was a claim, and a blank
@@ -813,6 +848,7 @@ fn entry_line<'a>(
         matched_column.is_none() && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
     let kind_cell = match matched_column {
         Some(column) => format!(" ·{column}"),
+        // `shown_column` below may cut this; both are written from the same string.
         None if kind.is_empty() => String::new(),
         None if kind_is_chip => format!("  {kind} "),
         None => format!(" {kind}"),
@@ -834,6 +870,89 @@ fn entry_line<'a>(
         Some(crate::locality::Locality::Unknown) | None => g.place_unknown,
     };
     let place_cell = format!("{place} ");
+
+    // A label counts now — `5000+ parquet` is thirteen characters where `iceberg` was
+    // seven — and on a narrow screen it can leave the name nothing to be truncated
+    // into, which puts the meta columns out of their alignment and clips them. The name
+    // is what identifies a row and the label only describes it, so the label goes. It
+    // goes for good at these widths — the details pane is not drawn below a hundred and
+    // two columns, and this fires far below that — which is the trade a screen with
+    // room for one of the two forces. The test is the one truncation already makes, so
+    // there is no width here to pick.
+    //
+    // Only a label. A column note says *why this row is in the list*, and the draw site
+    // writes it from `matched_column` rather than from this cell, so blanking the cell
+    // would hand the name a budget the note then overruns — the misalignment this
+    // exists to stop, one column wider. And `source not found:` is a warning the pane
+    // does not carry, so dropping it leaves a broken recent looking like a working one.
+    // Not a source id or a `source not found:` either: two stores can hold the same
+    // bucket and key, and that chip is the only thing that says which this row came
+    // from. Asked of what the cell holds, not of what the path carries.
+    //
+    // Nor the curated word. `dataset` and `project` are what a source calls a place it
+    // names, and the match above prefers them to the count for that reason; dropping
+    // them here would take away the one thing marking a curated row. Asked of the cell
+    // and not of the path, the same as the source id: a `multi` row under a public
+    // source has a curated path and a count in its cell, and a count gives way.
+    let is_label = matched_column.is_none() && !shows_source && !shows_curated;
+    let fits = |cell: &str| {
+        name_width.saturating_sub(2 + place_cell.chars().count() + cell.chars().count() + 1) > 1
+    };
+    // A column note says why the row is in the list and may not go, but it is as long
+    // as somebody's column name: `transaction_amount` is twenty cells, which at the
+    // narrowest width that draws meta leaves the name nothing to be cut into. Its head
+    // is the identifying part, so the tail goes and the marks that fell in it go with
+    // it — the same shape the name's own truncation takes.
+    // The ellipsis is one character in the Unicode set and three in the ASCII one, so
+    // the room it takes is asked for rather than assumed. Assuming one made the cut
+    // note two characters longer than it was allowed under `unicode = never`, which
+    // collapsed the name's budget — the misalignment this is all for, reached through
+    // the fix for it.
+    let ellipsis = glyphs::get().ellipsis;
+    let ellipsis_len = ellipsis.chars().count();
+    // The note as it will be drawn, and with it how many of those characters are the
+    // note rather than the ellipsis standing for the rest. The draw site needs that
+    // number to drop the marks the cut left behind, and carrying it from here is the
+    // point: subtracting an ellipsis there means knowing its length in two places, and
+    // the two only agree in one of the glyph sets.
+    let shown_column: Option<(String, usize)> = matched_column.map(|column| {
+        let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
+        let whole = column.chars().count();
+        // Cut only where a letter survives the ellipsis: `checked_sub` rather than a
+        // test of `room` against the ellipsis, so the subtraction cannot be reached
+        // without room for it. `…` is one character and `...` is three, which made the
+        // difference between a guard and a panic under `unicode = never`.
+        match room.checked_sub(ellipsis_len) {
+            Some(kept) if kept > 0 && whole > room => (
+                column.chars().take(kept).collect::<String>() + ellipsis,
+                kept,
+            ),
+            _ => (column.to_string(), whole),
+        }
+    });
+    let kind_cell = match &shown_column {
+        Some((column, _)) => format!(" ·{column}"),
+        None => kind_cell,
+    };
+    let (kind_cell, kind_is_chip) = if fits(&kind_cell) {
+        (kind_cell, kind_is_chip)
+    } else if is_label {
+        (String::new(), false)
+    } else if shows_source && matched_column.is_none() {
+        // A source id and a `source not found:` are as long as somebody's
+        // configuration, and this cell may not go — so it is cut to the longest that
+        // leaves the name room, which is the same test read backwards. The curated
+        // word is not cut: it is one of two words, `dataset` or `project`, and `d…t`
+        // says nothing at all where the whole of it still fits in eight cells.
+        //
+        // And not when a column matched, because then the cell is the note and the
+        // draw site writes that from `shown_column`: cutting the cell here would leave
+        // the two disagreeing about the width, which is how the columns come unstuck.
+        let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2);
+        (crate::discover::shorten(&kind_cell, room), false)
+    } else {
+        (kind_cell, kind_is_chip)
+    };
 
     // Positions are taken from the untruncated name, because that is what matched.
     // Truncation then shifts them, and dropping the ones that fall outside is exactly
@@ -935,8 +1054,17 @@ fn entry_line<'a>(
     match matched_column {
         Some(column) => {
             spans.push(Span::styled(" ·".to_string(), kind_style));
-            let positions = crate::home::substring_positions(filter, column);
-            spans.extend(highlight_spans(column, &positions, kind_style, hit_style));
+            // The note as it was cut to fit, and the marks the cut left standing: a
+            // character no longer on screen cannot be highlighted. `kept` counts the
+            // note's own characters, so an uncut note keeps the mark on its final
+            // letter and a cut one puts none on the ellipsis.
+            let (shown, kept) = match &shown_column {
+                Some((shown, kept)) => (shown.as_str(), *kept),
+                None => (column, column.chars().count()),
+            };
+            let mut positions = crate::home::substring_positions(filter, column);
+            positions.retain(|p| *p < kept);
+            spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
         }
         None if kind_is_chip => {
             // One cell of the row's own background, then the chip.
@@ -973,6 +1101,83 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
             Style::default().fg(ctx.column_separator),
         ),
     ])
+}
+
+/// How many rows a line takes once the pane has wrapped it.
+///
+/// Word-wrapped, the way `Wrap { trim: false }` does it: a word that will not fit goes
+/// whole to the next row, so dividing the width into the length is a floor and not an
+/// answer — and the one line this is asked about, `holds`, is a list of words.
+///
+/// A space at the end of a row is counted, where the renderer drops it, so this errs
+/// one high on a line that happens to break there. Which way it errs matters: what it
+/// feeds is a budget, and a row too few leaves a blank line where a row too many draws
+/// over the bottom of the pane.
+fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if width == 0 {
+        return 1;
+    }
+    let mut rows = 1;
+    let mut used = 0;
+    for word in text.split_inclusive(' ') {
+        // Cells, not characters: the pane wraps by what a glyph occupies, and a
+        // skipped file can be named in a script where one character is two cells.
+        let len = UnicodeWidthStr::width(word);
+        if used + len > width && used > 0 {
+            rows += 1;
+            used = 0;
+        }
+        used += len;
+        // A single word longer than the pane wraps inside itself.
+        while used > width {
+            rows += 1;
+            used -= width;
+        }
+    }
+    rows
+}
+
+/// As many of a schema's columns as `room` rows will hold, and how many that was.
+///
+/// Counted as they are built, because a schema line wraps too — `created_at
+/// datetime[μs, America/New_York]` is past the forty cells the pane has. Taking a
+/// column per row draws the tail past the bottom and sends the `… N more` line over
+/// the edge with it, which is the loss the count exists to report.
+fn schema_lines(
+    schema: &[(String, polars::prelude::DataType)],
+    name_w: usize,
+    width: usize,
+    room: usize,
+    ctx: &RenderContext,
+) -> (usize, Vec<Line<'static>>) {
+    let g = glyphs::get();
+    let mut lines = Vec::new();
+    let mut used = 0;
+    for (name, dtype) in schema {
+        let mut display = name.clone();
+        if display.chars().count() > name_w {
+            display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
+        }
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{display:<name_w$}  "),
+                Style::default().fg(ctx.text_secondary),
+            ),
+            Span::styled(
+                format!("{dtype}"),
+                Style::default().fg(type_color(dtype, ctx)),
+            ),
+        ]);
+        let takes = wrapped_rows(&line, width);
+        if used + takes > room {
+            break;
+        }
+        used += takes;
+        lines.push(line);
+    }
+    (lines.len(), lines)
 }
 
 /// One `key   value` line, with the value carrying the emphasis.
@@ -1054,14 +1259,33 @@ fn preview_head(
         };
         facts.push(("source", source.label().to_string(), style));
     }
+    let described = entry.label();
     let kind = match entry.kind {
-        EntryKind::Directory => place_kind
-            .or_else(|| crate::home::object_place_label(&entry.path))
-            .unwrap_or_else(|| entry.kind.label()),
-        _ => entry.kind.label(),
+        // Only when there is data to count. A prefix holding nothing but sub-prefixes
+        // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
+        // inside an object store the service's own word is the right one.
+        EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
+            (Some(curated), _) => curated,
+            (None, false) => described.as_ref(),
+            (None, true) => {
+                crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
+            }
+        },
+        _ => described.as_ref(),
     };
     if !kind.is_empty() {
         facts.push(("kind", kind.to_string(), plain));
+    }
+    // What one listing of it found, when that is more than the label already said. A
+    // folder of one format with nothing else in it boils down to itself, and printing
+    // `kind  12 parquet` above `holds  12 parquet` says it twice.
+    // Without the partition count when the `partitions` fact below carries one: they
+    // count the same thing under different caps — five thousand entries here against
+    // five hundred and twelve there — and two adjacent numbers that ought to agree and
+    // do not are worse than one.
+    let line = entry.holds.line(entry.cost.partitions.is_none());
+    if let Some(line) = line.filter(|line| line != kind) {
+        facts.push(("holds", line, plain));
     }
     if let Some(rows) = entry.rows {
         facts.push(("rows", discover::format_rows(rows), plain));
@@ -1243,26 +1467,17 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 .max()
                 .unwrap_or(0)
                 .min(22);
-            let room = (area.height as usize).saturating_sub(lines.len() + 1);
-            for (name, dtype) in schema.iter().take(room) {
-                let mut display = name.clone();
-                if display.chars().count() > name_w {
-                    display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
-                }
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{display:<name_w$}  "),
-                        Style::default().fg(ctx.text_secondary),
-                    ),
-                    Span::styled(
-                        format!("{dtype}"),
-                        Style::default().fg(type_color(dtype, ctx)),
-                    ),
-                ]));
-            }
-            if schema.len() > room {
+            // The rows the lines so far will *occupy*, not how many there are: the
+            // pane wraps, and a fact longer than its width takes two rows. Counting
+            // lines drew the tail of the schema past the bottom and reported `… N
+            // more` as if nothing had been lost.
+            let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
+            let room = (area.height as usize).saturating_sub(drawn + 1);
+            let (shown, mut schema_lines) = schema_lines(&schema, name_w, width, room, ctx);
+            lines.append(&mut schema_lines);
+            if schema.len() > shown {
                 lines.push(Line::from(Span::styled(
-                    format!("{} {} more", g.ellipsis, schema.len() - room),
+                    format!("{} {} more", g.ellipsis, schema.len() - shown),
                     Style::default().fg(ctx.dimmed),
                 )));
             }
@@ -1335,6 +1550,421 @@ mod tests {
             cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
+            holds: Default::default(),
+        }
+    }
+
+    /// The row and the pane beside it say the same word about one folder. They are two
+    /// renderers with the same question to answer, and answering it in two orders is
+    /// how a list says `12 parquet` while the pane says `dataset`.
+    #[test]
+    fn the_row_and_the_pane_agree_on_what_a_folder_is() {
+        let ctx = RenderContext::for_test();
+        let mut entry = row("s3://bucket/occurrence", EntryKind::Directory);
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        for curated in [None, Some("dataset"), Some("project")] {
+            let line = entry_line(&entry, false, 40, false, None, "", None, curated, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("");
+            let pane: String = preview_head(&entry, curated, 60, &ctx)
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect();
+            let word = curated.unwrap_or("12 parquet");
+            assert!(
+                pane.contains(word),
+                "the pane {pane:?} does not name it {word:?}"
+            );
+            assert!(
+                line.contains(word),
+                "the row {line:?} does not name it {word:?}"
+            );
+        }
+    }
+
+    /// A count says more about a prefix than the word `prefix` does, and a bucket that
+    /// nothing has peeked into keeps the word, which is the row it is right for.
+    #[test]
+    fn a_cloud_prefix_is_labelled_by_what_it_holds() {
+        let ctx = RenderContext::for_test();
+        let drawn = |entry: &Entry| -> String {
+            entry_line(entry, false, 40, false, None, "", None, None, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+
+        let mut prefix = row("s3://bucket/exports", EntryKind::Directory);
+        assert!(drawn(&prefix).contains("prefix"), "{}", drawn(&prefix));
+
+        prefix.holds = crate::discover::Holds {
+            formats: vec![("csv".to_string(), 12)],
+            ..Default::default()
+        };
+        let text = drawn(&prefix);
+        assert!(text.contains("12 csv"), "{text}");
+        assert!(!text.contains("prefix"), "{text}");
+    }
+
+    /// And the pane beside it says the same word. The two take the same order through
+    /// two separate matches, so a folder with nothing counted in it can read `prefix`
+    /// on the row and `dir` in the pane — the one disagreement this is all arranged to
+    /// stop, on the row a search is about.
+    #[test]
+    fn the_pane_calls_a_cloud_prefix_what_the_row_calls_it() {
+        let ctx = RenderContext::for_test();
+        let drawn = |entry: &Entry| -> String {
+            entry_line(entry, false, 40, false, None, "", None, None, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+
+        let mut prefix = row("s3://bucket/warehouse", EntryKind::Directory);
+        assert!(drawn(&prefix).contains("prefix"));
+        let pane = preview_text(&prefix, 60);
+        assert!(pane.contains("prefix"), "{pane}");
+        assert!(!pane.contains("dir"), "{pane}");
+
+        // And once it has counted something, both say that instead.
+        prefix.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        assert!(drawn(&prefix).contains("12 parquet"));
+        let pane = preview_text(&prefix, 60);
+        assert!(pane.contains("12 parquet"), "{pane}");
+        assert!(!pane.contains("prefix"), "{pane}");
+    }
+
+    /// A row count that is out of reach says `?`. A folder that is not one table has
+    /// none to be out of reach, and must not read like a dataset too big to count.
+    #[test]
+    fn a_folder_of_separate_tables_shows_its_width_without_a_question_mark() {
+        let mut folder = row("/data/consolidated", EntryKind::Directory);
+        folder.cols = Some(72);
+        let shape = meta_columns(&folder);
+        assert!(shape.contains("72 cols"), "{shape}");
+        assert!(!shape.contains('?'), "{shape}");
+        assert!(
+            !shape.contains(glyphs::get().times),
+            "an operator with nothing on its left: {shape}"
+        );
+
+        let mut big = row("/data/events", EntryKind::Hive);
+        big.cols = Some(72);
+        assert!(
+            meta_columns(&big).contains('?'),
+            "a hive dataset still says ?"
+        );
+    }
+
+    /// A schema line wraps too, so the budget counts the rows they take rather than
+    /// one per column. Taking a column per row draws the tail past the bottom of the
+    /// pane and sends the `… N more` line over the edge with it — the loss the count
+    /// exists to report.
+    #[test]
+    fn a_wrapping_schema_line_is_paid_for_at_its_real_height() {
+        use polars::prelude::DataType;
+        let ctx = RenderContext::for_test();
+        // Forty cells is what the pane has; this type alone is past it.
+        let long = (0..6).fold(DataType::Int64, |inner, _| DataType::List(Box::new(inner)));
+        assert!(
+            format!("{long}").chars().count() > 18,
+            "a type past the pane's forty cells beside a name: {long}"
+        );
+        let schema: Vec<(String, DataType)> = (0..10)
+            .map(|i| (format!("created_at_{i}"), long.clone()))
+            .collect();
+
+        let (shown, lines) = schema_lines(&schema, 22, 40, 6, &ctx);
+        let rows: usize = lines.iter().map(|l| wrapped_rows(l, 40)).sum();
+        assert!(rows <= 6, "{rows} rows drawn into six: {shown} columns");
+        assert!(shown < 6, "each column takes more than one row: {shown}");
+        assert!(shown > 0, "and at least one still fits");
+    }
+
+    /// The pane word-wraps, so a row count taken by dividing the width into the length
+    /// is a floor: a word that will not fit goes whole to the next row. The schema list
+    /// is drawn in what is left, and under-counting drew its tail past the bottom while
+    /// `… N more` reported nothing lost.
+    #[test]
+    fn a_wrapped_line_is_counted_by_the_rows_it_takes() {
+        let line = |text: &str| Line::from(vec![Span::raw(text.to_string())]);
+        assert_eq!(wrapped_rows(&line("short"), 40), 1);
+        // Five four-letter words at a width of six. Dividing twenty-four characters
+        // into six says four rows; each row can hold one word and the two cells left
+        // beside it are cells no word can use, so it takes five.
+        assert_eq!(
+            wrapped_rows(&line("aaaa aaaa aaaa aaaa aaaa"), 6),
+            5,
+            "the room left at the end of a row is room a word cannot use"
+        );
+        // A single word longer than the pane wraps inside itself.
+        assert_eq!(wrapped_rows(&line(&"x".repeat(25)), 10), 3);
+        // Cells, not characters. Three glyphs of two cells each do not fit in five,
+        // and counting characters would say they do — a skipped file can be named in
+        // a script where that is true of every letter.
+        assert_eq!(
+            wrapped_rows(&line("漢字漢"), 5),
+            2,
+            "three characters, six cells"
+        );
+    }
+
+    /// A label describes and a name identifies, so on a screen too narrow for both the
+    /// label goes. Before this a `5000+ parquet` chip left the name nothing to be
+    /// truncated into and shoved the size and modified columns out of alignment.
+    #[test]
+    fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
+        let ctx = RenderContext::for_test();
+        let mut entry = row("/data/exports", crate::discover::EntryKind::MultiFile);
+        // Real metadata, so the meta columns are a string the offset can be found by.
+        entry.size = Some(4096);
+        entry.rows = Some(12);
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(entry.label(), "5000+ parquet");
+
+        // Where the meta columns begin: everything drawn before them. It must not
+        // depend on how long a row's label is, or the columns stop lining up.
+        let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
+            let meta = meta_columns(entry);
+            let at = line
+                .spans
+                .iter()
+                .position(|s| s.content == meta)
+                .expect("the meta columns are drawn");
+            line.spans[..at]
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum()
+        };
+        let meta_starts_at = |entry: &Entry, width: usize| -> usize {
+            let line = entry_line(entry, false, width, true, None, "", None, None, &ctx);
+            offset_of_meta(line, entry)
+        };
+
+        // The same kind, so only the label's length differs: a `Directory` row carries
+        // a trailing slash and would be a character wider for a reason of its own.
+        let mut short = row("/data/exports", crate::discover::EntryKind::MultiFile);
+        short.size = Some(4096);
+        short.rows = Some(12);
+        short.holds = crate::discover::Holds {
+            formats: vec![("csv".to_string(), 2)],
+            ..Default::default()
+        };
+        assert_eq!(short.label(), "2 csv");
+
+        for width in [22usize, 24, 30, 48, 100] {
+            assert_eq!(
+                meta_starts_at(&entry, width),
+                meta_starts_at(&short, width),
+                "the meta columns must start in the same place at {width}"
+            );
+        }
+
+        // The curated word is not a label to give up. `dataset` and `project` are what
+        // a source calls a place it names, and the only thing marking a curated row.
+        let mut named = row("s3://bucket/occurrence", EntryKind::Directory);
+        named.size = Some(4096);
+        named.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        let curated = |width: usize| -> String {
+            entry_line(
+                &named,
+                false,
+                width,
+                true,
+                None,
+                "",
+                None,
+                Some("dataset"),
+                &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+        };
+        // Narrow enough that the guard fires: the word is eight cells with its space,
+        // so anything at or under fourteen leaves the name nothing to be cut into.
+        for width in [10usize, 12, 14, 22, 30] {
+            assert!(
+                curated(width).contains("dataset"),
+                "at {width}: {}",
+                curated(width)
+            );
+        }
+
+        // And a row whose *path* is curated but whose kind never reaches for the word
+        // is carrying a label, which gives way like any other. Only a `Directory` row
+        // consults `place_kind`; a `multi` prefix in a public source does not.
+        let mut curated_multi = row("s3://bucket/occurrence", EntryKind::MultiFile);
+        curated_multi.size = Some(4096);
+        curated_multi.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        let with_curated_path = |width: usize| -> usize {
+            let line = entry_line(
+                &curated_multi,
+                false,
+                width,
+                true,
+                None,
+                "",
+                None,
+                Some("dataset"),
+                &ctx,
+            );
+            offset_of_meta(line, &curated_multi)
+        };
+        for width in [20usize, 22, 24, 30] {
+            assert_eq!(
+                with_curated_path(width),
+                meta_starts_at(&short, width),
+                "a count under a curated path still gives way at {width}"
+            );
+        }
+
+        // A cell the guard may not drop is cut instead. A `source not found:` is as
+        // long as somebody's configuration, and a name with nothing left to be cut
+        // into is the misalignment all of this is for.
+        let mut gone = row("s3://averylongsourcename@bucket/exports", EntryKind::File);
+        gone.size = Some(4096);
+        let known: [String; 1] = ["other".to_string()];
+        let missing = |width: usize| -> usize {
+            let line = entry_line(
+                &gone,
+                false,
+                width,
+                true,
+                None,
+                "",
+                Some(&known),
+                None,
+                &ctx,
+            );
+            offset_of_meta(line, &gone)
+        };
+        for width in [22usize, 24, 30, 48] {
+            assert_eq!(
+                missing(width),
+                meta_starts_at(&short, width),
+                "a warning too long for the row is cut, not left to push the columns \
+                 out, at {width}"
+            );
+        }
+
+        // An uncut note keeps the mark on its last letter. The subtraction that makes
+        // room for the ellipsis applies only where there is one.
+        let marks = |width: usize| -> Vec<String> {
+            entry_line(
+                &short,
+                false,
+                width,
+                true,
+                Some("amount"),
+                "amount",
+                None,
+                None,
+                &ctx,
+            )
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+            .map(|s| s.content.to_string())
+            .collect()
+        };
+        assert_eq!(
+            marks(200).join(""),
+            "amount",
+            "every letter of the match is marked when the note is whole"
+        );
+
+        // A label under a named source is still a label. The path carrying a source id
+        // is a different question from the cell showing one, and a peeked prefix under
+        // `s3://prod@bucket` has both.
+        let mut named = row("s3://prod@bucket/exports", EntryKind::MultiFile);
+        named.size = Some(4096);
+        named.rows = Some(12);
+        named.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12000)],
+            ..Default::default()
+        };
+        let sources = ["prod".to_string()];
+        let offset = |width: usize| -> usize {
+            let line = entry_line(
+                &named,
+                false,
+                width,
+                true,
+                None,
+                "",
+                Some(&sources),
+                None,
+                &ctx,
+            );
+            offset_of_meta(line, &named)
+        };
+        for width in [22usize, 24, 30] {
+            assert_eq!(
+                offset(width),
+                meta_starts_at(&short, width),
+                "a label under a named source gives way like any other, at {width}"
+            );
+        }
+
+        // A column note is not a label: it says why the row is in the list, and the
+        // draw site writes it from `matched_column` rather than from the cell, so
+        // blanking the cell would hand the name a budget the note then overruns.
+        let noted = |entry: &Entry, width: usize| -> usize {
+            let line = entry_line(
+                entry,
+                false,
+                width,
+                true,
+                Some("transaction_amount"),
+                "",
+                None,
+                None,
+                &ctx,
+            );
+            offset_of_meta(line, entry)
+        };
+        for width in [20usize, 24, 30, 48] {
+            assert_eq!(
+                noted(&entry, width),
+                noted(&short, width),
+                "a matched row is drawn by its note, whatever its label would say, \
+                 at {width}"
+            );
+            // And the note itself is cut to fit, not left to push the columns out.
+            assert_eq!(
+                noted(&short, width),
+                meta_starts_at(&short, width),
+                "a column note too long for the row is cut, at {width}"
+            );
         }
     }
 
@@ -1427,6 +2057,161 @@ mod tests {
         assert!(text(Some(&[])).contains("source not found: lab"));
         // Inside a source the trail already says which, so nothing is added.
         assert!(!text(None).contains("lab"));
+    }
+
+    /// Where the meta columns begin, in cells. Everything left of them is the name
+    /// half of the row, and it is one width for every row on screen or the columns are
+    /// not columns.
+    fn meta_offset(line: &Line) -> usize {
+        // The meta text is second from the end; the last span carries the tint to the
+        // edge.
+        let spans = &line.spans[..line.spans.len().saturating_sub(2)];
+        spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum()
+    }
+
+    #[test]
+    fn the_pane_does_not_say_what_a_folder_holds_twice() {
+        let mut entry = Entry::for_test(std::path::Path::new("/data/consolidated"), "consolidated");
+        entry.kind = EntryKind::Directory;
+        // A folder of one format and nothing else: the label and the line are the same
+        // words, and `kind  12 parquet` above `holds  12 parquet` says it twice.
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        let text = preview_text(&entry, 60);
+        assert!(text.contains("12 parquet"), "{text}");
+        assert_eq!(
+            text.matches("12 parquet").count(),
+            1,
+            "the label and the line are the same words: {text}"
+        );
+
+        // With anything else beside them the line says more than the label, and both
+        // belong.
+        entry.holds.folders = 3;
+        let text = preview_text(&entry, 60);
+        assert!(text.contains("holds"), "{text}");
+        assert!(text.contains("3 folders"), "{text}");
+    }
+
+    #[test]
+    fn no_mark_ever_lands_on_a_cut_notes_ellipsis() {
+        // The note says why a row is in the list, and the marks say which letters
+        // matched. The ellipsis standing for the rest of the note matched nothing, so a
+        // mark on it is the row claiming a hit it does not have. `kept` counts the
+        // note's own characters and the marks stop there — this is what says so, since
+        // the comparison between the two rows below cannot see a change that moves
+        // both of them.
+        let ctx = RenderContext::for_test();
+        let entry = Entry::for_test(std::path::Path::new("/tmp/x"), "x");
+        let g = glyphs::get();
+        for width in 1..=40usize {
+            let line = entry_line(
+                &entry,
+                false,
+                width,
+                false,
+                Some("transaction_amount_usd"),
+                "usd",
+                Some(&[]),
+                None,
+                &ctx,
+            );
+            let marked: String = line
+                .spans
+                .iter()
+                .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+                .map(|s| s.content.to_string())
+                .collect();
+            assert!(
+                !marked.contains(g.ellipsis),
+                "at {width} cells a mark landed on the cut note's ellipsis: {marked:?}"
+            );
+            // And a note cut down to nothing but the ellipsis is not a note. Where
+            // there is no room for a letter beside it the whole note stays and the name
+            // gives way instead, the same reasoning that keeps `dataset` from becoming
+            // `d…t`.
+            let note: String = line
+                .spans
+                .iter()
+                .skip_while(|s| s.content != " ·")
+                .skip(1)
+                .map(|s| s.content.to_string())
+                .collect();
+            assert_ne!(
+                note.trim_end(),
+                g.ellipsis,
+                "at {width} cells the note was cut down to an ellipsis and said nothing"
+            );
+            // A note that fits is not cut. The cut one is always shorter than the
+            // whole, so a drawn note as long as the column can only be the column
+            // itself — which is what catches a boundary set one cell the wrong way,
+            // where the ellipsis replaces the last letter and changes nothing else.
+            let note = note.trim_end();
+            if note.chars().count() >= "transaction_amount_usd".chars().count() {
+                assert_eq!(
+                    note, "transaction_amount_usd",
+                    "at {width} cells a note that fitted was cut anyway"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_note_on_a_row_from_a_source_leaves_the_meta_columns_alone() {
+        let ctx = RenderContext::for_test();
+        let known = ["prod".to_string()];
+        // The same row in every way but the source id, so the only thing that can
+        // move the meta columns is the cell the id goes in.
+        let mut plain = Entry::for_test(
+            std::path::Path::new("s3://bucket/sales.parquet"),
+            "sales.parquet",
+        );
+        plain.kind = EntryKind::Unknown;
+        let mut sourced = Entry::for_test(
+            std::path::Path::new("s3://prod@bucket/sales.parquet"),
+            "sales.parquet",
+        );
+        sourced.kind = EntryKind::Unknown;
+
+        // Two cells hold this row's note: the source id, which is as long as somebody's
+        // configuration and so is cut when it stops fitting, and the column that put
+        // the row in the list. Only one of them is drawn. Cutting the other moved the
+        // meta columns of this row and no other — the columns coming unstuck on the one
+        // row a search was about.
+        for width in 6..=30usize {
+            let with_note = entry_line(
+                &sourced,
+                false,
+                width,
+                true,
+                Some("customer_identifier"),
+                "cust",
+                Some(&known),
+                None,
+                &ctx,
+            );
+            let without = entry_line(
+                &plain,
+                false,
+                width,
+                true,
+                Some("customer_identifier"),
+                "cust",
+                Some(&[]),
+                None,
+                &ctx,
+            );
+            assert_eq!(
+                meta_offset(&with_note),
+                meta_offset(&without),
+                "at {width} cells the source id moved the meta columns"
+            );
+        }
     }
 
     /// The row's spans, as (text, is_highlighted) pairs.

@@ -61,11 +61,15 @@ pub enum EntryKind {
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
 ///
+/// 4: a folder's row carries what one listing of it found, beside its kind, and the two
+/// are restored together — a record written by 3 carries the kind and not the count, and
+/// a row given a kind from the cache is never looked into again (#275, phase 2).
+///
 /// 3: one listing instead of a probe of the first eight entries, formats instead of
 /// extension strings, and one bookkeeping predicate. A folder of `.arrow` beside `.ipc`
 /// was `dir` and is now one dataset; a folder whose ninth entry decided it was answered
 /// by whatever the filesystem returned first (#275, phase 1).
-pub const CLASSIFIER_VERSION: u32 = 3;
+pub const CLASSIFIER_VERSION: u32 = 4;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -123,6 +127,188 @@ impl EntryKind {
     }
 }
 
+/// What one listing of a folder found in it, counted rather than judged.
+///
+/// The label a folder's row carries comes from here, so it says what is inside rather
+/// than what `Enter` will do with it. A count that is wrong then costs a reader nothing:
+/// `12 parquet` is true of a folder whether or not its files are one table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Holds {
+    /// Data files by format, commonest first. The name is [`crate::FileFormat::name`],
+    /// kept as a string so a record written by one build reads in the next.
+    #[serde(default)]
+    pub formats: Vec<(String, usize)>,
+    /// Subdirectories, partitions among them.
+    #[serde(default)]
+    pub folders: usize,
+    /// `key=value` subdirectories, which are also counted in `folders`.
+    #[serde(default)]
+    pub partitions: usize,
+    /// Files datui has no reader for: a README, a script, a notebook. Neither data nor
+    /// a writer's own, and without a count of their own they were in nothing — a folder
+    /// of twenty of them read `dir` with no line at all, the same as an empty one.
+    #[serde(default)]
+    pub not_read: usize,
+    /// Entries skipped as a writer's own, and the first few by name for the pane.
+    #[serde(default)]
+    pub skipped: usize,
+    #[serde(default)]
+    pub skipped_names: Vec<String>,
+    /// Whether the listing stopped at [`MAX_ENTRIES_PER_DIR`], so every count is a
+    /// floor. Shown as `5000+`.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// How many skipped names are kept for the pane. Enough to recognise the convention.
+pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
+
+/// How much of one of those names. A Hadoop output folder's `.crc` files sort first and
+/// are named for the file they check — `.part-00000-<uuid>-c000.snappy.parquet.crc`, some
+/// seventy characters — so four of them are a paragraph of UUID in a pane whose other
+/// facts are one line each. Both ends are kept, because both say what it is and the
+/// middle is the part that is nobody's business.
+const SKIPPED_NAME_WIDTH: usize = 24;
+
+/// A name cut to `width`, keeping both ends and marking the middle.
+pub(crate) fn shorten(name: &str, width: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= width {
+        return name.to_string();
+    }
+    let ellipsis = crate::glyphs::get().ellipsis;
+    let room = width.saturating_sub(ellipsis.chars().count());
+    let head = room.div_ceil(2);
+    let tail = room - head;
+    format!(
+        "{}{ellipsis}{}",
+        chars[..head].iter().collect::<String>(),
+        chars[chars.len() - tail..].iter().collect::<String>()
+    )
+}
+
+impl Holds {
+    /// Data files of every format.
+    pub fn data_files(&self) -> usize {
+        self.formats.iter().map(|(_, n)| n).sum()
+    }
+
+    /// The one format this folder holds, when it holds exactly one.
+    pub fn one_format(&self) -> Option<&str> {
+        match self.formats.as_slice() {
+            [(name, _)] => Some(name),
+            _ => None,
+        }
+    }
+
+    /// The label a folder's row carries when its kind does not name itself: `12
+    /// parquet`, `mixed`, or `dir` for a folder with no data directly inside.
+    pub fn label(&self) -> String {
+        let more = if self.truncated { "+" } else { "" };
+        match self.formats.as_slice() {
+            // `dir` says there is no data file inside. A listing cut short cannot say
+            // that — it found none among the entries it read, and more files can
+            // unmake it, which is what separates this from `mixed`.
+            [] => format!("dir{more}"),
+            // The `+` hedges the whole claim, not only the number: past the cap a
+            // second format may be among the entries that were not read, so `5000+
+            // parquet` and `mixed` are both answers this folder can give depending on
+            // the order it came back in. What is certain is that five thousand Parquet
+            // files are in there.
+            [(name, count)] => format!("{count}{more} {name}"),
+            // No `+`: `mixed` is not a count, and more files cannot unmake it. The
+            // pane's line carries the qualifier on each number it does report.
+            _ => "mixed".to_string(),
+        }
+    }
+
+    /// Whether nothing has been counted here: a file, or a folder nothing has looked
+    /// into. A folder that was looked into and found empty is not this — it has no
+    /// formats either, and `dir` is the right word for both.
+    pub fn is_empty(&self) -> bool {
+        self.formats.is_empty()
+            && self.folders == 0
+            && self.skipped == 0
+            && self.not_read == 0
+            // Every field, including the two that are counted elsewhere as well: a
+            // partition is a folder and a skipped name is one of `skipped`, so on both
+            // routes today these are implied. This is a `skip_serializing_if` and the
+            // guard that stops a placeholder erasing a row's count, and neither should
+            // turn on an invariant two other functions have to keep.
+            && self.partitions == 0
+            && self.skipped_names.is_empty()
+            // A listing cut short before it found anything still says something: that
+            // what it found is not all there is. Without this the row falls back to its
+            // kind and reads `dir`, where `label` would have said `dir+`.
+            && !self.truncated
+    }
+
+    /// The `holds` line in the details pane: every format, the folders, and what was
+    /// skipped, with a few of the skipped names so the convention is recognisable.
+    pub fn line(&self, with_partitions: bool) -> Option<String> {
+        let more = if self.truncated { "+" } else { "" };
+        let mut parts: Vec<String> = self
+            .formats
+            .iter()
+            .map(|(name, count)| format!("{count}{more} {name}"))
+            .collect();
+        // Partitions are folders too, and counted in `folders`; naming both would count
+        // them twice. What is left is the folders that are not partitions.
+        let plain = self.folders.saturating_sub(self.partitions);
+        if plain > 0 {
+            let word = if plain == 1 { "folder" } else { "folders" };
+            parts.push(format!("{plain}{more} {word}"));
+        }
+        if self.not_read > 0 {
+            parts.push(format!("{}{more} not read", self.not_read));
+        }
+        if with_partitions && self.partitions > 0 {
+            let word = if self.partitions == 1 {
+                "partition"
+            } else {
+                "partitions"
+            };
+            parts.push(format!("{}{more} {word}", self.partitions));
+        }
+        if self.skipped > 0 {
+            // The names are the first few, so a list shorter than the count ends in an
+            // ellipsis rather than reading as all of them.
+            let mut names = self
+                .skipped_names
+                .iter()
+                .map(|n| shorten(n, SKIPPED_NAME_WIDTH))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if self.skipped > self.skipped_names.len() && !names.is_empty() {
+                names.push_str(&format!(", {}", crate::glyphs::get().ellipsis));
+            }
+            parts.push(if names.is_empty() {
+                format!("{}{more} skipped", self.skipped)
+            } else {
+                format!("{}{more} skipped ({names})", self.skipped)
+            });
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+impl Entry {
+    /// The short label beside a row's name: what it holds, rather than what `Enter`
+    /// will do with it.
+    ///
+    /// A folder that has been looked into is described by the count — `12 parquet`,
+    /// `mixed`, `dir` — and a lake table or a hive root by the format's own name, which
+    /// is the thing it is. A row nothing has looked into has only its kind to go on.
+    pub fn label(&self) -> std::borrow::Cow<'static, str> {
+        match self.kind {
+            EntryKind::Directory | EntryKind::MultiFile if !self.holds.is_empty() => {
+                self.holds.label().into()
+            }
+            kind => kind.label().into(),
+        }
+    }
+}
+
 /// One row on the home screen.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -150,6 +336,9 @@ pub struct Entry {
     /// What opening this will cost: where it lives, how it is stored, how it is laid
     /// out. All of it derived from bytes datui already reads.
     pub cost: Cost,
+    /// What one listing of it found, for a folder. Empty for a file, and for a folder
+    /// nothing has looked into.
+    pub holds: Holds,
 }
 
 /// What pressing Enter on a dataset will actually cost.
@@ -230,6 +419,7 @@ impl Entry {
             cols_sampled: false,
             columns: Vec::new(),
             cost: Cost::default(),
+            holds: Default::default(),
         }
     }
 
@@ -369,6 +559,17 @@ pub(crate) fn folder_and_name(path: &Path) -> String {
     }
 }
 
+/// Commonest first, and by name where two formats tie, so the line reads the same way
+/// twice running.
+///
+/// Named rather than written inline because `read_dir` order is exactly what it exists
+/// to remove, and a fixture on disk cannot pin an order that depends on it: the tie is
+/// the whole point and only a caller choosing the input order can put one there. The
+/// cloud route sorts its own counts the same way over `&'static str`.
+fn order_formats(counts: &mut [(crate::FileFormat, usize)]) {
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(b.0.name())));
+}
+
 /// Whether a listing entry is bookkeeping rather than data.
 ///
 /// The one convention datui knows, and the only one: a leading `_` or `.`, which every
@@ -381,13 +582,20 @@ pub(crate) fn folder_and_name(path: &Path) -> String {
 /// cloud listing knew three more names. A folder whose ninth entry is `_metadata.json`
 /// answered `multi` locally and `dir` in a bucket for no better reason than that.
 pub fn is_bookkeeping(name: &str) -> bool {
+    // The `_$folder$` marker is asked about first, because it is a suffix and the
+    // folder it stands in for can itself be a partition: legacy s3n and EMR write
+    // `year=2024_$folder$` beside `year=2024/`, and a partition test looking only for
+    // an `=` calls that marker data.
+    if name.ends_with("_$folder$") {
+        return true;
+    }
     // A `key=value` name is a partition wherever it appears, whatever it starts with.
     // Spark and Hive partition on internal columns — `_date=2024-01-01`, `_c0=…` — and
     // reading those as a writer's own files loses the whole dataset.
     if is_partition_name(name) {
         return false;
     }
-    name.starts_with(['_', '.']) || name.ends_with("_$folder$")
+    name.starts_with(['_', '.'])
 }
 
 /// Whether a name is a hive partition (`year=2024`): `key=value`, with a non-empty key.
@@ -571,19 +779,36 @@ fn is_partition_dir(path: &Path) -> bool {
 /// Capping it lower again would put the order-dependence back exactly where the folders
 /// are biggest.
 pub fn classify_directory(path: &Path) -> EntryKind {
+    look_at_directory(path).0
+}
+
+/// The kind *and* what the listing found, from one read of it.
+///
+/// Two answers to two questions. The kind decides what `Enter` does with the folder;
+/// the count says what is in it, and the row's label is written from that — so a label
+/// that is wrong about the first is still true about the second.
+pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
+    let mut holds = Holds::default();
     // Before anything is counted: a lake table's data files genuinely do agree on a
     // schema, so every rule below says "one table" and is right about the schema and
     // wrong about the rows.
+    //
+    // And before the listing, which it does not need: three `join` tests answer it, and
+    // counting would walk up to `MAX_ENTRIES_PER_DIR` entries of every table in a
+    // warehouse, on every pass, for a `holds` line beside a table whose files `enrich`
+    // then refuses to read. A prefix in a bucket does carry one, because the listing it
+    // is counted from had already been paid for.
     if let Some(lake) = lake_table(path) {
-        return lake;
+        return (lake, holds);
     }
     let Ok(iter) = std::fs::read_dir(path) else {
-        return EntryKind::Directory;
+        return (EntryKind::Directory, holds);
     };
 
     let mut partitions = 0usize;
     let mut data_files = 0usize;
     let mut seen = 0usize;
+    let mut counts: Vec<(crate::FileFormat, usize)> = Vec::new();
     // A multi-file dataset is homogeneous by definition; a folder that merely
     // contains two different spreadsheets is not one. Compared as formats rather than
     // as extensions, so `.ipc` beside `.arrow` is one kind of thing and not two.
@@ -595,12 +820,34 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     // the count would let the walk run to twice the cap. The cap is a cost bound and not
     // a correctness one either way — a folder past it is decided by whichever entries
     // came back first, whether they were data or a writer's own.
-    for entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
+    // One past the cap, so "there is more" is known without paying to process it —
+    // the same shape `scan_dir_bounded` uses, and the reason a folder of exactly five
+    // thousand entries is a total rather than a floor.
+    for (entries, entry) in iter.flatten().take(MAX_ENTRIES_PER_DIR + 1).enumerate() {
+        if entries >= MAX_ENTRIES_PER_DIR {
+            holds.truncated = true;
+            break;
+        }
         let entry_path = entry.path();
         let name = entry.file_name();
         // The markers and job files tools leave beside their output, by the one test
         // every route makes.
-        if is_bookkeeping(&name.to_string_lossy()) {
+        let name = name.to_string_lossy().into_owned();
+        if is_bookkeeping(&name) {
+            holds.skipped += 1;
+            // The first few by name, not the first few the filesystem returned: a line
+            // in the pane that reads differently on two runs of the same folder is the
+            // order-dependence this module just spent a release removing. Past
+            // `MAX_ENTRIES_PER_DIR` it is the first few by name *of what was read*, and
+            // where the walk stopped is the filesystem's order again — which the `+` on
+            // every count beside them says.
+            if holds.skipped_names.last().is_none_or(|last| &name < last)
+                || holds.skipped_names.len() < SKIPPED_NAMES_SHOWN
+            {
+                holds.skipped_names.push(name);
+                holds.skipped_names.sort();
+                holds.skipped_names.truncate(SKIPPED_NAMES_SHOWN);
+            }
             continue;
         }
         // The type the directory read already returned, rather than a `stat` per entry:
@@ -622,6 +869,7 @@ pub fn classify_directory(path: &Path) -> EntryKind {
             Err(_) => followed(&entry_path),
         };
         if is_dir {
+            holds.folders += 1;
             if is_partition_dir(&entry_path) {
                 partitions += 1;
             }
@@ -633,14 +881,31 @@ pub fn classify_directory(path: &Path) -> EntryKind {
             .filter(|_| is_file)
         {
             data_files += 1;
+            match counts.iter_mut().find(|(f, _)| *f == found) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((found, 1)),
+            }
             match format {
                 None => format = Some(found),
                 Some(first) if first != found => mixed_formats = true,
                 Some(_) => {}
             }
+        } else {
+            // Everything else in the listing: a file with no reader, and a name with
+            // nothing behind it — a FIFO, a socket, a broken symlink. Named like data
+            // or not, none of them can be read, and the pane says every entry is in
+            // one of these counts.
+            holds.not_read += 1;
         }
         seen += 1;
     }
+
+    holds.partitions = partitions;
+    order_formats(&mut counts);
+    holds.formats = counts
+        .into_iter()
+        .map(|(f, n)| (f.name().to_string(), n))
+        .collect();
 
     // Unchanged from before the probe went, deliberately. Reading the whole listing
     // makes one `notes=old` among twenty ordinary subfolders a hive root every time
@@ -655,7 +920,7 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     // then walks it to depth four looking for footers. Left alone all the same — see
     // above for the two majorities that refused real hive roots instead.
     if partitions > 0 && partitions >= data_files {
-        return EntryKind::Hive;
+        return (EntryKind::Hive, holds);
     }
 
     // Require a format that can actually be read as many files. Without this the home
@@ -668,13 +933,14 @@ pub fn classify_directory(path: &Path) -> EntryKind {
     // be offered as a dataset, which is worse than useless: it hides the folder.
     let homogeneous = data_files > 1 && !mixed_formats && readable_as_one;
     let mostly_data = data_files * 2 >= seen;
-    if homogeneous && mostly_data {
+    let kind = if homogeneous && mostly_data {
         EntryKind::MultiFile
     } else {
         // Everything else — including a directory holding a single data file — is a
         // place to look inside, not a dataset in its own right.
         EntryKind::Directory
-    }
+    };
+    (kind, holds)
 }
 
 /// Entries under `metadata/` to look at before giving up on Iceberg. A table with a
@@ -822,6 +1088,10 @@ fn sort_entries(entries: &mut [Entry]) {
     });
 }
 
+/// How far below a folder the footer walk goes. A hive dataset partitioned by year,
+/// month, day and hour is four; past this the files belong to something else.
+const MAX_WALK_DEPTH: u8 = 4;
+
 /// Upper bound on Parquet footers read to size a multi-file or hive dataset.
 ///
 /// Two partitions is cheap; five thousand is not, and a home screen that stalls on
@@ -849,11 +1119,52 @@ pub fn enrich(entry: &mut Entry) {
 
 /// Sum footers across a bounded set of Parquet files under `entry`.
 fn enrich_dataset(entry: &mut Entry) {
+    // A folder of JSON is not described by the Parquet under it. The walk below
+    // recurses — it has to, because that is what opening the folder reads — so for a
+    // folder whose own files are a format this cannot count, every number it produced
+    // belonged to something the row does not name: `6 json` reported the sixty-one
+    // columns of the Parquet in its subfolders.
+    //
+    // A folder of Parquet with more Parquet beneath it is the opposite case and keeps
+    // the walk. The counts are a promise about what `Enter` gives, and `Enter` reads
+    // the subtree; measuring only the top would promise three files and open
+    // twenty-three, and would ask `is_one_table` about three files while unioning all
+    // twenty-three. The `holds` line names the folder that explains the difference.
+
     // The partition layout comes from directory names, so it is knowable even for a
     // dataset far too large to count the rows of — which is exactly the dataset whose
     // shape you most want described before opening it.
     if entry.kind == EntryKind::Hive {
         entry.cost.partitions = partition_layout(&entry.path);
+    }
+
+    // Whether the footers below are this folder's own shape, or something else's. A
+    // folder's own format is counted exactly, so this is exact for one.
+    //
+    // Not asked of a hive root at all. Its own files are strays beside the partitions —
+    // a `schema.json` or a `manifest.csv` left at the top — so its counted format is
+    // not its data's, and one such file would blank the whole dataset. Its data is down
+    // in the partitions, where the format can only be sampled, and one spine tells the
+    // two cases apart in neither direction: a CSV tree with a stray `snapshot.parquet`
+    // in the sampled partition and a Parquet tree with a stray `notes.csv` in it both
+    // come back `NotOneTable`. A stray Parquet in a CSV tree is still counted as the
+    // dataset's, which #275 phase 4 settles by making the tree readable in its own
+    // format.
+    let reads_as_parquet = entry.kind == EntryKind::Hive
+        || match entry.holds.one_format() {
+            // No single format to object with, so nothing to object. No row reaches
+            // this today — a folder of more than one format is a `Directory` and
+            // `enrich` leaves those alone — so it is a default, and the safe one:
+            // leaving the counts off a folder is a mistake opening it undoes.
+            None => true,
+            // A name this build cannot read back is not Parquet as far as anything here
+            // knows. Leaving the counts off a folder is the mistake that can be undone
+            // by opening it; giving it another format's numbers is not.
+            Some(name) => crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet),
+        };
+    if !reads_as_parquet {
+        entry.size = None;
+        return;
     }
 
     // The stat'ed size of a dataset directory is its own inode: a couple of hundred
@@ -873,8 +1184,28 @@ fn enrich_dataset(entry: &mut Entry) {
         let sampled = sample_footers(&files);
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
         if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&names) {
+            // Whether the folder is one table is asked of everything under it, because
+            // that is what opening it would union. What it *holds* is the files the
+            // label counts — the ones directly inside — and a downgraded row is never
+            // opened as one table, so a *count* spanning the subtree would be a width
+            // nothing produces. Three more footers, on a folder being downgraded, to
+            // say `2 parquet` and mean those two.
+            let own_files = direct_children(&files, &entry.path);
+            let own = sample_footers(&own_files);
+            // The names, though, are every one sampled under it, the same as the arm
+            // below: they are the home screen's search index, and a folder is found by
+            // a column that looking inside it will reach. Narrowing these to the direct
+            // children made a big folder unfindable by a column a small one is found by.
             entry.columns = union_of(&names);
-            downgrade_to_directory(entry);
+            // A floor only when a footer was left unread. The folder is past the
+            // counting budget, but its *own* files may be three of the seventy — and
+            // then `5+ cols` claims a sample that did not happen.
+            entry.cols_sampled = own.len() < own_files.len();
+            // The columns a reader sees, from the schema rather than by splitting leaf
+            // paths on a dot: a column named `user.id` and a struct `user` with a field
+            // `id` are not the same thing, and a string cannot tell them apart.
+            let top = union_of(&own.iter().map(top_level_names).collect::<Vec<_>>());
+            downgrade_to_directory(entry, (!top.is_empty()).then_some(top.len()));
             return;
         }
         // Still worth knowing the shape, even when the row count is out of reach.
@@ -910,6 +1241,13 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut top_level: Vec<String> = Vec::new();
     let mut seen_top_level = std::collections::HashSet::new();
     let mut per_file: Vec<Vec<String>> = Vec::with_capacity(files.len());
+    // The width and the size, restricted to the folder's own files. A folder the footers
+    // downgrade is never opened as one table, so a *count* spanning the subtree would be
+    // a width nothing produces — and the label beside it counts only what is inside. The
+    // column names stay the subtree's: they are the search index, not the label.
+    let mut own_bytes = 0u64;
+    let mut own_top_level: Vec<String> = Vec::new();
+    let mut own_seen_top = std::collections::HashSet::new();
     let mut cost = Cost::default();
     let mut uncompressed = 0u64;
     let mut row_groups = 0usize;
@@ -932,15 +1270,26 @@ fn enrich_dataset(entry: &mut Entry) {
         // The columns a reader sees, not the leaves the footer names: see
         // [`crate::schema_union::top_level_columns`].
         per_file.push(crate::schema_union::top_level_columns(&names));
+        // And the same again for this folder's own files, which is what a downgraded
+        // row is labelled from: `2 parquet` must mean those two.
+        // One stat, feeding both totals: on a share each is a round trip, and a folder
+        // of sixty-four files directly inside would have paid twice for every one.
+        let file_bytes = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+        bytes += file_bytes;
+        if file.parent() == Some(entry.path.as_path()) {
+            own_bytes += file_bytes;
+            for name in top_level_names(&meta) {
+                if own_seen_top.insert(name.clone()) {
+                    own_top_level.push(name);
+                }
+            }
+        }
         let mut per_file = Cost::default();
         physical_facts(&meta, &mut per_file);
         uncompressed += per_file.uncompressed.unwrap_or(0);
         row_groups += per_file.row_groups.unwrap_or(0);
         if cost.codec.is_none() {
             cost.codec = per_file.codec;
-        }
-        if let Ok(m) = std::fs::metadata(file) {
-            bytes += m.len();
         }
     }
     // The footers are read by now, so whether these files are one table is known
@@ -951,12 +1300,23 @@ fn enrich_dataset(entry: &mut Entry) {
     // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
     // and a hive folder's files hold the same table by construction.
     if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_one_table(&per_file) {
-        entry.size = Some(bytes);
+        // Its own files' bytes, not the subtree's. The label counts what is directly
+        // inside and so do the columns beside it; a size summed over a different set of
+        // files is a third number on one row measured against neither of the other two.
+        entry.size = Some(own_bytes);
         // Nothing here is one table's shape, but the names are what the folder holds,
         // and searching the home screen by column should still find the folder that
         // has one.
+        // The count is the folder's own files, which is what the label names. The column
+        // *names* are every one under it: they are the home screen's search index, and
+        // "which of these has a `txinwitness`?" is answered by the folder that has one
+        // anywhere, which is where looking inside will find it.
         entry.columns = columns;
-        downgrade_to_directory(entry);
+        entry.cols_sampled = false;
+        downgrade_to_directory(
+            entry,
+            (!own_top_level.is_empty()).then_some(own_top_level.len()),
+        );
         return;
     }
 
@@ -968,6 +1328,15 @@ fn enrich_dataset(entry: &mut Entry) {
     cost.row_groups = (row_groups > 0).then_some(row_groups);
     cost.partitions = entry.cost.partitions.take();
     entry.cost = cost;
+}
+
+/// The files of `dir` itself, out of a walk that went below it.
+fn direct_children(files: &[PathBuf], dir: &Path) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|f| f.parent() == Some(dir))
+        .cloned()
+        .collect()
 }
 
 /// The footers at the ends and the middle of a folder too large to read every one of.
@@ -1003,13 +1372,16 @@ fn agree_on_a_schema(sampled: &[Vec<String>]) -> bool {
 
 /// A folder whose files turned out to be separate tables is a place to look inside.
 ///
-/// Its row count would be the sum of unrelated things and its column count would
-/// belong to whichever file was read first, so neither is reported.
-fn downgrade_to_directory(entry: &mut Entry) {
+/// Its row count would be the sum of unrelated things, so it is not reported. The column
+/// count is: the union of what the folder's files hold is a true answer to "what is in
+/// here" even when "how many rows" has none, so a folder of fifteen tables reads
+/// `15 parquet · 72 columns` and no row count. Passed in rather than derived from
+/// `columns`, which names leaves: see [`top_level_names`] for why a leaf path cannot be
+/// split back into the columns a reader sees.
+fn downgrade_to_directory(entry: &mut Entry, cols: Option<usize>) {
     entry.kind = EntryKind::Directory;
     entry.rows = None;
-    entry.cols = None;
-    entry.cols_sampled = false;
+    entry.cols = cols;
     entry.cost = Cost {
         partitions: entry.cost.partitions.take(),
         ..Cost::default()
@@ -1057,7 +1429,7 @@ const MAX_NAMES_PER_DIR: usize = 20_000;
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
 /// once the cap is exceeded so a huge dataset costs the same as a small one.
 fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
-    if depth > 4 || out.len() > MAX_FOOTERS_PER_DATASET {
+    if depth > MAX_WALK_DEPTH || out.len() > MAX_FOOTERS_PER_DATASET {
         return;
     }
     let Ok(iter) = std::fs::read_dir(dir) else {
@@ -1337,7 +1709,7 @@ pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 /// Bounded on both breadth and depth so a hive dataset with thousands of partitions
 /// costs the same as one with three.
 fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
-    if depth > 4 {
+    if depth > MAX_WALK_DEPTH {
         return None;
     }
     let mut subdirs = Vec::new();
@@ -1444,6 +1816,26 @@ mod classification_tests {
         assert!(data_format(Path::new("notes")).is_none());
     }
 
+    /// A format's name is not an extension, and the one place that stores a name has
+    /// to read it back with the inverse of what wrote it. `excel` is a name no
+    /// extension spells, so parsing it as one answers `None` — and `None` there means
+    /// "not Parquet", which leaves a folder's counts off rather than filling them from
+    /// whatever Parquet is under it.
+    #[test]
+    fn a_format_name_round_trips_only_through_from_name() {
+        use crate::FileFormat;
+        for format in FileFormat::ALL {
+            assert_eq!(
+                FileFormat::from_name(format.name()),
+                Some(format),
+                "{} is a name",
+                format.name()
+            );
+        }
+        assert_eq!(FileFormat::from_extension("excel"), None);
+        assert_eq!(FileFormat::from_name("xlsx"), None);
+    }
+
     /// A compression suffix is how a file is stored, not what it holds, on both routes.
     #[test]
     fn a_compressed_name_reads_as_the_format_under_it() {
@@ -1488,10 +1880,653 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::classify_listing(&[], &objects),
+            crate::cloud_browse::look_at_listing("out/", &[], &objects).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
+    }
+
+    /// A label says what is inside, so it is true whatever `Enter` then does. The same
+    /// folder of three tables reads `3 parquet` and is a directory to look inside.
+    #[test]
+    fn a_label_counts_what_is_there_rather_than_naming_a_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id"]);
+        }
+        std::fs::create_dir_all(dir.path().join("archive")).unwrap();
+        std::fs::write(dir.path().join("notes.csv"), b"x").unwrap();
+        std::fs::write(dir.path().join("_SUCCESS"), b"").unwrap();
+        std::fs::write(dir.path().join(".part.crc"), b"").unwrap();
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.label(), "mixed", "two formats is two formats");
+        assert_eq!(
+            entry.holds.line(true).as_deref(),
+            Some("3 parquet · 1 csv · 1 folder · 2 skipped (.part.crc, _SUCCESS)"),
+            "and the pane says what the label boiled down"
+        );
+        assert_eq!(entry.holds.data_files(), 4);
+        assert_eq!(entry.holds.folders, 1);
+    }
+
+    /// One format, and the count is the files.
+    #[test]
+    fn a_folder_of_one_format_is_labelled_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..12 {
+            write(dir.path(), &format!("part-{i:05}.parquet"), &["id", "ts"]);
+        }
+        let entry = measured(dir.path());
+        assert_eq!(entry.label(), "12 parquet");
+        assert_eq!(entry.holds.line(true).as_deref(), Some("12 parquet"));
+
+        // A folder with nothing in it datui reads is a place to look inside — and the
+        // pane still says how many files are in there. Without a count of their own
+        // they were in nothing, and twenty of them read like an empty folder.
+        let plain = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            std::fs::write(plain.path().join(format!("note{i}.md")), b"x").unwrap();
+        }
+        let plain = measured(plain.path());
+        assert_eq!(plain.label(), "dir");
+        assert_eq!(plain.holds.line(true).as_deref(), Some("20 not read"));
+    }
+
+    /// A row nothing has looked into has only its kind to go on, and a hive root or a
+    /// lake table is named by the thing it is rather than counted.
+    #[test]
+    fn a_kind_that_names_itself_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("year=2024")).unwrap();
+        std::fs::create_dir_all(dir.path().join("year=2025")).unwrap();
+        assert_eq!(measured(dir.path()).label(), "hive");
+
+        let lake = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lake.path().join("_delta_log")).unwrap();
+        assert_eq!(measured(lake.path()).label(), "delta");
+
+        let unlooked = Entry::new(PathBuf::from("/nowhere"), EntryKind::Unknown);
+        assert_eq!(unlooked.label(), "");
+    }
+
+    /// A folder of exactly the cap is a total, not a floor. `5000+` claims there is
+    /// more; saying so about a folder that was read whole is a lie in the direction
+    /// nobody can check.
+    #[test]
+    fn a_folder_read_whole_does_not_claim_there_is_more() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..MAX_ENTRIES_PER_DIR {
+            std::fs::write(dir.path().join(format!("f{i:05}.csv")), b"x").unwrap();
+        }
+        let holds = look_at_directory(dir.path()).1;
+        assert!(!holds.truncated, "every entry was read");
+        assert_eq!(holds.label(), format!("{MAX_ENTRIES_PER_DIR} csv"));
+
+        std::fs::write(dir.path().join("one-more.csv"), b"x").unwrap();
+        let holds = look_at_directory(dir.path()).1;
+        assert!(holds.truncated, "and now there is more than was read");
+        assert!(holds.label().contains('+'));
+    }
+
+    /// A lake table is answered by three `join` tests and costs no listing. Counting
+    /// one would walk every table in a warehouse on every pass, for a line beside a
+    /// table whose files `enrich` then refuses to read anyway.
+    #[test]
+    fn a_lake_table_is_not_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("_delta_log")).unwrap();
+        write(dir.path(), "part-00000.parquet", &["id"]);
+        write(dir.path(), "part-00001.parquet", &["id"]);
+
+        let (kind, holds) = look_at_directory(dir.path());
+        assert_eq!(kind, EntryKind::Delta);
+        assert!(holds.is_empty(), "and its label is the format's own name");
+        let entry = measured(dir.path());
+        assert_eq!(entry.label(), "delta");
+    }
+
+    /// A listing cut short cannot say there is no data in a folder, only that it found
+    /// none among the entries it read. `mixed` needs no such qualifier — more files
+    /// cannot unmake it — and `dir` does, because they can.
+    #[test]
+    fn a_cut_short_listing_does_not_claim_a_folder_is_empty() {
+        let seen = Holds {
+            skipped: 5000,
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(seen.label(), "dir+");
+
+        let whole = Holds {
+            skipped: 3,
+            ..Default::default()
+        };
+        assert_eq!(whole.label(), "dir");
+
+        // And a listing cut short before it found anything at all still says so: it is
+        // not an empty tally, or the row falls back to its kind and reads `dir`.
+        let nothing_yet = Holds {
+            truncated: true,
+            ..Default::default()
+        };
+        assert!(!nothing_yet.is_empty());
+        assert_eq!(nothing_yet.label(), "dir+");
+        assert!(Holds::default().is_empty());
+
+        let mixed = Holds {
+            formats: vec![("parquet".to_string(), 3), ("csv".to_string(), 2)],
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(mixed.label(), "mixed", "more files cannot unmake it");
+    }
+
+    /// A name too long for the pane keeps both ends. A Hadoop output folder's `.crc`
+    /// files sort first and are named for the file they check, so four of them
+    /// unabridged are a paragraph of UUID beside facts that are one line each.
+    #[test]
+    fn a_long_skipped_name_keeps_both_ends() {
+        let holds = Holds {
+            formats: vec![("parquet".to_string(), 2)],
+            skipped: 2,
+            skipped_names: vec![
+                ".part-00000-8f3a91c2-7b4d-4e19-a6f0-c1d2e3f4a5b6-c000.snappy.parquet.crc"
+                    .to_string(),
+                "_SUCCESS".to_string(),
+            ],
+            ..Default::default()
+        };
+        let line = holds.line(true).expect("a line");
+        assert!(line.contains("_SUCCESS"), "{line}");
+        assert!(
+            line.contains(".part-00000"),
+            "the head says what it is: {line}"
+        );
+        // The tail, as much of it as the ellipsis leaves: it takes three characters of
+        // the twenty-four in the ASCII glyph set and one in the Unicode one.
+        assert!(line.contains(".crc"), "and the tail: {line}");
+        assert!(
+            !line.contains("8f3a91c2"),
+            "the middle is nobody's business: {line}"
+        );
+        assert!(
+            line.chars().count() < 80,
+            "{} chars: {line}",
+            line.chars().count()
+        );
+    }
+
+    /// The pane never presents the first few skipped names as all of them, and a count
+    /// that is a floor says so wherever it appears.
+    #[test]
+    fn a_tally_does_not_claim_more_than_it_counted() {
+        let holds = Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            // Five subdirectories, three of them partitions: naming both would count
+            // the three twice.
+            folders: 5,
+            partitions: 3,
+            not_read: 7,
+            skipped: 10,
+            skipped_names: vec![".crc".into(), "_SUCCESS".into()],
+            truncated: false,
+        };
+        // The ellipsis is the glyph set's: one character, or three where the terminal
+        // cannot draw it.
+        let e = crate::glyphs::get().ellipsis;
+        assert_eq!(
+            holds.line(true),
+            Some(format!(
+                "12 parquet · 2 folders · 7 not read · 3 partitions · 10 skipped (.crc, _SUCCESS, {e})"
+            ))
+        );
+
+        assert_eq!(
+            holds.line(false),
+            Some(format!(
+                "12 parquet · 2 folders · 7 not read · 10 skipped (.crc, _SUCCESS, {e})"
+            )),
+            "and without the partitions when the layout line below will carry them"
+        );
+
+        let floor = Holds {
+            truncated: true,
+            ..holds
+        };
+        assert_eq!(
+            floor.line(true),
+            Some(format!(
+                "12+ parquet · 2+ folders · 7+ not read · 3+ partitions · 10+ skipped (.crc, _SUCCESS, {e})"
+            ))
+        );
+    }
+
+    /// The same folder read twice reads the same. Skipped names come back in whatever
+    /// order the filesystem holds them, so the pane takes the first few *by name*.
+    #[test]
+    fn what_a_folder_holds_reads_the_same_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id"]);
+        for marker in [
+            "_SUCCESS",
+            "_committed_9",
+            "_committed_1",
+            ".crc",
+            "_started_4",
+        ] {
+            std::fs::write(dir.path().join(marker), b"").unwrap();
+        }
+        let first = look_at_directory(dir.path()).1;
+        for _ in 0..8 {
+            assert_eq!(look_at_directory(dir.path()).1, first);
+        }
+        assert_eq!(
+            first.skipped_names,
+            vec![".crc", "_SUCCESS", "_committed_1", "_committed_9"],
+            "the first four by name, of five"
+        );
+        assert_eq!(first.skipped, 5);
+    }
+
+    /// The label counts what is directly inside; the numbers beside it are a promise
+    /// about what `Enter` gives, and `Enter` reads the subtree. Measuring only the top
+    /// would promise three files and open twenty-three — and would ask `is_one_table`
+    /// about three files while unioning all twenty-three, which is the union the
+    /// downgrade exists to prevent. The `holds` line names the folder that explains it.
+    #[test]
+    fn a_folders_numbers_are_what_opening_it_gives() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id", "legacy"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        for i in 0..20 {
+            write(&archive, &format!("old-{i}.parquet"), &["id", "legacy"]);
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.label(),
+            "3 parquet",
+            "three files are directly inside"
+        );
+        assert_eq!(
+            entry.holds.line(true).as_deref(),
+            Some("3 parquet · 1 folder")
+        );
+        assert_eq!(entry.rows, Some(23), "and opening it reads all of them");
+    }
+
+    /// A folder past the counting budget whose *own* files were all read says an exact
+    /// width. The budget is about the subtree; three files at the top are three
+    /// footers, and `5+ cols` claims a sample that did not happen.
+    #[test]
+    fn a_width_is_a_floor_only_when_a_footer_went_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id", "ts"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        for i in 0..MAX_FOOTERS_PER_DATASET + 6 {
+            write(
+                &archive,
+                &format!("old-{i:03}.parquet"),
+                &["wholly", "different"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory, "not one table");
+        assert_eq!(entry.label(), "3 parquet");
+        assert_eq!(entry.cols, Some(2), "id and ts");
+        assert!(
+            !entry.cols_sampled,
+            "all three of its own footers were read"
+        );
+    }
+
+    #[test]
+    fn a_big_folder_is_still_found_by_a_column_one_level_down() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet", "c.parquet"] {
+            write(dir.path(), name, &["id", "ts"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        for i in 0..MAX_FOOTERS_PER_DATASET + 6 {
+            write(
+                &archive,
+                &format!("old-{i:03}.parquet"),
+                &["wholly", "different"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory);
+        // The label and the width are the three files directly inside.
+        assert_eq!(entry.label(), "3 parquet");
+        assert_eq!(entry.cols, Some(2), "id and ts");
+        // The names are not: they are the home screen's search index, and `wholly` has
+        // to reach the folder that holds one whether the folder was small enough to
+        // read every footer or, as here, too big and sampled instead. Narrowing these
+        // to the folder's own files made the answer depend on the folder's size.
+        assert!(
+            entry.columns.contains(&"wholly".to_string()),
+            "{:?}",
+            entry.columns
+        );
+        assert!(entry.columns.contains(&"id".to_string()));
+    }
+
+    #[test]
+    fn a_width_over_a_folders_own_files_is_a_floor_when_there_are_too_many() {
+        let dir = tempfile::tempdir().unwrap();
+        // Past the footer budget with the folder's *own* files, and no two of them one
+        // table, so the downgrade samples its own files as well and says so. Every file
+        // gets its own column, because which three get sampled is `read_dir` order.
+        for i in 0..MAX_FOOTERS_PER_DATASET + 6 {
+            write(
+                dir.path(),
+                &format!("f-{i:03}.parquet"),
+                &[&format!("c{i}")],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory, "not one table");
+        assert_eq!(entry.label(), "70 parquet");
+        assert!(
+            entry.cols_sampled,
+            "three of seventy footers were read, so the width is a floor"
+        );
+    }
+
+    #[test]
+    fn a_folder_read_as_one_table_is_sized_by_everything_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id", "ts"]);
+        write(dir.path(), "b.parquet", &["id", "ts"]);
+        let more = dir.path().join("more");
+        std::fs::create_dir_all(&more).unwrap();
+        write(&more, "c.parquet", &["id", "ts"]);
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile, "one table");
+        // `Enter` unions the subtree, so the size and the rows beside it are the
+        // subtree's — the opposite of a downgraded folder, whose numbers are its own
+        // files because it is never opened as one table.
+        let all: u64 = [
+            dir.path().join("a.parquet"),
+            dir.path().join("b.parquet"),
+            more.join("c.parquet"),
+        ]
+        .iter()
+        .map(|p| std::fs::metadata(p).unwrap().len())
+        .sum();
+        assert_eq!(entry.size, Some(all));
+        assert_eq!(entry.rows, Some(3));
+    }
+
+    #[test]
+    fn nothing_counted_is_the_only_thing_holds_calls_empty() {
+        // `is_empty` stops a peek's answer reaching a row and keeps a `Holds` out of
+        // the cache, so anything it calls empty is thrown away. Asked of each field on
+        // its own, because the contract is the function's and not its callers': both
+        // routes happen to set `folders` beside `partitions` and `skipped` beside
+        // `skipped_names` today, which is exactly the kind of agreement that stops
+        // holding one refactor later.
+        assert!(Holds::default().is_empty());
+        let one = |f: fn(&mut Holds)| {
+            let mut h = Holds::default();
+            f(&mut h);
+            h
+        };
+        for (what, holds) in [
+            ("a data file", one(|h| h.formats.push(("csv".into(), 1)))),
+            ("a folder", one(|h| h.folders = 1)),
+            ("a partition", one(|h| h.partitions = 1)),
+            ("a file it cannot read", one(|h| h.not_read = 1)),
+            ("a writer's own file", one(|h| h.skipped = 1)),
+            (
+                "the name of one",
+                one(|h| h.skipped_names.push("_SUCCESS".into())),
+            ),
+            ("a listing cut short", one(|h| h.truncated = true)),
+        ] {
+            assert!(!holds.is_empty(), "{what} is something to say");
+        }
+    }
+
+    #[test]
+    fn formats_that_tie_are_ordered_by_name_whatever_order_they_arrived_in() {
+        use crate::FileFormat;
+        // Given in the order that is wrong on both counts, so neither clause of the
+        // comparison can be the one doing nothing. Without the tie-break a folder of
+        // two CSV and two JSON reads `2 csv · 2 json` on one pass and `2 json · 2 csv`
+        // on the next, which is the `read_dir` order this release exists to remove.
+        let mut counts = vec![
+            (FileFormat::Json, 2),
+            (FileFormat::Csv, 2),
+            (FileFormat::Parquet, 5),
+        ];
+        order_formats(&mut counts);
+        assert_eq!(
+            counts,
+            vec![
+                (FileFormat::Parquet, 5),
+                (FileFormat::Csv, 2),
+                (FileFormat::Json, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn partitions_carry_a_folder_only_while_they_are_the_most_of_it() {
+        // The boundary the local rule turns on, and the twin of the cloud route's
+        // `partitions_carry_a_prefix_only_while_they_are_the_most_of_it`. Every folder
+        // on disk goes through this one.
+        let laid_out = |strays: usize| {
+            let dir = tempfile::tempdir().unwrap();
+            for year in ["year=2024", "year=2025"] {
+                let part = dir.path().join(year);
+                std::fs::create_dir_all(&part).unwrap();
+                write(&part, "data.parquet", &["id"]);
+            }
+            for i in 0..strays {
+                write(dir.path(), &format!("stray-{i}.parquet"), &["id"]);
+            }
+            classify_directory(dir.path())
+        };
+        assert_eq!(
+            laid_out(2),
+            EntryKind::Hive,
+            "two partitions against two files beside them"
+        );
+        assert_ne!(
+            laid_out(3),
+            EntryKind::Hive,
+            "one more file than partitions is a folder that holds a key=value"
+        );
+    }
+
+    #[test]
+    fn a_folder_marker_is_bookkeeping_even_beside_a_partition() {
+        // Legacy s3n and EMR write a zero-byte `<name>_$folder$` object beside every
+        // prefix. Where the prefix is a partition the marker carries the `=` too, so a
+        // partition test that only looks for one calls the marker data and the pane
+        // reports one unreadable file per partition.
+        assert!(is_bookkeeping("year=2024_$folder$"));
+        assert!(is_bookkeeping("alpha_$folder$"));
+        assert!(!is_bookkeeping("year=2024"), "the partition itself is data");
+        assert!(
+            !is_bookkeeping("_date=2024-01-01"),
+            "Spark partitions on internal columns"
+        );
+    }
+
+    /// And the files under it are what the one-table test is asked about, since they
+    /// are what the union would hold.
+    #[test]
+    fn a_table_hidden_under_a_folder_still_downgrades_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.parquet", "b.parquet"] {
+            write(dir.path(), name, &["id", "ts"]);
+        }
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        write(
+            &archive,
+            "other.parquet",
+            &["wholly", "different", "columns"],
+        );
+
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::Directory,
+            "a union over these is not one table"
+        );
+        assert_eq!(entry.rows, None);
+        // And the width beside `2 parquet` is those two files. The check is asked of
+        // everything under the folder, because that is what opening it would union;
+        // a downgraded row is never opened as one, so reporting the subtree's union
+        // would be a set of columns nothing produces.
+        assert_eq!(entry.label(), "2 parquet");
+        assert_eq!(entry.cols, Some(2), "id and ts");
+        // The names are every column under the folder, because they are what the home
+        // screen searches: the folder does hold a `wholly`, one level down.
+        assert!(entry.columns.contains(&"wholly".to_string()));
+        assert!(entry.columns.contains(&"id".to_string()));
+
+        // And the size is those two files, not the subtree's: three numbers on one row
+        // measured over three different sets of files is no row at all.
+        let own: u64 = ["a.parquet", "b.parquet"]
+            .iter()
+            .map(|n| std::fs::metadata(dir.path().join(n)).unwrap().len())
+            .sum();
+        assert_eq!(entry.size, Some(own));
+    }
+
+    /// A hive tree of CSV is still laid out, whatever its rows cannot say. The layout
+    /// is directory names — no footers, no opens — and it is the thing you most want
+    /// before opening a dataset too large to count.
+    #[test]
+    fn a_hive_tree_of_another_format_is_still_laid_out() {
+        let dir = tempfile::tempdir().unwrap();
+        for year in ["year=2024", "year=2025"] {
+            let part = dir.path().join(year);
+            std::fs::create_dir_all(&part).unwrap();
+            std::fs::write(part.join("data.csv"), b"id\n1\n").unwrap();
+        }
+        // A stray data file at the root, which is a hive root's ordinary furniture.
+        std::fs::write(dir.path().join("summary.csv"), b"id\n1\n").unwrap();
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Hive);
+        assert!(entry.cost.partitions.is_some(), "the layout is named");
+        assert_eq!(entry.rows, None, "and nothing is invented about its rows");
+    }
+
+    /// A hive root's own files are strays beside the partitions — a `schema.json` or a
+    /// `manifest.csv` left at the top — so its counted format is not its data's, and
+    /// asking it would blank the whole dataset for one such file.
+    #[test]
+    fn a_hive_dataset_is_described_despite_a_stray_file_at_its_root() {
+        let dir = tempfile::tempdir().unwrap();
+        for year in ["year=2024", "year=2025"] {
+            let part = dir.path().join(year);
+            std::fs::create_dir_all(&part).unwrap();
+            write(&part, "data.parquet", &["id"]);
+        }
+        std::fs::write(dir.path().join("schema.json"), b"{}").unwrap();
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Hive);
+        assert_eq!(entry.holds.one_format(), Some("json"), "its own only file");
+        assert_eq!(entry.rows, Some(2), "and the dataset is still counted");
+        assert_eq!(entry.cols, Some(1));
+    }
+
+    /// A hive dataset is described whatever odd file is lying in a partition. One
+    /// spine cannot tell a Parquet tree with a stray CSV in it from a CSV tree with a
+    /// stray Parquet, and blanking a dataset that opens perfectly is the worse of the
+    /// two mistakes.
+    #[test]
+    fn a_hive_dataset_is_described_despite_a_stray_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for year in ["year=2024", "year=2025"] {
+            let part = dir.path().join(year);
+            std::fs::create_dir_all(&part).unwrap();
+            write(&part, "data.parquet", &["id"]);
+        }
+        // Somebody's notes, dropped in beside the data.
+        std::fs::write(dir.path().join("year=2024/notes.csv"), b"x").unwrap();
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Hive);
+        assert_eq!(entry.rows, Some(2), "the dataset is still counted");
+        assert!(
+            entry.cost.partitions.is_some(),
+            "and its layout still named"
+        );
+    }
+
+    /// A folder is described by its own files, not by what is under them. The footer
+    /// walk recurses, which is right for a hive root and wrong for a folder of JSON
+    /// that happens to have Parquet in a subfolder.
+    #[test]
+    fn a_folder_is_not_described_by_files_it_does_not_name() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.json", "b.json", "c.json"] {
+            std::fs::write(dir.path().join(name), b"{}").unwrap();
+        }
+        let under = dir.path().join("derived");
+        std::fs::create_dir_all(&under).unwrap();
+        write(&under, "one.parquet", &["id", "ts", "amount"]);
+        write(&under, "two.parquet", &["id", "ts", "amount"]);
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.label(), "3 json");
+        assert_eq!(
+            entry.cols, None,
+            "the Parquet below it is not this folder's shape"
+        );
+        assert_eq!(entry.rows, None);
+        assert!(entry.columns.is_empty());
+    }
+
+    /// The gate's default, for a dataset row that counted nothing.
+    ///
+    /// **Nothing produces this row today.** `enrich` only reaches the gate for `Hive`
+    /// and `MultiFile`; `look_at_directory` cannot answer `MultiFile` without counting
+    /// a format, a hive root skips the gate outright, `CLASSIFIER_VERSION` 4 refuses a
+    /// cached kind that arrives without a tally, and the cloud `(all files)` row is
+    /// built from a listing and never measured. So this constructs the row by hand, and
+    /// it pins a default rather than a path.
+    ///
+    /// It is worth pinning because the default is the arguable one. Turning it away
+    /// would blank the size, the width and the row count of any such row the moment one
+    /// appeared, and leaving the counts off a folder is a mistake opening it undoes —
+    /// giving it another format's numbers is not.
+    #[test]
+    fn a_dataset_row_that_counted_nothing_is_still_described() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.parquet", &["id", "ts"]);
+        write(dir.path(), "b.parquet", &["id", "ts"]);
+
+        let mut entry = Entry {
+            kind: EntryKind::MultiFile,
+            ..Entry::for_test(dir.path(), "data")
+        };
+        assert!(entry.holds.one_format().is_none(), "nothing counted");
+
+        enrich(&mut entry);
+        assert!(entry.size.is_some(), "the footers were read");
+        assert_eq!(entry.rows, Some(2));
+        assert_eq!(entry.cols, Some(2), "id and ts");
     }
 
     /// A Parquet file whose name begins with `_` is still a Parquet file. It does not
@@ -1514,6 +2549,7 @@ mod classification_tests {
             cols_sampled: false,
             columns: Vec::new(),
             cost: Cost::default(),
+            holds: Default::default(),
         };
         enrich(&mut entry);
         assert_eq!(entry.rows, Some(1), "its footer was read");
@@ -1545,7 +2581,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(&table),
-            crate::cloud_browse::classify_listing(&[], &objects),
+            crate::cloud_browse::look_at_listing("gbif/occurrence.parquet/", &[], &objects).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(&table), EntryKind::MultiFile);
@@ -1605,7 +2641,8 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::classify_listing(&["out/notes=old/".to_string()], &objects),
+            crate::cloud_browse::look_at_listing("out/", &["out/notes=old/".to_string()], &objects)
+                .0,
             "the two routes answer the same folder alike"
         );
     }
@@ -1624,7 +2661,7 @@ mod classification_tests {
 
         assert_eq!(
             classify_directory(dir.path()),
-            crate::cloud_browse::classify_listing(&folders, &[]),
+            crate::cloud_browse::look_at_listing("events/", &folders, &[]).0,
             "the two routes answer the same folder alike"
         );
         assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
@@ -1656,10 +2693,33 @@ mod classification_tests {
         .iter()
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
-        let cloud = crate::cloud_browse::classify_listing(&folders, &objects);
+        let cloud = crate::cloud_browse::look_at_listing("out/", &folders, &objects).0;
 
         assert_eq!(local, cloud, "the two routes answer the same folder alike");
         assert_eq!(local, EntryKind::MultiFile);
+    }
+
+    /// Every entry is in exactly one count, including the ones with nothing behind
+    /// them. A FIFO and a broken symlink named like data are not data and are not a
+    /// writer's own; without a count they were in nothing, and the pane said `1 csv`
+    /// about a folder of three entries.
+    #[cfg(unix)]
+    #[test]
+    fn every_entry_is_in_one_count() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.csv"), b"id\n1\n").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("broken.csv")).unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"x").unwrap();
+        std::fs::write(dir.path().join("_SUCCESS"), b"").unwrap();
+
+        let holds = look_at_directory(dir.path()).1;
+        assert_eq!(holds.data_files(), 1);
+        assert_eq!(holds.not_read, 2, "the note and the broken link");
+        assert_eq!(holds.skipped, 1);
+        assert_eq!(
+            holds.line(true).as_deref(),
+            Some("1 csv · 2 not read · 1 skipped (_SUCCESS)")
+        );
     }
 
     /// Named like data and impossible to read: a FIFO blocks whoever opens it until a
@@ -1728,7 +2788,7 @@ mod classification_tests {
             keys.push((format!("jolpica/2000/{part}.parquet"), 100));
         }
         keys.sort();
-        let cloud = crate::cloud_browse::classify_listing(&[], &keys);
+        let cloud = crate::cloud_browse::look_at_listing("jolpica/2000/", &[], &keys).0;
 
         assert_eq!(local, cloud, "the two routes answer the same folder alike");
         assert_eq!(local, EntryKind::MultiFile);
@@ -1769,7 +2829,7 @@ mod classification_tests {
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
         assert_eq!(
-            crate::cloud_browse::classify_listing(&[], &keys),
+            crate::cloud_browse::look_at_listing("out/", &[], &keys).0,
             EntryKind::MultiFile,
             "and the same in a bucket"
         );
@@ -1810,9 +2870,10 @@ mod classification_tests {
     }
 
     fn measured(dir: &Path) -> Entry {
+        let (kind, holds) = look_at_directory(dir);
         let mut entry = Entry {
             path: dir.to_path_buf(),
-            kind: classify_directory(dir),
+            kind,
             name: dir.file_name().unwrap().to_string_lossy().into_owned(),
             size: None,
             modified: None,
@@ -1821,6 +2882,7 @@ mod classification_tests {
             cols_sampled: false,
             columns: Vec::new(),
             cost: Cost::default(),
+            holds,
         };
         enrich(&mut entry);
         entry
@@ -1863,7 +2925,12 @@ mod classification_tests {
             entry.rows, None,
             "a sum across separate tables is not a row count"
         );
-        assert_eq!(entry.cols, None);
+        assert_eq!(
+            entry.cols,
+            Some(9),
+            "the union of what the folder holds is still a true answer to what is in it"
+        );
+        assert_eq!(entry.label(), "3 parquet", "and the label counts the files");
     }
 
     /// The rows of one table split across files, which is what `multi` is for.
@@ -2256,6 +3323,12 @@ mod classification_tests {
             "drivers.parquet",
             &["driver_id", "code", "nationality"],
         );
+        // And one a level down, so "every column its files have" is a claim about more
+        // than the folder's own: the row's width is its own files, its names are
+        // everything under it, and a fixture with no subfolder cannot tell those apart.
+        let seasons = dir.path().join("seasons");
+        std::fs::create_dir_all(&seasons).unwrap();
+        write(&seasons, "2024.parquet", &["season_year", "round"]);
 
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::Directory);
@@ -2266,6 +3339,8 @@ mod classification_tests {
             "driver_id",
             "code",
             "nationality",
+            "season_year",
+            "round",
         ] {
             assert!(
                 entry.columns.iter().any(|c| c == column),

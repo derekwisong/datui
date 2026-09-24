@@ -1280,6 +1280,10 @@ fn preview_head(
     }
     let described = entry.label();
     let kind = match entry.kind {
+        // The door into this folder carries no label, and none of the words that stand
+        // in for one: see `Entry::opens_whole_folder`. Ahead of the arm below, which
+        // reaches for the place word before it ever consults the label.
+        _ if entry.opens_whole_folder => "",
         // Only when there is data to count. A prefix holding nothing but sub-prefixes
         // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
         // inside an object store the service's own word is the right one.
@@ -1707,6 +1711,19 @@ mod tests {
             "curated word on a door: {text:?}"
         );
         assert!(!text.contains("lab"), "source id on a door: {text:?}");
+
+        // And the pane beside it says the same nothing. It takes the place word through
+        // a second match of its own, which is how the row and the pane come to disagree
+        // about one folder.
+        let mut door = row("s3://bucket/warehouse", EntryKind::Directory);
+        door.name = "warehouse (all files)".to_string();
+        door.opens_whole_folder = true;
+        let pane = preview_text(&door, 60);
+        assert!(pane.contains("warehouse (all files)"), "{pane}");
+        assert!(
+            !pane.contains("prefix"),
+            "the place word stood in for the label it does not have: {pane}"
+        );
 
         // And all three draw the same row. A hive or multi-file kind wears its label as
         // a chip, which is a space of the row's own background and then the label — so

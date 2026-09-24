@@ -222,12 +222,21 @@ Every folder has two doors, and neither depends on the label being right.
 <kbd>→</kbd> goes inside any folder, to reach a single partition or a single
 file. <kbd>Esc</kbd> comes back out. The first row in there is `<folder> (all
 files)`, or `(all partitions)` for a hive folder, and it opens the whole folder
-as one table whatever the folder is labelled — so the worst a wrong label can
-cost is one keystroke. That row carries no label of its own: every other label
-counts what is directly inside a folder, and this row reads the whole of it.
+whatever the folder is labelled — so a label that is wrong about what the folder
+holds costs one keystroke rather than access to it.
 
-It is not a search result. While a filter is typed the row steps out of the way,
-and it comes back when the filter is cleared.
+That row carries no label of its own: every other label counts what is directly
+inside a folder, and this row reads the whole of it. Nor is it a search result —
+while a filter is typed it steps out of the way, and it comes back when the
+filter is cleared. A folder with nothing in it has no such row.
+
+What datui can then *read* is a narrower question than what it will open, and
+this release has not finished widening it. A folder of one format, and a hive
+tree of Parquet, read as one table. A folder holding more than one kind of data
+file says so and does not read. A folder whose data is in subfolders reads only
+if that data is Parquet. And a `delta`, `iceberg` or `hudi` root is refused by
+this row as well as by <kbd>Enter</kbd> on the folder above it, for the reason
+below.
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
 hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single

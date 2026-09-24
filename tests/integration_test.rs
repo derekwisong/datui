@@ -7205,3 +7205,140 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
         "and did not step into the folder it is already in"
     );
 }
+
+/// A lake table is not a folder of Parquet files, however much it looks like one.
+///
+/// Reading one as a union counts tombstoned rows, every rewritten version and both
+/// sides of a compaction. `enrich` will not so much as count a lake table for that
+/// reason, and the row above says datui does not read them yet — so the door into the
+/// folder must not quietly do it. #237, reached through the door phase 3 opens.
+#[test]
+fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let events = tmp.path().join("events");
+    std::fs::create_dir_all(events.join("_delta_log")).unwrap();
+    std::fs::write(events.join("_delta_log").join("00000000.json"), b"{}").unwrap();
+    let mut frame = polars::prelude::DataFrame::new(
+        1,
+        vec![polars::prelude::Column::new("id".into(), &[1i32])],
+    )
+    .unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        let file = std::fs::File::create(events.join(part)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(events.clone());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the folder carries the row");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Delta),
+        "the listing under it is a Delta table"
+    );
+
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(
+        next.is_none(),
+        "the door must not open a lake table as plain Parquet"
+    );
+    let said = app.home.status.clone().unwrap_or_default();
+    assert!(said.contains("Delta"), "and must say why: {said:?}");
+    assert!(
+        !said.contains("files under it"),
+        "that is what going inside says, and this row is already inside: {said:?}"
+    );
+}
+
+/// `hive: true` is what puts the open on the local folder route at all: without it a
+/// directory is `Unsupported file type`, and the whole of `folder_format`'s dispatch is
+/// behind it. The door row builds its own open, so nothing else pins the flag.
+#[test]
+fn test_the_door_opens_a_folder_by_the_folder_route() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.csv"), b"x,y\n1,2\n").unwrap();
+    std::fs::write(tmp.path().join("b.csv"), b"x,y\n3,4\n").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the folder carries the row");
+    app.home.selected = row;
+
+    match app.event(&key(KeyCode::Enter)) {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![tmp.path().to_path_buf()]);
+            assert!(
+                options.hive,
+                "without this the open is `Unsupported file type`"
+            );
+        }
+        _ => panic!("Enter on the door should open the folder"),
+    }
+}
+
+/// → goes inside a row nothing has looked into yet.
+///
+/// On a share that is most rows: `entry_for_path` calls a remote path with no data
+/// extension `Unknown`, and a listing looks into nothing. Excluding `Unknown` from the
+/// door would put the folders that cost most to reach back behind a classification —
+/// the label deciding access again, one indirection along. A remote file with an odd
+/// extension is browsed into and shows an empty listing, which `Esc` backs out of.
+#[test]
+fn test_right_goes_inside_a_row_nothing_has_looked_into() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("archive");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("one.parquet"), b"x").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "archive"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    // Deliberately not classified: this is what a listing hands over before anything
+    // has looked into it, and what every row on a share looks like.
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Unknown),
+    );
+
+    app.event(&key(KeyCode::Right));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(folder.as_path()),
+        "→ went inside without needing to know what it is first"
+    );
+}

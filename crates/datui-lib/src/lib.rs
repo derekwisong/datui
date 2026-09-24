@@ -8221,6 +8221,23 @@ impl App {
         // the open, because `open_what_it_is` would read the label back and send a
         // `dir` row inside the folder it is already in.
         if self.selection_opens_the_whole_folder() {
+            // Except a lake table, which is not a folder of Parquet files however much
+            // it looks like one: reading it as one counts tombstoned rows, every
+            // rewritten version and both sides of a compaction. `enrich` will not so
+            // much as count one for that reason, and this row offered to open it — the
+            // refusal one row above it, and #237 reached through the new door. Phase 4
+            // gives it a read that says what it is doing.
+            if let Some(format) = entry.kind.lake_name() {
+                // Not `lake_table_note`, which says "these are the files under it" —
+                // true of going inside, and this row is already inside.
+                self.home.status = Some(format!(
+                    "datui does not read {format} tables yet — open one of the files below instead"
+                ));
+                return None;
+            }
+            // `hive: true` is what puts the open on the local folder route at all:
+            // without it a directory is `Unsupported file type`. The cloud route
+            // returns before it is read.
             let folder = home::folder_dataset_url(&entry.path);
             return Some(self.home_open_path(folder, true));
         }

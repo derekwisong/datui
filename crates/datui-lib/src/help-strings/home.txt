@@ -25,6 +25,13 @@ NAVIGATION
   Esc               Back out one layer: the filter, the directory, then the data
   Ctrl+C            Quit
 
+  Inside any folder the first row is "<folder> (all files)", or "(all
+  partitions)" for a hive folder. Enter on it opens the whole folder whatever the
+  folder is labelled, so a label that is wrong costs a keystroke rather than
+  access. It carries no label itself, and it steps out of the way while a filter
+  is typed. A folder of more than one kind of data file, and a lake table, say
+  why they cannot be read rather than reading.
+
   A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
   a count and a format ("12 parquet"), "mixed" for more than one format, or
   "dir" for no data files — in a bucket, the word for the place instead. The

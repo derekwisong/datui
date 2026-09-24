@@ -3604,7 +3604,9 @@ fn test_a_folder_of_separate_tables_still_offers_to_read_them_together() {
     );
 
     // And once the peek has read footers and found separate tables, it still does: the
-    // peek decides what the folder is called, not what can be opened.
+    // peek decides what the folder is called, not what can be opened. The peek no
+    // longer reaches the listing at all — that plumbing went with the gate — so this
+    // half stands against the gate being put back where it was, not against the peek.
     home.cloud_kinds
         .insert(exports.clone(), (EntryKind::Directory, Default::default()));
     home.rebuild(&[], &[]);
@@ -3845,4 +3847,69 @@ fn test_the_whole_folder_row_is_a_door_not_a_search_result() {
             visible_names(&home)
         );
     }
+}
+
+/// The two folders that get no door, and the reason each is not one.
+///
+/// Both are `None` returns in `whole_folder_row` that its doc comment argues for and
+/// nothing tested. An empty folder is the one place a second door leads nowhere, and a
+/// `cloud://<id>/<account>` place stands for an Azure storage account — its children
+/// are containers, and it has no URL to open.
+#[test]
+fn test_a_folder_with_nothing_in_it_gets_no_door() {
+    let tmp = TempDir::new().unwrap();
+    let empty = tmp.path().join("empty");
+    fs::create_dir_all(&empty).unwrap();
+
+    let mut home = HomeState {
+        browsing: Some(empty),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.opens_whole_folder)),
+        "a row promising to read nothing is worse than no row"
+    );
+
+    // And one with something in it does get one, so the guard above is the reason.
+    touch(tmp.path(), "a.parquet");
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    assert!(
+        home.sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.opens_whole_folder)),
+    );
+}
+
+#[cfg(feature = "cloud")]
+#[test]
+fn test_an_azure_account_place_gets_no_door() {
+    use std::path::PathBuf;
+    let account = PathBuf::from("cloud://az-default/storageaccount");
+    let mut home = HomeState {
+        network_check: |_| true,
+        browsing: Some(account.clone()),
+        ..Default::default()
+    };
+    home.probe_ready(
+        account,
+        vec![datui::discover::Entry::directory(std::path::Path::new(
+            "abfss://raw@storageaccount.dfs.core.windows.net/",
+        ))],
+    );
+    home.rebuild(&[], &[]);
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.opens_whole_folder)),
+        "an account is not a folder: its children are containers and it has no URL"
+    );
 }

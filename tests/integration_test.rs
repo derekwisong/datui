@@ -4832,7 +4832,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
     pump_home(&mut app, &rx, area, &mut buf, |app| {
         app.home.visible().iter().any(|row| match row {
             datui::home::Row::Entry { entry, .. } => entry.kind == datui::discover::EntryKind::Hive,
-            datui::home::Row::Header { .. } => false,
+            _ => false,
         })
     });
     let looked_at = text_of(&buf);
@@ -4849,7 +4849,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
         .iter()
         .filter_map(|row| match row {
             datui::home::Row::Entry { entry, .. } => Some(entry.kind),
-            datui::home::Row::Header { .. } => None,
+            _ => None,
         })
         .collect();
     assert_eq!(
@@ -6222,6 +6222,193 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
     );
 }
 
+/// Recents grouped by place: two recents in one directory, one in another, so the
+/// home screen shows two place rows. Returns the app with the cursor on the first
+/// place row, and the three recents.
+///
+/// `seed_store` records them in the recents store too, for a test that reads it back.
+/// Tests share one isolated store, and every open writes to it, so a test that reads
+/// it asks whether its own paths are there rather than what else is.
+fn app_with_recents_in_two_places(
+    tmp: &tempfile::TempDir,
+    seed_store: bool,
+) -> (App, Vec<PathBuf>) {
+    common::isolate_cache();
+    let here = tmp.path().join("here");
+    let there = tmp.path().join("there");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::create_dir_all(&there).unwrap();
+    let recents = vec![
+        here.join("a.parquet"),
+        here.join("b.parquet"),
+        there.join("c.parquet"),
+    ];
+    for path in &recents {
+        std::fs::write(path, b"x").unwrap();
+    }
+    // Recorded the way an open records them, so what the test forgets is what the
+    // store holds. Oldest first: `push_recent` puts each at the front.
+    if seed_store {
+        let cache = datui::CacheManager::new("datui").expect("cache");
+        for path in recents.iter().rev() {
+            cache.push_recent(path);
+        }
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[], &recents);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
+        .expect("the directory two recents live in is a place row");
+    app.home.selected = row;
+    (app, recents)
+}
+
+/// `Enter` on a place row browses the place: the way back to a directory found by
+/// hand, now that a recent's directory is no longer a section of its own.
+#[test]
+fn test_enter_on_a_place_row_browses_it() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let here = recents[0].parent().unwrap().to_path_buf();
+
+    // The bar says → goes inside, the same as on any folder.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("Inside"), "the bar offers the door: {bar:?}");
+
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.home.browsing.as_deref(), Some(here.as_path()));
+    assert_eq!(
+        app.home.browse_start.as_deref(),
+        Some(here.as_path()),
+        "Esc comes back from here to the listing"
+    );
+
+    // → is the other door to the same place.
+    app.event(&key(KeyCode::Esc));
+    assert_eq!(app.home.browsing, None);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
+        .expect("back at the listing");
+    app.home.selected = row;
+    app.event(&key(KeyCode::Right));
+    assert_eq!(app.home.browsing.as_deref(), Some(here.as_path()));
+}
+
+/// `Delete` on a place row forgets every recent under it and nothing else, after
+/// asking. What is checked is the store, which is what the next launch reads.
+#[test]
+fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (mut app, recents) = app_with_recents_in_two_places(&tmp, true);
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    let holds =
+        |cache: &datui::CacheManager, path: &Path| cache.load_recents().iter().any(|p| p == path);
+    assert!(recents.iter().all(|p| holds(&cache, p)));
+
+    app.event(&key(KeyCode::Delete));
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(
+        screen.contains("Forget 2 recently opened datasets under"),
+        "asked first, and told how many: {screen:?}"
+    );
+    assert!(
+        recents.iter().all(|p| holds(&cache, p)),
+        "nothing is forgotten until the question is answered"
+    );
+
+    // Declined: the store is untouched, and a later confirmation is not armed.
+    app.event(&key(KeyCode::Esc));
+    assert!(recents.iter().all(|p| holds(&cache, p)));
+
+    app.event(&key(KeyCode::Delete));
+    app.event(&key(KeyCode::Enter));
+    assert!(
+        !holds(&cache, &recents[0]),
+        "forgotten: {:?}",
+        cache.load_recents()
+    );
+    assert!(
+        !holds(&cache, &recents[1]),
+        "forgotten: {:?}",
+        cache.load_recents()
+    );
+    assert!(
+        holds(&cache, &recents[2]),
+        "the other place's recent is left alone: {:?}",
+        cache.load_recents()
+    );
+}
+
+/// The `… N more` row stands for the places the cap hides. `Enter` on it shows them
+/// all, and nothing is opened.
+#[test]
+fn test_enter_on_the_more_row_expands_recent() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let recents: Vec<PathBuf> = (0..12)
+        .map(|i| {
+            let dir = tmp.path().join(format!("place{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("data.parquet");
+            std::fs::write(&path, b"x").unwrap();
+            path
+        })
+        .collect();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[], &recents);
+    // A short screen, so the cap bites: one place, then the more row.
+    let area = Rect::new(0, 0, 120, 14);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(screen.contains("more in"), "the cap is drawn: {screen:?}");
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::More { .. }))
+        .expect("the more row is listed");
+    app.home.selected = row;
+    app.event(&key(KeyCode::Enter));
+
+    assert_eq!(app.input_mode, InputMode::Home, "nothing was opened");
+    assert_eq!(app.home.browsing, None);
+    let places = app
+        .home
+        .visible()
+        .iter()
+        .filter(|r| matches!(r, datui::home::Row::Place { .. }))
+        .count();
+    assert_eq!(places, 12, "every place is shown");
+    assert!(
+        !app.home
+            .visible()
+            .iter()
+            .any(|r| matches!(r, datui::home::Row::More { .. }))
+    );
+}
+
 /// The hint, and the descent, are only offered on a row that is a dataset folder.
 /// `→` elsewhere goes on expanding the section, which on a visible row is already
 /// expanded and so does nothing.
@@ -7130,7 +7317,7 @@ fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
         .iter()
         .filter_map(|r| match r {
             datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
-            datui::home::Row::Header { .. } => None,
+            _ => None,
         })
         .collect();
     assert_eq!(

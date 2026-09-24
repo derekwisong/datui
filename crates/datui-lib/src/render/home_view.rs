@@ -481,7 +481,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
-            crate::home::Row::Entry { entry, .. } => {
+            crate::home::Row::Entry { entry, nested, .. } => {
                 // When a row is here because of a column rather than its name, say so:
                 // otherwise it reads as the filter having gone wrong.
                 let via = if crate::home::fuzzy_score(&app.home.filter, &entry.name).is_some() {
@@ -502,7 +502,23 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                         .is_none()
                         .then_some(known_sources.as_slice()),
                     app.home.place_kind(&entry.path),
+                    if *nested { NEST_INDENT } else { 0 },
                     ctx,
+                ));
+            }
+            crate::home::Row::Place { path, source, .. } => {
+                lines.push(place_line(
+                    path,
+                    source.as_deref(),
+                    selected,
+                    name_width,
+                    show_meta,
+                    ctx,
+                ));
+            }
+            crate::home::Row::More { hidden, places, .. } => {
+                lines.push(more_line(
+                    *hidden, *places, selected, name_width, show_meta, ctx,
                 ));
             }
         }
@@ -511,6 +527,130 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     let mut body: Vec<Line> = lines.into_iter().skip(app.home.scroll).collect();
     body.extend(guidance);
     Paragraph::new(body).render(area, buf);
+}
+
+/// How far a row under a place is drawn in. Two cells: enough to read as "under",
+/// not enough to cost a name its tail.
+const NEST_INDENT: usize = 2;
+
+/// What [`meta_columns`] draws: shape, size and age, each right-aligned in a fixed
+/// cell. A row that has no meta columns of its own is drawn to the same edge, so
+/// the width is named here rather than measured on every row.
+const META_COLUMNS_WIDTH: usize = 13 + 2 + 9 + 2 + 4;
+
+/// Where an entry row drawn with `name_width` ends: the marker, the name's cells, the
+/// meta columns when shown, and one cell of air. The rows that carry no meta columns
+/// of their own — a place, the `more` row — are drawn to this same edge.
+fn row_width(name_width: usize, show_meta: bool) -> usize {
+    let marker = glyphs::get().selector_blank.chars().count();
+    marker + name_width + if show_meta { META_COLUMNS_WIDTH } else { 0 } + 1
+}
+
+/// The place a group of recents lives in: its path with a trailing slash, and at the
+/// far right the filesystem it is on.
+///
+/// Quiet on purpose. It is a heading for the rows under it, not a row to open in its
+/// own right, so it takes the secondary text color and no locality glyph, and the
+/// filesystem name is the one fact it carries: the same word the rows' glyph stands
+/// for, spelled out once for the group rather than once per row.
+fn place_line(
+    path: &std::path::Path,
+    source: Option<&str>,
+    selected: bool,
+    name_width: usize,
+    show_meta: bool,
+    ctx: &RenderContext,
+) -> Line<'static> {
+    let g = glyphs::get();
+    let width = row_width(name_width, show_meta);
+    let marker = if selected {
+        g.selector
+    } else {
+        g.selector_blank
+    };
+    let base = match ctx.table_selected {
+        Some(bg) if selected => Style::default().bg(bg),
+        None if selected => Style::default().add_modifier(Modifier::REVERSED),
+        _ => Style::default(),
+    };
+    let source = source.unwrap_or("").to_string();
+    // Unknown or local: nothing to say. Only a place that could be slow or cost money
+    // names what it is on, which is the rule the rows' own glyph follows.
+    let locality = crate::locality::Locality::of_fstype(&source);
+    let source = match locality {
+        crate::locality::Locality::Object
+        | crate::locality::Locality::Network
+        | crate::locality::Locality::Memory => source,
+        _ => String::new(),
+    };
+    let source_style = base.fg(match locality {
+        crate::locality::Locality::Object => ctx.keybind_hints,
+        crate::locality::Locality::Network => ctx.warning,
+        crate::locality::Locality::Memory => ctx.temporal_col,
+        _ => ctx.dimmed,
+    });
+    let mut name = crate::home::display_path(path);
+    if !name.ends_with('/') {
+        name.push('/');
+    }
+    // marker, name, at least one space, source, space. The padding is what puts the
+    // source on the right edge, and a name cut to fit still leaves it a cell of air.
+    let fixed = marker.chars().count() + source.chars().count() + 1;
+    let name = truncate_start(&name, width.saturating_sub(fixed + 1).max(1));
+    let pad = width.saturating_sub(fixed + name.chars().count());
+    let name_style = if selected {
+        base.fg(ctx.text_secondary).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ctx.text_secondary)
+    };
+    Line::from(vec![
+        Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(name, name_style),
+        Span::styled(" ".repeat(pad), base),
+        Span::styled(source, source_style),
+        Span::styled(" ", base),
+    ])
+}
+
+/// What the cap on `RECENT` is hiding, as one row: `… 13 more in 5 places`.
+fn more_line(
+    hidden: usize,
+    places: usize,
+    selected: bool,
+    name_width: usize,
+    show_meta: bool,
+    ctx: &RenderContext,
+) -> Line<'static> {
+    let g = glyphs::get();
+    let width = row_width(name_width, show_meta);
+    let marker = if selected {
+        g.selector
+    } else {
+        g.selector_blank
+    };
+    let base = match ctx.table_selected {
+        Some(bg) if selected => Style::default().bg(bg),
+        None if selected => Style::default().add_modifier(Modifier::REVERSED),
+        _ => Style::default(),
+    };
+    let text = format!(
+        "{} {hidden} more in {places} {}",
+        g.ellipsis,
+        if places == 1 { "place" } else { "places" }
+    );
+    let pad = width.saturating_sub(marker.chars().count() + text.chars().count() + 1);
+    Line::from(vec![
+        Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(text, base.fg(ctx.dimmed)),
+        Span::styled(" ".repeat(pad), base),
+        Span::styled(" ", base),
+    ])
 }
 
 /// Section headers carry the collapse marker and the provenance note, so the list
@@ -767,6 +907,7 @@ fn entry_line<'a>(
     filter: &str,
     known_sources: Option<&[String]>,
     place_kind: Option<&'static str>,
+    indent: usize,
     ctx: &RenderContext,
 ) -> Line<'a> {
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -777,6 +918,10 @@ fn entry_line<'a>(
     } else {
         g.selector_blank
     };
+    // A row under a place is drawn in, and the cells it is drawn in by come off the
+    // name's side: the meta columns stay where every other row puts them, so the rule
+    // below that gives a label up for the name fires that much sooner.
+    let name_width = name_width.saturating_sub(indent);
 
     let mut name = entry.name.clone();
     if shows_as_a_place(entry) {
@@ -1056,6 +1201,7 @@ fn entry_line<'a>(
             marker,
             base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
         ),
+        Span::styled(" ".repeat(indent), base),
         Span::styled(place_cell, place_style),
     ];
     spans.extend(highlight_spans(
@@ -1446,10 +1592,19 @@ fn source_details(
 }
 
 fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
+    let width = area.width as usize;
+    if let Some(crate::home::Row::Place {
+        path, source, held, ..
+    }) = app.home.selected_row()
+    {
+        Paragraph::new(place_details(&path, source.as_deref(), held, width, ctx))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .render(area, buf);
+        return;
+    }
     let Some(entry) = app.home.selected_entry() else {
         return;
     };
-    let width = area.width as usize;
     if crate::home::cloud_source_id(&entry.path).is_some() {
         if let Some(source) = app.home.cloud_source_of(&entry.path) {
             Paragraph::new(source_details(&entry, source, width, ctx))
@@ -1534,6 +1689,47 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         .render(area, buf);
 }
 
+/// The pane for a place under `RECENT`: what it is, where, and how many recents it
+/// holds. From what the listing already knows; a place is never read for this.
+fn place_details(
+    path: &std::path::Path,
+    source: Option<&str>,
+    held: usize,
+    width: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let plain = Style::default().fg(ctx.text_secondary);
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "place".to_string(),
+            Style::default()
+                .fg(ctx.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            truncate_start(&crate::home::display_path(path), width),
+            Style::default().fg(ctx.dimmed),
+        )),
+    ];
+    let mut facts: Vec<(&str, String, Style)> = Vec::new();
+    if let Some(source) = source.map(crate::locality::Source::from_fstype) {
+        let style = match source.locality {
+            crate::locality::Locality::Network | crate::locality::Locality::Object => {
+                Style::default().fg(ctx.warning)
+            }
+            crate::locality::Locality::Memory => Style::default().fg(ctx.success),
+            _ => plain,
+        };
+        facts.push(("source", source.label().to_string(), style));
+    }
+    facts.push(("recents", held.to_string(), plain));
+    let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+    for (key, value, style) in facts {
+        lines.push(fact_line(key, value, key_w, style, ctx));
+    }
+    lines
+}
+
 /// Whether a row's name is drawn with a trailing slash.
 ///
 /// A row nothing has looked into is still a place: a listing datui made itself only ever
@@ -1595,7 +1791,7 @@ mod tests {
             ..Default::default()
         };
         for curated in [None, Some("dataset"), Some("project")] {
-            let line = entry_line(&entry, false, 40, false, None, "", None, curated, &ctx)
+            let line = entry_line(&entry, false, 40, false, None, "", None, curated, 0, &ctx)
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -1624,7 +1820,7 @@ mod tests {
     fn a_cloud_prefix_is_labelled_by_what_it_holds() {
         let ctx = RenderContext::for_test();
         let drawn = |entry: &Entry| -> String {
-            entry_line(entry, false, 40, false, None, "", None, None, &ctx)
+            entry_line(entry, false, 40, false, None, "", None, None, 0, &ctx)
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -1671,12 +1867,12 @@ mod tests {
             // widths are where the cell is rewritten. Nothing here asserts a shape:
             // drawing at all is the thing that was not happening.
             for width in 1..=60usize {
-                let line = entry_line(&door, false, width, true, None, "", None, None, &ctx);
+                let line = entry_line(&door, false, width, true, None, "", None, None, 0, &ctx);
                 let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                 assert!(!text.is_empty(), "at {width} cells, {kind:?}");
             }
             // And with room to spare it reads as itself, with no label beside it.
-            let line = entry_line(&door, false, 40, true, None, "", None, None, &ctx);
+            let line = entry_line(&door, false, 40, true, None, "", None, None, 0, &ctx);
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(text.contains("us-states (all files)"), "{kind:?}: {text:?}");
             assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
@@ -1699,6 +1895,7 @@ mod tests {
             "",
             Some(&known),
             Some("dataset"),
+            0,
             &ctx,
         )
         .spans
@@ -1739,7 +1936,7 @@ mod tests {
     fn the_pane_calls_a_cloud_prefix_what_the_row_calls_it() {
         let ctx = RenderContext::for_test();
         let drawn = |entry: &Entry| -> String {
-            entry_line(entry, false, 40, false, None, "", None, None, &ctx)
+            entry_line(entry, false, 40, false, None, "", None, None, 0, &ctx)
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -1871,7 +2068,7 @@ mod tests {
                 .sum()
         };
         let meta_starts_at = |entry: &Entry, width: usize| -> usize {
-            let line = entry_line(entry, false, width, true, None, "", None, None, &ctx);
+            let line = entry_line(entry, false, width, true, None, "", None, None, 0, &ctx);
             offset_of_meta(line, entry)
         };
 
@@ -1913,6 +2110,7 @@ mod tests {
                 "",
                 None,
                 Some("dataset"),
+                0,
                 &ctx,
             )
             .spans
@@ -1951,6 +2149,7 @@ mod tests {
                 "",
                 None,
                 Some("dataset"),
+                0,
                 &ctx,
             );
             offset_of_meta(line, &curated_multi)
@@ -1979,6 +2178,7 @@ mod tests {
                 "",
                 Some(&known),
                 None,
+                0,
                 &ctx,
             );
             offset_of_meta(line, &gone)
@@ -2004,6 +2204,7 @@ mod tests {
                 "amount",
                 None,
                 None,
+                0,
                 &ctx,
             )
             .spans
@@ -2039,6 +2240,7 @@ mod tests {
                 "",
                 Some(&sources),
                 None,
+                0,
                 &ctx,
             );
             offset_of_meta(line, &named)
@@ -2064,6 +2266,7 @@ mod tests {
                 "",
                 None,
                 None,
+                0,
                 &ctx,
             );
             offset_of_meta(line, entry)
@@ -2086,6 +2289,158 @@ mod tests {
 
     /// A dot in a folder's name does not make it a file. A local row nothing has looked
     /// into came from a listing that saw a directory, so the name is not the evidence.
+    #[test]
+    fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
+        // A row two cells in under a place must not push its meta columns two cells
+        // to the right, or the column of shapes and sizes zigzags down RECENT. The
+        // indent comes off the name's side, and the narrow-screen rule that gives a
+        // label up for the name fires that much sooner.
+        let ctx = RenderContext::for_test();
+        let mut entry = row("/data/exports", EntryKind::MultiFile);
+        entry.size = Some(4096);
+        entry.rows = Some(12);
+        entry.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 5000)],
+            truncated: true,
+            ..Default::default()
+        };
+        let meta = meta_columns(&entry);
+        let meta_at = |indent: usize, width: usize| -> usize {
+            let line = entry_line(
+                &entry, false, width, true, None, "", None, None, indent, &ctx,
+            );
+            let at = line
+                .spans
+                .iter()
+                .position(|s| s.content == meta)
+                .expect("the meta columns are drawn");
+            line.spans[..at]
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum()
+        };
+        for width in [24usize, 30, 48, 100] {
+            assert_eq!(
+                meta_at(NEST_INDENT, width),
+                meta_at(0, width),
+                "at {width} the indented row's meta columns start where a plain row's do"
+            );
+        }
+        // And the place row above it ends where the entry row ends, so its right-hand
+        // cell sits on the edge the age column sits on. `row_width` names the entry
+        // row's width rather than measuring it, and this is what keeps the two honest.
+        assert_eq!(meta.chars().count(), META_COLUMNS_WIDTH);
+        let drawn = |line: Line<'_>| -> usize {
+            line.spans.iter().map(|s| s.content.chars().count()).sum()
+        };
+        // With the meta columns shown, which is when there is an edge to share. Without
+        // them an entry row stops after its label, and the place row fills its width
+        // alone so the selection tint reaches the edge.
+        for name_width in [60usize, 24] {
+            let entry_width = drawn(entry_line(
+                &entry,
+                false,
+                name_width,
+                true,
+                None,
+                "",
+                None,
+                None,
+                NEST_INDENT,
+                &ctx,
+            ));
+            assert_eq!(entry_width, row_width(name_width, true));
+            let place = place_line(
+                std::path::Path::new("/data"),
+                Some("nfs4"),
+                false,
+                name_width,
+                true,
+                &ctx,
+            );
+            assert_eq!(drawn(place), entry_width, "{name_width}");
+            let more = more_line(3, 2, false, name_width, true, &ctx);
+            assert_eq!(drawn(more), entry_width, "{name_width}");
+        }
+    }
+
+    #[test]
+    fn a_place_row_names_only_a_filesystem_worth_naming() {
+        // A local disk is the overwhelming majority of places, and `ext4` beside
+        // every one would be texture. A share or a store is worth a word, in the
+        // color the rows' own glyph uses for it.
+        let ctx = RenderContext::for_test();
+        let text = |source: Option<&str>| -> String {
+            place_line(
+                std::path::Path::new("/data/x"),
+                source,
+                false,
+                40,
+                false,
+                &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect::<String>()
+        };
+        assert!(
+            text(Some("ext4")).trim_end().ends_with("/data/x/"),
+            "{:?}",
+            text(Some("ext4"))
+        );
+        assert!(
+            text(Some("nfs4")).trim_end().ends_with("nfs4"),
+            "{:?}",
+            text(Some("nfs4"))
+        );
+        assert!(
+            text(Some("s3")).trim_end().ends_with("s3"),
+            "{:?}",
+            text(Some("s3"))
+        );
+        assert!(
+            text(None).trim_end().ends_with("/data/x/"),
+            "{:?}",
+            text(None)
+        );
+        // A long path keeps its tail, which is the part that says where it is.
+        let long = place_line(
+            std::path::Path::new("/very/deeply/nested/place/on/a/share/somewhere/far"),
+            Some("nfs4"),
+            false,
+            27,
+            false,
+            &ctx,
+        );
+        let drawn: String = long.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(drawn.chars().count(), row_width(27, false), "{drawn:?}");
+        assert!(drawn.contains("far/"), "{drawn:?}");
+    }
+
+    #[test]
+    fn the_more_row_counts_rows_and_places() {
+        let ctx = RenderContext::for_test();
+        let text = |hidden: usize, places: usize| -> String {
+            more_line(hidden, places, false, 40, false, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let g = glyphs::get();
+        assert_eq!(
+            text(13, 5),
+            format!("{}{} 13 more in 5 places", g.selector_blank, g.ellipsis)
+        );
+        assert_eq!(
+            text(1, 1),
+            format!("{}{} 1 more in 1 place", g.selector_blank, g.ellipsis)
+        );
+    }
+
     #[test]
     fn a_local_folder_keeps_its_slash_however_its_name_is_spelled() {
         for name in ["project.old", "v1.2", "site.com", "datui.git", "plain"] {
@@ -2144,6 +2499,7 @@ mod tests {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -2162,7 +2518,7 @@ mod tests {
         let mut entry = Entry::for_test(path, "sales.parquet");
         entry.kind = EntryKind::Unknown;
         let text = |known: Option<&[String]>| -> String {
-            entry_line(&entry, false, 80, false, None, "", known, None, &ctx)
+            entry_line(&entry, false, 80, false, None, "", known, None, 0, &ctx)
                 .spans
                 .iter()
                 .map(|s| s.content.to_string())
@@ -2235,6 +2591,7 @@ mod tests {
                 "usd",
                 Some(&[]),
                 None,
+                0,
                 &ctx,
             );
             let marked: String = line
@@ -2309,6 +2666,7 @@ mod tests {
                 "cust",
                 Some(&known),
                 None,
+                0,
                 &ctx,
             );
             let without = entry_line(
@@ -2320,6 +2678,7 @@ mod tests {
                 "cust",
                 Some(&[]),
                 None,
+                0,
                 &ctx,
             );
             assert_eq!(
@@ -2343,6 +2702,7 @@ mod tests {
             filter,
             Some(&[]),
             None,
+            0,
             &ctx,
         );
         line.spans
@@ -2598,6 +2958,7 @@ mod tests {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, 0, &ctx);

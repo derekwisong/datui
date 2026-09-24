@@ -13,7 +13,7 @@ fn visible_names(home: &HomeState) -> Vec<String> {
         .iter()
         .filter_map(|r| match r {
             Row::Entry { entry, .. } => Some(entry.name.clone()),
-            Row::Header { .. } => None,
+            _ => None,
         })
         .collect()
 }
@@ -206,20 +206,35 @@ fn test_datasets_sort_before_directories() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_recent_dataset_implies_its_directory_is_a_root() {
+fn test_a_recent_dataset_puts_its_directory_under_recent_not_beside_it() {
     // The whole point: code lives in cwd, data lives on a mount. Opening something
-    // there once must be enough for datui to know about the place.
+    // there once must be enough for datui to know about the place. It used to become
+    // a section of its own, titled by path and drawn exactly like a configured
+    // directory; now it is a place row under RECENT, and Enter on it browses there.
     let tmp = TempDir::new().unwrap();
     let mount = tmp.path().join("mnt/data");
     let dataset = touch(&mount, "sales.parquet");
 
-    let roots = HomeState::roots(&[], &[dataset], &[]);
-    let derived = roots
+    let mut home = HomeState::default();
+    home.rebuild(&[], std::slice::from_ref(&dataset));
+
+    let mount_title = datui::home::display_path(&mount);
+    assert!(
+        !home.sections.iter().any(|s| s.title == mount_title),
+        "a path in a header is a real root; a recent's directory is not one"
+    );
+    let rows = home.visible();
+    let place = rows
         .iter()
-        .find(|r| r.path == mount)
-        .expect("the directory holding a recent dataset should become a root");
-    assert_eq!(derived.origin, RootOrigin::Recent);
-    assert!(derived.available);
+        .position(|r| matches!(r, Row::Place { path, .. } if *path == mount))
+        .expect("the directory holding a recent dataset is a place row");
+    assert!(
+        matches!(
+            rows.get(place + 1),
+            Some(Row::Entry { entry, nested: true, .. }) if entry.path == dataset
+        ),
+        "the dataset is drawn under its place: {rows:?}"
+    );
 }
 
 #[test]
@@ -229,7 +244,7 @@ fn test_configured_directories_become_roots() {
     fs::create_dir_all(&configured).unwrap();
 
     // The working directory is always root 0, so look the configured one up by path.
-    let roots = HomeState::roots(std::slice::from_ref(&configured), &[], &[]);
+    let roots = HomeState::roots(std::slice::from_ref(&configured), &[]);
     let root = roots
         .iter()
         .find(|r| r.path == configured)
@@ -241,7 +256,7 @@ fn test_configured_directories_become_roots() {
 fn test_unavailable_root_is_reported_not_hidden() {
     // "The mount is down" is information; silently dropping the row is not.
     let missing = std::path::PathBuf::from("/definitely/not/here");
-    let roots = HomeState::roots(std::slice::from_ref(&missing), &[], &[]);
+    let roots = HomeState::roots(std::slice::from_ref(&missing), &[]);
     let root = roots.iter().find(|r| r.path == missing).expect("kept");
     assert!(!root.available);
 }
@@ -250,9 +265,9 @@ fn test_unavailable_root_is_reported_not_hidden() {
 fn test_roots_are_deduplicated() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().join("data");
-    let dataset = touch(&dir, "a.parquet");
+    touch(&dir, "a.parquet");
 
-    let roots = HomeState::roots(std::slice::from_ref(&dir), &[dataset], &[]);
+    let roots = HomeState::roots(&[dir.clone(), dir.clone()], std::slice::from_ref(&dir));
     let hits = roots.iter().filter(|r| r.path == dir).count();
     assert_eq!(hits, 1, "a directory named twice should appear once");
 }
@@ -474,7 +489,9 @@ fn test_filtered_results_stay_grouped_by_where_they_came_from() {
             .visible()
             .iter()
             .filter_map(|r| match r {
-                Row::Entry { entry, section: s } if *s == section => Some(entry.path.clone()),
+                Row::Entry {
+                    entry, section: s, ..
+                } if *s == section => Some(entry.path.clone()),
                 _ => None,
             })
             .collect();
@@ -559,12 +576,10 @@ fn test_desktop_roots_rank_below_everything_else() {
     let configured = tmp.path().join("configured");
     let downloads = tmp.path().join("downloads");
     fs::create_dir_all(&configured).unwrap();
-    let recent = touch(&tmp.path().join("mount"), "sales.parquet");
     fs::create_dir_all(&downloads).unwrap();
 
     let roots = HomeState::roots(
         std::slice::from_ref(&configured),
-        std::slice::from_ref(&recent),
         std::slice::from_ref(&downloads),
     );
     let origins: Vec<RootOrigin> = roots.iter().map(|r| r.origin).collect();
@@ -967,9 +982,10 @@ fn test_network_detection_prefers_the_deepest_and_last_mount() {
 }
 
 #[test]
-fn test_an_unreadable_derived_root_is_shown_not_dropped() {
-    // A network share that has stopped answering is exactly what the section heading
-    // exists to report. Dropping it leaves the user wondering where their data went.
+fn test_a_vanished_recent_leaves_nothing_behind() {
+    // The directory of a recent used to be promoted to a root before the recent
+    // itself was checked, so a dataset deleted with its directory left a section
+    // titled by a path that no longer existed. A recent that is gone is gone.
     let tmp = TempDir::new().unwrap();
     let gone = tmp.path().join("mount/data");
     let dataset = touch(&gone, "sales.parquet");
@@ -979,24 +995,31 @@ fn test_an_unreadable_derived_root_is_shown_not_dropped() {
     home.rebuild(&[], std::slice::from_ref(&dataset));
 
     assert!(
-        home.sections.iter().any(|s| s.unavailable),
-        "an unreadable root should be listed as unavailable"
+        !home.sections.iter().any(|s| s.unavailable),
+        "a vanished recent must not be reported as an unavailable root"
+    );
+    assert!(
+        !home
+            .visible()
+            .iter()
+            .any(|r| matches!(r, Row::Place { path, .. } if *path == gone)),
+        "nor as a place with nothing under it"
     );
 }
 
 #[test]
-fn test_an_empty_but_readable_derived_root_is_dropped() {
+fn test_a_directory_that_is_only_a_recents_parent_is_not_a_section() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("empty");
-    let dataset = touch(&dir, "gone.parquet");
-    fs::remove_file(&dataset).unwrap();
+    let dir = tmp.path().join("somewhere");
+    let dataset = touch(&dir, "opened_once.parquet");
 
     let mut home = HomeState::default();
     home.rebuild(&[], std::slice::from_ref(&dataset));
 
+    let title = datui::home::display_path(&dir);
     assert!(
-        !home.sections.iter().any(|s| s.title.contains("empty")),
-        "a readable root with nothing in it is noise"
+        !home.sections.iter().any(|s| s.title == title),
+        "only the current directory and configured directories are titled by a path"
     );
 }
 
@@ -1077,6 +1100,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
             folded_by_default: true,
             remote_root: Some(root.clone()),
             waiting: true,
+            grouped_by_place: false,
         }],
     });
 
@@ -1242,7 +1266,7 @@ fn test_a_url_is_classified_by_name_not_by_stat() {
         .iter()
         .filter_map(|r| match r {
             Row::Entry { entry, .. } => Some((entry.name.clone(), entry.kind)),
-            Row::Header { .. } => None,
+            _ => None,
         })
         .collect();
 
@@ -1747,6 +1771,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         }],
     });
     home
@@ -1957,29 +1982,6 @@ fn test_a_recent_that_no_longer_exists_is_dropped() {
 }
 
 #[test]
-fn test_the_working_directory_outranks_incidental_roots() {
-    // Standing in a directory is the strongest statement of what you are working on.
-    // Ordered after recent-derived roots, a single recent root holding sixty files
-    // buried the very place the user had just cd'd into — the data was found, and
-    // unreachable.
-    let tmp = TempDir::new().unwrap();
-    let elsewhere = tmp.path().join("elsewhere");
-    let recent = touch(&elsewhere, "opened_once.parquet");
-
-    let roots = HomeState::roots(&[], std::slice::from_ref(&recent), &[]);
-    let cwd_at = roots.iter().position(|r| r.origin == RootOrigin::Cwd);
-    let derived_at = roots.iter().position(|r| r.origin == RootOrigin::Recent);
-
-    if let (Some(cwd_at), Some(derived_at)) = (cwd_at, derived_at) {
-        assert!(
-            cwd_at < derived_at,
-            "the working directory should come before a root that exists only \
-             because something in it was opened once"
-        );
-    }
-}
-
-#[test]
 fn test_cwd_datasets_are_listed_without_ever_having_been_opened() {
     // Being in the directory is enough; nothing has to be in recents first.
     let tmp = TempDir::new().unwrap();
@@ -2001,55 +2003,342 @@ fn test_cwd_datasets_are_listed_without_ever_having_been_opened() {
 }
 
 #[test]
-fn test_recent_directories_promoted_to_roots_are_capped() {
-    // Fifty recents scattered across fifty directories would be fifty directory
-    // listings on every rebuild. The newest few are where the work is.
+fn test_scattered_recents_cost_no_directory_listings() {
+    // Thirty recents in thirty directories used to be eight directory listings on
+    // every rebuild, and eight sections titled by path. Now they are thirty rows
+    // under thirty place rows, and nothing beyond the recents themselves is read.
     let tmp = TempDir::new().unwrap();
     let recents: Vec<std::path::PathBuf> = (0..30)
         .map(|i| touch(&tmp.path().join(format!("place{i}")), "data.parquet"))
         .collect();
 
-    let roots = HomeState::roots(&[], &recents, &[]);
-    let derived = roots
-        .iter()
-        .filter(|r| r.origin == RootOrigin::Recent)
-        .count();
-    assert!(
-        derived <= 8,
-        "thirty scattered recents produced {derived} roots; the cap is 8"
-    );
-    assert_eq!(derived, 8, "the budget should be spent, not left unused");
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
 
-    // Newest first: place0 is the most recent, so it must be one of the kept roots.
+    let titles: Vec<&str> = home.sections.iter().map(|s| s.title.as_str()).collect();
     assert!(
-        roots.iter().any(|r| r.path == tmp.path().join("place0")),
-        "the most recently used directory must survive the cap"
+        !titles.iter().any(|t| t.contains("place")),
+        "no recent's directory is a section: {titles:?}"
     );
+    let places = home
+        .visible()
+        .iter()
+        .filter(|r| matches!(r, Row::Place { .. }))
+        .count();
+    assert_eq!(places, 30, "one place row per directory");
+}
+
+#[test]
+fn test_recents_in_one_directory_share_one_place_row() {
+    let tmp = TempDir::new().unwrap();
+    let one = tmp.path().join("shared");
+    let newer = touch(&one, "part1.parquet");
+    let older = touch(&one, "part0.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &[newer.clone(), older.clone()]);
+
+    let rows = home.visible();
+    let places: Vec<&Row> = rows
+        .iter()
+        .filter(|r| matches!(r, Row::Place { .. }))
+        .collect();
+    assert_eq!(places.len(), 1, "one place for one directory: {rows:?}");
     assert!(
-        !roots.iter().any(|r| r.path == tmp.path().join("place29")),
-        "the oldest directory should fall off the end"
+        matches!(places[0], Row::Place { path, held: 2, .. } if *path == one),
+        "the place counts what it holds: {:?}",
+        places[0]
+    );
+    let under: Vec<&std::path::Path> = rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry {
+                entry,
+                nested: true,
+                ..
+            } => Some(entry.path.as_path()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        under,
+        vec![newer.as_path(), older.as_path()],
+        "both rows are under it, newest first"
     );
 }
 
 #[test]
-fn test_many_recents_in_one_directory_cost_one_root() {
-    // The cap counts directories, not recents. Opening thirty files from the same
-    // place must not exhaust a budget meant for thirty different places.
+fn test_places_are_ordered_by_their_newest_recent() {
+    // Recents are newest first. A place opened once long ago but again just now is
+    // the first place, however many older opens sit under the second.
     let tmp = TempDir::new().unwrap();
-    let one = tmp.path().join("shared");
-    let recents: Vec<std::path::PathBuf> = (0..30)
-        .map(|i| touch(&one, &format!("part{i}.parquet")))
+    let a = tmp.path().join("a");
+    let b = tmp.path().join("b");
+    let a_new = touch(&a, "new.parquet");
+    let b_1 = touch(&b, "one.parquet");
+    let b_2 = touch(&b, "two.parquet");
+    let a_old = touch(&a, "old.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild(
+        &[],
+        &[a_new.clone(), b_1.clone(), b_2.clone(), a_old.clone()],
+    );
+
+    let shape: Vec<String> = home
+        .visible()
+        .iter()
+        .filter(|r| r.section() == 0)
+        .filter_map(|r| match r {
+            Row::Place { path, .. } => Some(format!("{}/", path.display())),
+            Row::Entry { entry, .. } => Some(entry.path.display().to_string()),
+            _ => None,
+        })
         .collect();
-    let elsewhere = touch(&tmp.path().join("other"), "data.parquet");
+    let want: Vec<String> = [
+        format!("{}/", a.display()),
+        a_new.display().to_string(),
+        a_old.display().to_string(),
+        format!("{}/", b.display()),
+        b_1.display().to_string(),
+        b_2.display().to_string(),
+    ]
+    .to_vec();
+    assert_eq!(shape, want);
+}
 
-    let mut all = recents;
-    all.push(elsewhere.clone());
+#[test]
+fn test_a_sort_orders_within_each_place_and_never_flattens_recent() {
+    use datui::home::SortMode;
 
-    let roots = HomeState::roots(&[], &all, &[]);
+    let tmp = TempDir::new().unwrap();
+    let a = tmp.path().join("a");
+    let b = tmp.path().join("b");
+    let a_small = a.join("small.parquet");
+    let a_big = a.join("big.parquet");
+    let b_huge = b.join("huge.parquet");
+    fs::create_dir_all(&a).unwrap();
+    fs::create_dir_all(&b).unwrap();
+    fs::write(&a_small, vec![0u8; 10]).unwrap();
+    fs::write(&a_big, vec![0u8; 1000]).unwrap();
+    fs::write(&b_huge, vec![0u8; 100_000]).unwrap();
+
+    let mut home = HomeState {
+        sort: SortMode::Size,
+        ..Default::default()
+    };
+    // `a` is the newer place though `b` holds the biggest file.
+    home.rebuild(&[], &[a_small.clone(), b_huge.clone(), a_big.clone()]);
+
+    let shape: Vec<std::path::PathBuf> = home
+        .visible()
+        .iter()
+        .filter(|r| r.section() == 0)
+        .filter_map(|r| match r {
+            Row::Place { path, .. } => Some(path.clone()),
+            Row::Entry { entry, .. } => Some(entry.path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![a.clone(), a_big, a_small, b.clone(), b_huge],
+        "places keep their order; the rows inside each are by size"
+    );
+}
+
+/// Thirty recents in ten places, three to a place, so a place row and its rows cost
+/// four lines each.
+fn ten_places_of_three(tmp: &TempDir) -> Vec<std::path::PathBuf> {
+    (0..30)
+        .map(|i| {
+            touch(
+                &tmp.path().join(format!("place{:02}", i / 3)),
+                &format!("part{i}.parquet"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn test_recent_shows_whole_places_up_to_a_third_of_the_screen() {
+    let tmp = TempDir::new().unwrap();
+    let recents = ten_places_of_three(&tmp);
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+
+    // Thirty lines of list: ten for RECENT, which is two whole places (eight lines)
+    // and not a third one (twelve).
+    home.view_height = 30;
+    fn recent(home: &HomeState) -> Vec<Row<'_>> {
+        home.visible()
+            .into_iter()
+            .filter(|r| r.section() == 0)
+            .collect()
+    }
+    let rows = recent(&home);
+    let places = rows
+        .iter()
+        .filter(|r| matches!(r, Row::Place { .. }))
+        .count();
+    assert_eq!(places, 2, "{rows:?}");
+    let entries = rows
+        .iter()
+        .filter(|r| matches!(r, Row::Entry { section: 0, .. }))
+        .count();
+    assert_eq!(entries, 6, "a place is shown whole or not at all");
     assert!(
-        roots.iter().any(|r| r.path == tmp.path().join("other")),
-        "a directory listed last must still become a root when the ones before it \
-         all resolved to the same place"
+        matches!(
+            rows.last(),
+            Some(Row::More {
+                hidden: 24,
+                places: 8,
+                ..
+            })
+        ),
+        "what is hidden is counted, rows and places both: {:?}",
+        rows.last()
+    );
+    assert!(
+        matches!(rows.first(), Some(Row::Header { matches: 30, .. })),
+        "the header's count is the true count, not the shown one: {:?}",
+        rows.first()
+    );
+
+    // Too short for even one place: one is shown anyway. RECENT with nothing in it
+    // would be the section saying the opposite of what it holds.
+    home.view_height = 6;
+    let rows = recent(&home);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| matches!(r, Row::Place { .. }))
+            .count(),
+        1,
+        "{rows:?}"
+    );
+    assert!(matches!(
+        rows.last(),
+        Some(Row::More {
+            hidden: 27,
+            places: 9,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn test_expanding_recent_shows_every_place_for_the_session() {
+    let tmp = TempDir::new().unwrap();
+    let recents = ten_places_of_three(&tmp);
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+    home.view_height = 30;
+    assert!(home.visible().iter().any(|r| matches!(r, Row::More { .. })));
+
+    home.recent_expanded = true;
+    let rows = home.visible();
+    assert!(!rows.iter().any(|r| matches!(r, Row::More { .. })));
+    assert_eq!(
+        rows.iter()
+            .filter(|r| matches!(r, Row::Entry { section: 0, .. }))
+            .count(),
+        30
+    );
+
+    // A rebuild — a probe answering, a measurement landing — does not fold it back.
+    home.rebuild(&[], &recents);
+    assert!(
+        !home.visible().iter().any(|r| matches!(r, Row::More { .. })),
+        "expanded is for the session, not for one listing"
+    );
+}
+
+#[test]
+fn test_a_filter_reaches_past_the_cap() {
+    let tmp = TempDir::new().unwrap();
+    let recents = ten_places_of_three(&tmp);
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+    home.view_height = 30;
+
+    // The last recent is in the last place, well past what the cap shows.
+    home.filter = "part29".to_string();
+    let rows = home.visible();
+    assert!(
+        rows.iter()
+            .any(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "part29.parquet")),
+        "a match anywhere in RECENT is shown: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|r| matches!(r, Row::More { .. })),
+        "nothing is hidden under a filter, so there is no more row"
+    );
+    assert!(
+        matches!(
+            rows.iter().find(|r| matches!(r, Row::Place { .. })),
+            Some(Row::Place { path, .. }) if *path == tmp.path().join("place09")
+        ),
+        "the match is shown under its place: {rows:?}"
+    );
+}
+
+#[test]
+fn test_a_remembered_fold_does_not_fold_the_listing_browsed_into() {
+    // Folds are remembered by title, and a directory's title is its path. The
+    // directories recents used to be promoted to were sections by that path, folded
+    // by default and remembered when toggled — so a user who folded one would now
+    // browse into it from its place row and see the heading and nothing else.
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("data");
+    touch(&dir, "a.parquet");
+    let title = datui::home::display_path(&dir);
+
+    let mut home = HomeState::default();
+    home.folds.insert(title, true);
+    home.browsing = Some(dir);
+    home.rebuild(&[], &[]);
+
+    assert!(
+        visible_names(&home).iter().any(|n| n == "a.parquet"),
+        "the place browsed into is the whole screen and is never folded: {:?}",
+        home.visible()
+    );
+}
+
+#[test]
+fn test_a_place_row_is_never_looked_into_or_measured() {
+    // A place is a row of the view. Nothing that reads a directory, opens a file or
+    // writes the cache is ever handed one, which is what keeps it free to draw.
+    let tmp = TempDir::new().unwrap();
+    let recents = ten_places_of_three(&tmp);
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+    home.view_height = 30;
+
+    let places: Vec<std::path::PathBuf> = home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Place { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!places.is_empty());
+    for wanted in [home.unclassified_visible(100), home.unmeasured_visible(100)] {
+        assert!(
+            wanted.iter().all(|e| !places.contains(&e.path)),
+            "a place was queued for a read: {wanted:?}"
+        );
+    }
+    assert!(
+        home.selected_entry()
+            .is_some_and(|e| !places.contains(&e.path))
+    );
+    home.selected = 1; // the first place row, under the header
+    assert!(matches!(home.selected_row(), Some(Row::Place { .. })));
+    assert!(
+        home.selected_entry().is_none(),
+        "a place is not an entry, so nothing opens or caches it as one"
     );
 }
 
@@ -2154,7 +2443,7 @@ fn visible_kinds(home: &HomeState) -> Vec<(String, EntryKind)> {
         .iter()
         .filter_map(|r| match r {
             Row::Entry { entry, .. } => Some((entry.name.clone(), entry.kind)),
-            Row::Header { .. } => None,
+            _ => None,
         })
         .collect()
 }
@@ -2324,6 +2613,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         }],
     });
 
@@ -2936,10 +3226,10 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
 }
 
 #[test]
-fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
-    // Recent, where you are, the cloud, what you configured, and only then the
-    // directories derived from recents and the desktop's places -- folded, since they
-    // repeat what Recent shows or are places rather than datasets.
+fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
+    // Recent, where you are, the cloud, what you configured, and the desktop's
+    // places last and folded, since they are places rather than datasets. A recent's
+    // own directory is not a section at all: it is a place row under Recent.
     use datui::home::{CloudSource, ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
@@ -2984,30 +3274,34 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
         "cloud before configured: {titles:?}"
     );
     assert!(
-        pos(&conf) < pos(&derived),
-        "configured before derived: {titles:?}"
+        pos(&conf) < pos("Elsewhere"),
+        "configured before Elsewhere: {titles:?}"
     );
     assert!(
-        pos(&derived) < pos("Elsewhere"),
-        "derived before Elsewhere: {titles:?}"
+        !titles.contains(&derived.as_str()),
+        "a recent's directory is not a section: {titles:?}"
+    );
+    assert!(
+        listing.sections.len() <= 5,
+        "five sections at most: {titles:?}"
     );
 
     let by_title = |t: &str| &listing.sections[pos(t)];
     assert!(!by_title("Recent").folded_by_default);
+    assert!(by_title("Recent").grouped_by_place);
     assert!(!by_title("Cloud").folded_by_default);
     assert!(!by_title(&conf).folded_by_default);
-    assert!(by_title(&derived).folded_by_default);
     assert!(by_title("Elsewhere").folded_by_default);
 
     // The default is a default: opening one is remembered over it, and the listing
     // still knows it holds datasets when every section is folded.
-    let derived_idx = pos(&derived);
+    let elsewhere_idx = pos("Elsewhere");
     drop(titles);
     let mut home = HomeState::default();
     home.apply_listing(listing);
-    assert!(home.is_collapsed(derived_idx));
-    home.set_collapsed(derived_idx, false);
-    assert!(!home.is_collapsed(derived_idx));
+    assert!(home.is_collapsed(elsewhere_idx));
+    home.set_collapsed(elsewhere_idx, false);
+    assert!(!home.is_collapsed(elsewhere_idx));
     for i in 0..home.sections.len() {
         home.set_collapsed(i, true);
     }

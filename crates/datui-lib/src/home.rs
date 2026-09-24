@@ -5,17 +5,17 @@
 //!
 //! Code lives in your working directory; the interesting datasets usually do not.
 //! They are on a mount, a NAS, a scratch volume. So the home screen is built around
-//! *roots* — places to look — gathered from three sources, none of which require
+//! *roots* — places to look — gathered from two sources, neither of which requires
 //! maintaining a catalogue:
 //!
 //! 1. **Configured** — `[data] directories`, a `PATH`-shaped list of places.
 //! 2. **The working directory** — free, and right for local exports and fixtures.
-//! 3. **Derived from recents** — if you opened `/mnt/data/sales/`, then `/mnt/data`
-//!    is now somewhere datui knows to look.
 //!
-//! The third is what bridges "code here, data there" with no configuration at all:
-//! you establish the association by using it once. It is derived state, so it costs
-//! nothing to be wrong and nothing to throw away.
+//! What bridges "code here, data there" with no configuration at all is `RECENT`:
+//! every dataset you have opened, grouped under the directory or prefix it lives in.
+//! Opening `/mnt/data/sales/` once puts `/mnt/data/` on the screen as a place row,
+//! and `Enter` on that row browses it. It is derived state, so it costs nothing to be
+//! wrong and nothing to throw away.
 
 use crate::discover::{self, Entry, EntryKind};
 use std::path::{Path, PathBuf};
@@ -25,7 +25,6 @@ use std::path::{Path, PathBuf};
 pub enum RootOrigin {
     Cwd,
     Configured,
-    Recent,
     /// Derived from the desktop's own recently-used list.
     Desktop,
 }
@@ -35,7 +34,6 @@ impl RootOrigin {
         match self {
             RootOrigin::Cwd => "current directory",
             RootOrigin::Configured => "configured",
-            RootOrigin::Recent => "recent",
             RootOrigin::Desktop => "opened elsewhere",
         }
     }
@@ -114,18 +112,6 @@ fn percent_decode(raw: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
-
-/// Filesystem types that live over a network. Listing one can be slow, and it can
-/// stop working entirely when the link or the server goes away — worth saying so next
-/// to a root rather than leaving the user to wonder why a listing is empty or slow.
-/// Directories promoted to roots because something in them was opened recently.
-///
-/// Every root costs a directory listing on every rebuild. Recents are capped at
-/// fifty, so fifty scattered opens meant fifty listings — locally a stutter, on a
-/// network share the difference between instant and unusable. The most recent eight
-/// distinct directories cover where someone is actually working; older places stay
-/// in `RECENT` as individual datasets and remain reachable by typing a path.
-const MAX_RECENT_ROOTS: usize = 8;
 
 /// What to call a place inside an object store: a bucket, or a prefix within one.
 ///
@@ -445,6 +431,10 @@ pub struct Section {
     /// The probe had not answered when this listing was built, so the rows are not in
     /// yet. Shown, not hidden: an empty section here means "wait", not "nothing".
     pub waiting: bool,
+    /// Rows are shown under the place each lives in, with a row for the place itself.
+    /// Set on `RECENT`, whose rows come from anywhere; a directory's rows all live in
+    /// the directory the title names.
+    pub grouped_by_place: bool,
 }
 
 /// Where a cloud source's listing stands.
@@ -627,7 +617,13 @@ impl SortMode {
 
 /// One line of the home screen. Headers are selectable so a section can be
 /// collapsed and expanded from the keyboard.
-#[derive(Debug, Clone, Copy)]
+///
+/// A place and the `more` row are rows of the view, not entries. An [`Entry`]'s kind
+/// decides whether the probe passes look into it, whether it is measured and whether
+/// what was learned is cached, and none of those may ever happen to a place: it is
+/// drawn from what is already known and never causes a directory read. Being a
+/// variant here rather than an [`EntryKind`] keeps it outside all four by construction.
+#[derive(Debug, Clone)]
 pub enum Row<'a> {
     Header {
         section: usize,
@@ -638,15 +634,42 @@ pub enum Row<'a> {
     Entry {
         section: usize,
         entry: &'a Entry,
+        /// Drawn two cells in, under the place row above it.
+        nested: bool,
+    },
+    /// The directory or prefix the entries below it live in, under `RECENT`.
+    Place {
+        section: usize,
+        path: PathBuf,
+        /// The filesystem it is on, or the object store's scheme.
+        source: Option<String>,
+        /// How many recents live there, whether or not the filter shows them.
+        held: usize,
+    },
+    /// What the cap on `RECENT` is hiding: `… 13 more in 5 places`.
+    More {
+        section: usize,
+        hidden: usize,
+        places: usize,
     },
 }
 
 impl Row<'_> {
     pub fn section(&self) -> usize {
         match self {
-            Row::Header { section, .. } | Row::Entry { section, .. } => *section,
+            Row::Header { section, .. }
+            | Row::Entry { section, .. }
+            | Row::Place { section, .. }
+            | Row::More { section, .. } => *section,
         }
     }
+}
+
+/// The place a recent lives in: its directory, or its prefix in an object store.
+///
+/// A bare bucket or host, which has nothing above it, is its own place.
+pub fn place_of(path: &Path) -> PathBuf {
+    parent_location(path).unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Home screen state.
@@ -725,6 +748,9 @@ pub struct HomeState {
     pub cloud: Vec<CloudSource>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
     pub waiting_since: Option<std::time::Instant>,
+    /// `RECENT` shows every place, however many rows that takes. Set by `Enter` on the
+    /// `… N more` row, for the session.
+    pub recent_expanded: bool,
 }
 
 /// The result of one recursive walk below the working directory.
@@ -784,6 +810,7 @@ impl Default for HomeState {
             enriched: std::collections::HashMap::new(),
             folds: std::collections::HashMap::new(),
             search: SearchState::default(),
+            recent_expanded: false,
         }
     }
 }
@@ -940,6 +967,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             folded_by_default: false,
             remote_root: None,
             waiting: source.is_some_and(|s| s.busy()),
+            grouped_by_place: false,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing { sections };
@@ -1001,6 +1029,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // Its wait is drawn in place of the whole list; see `awaiting_listing`.
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing { sections };
@@ -1027,7 +1056,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         .collect();
     if !recent_rows.is_empty() {
         sections.push(Section {
-            title: "Recent".to_string(),
+            title: HomeState::RECENT_SECTION.to_string(),
             subtitle: None,
             rows: recent_rows,
             unavailable: false,
@@ -1035,13 +1064,18 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            // Every trace of recent use lives here. The directories recents live in
+            // used to be sections of their own, titled by path and drawn exactly like
+            // a configured directory, with `recent` at the far end of the rule the
+            // only thing saying why they were there. Now they are rows of this one.
+            grouped_by_place: true,
         });
     }
 
     // Desktop-derived places are collected rather than expanded — see below.
     let mut elsewhere: Vec<Entry> = Vec::new();
 
-    let roots = HomeState::roots_with(config_dirs, recents, desktop_dirs, network_check);
+    let roots = HomeState::roots_with(config_dirs, desktop_dirs, network_check);
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
     for root in roots {
         // A place the desktop mentioned is listed as a directory to step into,
@@ -1060,8 +1094,6 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             continue;
         }
 
-        // A derived root with nothing in it adds noise; keep configured and cwd
-        // roots always, since the user named them or is standing in them.
         // A remote root is listed from whatever its background probe returned,
         // and left empty until then. Scanning it here is the thing that freezes
         // datui on a slow or absent network.
@@ -1078,14 +1110,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         } else {
             Vec::new()
         };
-        // An empty derived root is noise and goes. One that cannot be *read* stays:
-        // a network share that has stopped answering is the case the section
-        // heading exists to report, and silently dropping it is the worst answer.
+        // A root that cannot be *read* stays: a network share that has stopped
+        // answering is the case the section heading exists to report, and silently
+        // dropping it is the worst answer.
         let unreachable = root.network && unreachable.contains(&root.path);
         let waiting = root.network && !unreachable && !probed.contains_key(&root.path);
-        if rows.is_empty() && root.origin == RootOrigin::Recent && root.available && !root.network {
-            continue;
-        }
         // A network root is worth flagging: it is the one that will be slow, and
         // the one that can stop answering.
         // Naming the filesystem rather than saying "network" costs one word and says
@@ -1119,20 +1148,19 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 rows,
                 unavailable: !root.available || unreachable,
                 unavailable_note: None,
-                // A directory promoted from a recent repeats what Recent already
-                // shows. It stays available, folded, one keystroke from open.
-                folded_by_default: root.origin == RootOrigin::Recent,
+                folded_by_default: false,
                 remote_root: root.network.then(|| root.path.clone()),
                 waiting,
+                grouped_by_place: false,
             },
         ));
     }
 
     // The order is by why you came, not by where the rows come from: what you
     // opened last, where you are standing, the object stores your credentials
-    // reach, the places you configured, and only then the directories derived from
-    // recents. Cloud sits high because credentials on a machine are a deliberate
-    // signal, and a bucket is the one place no directory listing can ever reach.
+    // reach, then the places you configured. Cloud sits high because credentials
+    // on a machine are a deliberate signal, and a bucket is the one place no
+    // directory listing can ever reach.
     let (cwd_sections, rest): (Vec<_>, Vec<_>) = root_sections
         .into_iter()
         .partition(|(origin, _)| *origin == RootOrigin::Cwd);
@@ -1152,15 +1180,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         });
     }
 
-    // Configured places, then the directories promoted from recents.
-    let (configured, derived): (Vec<_>, Vec<_>) = rest
-        .into_iter()
-        .partition(|(origin, _)| *origin == RootOrigin::Configured);
-    sections.extend(configured.into_iter().map(|(_, s)| s));
-    sections.extend(derived.into_iter().map(|(_, s)| s));
+    // Configured places, in the order configured.
+    sections.extend(rest.into_iter().map(|(_, s)| s));
 
     if !elsewhere.is_empty() {
         sections.push(Section {
@@ -1173,6 +1198,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             folded_by_default: true,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         });
     }
 
@@ -1453,23 +1479,19 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
 }
 
 impl HomeState {
-    /// Gather roots from config, cwd, and the directories of recent datasets.
+    /// Gather roots from the working directory, the config and the desktop.
     ///
-    /// Order matters and is deliberate: configured places first (you said they
-    /// matter), then directories implied by what you have actually opened, then the
-    /// working directory. Duplicates collapse to their highest-priority origin.
-    pub fn roots(
-        config_dirs: &[PathBuf],
-        recents: &[PathBuf],
-        desktop_dirs: &[PathBuf],
-    ) -> Vec<Root> {
-        Self::roots_with(config_dirs, recents, desktop_dirs, is_remote_path)
+    /// Order matters and is deliberate: where you are first, then the places you
+    /// configured, then the directories the desktop says you have opened data from.
+    /// Duplicates collapse to their highest-priority origin. Recents do not make
+    /// roots: the place a recent lives in is a row of `RECENT`.
+    pub fn roots(config_dirs: &[PathBuf], desktop_dirs: &[PathBuf]) -> Vec<Root> {
+        Self::roots_with(config_dirs, desktop_dirs, is_remote_path)
     }
 
     /// As [`HomeState::roots`], with the network test injected.
     pub fn roots_with(
         config_dirs: &[PathBuf],
-        recents: &[PathBuf],
         desktop_dirs: &[PathBuf],
         is_network: fn(&Path) -> bool,
     ) -> Vec<Root> {
@@ -1510,24 +1532,10 @@ impl HomeState {
                 });
             };
 
-        let cwd = std::env::current_dir().ok();
-        let cwd_key = cwd.as_ref().map(|c| {
-            if is_network(c) {
-                c.clone()
-            } else {
-                c.canonicalize().unwrap_or_else(|_| c.clone())
-            }
-        });
-
         // Where you are comes first. Standing in a directory is the strongest
         // statement of what you are working on right now — stronger than a directory
-        // configured months ago, and far stronger than one listed only because
-        // something in it was opened once. Ordering it last meant a recent root
-        // holding sixty files buried the very place the user had just cd'd into.
-        //
-        // Claiming it here also keeps its own label when a recent dataset lives there
-        // too: "current directory" tells you more than "recent" does.
-        if let Some(cwd) = cwd.clone() {
+        // configured months ago.
+        if let Ok(cwd) = std::env::current_dir() {
             push(cwd, RootOrigin::Cwd, &mut roots, &mut seen);
         }
 
@@ -1535,45 +1543,8 @@ impl HomeState {
             push(dir.clone(), RootOrigin::Configured, &mut roots, &mut seen);
         }
 
-        // A recent dataset implies its containing directory is a place worth showing.
-        // `recents` is most-recent-first, so the newest distinct directories win the
-        // budget and the rest fall off the end.
-        let mut derived = 0usize;
-        for recent in recents {
-            if derived >= MAX_RECENT_ROOTS {
-                break;
-            }
-            if let Some(parent) = recent.parent() {
-                if parent.as_os_str().is_empty() {
-                    continue;
-                }
-                let key = if is_network(parent) {
-                    parent.to_path_buf()
-                } else {
-                    parent
-                        .canonicalize()
-                        .unwrap_or_else(|_| parent.to_path_buf())
-                };
-                if Some(&key) == cwd_key.as_ref() {
-                    continue;
-                }
-                let before = roots.len();
-                push(
-                    parent.to_path_buf(),
-                    RootOrigin::Recent,
-                    &mut roots,
-                    &mut seen,
-                );
-                // Only a directory that was actually added spends budget; fifty
-                // recents from one directory still cost one root.
-                if roots.len() > before {
-                    derived += 1;
-                }
-            }
-        }
-
         // Last, and weakest: places the desktop says you have opened data from. Only
-        // useful before datui has recents of its own, so it should never outrank one.
+        // useful before datui has recents of its own.
         for dir in desktop_dirs {
             push(dir.clone(), RootOrigin::Desktop, &mut roots, &mut seen);
         }
@@ -1658,9 +1629,18 @@ impl HomeState {
             .saturating_sub(self.view_height.saturating_sub(3).max(1));
     }
 
-    /// Rows currently passing the filter, flattened, as `(section index, row)`.
     /// Whether a section is folded: what the user last chose for it, else its default.
+    ///
+    /// Never while browsing. The listing of the place browsed into is the whole
+    /// screen, and folding it leaves nothing. The fold memory is keyed by title, and
+    /// a directory's title is its path, so a fold remembered for a section that used
+    /// to be titled by that path — the directories recents were promoted to, before
+    /// they became place rows — would otherwise fold the listing the place row leads
+    /// to, which is the one place the user has just asked to see.
     fn section_folded(&self, section: &Section) -> bool {
+        if self.browsing.is_some() {
+            return false;
+        }
         self.folds
             .get(&section.title)
             .copied()
@@ -1750,6 +1730,9 @@ impl HomeState {
 
     /// Title of the section listing cloud sources.
     pub const CLOUD_SECTION: &'static str = "Cloud";
+
+    /// Title of the section listing what has been opened, grouped by place.
+    pub const RECENT_SECTION: &'static str = "Recent";
 
     /// The source a place belongs to: `cloud://<id>` itself, a bucket named with a
     /// source (`s3://<id>@bucket`), or a bucket some source listed.
@@ -2012,6 +1995,7 @@ impl HomeState {
                     folded_by_default: false,
                     remote_root: None,
                     waiting: false,
+                    grouped_by_place: false,
                 });
             }
             return;
@@ -2058,6 +2042,7 @@ impl HomeState {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         });
     }
 
@@ -2168,15 +2153,105 @@ impl HomeState {
                     .count(),
                 collapsed,
             });
-            if !collapsed {
-                out.extend(
-                    matched
-                        .into_iter()
-                        .map(|(entry, _)| Row::Entry { section: si, entry }),
-                );
+            if collapsed {
+                continue;
+            }
+            if section.grouped_by_place {
+                out.extend(self.rows_by_place(si, section, &matched));
+            } else {
+                out.extend(matched.into_iter().map(|(entry, _)| Row::Entry {
+                    section: si,
+                    entry,
+                    nested: false,
+                }));
             }
         }
         out
+    }
+
+    /// A grouped section's rows under the place each lives in, and what the cap hides.
+    ///
+    /// Places come in the order of their newest row in the section, which for `RECENT`
+    /// is the order the rows already have. Within a place the rows keep the order
+    /// `matched` gave them — recency, or the sort or match rank in effect — so a sort
+    /// orders each place and never flattens the section.
+    ///
+    /// Whole places are shown, newest first, until they have used a third of the
+    /// list's height, and always at least one; what is left is one `… N more in M
+    /// places` row. The fraction is a judgment. If it proves wrong in use the answer
+    /// is a `[data] recent_rows` setting, not a different fraction. A filter shows
+    /// every match, and the `more` row goes with the cap: a match that is hidden is
+    /// not a match.
+    fn rows_by_place<'a>(
+        &self,
+        si: usize,
+        section: &'a Section,
+        matched: &[(&'a Entry, i32)],
+    ) -> Vec<Row<'a>> {
+        let mut order: Vec<PathBuf> = Vec::new();
+        for row in &section.rows {
+            let place = place_of(&row.path);
+            if !order.contains(&place) {
+                order.push(place);
+            }
+        }
+        let groups: Vec<(PathBuf, Vec<&'a Entry>)> = order
+            .into_iter()
+            .filter_map(|place| {
+                let rows: Vec<&'a Entry> = matched
+                    .iter()
+                    .filter(|(entry, _)| place_of(&entry.path) == place)
+                    .map(|(entry, _)| *entry)
+                    .collect();
+                (!rows.is_empty()).then_some((place, rows))
+            })
+            .collect();
+
+        // Before the first frame there is no height to budget against, and a listing
+        // built for a caller with no screen is asked for whole.
+        let capped = !self.recent_expanded && self.filter.is_empty() && self.view_height > 0;
+        let budget = self.view_height / 3;
+        let mut out: Vec<Row<'a>> = Vec::new();
+        let mut used = 0usize;
+        let mut shown = 0usize;
+        for (place, rows) in &groups {
+            let cost = 1 + rows.len();
+            if capped && shown > 0 && used + cost > budget {
+                break;
+            }
+            out.push(Row::Place {
+                section: si,
+                path: place.clone(),
+                // Every row in a place is on the filesystem the place is, so the first
+                // speaks for it. Filled in by `annotate` from the mount table.
+                source: rows[0].cost.source.clone(),
+                held: section
+                    .rows
+                    .iter()
+                    .filter(|row| place_of(&row.path) == *place)
+                    .count(),
+            });
+            out.extend(rows.iter().map(|entry| Row::Entry {
+                section: si,
+                entry,
+                nested: true,
+            }));
+            used += cost;
+            shown += 1;
+        }
+        if shown < groups.len() {
+            out.push(Row::More {
+                section: si,
+                hidden: groups[shown..].iter().map(|(_, rows)| rows.len()).sum(),
+                places: groups.len() - shown,
+            });
+        }
+        out
+    }
+
+    /// The highlighted row, whatever it is.
+    pub fn selected_row(&self) -> Option<Row<'_>> {
+        self.visible().into_iter().nth(self.selected)
     }
 
     /// The highlighted row, when it is a dataset rather than a section header.
@@ -2185,6 +2260,17 @@ impl HomeState {
             Some(Row::Entry { entry, .. }) => Some((*entry).clone()),
             _ => None,
         }
+    }
+
+    /// The recents that live in `place`: what `Delete` on its row forgets.
+    pub fn recents_in(&self, place: &Path) -> Vec<PathBuf> {
+        self.sections
+            .iter()
+            .filter(|s| s.grouped_by_place)
+            .flat_map(|s| s.rows.iter())
+            .filter(|row| place_of(&row.path) == place)
+            .map(|row| row.path.clone())
+            .collect()
     }
 
     /// The section the highlighted row belongs to.
@@ -2837,6 +2923,7 @@ mod holds_flow_tests {
             folded_by_default: false,
             remote_root: None,
             waiting: false,
+            grouped_by_place: false,
         });
         // A measurement of a file carries no `holds`, and the same struct measures both.
         home.enriched.insert(

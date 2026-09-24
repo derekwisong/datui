@@ -48,15 +48,15 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | Move |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any folder goes inside it |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any folder, or on a place row under `RECENT`, goes inside it |
+| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name, and search below the working directory |
 | <kbd>~</kbd> | Type a path; <kbd>Tab</kbd> completes |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen, ignoring what is cached |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Delete</kbd> | Forget the highlighted recent entry, or hide a cloud source |
+| <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, directory, then to the open data |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |

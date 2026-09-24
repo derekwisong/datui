@@ -7826,3 +7826,72 @@ fn test_the_caption_does_not_count_the_door_as_a_dataset() {
         "three files, and the door is not a fourth: {bar:?}"
     );
 }
+
+/// #275's done-when for this phase: from a folder the rule turns away, one table is
+/// still reachable in two keystrokes.
+///
+/// A folder whose files each bring a column the other lacks is a place to look inside
+/// rather than a dataset — that is `is_nested`, and it is stricter than the containment
+/// threshold it replaced. What makes a strict rule affordable is the other door: `→`
+/// steps in, and the first row in there opens the union anyway.
+#[test]
+fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sales = tmp.path().join("sales");
+    std::fs::create_dir_all(&sales).unwrap();
+    for (name, last) in [("old.parquet", "amount"), ("new.parquet", "amt")] {
+        let mut frame = polars::prelude::DataFrame::new(
+            1,
+            vec![
+                polars::prelude::Column::new("id".into(), &[1i32]),
+                polars::prelude::Column::new(last.into(), &[2i32]),
+            ],
+        )
+        .unwrap();
+        let file = std::fs::File::create(sales.join(name)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    app.home.classify_now(8);
+    app.home.measure_now(8);
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Directory),
+        "neither file's columns are in the other's"
+    );
+
+    // One key in.
+    app.event(&key(KeyCode::Right));
+    assert_eq!(app.home.browsing.as_deref(), Some(sales.as_path()));
+    app.home.rebuild(&[], &[]);
+
+    // The second key opens the union.
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the folder carries the row");
+    app.home.selected = row;
+    assert!(
+        matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        "the door opens what the rule declined to open in one key"
+    );
+}

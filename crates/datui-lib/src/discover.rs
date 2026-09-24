@@ -1196,7 +1196,7 @@ fn enrich_dataset(entry: &mut Entry) {
         // them costs.
         let sampled = sample_footers(&files);
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
-        if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&names) {
+        if entry.kind == EntryKind::MultiFile && !files_nest(&names) {
             // Whether the folder is one table is asked of everything under it, because
             // that is what opening it would union. What it *holds* is the files the
             // label counts — the ones directly inside — and a downgraded row is never
@@ -1312,7 +1312,7 @@ fn enrich_dataset(entry: &mut Entry) {
     //
     // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
     // and a hive folder's files hold the same table by construction.
-    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_one_table(&per_file) {
+    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_nested(&per_file) {
         // Its own files' bytes, not the subtree's. The label counts what is directly
         // inside and so do the columns beside it; a size summed over a different set of
         // files is a third number on one row measured against neither of the other two.
@@ -1375,12 +1375,12 @@ fn sample_footers(files: &[PathBuf]) -> Vec<crate::widgets::info::ParquetMetadat
 ///
 /// Fewer than two readable footers decide nothing, and the folder keeps the kind its
 /// names suggested.
-fn agree_on_a_schema(sampled: &[Vec<String>]) -> bool {
+fn files_nest(sampled: &[Vec<String>]) -> bool {
     let per_file: Vec<Vec<String>> = sampled
         .iter()
         .map(|names| crate::schema_union::top_level_columns(names))
         .collect();
-    per_file.len() < 2 || crate::schema_union::is_one_table(&per_file)
+    per_file.len() < 2 || crate::schema_union::is_nested(&per_file)
 }
 
 /// A folder whose files turned out to be separate tables is a place to look inside.
@@ -2949,6 +2949,37 @@ mod classification_tests {
     }
 
     /// The rows of one table split across files, which is what `multi` is for.
+    /// The folders the old threshold took as one table and nesting does not.
+    ///
+    /// Two files that each bring a column the other lacks — a renamed column is the
+    /// everyday case — scored two thirds against a bar of a half, so they opened as one
+    /// table and the union carried both spellings with nulls under each. Nothing datui
+    /// can see tells that apart from two tables that share most of their columns, which
+    /// is why the number moved rather than the question.
+    ///
+    /// The folder is not refused. It is a place to look inside, and the row inside it
+    /// opens the union anyway.
+    #[test]
+    fn a_folder_whose_files_each_bring_a_column_is_a_place_to_look_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "old.parquet", &["id", "ts", "amount"]);
+        write(dir.path(), "new.parquet", &["id", "ts", "amt"]);
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            EntryKind::MultiFile,
+            "the names alone still say two Parquet files"
+        );
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::Directory,
+            "and the footers say neither file's columns are in the other's"
+        );
+        assert_eq!(entry.label(), "2 parquet", "which the label still reports");
+        assert_eq!(entry.rows, None, "a sum over two tables is not a number");
+    }
+
     #[test]
     fn a_folder_of_one_table_stays_a_dataset() {
         let dir = tempfile::tempdir().unwrap();

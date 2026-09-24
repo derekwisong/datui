@@ -273,62 +273,37 @@ impl SkippedFiles {
     }
 }
 
-/// Agreement a folder's files must exceed to be read as one table.
+/// Whether every file's columns are contained in the widest file's.
 ///
-/// Every folder measured whose files are one table scored 1.0, and every folder of
-/// separate tables scored at most 0.222, so the figure sits in a wide gap rather than
-/// on a boundary. It is low deliberately: the cost of reading one table as several is
-/// one keystroke, and the cost of reading several as one is a folder that cannot be
-/// opened at all.
+/// The one shape schema evolution produces, and the one that reads cleanly as a union:
+/// a file written before a column existed has every column the widest file has, minus
+/// the ones added since. Nothing is scored and nothing is thresholded — a file either
+/// brings a column no other file has, or it does not.
 ///
-/// Exceeded rather than met, because the denominator is the narrower file's width: two
-/// tables joined on one key, `[id, name]` beside `[id, customer_id, amount]`, land
-/// exactly on it, and they are two tables.
-pub const ONE_TABLE_AGREEMENT: f64 = 0.5;
-
-/// How much a folder's files agree on a schema: the least overlap between any file and
-/// the widest one, over the smaller of the two column counts.
+/// This replaced a containment ratio against a 0.5 threshold. The ratio was measured
+/// and the threshold sat in a wide gap, but every counter-example found was a folder
+/// landing on the wrong side of a number: two tables joined on one key scored exactly
+/// 0.5, and a dataset grown from ten columns to fifty with one dropped along the way
+/// scored 0.196 — *below* the 0.200 of unrelated tables sharing a key. A dataset that
+/// drifted could not be told from tables that never agreed, by any statistic over
+/// column overlap, because the two produce the same overlaps. So the question changed
+/// instead of the number: not "how much do these agree" but "does any file bring
+/// something the others cannot account for".
 ///
-/// Containment rather than overlap, because gaining a column is what a dataset does
-/// over time. An older file's columns are then a subset of a newer one's and this stays
-/// 1.0 however many were added, where a Jaccard ratio falls — far enough that a real
-/// dataset which grew from five columns to fifty scores below a folder of unrelated
-/// tables that share a key. Measured, not supposed: see the tests below.
-///
-/// Against the widest file rather than every pair, which is O(n²) and unaffordable at
-/// twenty thousand files. Exact whenever one file's columns contain every other file's,
-/// which is the shape growth produces; optimistic otherwise, and optimistic here means
-/// reading the folder as one table, which is the reversible mistake.
+/// A folder that fails this is not refused. It is one keystroke further away — the row
+/// goes inside instead of opening, and the `(all files)` row inside it opens the union
+/// anyway. That is what makes a strict rule affordable here.
 ///
 /// Fewer than two files is one table by definition, and so is a folder whose files all
 /// have no columns to disagree about.
-pub fn column_agreement(files: &[Vec<String>]) -> f64 {
+pub fn is_nested(files: &[Vec<String>]) -> bool {
     let Some(widest) = files.iter().max_by_key(|f| f.len()) else {
-        return 1.0;
+        return true;
     };
-    if widest.is_empty() {
-        return 1.0;
-    }
     let widest: std::collections::BTreeSet<&str> = widest.iter().map(String::as_str).collect();
     files
         .iter()
-        .map(|file| {
-            let file: std::collections::BTreeSet<&str> = file.iter().map(String::as_str).collect();
-            let smaller = file.len().min(widest.len());
-            if smaller == 0 {
-                // A file with no columns tells us nothing either way, and dividing by
-                // its width would say it disagrees with everything.
-                return 1.0;
-            }
-            file.intersection(&widest).count() as f64 / smaller as f64
-        })
-        .fold(1.0, f64::min)
-}
-
-/// Whether a folder's files are the same table, rather than separate ones stored side
-/// by side.
-pub fn is_one_table(files: &[Vec<String>]) -> bool {
-    column_agreement(files) > ONE_TABLE_AGREEMENT
+        .all(|file| file.iter().all(|name| widest.contains(name.as_str())))
 }
 
 /// The top-level column names in a list of Parquet leaf paths.
@@ -1667,6 +1642,26 @@ mod tests {
                 cols(&[&["a", "b", "c", "d"], &["a"], &["a", "b", "c", "d"]]),
             ),
             ("five columns grown to fifty", grew(10, 5, 50)),
+            ("one file", cols(&[&["a", "b"]])),
+            ("no files", Vec::new()),
+        ] {
+            assert!(is_nested(&files), "{what} should read as one table");
+        }
+    }
+
+    /// Folders that a union would read correctly, and that this rule turns away anyway.
+    ///
+    /// Two files that each bring a column the other lacks are not a dataset that grew:
+    /// nothing datui can see separates a rename from two tables that happen to share
+    /// most of their columns. The scorer that came before this took them as one table,
+    /// and took a folder of six unrelated tables as one table too, because no statistic
+    /// over column overlap can tell the two apart.
+    ///
+    /// Turning them away is cheap by design. The row goes inside instead of opening,
+    /// and the first row in there opens the union anyway — one keystroke, not a wall.
+    #[test]
+    fn a_column_each_way_is_not_nesting_and_costs_a_keystroke() {
+        for (what, files) in [
             (
                 "one column each way",
                 cols(&[&["a", "b", "c", "d", "e"], &["a", "b", "c", "d", "f"]]),
@@ -1675,13 +1670,10 @@ mod tests {
                 "a column renamed",
                 cols(&[&["id", "ts", "amount"], &["id", "ts", "amt"]]),
             ),
-            ("one file", cols(&[&["a", "b"]])),
-            ("no files", Vec::new()),
         ] {
-            let score = column_agreement(&files);
             assert!(
-                is_one_table(&files),
-                "{what} should be one table, scored {score:.3}"
+                !is_nested(&files),
+                "{what} brings a column the widest file cannot account for"
             );
         }
     }
@@ -1779,31 +1771,27 @@ mod tests {
                 ]),
             ),
         ] {
-            let score = column_agreement(&files);
-            assert!(
-                !is_one_table(&files),
-                "{what} should be separate tables, scored {score:.3}"
-            );
+            assert!(!is_nested(&files), "{what} should be separate tables");
         }
     }
 
-    /// Growth is what containment is for: a Jaccard ratio puts this folder below a
-    /// folder of unrelated tables, which is the mistake this statistic exists to avoid.
+    /// Growth is the shape this rule is built around, and the one the scorer before it
+    /// could not hold on to: a dataset grown from five columns to fifty, with one
+    /// dropped along the way, scored 0.196 — below the 0.200 of six unrelated tables
+    /// sharing a key. Asked as nesting, the same two folders are not close.
     #[test]
-    fn growth_scores_above_unrelated_tables_sharing_a_key() {
-        let grown = grew(10, 5, 50);
+    fn growth_nests_where_unrelated_tables_do_not() {
+        assert!(is_nested(&grew(10, 5, 50)));
         let unrelated = cols(&[&["id", "a", "b"], &["id", "x", "y"], &["id", "p", "q"]]);
-        assert_eq!(column_agreement(&grown), 1.0);
-        assert!(column_agreement(&grown) > column_agreement(&unrelated));
+        assert!(!is_nested(&unrelated));
     }
 
-    /// Two tables joined on a key land exactly on the threshold, because half of the
-    /// narrower one is shared. They are still two tables.
+    /// Two tables joined on a key sat exactly on the old threshold, which is what made
+    /// it a threshold rather than a gap. Neither file's columns are in the other's.
     #[test]
-    fn two_tables_sharing_a_key_are_not_one_table() {
+    fn two_tables_sharing_a_key_do_not_nest() {
         let files = cols(&[&["id", "name"], &["id", "customer_id", "amount"]]);
-        assert_eq!(column_agreement(&files), ONE_TABLE_AGREEMENT);
-        assert!(!is_one_table(&files));
+        assert!(!is_nested(&files));
     }
 
     /// The leaves a footer names are an encoding choice; the columns a reader sees are
@@ -1825,19 +1813,18 @@ mod tests {
             top_level_columns(&new_writer),
         ];
         assert_eq!(files[0], vec!["id", "tags", "refs"]);
-        assert!(
-            is_one_table(&files),
-            "the same three columns, written twice"
-        );
-        // Without the flattening these share only `id`, and the folder is demoted.
-        assert!(!is_one_table(&[old_writer, new_writer]));
+        assert!(is_nested(&files), "the same three columns, written twice");
+        // Without the flattening each brings two leaves the other lacks, and the folder
+        // is demoted.
+        assert!(!is_nested(&[old_writer, new_writer]));
     }
 
-    /// A file with no columns cannot disagree, and must not divide by its own width.
+    /// A file with no columns cannot disagree: it brings nothing the widest file
+    /// cannot account for, which is the whole question.
     #[test]
     fn an_empty_file_does_not_decide_the_folder() {
-        let files = cols(&[&["a", "b"], &[], &["a", "b"]]);
-        assert_eq!(column_agreement(&files), 1.0);
+        assert!(is_nested(&cols(&[&["a", "b"], &[], &["a", "b"]])));
+        assert!(is_nested(&cols(&[&[], &[]])), "nothing to disagree about");
     }
 
     fn union(files: &[Option<FileSchema>]) -> DatasetSchema {

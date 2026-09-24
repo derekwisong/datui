@@ -805,7 +805,7 @@ async fn kind_from_footers(
     if per_file.len() < 2 {
         return None;
     }
-    Some(if crate::schema_union::is_one_table(&per_file) {
+    Some(if crate::schema_union::is_nested(&per_file) {
         crate::discover::EntryKind::MultiFile
     } else {
         crate::discover::EntryKind::Directory

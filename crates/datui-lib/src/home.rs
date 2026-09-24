@@ -672,6 +672,37 @@ pub fn place_of(path: &Path) -> PathBuf {
     parent_location(path).unwrap_or_else(|| path.to_path_buf())
 }
 
+/// Whether a place can be listed: a directory, or a prefix in an object store.
+///
+/// An HTTP server has no listing to give — the only thing datui can do with a URL on
+/// one is fetch the file it names — so the place a URL recent lives in is a heading
+/// and not a door. Offering `Enter` on it led to "Listing https://…" and then
+/// `unreachable`, which is the probe reporting truthfully on a `read_dir` of a URL.
+pub fn place_is_browsable(path: &Path) -> bool {
+    is_cloud_place(path)
+        || is_object_store_url(path)
+        || matches!(
+            crate::source::input_source(path),
+            crate::source::InputSource::Local(_)
+        )
+}
+
+/// What a row is, apart from where it sits: enough to find it again after the rows
+/// have been rebuilt or the cap has moved.
+///
+/// The cursor is an index into [`HomeState::visible`], and the rows behind that index
+/// change under it whenever a listing lands or the terminal changes height. Keeping the
+/// index kept the cursor on whatever row fell into its place, which for a place row —
+/// the thing a user arrows onto and then presses `Enter` — meant opening the dataset
+/// beneath it instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowKey {
+    Header(String),
+    Entry(PathBuf),
+    Place(PathBuf),
+    More(String),
+}
+
 /// Home screen state.
 #[derive(Debug)]
 pub struct HomeState {
@@ -1588,7 +1619,7 @@ impl HomeState {
 
     /// Install a listing built elsewhere, keeping the cursor on whatever it was on.
     pub fn apply_listing(&mut self, listing: Listing) {
-        let previous = self.selected_entry().map(|e| e.path);
+        let previous = self.selected_key();
         self.sections = listing.sections;
         // A rebuild replaces every section, and search results outlive rebuilds —
         // they came from a walk, not from this listing. Put them back.
@@ -1599,20 +1630,65 @@ impl HomeState {
         // ask for them again.
         self.apply_measurements();
 
-        // Keep the cursor on the same dataset across a refresh; landing back at the
-        // top every time a background result arrives makes the screen unusable.
-        if let Some(path) = previous
-            && let Some(idx) = self
-                .visible()
-                .iter()
-                .position(|r| matches!(r, Row::Entry { entry, .. } if entry.path == path))
-        {
-            self.selected = idx;
-            self.follow_selection();
+        // Keep the cursor on the same row across a refresh; landing back at the top
+        // every time a background result arrives makes the screen unusable.
+        if !self.reselect(previous) {
+            self.select_first_entry();
+        }
+        self.follow_selection();
+    }
+
+    /// What the cursor is on, as something that survives the rows changing.
+    pub fn selected_key(&self) -> Option<RowKey> {
+        let title = |section: usize| self.sections.get(section).map(|s| s.title.clone());
+        Some(match self.selected_row()? {
+            Row::Header { section, .. } => RowKey::Header(title(section)?),
+            Row::More { section, .. } => RowKey::More(title(section)?),
+            Row::Entry { entry, .. } => RowKey::Entry(entry.path.clone()),
+            Row::Place { path, .. } => RowKey::Place(path),
+        })
+    }
+
+    /// Put the cursor back on the row `key` names, if it is still on screen. Says
+    /// whether it was; the cursor is clamped either way, so a cursor left past the end
+    /// by rows disappearing is never left there.
+    pub fn reselect(&mut self, key: Option<RowKey>) -> bool {
+        let found = key.and_then(|key| {
+            self.visible().iter().position(|row| match (row, &key) {
+                (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
+                (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
+                (Row::Header { section, .. }, RowKey::Header(title))
+                | (Row::More { section, .. }, RowKey::More(title)) => self
+                    .sections
+                    .get(*section)
+                    .is_some_and(|s| s.title == *title),
+                _ => false,
+            })
+        });
+        match found {
+            Some(idx) => {
+                self.selected = idx;
+                true
+            }
+            None => {
+                self.clamp_selection();
+                false
+            }
+        }
+    }
+
+    /// Tell the listing how tall the list is, keeping the cursor on the row it was on.
+    ///
+    /// The cap on `RECENT` is a share of this height, so a shorter terminal takes rows
+    /// out from under the cursor and a taller one puts rows in above it. The renderer
+    /// calls this every frame; only a change in height does any work.
+    pub fn set_view_height(&mut self, height: usize) {
+        if height == self.view_height {
             return;
         }
-        self.select_first_entry();
-        self.follow_selection();
+        let key = self.selected_key();
+        self.view_height = height;
+        self.reselect(key);
     }
 
     /// Put the viewport where the next frame will put it, without waiting for it.
@@ -1660,7 +1736,14 @@ impl HomeState {
         self.set_collapsed(section, !folded);
     }
 
+    /// Nothing is remembered while browsing: the listing browsed into is never drawn
+    /// folded (see `section_folded`), and a fold written for it would be a fold for
+    /// its path, which is the title the same directory has as a configured or current
+    /// directory section on the root listing.
     pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
+        if self.browsing.is_some() {
+            return;
+        }
         let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
             return;
         };
@@ -2071,6 +2154,18 @@ impl HomeState {
     }
 
     pub fn visible(&self) -> Vec<Row<'_>> {
+        self.rows(true)
+    }
+
+    /// Every row a section would show, with the cap on `RECENT` lifted.
+    ///
+    /// For counting what is listed. The header says thirty and the `more` row says
+    /// twenty-seven more, so the control bar must not say three.
+    pub fn listed(&self) -> Vec<Row<'_>> {
+        self.rows(false)
+    }
+
+    fn rows(&self, capped: bool) -> Vec<Row<'_>> {
         let mut out: Vec<Row<'_>> = Vec::new();
         // The row that opens the folder being browsed is a door, not something to
         // search for. Its name carries the words `all files`, which a fuzzy filter
@@ -2157,7 +2252,7 @@ impl HomeState {
                 continue;
             }
             if section.grouped_by_place {
-                out.extend(self.rows_by_place(si, section, &matched));
+                out.extend(self.rows_by_place(si, section, &matched, capped));
             } else {
                 out.extend(matched.into_iter().map(|(entry, _)| Row::Entry {
                     section: si,
@@ -2187,6 +2282,7 @@ impl HomeState {
         si: usize,
         section: &'a Section,
         matched: &[(&'a Entry, i32)],
+        capped: bool,
     ) -> Vec<Row<'a>> {
         let mut order: Vec<PathBuf> = Vec::new();
         for row in &section.rows {
@@ -2209,7 +2305,8 @@ impl HomeState {
 
         // Before the first frame there is no height to budget against, and a listing
         // built for a caller with no screen is asked for whole.
-        let capped = !self.recent_expanded && self.filter.is_empty() && self.view_height > 0;
+        let capped =
+            capped && !self.recent_expanded && self.filter.is_empty() && self.view_height > 0;
         let budget = self.view_height / 3;
         let mut out: Vec<Row<'a>> = Vec::new();
         let mut used = 0usize;

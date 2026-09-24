@@ -64,7 +64,7 @@ WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, grouped under the directory
                     or bucket prefix each lives in, newest place first. The place
                     row names the directory and, on a share or in a store, what
-                    it is on. Whole places are shown up to a third of the screen,
+                    it is on. Whole places are shown up to a third of the list,
                     then "… N more in M places" stands for the rest
   Current directory Where you launched datui
   Cloud             One row per cloud source. Enter lists its buckets

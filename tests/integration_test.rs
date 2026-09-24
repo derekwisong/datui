@@ -6356,6 +6356,80 @@ fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     );
 }
 
+/// `Enter` and `→` on the place of a recent opened over HTTP say why they do nothing,
+/// rather than listing a URL and reporting it unreachable.
+#[test]
+fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
+    common::isolate_cache();
+    let url = PathBuf::from("https://example.com/data/y.csv");
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[], std::slice::from_ref(&url));
+    let place = PathBuf::from("https://example.com/data");
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == place))
+        .expect("the URL's prefix is its place");
+    app.home.selected = row;
+
+    // The bar does not offer the door.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(!bar.contains("Inside"), "{bar:?}");
+
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.home.browsing, None);
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("HTTP")),
+        "{:?}",
+        app.home.status
+    );
+    app.event(&key(KeyCode::Right));
+    assert_eq!(app.home.browsing, None);
+}
+
+/// The bar's count is of what is listed, which the header and the `more` row agree on.
+#[test]
+fn test_the_bar_counts_datasets_past_the_cap() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let recents: Vec<PathBuf> = (0..12)
+        .map(|i| {
+            let dir = tmp.path().join(format!("place{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("data.parquet");
+            std::fs::write(&path, b"x").unwrap();
+            path
+        })
+        .collect();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[], &recents);
+    for section in 1..app.home.sections.len() {
+        app.home.set_collapsed(section, true);
+    }
+    let area = Rect::new(0, 0, 200, 14);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(screen.contains("more in"), "the cap is drawn: {screen:?}");
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("12 datasets"), "{bar:?}");
+}
+
 /// The `… N more` row stands for the places the cap hides. `Enter` on it shows them
 /// all, and nothing is opened.
 #[test]

@@ -2283,6 +2283,138 @@ fn test_a_filter_reaches_past_the_cap() {
 }
 
 #[test]
+fn test_a_shorter_terminal_keeps_the_cursor_on_its_row_or_in_range() {
+    // The cap is a share of the list's height, so a resize takes rows out from under
+    // the cursor. An index kept across that pointed past the end — nothing lit, Enter
+    // dead — or at whatever row slid into its place.
+    let tmp = TempDir::new().unwrap();
+    let recents = ten_places_of_three(&tmp);
+    let configured = tmp.path().join("configured");
+    touch(&configured, "c.parquet");
+    let mut home = HomeState::default();
+    home.rebuild(std::slice::from_ref(&configured), &recents);
+    home.set_view_height(60);
+    let shown_places = |home: &HomeState| {
+        home.visible()
+            .iter()
+            .filter(|r| matches!(r, Row::Place { .. }))
+            .count()
+    };
+    assert_eq!(
+        shown_places(&home),
+        5,
+        "twenty of sixty rows: five places of four"
+    );
+
+    // On the configured section's header, below RECENT. Shrinking the terminal takes
+    // places out of RECENT and the header moves up; the cursor must move with it.
+    let title = datui::home::display_path(&configured);
+    let header = home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, Row::Header { section, .. } if home.sections[*section].title == title),
+        )
+        .unwrap();
+    home.selected = header;
+    let key = home.selected_key();
+    home.set_view_height(30);
+    assert_eq!(shown_places(&home), 2);
+    assert_eq!(home.selected_key(), key, "the cursor followed its row up");
+    assert!(home.selected < header);
+    home.set_view_height(60);
+    assert_eq!(home.selected_key(), key, "and back down");
+
+    // On the last row of RECENT, with RECENT the only open section. Shrinking takes
+    // that row away, and the cursor lands on a row that exists rather than past the end.
+    for section in 1..home.sections.len() {
+        home.set_collapsed(section, true);
+    }
+    let last_recent = home
+        .visible()
+        .iter()
+        .rposition(|r| matches!(r, Row::Entry { section: 0, .. }))
+        .unwrap();
+    home.selected = last_recent;
+    home.set_view_height(8);
+    assert_eq!(shown_places(&home), 1);
+    assert!(
+        home.selected < home.visible().len(),
+        "{} of {}",
+        home.selected,
+        home.visible().len()
+    );
+    assert!(home.selected_row().is_some());
+}
+
+#[test]
+fn test_a_rebuild_keeps_the_cursor_on_a_place_row() {
+    // A probe answering or a bucket listing landing rebuilds the listing. The cursor
+    // used to be put back only on an entry, so on a place row it bounced to the first
+    // entry, and the Enter meant for the place opened the dataset under it.
+    let tmp = TempDir::new().unwrap();
+    let recents = ten_places_of_three(&tmp);
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+    let place = tmp.path().join("place01");
+    let at = home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, Row::Place { path, .. } if *path == place))
+        .unwrap();
+    home.selected = at;
+
+    home.rebuild(&[], &recents);
+    assert!(
+        matches!(home.selected_row(), Some(Row::Place { path, .. }) if path == place),
+        "{:?}",
+        home.selected_row()
+    );
+
+    // The same for the more row.
+    home.set_view_height(30);
+    let more = home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, Row::More { .. }))
+        .unwrap();
+    home.selected = more;
+    home.rebuild(&[], &recents);
+    assert!(matches!(home.selected_row(), Some(Row::More { .. })));
+}
+
+#[test]
+fn test_folding_while_browsing_remembers_nothing() {
+    // The listing browsed into never draws folded, so a fold written for it would be
+    // invisible here and land on the root listing's section of the same path later.
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("data");
+    touch(&dir, "a.parquet");
+    let mut home = HomeState {
+        browsing: Some(dir),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    home.set_collapsed(0, true);
+    home.toggle_collapsed(0);
+    assert!(home.folds.is_empty(), "{:?}", home.folds);
+    assert!(!home.is_collapsed(0));
+}
+
+#[test]
+fn test_the_place_of_an_http_recent_is_not_a_door() {
+    use datui::home::place_is_browsable;
+    use std::path::Path;
+    assert!(!place_is_browsable(Path::new("https://example.com/data")));
+    assert!(!place_is_browsable(Path::new("http://example.com")));
+    assert!(place_is_browsable(Path::new("s3://bucket/prefix")));
+    assert!(place_is_browsable(Path::new("gs://bucket")));
+    assert!(place_is_browsable(Path::new("cloud://s3-default")));
+    assert!(place_is_browsable(Path::new("/mnt/data")));
+}
+
+#[test]
 fn test_a_remembered_fold_does_not_fold_the_listing_browsed_into() {
     // Folds are remembered by title, and a directory's title is its path. The
     // directories recents used to be promoted to were sections by that path, folded

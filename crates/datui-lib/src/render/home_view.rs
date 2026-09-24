@@ -332,11 +332,13 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // Keep a little context above the selection rather than pinning it to the edge.
     // One drawn line per row now that the spacer is gone.
     let height = area.height as usize;
+    // The height first: the cap on RECENT is a share of it, and the cursor has to be
+    // put back on its row before the scroll is settled from it.
+    app.home.set_view_height(height);
     app.home.scroll = app
         .home
         .selected
         .saturating_sub(height.saturating_sub(3).max(1));
-    app.home.view_height = height;
 
     // Nothing is read here. Rows carry whatever a worker has measured so far, and
     // the request for more is made after the frame, not during it.

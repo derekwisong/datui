@@ -8019,6 +8019,11 @@ impl App {
     /// Collapsing moves the cursor to the header, so the section the user just folded
     /// is what stays selected rather than whatever row happens to fall into place.
     fn home_collapse(&mut self, collapse: bool) {
+        // The listing browsed into is the whole screen. It never folds, and the fold
+        // must not be remembered for its path either — see `set_collapsed`.
+        if self.home.browsing.is_some() {
+            return;
+        }
         let Some(section) = self.home.selected_section() else {
             return;
         };
@@ -8203,7 +8208,7 @@ impl App {
         // A place under `RECENT` is a directory to go inside, and → is one of its two
         // doors. It has no entry to ask about, so it is answered before one is looked for.
         if let Some(home::Row::Place { path, .. }) = self.home.selected_row() {
-            return Some(path);
+            return home::place_is_browsable(&path).then_some(path);
         }
         let entry = self.home.selected_entry()?;
         if self.selection_opens_the_whole_folder() {
@@ -8277,7 +8282,13 @@ impl App {
             // Into the directory or prefix the recents under it live in: the way back
             // to a place found by hand, now that recents no longer make roots.
             Some(home::Row::Place { path, .. }) => {
-                self.home_browse_into(path);
+                if home::place_is_browsable(&path) {
+                    self.home_browse_into(path);
+                } else {
+                    self.home.status = Some(
+                        "An HTTP server has no listing to browse. Open a file under it".into(),
+                    );
+                }
                 return None;
             }
             // The rest of `RECENT`, for the session.
@@ -17646,9 +17657,11 @@ impl Widget for &mut App {
             // look, not a dataset, and counting it makes the figure a lie — and so
             // does counting a folder nothing has looked into yet, which in a fresh
             // listing is every folder in it.
+            // Past the cap on RECENT: a dataset the `more` row stands for is listed,
+            // and the header above it counts it.
             let datasets = self
                 .home
-                .visible()
+                .listed()
                 .iter()
                 .filter(|r| {
                     // Not the row that opens the folder being browsed. Its kind is the

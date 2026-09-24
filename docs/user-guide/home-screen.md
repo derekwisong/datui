@@ -228,7 +228,8 @@ holds costs one keystroke rather than access to it.
 That row carries no label of its own: every other label counts what is directly
 inside a folder, and this row reads the whole of it. Nor is it a search result —
 while a filter is typed it steps out of the way, and it comes back when the
-filter is cleared. A folder with nothing in it has no such row.
+filter is cleared. A folder datui lists nothing in — an empty one, or one
+holding only files it does not show — has no such row.
 
 What datui can then *read* is a narrower question than what it will open, and
 this release has not finished widening it.

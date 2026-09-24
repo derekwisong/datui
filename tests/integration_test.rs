@@ -7425,7 +7425,8 @@ fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
     use std::path::PathBuf;
 
     // Press Enter on the door of a prefix holding these names, and say what happened.
-    // A name with a dot in it stands for an object, the rest for sub-prefixes.
+    // A name with a dot in it stands for an object, the rest for sub-prefixes; a name
+    // with an `=` in it is a partition, the way a listing hands one over.
     fn door(prefix: &str, names: &[&str]) -> (bool, String) {
         let place = PathBuf::from(prefix);
         let rows: Vec<Entry> = names
@@ -7508,6 +7509,19 @@ fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
     assert!(
         opened,
         "a sub-prefix may hold Parquet, and nothing here has looked"
+    );
+
+    // And a hive root with one stray data file beside its partitions. `formats` holds
+    // only the stray, so a refusal reading the formats alone saw a prefix of CSV and
+    // turned away a prefix the row one level up opens — the door added to guarantee
+    // access refusing what the label already promised.
+    let (opened, said) = door(
+        "s3://bucket/events",
+        &["date=2024-01-01", "date=2024-01-02", "manifest.csv"],
+    );
+    assert!(
+        opened,
+        "a hive root is read through its partitions, not through the stray beside them: {said:?}"
     );
 }
 

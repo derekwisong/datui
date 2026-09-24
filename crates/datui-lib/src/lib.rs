@@ -8287,7 +8287,16 @@ impl App {
             // that reachable: the row used to exist only where the listing had already
             // found Parquet. What it holds is counted and on screen, so saying so costs
             // no request. #275 phase 4 is where these read.
+            // Not asked of a prefix the listing already calls a dataset. A hive root
+            // is read through its partitions, and one stray `manifest.csv` beside them
+            // is not what it holds — but it is the only thing in `formats`, so the
+            // refusal below saw a folder of CSV. The row one level up opens that prefix
+            // and always has; the door added to guarantee access was refusing it.
             if home::is_object_store_url(&entry.path)
+                && !matches!(
+                    entry.kind,
+                    discover::EntryKind::Hive | discover::EntryKind::MultiFile
+                )
                 && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
             {
                 self.home.status = Some(what);

@@ -25,14 +25,14 @@ NAVIGATION
   Esc               Back out one layer: the filter, the directory, then the data
   Ctrl+C            Quit
 
-  Inside a folder with anything in it, the first row is "<folder> (all files)",
-  or "(all partitions)" for a hive folder. Enter on it opens the whole folder
-  whatever the folder is labelled, so a label that is wrong costs a keystroke
-  rather than access. It carries no label itself, and it steps out of the way
-  while a filter is typed. What can be read through it is narrower than what it
-  opens: on disk a folder of more than one kind of data file says so, in a bucket
-  only Parquet is read in place and a prefix whose own files are not Parquet
-  names what it holds, and a lake table says why on both.
+  Inside a folder datui lists anything in, the first row is "<folder> (all
+  files)", or "(all partitions)" for a hive folder. Enter on it opens the whole
+  folder whatever the folder is labelled, so a label that is wrong costs a
+  keystroke rather than access. It carries no label itself, and it steps out of
+  the way while a filter is typed. What can be read through it is narrower than
+  what it opens: on disk a folder of more than one kind of data file says so, in
+  a bucket only Parquet is read in place and a prefix whose own files are not
+  Parquet names what it holds, and a lake table says why on both.
 
   A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
   a count and a format ("12 parquet"), "mixed" for more than one format, or

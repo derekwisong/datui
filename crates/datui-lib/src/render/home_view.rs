@@ -1615,6 +1615,39 @@ mod tests {
         assert!(!text.contains("prefix"), "{text}");
     }
 
+    /// And the pane beside it says the same word. The two take the same order through
+    /// two separate matches, so a folder with nothing counted in it can read `prefix`
+    /// on the row and `dir` in the pane — the one disagreement this is all arranged to
+    /// stop, on the row a search is about.
+    #[test]
+    fn the_pane_calls_a_cloud_prefix_what_the_row_calls_it() {
+        let ctx = RenderContext::for_test();
+        let drawn = |entry: &Entry| -> String {
+            entry_line(entry, false, 40, false, None, "", None, None, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+
+        let mut prefix = row("s3://bucket/warehouse", EntryKind::Directory);
+        assert!(drawn(&prefix).contains("prefix"));
+        let pane = preview_text(&prefix, 60);
+        assert!(pane.contains("prefix"), "{pane}");
+        assert!(!pane.contains("dir"), "{pane}");
+
+        // And once it has counted something, both say that instead.
+        prefix.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        assert!(drawn(&prefix).contains("12 parquet"));
+        let pane = preview_text(&prefix, 60);
+        assert!(pane.contains("12 parquet"), "{pane}");
+        assert!(!pane.contains("prefix"), "{pane}");
+    }
+
     /// A row count that is out of reach says `?`. A folder that is not one table has
     /// none to be out of reach, and must not read like a dataset too big to count.
     #[test]

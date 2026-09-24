@@ -541,5 +541,18 @@ mod format_tests {
             assert!(listed(format), "{format:?}");
             assert_eq!(FileFormat::from_name(format.name()), Some(format));
         }
+
+        // And the names themselves, because they are not only labels. `Holds` keeps a
+        // format as this string and the dataset cache writes it out, so renaming one
+        // changes what every folder of that format reads *and* makes the records
+        // already on disk unreadable — `from_name` then answers `None`, which the
+        // enrich gate takes for "not Parquet" and blanks the folder's size. The round
+        // trip above holds for any string; this is what says which.
+        assert_eq!(
+            FileFormat::ALL.map(|f| f.name()),
+            [
+                "parquet", "csv", "tsv", "psv", "json", "jsonl", "arrow", "avro", "orc", "excel"
+            ]
+        );
     }
 }

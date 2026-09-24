@@ -203,7 +203,8 @@ A folder's label says what is directly inside it, from one listing:
 
 A folder larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12
-parquet · 2 csv · 3 folders · 5 not read · 4 skipped (.crc, _SUCCESS, …)` — every
+parquet · 2 csv · 3 folders · 5 not read · 7 skipped (.crc, _SUCCESS, _committed_1727,
+_started_1727, …)` — every
 file in the folder is in one of those counts. `skipped` is a name beginning with
 `_` or `.`, or ending `_$folder$` — where every engine puts its own files, where
 a repository puts `.git`, and what s3n and EMR write to stand in for a folder. A

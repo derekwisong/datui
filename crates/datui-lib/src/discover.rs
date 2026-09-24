@@ -1152,7 +1152,10 @@ fn enrich_dataset(entry: &mut Entry) {
     // format.
     let reads_as_parquet = entry.kind == EntryKind::Hive
         || match entry.holds.one_format() {
-            // No single format to object with: nothing counted, or more than one kind.
+            // No single format to object with, so nothing to object. No row reaches
+            // this today — a folder of more than one format is a `Directory` and
+            // `enrich` leaves those alone — so it is a default, and the safe one:
+            // leaving the counts off a folder is a mistake opening it undoes.
             None => true,
             // A name this build cannot read back is not Parquet as far as anything here
             // knows. Leaving the counts off a folder is the mistake that can be undone
@@ -2495,13 +2498,19 @@ mod classification_tests {
         assert!(entry.columns.is_empty());
     }
 
-    /// The other side of the gate: a row that is a dataset but carries no count of what
-    /// is in it has nothing to object with, so it keeps every number the footers give.
+    /// The gate's default, for a dataset row that counted nothing.
     ///
-    /// Not a folder a listing produces — `mixed` never reaches here, because a folder
-    /// of two formats is a `Directory` and `enrich` leaves those alone. It is a row
-    /// built without a listing: the cloud `(all files)` row, and any row restored with
-    /// a kind but no tally. Turning this arm away blanks every one of them.
+    /// **Nothing produces this row today.** `enrich` only reaches the gate for `Hive`
+    /// and `MultiFile`; `look_at_directory` cannot answer `MultiFile` without counting
+    /// a format, a hive root skips the gate outright, `CLASSIFIER_VERSION` 4 refuses a
+    /// cached kind that arrives without a tally, and the cloud `(all files)` row is
+    /// built from a listing and never measured. So this constructs the row by hand, and
+    /// it pins a default rather than a path.
+    ///
+    /// It is worth pinning because the default is the arguable one. Turning it away
+    /// would blank the size, the width and the row count of any such row the moment one
+    /// appeared, and leaving the counts off a folder is a mistake opening it undoes —
+    /// giving it another format's numbers is not.
     #[test]
     fn a_dataset_row_that_counted_nothing_is_still_described() {
         let dir = tempfile::tempdir().unwrap();
@@ -2509,13 +2518,9 @@ mod classification_tests {
         write(dir.path(), "b.parquet", &["id", "ts"]);
 
         let mut entry = Entry {
-            path: dir.path().to_path_buf(),
             kind: EntryKind::MultiFile,
-            name: "data".into(),
             ..Entry::for_test(dir.path(), "data")
         };
-        entry.kind = EntryKind::MultiFile;
-        entry.holds = Holds::default();
         assert!(entry.holds.one_format().is_none(), "nothing counted");
 
         enrich(&mut entry);

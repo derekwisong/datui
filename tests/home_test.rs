@@ -3610,6 +3610,46 @@ fn test_a_folder_of_separate_tables_offers_no_whole_folder_row() {
     );
 }
 
+/// The `(all files)` row is labelled by what the listing under it holds, like any other
+/// folder row. It is built rather than listed, so it is the one row whose tally nothing
+/// upstream fills in.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_whole_folder_row_says_what_the_listing_holds() {
+    use datui::discover::{Entry, EntryKind};
+    use std::path::PathBuf;
+
+    let exports = PathBuf::from("gs://bucket/exports");
+    let object = |name: &str| {
+        let mut entry = Entry::directory(&exports.join(name));
+        entry.name = name.to_string();
+        entry.kind = EntryKind::File;
+        entry.size = Some(1_000);
+        entry
+    };
+    let mut home = HomeState {
+        network_check: |_| true,
+        ..Default::default()
+    };
+    home.probe_ready(
+        exports.clone(),
+        (0..12)
+            .map(|i| object(&format!("part-{i:05}.parquet")))
+            .collect(),
+    );
+    home.browsing = Some(exports.clone());
+    home.rebuild(&[], &[]);
+
+    let row = &home.sections[0].rows[0];
+    assert_eq!(row.name, "exports (all files)");
+    assert_eq!(
+        row.label(),
+        "12 parquet",
+        "without the tally it falls back to its kind and reads `multi`"
+    );
+    assert_eq!(row.holds.data_files(), 12);
+}
+
 /// Rows that will never be measured are not asked where they live.
 ///
 /// `unmeasured_visible` runs once per row on every frame that draws the home screen,

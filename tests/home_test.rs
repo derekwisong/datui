@@ -2369,8 +2369,20 @@ fn test_a_rebuild_keeps_the_cursor_on_a_place_row() {
         home.selected_row()
     );
 
-    // The same for the more row.
+    // A row behind the cap is put back on the more row that stands for it, and a
+    // rebuild leaves it there rather than at the first entry.
     home.set_view_height(30);
+    let behind = recents.last().unwrap().clone();
+    assert!(home.reselect(Some(datui::home::RowKey::Entry(behind))));
+    assert!(matches!(home.selected_row(), Some(Row::More { .. })));
+    home.rebuild(&[], &recents);
+    assert!(
+        matches!(home.selected_row(), Some(Row::More { .. })),
+        "{:?}",
+        home.selected_row()
+    );
+
+    // The same for the more row.
     let more = home
         .visible()
         .iter()

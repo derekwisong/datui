@@ -1650,12 +1650,12 @@ impl HomeState {
     }
 
     /// Put the cursor back on the row `key` names, if it is still on screen. Says
-    /// whether it was; the cursor is clamped either way, so a cursor left past the end
-    /// by rows disappearing is never left there.
+    /// whether the cursor was placed by the key; when it was not, the cursor is
+    /// clamped, so a cursor left past the end by rows disappearing is never left there.
     ///
     /// A row the cap has just hidden is still there, behind the `more` row that now
     /// stands for it, so the cursor goes to that row rather than to whatever fell
-    /// into its index in the section below.
+    /// into its index in the section below — and that counts as placed.
     pub fn reselect(&mut self, key: Option<RowKey>) -> bool {
         let Some(key) = key else {
             self.clamp_selection();
@@ -1687,10 +1687,15 @@ impl HomeState {
             _ => None,
         };
         match behind_the_cap {
-            Some(idx) => self.selected = idx,
-            None => self.clamp_selection(),
+            Some(idx) => {
+                self.selected = idx;
+                true
+            }
+            None => {
+                self.clamp_selection();
+                false
+            }
         }
-        false
     }
 
     /// Tell the listing how tall the list is, keeping the cursor on the row it was on.

@@ -16,11 +16,12 @@ NAVIGATION
                     where the cursor is: "recent" under Recent, "name" under a
                     directory, or size / modified / rows once chosen.
   Enter             Open the dataset, enter the directory, source or bucket, or
-                    fold the section. A hive folder, or one whose files hold the
-                    same table, opens as one dataset; one labelled delta, iceberg
-                    or hudi is a lake table datui does not read yet, and Enter
-                    goes inside it. On a place row under Recent, Enter browses
-                    the place; on the "… N more" row it shows the rest of Recent
+                    fold the section. A hive folder, or one whose files all have
+                    the widest file's columns, opens as one dataset; one labelled
+                    delta, iceberg or hudi is a lake table datui does not read
+                    yet, and Enter goes inside it. On a place row under Recent,
+                    Enter browses the place; on the "… N more" row it shows the
+                    rest of Recent
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
   Ctrl+R            List again what is on screen: every cloud source, the one

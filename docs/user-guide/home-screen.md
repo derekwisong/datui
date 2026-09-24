@@ -281,8 +281,8 @@ Sharing a file extension is not enough to make a folder one table. A database
 exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,
 `laps.parquet` — looks identical from its names, and reading it as one table
 would union things that share no columns. So the footers decide: datui compares
-the columns of the folder's files, and a folder whose files do not agree is left
-as a directory to look inside.
+the columns of the folder's files, and a folder whose files each bring something
+the others lack is left as a directory to look inside.
 
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not
@@ -310,10 +310,17 @@ root: looking inside `metadata/` would be a second listing, and the layout is
 enough. So a folder that happens to hold both names is labelled `iceberg` there.
 It is still somewhere to go, which a table read as one table is not.
 
-Files are compared by how much of the narrower one the wider one holds, not by
-how much they have in common overall, because gaining a column is what a dataset
-does over time. A blockchain that added `txinwitness` in 2017 is still one
-dataset, and so is one that grew from five columns to fifty.
+The test is whether every file's columns are in the widest file's. That is the
+shape schema evolution makes — a file written before a column existed has all of
+the widest file's columns except the ones added since — so a blockchain that
+added `txinwitness` in 2017 is still one dataset, and so is one that grew from
+five columns to fifty.
+
+A file that brings a column no other file has, such as a renamed one, fails it.
+Nothing in a footer separates a rename from two tables that happen to share most
+of their columns, so the folder is left as a place to look inside — and the first
+row in there opens the union anyway. That is the trade: a strict test costs a
+keystroke, where a lenient one costs a folder read as a table it is not.
 
 The columns come from footers that are read anyway to count the rows, so locally
 this costs nothing. In a bucket, three of the folder's files are read while you

@@ -628,9 +628,16 @@ pub enum FolderFormat {
     /// Every data file directly in the folder reads as this one format, and these are
     /// the files. Sorted, because a concatenation's row order is its file order.
     One(crate::FileFormat, Vec<PathBuf>),
-    /// The files name more than one format, or one datui has no reader for. Whatever
-    /// the folder is, it is not a single table.
-    NotOneTable,
+    /// The files name more than one format. The commonest of them is the table — a
+    /// folder of a thousand CSVs and one stray JSON is a folder of CSVs — and the rest
+    /// are counted by format so the read can say what it passed over. Parquet wins a
+    /// tie, because it is the format a folder of data files is most likely to be about
+    /// and the one every other route here reads in place.
+    Mixed {
+        format: crate::FileFormat,
+        files: Vec<PathBuf>,
+        passed_over: Vec<(crate::FileFormat, usize)>,
+    },
     /// The folder settles nothing by itself: it holds no readable data file directly,
     /// or it has subfolders and so may hold its data below. A hive dataset looks like
     /// this — its files are a level down, under `key=value`.
@@ -656,9 +663,10 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
         return FolderFormat::Deeper;
     };
 
-    let mut format: Option<crate::FileFormat> = None;
-    let mut files = Vec::new();
-    let mut mixed = false;
+    // Every format the folder names, with the files of each. A folder of one format
+    // takes the only entry; a folder of several takes the commonest and reports the
+    // rest, which is what stops one stray file deciding a folder cannot be read.
+    let mut by_format: Vec<(crate::FileFormat, Vec<PathBuf>)> = Vec::new();
     let mut partitioned = false;
     for entry in iter.flatten() {
         let path = entry.path();
@@ -690,12 +698,10 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
         let Some(found) = data_format(&path) else {
             continue;
         };
-        match format {
-            Some(seen) if seen != found => mixed = true,
-            Some(_) => {}
-            None => format = Some(found),
+        match by_format.iter_mut().find(|(f, _)| *f == found) {
+            Some((_, of_that_format)) => of_that_format.push(path),
+            None => by_format.push((found, vec![path])),
         }
-        files.push(path);
     }
 
     // Decided after the whole listing rather than at the first entry that could settle
@@ -705,16 +711,32 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
     if partitioned {
         return FolderFormat::Deeper;
     }
-    if mixed {
-        return FolderFormat::NotOneTable;
-    }
 
-    match format {
-        Some(format) => {
-            files.sort();
-            FolderFormat::One(format, files)
+    // Commonest first, Parquet ahead of anything it ties with, then by name so the
+    // answer does not depend on the order the directory read returned.
+    by_format.sort_by(|a, b| {
+        b.1.len()
+            .cmp(&a.1.len())
+            .then_with(|| {
+                (a.0 != crate::FileFormat::Parquet).cmp(&(b.0 != crate::FileFormat::Parquet))
+            })
+            .then_with(|| a.0.name().cmp(b.0.name()))
+    });
+    let mut by_format = by_format.into_iter();
+    let Some((format, mut files)) = by_format.next() else {
+        return FolderFormat::Deeper;
+    };
+    files.sort();
+    let passed_over: Vec<(crate::FileFormat, usize)> =
+        by_format.map(|(f, of_that)| (f, of_that.len())).collect();
+    if passed_over.is_empty() {
+        FolderFormat::One(format, files)
+    } else {
+        FolderFormat::Mixed {
+            format,
+            files,
+            passed_over,
         }
-        None => FolderFormat::Deeper,
     }
 }
 

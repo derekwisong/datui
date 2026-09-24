@@ -7330,14 +7330,15 @@ fn test_a_folder_opened_as_one_dataset_is_read_as_what_it_holds() {
 /// Parquet. A test that only checked that nothing loaded would pass either way and be
 /// about nothing.
 #[test]
-fn test_a_folder_of_two_formats_says_it_is_not_one_table() {
+fn test_a_folder_of_two_formats_is_read_as_the_one_it_mostly_holds() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join("a.csv"), "a\n1\n").unwrap();
-    std::fs::write(tmp.path().join("b.json"), "[{\"a\":1}]").unwrap();
+    std::fs::write(tmp.path().join("b.csv"), "a\n2\n").unwrap();
+    std::fs::write(tmp.path().join("c.json"), "[{\"a\":1}]").unwrap();
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let complaint = pump_open_until_error(
+    pump_open_until_loaded(
         &mut app,
         &rx,
         vec![tmp.path().to_path_buf()],
@@ -7345,18 +7346,18 @@ fn test_a_folder_of_two_formats_says_it_is_not_one_table() {
             hive: true,
             ..OpenOptions::default()
         },
-    )
-    .expect("two formats are not one table, so the open should fail");
+    );
 
-    assert!(
-        complaint.contains("does not hold one kind of data file"),
-        "the folder is what is wrong, so the folder is what it should say: {complaint}"
+    let table = app
+        .data_table_state
+        .as_ref()
+        .expect("two CSVs and a stray JSON is a folder of CSVs");
+    assert_eq!(table.headers(), vec!["a"], "read as CSV, not as JSON");
+    assert_eq!(
+        table.num_rows_if_valid(),
+        Some(2),
+        "both CSVs, and not the JSON beside them"
     );
-    assert!(
-        !complaint.contains("PAR1"),
-        "nothing here was ever Parquet: {complaint}"
-    );
-    assert!(app.data_table_state.is_none(), "nothing should have loaded");
 }
 
 /// A folder of CSVs with some unrelated folder beside them is still a folder of CSVs.

@@ -4550,13 +4550,32 @@ fn test_a_folder_is_read_as_whatever_is_actually_in_it() {
         FolderFormat::One(datui::FileFormat::Parquet, _)
     ));
 
-    // Two formats are two tables.
+    // Two formats: the commonest is the table, and the rest are counted so the read can
+    // say what it passed over rather than refusing the folder over a stray.
     touch(tmp.path(), "both/a.csv");
-    touch(tmp.path(), "both/b.json");
-    assert_eq!(
-        folder_format(&tmp.path().join("both")),
-        FolderFormat::NotOneTable
-    );
+    touch(tmp.path(), "both/b.csv");
+    touch(tmp.path(), "both/c.json");
+    match folder_format(&tmp.path().join("both")) {
+        FolderFormat::Mixed {
+            format,
+            files,
+            passed_over,
+        } => {
+            assert_eq!(format, datui::FileFormat::Csv);
+            assert_eq!(files.len(), 2);
+            assert_eq!(passed_over, vec![(datui::FileFormat::Json, 1)]);
+        }
+        other => panic!("got {other:?}"),
+    }
+
+    // Parquet wins a tie, because it is the format a folder of data files is most
+    // likely to be about and the one every other route reads in place.
+    touch(tmp.path(), "tied/a.csv");
+    touch(tmp.path(), "tied/b.parquet");
+    match folder_format(&tmp.path().join("tied")) {
+        FolderFormat::Mixed { format, .. } => assert_eq!(format, datui::FileFormat::Parquet),
+        other => panic!("got {other:?}"),
+    }
 }
 
 /// The row that opens the folder being browsed is a door, not a search result.

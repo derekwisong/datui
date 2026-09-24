@@ -4587,6 +4587,14 @@ pub struct OpenOptions {
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
+    /// Data files in the folder being opened that this read passes over, by format and
+    /// count.
+    ///
+    /// A folder of more than one format is read as the commonest of them — a thousand
+    /// CSVs and one stray JSON is a folder of CSVs — and this is what the stray was, so
+    /// the dataset can say what it left out rather than the folder being refused over
+    /// it. Empty for every other open, which is all of them but one.
+    pub left_out: Vec<(FileFormat, usize)>,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
@@ -4630,6 +4638,7 @@ impl OpenOptions {
             skip_lines: None,
             skip_rows: None,
             skip_tail_rows: None,
+            left_out: Vec::new(),
             compression: None,
             format: None,
             pages_lookahead: None,
@@ -10409,12 +10418,22 @@ impl App {
                             };
                             return Self::build_lazyframe_from_paths_with(cloud, &files, &nested);
                         }
-                        crate::discover::FolderFormat::NotOneTable => {
-                            return Err(color_eyre::eyre::eyre!(
-                                "{} does not hold one kind of data file, so there is \
-                                 no single table to read. Open a file inside it instead.",
-                                path.display()
-                            ));
+                        crate::discover::FolderFormat::Mixed {
+                            format: found,
+                            files,
+                            passed_over,
+                        } => {
+                            // The commonest format is the table. A folder of a thousand
+                            // CSVs and one stray JSON is a folder of CSVs, and refusing
+                            // the whole of it over the stray was datui deciding that a
+                            // folder it could read was not worth reading.
+                            let nested = OpenOptions {
+                                hive: false,
+                                format: Some(options.format.unwrap_or(found)),
+                                left_out: passed_over,
+                                ..options.clone()
+                            };
+                            return Self::build_lazyframe_from_paths_with(cloud, &files, &nested);
                         }
                     }
                 }

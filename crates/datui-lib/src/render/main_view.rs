@@ -110,7 +110,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             },
             !app.home.filter.is_empty(),
             app.data_table_state.is_some(),
-            app.selected_dataset_folder().is_some(),
+            app.selected_folder_to_enter().is_some(),
         )),
     }
 }
@@ -137,7 +137,7 @@ pub fn home_control_keys(
     browsing: Browse,
     has_filter: bool,
     has_data: bool,
-    on_dataset_folder: bool,
+    on_a_folder: bool,
 ) -> Vec<(&'static str, &'static str)> {
     // Named keys are spelled out — "Enter", "Tab", "Bksp" — matching the analysis and
     // chart bars, and avoiding U+23CE and U+21E5, which plenty of terminal fonts do
@@ -174,7 +174,7 @@ pub fn home_control_keys(
         if browsing != Browse::Listing {
             keys.push(("Bksp", "Up"));
         }
-        if on_dataset_folder {
+        if on_a_folder {
             // → does not fold on this row, it goes inside the folder — and nothing else
             // on screen says that door exists. One chip, not two beside it: the bar is
             // cut from the right and this hint is already near that end, so `← Fold`

@@ -301,6 +301,9 @@ impl Entry {
     /// is the thing it is. A row nothing has looked into has only its kind to go on.
     pub fn label(&self) -> std::borrow::Cow<'static, str> {
         match self.kind {
+            // See `opens_whole_folder`: the one row whose label would be about a
+            // different set of files than the row itself.
+            _ if self.opens_whole_folder => "".into(),
             EntryKind::Directory | EntryKind::MultiFile if !self.holds.is_empty() => {
                 self.holds.label().into()
             }
@@ -339,6 +342,15 @@ pub struct Entry {
     /// What one listing of it found, for a folder. Empty for a file, and for a folder
     /// nothing has looked into.
     pub holds: Holds,
+    /// Whether this row is the door that opens the folder being browsed, rather than
+    /// something in it.
+    ///
+    /// It carries no label. Every other label counts what is directly inside a folder,
+    /// and this row is the one that reads the whole of it — so `dir` beside `(all
+    /// files)` would say there is no data here while offering to open it, and `2
+    /// parquet` beside it would name two of the twenty it is about to read. The name
+    /// says what it does; the numbers beside it, once measured, say how much.
+    pub opens_whole_folder: bool,
 }
 
 /// What pressing Enter on a dataset will actually cost.
@@ -420,6 +432,7 @@ impl Entry {
             columns: Vec::new(),
             cost: Cost::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         }
     }
 
@@ -2550,6 +2563,7 @@ mod classification_tests {
             columns: Vec::new(),
             cost: Cost::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         };
         enrich(&mut entry);
         assert_eq!(entry.rows, Some(1), "its footer was read");
@@ -2883,6 +2897,7 @@ mod classification_tests {
             columns: Vec::new(),
             cost: Cost::default(),
             holds,
+            opens_whole_folder: false,
         };
         enrich(&mut entry);
         entry

@@ -4826,11 +4826,14 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
         "an unlooked-at row should read `{unlooked_at_row}`:\n{unlooked_at}"
     );
 
-    // Then the rows that frame drew are looked into, and say what they are.
+    // Then the rows that frame drew are looked into, and say what they are. Asked of
+    // the rows on screen rather than the selected one: the cursor starts on the row that
+    // opens the whole folder, which is not one of the two hundred being looked into.
     pump_home(&mut app, &rx, area, &mut buf, |app| {
-        app.home
-            .selected_entry()
-            .is_some_and(|e| e.kind == datui::discover::EntryKind::Hive)
+        app.home.visible().iter().any(|row| match row {
+            datui::home::Row::Entry { entry, .. } => entry.kind == datui::discover::EntryKind::Hive,
+            datui::home::Row::Header { .. } => false,
+        })
     });
     let looked_at = text_of(&buf);
     assert!(
@@ -7063,4 +7066,142 @@ fn test_a_nested_hive_of_parquet_still_opens() {
         .as_ref()
         .expect("a nested hive of Parquet is a dataset");
     assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
+}
+
+/// Two doors, on a folder datui does not recognize as anything.
+///
+/// A folder holding a CSV and a JSON is `mixed`: no label datui has says it is one
+/// table, and before this the row could only be folded — `→` did nothing and `Enter`
+/// tried to open it as a dataset and said it could not. A folder whose storage
+/// convention datui does not know is exactly the folder a user most needs to get into,
+/// so both doors are open on it now: `→` steps inside, and the first row in there reads
+/// the whole of it.
+#[test]
+fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("exports");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("sales.csv"), b"a,b\n1,2\n").unwrap();
+    std::fs::write(folder.join("notes.json"), b"{}").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "exports"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    app.home.classify_now(8);
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.label().to_string()),
+        Some("mixed".to_string()),
+        "nothing datui knows calls this a dataset"
+    );
+
+    // The bar says the door is there, on a row no label offers as a dataset.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("Inside"), "the bar offers the key: {bar:?}");
+
+    // One key in.
+    app.event(&key(KeyCode::Right));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(folder.as_path()),
+        "→ went inside a folder datui has no name for"
+    );
+
+    // And the first row in there is the other door. (The app rebuilds the listing on
+    // the event this returns; here the same call does it on the spot.)
+    app.home.rebuild(&[], &[]);
+    let names: Vec<String> = app
+        .home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            datui::home::Row::Header { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("exports (all files)"),
+        "got {names:?}"
+    );
+}
+
+/// The `(all files)` row opens the folder it names, whatever the folder is labelled.
+///
+/// The label describes; this row is the promise that the description cannot lock you
+/// out. A `mixed` folder is the case: `open_what_it_is` reads the label back, and a
+/// `Directory` sent through it goes *inside* — which, on a row that is already inside,
+/// is nowhere.
+#[test]
+fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("sales.csv"), b"a,b\n1,2\n").unwrap();
+    std::fs::write(tmp.path().join("notes.json"), b"{}").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("every folder carries the row");
+    app.home.selected = row;
+
+    let was = app.home.browsing.clone();
+
+    // → does nothing here. This row is inside the folder it opens, so going inside is
+    // nowhere: it would re-enter the listing already on screen and lose the cursor and
+    // the filter on the way. ← / → fold, the way they do on a file row. Checked before
+    // Enter, because Enter puts the app in its loading view and the home bar is gone.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !bar.contains("Inside"),
+        "the bar offers a door to nowhere: {bar:?}"
+    );
+    app.event(&key(KeyCode::Right));
+    assert_eq!(
+        app.home.browsing, was,
+        "→ on the row that opens this folder must not re-enter it"
+    );
+    assert_eq!(
+        app.home.selected, row,
+        "and must not move the cursor off it"
+    );
+
+    // Enter opens it.
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(
+        matches!(next, Some(AppEvent::Open(..))),
+        "Enter should open the folder rather than move the cursor"
+    );
+    assert_eq!(
+        app.home.browsing, was,
+        "and did not step into the folder it is already in"
+    );
 }

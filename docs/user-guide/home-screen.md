@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder datui offers as one dataset, or on a lake table, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any folder <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -215,15 +215,23 @@ is. The first four skipped are named.
 A label describes; it does not promise what <kbd>Enter</kbd> will do. A folder of
 fifteen unrelated tables reads `15 parquet` and is still a place to look inside.
 
-### When a folder is one dataset
+### Two doors into every folder
+
+Every folder has two doors, and neither depends on the label being right.
+
+<kbd>→</kbd> goes inside any folder, to reach a single partition or a single
+file. <kbd>Esc</kbd> comes back out. The first row in there is `<folder> (all
+files)`, or `(all partitions)` for a hive folder, and it opens the whole folder
+as one table whatever the folder is labelled — so the worst a wrong label can
+cost is one keystroke. That row carries no label of its own: every other label
+counts what is directly inside a folder, and this row reads the whole of it.
+
+It is not a search result. While a filter is typed the row steps out of the way,
+and it comes back when the filter is cleared.
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
 hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single
-dataset, and <kbd>→</kbd> goes inside one instead, to reach a single partition or
-a single file. That is the way to look at the files when the label is wrong.
-<kbd>Esc</kbd> comes back out; in a bucket the first row inside,
-`<folder> (all files)`, opens the whole folder again, and locally there is no
-such row.
+dataset.
 
 Sharing a file extension is not enough to make a folder one table. A database
 exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,
@@ -454,13 +462,12 @@ listing request per folder, for at most 48 of them. A folder of `key=value`
 partitions is then labelled `hive`, and every other folder by what it holds —
 `12 parquet`, `3 csv` — like a local one. A prefix with no data file directly
 inside keeps the word for the place, `prefix`, rather than becoming `dir` the
-moment the peek lands. A folder of Parquet files whose
-schemas agree is offered as one dataset; see
-[When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
-one reads the footers of up to three of the folder's files, a few kilobytes each;
-nothing else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd>
-opens it as one dataset, with the partitions as columns; <kbd>→</kbd> goes inside
-instead, where the first row, `<folder> (all partitions)`, opens the whole folder
+moment the peek lands. A folder of Parquet files whose schemas agree is offered
+as one dataset; see [Two doors into every folder](#two-doors-into-every-folder).
+Deciding that last one reads the footers of up to three of the folder's files, a
+few kilobytes each; nothing else here reads an object, and nothing reads a whole
+one. <kbd>Enter</kbd> opens it as one dataset, with the partitions as columns;
+<kbd>→</kbd> goes inside instead, where the first row opens the whole folder
 again.
 
 A partitioned dataset whose files gained columns over time, such as a blockchain's

@@ -7753,7 +7753,6 @@ impl App {
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             known: self.cache.load_dataset_facts(),
-            cloud_kinds: self.home.cloud_kinds.clone(),
         };
 
         self.home.listing_in_flight = true;
@@ -8160,34 +8159,35 @@ impl App {
         self.home_refresh();
     }
 
-    /// The highlighted row, when it is a folder that opens as one dataset and so can be
-    /// browsed into only with →.
+    /// Whether the highlighted row is the `(all files)` row: the one that opens the
+    /// folder being browsed, and so is already inside it.
+    ///
+    /// `Enter` on it opens the folder whatever the label says, and → on it would
+    /// descend into where it already is.
+    fn selection_opens_the_whole_folder(&self) -> bool {
+        self.home
+            .selected_entry()
+            .is_some_and(|entry| entry.opens_whole_folder)
+    }
+
+    /// The highlighted row, when → goes inside it.
+    ///
+    /// Every folder, whatever its label. A label describes what is directly inside; it
+    /// no longer decides what can be reached, so the exception list this used to carry —
+    /// hive, multi and the three lake markers — is gone, and with it the folders that
+    /// had no way in because datui did not recognize how they were stored. What is left
+    /// out is what is not a folder: a file, a section header, and the row that opens the
+    /// folder you are already in.
     ///
     /// Local or remote. The split this used to carry — remote only — was never about
     /// where the folder was: a cloud prefix simply could not be descended into until
-    /// there was a listing to descend with. A local `hive` tree or folder of part files
-    /// had no way in at all, so Enter opened the whole thing, ←/→ folded the section and
-    /// the files inside were unreachable. That matters more since a folder's
-    /// classification began depending on its files' schemas: looking inside is the only
-    /// recourse when the answer is wrong.
-    fn selected_dataset_folder(&self) -> Option<PathBuf> {
+    /// there was a listing to descend with.
+    fn selected_folder_to_enter(&self) -> Option<PathBuf> {
         let entry = self.home.selected_entry()?;
-        // The row that opens the folder being browsed as one dataset, which is inside
-        // that folder already: → on it would descend into where it already is.
-        let whole_of_here = self
-            .home
-            .browsing
-            .as_deref()
-            .is_some_and(|dir| home::folder_dataset_url(dir) == entry.path);
-        // A lake table too: Enter already goes inside one, and → doing the same is what
-        // every other folder-shaped row does. Before this it folded the section, which
-        // on a cloud Delta root was a step backwards — labelled `multi`, → went inside.
-        ((matches!(
-            entry.kind,
-            discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) || entry.kind.is_lake_table())
-            && !whole_of_here)
-            .then_some(entry.path)
+        if self.selection_opens_the_whole_folder() {
+            return None;
+        }
+        (entry.kind != discover::EntryKind::File).then_some(entry.path)
     }
 
     /// What to say when the user asks to open a lake table: datui goes inside it rather
@@ -8215,6 +8215,15 @@ impl App {
             return None;
         }
         let entry = self.home.selected_entry()?;
+        // The `(all files)` row opens the folder it names, whatever the folder is
+        // labelled. That is the whole of what it is for: the label describes, and this
+        // row is the promise that the description cannot lock you out. Sent straight to
+        // the open, because `open_what_it_is` would read the label back and send a
+        // `dir` row inside the folder it is already in.
+        if self.selection_opens_the_whole_folder() {
+            let folder = home::folder_dataset_url(&entry.path);
+            return Some(self.home_open_path(folder, true));
+        }
         // A row nothing has looked at is looked at before it is opened, rather than
         // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
         // openable, so without this a lake root reached this way is read as one table:
@@ -8423,7 +8432,7 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
-            KeyCode::Right => match self.selected_dataset_folder() {
+            KeyCode::Right => match self.selected_folder_to_enter() {
                 // Into a folder that opens as one dataset rather than opening it, to
                 // reach one partition or one file. This clears the filter, as browsing
                 // anywhere does.

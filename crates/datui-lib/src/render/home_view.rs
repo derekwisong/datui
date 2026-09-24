@@ -1551,6 +1551,7 @@ mod tests {
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
+            opens_whole_folder: false,
         }
     }
 

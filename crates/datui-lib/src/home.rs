@@ -239,17 +239,26 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
     }
 }
 
-/// A row for the cloud folder being browsed, when what it holds makes it one dataset.
+/// A row that opens the folder being browsed as one table, whatever its label says.
+///
+/// The second of the two doors. A label describes what is directly inside a folder; it
+/// does not decide what the folder can give you, so every folder carries this row and
+/// the worst a wrong label can cost is one keystroke. It used to be offered in a bucket
+/// only, and there only for the two kinds the listing had already called a dataset —
+/// which is the same judgement twice, and left a local folder of separate tables with
+/// no way to read them together at all.
+///
+/// Built from the listing already on screen, so it costs nothing to look at.
 #[cfg(feature = "cloud")]
-fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> Option<Entry> {
-    if !is_object_store_url(dir) || cloud_account(dir).is_some() {
+fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
+    // Not a folder: a `cloud://<id>/<account>` place stands for an Azure storage
+    // account, whose children are containers and which has no URL to open.
+    if cloud_account(dir).is_some() {
         return None;
     }
-    // What this folder holds was already decided when the listing above it peeked
-    // inside, and that peek read footers where the names alone were not enough. A
-    // folder it found to be separate tables must not be offered as one dataset here
-    // either — this row is the other door to the same open.
-    if peeked == Some(&EntryKind::Directory) {
+    // Nothing in it to open. An empty folder is the one place a second door leads
+    // nowhere, and a row promising to read nothing is worse than no row.
+    if rows.is_empty() {
         return None;
     }
     let folders: Vec<String> = rows
@@ -264,10 +273,12 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
         .collect();
     let (kind, holds) =
         crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects);
-    let what = match kind {
-        EntryKind::Hive => "all partitions",
-        EntryKind::MultiFile => "all files",
-        _ => return None,
+    // What the row says it opens, not whether it opens: a hive folder is read through
+    // its partitions and everything else through its files.
+    let what = if kind == EntryKind::Hive {
+        "all partitions"
+    } else {
+        "all files"
     };
     let text = dir.to_string_lossy();
     let name = text
@@ -284,6 +295,7 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> O
     // so it reports fewer skipped. Two views of one folder, each true of what it saw.
     entry.holds = holds;
     entry.name = format!("{name} ({what})");
+    entry.opens_whole_folder = true;
     Some(entry)
 }
 
@@ -763,8 +775,6 @@ pub struct ListingRequest {
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
-    /// What looking inside each cloud folder found, from this session's peeks.
-    pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
 }
 
 /// What a listing pass produced.
@@ -862,7 +872,6 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         desktop_dirs,
         browsing,
         probed,
-        cloud_kinds,
         unreachable,
         probe_errors,
         network_check,
@@ -919,14 +928,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             discover::scan_dir(&dir)
         };
         let unavailable = remote && unreachable.contains(&dir);
-        // Inside a cloud folder of partitions or Parquet files: a row that opens the
-        // whole folder as one dataset, since Enter on the rows opens only one part.
+        // The first row inside any folder opens the whole of it, since `Enter` on the
+        // rows below opens one file. The other door.
         #[cfg(feature = "cloud")]
         let rows = {
             let mut rows = rows;
-            if let Some(whole) =
-                whole_folder_row(&dir, &rows, cloud_kinds.get(&dir).map(|(kind, _)| kind))
-            {
+            if let Some(whole) = whole_folder_row(&dir, &rows) {
                 rows.insert(0, whole);
             }
             rows
@@ -1571,7 +1578,6 @@ impl HomeState {
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
-            cloud_kinds: self.cloud_kinds.clone(),
         };
         let listing = build_listing(&request);
         self.apply_listing(listing);
@@ -2049,10 +2055,18 @@ impl HomeState {
 
     pub fn visible(&self) -> Vec<Row<'_>> {
         let mut out: Vec<Row<'_>> = Vec::new();
+        // The row that opens the folder being browsed is a door, not something to
+        // search for. Its name carries the words `all files`, which a fuzzy filter
+        // matches for most of the alphabet — `sal` found it beside `sales.parquet` —
+        // so it steps out of the way while a filter is on, and comes back when it is
+        // cleared. It also stays first whatever the sort, because being the first row
+        // inside a folder is the whole of what it is.
+        let is_the_whole_folder = |row: &Entry| row.opens_whole_folder;
         for (si, section) in self.sections.iter().enumerate() {
             let mut matched: Vec<(&Entry, i32)> = section
                 .rows
                 .iter()
+                .filter(|row| self.filter.is_empty() || !is_the_whole_folder(row))
                 .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
                 .collect();
 
@@ -2100,6 +2114,12 @@ impl HomeState {
                         )
                     });
                 }
+            }
+
+            // After every sort, because it is not one of the things being ordered.
+            if let Some(at) = matched.iter().position(|(e, _)| is_the_whole_folder(e)) {
+                let row = matched.remove(at);
+                matched.insert(0, row);
             }
 
             let collapsed = self.section_folded(section);
@@ -2491,6 +2511,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         columns: Vec::new(),
         cost: Default::default(),
         holds: Default::default(),
+        opens_whole_folder: false,
     }
 }
 
@@ -2546,6 +2567,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         columns: Vec::new(),
         cost: Default::default(),
         holds,
+        opens_whole_folder: false,
     };
     if !remote && let Ok(meta) = std::fs::metadata(path) {
         if meta.is_file() {

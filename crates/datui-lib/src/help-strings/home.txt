@@ -5,9 +5,8 @@ NAVIGATION
   ↑ / ↓             Move the selection (Ctrl+P / Ctrl+N as well)
   Ctrl+↑ / Ctrl+↓   Previous or next section
   ← / →             Collapse or expand a section; the choice is remembered.
-                    → on a folder datui offers as one dataset, or on a lake
-                    table, goes inside it instead, so one partition or one file
-                    can be reached
+                    → on any folder goes inside it instead, whatever its label,
+                    so one partition or one file can always be reached
   PgUp / PgDn       Move ten rows
 
   Every letter types into the filter, so none is a key here: "json" finds json.

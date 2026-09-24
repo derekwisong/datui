@@ -848,9 +848,10 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
     home.rebuild(&[], &[]);
 
     let more = home.measure_now(2);
-    // Six files and the row that opens the folder holding them, which is measured like
-    // any other row on screen — what it says it gives is what `Enter` on it gives.
-    assert!(more, "with 7 rows and a budget of 2, work must remain");
+    // The six files. The row that opens the folder holding them is not measured: its
+    // path is the folder's, so a measurement of it lands in the slot the folder's own
+    // row uses one level up.
+    assert!(more, "with 6 rows and a budget of 2, work must remain");
     assert_eq!(home.enriched.len(), 2, "a pass spends only its budget");
 
     home.measure_now(2);
@@ -861,7 +862,7 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
     );
 
     let more = home.measure_now(10);
-    assert_eq!(home.enriched.len(), 7);
+    assert_eq!(home.enriched.len(), 6);
     assert!(!more, "nothing left to measure");
 }
 
@@ -3934,4 +3935,156 @@ fn test_the_door_is_named_after_the_folder_even_at_the_root() {
         .find(|r| r.opens_whole_folder)
         .expect("the root is a folder like any other");
     assert_eq!(door.name, "/ (all files)", "got {:?}", door.name);
+}
+
+/// Stepping into a folder and back out leaves its label alone.
+///
+/// The door's path *is* the folder's — `PathBuf` compares and hashes a trailing slash
+/// away — so measuring it wrote into the slot the folder's own row uses one level up.
+/// That write carries no kind, because the door's kind did not change, and
+/// `folders_to_look_into` reads the slot being occupied as the row having been looked
+/// into. So the folder upstairs kept `Unknown`: `multi  2 parquet  2 × 1` became
+/// `multi/  …`, the pane lost its `holds` line, the caption dropped to `0 datasets`,
+/// and nothing cleared `enriched` for the rest of the session — not even Ctrl+R.
+#[test]
+fn test_stepping_into_a_folder_and_back_does_not_erase_its_label() {
+    let tmp = TempDir::new().unwrap();
+    let multi = tmp.path().join("multi");
+    fs::create_dir_all(&multi).unwrap();
+    for name in ["a.parquet", "b.parquet"] {
+        let mut frame = polars::prelude::DataFrame::new(
+            1,
+            vec![
+                polars::prelude::Column::new("id".into(), &[1i32]),
+                polars::prelude::Column::new("ts".into(), &[2i32]),
+            ],
+        )
+        .unwrap();
+        let file = fs::File::create(multi.join(name)).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    let mut home = HomeState {
+        browsing: Some(multi.clone()),
+        ..Default::default()
+    };
+    // Inside the folder: the door is on screen and every pass runs over it.
+    home.rebuild(&[], &[]);
+    assert!(home.sections[0].rows.iter().any(|r| r.opens_whole_folder));
+    for _ in 0..4 {
+        home.measure_now(16);
+        home.classify_now(16);
+    }
+    assert!(
+        !home.enriched.contains_key(&multi),
+        "the door must not take the folder's measurement slot"
+    );
+
+    // Back out. The folder's own row is classified and labelled as it would have been.
+    home.browsing = Some(tmp.path().to_path_buf());
+    home.rebuild(&[], &[]);
+    for _ in 0..4 {
+        home.classify_now(16);
+        home.measure_now(16);
+    }
+    let row = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.name == "multi")
+        .expect("the folder is listed");
+    assert_eq!(row.kind, EntryKind::MultiFile, "got {:?}", row.kind);
+    assert_eq!(row.label(), "2 parquet");
+}
+
+/// Nothing remote is read to build the door.
+///
+/// The rule this whole branch is built on: listing a share that has stopped answering
+/// is the call that freezes the interface, so the rows come from whatever the
+/// background probe returned. Asking `look_at_directory` for the door's kind put a
+/// `read_dir` and a `metadata` per entry back on the share, twelve lines below the
+/// comment saying it never does.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_door_on_a_share_is_built_from_the_probe_not_the_disk() {
+    let tmp = TempDir::new().unwrap();
+    let share = tmp.path().join("share");
+    fs::create_dir_all(&share).unwrap();
+    // On disk: three Parquet files. Through the probe: one CSV. A door built from disk
+    // says `3 parquet`; one built from the listing says what the listing said.
+    for name in ["a.parquet", "b.parquet", "c.parquet"] {
+        touch(&share, name);
+    }
+
+    let mut home = HomeState {
+        network_check: |_| true,
+        browsing: Some(share.clone()),
+        ..Default::default()
+    };
+    let mut stale = datui::discover::Entry::directory(&share.join("stale.csv"));
+    stale.name = "stale.csv".to_string();
+    stale.kind = EntryKind::File;
+    stale.size = Some(10);
+    home.probe_ready(share, vec![stale]);
+    home.rebuild(&[], &[]);
+
+    let door = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.opens_whole_folder)
+        .expect("the folder carries the row");
+    assert_eq!(
+        door.holds.label(),
+        "1 csv",
+        "built from the probe's rows, not from a read of the share"
+    );
+}
+
+/// The door is named the way the section title above it names the same place.
+///
+/// A source id is not part of a name — `s3://lab@bucket` is titled `bucket` — and an
+/// Azure container is named by container rather than by the long URL its last component
+/// happens to be. Both were reachable: a source with an id lists its buckets as
+/// `s3://<id>@bucket`, and an Azure account lists its containers as
+/// `abfss://<container>@<account>.dfs.core.windows.net/`.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_the_door_is_named_the_way_the_title_is() {
+    use std::path::PathBuf;
+    let named = |url: &str| -> String {
+        let place = PathBuf::from(url);
+        let mut home = HomeState {
+            network_check: |_| true,
+            browsing: Some(place.clone()),
+            ..Default::default()
+        };
+        let mut object = datui::discover::Entry::directory(&place.join("one.parquet"));
+        object.name = "one.parquet".to_string();
+        object.kind = EntryKind::File;
+        object.size = Some(10);
+        home.probe_ready(place, vec![object]);
+        home.rebuild(&[], &[]);
+        home.sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .find(|r| r.opens_whole_folder)
+            .map(|r| r.name.clone())
+            .expect("the place carries the row")
+    };
+
+    assert_eq!(named("s3://bucket"), "bucket (all files)");
+    assert_eq!(named("s3://lab@bucket"), "bucket (all files)");
+    assert_eq!(named("s3://lab@bucket/exports"), "exports (all files)");
+    assert_eq!(named("gs://bucket/exports/"), "exports (all files)");
+    assert_eq!(
+        named("abfss://raw@acct.dfs.core.windows.net"),
+        "raw (all files)"
+    );
+    assert_eq!(
+        named("abfss://raw@acct.dfs.core.windows.net/tbl"),
+        "tbl (all files)"
+    );
 }

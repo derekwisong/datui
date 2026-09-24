@@ -8190,6 +8190,51 @@ impl App {
         (entry.kind != discover::EntryKind::File).then_some(entry.path)
     }
 
+    /// Why a prefix in an object store cannot be read as one table, when it cannot.
+    ///
+    /// Every cloud path is scanned as Parquet — the folder-format dispatch is local
+    /// only — so a prefix of anything else comes back "Could not read from S3. Check
+    /// credentials and URL", which is a false statement about a login that is fine.
+    /// What the prefix holds is already counted and on screen, so saying so costs no
+    /// request. #275 phase 4 is where these read.
+    ///
+    /// `None` for a prefix that may yet be Parquet: one holding Parquet, and one
+    /// holding no data files at all, whose data may be a level down.
+    #[cfg(feature = "cloud")]
+    fn why_a_cloud_prefix_cannot_be_read(holds: &discover::Holds) -> Option<String> {
+        let reads_parquet =
+            |name: &str| crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet);
+        if holds.formats.iter().any(|(name, _)| reads_parquet(name)) {
+            return None;
+        }
+        match holds.formats.as_slice() {
+            // Data files, none of them Parquet. `label()` says `mixed` for more than
+            // one format, which is a word rather than a count, so the line is spelled
+            // out from the formats themselves.
+            [] => {
+                // Nothing datui has a reader for. Only a refusal when there is also
+                // nothing below: a prefix of sub-prefixes may hold Parquet a level
+                // down, and nothing here has looked.
+                (holds.not_read > 0 && holds.folders == 0).then(|| {
+                    "this prefix holds nothing datui can read — datui reads a folder in \
+                     an object store as Parquet only."
+                        .to_string()
+                })
+            }
+            formats => {
+                let held = formats
+                    .iter()
+                    .map(|(name, count)| format!("{count} {name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(format!(
+                    "this prefix holds {held} — datui reads a folder in an object store \
+                     as Parquet only. Open one of the files below instead."
+                ))
+            }
+        }
+    }
+
     /// What to say when the user asks to open a lake table: datui goes inside it rather
     /// than reading it, and the reason is not guessable from the row.
     ///
@@ -8243,15 +8288,9 @@ impl App {
             // found Parquet. What it holds is counted and on screen, so saying so costs
             // no request. #275 phase 4 is where these read.
             if home::is_object_store_url(&entry.path)
-                && !entry.holds.formats.is_empty()
-                && !entry.holds.formats.iter().any(|(name, _)| {
-                    crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet)
-                })
+                && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
             {
-                self.home.status = Some(format!(
-                    "this prefix holds {} — datui reads a folder in an object store as Parquet only. Open one of the files below instead.",
-                    entry.holds.label()
-                ));
+                self.home.status = Some(what);
                 return None;
             }
             // `hive: true` is what puts the open on the local folder route at all:

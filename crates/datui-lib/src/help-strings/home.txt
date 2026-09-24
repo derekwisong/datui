@@ -31,8 +31,8 @@ NAVIGATION
   access. It carries no label itself, and it steps out of the way while a filter
   is typed. What can be read through it is narrower than what it opens: on disk a
   folder of more than one kind of data file says so, in a bucket only Parquet is
-  read in place, and a lake table says why on both. Each says what it holds
-  rather than reading.
+  read in place and a prefix of anything else names what it holds, and a lake
+  table says why on both.
 
   A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
   a count and a format ("12 parquet"), "mixed" for more than one format, or

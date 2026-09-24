@@ -7458,9 +7458,66 @@ fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
     let said = app.home.status.clone().unwrap_or_default();
     assert!(said.contains("3 csv"), "it says what is there: {said:?}");
     assert!(
+        !said.contains("mixed"),
+        "`mixed` is a word, not a count: {said:?}"
+    );
+    assert!(
         !said.to_lowercase().contains("credential"),
         "and does not blame a login that is fine: {said:?}"
     );
+
+    // A prefix of two formats, neither of them Parquet, names both rather than saying
+    // `mixed` — which is a word, not a count, and says nothing about what is there.
+    let pair = PathBuf::from("s3://bucket/pair");
+    let mut csv = Entry::directory(Path::new("s3://bucket/pair/a.csv"));
+    csv.name = "a.csv".to_string();
+    csv.kind = EntryKind::File;
+    csv.size = Some(10);
+    let mut json = Entry::directory(Path::new("s3://bucket/pair/b.json"));
+    json.name = "b.json".to_string();
+    json.kind = EntryKind::File;
+    json.size = Some(10);
+    app.home.probe_ready(pair.clone(), vec![csv, json]);
+    app.home.browsing = Some(pair);
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the prefix carries the row");
+    app.home.selected = row;
+    assert!(app.event(&key(KeyCode::Enter)).is_none());
+    let said = app.home.status.clone().unwrap_or_default();
+    assert!(said.contains("1 csv"), "{said:?}");
+    assert!(said.contains("1 json"), "{said:?}");
+
+    // And a prefix of files datui has no reader for at all. `holds.formats` is empty
+    // there, so a test written over the formats alone let it through and the scan came
+    // back blaming the user's credentials.
+    let docs = PathBuf::from("s3://bucket/docs");
+    let mut readme = Entry::directory(Path::new("s3://bucket/docs/README.md"));
+    readme.name = "README.md".to_string();
+    readme.kind = EntryKind::File;
+    readme.size = Some(10);
+    app.home.probe_ready(docs.clone(), vec![readme]);
+    app.home.browsing = Some(docs);
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
+        )
+        .expect("the prefix carries the row");
+    app.home.selected = row;
+    assert!(app.event(&key(KeyCode::Enter)).is_none());
+    let said = app.home.status.clone().unwrap_or_default();
+    assert!(said.contains("nothing datui can read"), "{said:?}");
+    assert!(!said.to_lowercase().contains("credential"), "{said:?}");
 
     // A prefix whose data is a level down still tries: the files below it may be
     // Parquet, and nothing here has looked.

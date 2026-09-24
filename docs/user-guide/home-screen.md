@@ -233,14 +233,16 @@ filter is cleared. A folder with nothing in it has no such row.
 What datui can then *read* is a narrower question than what it will open, and
 this release has not finished widening it.
 
-On disk, a folder of one format and a hive tree of Parquet read as one table; a
-folder holding more than one kind of data file says so and does not read; and a
-folder whose data is in subfolders reads only if that data is Parquet.
+On disk, a folder of one format and a hive tree of Parquet read as one table,
+and a folder holding more than one kind of data file says so. A folder whose
+data is in subfolders reads only if that data is Parquet; if it is not, the
+error names Parquet about a folder that has none, which is a rough edge this
+release has not reached yet.
 
-In a bucket, only Parquet is read in place. A prefix holding CSV, JSON or
-anything else says what it holds and does not read — it does not report a
-problem with your credentials, which is what it used to do. A prefix whose data
-is a level down is tried, since the files below it may be Parquet.
+In a bucket, only Parquet is read in place. A prefix holding CSV, JSON, or
+files datui has no reader for says what it holds and does not read — it does not
+report a problem with your credentials, which is what it used to do. A prefix
+whose data is a level down is tried, since the files below it may be Parquet.
 
 A `delta`, `iceberg` or `hudi` root is refused by this row on both routes, as it
 is by <kbd>Enter</kbd> on the folder above it, for the reason below.

@@ -250,7 +250,7 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
 ///
 /// Built from the listing already on screen, so it costs nothing to look at.
 #[cfg(feature = "cloud")]
-fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
+fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     // Not a folder: a `cloud://<id>/<account>` place stands for an Azure storage
     // account, whose children are containers and which has no URL to open.
     if cloud_account(dir).is_some() {
@@ -278,7 +278,13 @@ fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
     // above said datui does not read Hudi tables. And the cloud Iceberg rule is the
     // looser of the two on purpose, name-shape only, so a plain folder holding `data/`
     // beside `metadata/` was refused as a lake table it is not.
-    let (kind, holds) = if is_object_store_url(dir) {
+    // Nothing remote is read here, which is the rule this whole branch is built on:
+    // the call that freezes the interface is a listing of a share that has stopped
+    // answering, and `look_at_directory` is a `read_dir` plus a `metadata` per entry.
+    // An object store was never going to be read anyway — `read_dir` on an `s3://`
+    // URL asks the working directory about a file called `s3:` — and a mount is not
+    // read because the rows in hand came from the probe that already paid for it.
+    let (kind, holds) = if remote || is_object_store_url(dir) {
         crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects)
     } else {
         crate::discover::look_at_directory(dir)
@@ -290,14 +296,29 @@ fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
     } else {
         "all files"
     };
-    // `file_name` rather than splitting on `/`: at the filesystem root there is no last
-    // component and the row was named `" (all files)"`, and on Windows the separator is
-    // not the one a split would look for.
+    // Named the way the section title above it names the same place, or the two
+    // disagree about the folder you are standing in. A source id is not part of the
+    // name — `s3://lab@bucket` is titled `bucket` — and an Azure container is named by
+    // container, not by the long URL its last component happens to be.
+    //
+    // `file_name` rather than splitting on `/` for the rest: at the filesystem root
+    // there is no last component and the row was named `" (all files)"`, and on Windows
+    // the separator is not the one a split would look for.
     let text = dir.to_string_lossy();
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| text.to_string());
+    let name = if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+        let leaf = key.trim_matches('/').rsplit('/').next().unwrap_or("");
+        if leaf.is_empty() {
+            container
+        } else {
+            leaf.to_string()
+        }
+    } else {
+        let (_, plain) = crate::source::split_source_id(&text);
+        std::path::Path::new(plain.as_ref())
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| plain.into_owned())
+    };
     let mut entry = Entry::directory(&folder_dataset_url(dir));
     entry.kind = kind;
     // What the listing you are looking at holds. Not the same tally as the folder's own
@@ -944,7 +965,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         #[cfg(feature = "cloud")]
         let rows = {
             let mut rows = rows;
-            if let Some(whole) = whole_folder_row(&dir, &rows) {
+            if let Some(whole) = whole_folder_row(&dir, &rows, remote) {
                 rows.insert(0, whole);
             }
             rows
@@ -2331,6 +2352,20 @@ impl HomeState {
                 continue;
             };
             if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
+                continue;
+            }
+            // The door into the folder being browsed is a view of that folder, not a
+            // row of its own: its path *is* the folder's, and `PathBuf` compares and
+            // hashes a trailing slash away, so measuring it writes into the slot the
+            // folder's own row uses one level up. That write carries no kind — the
+            // door's kind did not change — and `folders_to_look_into` then takes the
+            // slot being occupied as the row having been looked into, so the folder
+            // upstairs kept `Unknown` and lost its label for the rest of the session.
+            //
+            // It still *reads* that slot, so once anything has measured the folder the
+            // door shows those numbers, which is every time you stepped into it from
+            // the listing above.
+            if entry.opens_whole_folder {
                 continue;
             }
             // What a row *is* settles it before where it lives does, because the kind

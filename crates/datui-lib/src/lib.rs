@@ -1736,6 +1736,10 @@ pub mod tests {
             assert_eq!(facts.cols, Some(1));
             assert_eq!(facts.kind, Some(EntryKind::File));
             assert_eq!(facts.size, 0);
+            assert!(
+                facts.mtime > 0,
+                "dated, so the index does not evict it first"
+            );
         }
 
         /// A sampled read knows the columns and not the rows, and says the width is a
@@ -9865,7 +9869,9 @@ impl App {
     /// What the home screen can say about one object opened from a bucket: its rows
     /// and columns from the footer the open read, under the URL it resolved to. The
     /// object's size is not known here — the footer is read from the tail — so the
-    /// record carries none, and the row shows none.
+    /// record carries none, and the row shows none. Its `mtime` is the time of the
+    /// open: a remote record is never fingerprinted by it, and the index evicts its
+    /// oldest `mtime` first, so a zero would make these the first to go.
     fn record_cloud_object_facts(
         cache: Option<&crate::cache::CacheManager>,
         full: &str,
@@ -9882,7 +9888,10 @@ impl App {
         cache.record_dataset_facts(&[(
             PathBuf::from(full),
             crate::cache::DatasetFacts {
-                mtime: 0,
+                mtime: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
                 size: 0,
                 rows: Some(footer.row_group_rows.iter().sum()),
                 cols: Some(columns.len()),

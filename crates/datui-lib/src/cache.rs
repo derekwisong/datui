@@ -526,18 +526,23 @@ impl DatasetShape {
 /// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
 /// `target/<profile>/datui`, and an installed one is nowhere near.
 fn running_as_a_cargo_test() -> bool {
-    std::env::current_exe().is_ok_and(|exe| cargo_test_layout(&exe))
+    std::env::current_exe()
+        .is_ok_and(|exe| cargo_test_layout(&exe, std::env::var_os("CARGO_TARGET_DIR").as_deref()))
 }
 
-/// The directory is `deps`, and `target` is at most three levels above it. Asked of
-/// the shape rather than of any `deps` anywhere in the path, so a program installed
-/// under some `deps` directory of the user's own is not mistaken for a test.
-fn cargo_test_layout(exe: &Path) -> bool {
+/// The directory is `deps`, and it sits under a `target` at most three levels up, or
+/// under the target directory cargo was told to use. Asked of the shape rather than of
+/// any `deps` anywhere in the path, so a program installed under some `deps` directory
+/// of the user's own is not mistaken for a test.
+fn cargo_test_layout(exe: &Path, target_dir: Option<&std::ffi::OsStr>) -> bool {
     let Some(deps) = exe.parent() else {
         return false;
     };
     if deps.file_name().is_none_or(|name| name != "deps") {
         return false;
+    }
+    if target_dir.is_some_and(|dir| exe.starts_with(dir)) {
+        return true;
     }
     deps.ancestors()
         .skip(1)
@@ -813,23 +818,29 @@ mod harness_tests {
     /// called `deps` must not refuse to start with a message about the test harness.
     #[test]
     fn only_cargos_layout_is_a_test() {
+        use std::ffi::OsStr;
         use std::path::Path;
-        assert!(super::cargo_test_layout(Path::new(
+        let layout = |exe: &str| super::cargo_test_layout(Path::new(exe), None);
+        assert!(layout(
             "/home/x/src/datui/target/debug/deps/home_test-1a2b3c"
-        )));
-        assert!(super::cargo_test_layout(Path::new(
+        ));
+        assert!(layout(
             "/home/x/src/datui/target/x86_64-unknown-linux-gnu/release/deps/datui-1a2b"
-        )));
-        assert!(!super::cargo_test_layout(Path::new(
-            "/home/x/src/datui/target/debug/datui"
-        )));
-        assert!(!super::cargo_test_layout(Path::new("/opt/deps/bin/datui")));
-        assert!(!super::cargo_test_layout(Path::new(
-            "/home/x/deps/datui-0.4/bin/datui"
-        )));
-        assert!(!super::cargo_test_layout(Path::new(
-            "/home/x/src/datui/target/debug/examples/demo"
-        )));
+        ));
+        assert!(!layout("/home/x/src/datui/target/debug/datui"));
+        assert!(!layout("/opt/deps/bin/datui"));
+        assert!(!layout("/home/x/deps/datui-0.4/bin/datui"));
+        assert!(!layout("/home/x/src/datui/target/debug/examples/demo"));
+        // A target directory of another name, when cargo was told about it.
+        assert!(!layout("/home/x/build/datui/debug/deps/home_test-1a2b3c"));
+        assert!(super::cargo_test_layout(
+            Path::new("/home/x/build/datui/debug/deps/home_test-1a2b3c"),
+            Some(OsStr::new("/home/x/build/datui"))
+        ));
+        assert!(!super::cargo_test_layout(
+            Path::new("/home/x/build/deps/datui"),
+            Some(OsStr::new("/home/x/other"))
+        ));
     }
 }
 

@@ -222,7 +222,7 @@ pub struct Args {
     #[arg(long = "skip-rows")]
     pub skip_rows: Option<usize>,
 
-    /// Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage). Counts every row first; on a prefix in a bucket that downloads every file
+    /// Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage). Counts every row first; on a directory in a bucket that downloads every file
     #[arg(long = "skip-tail-rows", value_name = "N")]
     pub skip_tail_rows: Option<usize>,
 

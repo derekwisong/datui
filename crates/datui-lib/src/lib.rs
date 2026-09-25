@@ -4596,6 +4596,17 @@ pub struct OpenOptions {
     /// the dataset can say what it left out rather than the folder being refused over
     /// it. Empty for every other open, which is all of them but one.
     pub left_out: Vec<(FileFormat, usize)>,
+    /// Set when the folder being opened is a lake table and this read is of its plain
+    /// files: `"Delta"`, `"Iceberg"` or `"Hudi"`.
+    ///
+    /// The files are not the table. A delete leaves its rows on disk, an update leaves
+    /// the version it replaced, and compaction leaves both sides — so this read counts
+    /// rows no query of the table would return. datui does it anyway, because the
+    /// alternative was a folder the user could see and could not read at all, and every
+    /// other engine at least lets you look. What makes it honest rather than wrong is
+    /// that it is never silent: a note and a chip in the control bar say so, and both
+    /// are load-bearing.
+    pub read_as_plain_files_of: Option<&'static str>,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
@@ -4640,6 +4651,7 @@ impl OpenOptions {
             skip_rows: None,
             skip_tail_rows: None,
             left_out: Vec::new(),
+            read_as_plain_files_of: None,
             compression: None,
             format: None,
             pages_lookahead: None,
@@ -8496,20 +8508,17 @@ impl App {
         // the open, because `open_what_it_is` would read the label back and send a
         // `dir` row inside the folder it is already in.
         if self.selection_opens_the_whole_folder() {
-            // Except a lake table, which is not a folder of Parquet files however much
-            // it looks like one: reading it as one counts tombstoned rows, every
-            // rewritten version and both sides of a compaction. `enrich` will not so
-            // much as count one for that reason, and this row offered to open it — the
-            // refusal one row above it, and #237 reached through the new door. Phase 4
-            // gives it a read that says what it is doing.
-            if let Some(format) = entry.kind.lake_name() {
-                // Not `lake_table_note`, which says "these are the files under it" —
-                // true of going inside, and this row is already inside.
-                self.home.status = Some(format!(
-                    "datui does not read {format} tables yet — open one of the files below instead"
-                ));
-                return None;
-            }
+            // A lake table is not a folder of Parquet files however much it looks like
+            // one: reading it as one counts tombstoned rows, every rewritten version
+            // and both sides of a compaction. So the read is labelled rather than
+            // refused. Refusing it left a folder the user could see and could not read
+            // at all — this row is the promise that no label locks you out, and a
+            // refusal here is that promise broken on the one folder that needed it.
+            // Until datui reads the log, its files are what there is, and what makes
+            // that honest is that nothing about it is silent: a note in the panel, a
+            // chip in the control bar, and `Enter` on the row one level up still goes
+            // inside and says datui does not read the table itself yet.
+            let lake = entry.kind.lake_name();
             // A prefix in an object store is scanned as Parquet whatever is in it —
             // every cloud path returns before the folder-format dispatch is reached —
             // so a prefix of CSV answers "Could not read from S3. Check credentials and
@@ -8537,7 +8546,7 @@ impl App {
             // folder the dispatch sends down the hive route. The cloud route returns
             // before the dispatch is reached.
             let folder = home::folder_dataset_url(&entry.path);
-            return Some(self.home_open_path(folder, true));
+            return Some(self.home_open_folder(folder, true, lake));
         }
         // A row nothing has looked at is looked at before it is opened, rather than
         // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
@@ -8701,12 +8710,24 @@ impl App {
     /// The recent entry is recorded by the `Open` handler, which every open goes
     /// through, so this does not record one itself.
     fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
+        self.home_open_folder(path, hive, None)
+    }
+
+    /// As [`Self::home_open_path`], and carrying whether the folder being read is a
+    /// lake table whose plain files this read is, so the dataset can say so.
+    fn home_open_folder(
+        &mut self,
+        path: PathBuf,
+        hive: bool,
+        lake: Option<&'static str>,
+    ) -> AppEvent {
         // A directory of partitions is only meaningful read as one hive dataset. Told
         // rather than stat'ed: the caller already knows what this is, and on a share that
         // has gone away a `stat` here would freeze the thread reading the keys — the same
         // reason the size below is left to the `Open` handler.
         let options = OpenOptions {
             hive,
+            read_as_plain_files_of: lake,
             ..OpenOptions::default()
         };
         self.input_mode = InputMode::Normal;
@@ -9226,8 +9247,16 @@ impl App {
         let path_for_event = display_path.or_else(|| paths.first().cloned());
         let slot = self.pending_lazyframe_result.clone();
         self.spawn_bg(status, move |task_gen, tx| {
-            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options) {
+            // What the read passed over rides back with the options it was asked for,
+            // so the dataset can say what it left out. Only a folder of more than one
+            // format has anything to put here.
+            let mut left_out = Vec::new();
+            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut left_out) {
                 Ok(lf) => {
+                    let options = OpenOptions {
+                        left_out,
+                        ..options
+                    };
                     let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
                     // A newer scan already landed; this result is obsolete.
                     let dominated = guard.as_ref().is_some_and(|(g, _)| *g > task_gen);
@@ -10104,6 +10133,17 @@ impl App {
         // fails never gets here, which is what keeps the dataset still on screen
         // showing its own figures.
         state.set_measurements(meter);
+        // What the open did, as against what it found. The one place both are known:
+        // the scan has reported what it passed over, the caller has said whether this
+        // is a lake table's plain files, and the state that will carry the notes is in
+        // hand. See `DataTableState::open_notes` for why they are not the other notes.
+        state.set_open_notes(crate::notes::from_the_open(
+            &options.left_out,
+            options.read_as_plain_files_of,
+        ));
+        // And the half of it that cannot be missed: the row count on screen is a true
+        // count of the files and a wrong one of the table.
+        state.set_not_the_table(options.read_as_plain_files_of);
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         if path.is_some_and(source::scans_in_place) {
@@ -10303,10 +10343,17 @@ impl App {
     /// Takes the cloud config by reference rather than reading `self`, so the same
     /// code can run on a background thread — scanning is where the wall-clock time
     /// goes for CSV (schema inference) and for hive directories with many files.
+    /// `left_out` is what the read passed over, by format and count, for the caller to
+    /// say in a note. Only a folder of more than one format fills it: the read takes
+    /// the commonest format and this is what the rest were. Written here rather than
+    /// worked out by the caller because this is the pass that decides, and a second
+    /// opinion formed from a second directory read is a second answer waiting to
+    /// disagree.
     fn build_lazyframe_from_paths_with(
         cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
         options: &OpenOptions,
+        left_out: &mut Vec<(FileFormat, usize)>,
     ) -> Result<LazyFrame> {
         let path = &paths[0];
         match source::input_source(path) {
@@ -10487,7 +10534,9 @@ impl App {
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
-                            return Self::build_lazyframe_from_paths_with(cloud, &files, &nested);
+                            return Self::build_lazyframe_from_paths_with(
+                                cloud, &files, &nested, left_out,
+                            );
                         }
                         crate::discover::FolderFormat::Mixed {
                             format: found,
@@ -10501,10 +10550,15 @@ impl App {
                             let nested = OpenOptions {
                                 hive: false,
                                 format: Some(options.format.unwrap_or(found)),
-                                left_out: passed_over,
                                 ..options.clone()
                             };
-                            return Self::build_lazyframe_from_paths_with(cloud, &files, &nested);
+                            let lf = Self::build_lazyframe_from_paths_with(
+                                cloud, &files, &nested, left_out,
+                            )?;
+                            // After the call, which reads a flat folder of one format
+                            // and leaves nothing out of its own.
+                            *left_out = passed_over;
+                            return Ok(lf);
                         }
                     }
                 }
@@ -18025,6 +18079,11 @@ impl Widget for &mut App {
             }
         });
         controls = controls.with_status_message(status_msg);
+        controls = controls.with_not_the_table(
+            self.data_table_state
+                .as_ref()
+                .and_then(|s| s.not_the_table()),
+        );
         controls = controls.with_notes_pending(
             self.app_config.display.notes_accent
                 && self

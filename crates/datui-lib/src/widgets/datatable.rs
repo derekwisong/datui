@@ -176,6 +176,18 @@ pub struct DataTableState {
     /// screen are leaving out. Recomputed whenever either changes, so clearing them
     /// takes the note away with them.
     view_notes: Vec<crate::notes::Note>,
+    /// Notes about the read itself rather than about what it found: which files this
+    /// open passed over, and whether it is reading a lake table's plain files.
+    ///
+    /// Their own list because they are settled before a footer is read, and
+    /// [`Self::notes`] is written from the footers when those land — so a note put
+    /// there at open time would be overwritten by the dataset's own. They also outlive
+    /// a reshape, which the footer notes do not: a query changes what is on screen, not
+    /// which files were read to get it.
+    open_notes: Vec<crate::notes::Note>,
+    /// The lake format whose plain files this dataset is, if it is one. See
+    /// [`crate::OpenOptions::read_as_plain_files_of`].
+    not_the_table: Option<&'static str>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -612,6 +624,8 @@ impl DataTableState {
             drift_files: Vec::new(),
             footers_pending: None,
             notes: Vec::new(),
+            open_notes: Vec::new(),
+            not_the_table: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -723,6 +737,8 @@ impl DataTableState {
             drift_files: Vec::new(),
             footers_pending: None,
             notes: Vec::new(),
+            open_notes: Vec::new(),
+            not_the_table: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -4663,11 +4679,35 @@ impl DataTableState {
     /// What datui noticed: about the dataset when it opened, then about the view the
     /// filter and sort have made of it. Empty when there is nothing to say.
     pub fn notes(&self) -> Vec<crate::notes::Note> {
-        self.notes
+        // What the read did first, because it is the frame everything below is about:
+        // a folder read as CSV with a JSON file left out, or a lake table read as its
+        // plain files, changes what every other note is a note about.
+        self.open_notes
             .iter()
+            .chain(self.notes.iter())
             .chain(self.view_notes.iter())
             .cloned()
             .collect()
+    }
+
+    /// What the open itself has to say, settled before any footer was read.
+    ///
+    /// See [`Self::open_notes`]. Set once, by the route that built the state.
+    pub fn set_open_notes(&mut self, notes: Vec<crate::notes::Note>) {
+        self.open_notes = notes;
+    }
+
+    /// The lake format whose plain files this dataset is, if it is one.
+    ///
+    /// For the chip in the control bar. The note says the same at length; this is what
+    /// keeps the row count from reading as the table's.
+    pub fn not_the_table(&self) -> Option<&'static str> {
+        self.not_the_table
+    }
+
+    /// See [`Self::not_the_table`].
+    pub fn set_not_the_table(&mut self, format: Option<&'static str>) {
+        self.not_the_table = format;
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
@@ -4677,7 +4717,11 @@ impl DataTableState {
         // draws a note of its own when the dataset opens. So the view half can never
         // be the only half, and the Notes tab does not appear and disappear as the
         // user sorts.
-        !self.notes.is_empty()
+        //
+        // The open's own notes count: a folder read as one format with another left
+        // out may have nothing else worth saying, and that is exactly the dataset whose
+        // reader the user most wants to know about.
+        !self.notes.is_empty() || !self.open_notes.is_empty()
     }
 
     /// Whether there is something to say that has not been offered yet.

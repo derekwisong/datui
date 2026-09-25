@@ -7583,14 +7583,17 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
     );
 }
 
-/// A lake table is not a folder of Parquet files, however much it looks like one.
+/// The door into a lake table reads its files, and says they are not the table.
 ///
-/// Reading one as a union counts tombstoned rows, every rewritten version and both
-/// sides of a compaction. `enrich` will not so much as count a lake table for that
-/// reason, and the row above says datui does not read them yet — so the door into the
-/// folder must not quietly do it. #237, reached through the door phase 3 opens.
+/// A lake table is not a folder of Parquet files however much it looks like one:
+/// reading one as a union counts tombstoned rows, every rewritten version and both
+/// sides of a compaction. Refusing it, though, left a folder the user could see and
+/// could not read at all — and this row is the promise that no label locks you out.
+/// So the read is labelled instead of refused: a note in the panel, a chip beside the
+/// row count, and the row one level up still goes inside and says datui does not read
+/// the table itself yet. All three, because each on its own is missable.
 #[test]
-fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
+fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let events = tmp.path().join("events");
     std::fs::create_dir_all(events.join("_delta_log")).unwrap();
@@ -7626,16 +7629,46 @@ fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
         "the listing under it is a Delta table"
     );
 
-    let next = app.event(&key(KeyCode::Enter));
-    assert!(
-        next.is_none(),
-        "the door must not open a lake table as plain Parquet"
+    // It opens, and the open carries what it is.
+    let options = match app.event(&key(KeyCode::Enter)) {
+        Some(AppEvent::Open(_, options)) => options,
+        _ => panic!("the door opens the folder it names, whatever the label says"),
+    };
+    assert_eq!(
+        options.read_as_plain_files_of,
+        Some("Delta"),
+        "and the open says these are a Delta table's files, not the table"
     );
-    let said = app.home.status.clone().unwrap_or_default();
-    assert!(said.contains("Delta"), "and must say why: {said:?}");
+
+    // The note and the chip, from that one field. Both, because the note is a tab away
+    // and the chip is in the corner: each on its own is missable.
+    let notes = datui::notes::from_the_open(&[], options.read_as_plain_files_of);
+    assert_eq!(notes.len(), 1, "one note, about the read");
     assert!(
-        !said.contains("files under it"),
-        "that is what going inside says, and this row is already inside: {said:?}"
+        notes[0].summary.contains("Delta") && notes[0].summary.contains("deleted rows"),
+        "it names the format and what the count includes: {:?}",
+        notes[0].summary
+    );
+
+    // And the row one level up still goes inside rather than reading it.
+    let (tx, _rx) = mpsc::channel();
+    let mut up = App::new(tx, common::test_runtime());
+    up.enter_home();
+    up.home.browsing = Some(tmp.path().to_path_buf());
+    up.home.rebuild(&[], &[]);
+    let row = up
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
+        .expect("the folder is listed");
+    up.home.selected = row;
+    assert!(up.event(&key(KeyCode::Enter)).is_none());
+    assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
+    let said = up.home.status.clone().unwrap_or_default();
+    assert!(
+        said.contains("Delta") && said.contains("files under it"),
+        "the row above is where datui says it does not read the table: {said:?}"
     );
 }
 
@@ -8131,5 +8164,54 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
             Some(AppEvent::Open(..))
         ),
         "--hive still means read this as one, whatever the folder looks like"
+    );
+}
+
+/// A folder of several formats is read as the commonest, and says what it left out.
+///
+/// Refusing the whole of a thousand CSVs over one stray JSON was datui deciding that a
+/// folder it could read was not worth reading. It reads it now — and a read that
+/// silently drops a file is the other half of the same mistake, so the dataset says
+/// which formats were passed over and how many of each.
+#[test]
+fn test_a_mixed_folder_reads_as_the_commonest_format_and_says_what_it_left_out() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path();
+    for name in ["a.csv", "b.csv", "c.csv"] {
+        std::fs::write(dir.join(name), b"x,y\n1,2\n").unwrap();
+    }
+    std::fs::write(dir.join("notes.json"), b"{\"x\": 1}").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the folder opens rather than being refused over the stray");
+    assert_eq!(state.num_rows, 3, "one row from each CSV");
+
+    let notes = state.notes();
+    let said = notes
+        .iter()
+        .find(|n| n.summary.contains("more than one format"))
+        .unwrap_or_else(|| panic!("the read says what it left out, got {notes:?}"));
+    assert!(
+        said.summary.contains("1 json"),
+        "by format and count: {:?}",
+        said.summary
+    );
+    assert!(
+        state.has_notes(),
+        "and the Info key offers it, which is the only way anyone finds out"
     );
 }

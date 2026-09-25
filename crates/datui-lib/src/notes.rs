@@ -485,6 +485,45 @@ fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
     })
 }
 
+/// What the open itself has to say, before a footer has been read.
+///
+/// Two facts, both decided by the route that opened the folder rather than by anything
+/// in the data: which of the folder's data files this read passed over, and whether the
+/// folder is a lake table being read as its plain files. Neither is a defect in the
+/// data — they are what datui chose to do, and #275's rule is that datui never refuses
+/// a read the user asked for and always says what it did instead.
+pub fn from_the_open(left_out: &[(crate::FileFormat, usize)], lake: Option<&str>) -> Vec<Note> {
+    let mut notes = Vec::new();
+    if let Some(format) = lake {
+        notes.push(Note {
+            // The strongest sentence the panel has, because it is the one place a
+            // number on screen is not a number about the table. A delete leaves its
+            // rows on disk, an update leaves the version it replaced, and compaction
+            // leaves both sides — all of them counted here.
+            summary: format!(
+                "these are the files under a {format} table, not the table:                  deleted rows and old versions are counted"
+            ),
+            scope: format!("in this {format} table's folder"),
+            read_as_text: None,
+        });
+    }
+    if !left_out.is_empty() {
+        let said: Vec<String> = left_out
+            .iter()
+            .map(|(format, n)| format!("{n} {}", format.name()))
+            .collect();
+        notes.push(Note {
+            summary: format!(
+                "the folder holds more than one format and was read as the commonest;                  {} not read",
+                said.join(", ")
+            ),
+            scope: "in this folder's listing".to_string(),
+            read_as_text: None,
+        });
+    }
+    notes
+}
+
 /// A column that some files were written without. The one note that states a ratio,
 /// because "some" is only meaningful against a total.
 fn absence_note(

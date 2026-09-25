@@ -273,6 +273,49 @@ impl SkippedFiles {
     }
 }
 
+/// The few reader settings that change what a sample of a file's columns comes back as.
+///
+/// The sample exists to say what the *open* will do, so it reads each file the way the
+/// open will. Guessing instead, and then standing down wherever the guess might be
+/// wrong, does not work: `OpenOptions::from_args_and_config` fills in
+/// `infer_schema_length` and `parse_strings` on every run with no flags at all, so a
+/// predicate over "did the user set anything" is true every time and the sample never
+/// runs. That shipped once — the notes about how a folder was stacked never appeared
+/// outside the tests, which built `OpenOptions::default()` and saw `None` in both.
+///
+/// [`Default`] is what Polars' own readers do, which is what the home screen's opens
+/// pass.
+#[derive(Debug, Clone)]
+pub struct ReadAs {
+    pub has_header: Option<bool>,
+    pub skip_rows: Option<usize>,
+    pub skip_lines: Option<usize>,
+    pub infer_schema_length: Option<usize>,
+    pub ignore_errors: bool,
+    pub try_parse_dates: bool,
+}
+
+impl Default for ReadAs {
+    /// What a folder opened from the home screen is read with: `OpenOptions::default()`
+    /// plus `hive`, whose `csv_try_parse_dates()` is true because `parse_strings` is
+    /// unset there.
+    ///
+    /// Written out rather than derived. A derived `Default` gives `try_parse_dates:
+    /// false`, which is not what any caller wants and differs from what the read does —
+    /// two defaults for one thing, and the wrong one reachable by anybody typing
+    /// `ReadAs::default()`.
+    fn default() -> Self {
+        Self {
+            has_header: None,
+            skip_rows: None,
+            skip_lines: None,
+            infer_schema_length: None,
+            ignore_errors: false,
+            try_parse_dates: true,
+        }
+    }
+}
+
 /// The column names one data file holds, read as cheaply as its format allows.
 ///
 /// The evidence [`is_nested`] wants, for the formats that have no footer. Parquet's
@@ -292,20 +335,31 @@ impl SkippedFiles {
 pub fn column_schema_of(
     path: &std::path::Path,
     format: crate::FileFormat,
+    as_read: &ReadAs,
 ) -> Option<Vec<(String, DataType)>> {
     use polars::prelude::{LazyCsvReader, LazyFileListReader, LazyJsonLineReader};
     let pl_path = PlRefPath::try_from_path(path).ok()?;
     let lf = match format {
         crate::FileFormat::Csv | crate::FileFormat::Tsv | crate::FileFormat::Psv => {
-            // The reader's own default, not the bare one. `from_csv_paths` parses dates
-            // unless the user turned it off, and a sample that did not would see two
-            // files' `when` column as String and String where the read sees Date and
-            // String and widens — a difference the table shows and the sample could
-            // not.
-            LazyCsvReader::new(pl_path)
-                .with_try_parse_dates(true)
-                .finish()
-                .ok()?
+            // Read the way the open will read it. Where the header is and how far the
+            // reader looks before settling a type both change what comes back, and a
+            // sample that used its own answers would describe a file nobody opened.
+            let mut reader = LazyCsvReader::new(pl_path)
+                .with_try_parse_dates(as_read.try_parse_dates)
+                .with_ignore_errors(as_read.ignore_errors);
+            if let Some(has_header) = as_read.has_header {
+                reader = reader.with_has_header(has_header);
+            }
+            if let Some(skip) = as_read.skip_rows {
+                reader = reader.with_skip_rows(skip);
+            }
+            if let Some(skip) = as_read.skip_lines {
+                reader = reader.with_skip_lines(skip);
+            }
+            if let Some(n) = as_read.infer_schema_length {
+                reader = reader.with_infer_schema_length(Some(n));
+            }
+            reader.finish().ok()?
         }
         crate::FileFormat::Jsonl => LazyJsonLineReader::new(pl_path).finish().ok()?,
         _ => return None,
@@ -443,7 +497,11 @@ impl Disagreement {
 /// start with several files of the same table. Three reads whatever the folder's size:
 /// this runs in a listing pass and on the way into an open, and a folder of forty
 /// thousand files must cost the same as a folder of four.
-pub fn sample_files(files: &[std::path::PathBuf], format: crate::FileFormat) -> Sampled {
+pub fn sample_files(
+    files: &[std::path::PathBuf],
+    format: crate::FileFormat,
+    as_read: &ReadAs,
+) -> Sampled {
     // Enough files to see a disagreement, and a bound on the reads it takes to find
     // them. A folder written daily has empty days in it — a Saturday's file of nothing
     // — and those carry no columns, so a spread that lands on two of them learns
@@ -483,7 +541,7 @@ pub fn sample_files(files: &[std::path::PathBuf], format: crate::FileFormat) -> 
             tried += 1;
             // A file with nothing in it has no columns to disagree about, and is not
             // evidence about the folder either way. Its neighbour is asked instead.
-            if let Some(schema) = column_schema_of(file, format)
+            if let Some(schema) = column_schema_of(file, format, as_read)
                 && !is_an_empty_file(&schema)
             {
                 read.push(schema);

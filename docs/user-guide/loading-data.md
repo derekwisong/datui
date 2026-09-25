@@ -24,6 +24,18 @@ Before 0.4.0 a folder was `Unsupported file type` unless `--hive` was passed.
 `--hive` still means what it always did: read this as partitioned, which is the
 answer for a glob and for a layout that does not say so itself.
 
+Finding out which of those a folder is means reading footers, or the front of a
+spread of its files, so a folder of large Parquet takes a moment. datui draws the
+screen first and names the folder it is looking at, and
+<kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> work throughout.
+
+Working out which of those a folder is means reading the front of a few of its
+files, and datui reads them the way it is about to read the whole folder —
+`--no-header`, `--skip-rows`, `--skip-lines`, `--infer-schema-length` and the rest
+all apply. So `datui --no-header exports/` judges the folder as headerless, finds
+its files stack, and opens it; without the flag the same folder is judged with a
+header, its files do not agree, and the home screen opens on it instead.
+
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
 [configuration file](configuration.md#file-loading).

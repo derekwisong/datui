@@ -962,13 +962,22 @@ pub struct Listing {
 /// measuring is what [`crate::discover::enrich`] has always done, and it does nothing
 /// for a row that turns out to be a plain directory.
 pub fn look_into(entry: &Entry) -> Entry {
+    look_into_as(entry, &crate::schema_union::ReadAs::default())
+}
+
+/// As [`look_into`], reading each file the way the open that follows will read it.
+///
+/// For the command line, which has the user's own reader settings in hand before it
+/// looks. The listing passes have none and take the defaults, which is what an open
+/// from the home screen is made with.
+pub fn look_into_as(entry: &Entry, as_read: &crate::schema_union::ReadAs) -> Entry {
     let mut probe = entry.clone();
     if probe.kind == EntryKind::Unknown && probe.path.is_dir() {
         let (kind, holds) = discover::look_at_directory(&probe.path);
         probe.kind = kind;
         probe.holds = holds;
     }
-    discover::enrich(&mut probe);
+    discover::enrich_as(&mut probe, as_read);
     probe.size = probe.size.or(entry.size);
     probe.modified = probe.modified.or(entry.modified);
     probe

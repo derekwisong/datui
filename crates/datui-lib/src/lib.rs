@@ -3458,8 +3458,13 @@ pub mod tests {
         );
     }
 
-    /// The buffer collect is the only spawn that takes no lease, and adding a second
-    /// exemption has to be a deliberate act rather than an oversight.
+    /// Skipping the lease is a deliberate act rather than an oversight.
+    ///
+    /// Two spawns do. The buffer collect, whose answer is simply asked for again if a
+    /// bump throws it away. And the look at a folder named on the command line, whose
+    /// answer is *meant* to be thrown away when the user moves on — leased, it made a
+    /// seventeen-second look hold the next dataset's buffer collect behind it, after
+    /// Ctrl+O had been offered as the way out.
     ///
     /// `spawn_bg` leases by construction, so a new kind of gated background work is
     /// accounted for without anyone remembering to account for it. The two ways around
@@ -3471,10 +3476,10 @@ pub mod tests {
     /// itself. That is a different shape, and the three that exist do not carry a
     /// generation at all.
     #[test]
-    fn the_collect_is_the_only_unleased_spawn() {
+    fn an_unleased_spawn_is_a_deliberate_act() {
         // Split so this test's own needles are not among the things it finds.
         let needles = [
-            (concat!("spawn_bg_", "replaceable("), 1usize),
+            (concat!("spawn_bg_", "replaceable("), 2usize),
             (concat!("spawn_bg_", "inner("), 2usize),
         ];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -3499,10 +3504,11 @@ pub mod tests {
             let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
             assert_eq!(
                 found, expected,
-                "`{needle}` appears {found} times, not {expected}. The buffer collect is \
-                 the one spawn whose answer is asked for again if a bump throws it away; \
-                 anything else that skips the lease can be stranded by a bump, silently. \
-                 See GenerationLease."
+                "`{needle}` appears {found} times, not {expected}. Two spawns skip the \
+                 lease on purpose: the buffer collect, whose answer is asked for again \
+                 if a bump throws it away, and the look at a folder named on the \
+                 command line, whose answer is meant to be thrown away. Anything else \
+                 that skips it can be stranded by a bump, silently. See GenerationLease."
             );
         }
     }
@@ -5171,6 +5177,21 @@ pub enum AppEvent {
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
     BackgroundWorkFinished,
+    /// A folder named on the command line: look at it on a worker, then do with it
+    /// whatever `Enter` on its row would do.
+    ///
+    /// The look reads footers, or the front of a spread of files, which for a folder of
+    /// large Parquet is seconds. It is an event rather than a call so the first frame
+    /// is drawn before it starts, and the wait has the folder's name on it, a spinner
+    /// and a way out.
+    LookThenOpenFolder(PathBuf, OpenOptions),
+    /// What the look found, back from the worker.
+    FolderLookedAt {
+        generation: u64,
+        path: PathBuf,
+        kind: discover::EntryKind,
+        options: Box<OpenOptions>,
+    },
     /// Look at a path off the interface thread, then do with it whatever it turns out to
     /// need — browse into it, say it is a lake table, or open it.
     ///
@@ -6194,6 +6215,19 @@ pub struct App {
     classify_inflight: Option<ClassifyRequest>,
     /// Ids for those, so a superseded answer can be told from the one being waited on.
     classify_requests: u64,
+    /// The folder a `LookThenOpenFolder` is being looked at, if any.
+    ///
+    /// The look takes seconds on a folder of large Parquet, and Ctrl+O works throughout
+    /// — that is the point of it being off the startup thread — so the user can be
+    /// somewhere else by the time it answers. `abandon_load` puts it down with
+    /// everything else that belonged to the screen being left, and an answer that finds
+    /// nothing outstanding touches nothing. Without it the look landed seventeen
+    /// seconds later and took the user off the home screen they had chosen.
+    ///
+    /// Its own field rather than `task_generation`, which `abandon_load` deliberately
+    /// does not bump: a load abandoned is not a newer load, and bumping it there would
+    /// discard answers that other waiting work still wants.
+    looking_at_folder: Option<PathBuf>,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -6875,6 +6909,17 @@ impl App {
     /// take down its own line without clearing one that belongs to something else.
     const LOOKING: &'static str = "Looking...";
 
+    /// The wait while a folder named on the command line is looked at: which files it
+    /// holds, and whether they are one table. Seconds, for a folder of large Parquet.
+    pub const LOOKING_AT_A_FOLDER: &'static str = "Looking at the folder";
+
+    /// Put the path on the loading screen, so a wait says what it is waiting for.
+    fn name_what_is_loading(&mut self, path: PathBuf) {
+        if let LoadingState::Loading { file_path, .. } = &mut self.loading_state {
+            *file_path = Some(path);
+        }
+    }
+
     /// Work already running that the re-read after a join would cancel.
     ///
     /// The re-read goes through the ordinary collect, which bumps `task_generation`, so
@@ -7479,6 +7524,7 @@ impl App {
             home_generation: 0,
             classify_inflight: None,
             classify_requests: 0,
+            looking_at_folder: None,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -8167,6 +8213,15 @@ impl App {
             self.busy = false;
             self.home.status = None;
         }
+        // And the look at a folder named on the command line, for the same reason: it
+        // takes seconds, Ctrl+O works throughout, and its answer must not take the user
+        // off the screen they went to instead.
+        if self.looking_at_folder.take().is_some() {
+            self.busy = false;
+            if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
+                self.status_message = None;
+            }
+        }
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
@@ -8800,7 +8855,7 @@ impl App {
     pub fn open_the_path_named_on_the_command_line(
         &mut self,
         paths: Vec<PathBuf>,
-        mut options: OpenOptions,
+        options: OpenOptions,
     ) -> Option<AppEvent> {
         // Several paths are a list of files to read together, and `--hive` is an answer
         // already given. Neither is a question about what one folder is.
@@ -8809,10 +8864,31 @@ impl App {
             return Some(AppEvent::Open(paths, options));
         };
 
-        let mut entry = discover::Entry::directory(&dir);
-        entry.kind = discover::EntryKind::Unknown;
-        let kind = home::look_into(&entry).kind;
+        // Looking at a folder reads its footers, or the front of a spread of its files.
+        // For a folder of large Parquet that is seconds — 4.6 of them on a real one —
+        // and this runs before the first frame is drawn, so doing it here is a blank
+        // terminal for the whole of it: no name, no spinner, no way out. It goes to a
+        // worker, and the answer comes back as an event like every other read.
+        Some(AppEvent::LookThenOpenFolder(dir, options))
+    }
 
+    /// Act on what the look at a folder named on the command line found.
+    ///
+    /// The other half of [`Self::open_the_path_named_on_the_command_line`], which is
+    /// where the reasoning for the rule itself is.
+    fn open_the_folder_looked_at(
+        &mut self,
+        dir: PathBuf,
+        kind: discover::EntryKind,
+        mut options: OpenOptions,
+    ) -> Option<AppEvent> {
+        // No override for the user's reader settings here, and none needed: the look
+        // read every file the way this open will, so `--no-header` and the skips have
+        // already been accounted for by the rule rather than around it. Overriding
+        // instead took three goes to get wrong in three different ways — it fired on
+        // config values, it fired on folders with nothing readable in them, and it
+        // fired on Parquet, which no CSV setting can affect.
+        //
         // A lake table's files are not its rows, so the home screen is opened on it and
         // says why — the same sentence the row gives, because it is the same refusal.
         if let Some(note) = Self::lake_table_note(kind) {
@@ -8828,7 +8904,10 @@ impl App {
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
         ) {
             options.hive = true;
-            return Some(AppEvent::Open(paths, options));
+            self.set_loading_phase("Scanning input", 10);
+            self.name_what_is_loading(dir.clone());
+            self.busy = true;
+            return Some(AppEvent::Open(vec![dir], options));
         }
         // A place to look inside. `datui .` is this, and so is a folder of separate
         // tables — where the `(all files)` row inside is the one keystroke that unions
@@ -10586,33 +10665,33 @@ impl App {
         if format == FileFormat::Parquet {
             return Default::default();
         }
-        if Self::parsing_is_the_user_s_answer(options) {
+        // Null values are the one setting the sample cannot mirror: `--null-value`
+        // takes `COL=VAL` forms the reader resolves against the file it is opening, and
+        // a sample that guessed would report a widening the table never did. They are
+        // unset unless the user names them, so this stands down where it must and runs
+        // everywhere else.
+        if options.null_values.is_some() {
             return Default::default();
         }
-        crate::schema_union::sample_files(files, format).disagreement()
+        crate::schema_union::sample_files(files, format, &Self::read_as(options)).disagreement()
     }
 
-    /// Whether the user has told datui how to read these files, in a way that moves
-    /// where the columns are or changes what type they come out as.
+    /// The reader settings a sample has to copy to describe what the open will do.
     ///
-    /// The sample reads each file with the reader's own defaults and nothing else, so
-    /// where any of these is set it is reading a different file than the open will, and
-    /// anything decided from it is about a read that never happened. With
-    /// `--null-value N/A` the read keeps `amount` an Int64 while the sample sees an
-    /// Int64 beside a String and would report a widening the table never did; with
-    /// `--no-header` the read names every file's columns `column_1..N` and they stack
-    /// perfectly, while the sample takes each file's first row of data for names and
-    /// finds them all different.
-    fn parsing_is_the_user_s_answer(options: &OpenOptions) -> bool {
-        options.has_header.is_some()
-            || options.skip_rows.is_some()
-            || options.skip_lines.is_some()
-            || options.skip_tail_rows.is_some()
-            || options.infer_schema_length.is_some()
-            || options.ignore_errors
-            || options.parse_strings.is_some()
-            || !options.parse_dates
-            || options.null_values.is_some()
+    /// Taken from the options the open is actually being made with, not guessed at and
+    /// then bailed out of: `from_args_and_config` fills in `infer_schema_length` and
+    /// `parse_strings` on every run with no flags at all, so a predicate over "did the
+    /// user set anything" is true every time. That shipped once, and the notes about
+    /// how a folder had been stacked never appeared outside the tests.
+    fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
+        crate::schema_union::ReadAs {
+            has_header: options.has_header,
+            skip_rows: options.skip_rows,
+            skip_lines: options.skip_lines,
+            infer_schema_length: options.infer_schema_length,
+            ignore_errors: options.ignore_errors,
+            try_parse_dates: options.csv_try_parse_dates(),
+        }
     }
 
     /// `found` is what the read has to say about itself, for the caller to put in the
@@ -16971,6 +17050,95 @@ impl App {
                 }
                 None
             }
+            AppEvent::LookThenOpenFolder(dir, options) => {
+                // The name on the wait, so the first frame says which folder is being
+                // looked at rather than sitting blank. `spawn_bg` puts the throbber up
+                // and the keys that survive it — Ctrl+C, Ctrl+O — keep working, which
+                // is the whole of what doing this on the event thread cost.
+                let looking = dir.clone();
+                let options = options.clone();
+                self.set_loading_phase(Self::LOOKING_AT_A_FOLDER, 5);
+                self.name_what_is_loading(looking.clone());
+                self.looking_at_folder = Some(looking.clone());
+                // The same words the loading screen shows, so the control bar and the
+                // screen above it do not name the wait two different ways.
+                // Unleased. A lease exists to make a bump wait for an answer that
+                // would otherwise be stranded — and this answer is *meant* to be
+                // thrown away when the user moves on, which is the whole of the guard
+                // below. Leased, it made everything else wait instead: Ctrl+O out of a
+                // seventeen-second look and open a small CSV, and its buffer collect
+                // parks in `collect_owed` until the abandoned look finally returns.
+                // Advertising Ctrl+O as the way out of the wait and then holding the
+                // next dataset behind it is the wait again, wearing a different hat.
+                self.spawn_bg_replaceable(Self::LOOKING_AT_A_FOLDER, move |task_gen, tx| {
+                    // A panic here used to unwind through `run()` and report a crash,
+                    // because the look was made on the way to the first frame. On a
+                    // worker it is swallowed with the dropped handle instead, and
+                    // nothing would ever be sent: the spinner would stay up and the
+                    // folder unopened for as long as the user waited. Caught, so the
+                    // answer is "a directory" and the home screen opens on it.
+                    // Read the way this open will read them, so the rule judges the
+                    // folder the user is about to see rather than one nobody will open.
+                    let as_read = Self::read_as(&options);
+                    let looked = std::panic::catch_unwind(|| {
+                        let mut entry = discover::Entry::directory(&looking);
+                        entry.kind = discover::EntryKind::Unknown;
+                        home::look_into_as(&entry, &as_read)
+                    });
+                    let kind = match looked {
+                        Ok(entry) => entry.kind,
+                        Err(_) => discover::EntryKind::Directory,
+                    };
+                    let _ = tx.send(AppEvent::FolderLookedAt {
+                        generation: task_gen,
+                        path: looking,
+                        kind,
+                        options: Box::new(options),
+                    });
+                });
+                None
+            }
+            AppEvent::FolderLookedAt {
+                generation,
+                path,
+                kind,
+                options,
+            } => {
+                // The user pressed Ctrl+O and went to the home screen, or opened
+                // something else, while this was reading. Their choice is the one on
+                // screen, and this is the answer to a question nobody is waiting for.
+                //
+                // Both tests: the folder, because a newer look replaces an older one,
+                // and the generation, because other work bumps that when it takes the
+                // screen over.
+                // Not ours: a newer look is out and this is an older answer, so the
+                // tracking belongs to that one and is left alone. Taking it here would
+                // strand the newer answer as unowned, and the app would sit on a
+                // loading screen with nothing left to clear it.
+                if self.looking_at_folder.as_deref() != Some(path.as_path()) {
+                    return None;
+                }
+                // Ours, so it is put down whatever happens next — including the
+                // generation test below. Left set, the next `abandon_load` from
+                // anywhere would find it and clear `busy` for work it does not own.
+                self.looking_at_folder = None;
+                if *generation != self.task_generation {
+                    return None;
+                }
+                let outcome =
+                    self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone());
+                // Only when nothing follows. An `Open` keeps the wait up — it sets its
+                // own phase and `busy` — and clearing them here would draw one frame
+                // with the spinner stopped and the keys held during the look replayed
+                // into an app that has no dataset yet, ahead of the load.
+                if outcome.is_none() {
+                    self.busy = false;
+                    if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
+                        self.status_message = None;
+                    }
+                }
+                outcome
+            }
             AppEvent::ClassifyThenOpen { path, jump } => {
                 // A second Enter replaces the first rather than being refused. Every key
                 // acts on the home screen even while `busy`, so a second one is
@@ -18905,10 +19073,23 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         }
         RunInput::Paths(paths, opts) => {
             // A folder named here is read the way `Enter` reads its row, which may be
-            // by opening the home screen on it rather than by loading anything.
+            // by opening the home screen on it rather than by loading anything. The
+            // looking is an event, not a call: it is sent here and carried out after
+            // the first frame, so a folder that takes seconds to look at says which
+            // folder it is looking at while it does.
             match app.open_the_path_named_on_the_command_line(paths, opts) {
                 Some(event) => {
-                    app.set_loading_phase("Scanning input", 10);
+                    // The first frame is drawn before any event is handled, so what it
+                    // says has to be set here — the handler's own phase lands a frame
+                    // later, and "Scanning input" on a folder nothing has read yet is
+                    // the wrong word for the wait the user is actually in.
+                    match &event {
+                        AppEvent::LookThenOpenFolder(dir, _) => {
+                            app.set_loading_phase(App::LOOKING_AT_A_FOLDER, 5);
+                            app.name_what_is_loading(dir.clone());
+                        }
+                        _ => app.set_loading_phase("Scanning input", 10),
+                    }
                     tx.send(event)?;
                 }
                 None => starting_at_home = true,

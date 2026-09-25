@@ -2422,6 +2422,33 @@ impl DataTableState {
             .with_null_values(null_values.cloned())
     }
 
+    /// [`Self::configure_csv_reader`] for the in-memory readers, which take options
+    /// rather than a builder.
+    fn eager_csv_read_options(
+        options: &OpenOptions,
+        null_values: Option<&NullValues>,
+    ) -> CsvReadOptions {
+        let mut read_options = CsvReadOptions::default();
+        if let Some(skip_lines) = options.skip_lines {
+            read_options.skip_lines = skip_lines;
+        }
+        if let Some(skip_rows) = options.skip_rows {
+            read_options.skip_rows = skip_rows;
+        }
+        if let Some(has_header) = options.has_header {
+            read_options.has_header = has_header;
+        }
+        if let Some(n) = options.infer_schema_length {
+            read_options.infer_schema_length = Some(n);
+        }
+        read_options.ignore_errors = options.ignore_errors;
+        read_options.map_parse_options(|opts| {
+            opts.with_separator(options.separator_or(b','))
+                .with_try_parse_dates(options.csv_try_parse_dates())
+                .with_null_values(null_values.cloned())
+        })
+    }
+
     /// The columns a CSV reader will produce, from one row, for building null_values
     /// when both global and per-column are set.
     pub(crate) fn csv_schema_for_null_values(
@@ -2848,7 +2875,6 @@ impl DataTableState {
             delimiter: Some(options.separator_or(delimiter)),
             ..options.clone()
         };
-        let nv = Self::build_null_values_for_csv(options, Some(path))?;
 
         // Determine compression format: explicit option, or auto-detect from extension
         let compression = options
@@ -2860,29 +2886,8 @@ impl DataTableState {
                 // Eager read: decompress into memory, then CSV read
                 match compression {
                     CompressionFormat::Gzip | CompressionFormat::Zstd => {
-                        let mut read_options = CsvReadOptions::default();
-                        if let Some(skip_lines) = options.skip_lines {
-                            read_options.skip_lines = skip_lines;
-                        }
-                        if let Some(skip_rows) = options.skip_rows {
-                            read_options.skip_rows = skip_rows;
-                        }
-                        if let Some(has_header) = options.has_header {
-                            read_options.has_header = has_header;
-                        }
-                        if let Some(n) = options.infer_schema_length {
-                            read_options.infer_schema_length = Some(n);
-                        }
-                        read_options.ignore_errors = options.ignore_errors;
-                        read_options = read_options.map_parse_options(|opts| {
-                            let o = opts
-                                .with_separator(options.separator_or(b','))
-                                .with_try_parse_dates(options.csv_try_parse_dates());
-                            match &nv {
-                                Some(n) => o.with_null_values(Some(n.clone())),
-                                None => o,
-                            }
-                        });
+                        let nv = Self::build_null_values_for_csv(options, Some(path))?;
+                        let read_options = Self::eager_csv_read_options(options, nv.as_ref());
                         let df = read_options
                             .try_into_reader_with_file_path(Some(path.into()))?
                             .finish()?;
@@ -2906,29 +2911,17 @@ impl DataTableState {
                         let mut decoder = bzip2::read::BzDecoder::new(BufReader::new(file));
                         let mut decompressed = Vec::new();
                         decoder.read_to_end(&mut decompressed)?;
-                        let mut read_options = CsvReadOptions::default();
-                        if let Some(skip_lines) = options.skip_lines {
-                            read_options.skip_lines = skip_lines;
-                        }
-                        if let Some(skip_rows) = options.skip_rows {
-                            read_options.skip_rows = skip_rows;
-                        }
-                        if let Some(has_header) = options.has_header {
-                            read_options.has_header = has_header;
-                        }
-                        if let Some(n) = options.infer_schema_length {
-                            read_options.infer_schema_length = Some(n);
-                        }
-                        read_options.ignore_errors = options.ignore_errors;
-                        read_options = read_options.map_parse_options(|opts| {
-                            let o = opts
-                                .with_separator(options.separator_or(b','))
-                                .with_try_parse_dates(options.csv_try_parse_dates());
-                            match &nv {
-                                Some(n) => o.with_null_values(Some(n.clone())),
-                                None => o,
-                            }
-                        });
+                        // Column names for per-column null values come from the bytes: the file on
+                        // disk is still compressed.
+                        let nv = Self::build_null_values_with(options, || {
+                            let one_row =
+                                Self::eager_csv_read_options(options, None).with_n_rows(Some(1));
+                            let df = CsvReader::new(std::io::Cursor::new(decompressed.as_slice()))
+                                .with_options(one_row)
+                                .finish()?;
+                            Ok(df.schema().clone())
+                        })?;
+                        let read_options = Self::eager_csv_read_options(options, nv.as_ref());
                         let df = CsvReader::new(std::io::Cursor::new(decompressed))
                             .with_options(read_options)
                             .finish()?;
@@ -2952,29 +2945,17 @@ impl DataTableState {
                         let mut decoder = xz2::read::XzDecoder::new(BufReader::new(file));
                         let mut decompressed = Vec::new();
                         decoder.read_to_end(&mut decompressed)?;
-                        let mut read_options = CsvReadOptions::default();
-                        if let Some(skip_lines) = options.skip_lines {
-                            read_options.skip_lines = skip_lines;
-                        }
-                        if let Some(skip_rows) = options.skip_rows {
-                            read_options.skip_rows = skip_rows;
-                        }
-                        if let Some(has_header) = options.has_header {
-                            read_options.has_header = has_header;
-                        }
-                        if let Some(n) = options.infer_schema_length {
-                            read_options.infer_schema_length = Some(n);
-                        }
-                        read_options.ignore_errors = options.ignore_errors;
-                        read_options = read_options.map_parse_options(|opts| {
-                            let o = opts
-                                .with_separator(options.separator_or(b','))
-                                .with_try_parse_dates(options.csv_try_parse_dates());
-                            match &nv {
-                                Some(n) => o.with_null_values(Some(n.clone())),
-                                None => o,
-                            }
-                        });
+                        // Column names for per-column null values come from the bytes: the file on
+                        // disk is still compressed.
+                        let nv = Self::build_null_values_with(options, || {
+                            let one_row =
+                                Self::eager_csv_read_options(options, None).with_n_rows(Some(1));
+                            let df = CsvReader::new(std::io::Cursor::new(decompressed.as_slice()))
+                                .with_options(one_row)
+                                .finish()?;
+                            Ok(df.schema().clone())
+                        })?;
+                        let read_options = Self::eager_csv_read_options(options, nv.as_ref());
                         let df = CsvReader::new(std::io::Cursor::new(decompressed))
                             .with_options(read_options)
                             .finish()?;
@@ -3022,6 +3003,7 @@ impl DataTableState {
             }
         } else {
             // For uncompressed files, use lazy scanning (more efficient)
+            let nv = Self::build_null_values_for_csv(options, Some(path))?;
             let mut state = Self::from_csv_customize(
                 path,
                 options.pages_lookahead,
@@ -8397,7 +8379,8 @@ mod tests {
     }
 
     /// `--delimiter` reaches the in-memory readers of every compression, and the
-    /// one-row read that per-column null values are built from (#290).
+    /// one-row read that per-column null values are built from (#290), including
+    /// for a file that is only readable once decompressed.
     #[test]
     fn test_delimiter_reaches_every_csv_reader() {
         use std::io::Write;
@@ -8427,10 +8410,18 @@ mod tests {
             null_values: Some(vec!["NA".into(), "name=x".into()]),
             ..Default::default()
         };
+        // The same in memory, where the column names have to come from the
+        // decompressed bytes rather than the file on disk.
+        let null_values_in_memory = OpenOptions {
+            decompress_in_memory: true,
+            ..null_values.clone()
+        };
         for (what, path, opts) in [
             ("bzip2", &bz, &in_memory),
             ("xz", &xz, &in_memory),
             ("null values", &plain, &null_values),
+            ("null values, bzip2", &bz, &null_values_in_memory),
+            ("null values, xz", &xz, &null_values_in_memory),
         ] {
             let state = DataTableState::from_csv(path, opts).unwrap();
             let df = state.lf.clone().collect().unwrap();

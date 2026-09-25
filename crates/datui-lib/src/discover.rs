@@ -1237,9 +1237,20 @@ const MAX_FOOTERS_PER_DATASET: usize = 64;
 /// datasets. Anything not backed by Parquet keeps `None`, which the UI shows as an
 /// honest blank.
 pub fn enrich(entry: &mut Entry) {
+    enrich_as(entry, &crate::schema_union::ReadAs::default())
+}
+
+/// As [`enrich`], reading each file the way the open that follows will read it.
+///
+/// The rule that decides whether a folder's files are one table reads the names at the
+/// front of them, and where those names are is a reader setting. A pass that used its
+/// own answers would judge a folder by a reading nobody is going to make — which is how
+/// `datui --no-header folder/` came to open the home screen for a folder the flag reads
+/// perfectly as one table.
+pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     match entry.kind {
         EntryKind::File => enrich_parquet(entry),
-        EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry),
+        EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read),
         // Nothing to read for a plain directory, and nothing that *may* be read for
         // one that has not been looked at. Nor for a lake table: summing the footers
         // under one counts tombstoned rows, every rewritten version and both sides of
@@ -1250,7 +1261,7 @@ pub fn enrich(entry: &mut Entry) {
 }
 
 /// Sum footers across a bounded set of Parquet files under `entry`.
-fn enrich_dataset(entry: &mut Entry) {
+fn enrich_dataset(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     // A folder of JSON is not described by the Parquet under it. The walk below
     // recurses — it has to, because that is what opening the folder reads — so for a
     // folder whose own files are a format this cannot count, every number it produced
@@ -1296,7 +1307,7 @@ fn enrich_dataset(entry: &mut Entry) {
         };
     if !reads_as_parquet {
         entry.size = None;
-        judge_by_names(entry);
+        judge_by_names(entry, as_read);
         return;
     }
 
@@ -1517,7 +1528,7 @@ fn files_nest(sampled: &[Vec<String>]) -> bool {
 /// whose schema costs a whole read, or a file that would not parse all leave the folder
 /// as its names suggested. That is only safe because the read behind it unions by name
 /// and widens types rather than failing — see `DataTableState::union_of_files`.
-fn judge_by_names(entry: &mut Entry) {
+fn judge_by_names(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     if entry.kind != EntryKind::MultiFile {
         return;
     }
@@ -1541,11 +1552,10 @@ fn judge_by_names(entry: &mut Entry) {
     let FolderFormat::One(_, files) = folder_format(&entry.path) else {
         return;
     };
-    // The reader's own defaults, which is what an open from the home screen passes.
-    // The command line's own options reach the read through `files_disagree`, and where
-    // they move the header they keep the rule off this folder entirely.
-    let sampled =
-        crate::schema_union::sample_files(&files, format, &crate::schema_union::ReadAs::default());
+    // Read the way the open that follows will read it: where the header is decides
+    // what these names are, and a verdict reached by another reading is about a folder
+    // nobody is going to open.
+    let sampled = crate::schema_union::sample_files(&files, format, as_read);
     if sampled.nests == Some(false) {
         // The columns the sample found, so searching the home screen by column still
         // finds the folder that has one — the same thing the Parquet path keeps when it

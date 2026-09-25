@@ -3458,8 +3458,13 @@ pub mod tests {
         );
     }
 
-    /// The buffer collect is the only spawn that takes no lease, and adding a second
-    /// exemption has to be a deliberate act rather than an oversight.
+    /// Skipping the lease is a deliberate act rather than an oversight.
+    ///
+    /// Two spawns do. The buffer collect, whose answer is simply asked for again if a
+    /// bump throws it away. And the look at a folder named on the command line, whose
+    /// answer is *meant* to be thrown away when the user moves on — leased, it made a
+    /// seventeen-second look hold the next dataset's buffer collect behind it, after
+    /// Ctrl+O had been offered as the way out.
     ///
     /// `spawn_bg` leases by construction, so a new kind of gated background work is
     /// accounted for without anyone remembering to account for it. The two ways around
@@ -3471,10 +3476,10 @@ pub mod tests {
     /// itself. That is a different shape, and the three that exist do not carry a
     /// generation at all.
     #[test]
-    fn the_collect_is_the_only_unleased_spawn() {
+    fn an_unleased_spawn_is_a_deliberate_act() {
         // Split so this test's own needles are not among the things it finds.
         let needles = [
-            (concat!("spawn_bg_", "replaceable("), 1usize),
+            (concat!("spawn_bg_", "replaceable("), 2usize),
             (concat!("spawn_bg_", "inner("), 2usize),
         ];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -3499,10 +3504,11 @@ pub mod tests {
             let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
             assert_eq!(
                 found, expected,
-                "`{needle}` appears {found} times, not {expected}. The buffer collect is \
-                 the one spawn whose answer is asked for again if a bump throws it away; \
-                 anything else that skips the lease can be stranded by a bump, silently. \
-                 See GenerationLease."
+                "`{needle}` appears {found} times, not {expected}. Two spawns skip the \
+                 lease on purpose: the buffer collect, whose answer is asked for again \
+                 if a bump throws it away, and the look at a folder named on the \
+                 command line, whose answer is meant to be thrown away. Anything else \
+                 that skips it can be stranded by a bump, silently. See GenerationLease."
             );
         }
     }
@@ -5184,14 +5190,6 @@ pub enum AppEvent {
         generation: u64,
         path: PathBuf,
         kind: discover::EntryKind,
-        /// Whether the folder holds data files directly inside it.
-        ///
-        /// `EntryKind::Directory` covers both a folder of separate tables and one with
-        /// no data in it at all, and the two want opposite things from an option that
-        /// says where the header is: the first is read as one table, the second has no
-        /// table to read and the home screen is the answer. Forcing the one-table route
-        /// on `~/src` ends in an error modal, not a table.
-        holds_data_files: bool,
         options: Box<OpenOptions>,
     },
     /// Look at a path off the interface thread, then do with it whatever it turns out to
@@ -8882,29 +8880,15 @@ impl App {
         &mut self,
         dir: PathBuf,
         kind: discover::EntryKind,
-        holds_data_files: bool,
         mut options: OpenOptions,
     ) -> Option<AppEvent> {
-        // The user has said how to read these files, so datui does not then judge them
-        // by a reading it was told not to make. `--no-header` is the one that matters:
-        // the rule takes each file's first row of data for its column names, finds them
-        // all different, calls the folder separate tables, and drops the user on the
-        // home screen — for a folder the flag would have read perfectly as one table.
+        // No override for the user's reader settings here, and none needed: the look
+        // read every file the way this open will, so `--no-header` and the skips have
+        // already been accounted for by the rule rather than around it. Overriding
+        // instead took three goes to get wrong in three different ways — it fired on
+        // config values, it fired on folders with nothing readable in them, and it
+        // fired on Parquet, which no CSV setting can affect.
         //
-        // Only where the folder is otherwise a place to look inside: a lake root is
-        // still a lake root and a hive tree is still read through its partitions,
-        // whatever the CSV options say.
-        if kind == discover::EntryKind::Directory
-            && holds_data_files
-            && Self::the_columns_are_not_where_the_rule_looked(&options)
-        {
-            options.hive = true;
-            self.set_loading_phase("Scanning input", 10);
-            self.name_what_is_loading(dir.clone());
-            self.busy = true;
-            return Some(AppEvent::Open(vec![dir], options));
-        }
-
         // A lake table's files are not its rows, so the home screen is opened on it and
         // says why — the same sentence the row gives, because it is the same refusal.
         if let Some(note) = Self::lake_table_note(kind) {
@@ -10708,33 +10692,6 @@ impl App {
             ignore_errors: options.ignore_errors,
             try_parse_dates: options.csv_try_parse_dates(),
         }
-    }
-
-    /// Whether the user has told datui where the columns are, so the rule that decides
-    /// what a folder is should not be asked about this one.
-    ///
-    /// The rule runs in the listing pass, which has no options: it reads each file with
-    /// the reader's defaults. Where the user has moved the header, that reading is not
-    /// the one the open will make — with `--no-header` the open names every file's
-    /// columns `column_1..N` and they stack perfectly, while the rule takes each file's
-    /// first row of *data* for names, finds them all different, calls the folder
-    /// separate tables and opens the home screen instead.
-    ///
-    /// Only where they move it *away* from where the rule looked.
-    /// `has_header: Some(true)` and `skip_rows: Some(0)` say the same thing the rule
-    /// assumed, so they change nothing and are no reason to stop asking it.
-    ///
-    /// "Did the user set this" is the wrong question twice over. `from_args_and_config`
-    /// fills in `infer_schema_length` and `parse_strings` on every run with no flags at
-    /// all, so a predicate including those is true every time — that shipped in #287
-    /// and made the notes it guarded unreachable to anyone. And these three come from
-    /// the config file as well as the command line, so `has_header = true` in
-    /// `~/.config/datui/config.toml` would make it true every time as well, for a
-    /// setting that agrees with the rule.
-    fn the_columns_are_not_where_the_rule_looked(options: &OpenOptions) -> bool {
-        options.has_header == Some(false)
-            || options.skip_rows.is_some_and(|n| n > 0)
-            || options.skip_lines.is_some_and(|n| n > 0)
     }
 
     /// `found` is what the read has to say about itself, for the caller to put in the
@@ -17105,27 +17062,37 @@ impl App {
                 self.looking_at_folder = Some(looking.clone());
                 // The same words the loading screen shows, so the control bar and the
                 // screen above it do not name the wait two different ways.
-                self.spawn_bg(Self::LOOKING_AT_A_FOLDER, move |task_gen, tx| {
+                // Unleased. A lease exists to make a bump wait for an answer that
+                // would otherwise be stranded — and this answer is *meant* to be
+                // thrown away when the user moves on, which is the whole of the guard
+                // below. Leased, it made everything else wait instead: Ctrl+O out of a
+                // seventeen-second look and open a small CSV, and its buffer collect
+                // parks in `collect_owed` until the abandoned look finally returns.
+                // Advertising Ctrl+O as the way out of the wait and then holding the
+                // next dataset behind it is the wait again, wearing a different hat.
+                self.spawn_bg_replaceable(Self::LOOKING_AT_A_FOLDER, move |task_gen, tx| {
                     // A panic here used to unwind through `run()` and report a crash,
                     // because the look was made on the way to the first frame. On a
                     // worker it is swallowed with the dropped handle instead, and
                     // nothing would ever be sent: the spinner would stay up and the
                     // folder unopened for as long as the user waited. Caught, so the
                     // answer is "a directory" and the home screen opens on it.
+                    // Read the way this open will read them, so the rule judges the
+                    // folder the user is about to see rather than one nobody will open.
+                    let as_read = Self::read_as(&options);
                     let looked = std::panic::catch_unwind(|| {
                         let mut entry = discover::Entry::directory(&looking);
                         entry.kind = discover::EntryKind::Unknown;
-                        home::look_into(&entry)
+                        home::look_into_as(&entry, &as_read)
                     });
-                    let (kind, holds_data_files) = match looked {
-                        Ok(entry) => (entry.kind, entry.holds.data_files() > 0),
-                        Err(_) => (discover::EntryKind::Directory, false),
+                    let kind = match looked {
+                        Ok(entry) => entry.kind,
+                        Err(_) => discover::EntryKind::Directory,
                     };
                     let _ = tx.send(AppEvent::FolderLookedAt {
                         generation: task_gen,
                         path: looking,
                         kind,
-                        holds_data_files,
                         options: Box::new(options),
                     });
                 });
@@ -17135,7 +17102,6 @@ impl App {
                 generation,
                 path,
                 kind,
-                holds_data_files,
                 options,
             } => {
                 // The user pressed Ctrl+O and went to the home screen, or opened
@@ -17145,21 +17111,22 @@ impl App {
                 // Both tests: the folder, because a newer look replaces an older one,
                 // and the generation, because other work bumps that when it takes the
                 // screen over.
-                // Taken before either test, so no path out of here leaves it set. Left
-                // behind, the next `abandon_load` from anywhere would find it and clear
-                // `busy` for work it does not own.
-                let waiting_for = self.looking_at_folder.take();
-                if waiting_for.as_deref() != Some(path.as_path())
-                    || *generation != self.task_generation
-                {
+                // Not ours: a newer look is out and this is an older answer, so the
+                // tracking belongs to that one and is left alone. Taking it here would
+                // strand the newer answer as unowned, and the app would sit on a
+                // loading screen with nothing left to clear it.
+                if self.looking_at_folder.as_deref() != Some(path.as_path()) {
                     return None;
                 }
-                let outcome = self.open_the_folder_looked_at(
-                    path.clone(),
-                    *kind,
-                    *holds_data_files,
-                    (**options).clone(),
-                );
+                // Ours, so it is put down whatever happens next — including the
+                // generation test below. Left set, the next `abandon_load` from
+                // anywhere would find it and clear `busy` for work it does not own.
+                self.looking_at_folder = None;
+                if *generation != self.task_generation {
+                    return None;
+                }
+                let outcome =
+                    self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone());
                 // Only when nothing follows. An `Open` keeps the wait up — it sets its
                 // own phase and `busy` — and clearing them here would draw one frame
                 // with the spinner stopped and the keys held during the look replayed

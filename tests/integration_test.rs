@@ -8955,15 +8955,74 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
         );
     }
 
-    // Moving the header does change it.
+    // Moving the header does change it — not by overriding the rule, but because the
+    // rule now reads the files the way the open will: headerless, every file's columns
+    // are `column_1..N` and the narrower nests inside the wider.
     assert!(
         settle(OpenOptions {
             has_header: Some(false),
             ..OpenOptions::default()
         })
         .is_some(),
-        "where the columns are not where the rule looked, the rule is not asked"
+        "read as headerless, these files are one table"
     );
+}
+
+/// A CSV setting does not decide a folder of Parquet.
+///
+/// `has_header` and the skips are reader settings for delimited text. Nothing about
+/// them can change how a Parquet file is read, so a folder of Parquet must reach the
+/// same verdict whatever they say — which it does because the rule reads Parquet
+/// through its footers and the settings never touch that path.
+#[test]
+fn test_a_csv_setting_does_not_decide_a_folder_of_parquet() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let apart = tmp.path().join("apart");
+    std::fs::create_dir_all(&apart).unwrap();
+    for (name, cols) in [
+        ("by_block.parquet", vec!["block", "fee"]),
+        ("daily.parquet", vec!["day", "price", "volume"]),
+    ] {
+        let mut frame = DataFrame::new(
+            1,
+            cols.iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect(),
+        )
+        .unwrap();
+        ParquetWriter::new(File::create(apart.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    for options in [
+        OpenOptions::default(),
+        OpenOptions {
+            has_header: Some(false),
+            skip_rows: Some(3),
+            ..OpenOptions::default()
+        },
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        let mut next = app.open_the_path_named_on_the_command_line(vec![apart.clone()], options);
+        loop {
+            if app.home.browsing.is_some() {
+                break;
+            }
+            match next.take() {
+                Some(AppEvent::Open(..)) => {
+                    panic!("a CSV setting cannot make two Parquet tables into one")
+                }
+                Some(ev) => next = app.event(&ev),
+                None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
+                    Ok(ev) => next = Some(ev),
+                    Err(_) => panic!("the chain stopped without settling"),
+                },
+            }
+        }
+        assert_eq!(app.home.browsing.as_deref(), Some(apart.as_path()));
+    }
 }
 
 /// A folder with no data files in it is never forced down the one-table route.

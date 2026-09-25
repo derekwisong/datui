@@ -8085,8 +8085,14 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
             let mut next =
                 app.open_the_path_named_on_the_command_line(vec![dir.to_path_buf()], options);
             // Follow the chain to whatever it settles on: the look goes to a worker and
-            // answers here, and what it answers with is the decision.
+            // answers here, and what it answers with is the decision. Settling on the
+            // home screen is an outcome, not a timeout — a helper that could only tell
+            // the two apart by waiting would make every such case cost the wait, and
+            // would quietly pass a chain that had stopped.
             loop {
+                if app.home.browsing.is_some() {
+                    return None;
+                }
                 match next.take() {
                     Some(AppEvent::Open(paths, options)) => {
                         return Some(AppEvent::Open(paths, options));
@@ -8094,13 +8100,24 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
                     Some(ev) => next = app.event(&ev),
                     None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
                         Ok(ev) => next = Some(ev),
-                        Err(_) => return None,
+                        Err(_) => panic!("the chain stopped without settling on anything"),
                     },
                 }
             }
         };
+    // The options the binary really passes, not `OpenOptions::default()`. They differ
+    // in exactly the fields a guard over "did the user set anything" reads — the CLI
+    // fills in `infer_schema_length` and `parse_strings` on every run with no flags —
+    // so a test built on the defaults cannot see a guard that fires on every open.
+    let as_the_binary_does = |dir: &Path| {
+        use clap::Parser;
+        let args =
+            datui_cli::Args::try_parse_from(["datui", dir.to_str().unwrap()]).expect("parses");
+        OpenOptions::from_args_and_config(&args, &datui::config::AppConfig::default())
+    };
     let named = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, dir: &Path| {
-        named_with(app, rx, dir, OpenOptions::default())
+        let options = as_the_binary_does(dir);
+        named_with(app, rx, dir, options)
     };
 
     // One table across several files: read as one, on the folder route.

@@ -8885,8 +8885,13 @@ impl App {
         // Only where the folder is otherwise a place to look inside: a lake root is
         // still a lake root and a hive tree is still read through its partitions,
         // whatever the CSV options say.
-        if kind == discover::EntryKind::Directory && Self::parsing_is_the_user_s_answer(&options) {
+        if kind == discover::EntryKind::Directory
+            && Self::the_user_said_where_the_columns_are(&options)
+        {
             options.hive = true;
+            self.set_loading_phase("Scanning input", 10);
+            self.name_what_is_loading(dir.clone());
+            self.busy = true;
             return Some(AppEvent::Open(vec![dir], options));
         }
 
@@ -8905,6 +8910,9 @@ impl App {
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
         ) {
             options.hive = true;
+            self.set_loading_phase("Scanning input", 10);
+            self.name_what_is_loading(dir.clone());
+            self.busy = true;
             return Some(AppEvent::Open(vec![dir], options));
         }
         // A place to look inside. `datui .` is this, and so is a folder of separate
@@ -10663,33 +10671,52 @@ impl App {
         if format == FileFormat::Parquet {
             return Default::default();
         }
-        if Self::parsing_is_the_user_s_answer(options) {
+        // Null values are the one setting the sample cannot mirror: `--null-value`
+        // takes `COL=VAL` forms the reader resolves against the file it is opening, and
+        // a sample that guessed would report a widening the table never did. They are
+        // unset unless the user names them, so this stands down where it must and runs
+        // everywhere else.
+        if options.null_values.is_some() {
             return Default::default();
         }
-        crate::schema_union::sample_files(files, format).disagreement()
+        crate::schema_union::sample_files(files, format, &Self::read_as(options)).disagreement()
     }
 
-    /// Whether the user has told datui how to read these files, in a way that moves
-    /// where the columns are or changes what type they come out as.
+    /// The reader settings a sample has to copy to describe what the open will do.
     ///
-    /// The sample reads each file with the reader's own defaults and nothing else, so
-    /// where any of these is set it is reading a different file than the open will, and
-    /// anything decided from it is about a read that never happened. With
-    /// `--null-value N/A` the read keeps `amount` an Int64 while the sample sees an
-    /// Int64 beside a String and would report a widening the table never did; with
-    /// `--no-header` the read names every file's columns `column_1..N` and they stack
-    /// perfectly, while the sample takes each file's first row of data for names and
-    /// finds them all different.
-    fn parsing_is_the_user_s_answer(options: &OpenOptions) -> bool {
-        options.has_header.is_some()
-            || options.skip_rows.is_some()
-            || options.skip_lines.is_some()
-            || options.skip_tail_rows.is_some()
-            || options.infer_schema_length.is_some()
-            || options.ignore_errors
-            || options.parse_strings.is_some()
-            || !options.parse_dates
-            || options.null_values.is_some()
+    /// Taken from the options the open is actually being made with, not guessed at and
+    /// then bailed out of: `from_args_and_config` fills in `infer_schema_length` and
+    /// `parse_strings` on every run with no flags at all, so a predicate over "did the
+    /// user set anything" is true every time. That shipped once, and the notes about
+    /// how a folder had been stacked never appeared outside the tests.
+    fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
+        crate::schema_union::ReadAs {
+            has_header: options.has_header,
+            skip_rows: options.skip_rows,
+            skip_lines: options.skip_lines,
+            infer_schema_length: options.infer_schema_length,
+            ignore_errors: options.ignore_errors,
+            try_parse_dates: options.csv_try_parse_dates(),
+        }
+    }
+
+    /// Whether the user has told datui where the columns are, so the rule that decides
+    /// what a folder is should not be asked about this one.
+    ///
+    /// The rule runs in the listing pass, which has no options: it reads each file with
+    /// the reader's defaults. Where the user has moved the header, that reading is not
+    /// the one the open will make — with `--no-header` the open names every file's
+    /// columns `column_1..N` and they stack perfectly, while the rule takes each file's
+    /// first row of *data* for names, finds them all different, calls the folder
+    /// separate tables and opens the home screen instead.
+    ///
+    /// Only the three that move where the columns are, and only because all three are
+    /// unset unless the user names them. A wider test is a trap: `from_args_and_config`
+    /// fills in `infer_schema_length` and `parse_strings` on every run with no flags at
+    /// all, so a predicate including those is true every time — which would send every
+    /// folder down the one-table route and never open the home screen again.
+    fn the_user_said_where_the_columns_are(options: &OpenOptions) -> bool {
+        options.has_header.is_some() || options.skip_rows.is_some() || options.skip_lines.is_some()
     }
 
     /// `found` is what the read has to say about itself, for the caller to put in the
@@ -17092,11 +17119,19 @@ impl App {
                     return None;
                 }
                 self.looking_at_folder = None;
-                self.busy = false;
-                if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
-                    self.status_message = None;
+                let outcome =
+                    self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone());
+                // Only when nothing follows. An `Open` keeps the wait up — it sets its
+                // own phase and `busy` — and clearing them here would draw one frame
+                // with the spinner stopped and the keys held during the look replayed
+                // into an app that has no dataset yet, ahead of the load.
+                if outcome.is_none() {
+                    self.busy = false;
+                    if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
+                        self.status_message = None;
+                    }
                 }
-                self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone())
+                outcome
             }
             AppEvent::ClassifyThenOpen { path, jump } => {
                 // A second Enter replaces the first rather than being refused. Every key

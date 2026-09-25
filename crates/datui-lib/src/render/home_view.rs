@@ -1797,11 +1797,26 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // is, and the control bar already says what Enter does; a sentence
             // repeating either is a sentence to read past on every row.
             let reading = app.home_schema_pending(&entry.path);
+            // Whether there will actually be a door in there to point at. An empty
+            // folder gets none, nor does one holding only a writer's own markers, and
+            // promising a row that is not there is worse than saying nothing — it is
+            // the row a new user would go looking for on the strength of this sentence.
+            //
+            // The filter on *this* listing is not a reason to withhold it: stepping
+            // into a folder clears the filter before the listing inside it is built, so
+            // the door will be there — and a user with a filter typed is the one most
+            // likely to be lost.
+            let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
             let note = match entry.kind {
-                // Nothing to add: "kind directory" is directly above.
+                // Where the other door is. A folder datui will not read as one table is
+                // the row a new user is most likely to be stuck on — the label says
+                // what is in there, Enter steps into it, and nothing until now said
+                // that the way to read the whole of it is one row further in.
+                EntryKind::Directory if door_in_there => INSIDE_AND_THE_DOOR,
                 EntryKind::Directory => "",
                 EntryKind::Unknown => "Not read yet.",
                 // The log says which files are live, and datui does not read it.
+                k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
                 _ if crate::home::is_object_store_url(&entry.path) => "Read when opened.",
                 _ if reading => "Reading…",
@@ -1819,6 +1834,29 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     Paragraph::new(lines)
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
+}
+
+/// What the pane says on a folder `Enter` steps into rather than opens.
+///
+/// Written with `concat!` rather than a `\` continuation: `cargo fmt` joins a
+/// continued literal back onto one line and keeps the indentation with it, which once
+/// put twenty spaces into the middle of this sentence. See
+/// `the_pane_s_guidance_has_no_holes_in_it`.
+const INSIDE_AND_THE_DOOR: &str = concat!(
+    "Enter goes inside. The first row in there reads the whole folder ",
+    "as one table."
+);
+
+/// The same, for a lake table, whose files are not its rows.
+const INSIDE_A_LAKE_TABLE: &str = concat!(
+    "Enter goes inside. The table itself is not read yet; the first row in there ",
+    "reads the files under it, which are not the table."
+);
+
+/// Every sentence the pane offers as guidance, for the test that reads them.
+#[cfg(test)]
+fn guidance_notes() -> [&'static str; 2] {
+    [INSIDE_AND_THE_DOOR, INSIDE_A_LAKE_TABLE]
 }
 
 /// The pane for a place under `RECENT`: what it is, where, and how many recents it
@@ -1893,6 +1931,27 @@ mod tests {
     use super::*;
     use crate::discover::Entry;
     use crate::home::Section;
+
+    /// The pane's guidance reads as one sentence, with no gap left by a wrapped literal.
+    ///
+    /// These lines are long enough to want writing across two lines of source, and a
+    /// `\` continuation inside one is a trap: `cargo fmt` may join the literal back up
+    /// and keep the indentation with it, which puts twenty spaces into the middle of a
+    /// sentence nobody re-reads before shipping. It did exactly that once. `concat!` is
+    /// what they use instead, and this is what notices if that changes.
+    #[test]
+    fn the_pane_s_guidance_has_no_holes_in_it() {
+        for note in guidance_notes() {
+            assert!(
+                !note.contains("  "),
+                "a run of spaces in the middle of {note:?}"
+            );
+            assert!(
+                note.ends_with('.') && !note.contains('\n'),
+                "one sentence, punctuated: {note:?}"
+            );
+        }
+    }
 
     fn row(path: &str, kind: crate::discover::EntryKind) -> Entry {
         Entry {

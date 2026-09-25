@@ -273,6 +273,277 @@ impl SkippedFiles {
     }
 }
 
+/// The column names one data file holds, read as cheaply as its format allows.
+///
+/// The evidence [`is_nested`] wants, for the formats that have no footer. Parquet's
+/// answer comes from its footer and has its own path; this is for the rest, where the
+/// names are at the front of the file — a CSV header line, an NDJSON object's keys —
+/// and Polars' own schema inference is what reads them, so the names are the ones the
+/// open will use, delimiter detection and all.
+///
+/// `None` for a format whose schema cannot be had without reading the whole file, and
+/// for a file that would not parse. Both mean "no evidence", which every caller here
+/// treats as it treats an unreadable footer: the folder keeps the kind its names
+/// suggested, and the read that follows is lenient enough to survive being wrong.
+///
+/// Deliberately not JSON: a `.json` file is one document, and its keys are only known
+/// once it has been parsed. Sampling three of those in a listing pass is a read of
+/// three whole files for a label.
+pub fn column_schema_of(
+    path: &std::path::Path,
+    format: crate::FileFormat,
+) -> Option<Vec<(String, DataType)>> {
+    use polars::prelude::{LazyCsvReader, LazyFileListReader, LazyJsonLineReader};
+    let pl_path = PlRefPath::try_from_path(path).ok()?;
+    let lf = match format {
+        crate::FileFormat::Csv | crate::FileFormat::Tsv | crate::FileFormat::Psv => {
+            // The reader's own default, not the bare one. `from_csv_paths` parses dates
+            // unless the user turned it off, and a sample that did not would see two
+            // files' `when` column as String and String where the read sees Date and
+            // String and widens — a difference the table shows and the sample could
+            // not.
+            LazyCsvReader::new(pl_path)
+                .with_try_parse_dates(true)
+                .finish()
+                .ok()?
+        }
+        crate::FileFormat::Jsonl => LazyJsonLineReader::new(pl_path).finish().ok()?,
+        _ => return None,
+    };
+    let schema = lf.clone().collect_schema().ok()?;
+    // Trimmed, because `trim_csv_column_names` trims what the read produces: one
+    // writer's `id, name` and another's `id,name` are the same two columns by the time
+    // they are on screen, and a sample that kept the space would call them different
+    // and say so in a note about a table that has no such difference.
+    let fields: Vec<(String, DataType)> = schema
+        .iter()
+        .map(|(name, dtype)| (name.trim().to_string(), dtype.clone()))
+        .collect();
+    Some(fields)
+}
+
+/// Whether a schema is what an empty file parses as, rather than a table.
+///
+/// No columns at all, or exactly one with no name. The second is the one that matters
+/// and it is not obvious: a writer that emits a header even on a day with no rows
+/// leaves a three-byte file holding `""`, which Polars reads as a single unnamed
+/// column — and a schema of one unnamed column is contained in *every* wider schema, so
+/// it nests inside anything and says a folder is one table however many tables are
+/// really in it.
+///
+/// Measured on a real share: a month of stock data holding dividends, splits, tickers
+/// and daily bars came back as one table because the files the spread landed on were
+/// the empty days.
+///
+/// An unnamed column inside a wider schema is ordinary — it is what a written-out index
+/// looks like — so only a schema that is *nothing but* one counts here.
+fn is_an_empty_file(schema: &[(String, DataType)]) -> bool {
+    match schema {
+        [] => true,
+        [(only, _)] => only.trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether what came back are column names at all, or the first row of a file that has
+/// no header.
+///
+/// datui reads a CSV as having a header, so a headerless one gives its first row of
+/// *data* as the names: two files of the same table come back `["1", "2"]` and
+/// `["5", "6"]` and look like separate tables, and those values would go on to the home
+/// screen's column index as if they were column names.
+///
+/// Polars cannot tell the two apart either, and neither can anyone: a first row reading
+/// `alice,30` is a header or it is not, and only the file knows. What is decidable is
+/// the case that matters — every name a number — because a header of nothing but
+/// numbers is vanishingly rare and a row of them is the common headerless shape. Where
+/// it fires the answer is "no evidence", which leaves the folder as its names suggested
+/// and the read to union what it finds.
+fn names_are_names(names: &[String]) -> bool {
+    !names.is_empty() && !names.iter().all(|n| n.trim().parse::<f64>().is_ok())
+}
+
+/// What a spread of a folder's files says about whether they are one table.
+///
+/// One sampling, read once, answering both questions asked of it: whether the files
+/// nest, which decides what `Enter` does, and whether they agree, which decides what
+/// the dataset says about itself. Taking them separately meant reading the same three
+/// files twice and, worse, letting the two answers disagree.
+#[derive(Debug, Clone, Default)]
+pub struct Sampled {
+    /// Every column name any sampled file has, first seen first. Empty when nothing
+    /// could be read.
+    pub columns: Vec<String>,
+    /// Whether every sampled file's columns are within the widest one's. `None` where
+    /// fewer than two files could be read, which decides nothing.
+    pub nests: Option<bool>,
+    /// Whether a column one file has is missing from another. The table is then their
+    /// union, and a row from a file without the column reads null.
+    pub columns_differ: bool,
+    /// Whether a column they share is held in two different types. The half a name test
+    /// cannot see: `amount` is an Int64 in one file and a String in the next because
+    /// one row said `N/A`, and the read widens it to String for the whole folder
+    /// without a word unless this says so.
+    pub types_differ: bool,
+    /// How many files were actually read, so a caller can say whether a count over them
+    /// is exact or a floor.
+    pub read: usize,
+    /// Whether the files appear to have no header row, so what came back as names is
+    /// each file's first row of *data*.
+    ///
+    /// datui reads a CSV as having a header, so such a folder cannot be read as one
+    /// table at all without `--no-header`: every file contributes its own first row as
+    /// column names and the union is a wide sheet of nulls. Neither a nesting verdict
+    /// nor a note about columns means anything here — this is the thing to say instead.
+    pub headerless: bool,
+}
+
+impl Sampled {
+    /// How the files differ, for the note that says so.
+    pub fn disagreement(&self) -> Disagreement {
+        // A headerless folder has one thing wrong with it, and the other two would be
+        // said about column names that are really data.
+        if self.headerless {
+            return Disagreement {
+                headerless: true,
+                ..Default::default()
+            };
+        }
+        Disagreement {
+            columns: self.columns_differ,
+            types: self.types_differ,
+            headerless: false,
+        }
+    }
+}
+
+/// How a folder's files differed, as the read found them.
+///
+/// Two separate facts because they are two separate things to say, and a folder can be
+/// either, both or neither: a column some files lack is the ordinary shape of schema
+/// drift, and a column held in two types is what forces the whole folder to the wider
+/// one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Disagreement {
+    pub columns: bool,
+    pub types: bool,
+    /// See [`Sampled::headerless`].
+    pub headerless: bool,
+}
+
+impl Disagreement {
+    pub fn any(&self) -> bool {
+        self.columns || self.types || self.headerless
+    }
+}
+
+/// Read a spread of `files` and say what they are.
+///
+/// The ends and the middle, because names sort and a folder written table by table can
+/// start with several files of the same table. Three reads whatever the folder's size:
+/// this runs in a listing pass and on the way into an open, and a folder of forty
+/// thousand files must cost the same as a folder of four.
+pub fn sample_files(files: &[std::path::PathBuf], format: crate::FileFormat) -> Sampled {
+    // Enough files to see a disagreement, and a bound on the reads it takes to find
+    // them. A folder written daily has empty days in it — a Saturday's file of nothing
+    // — and those carry no columns, so a spread that lands on two of them learns
+    // nothing and the folder goes unjudged. Measured on a real share: a month of stock
+    // data holding three different tables came back as one, because the first and
+    // middle files of that month were a three-byte file and an empty one.
+    const WANTED: usize = 3;
+    const TRIES: usize = 12;
+    let last = files.len().saturating_sub(1);
+    // Three anchors — the ends and the middle — because names sort, so a folder written
+    // table by table holds each table in a contiguous run and the three land in
+    // different runs. Spreading the reads evenly instead is worse, and measurably: the
+    // first files that happen to be readable then come from one run, agree with each
+    // other, and the folder is called one table.
+    //
+    // From each anchor, step forward past files with nothing in them. A folder written
+    // daily has empty days in it — forty per cent of one real month — and an anchor
+    // that lands on one learns nothing, while a neighbour of it is in the same run and
+    // answers for that run.
+    const NEAR: usize = 4;
+    let anchors = [0usize, last / 2, last];
+
+    let mut read: Vec<Vec<(String, DataType)>> = Vec::new();
+    let mut tried = 0usize;
+    let mut seen: Vec<usize> = Vec::new();
+    'anchors: for anchor in anchors {
+        for step in 0..NEAR {
+            if read.len() >= WANTED || tried >= TRIES {
+                break 'anchors;
+            }
+            let i = anchor + step;
+            if i > last || seen.contains(&i) {
+                continue;
+            }
+            seen.push(i);
+            let Some(file) = files.get(i) else { continue };
+            tried += 1;
+            // A file with nothing in it has no columns to disagree about, and is not
+            // evidence about the folder either way. Its neighbour is asked instead.
+            if let Some(schema) = column_schema_of(file, format)
+                && !is_an_empty_file(&schema)
+            {
+                read.push(schema);
+                continue 'anchors;
+            }
+        }
+    }
+
+    let mut out = Sampled {
+        read: read.len(),
+        ..Default::default()
+    };
+    for file in &read {
+        for (name, _) in file {
+            if !out.columns.iter().any(|c| c == name) {
+                out.columns.push(name.clone());
+            }
+        }
+    }
+    if read.len() < 2 {
+        return out;
+    }
+    let names: Vec<Vec<String>> = read
+        .iter()
+        .map(|f| f.iter().map(|(n, _)| n.clone()).collect())
+        .collect();
+    // A file whose "names" are its first row of data. Said rather than guessed around:
+    // the folder cannot be read as one table without `--no-header`, so there is no
+    // nesting verdict worth reaching and no note about columns worth writing. `nests`
+    // stays `Some(false)` so `Enter` steps inside rather than silently building a sheet
+    // of nulls, and the columns are dropped rather than offered to the search index as
+    // if `4` and `7` were names.
+    if names.iter().any(|f| !names_are_names(f)) {
+        out.columns.clear();
+        out.headerless = true;
+        out.nests = Some(false);
+        return out;
+    }
+    let nests = is_nested(&names);
+    out.nests = Some(nests);
+    // A column two files hold in two types is a disagreement the names cannot show.
+    let mut types: HashMap<&str, &DataType> = HashMap::new();
+    let mut typed_apart = false;
+    for (name, dtype) in read.iter().flatten() {
+        match types.get(name.as_str()) {
+            Some(seen) if *seen != dtype => typed_apart = true,
+            Some(_) => {}
+            None => {
+                types.insert(name.as_str(), dtype);
+            }
+        }
+    }
+    // Not `!nests`: a folder can nest and still be missing a column from one file,
+    // which is the ordinary shape of schema drift and exactly what the note is for.
+    let widest = names.iter().map(|f| f.len()).max().unwrap_or(0);
+    out.columns_differ = names.iter().any(|f| f.len() != widest) || !nests;
+    out.types_differ = typed_apart;
+    out
+}
+
 /// Whether every file's columns are contained in the widest file's.
 ///
 /// The one shape schema evolution produces, and the one that reads cleanly as a union:

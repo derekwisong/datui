@@ -7642,7 +7642,8 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
 
     // The note and the chip, from that one field. Both, because the note is a tab away
     // and the chip is in the corner: each on its own is missable.
-    let notes = datui::notes::from_the_open(&[], options.read_as_plain_files_of);
+    let notes =
+        datui::notes::from_the_open(&[], options.read_as_plain_files_of, Default::default());
     assert_eq!(notes.len(), 1, "one note, about the read");
     assert!(
         notes[0].summary.contains("Delta") && notes[0].summary.contains("deleted rows"),
@@ -8367,4 +8368,385 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
         }
         other => panic!("the names settled it, got {other:?}"),
     }
+}
+
+/// The nesting rule reaches the formats that have no footer.
+///
+/// A folder of forty unrelated CSVs was labelled `40 csv`, `Enter` promised one table
+/// because nothing had looked, and the read then refused it — the permissive rule with
+/// the strict reader, which is the pairing #275 exists to stop. The names at the front
+/// of a CSV are the same evidence `is_nested` takes from a Parquet footer, so the same
+/// rule now answers for both.
+#[test]
+fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let folder = |name: &str, files: &[&str]| {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, body) in files.iter().enumerate() {
+            std::fs::write(dir.join(format!("part-{i}.csv")), body).unwrap();
+        }
+        dir
+    };
+    let looked_at = |dir: &Path| {
+        let mut entry = datui::discover::Entry::directory(dir);
+        entry.kind = datui::discover::EntryKind::Unknown;
+        datui::home::look_into(&entry)
+    };
+
+    // Files that agree: one table, as before.
+    let same = folder("same", &["a,b\n1,2\n", "a,b\n3,4\n", "a,b\n5,6\n"]);
+    assert_eq!(
+        looked_at(&same).kind,
+        datui::discover::EntryKind::MultiFile,
+        "identical headers are one table"
+    );
+
+    // A column added along the way: still one table. This is the shape the rule is for,
+    // and the one a stricter test would refuse.
+    let drift = folder(
+        "drift",
+        &["id,ts\n1,5\n", "id,ts\n2,6\n", "id,ts,region\n3,7,eu\n"],
+    );
+    assert_eq!(
+        looked_at(&drift).kind,
+        datui::discover::EntryKind::MultiFile,
+        "a column added later is schema drift, not separate tables"
+    );
+
+    // Separate tables: somewhere to look inside, not one table.
+    let apart = folder("apart", &["a,b\n1,2\n", "x,y,z\n3,4,5\n", "q\n9\n"]);
+    let judged = looked_at(&apart);
+    assert_eq!(
+        judged.kind,
+        datui::discover::EntryKind::Directory,
+        "files that each bring something the others lack are not one table"
+    );
+    assert_eq!(
+        judged.rows, None,
+        "and no row count, which would be a sum of unrelated things"
+    );
+    assert!(
+        judged.columns.iter().any(|c| c == "q"),
+        "but the union of columns, so a column search still finds the folder: {:?}",
+        judged.columns
+    );
+
+    // A headerless file gives its first row of *data* as the names, because datui
+    // reads a CSV as having a header. datui cannot read such a folder as one table at
+    // all without `--no-header`: every file would contribute its own first row as
+    // column names and the union would be a wide sheet of nulls. So it is not offered
+    // as one — and the data values are not offered as column names either.
+    let headless = folder("headless", &["1,2\n3,4\n", "5,6\n", "7,8\n"]);
+    let judged = looked_at(&headless);
+    assert_eq!(
+        judged.kind,
+        datui::discover::EntryKind::Directory,
+        "a folder datui can only read as nulls is not one table"
+    );
+    assert!(
+        judged.columns.is_empty(),
+        "and data values are not offered as column names: {:?}",
+        judged.columns
+    );
+    // Opened anyway, through the door, it says what it is seeing and what to do.
+    let said = datui::notes::from_the_open(
+        &[],
+        None,
+        datui::schema_union::Disagreement {
+            headerless: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        said.iter()
+            .any(|n| n.summary.contains("no header row") && n.summary.contains("--no-header")),
+        "got {said:?}"
+    );
+
+    // Compression does not hide the header: it is still at the front of the file.
+    let zipped = tmp.path().join("zipped");
+    std::fs::create_dir_all(&zipped).unwrap();
+    for (name, body) in [("a.csv.gz", "a,b\n1,2\n"), ("b.csv.gz", "x,y,z\n3,4,5\n")] {
+        let file = File::create(zipped.join(name)).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, body.as_bytes()).unwrap();
+        gz.finish().unwrap();
+    }
+    assert_eq!(
+        looked_at(&zipped).kind,
+        datui::discover::EntryKind::Directory,
+        "a gzipped CSV is judged by its header like any other"
+    );
+
+    // Two files are the fewest that can disagree; one decides nothing.
+    let alone = folder("alone", &["a,b\n1,2\n"]);
+    assert_eq!(
+        looked_at(&alone).kind,
+        datui::discover::EntryKind::Directory,
+        "a folder of one data file was never a multi-file dataset"
+    );
+}
+
+/// The control bar says what Enter will really do, on a row of every shape.
+///
+/// `WhatEnter` is a prediction the renderer reads and `home_open_selected` is the thing
+/// that decides, so the two can drift. This is what stops them: one row of each shape,
+/// Enter pressed on it, and the prediction checked against what actually happened.
+#[test]
+fn test_the_bar_says_what_enter_will_really_do() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let table = |cols: &[&str]| {
+        DataFrame::new(
+            1,
+            cols.iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect(),
+        )
+        .unwrap()
+    };
+    let parquet = |dir: &Path, name: &str, mut frame: DataFrame| {
+        std::fs::create_dir_all(dir).unwrap();
+        ParquetWriter::new(File::create(dir.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    };
+
+    // One table across two files; separate tables; a lake root; and a plain file.
+    let one = tmp.path().join("one");
+    parquet(&one, "a.parquet", table(&["id", "ts"]));
+    parquet(&one, "b.parquet", table(&["id", "ts"]));
+    let apart = tmp.path().join("apart");
+    parquet(&apart, "by_block.parquet", table(&["block", "fee"]));
+    parquet(&apart, "daily.parquet", table(&["day", "price"]));
+    let delta = tmp.path().join("delta");
+    std::fs::create_dir_all(delta.join("_delta_log")).unwrap();
+    std::fs::write(delta.join("_delta_log").join("0.json"), "{}").unwrap();
+    parquet(&delta, "part-0.parquet", table(&["id"]));
+    parquet(tmp.path(), "loose.parquet", table(&["id"]));
+
+    // Each row, classified the way the background pass would, then Enter pressed on it.
+    for (name, expected) in [
+        ("one", datui::WhatEnter::OpensFolder),
+        ("apart", datui::WhatEnter::GoesInside),
+        ("delta", datui::WhatEnter::GoesInside),
+        ("loose.parquet", datui::WhatEnter::OpensFile),
+    ] {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.enter_home();
+        app.home.browsing = Some(tmp.path().to_path_buf());
+        app.home.rebuild(&[], &[]);
+        app.home.measure_now(16);
+        app.home.classify_now(16);
+        app.home.rebuild(&[], &[]);
+
+        let row = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        app.home.selected = row;
+
+        let predicted = app.what_enter_does();
+        assert_eq!(predicted, expected, "prediction for {name}");
+
+        let was = app.home.browsing.clone();
+        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
+        let went_inside = app.home.browsing != was;
+        match expected {
+            datui::WhatEnter::OpensFolder | datui::WhatEnter::OpensFile => assert!(
+                opened && !went_inside,
+                "{name}: the bar promised an open and Enter did {opened}/{went_inside}"
+            ),
+            datui::WhatEnter::GoesInside => assert!(
+                went_inside && !opened,
+                "{name}: the bar promised to go inside and Enter did {opened}/{went_inside}"
+            ),
+            _ => unreachable!("no other shape is asserted here"),
+        }
+    }
+
+    // The shapes that are not entries at all. Each does something different and each
+    // said "Open" before, which is the wrong first impression on three more rows.
+    let (tx, _rx) = mpsc::channel();
+    let mut other = App::new(tx, common::test_runtime());
+    other.enter_home();
+    other.home.browsing = Some(tmp.path().to_path_buf());
+    other.home.rebuild(&[], &[]);
+    let at = |app: &mut App, want: fn(&datui::home::Row) -> bool| {
+        app.home.visible().iter().position(want)
+    };
+    if let Some(i) = at(&mut other, |r| matches!(r, datui::home::Row::Header { .. })) {
+        other.home.selected = i;
+        assert_eq!(
+            other.what_enter_does(),
+            datui::WhatEnter::FoldsSection,
+            "Enter folds a section header; it does not open anything"
+        );
+    }
+
+    // And the door, which reads whatever it is standing in.
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(apart.clone());
+    app.home.rebuild(&[], &[]);
+    let door = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
+        .expect("the folder carries the door");
+    app.home.selected = door;
+    assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensFolder);
+    assert!(matches!(
+        app.event(&key(KeyCode::Enter)),
+        Some(AppEvent::Open(..))
+    ));
+}
+
+/// A place row under `RECENT` gets the verb its key actually has.
+///
+/// Enter browses into the place, which is what → does on it too. The bar read
+/// `Enter Open … → Inside`: the wrong verb, plus the two-chips-for-one-outcome the
+/// labelling exists to remove. Neither the key-pumping test nor the bar's own tests
+/// covered a place row, because both were written over entries.
+#[test]
+fn test_a_place_row_says_inside_and_says_it_once() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let held = tmp.path().join("exports");
+    std::fs::create_dir_all(&held).unwrap();
+    let file = held.join("sales.csv");
+    std::fs::write(&file, "a,b\n1,2\n").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[], std::slice::from_ref(&file));
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { .. }))
+        .expect("a recent under a place row");
+    app.home.selected = row;
+
+    assert_eq!(
+        app.what_enter_does(),
+        datui::WhatEnter::GoesInside,
+        "Enter browses the place, which is what → does"
+    );
+
+    // And Enter really does browse, so the label is not a guess.
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.home.browsing.as_deref(), Some(held.as_path()));
+}
+
+/// The pane does not point at a door that will not be there.
+///
+/// `whole_folder_row` gives no `(all files)` row to a folder with nothing in it, nor
+/// to any folder while a filter is typed — and the pane said "the first row in there
+/// reads the whole folder as one table" for every plain directory regardless.
+#[test]
+fn test_the_pane_only_promises_a_door_that_exists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let empty = tmp.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let full = tmp.path().join("full");
+    std::fs::create_dir_all(&full).unwrap();
+    std::fs::write(full.join("a.csv"), "a,b\n1,2\n").unwrap();
+    std::fs::write(full.join("b.csv"), "x,y,z\n3,4,5\n").unwrap();
+
+    let pane = |app: &mut App, name: &str| {
+        let row = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        app.home.selected = row;
+        let area = ratatui::layout::Rect::new(0, 0, 120, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&mut *app, area, &mut buf);
+        // The pane wraps and pads, so a sentence spans rows with a border and a run of
+        // spaces in the middle. Flattened to single spaces so the text can be looked
+        // for as it reads.
+        let raw = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        raw.replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    app.home.measure_now(16);
+    app.home.classify_now(16);
+    app.home.rebuild(&[], &[]);
+
+    let shown = pane(&mut app, "full");
+    assert!(
+        shown.contains("first row in there"),
+        "a folder with something in it has the door to point at: {shown}"
+    );
+    assert!(
+        !pane(&mut app, "empty").contains("first row in there"),
+        "an empty folder has none, so nothing points at one"
+    );
+}
+
+/// A read that widened a column's type says so, and one with no rule behind it does
+/// not widen at all.
+///
+/// `to_supertypes` was added for exactly this case — one `N/A` makes `amount` a String
+/// in one file and an Int64 in the next — and the note was written from the column
+/// *names*, which agree. So the folder opened with `amount` silently text for every
+/// row, where before it had failed loudly.
+#[test]
+fn test_widening_a_column_is_never_silent() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let drifted = tmp.path().join("drifted");
+    std::fs::create_dir_all(&drifted).unwrap();
+    std::fs::write(drifted.join("a.csv"), "id,amount\n1,10\n").unwrap();
+    std::fs::write(drifted.join("b.csv"), "id,amount\n2,N/A\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![drifted.clone()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    let state = app.data_table_state.as_ref().expect("it opens");
+    let notes = state.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.summary.contains("more than one type")),
+        "the widening is reported: {notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.summary.contains("same columns")),
+        "and not as a disagreement about columns, which these files do not have: {notes:?}"
+    );
+
+    // The names agreeing is what made this invisible, so assert they do.
+    assert_eq!(state.headers(), vec!["id", "amount"]);
 }

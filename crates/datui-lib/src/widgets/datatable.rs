@@ -909,6 +909,39 @@ impl DataTableState {
     }
 
     /// Load multiple Parquet files and concatenate them into one LazyFrame (same schema assumed).
+    /// How the files of one dataset are stacked into one table.
+    ///
+    /// `diagonal`, so a file written before a column existed brings the rest of its
+    /// rows instead of refusing the whole folder; the column reads null for it, and
+    /// the Notes say which files have it. `to_supertypes`, because a CSV column is
+    /// typed by inference per file — one `N/A` makes `amount` a String in one file and
+    /// an Int64 in the next — and without widening, name agreement is not enough to
+    /// stack them.
+    ///
+    /// Both are opt-ins everywhere else: DuckDB's `union_by_name`, pyarrow's
+    /// `unify_schemas`, Spark's `mergeSchema`. They are the default here because a
+    /// library that unions silently becomes wrong analysis downstream, while datui
+    /// says what it did in the Notes and keeps `Enter` on the row conservative — a
+    /// folder whose files are not one table is gone inside, not unioned, and this is
+    /// what the `(all files)` row behind it reads with.
+    ///
+    /// **Only for the formats that rule can judge**, which is CSV and NDJSON here, and
+    /// Parquet through `lenient_scan` elsewhere. Arrow, Avro, ORC and `.json` keep
+    /// their columns nowhere cheap to reach, so nothing looks at them before the open
+    /// and nothing could say what a union of them had done — a silent union with no
+    /// gate in front of it and no note behind it is the pairing this whole change
+    /// exists to remove, not something to spread further.
+    ///
+    /// Identical schemas stack exactly as before: diagonal over one schema is vertical,
+    /// and nothing is widened where nothing differs.
+    fn union_of_files() -> polars::prelude::UnionArgs {
+        polars::prelude::UnionArgs {
+            diagonal: true,
+            to_supertypes: true,
+            ..Default::default()
+        }
+    }
+
     pub fn from_parquet_paths(
         paths: &[impl AsRef<Path>],
         pages_lookahead: Option<usize>,
@@ -3061,7 +3094,7 @@ impl DataTableState {
         }
         let mut lf = Self::trim_csv_column_names(polars::prelude::concat(
             lazy_frames.as_slice(),
-            Default::default(),
+            Self::union_of_files(),
         )?)?;
         lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
         lf = Self::apply_skip_tail_rows_csv(lf, options)?;
@@ -3132,7 +3165,7 @@ impl DataTableState {
             let lf = LazyJsonLineReader::new(pl_path).finish()?;
             lazy_frames.push(lf);
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,

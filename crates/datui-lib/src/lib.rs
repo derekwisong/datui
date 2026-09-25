@@ -4607,6 +4607,13 @@ pub struct OpenOptions {
     /// that it is never silent: a note and a chip in the control bar say so, and both
     /// are load-bearing.
     pub read_as_plain_files_of: Option<&'static str>,
+    /// How the folder's own files differed, when they did.
+    ///
+    /// Only for the formats with no footer. A Parquet dataset's footers are read
+    /// anyway, and say this per column and per file in far more detail — which columns,
+    /// in how many files, and where — so saying it twice would be one vague note above
+    /// several exact ones.
+    pub files_disagree: crate::schema_union::Disagreement,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
@@ -4652,6 +4659,7 @@ impl OpenOptions {
             skip_tail_rows: None,
             left_out: Vec::new(),
             read_as_plain_files_of: None,
+            files_disagree: Default::default(),
             compression: None,
             format: None,
             pages_lookahead: None,
@@ -5254,6 +5262,92 @@ impl Drop for GenerationLease {
 /// with that key and it was not dropped: the caller keeps it and offers it again once
 /// the app is idle.
 pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
+
+/// What <kbd>Enter</kbd> will do on the highlighted row.
+///
+/// Written so the control bar and the details pane can say it before it happens.
+/// Every folder has two doors and the labels no longer decide access, which is only
+/// worth anything if the screen says which key is which — a bar reading `Enter Open` on
+/// a row where `Enter` goes inside teaches the wrong thing on the first try, and the
+/// first try is the one that forms the impression.
+///
+/// A prediction, so it can drift from [`App::home_open_selected`], which is the thing
+/// that actually decides. `test_the_bar_says_what_enter_will_really_do` pumps `Enter`
+/// on one row of every shape and asserts the two agreed; that test is the reason this
+/// is safe to read from the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhatEnter {
+    /// Load the file on the row.
+    OpensFile,
+    /// Read the whole folder as one table: a hive root, a folder whose files are one
+    /// table, or the `(all files)` row.
+    OpensFolder,
+    /// Step into the folder. What `→` does too, on these rows.
+    GoesInside,
+    /// Look at the row first, then do whichever of the above the answer calls for.
+    LooksFirst,
+    /// Fold or unfold a section.
+    FoldsSection,
+    /// Show the rest of `RECENT`.
+    ShowsMore,
+    /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
+    /// browse and says so.
+    Explains,
+}
+
+impl App {
+    /// See [`WhatEnter`].
+    pub fn what_enter_does(&self) -> WhatEnter {
+        // One walk of the list, not four. Every `selected_*` helper rebuilds it, and
+        // this runs from the control bar on every frame, beside a `selected_folder_to_enter`
+        // that walks it once more.
+        let rows = self.home.visible();
+        let entry = match rows.get(self.home.selected) {
+            // A place row browses into the place, which is what `→` does on it too, so
+            // it is labelled the same and offered once. An HTTP place has no listing to
+            // browse and says so instead.
+            Some(home::Row::Place { path, .. }) => {
+                return if home::place_is_browsable(path) {
+                    WhatEnter::GoesInside
+                } else {
+                    WhatEnter::Explains
+                };
+            }
+            Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
+            Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
+            None => return WhatEnter::Explains,
+            // The door reads the folder it names whatever that folder is labelled — the
+            // lake tables included, which is the one row that reads them at all.
+            Some(home::Row::Door { .. }) => return WhatEnter::OpensFolder,
+            Some(home::Row::Entry { entry, .. }) => *entry,
+        };
+        match entry.kind {
+            discover::EntryKind::Unknown => WhatEnter::LooksFirst,
+            discover::EntryKind::File => WhatEnter::OpensFile,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensFolder,
+            // A plain directory, and a lake table, whose files are not its rows.
+            discover::EntryKind::Directory
+            | discover::EntryKind::Delta
+            | discover::EntryKind::Iceberg
+            | discover::EntryKind::Hudi => WhatEnter::GoesInside,
+        }
+    }
+}
+
+/// What a read of a folder found out about itself on the way through.
+///
+/// Filled by the pass that actually picks the files and the reader, and carried back on
+/// the options so the dataset can say it in the Notes. Everything here is about what
+/// datui *did*, not about what the data is — the footer notes are the other half, and
+/// they are written later, by whatever read the footers.
+#[derive(Debug, Clone, Default)]
+pub struct ReadReport {
+    /// Data files in the folder this read passed over, by format and count. A folder of
+    /// more than one format is read as the commonest of them; this is the rest.
+    pub left_out: Vec<(FileFormat, usize)>,
+    /// How the files read differed. See [`OpenOptions::files_disagree`].
+    pub files_disagree: crate::schema_union::Disagreement,
+}
 
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
 #[derive(Clone)]
@@ -9329,11 +9423,15 @@ impl App {
             // the read's own answer, because it is the pass that decides, while for a
             // prefix in an object store Polars does the listing and never sees the
             // other formats — there the home screen's listing is the only witness.
-            let mut left_out = options.left_out.clone();
-            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut left_out) {
+            let mut report = ReadReport {
+                left_out: options.left_out.clone(),
+                files_disagree: options.files_disagree,
+            };
+            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut report) {
                 Ok(lf) => {
                     let options = OpenOptions {
-                        left_out,
+                        left_out: report.left_out,
+                        files_disagree: report.files_disagree,
                         ..options
                     };
                     let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -10219,6 +10317,7 @@ impl App {
         state.set_open_notes(crate::notes::from_the_open(
             &options.left_out,
             options.read_as_plain_files_of,
+            options.files_disagree,
         ));
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
@@ -10465,17 +10564,67 @@ impl App {
     /// Takes the cloud config by reference rather than reading `self`, so the same
     /// code can run on a background thread — scanning is where the wall-clock time
     /// goes for CSV (schema inference) and for hive directories with many files.
-    /// `left_out` is what the read passed over, by format and count, for the caller to
-    /// say in a note. Only a folder of more than one format fills it: the read takes
-    /// the commonest format and this is what the rest were. Written here rather than
-    /// worked out by the caller because this is the pass that decides, and a second
-    /// opinion formed from a second directory read is a second answer waiting to
-    /// disagree.
+    /// Whether the files about to be read as one table do not all carry the same
+    /// columns, for the note that says so.
+    ///
+    /// Only for the formats with no footer. A Parquet dataset's footers are read anyway
+    /// and produce the exact version of this — which columns, in how many files, and
+    /// where — so a second, vaguer note above those would be noise.
+    ///
+    /// A spread of the files rather than all of them, the same three
+    /// [`crate::schema_union::sample_files`] reads for the label, and for the same
+    /// reason: this runs on the way into a read the user is waiting for.
+    fn files_disagree(
+        files: &[PathBuf],
+        options: &OpenOptions,
+        found: FileFormat,
+    ) -> crate::schema_union::Disagreement {
+        // The format the read will use, not the one the names suggested: an explicit
+        // `--format` outranks both, and judging a folder with a reader the open will
+        // not use is a note about a read that never happened.
+        let format = options.format.unwrap_or(found);
+        if format == FileFormat::Parquet {
+            return Default::default();
+        }
+        if Self::parsing_is_the_user_s_answer(options) {
+            return Default::default();
+        }
+        crate::schema_union::sample_files(files, format).disagreement()
+    }
+
+    /// Whether the user has told datui how to read these files, in a way that moves
+    /// where the columns are or changes what type they come out as.
+    ///
+    /// The sample reads each file with the reader's own defaults and nothing else, so
+    /// where any of these is set it is reading a different file than the open will, and
+    /// anything decided from it is about a read that never happened. With
+    /// `--null-value N/A` the read keeps `amount` an Int64 while the sample sees an
+    /// Int64 beside a String and would report a widening the table never did; with
+    /// `--no-header` the read names every file's columns `column_1..N` and they stack
+    /// perfectly, while the sample takes each file's first row of data for names and
+    /// finds them all different.
+    fn parsing_is_the_user_s_answer(options: &OpenOptions) -> bool {
+        options.has_header.is_some()
+            || options.skip_rows.is_some()
+            || options.skip_lines.is_some()
+            || options.skip_tail_rows.is_some()
+            || options.infer_schema_length.is_some()
+            || options.ignore_errors
+            || options.parse_strings.is_some()
+            || !options.parse_dates
+            || options.null_values.is_some()
+    }
+
+    /// `found` is what the read has to say about itself, for the caller to put in the
+    /// dataset's notes: which data files it passed over, and whether the files it did
+    /// read carry the same columns. Written here rather than worked out by the caller
+    /// because this is the pass that decides, and a second opinion formed from a second
+    /// directory read is a second answer waiting to disagree.
     fn build_lazyframe_from_paths_with(
         cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
         options: &OpenOptions,
-        left_out: &mut Vec<(FileFormat, usize)>,
+        report: &mut ReadReport,
     ) -> Result<LazyFrame> {
         let path = &paths[0];
         match source::input_source(path) {
@@ -10675,13 +10824,14 @@ impl App {
                             // list of files typed on the command line goes through. An
                             // explicit `--format` is the user's own answer and outranks
                             // what the names say.
+                            report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
                             return Self::build_lazyframe_from_paths_with(
-                                cloud, &files, &nested, left_out,
+                                cloud, &files, &nested, report,
                             );
                         }
                         crate::discover::FolderFormat::Mixed {
@@ -10693,17 +10843,18 @@ impl App {
                             // CSVs and one stray JSON is a folder of CSVs, and refusing
                             // the whole of it over the stray was datui deciding that a
                             // folder it could read was not worth reading.
+                            report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
                             let lf = Self::build_lazyframe_from_paths_with(
-                                cloud, &files, &nested, left_out,
+                                cloud, &files, &nested, report,
                             )?;
                             // After the call, which reads a flat folder of one format
                             // and leaves nothing out of its own.
-                            *left_out = passed_over;
+                            report.left_out = passed_over;
                             return Ok(lf);
                         }
                     }

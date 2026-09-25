@@ -50,6 +50,8 @@ tempfile = "3.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 fs2 = "0.4"
 toml = "1.1"
+# Writing a `.csv.gz` fixture. Already `datui-lib`'s, so nothing new enters the tree.
+flate2 = "1.0"
 
 # Packaging: deb, rpm, AUR.
 [package.metadata.deb]

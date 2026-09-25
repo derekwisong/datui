@@ -21,7 +21,11 @@ NAVIGATION
                     delta, iceberg or hudi is a lake table datui does not read
                     yet, and Enter goes inside it. On a place row under Recent,
                     Enter browses the place; on the "… N more" row it shows the
-                    rest of Recent
+                    rest of Recent.
+                    The control bar names which of these it will be on the row
+                    you are on: "Open all" reads the whole folder, "Inside" steps
+                    into it, "Open" loads a file, "Look" finds out first. Where
+                    Enter and → do the same thing only one is offered
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
   Ctrl+R            List again what is on screen: every cloud source, the one
@@ -36,12 +40,15 @@ NAVIGATION
   the way while a filter is typed.
 
   It does not refuse. A folder of more than one format is read as the commonest
-  of them, a lake table as the plain files under it, and files written with no
-  extension by what their first bytes say. Each of those says what it did in the
-  Notes tab, and a lake table's files also carry a chip beside the row count,
-  because that count includes rows a delete tombstoned and versions an update
-  replaced. The one folder still refused is a prefix in a bucket holding nothing
-  datui has a reader for, and it names what is there.
+  of them, a lake table as the plain files under it, files written with no
+  extension by what their first bytes say, and Parquet, CSV or NDJSON files that
+  do not agree as the union of them, where a row from a file without a column
+  reads null and a column held in two types is read as the wider.
+  Each of those says what it did in the Notes tab, and a lake table's files also
+  carry a chip beside the row count, because that count includes rows a delete
+  tombstoned and versions an update replaced. The one folder still refused is a
+  prefix in a bucket holding nothing datui has a reader for, and it names what
+  is there.
 
   A folder's label says what is directly inside it: hive, delta, iceberg, hudi,
   a count and a format ("12 parquet"), "mixed" for more than one format, or

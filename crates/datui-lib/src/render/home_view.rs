@@ -379,6 +379,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // the request for more is made after the frame, not during it.
     app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
     app.home.pending_classify = !app.home.unclassified_visible(1).is_empty();
+    app.home.pending_peek = !app.home.cloud_folders_to_peek(1).is_empty();
     let awaiting = app.home.awaiting_listing().map(|d| d.to_path_buf());
     let since = match awaiting {
         Some(_) => Some(
@@ -543,6 +544,23 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                         .then_some(known_sources.as_slice()),
                     app.home.place_kind(&entry.path),
                     if *nested { NEST_INDENT } else { 0 },
+                    ctx,
+                ));
+            }
+            // Drawn exactly like an entry, because to look at it is one: a row in
+            // the folder's list with a name, a shape and a size. What it is not is a
+            // row *of* the folder, which is why it arrives here by its own variant.
+            crate::home::Row::Door { entry, .. } => {
+                lines.push(entry_line(
+                    entry,
+                    selected,
+                    name_width,
+                    show_meta,
+                    None,
+                    &app.home.filter,
+                    None,
+                    app.home.place_kind(&entry.path),
+                    0,
                     ctx,
                 ));
             }
@@ -2407,6 +2425,7 @@ mod tests {
     fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
         let ctx = RenderContext::for_test();
         let section = Section {
+            door: None,
             title: "/mnt/data".to_string(),
             subtitle: Some("nfs4".to_string()),
             origin: Some("configured"),
@@ -2718,6 +2737,7 @@ mod tests {
         // A search heading carries the path it searched, which is easily longer than
         // the terminal. The note is context; the title is what the section is.
         let section = Section {
+            door: None,
             title: "Found".to_string(),
             subtitle: Some(
                 "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
@@ -3182,6 +3202,7 @@ mod tests {
         // Trimming the note first is the point: a header that says only where it
         // looked, and not what it is, has lost the more useful half.
         let section = Section {
+            door: None,
             title: "Found".to_string(),
             subtitle: Some("x".repeat(200)),
             origin: None,

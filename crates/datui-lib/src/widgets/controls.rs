@@ -28,6 +28,15 @@ pub struct Controls {
     pub row_count_unknown: bool, // When true, the count could not be determined: show "?" instead of a misleading provisional number (takes effect only when not pending)
     /// Replaces the row count entirely, for views that are not showing a table.
     pub caption: Option<String>,
+    /// Set to the lake format's name when the table on screen is a lake table's plain
+    /// files rather than the table: `"Delta"`, `"Iceberg"`, `"Hudi"`.
+    ///
+    /// Drawn as a chip beside the row count, which is the number it is about — the
+    /// files hold rows a delete tombstoned, versions an update replaced and both sides
+    /// of a compaction, so the count is a true count of the files and a wrong one of
+    /// the table. A note in the panel says the same at length; this is the half that
+    /// cannot be missed, and the read is only defensible because both are there.
+    pub not_the_table: Option<&'static str>,
 }
 
 impl Default for Controls {
@@ -50,6 +59,7 @@ impl Default for Controls {
             notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
+            not_the_table: None,
         }
     }
 }
@@ -78,6 +88,7 @@ impl Controls {
             notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
+            not_the_table: None,
         }
     }
 
@@ -153,6 +164,13 @@ impl Controls {
         self
     }
 
+    /// Say, beside the row count, that these are a lake table's files and not the
+    /// table. See [`Self::not_the_table`].
+    pub fn with_not_the_table(mut self, format: Option<&'static str>) -> Self {
+        self.not_the_table = format;
+        self
+    }
+
     /// Create Controls from RenderContext (Phase 2+).
     /// This is the preferred way to create Controls with proper theming.
     pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
@@ -174,6 +192,7 @@ impl Controls {
             notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
+            not_the_table: None,
         }
     }
 
@@ -202,6 +221,7 @@ impl Controls {
             notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
+            not_the_table: None,
         }
     }
 }
@@ -285,12 +305,32 @@ impl Widget for &Controls {
                 .max(20)
         });
 
-        // Status message mode: [spinner 2ch] [message Fill] [row count or caption]
+        // The chip that says the row count is not the table's. Immediately left of the
+        // count, because the count is what it is about.
+        let not_the_table = self
+            .not_the_table
+            .map(|format| format!(" not the {format} table "));
+        let chip_width = not_the_table
+            .as_ref()
+            .map(|text| text.chars().count() as u16)
+            .unwrap_or(0);
+
+        // The chip: the bar's accent behind the bar's own colour, the same cut-out a
+        // key chip is, because it is the one thing here the eye must not slide past.
+        let chip_style = Style::default()
+            .bg(self.key_color)
+            .fg(self.chip_text_color)
+            .add_modifier(Modifier::BOLD);
+
+        // Status message mode: [spinner 2ch] [message Fill] [chip] [row count or caption]
         if let Some(ref msg) = self.status_message {
             let mut constraints = vec![
                 Constraint::Length(2), // spinner
                 Constraint::Fill(1),   // status message
             ];
+            if chip_width > 0 {
+                constraints.push(Constraint::Length(chip_width));
+            }
             if let Some(width) = trailing {
                 constraints.push(Constraint::Length(width));
             }
@@ -313,12 +353,19 @@ impl Widget for &Controls {
             .style(label_style)
             .render(layout[1], buf);
 
+            let mut next = 2;
+            if let Some(text) = &not_the_table {
+                Paragraph::new(text.as_str())
+                    .style(chip_style)
+                    .render(layout[next], buf);
+                next += 1;
+            }
             // Row count (right-aligned, if available)
             if let Some(count) = self.row_count {
                 Paragraph::new(row_count_text(count))
                     .style(label_style)
                     .right_aligned()
-                    .render(layout[2], buf);
+                    .render(layout[next], buf);
             }
 
             return;
@@ -358,7 +405,7 @@ impl Widget for &Controls {
         // is satisfied by nothing, so the extra column is a margin rather than a
         // requirement — it costs one chip at one width and keeps the common case as it
         // was.
-        let right_reserved = trailing.map(|width| width + 1).unwrap_or(1);
+        let right_reserved = trailing.map(|width| width + 1).unwrap_or(1) + chip_width;
         let mut available = area.width.saturating_sub(right_reserved);
 
         let mut n_show = 0;
@@ -384,18 +431,14 @@ impl Widget for &Controls {
             .collect();
 
         constraints.push(Constraint::Fill(1));
+        if chip_width > 0 {
+            constraints.push(Constraint::Length(chip_width));
+        }
         if let Some(width) = trailing {
             constraints.push(Constraint::Length(width));
         }
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
-
-        // The chip: key on the accent, text in the bar's own colour, bold. A flat
-        // block, no caps, so it reads as a keycap and not as a button.
-        let chip_style = Style::default()
-            .bg(self.key_color)
-            .fg(self.chip_text_color)
-            .add_modifier(Modifier::BOLD);
 
         for (i, (key, action)) in controls.iter().take(n_show).enumerate() {
             let j = i * 2;
@@ -413,11 +456,18 @@ impl Widget for &Controls {
         }
 
         let fill_idx = n_show * 2;
+        let mut next = fill_idx + 1;
+        if let Some(text) = &not_the_table {
+            Paragraph::new(text.as_str())
+                .style(chip_style)
+                .render(layout[next], buf);
+            next += 1;
+        }
         if let Some(count) = self.row_count {
             Paragraph::new(row_count_text(count))
                 .style(label_style)
                 .right_aligned()
-                .render(layout[fill_idx + 1], buf);
+                .render(layout[next], buf);
         }
 
         Paragraph::new("")
@@ -509,6 +559,44 @@ mod tests {
         (0..width)
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect::<String>()
+    }
+
+    /// The chip is in the bar, beside the count it is about, and it costs a key rather
+    /// than the count.
+    ///
+    /// A note in the panel is a tab away. This is the half that cannot be missed, and
+    /// reading a lake table's files at all is only defensible because both are there.
+    #[test]
+    fn a_lake_table_s_files_say_so_beside_the_row_count() {
+        let bar = |format: Option<&'static str>| {
+            render_to_string(
+                &Controls::with_row_count(1_234).with_not_the_table(format),
+                80,
+            )
+        };
+
+        let plain = bar(None);
+        let labelled = bar(Some("Delta"));
+        assert!(plain.contains("Rows: 1,234"));
+        assert!(
+            !plain.contains("not the"),
+            "nothing is said about an ordinary dataset"
+        );
+        assert!(labelled.contains("not the Delta table"), "got {labelled:?}");
+        assert!(
+            labelled.contains("Rows: 1,234"),
+            "and the count it is about is still there: {labelled:?}"
+        );
+        assert!(
+            labelled.find("not the Delta").unwrap() < labelled.find("Rows:").unwrap(),
+            "immediately left of the count: {labelled:?}"
+        );
+        // Room for it comes out of the keys, which the bar drops from the tail as it
+        // always has, rather than out of the count.
+        assert!(
+            labelled.contains("Query"),
+            "the first keys are still offered: {labelled:?}"
+        );
     }
 
     #[test]

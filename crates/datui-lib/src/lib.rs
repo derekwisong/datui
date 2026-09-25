@@ -505,6 +505,7 @@ mod classify_batch_tests {
             .collect();
         home::Listing {
             sections: vec![home::Section {
+                door: None,
                 title: "SHARE".into(),
                 subtitle: None,
                 origin: None,
@@ -4587,6 +4588,25 @@ pub struct OpenOptions {
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
+    /// Data files in the folder being opened that this read passes over, by format and
+    /// count.
+    ///
+    /// A folder of more than one format is read as the commonest of them — a thousand
+    /// CSVs and one stray JSON is a folder of CSVs — and this is what the stray was, so
+    /// the dataset can say what it left out rather than the folder being refused over
+    /// it. Empty for every other open, which is all of them but one.
+    pub left_out: Vec<(FileFormat, usize)>,
+    /// Set when the folder being opened is a lake table and this read is of its plain
+    /// files: `"Delta"`, `"Iceberg"` or `"Hudi"`.
+    ///
+    /// The files are not the table. A delete leaves its rows on disk, an update leaves
+    /// the version it replaced, and compaction leaves both sides — so this read counts
+    /// rows no query of the table would return. datui does it anyway, because the
+    /// alternative was a folder the user could see and could not read at all, and every
+    /// other engine at least lets you look. What makes it honest rather than wrong is
+    /// that it is never silent: a note and a chip in the control bar say so, and both
+    /// are load-bearing.
+    pub read_as_plain_files_of: Option<&'static str>,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
@@ -4630,6 +4650,8 @@ impl OpenOptions {
             skip_lines: None,
             skip_rows: None,
             skip_tail_rows: None,
+            left_out: Vec::new(),
+            read_as_plain_files_of: None,
             compression: None,
             format: None,
             pages_lookahead: None,
@@ -7981,6 +8003,10 @@ impl App {
         if std::mem::take(&mut self.home.pending_classify) {
             self.request_home_classifications();
         }
+        #[cfg(feature = "cloud")]
+        if std::mem::take(&mut self.home.pending_peek) {
+            self.peek_cloud_folders();
+        }
     }
 
     /// Ask a worker what the rows on screen are.
@@ -8089,9 +8115,13 @@ impl App {
                         .unwrap_or_else(|_| entry.path.clone())
                         == target
                 }
-                home::Row::Header { .. } | home::Row::Place { .. } | home::Row::More { .. } => {
-                    false
-                }
+                // Not the door: its path is the folder's, so an open file whose
+                // folder is being browsed would put the cursor on the row that
+                // opens the whole folder rather than on the file itself.
+                home::Row::Header { .. }
+                | home::Row::Place { .. }
+                | home::Row::More { .. }
+                | home::Row::Door { .. } => false,
             }) {
                 self.home.selected = idx;
             }
@@ -8246,8 +8276,12 @@ impl App {
     /// a prefix of twelve CSV objects is a `Directory` — only Parquet is read in place —
     /// and it is still `12 csv`, which is the count the row is labelled from.
     ///
-    /// An answer that says neither is dropped, because each send costs a listing
-    /// rebuild, and that reads the dataset index on the thread drawing the frame.
+    /// An answer that says neither is replaced by "a directory, and nothing to say
+    /// about it" rather than dropped. The folder still has to come back — that is what
+    /// takes it out of `peeking` and holds the one-request-per-folder promise — and
+    /// once the request has been made, "nothing to say" is a real answer rather than
+    /// the claim it was when it was being written before the request. What this decides
+    /// is whether the peek's own words are kept.
     ///
     /// "Says something" is `Holds::is_empty`, not the formats alone. The row is not the
     /// only thing an answer reaches: the details pane draws the whole `holds` line, so a
@@ -8255,9 +8289,8 @@ impl App {
     /// sub-prefixes has `12 folders`. Testing the formats dropped both, and the same
     /// folders on disk said both things.
     ///
-    /// The cost is real and is the reason this is not simply `true`: each send rebuilds
-    /// the listing on the thread drawing the frame, and a warehouse of forty-eight
-    /// database prefixes goes from no sends to twelve. `Holds::is_empty` is the line
+    /// The cost is real and is the reason the distinction is kept: each batch rebuilds
+    /// the listing on the thread drawing the frame. `Holds::is_empty` is the line
     /// because it is the same question the pane asks before drawing the line at all.
     ///
     /// One shape it lets through buys nothing today: a `Holds` whose only field is
@@ -8265,34 +8298,38 @@ impl App {
     /// data file keeps the word for its place rather than becoming `dir+`, so the `+`
     /// has nowhere to land on this route. It is let through because the alternative is
     /// a second, narrower definition of "says something" that would drift from the
-    /// first — and #275 phase 6 gives the `+` somewhere to land.
+    /// first.
     #[cfg(feature = "cloud")]
     fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
         answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
     }
 
-    /// Look inside the folders a cloud listing returned, a few at a time, so the ones
-    /// that are datasets say `hive` or `multi` and open as one. One small listing
-    /// request per folder, and at most `PEEKS_PER_LISTING` of them per listing; each
-    /// folder is peeked at once per session.
+    /// Look inside the cloud folders the cursor is on or near, so the ones that are
+    /// datasets say `hive` or `multi` and open as one. One small listing request per
+    /// folder, and each folder is peeked at once per session.
     ///
     /// A folder the listing takes for `multi` costs a little more: up to three ranged
     /// reads of a few kilobytes each, to ask the footers whether its files are really
     /// one table. Nothing else reads an object, and nothing reads a whole one.
+    ///
+    /// Driven by the cursor rather than by the listing. It used to take the first
+    /// forty-eight folders of each listing, once: a bucket of two hundred prefixes had
+    /// forty-eight labelled and the rest reading `dir` for the session however long you
+    /// spent on them, and paging straight past those forty-eight spent the requests on
+    /// rows nobody saw. The budget is the same shape as the local classify pass now —
+    /// what is on screen, a batch at a time, the highlighted row first.
     #[cfg(feature = "cloud")]
-    fn peek_cloud_folders(&mut self, root: &Path) {
-        const PEEKS_PER_LISTING: usize = 48;
+    fn peek_cloud_folders(&mut self) {
         const PEEKS_AT_ONCE: usize = 4;
-        let folders = self.home.cloud_folders_to_peek(root, PEEKS_PER_LISTING);
+        let folders = self.home.cloud_folders_to_peek(PEEKS_AT_ONCE);
         if folders.is_empty() {
             return;
         }
-        // Claimed now, so a rebuild before the answers arrive does not ask again.
+        // Out, not answered. A second pass before these land must not ask again, and an
+        // answer written here instead would be a claim — `dir` on a row that has a
+        // count, and "never again this session" staked on a request that may fail.
         for folder in &folders {
-            self.home.cloud_kinds.insert(
-                folder.clone(),
-                (discover::EntryKind::Directory, Default::default()),
-            );
+            self.home.peeking.insert(folder.clone());
         }
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
@@ -8310,13 +8347,23 @@ impl App {
             }
             // Sent a few at a time: the labels fill in as they are found, without a
             // rebuild per folder.
+            //
+            // Every folder asked about is sent back, including the ones whose peek
+            // decided nothing and the ones whose request failed. That is what takes
+            // them out of `peeking` and what holds the one-request-per-folder promise
+            // — and an answer of "a directory, and nothing to say about it" is a real
+            // answer once the request has been made, which is what it was not while it
+            // was being written before the request.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                if let Ok((folder, Ok(answer))) = joined
-                    && Self::peek_tells_a_row_something(&answer)
-                {
-                    found.push((folder, answer));
-                }
+                let Ok((folder, answer)) = joined else {
+                    continue;
+                };
+                let answer = answer
+                    .ok()
+                    .filter(Self::peek_tells_a_row_something)
+                    .unwrap_or((discover::EntryKind::Directory, Default::default()));
+                found.push((folder, answer));
                 if found.len() >= PEEKS_AT_ONCE {
                     let _ = tx.send(AppEvent::HomeCloudKinds {
                         kinds: std::mem::take(&mut found),
@@ -8355,10 +8402,10 @@ impl App {
     ///
     /// `Enter` on it opens the folder whatever the label says, and → on it would
     /// descend into where it already is.
+    /// Asked of the row's variant rather than of a flag on the entry it carries: the
+    /// door is a `Row::Door` now, so this is one match instead of a clone.
     fn selection_opens_the_whole_folder(&self) -> bool {
-        self.home
-            .selected_entry()
-            .is_some_and(|entry| entry.opens_whole_folder)
+        self.home.selection_is_the_door()
     }
 
     /// The highlighted row, when → goes inside it.
@@ -8431,6 +8478,34 @@ impl App {
         }
     }
 
+    /// The reader a prefix in an object store calls for, from what its listing counted.
+    ///
+    /// The commonest format, which is the same rule a folder on disk follows — and
+    /// `rank_formats` is the same order, so a prefix and the folder it mirrors pick the
+    /// same reader. `None` when nothing there has a multi-file reader, which is where
+    /// the refusal that names what is there belongs.
+    ///
+    /// Parquet included and returned as itself: the cloud branches compare against it
+    /// and take their own path, which is the one every cloud dataset took before any of
+    /// this, and the only one with hive partitioning behind it.
+    #[cfg(feature = "cloud")]
+    fn cloud_prefix_format(
+        holds: &discover::Holds,
+    ) -> Option<(FileFormat, Vec<(FileFormat, usize)>)> {
+        let (name, _) = holds.formats.first()?;
+        let format = FileFormat::from_name(name).filter(|f| f.reads_many_files())?;
+        // And what taking the commonest passes over. The local read reports its own —
+        // it is the pass that decides — but here Polars does the listing and never sees
+        // the other formats, so the note has to be written from the listing on screen.
+        let left_out = holds
+            .formats
+            .iter()
+            .skip(1)
+            .filter_map(|(name, n)| FileFormat::from_name(name).map(|f| (f, *n)))
+            .collect();
+        Some((format, left_out))
+    }
+
     /// What to say when the user asks to open a lake table: datui goes inside it rather
     /// than reading it, and the reason is not guessable from the row.
     ///
@@ -8482,47 +8557,50 @@ impl App {
         // the open, because `open_what_it_is` would read the label back and send a
         // `dir` row inside the folder it is already in.
         if self.selection_opens_the_whole_folder() {
-            // Except a lake table, which is not a folder of Parquet files however much
-            // it looks like one: reading it as one counts tombstoned rows, every
-            // rewritten version and both sides of a compaction. `enrich` will not so
-            // much as count one for that reason, and this row offered to open it — the
-            // refusal one row above it, and #237 reached through the new door. Phase 4
-            // gives it a read that says what it is doing.
-            if let Some(format) = entry.kind.lake_name() {
-                // Not `lake_table_note`, which says "these are the files under it" —
-                // true of going inside, and this row is already inside.
-                self.home.status = Some(format!(
-                    "datui does not read {format} tables yet — open one of the files below instead"
-                ));
-                return None;
-            }
-            // A prefix in an object store is scanned as Parquet whatever is in it —
-            // every cloud path returns before the folder-format dispatch is reached —
-            // so a prefix of CSV answers "Could not read from S3. Check credentials and
-            // URL", which is a false statement about the user's login. The door made
-            // that reachable: the row used to exist only where the listing had already
-            // found Parquet. What it holds is counted and on screen, so saying so costs
-            // no request. #275 phase 4 is where these read.
-            // Not asked of a prefix the listing already calls a dataset. A hive root
-            // is read through its partitions, and one stray `manifest.csv` beside them
-            // is not what it holds — but it is the only thing in `formats`, so the
-            // refusal below saw a folder of CSV. The row one level up opens that prefix
-            // and always has; the door added to guarantee access was refusing it.
+            // A lake table is not a folder of Parquet files however much it looks like
+            // one: reading it as one counts tombstoned rows, every rewritten version
+            // and both sides of a compaction. So the read is labelled rather than
+            // refused. Refusing it left a folder the user could see and could not read
+            // at all — this row is the promise that no label locks you out, and a
+            // refusal here is that promise broken on the one folder that needed it.
+            // Until datui reads the log, its files are what there is, and what makes
+            // that honest is that nothing about it is silent: a note in the panel, a
+            // chip in the control bar, and `Enter` on the row one level up still goes
+            // inside and says datui does not read the table itself yet.
+            let lake = entry.kind.lake_name();
+            // A prefix in an object store used to be scanned as Parquet whatever was
+            // in it — every cloud path returns before the folder-format dispatch is
+            // reached — so a prefix of CSV answered "Could not read from S3. Check
+            // credentials and URL", a false statement about the user's login. What the
+            // prefix holds was counted by the listing and is on screen, so the reader
+            // is picked from it, which costs no request. Only a prefix the listing
+            // already calls a dataset is left alone: a hive root is read through its
+            // partitions, and one stray `manifest.csv` beside them is not what it
+            // holds — but it is the only thing in `formats`.
+            let mut reader = None;
+            #[cfg(feature = "cloud")]
             if home::is_object_store_url(&entry.path)
                 && !matches!(
                     entry.kind,
                     discover::EntryKind::Hive | discover::EntryKind::MultiFile
                 )
-                && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
             {
-                self.home.status = Some(what);
-                return None;
+                reader = Self::cloud_prefix_format(&entry.holds);
+                // Nothing here datui has a reader for. The listing is on screen, so the
+                // refusal names what is there rather than blaming the connection.
+                if reader.is_none()
+                    && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
+                {
+                    self.home.status = Some(what);
+                    return None;
+                }
             }
-            // `hive: true` is what puts the open on the local folder route at all:
-            // without it a directory is `Unsupported file type`. The cloud route
-            // returns before it is read.
+            // `hive: true` says read this as one, which is the whole of what the row
+            // promises — it is also what carries partition columns through, for a
+            // folder the dispatch sends down the hive route. The cloud route returns
+            // before the dispatch is reached.
             let folder = home::folder_dataset_url(&entry.path);
-            return Some(self.home_open_path(folder, true));
+            return Some(self.home_open_folder_as(folder, true, lake, reader));
         }
         // A row nothing has looked at is looked at before it is opened, rather than
         // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
@@ -8606,6 +8684,66 @@ impl App {
         Some(self.home_open_path(path, folder))
     }
 
+    /// What `datui <path>` does with a directory: the same rule as `Enter` on its row.
+    ///
+    /// A directory used to be `Unsupported file type` unless `--hive` was passed, while
+    /// pyarrow, Polars, pandas and Spark all open one. Naming a folder *is* the request
+    /// to read it, so the three doors onto a path — the highlighted row, the `~` prompt
+    /// and the command line — now answer the same: a hive root or a folder whose files
+    /// are one table opens as one table, and a folder that is a place to look inside
+    /// opens the home screen browsed into it, one keystroke from either file or union.
+    ///
+    /// The folder is looked into here rather than guessed at, because that is what the
+    /// rule is: [`home::look_into`] is the same call the home screen's background pass
+    /// makes, footers and all. On the command line it is on this thread, before the
+    /// first frame, which is where the user is already waiting for the path they named.
+    ///
+    /// `--hive` is untouched. It names a glob or forces partition columns, and it is
+    /// still the only way to say "read this as partitioned" about something whose
+    /// layout does not say so itself.
+    ///
+    /// Returns the event to send, or `None` when the app is now at the home screen.
+    pub fn open_the_path_named_on_the_command_line(
+        &mut self,
+        paths: Vec<PathBuf>,
+        mut options: OpenOptions,
+    ) -> Option<AppEvent> {
+        // Several paths are a list of files to read together, and `--hive` is an answer
+        // already given. Neither is a question about what one folder is.
+        let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
+        let Some(dir) = single.filter(|p| p.is_dir()) else {
+            return Some(AppEvent::Open(paths, options));
+        };
+
+        let mut entry = discover::Entry::directory(&dir);
+        entry.kind = discover::EntryKind::Unknown;
+        let kind = home::look_into(&entry).kind;
+
+        // A lake table's files are not its rows, so the home screen is opened on it and
+        // says why — the same sentence the row gives, because it is the same refusal.
+        if let Some(note) = Self::lake_table_note(kind) {
+            self.enter_home();
+            self.home_jump_into(dir);
+            self.home.status = Some(note);
+            return None;
+        }
+        // One table: read it. `hive` is what puts the open on the folder route, where
+        // what the folder holds picks the reader.
+        if matches!(
+            kind,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile
+        ) {
+            options.hive = true;
+            return Some(AppEvent::Open(paths, options));
+        }
+        // A place to look inside. `datui .` is this, and so is a folder of separate
+        // tables — where the `(all files)` row inside is the one keystroke that unions
+        // them anyway.
+        self.enter_home();
+        self.home_jump_into(dir);
+        None
+    }
+
     /// Browse into `path` as a jump, from wherever the user was.
     ///
     /// Unlike `home_browse_into`, the browse *starts* here: Esc comes back from here to
@@ -8626,12 +8764,46 @@ impl App {
     /// The recent entry is recorded by the `Open` handler, which every open goes
     /// through, so this does not record one itself.
     fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
+        self.home_open_folder(path, hive, None)
+    }
+
+    /// As [`Self::home_open_path`], and carrying whether the folder being read is a
+    /// lake table whose plain files this read is, so the dataset can say so.
+    fn home_open_folder(
+        &mut self,
+        path: PathBuf,
+        hive: bool,
+        lake: Option<&'static str>,
+    ) -> AppEvent {
+        self.home_open_folder_as(path, hive, lake, None)
+    }
+
+    /// As [`Self::home_open_folder`], naming the reader to use.
+    ///
+    /// For a prefix in an object store, where nothing downstream reads the listing: the
+    /// cloud branches scan before the folder-format dispatch is reached, so the format
+    /// the listing counted has to travel with the open or the scan falls back to
+    /// Parquet, which is what it always did.
+    fn home_open_folder_as(
+        &mut self,
+        path: PathBuf,
+        hive: bool,
+        lake: Option<&'static str>,
+        reader: Option<(FileFormat, Vec<(FileFormat, usize)>)>,
+    ) -> AppEvent {
+        let (format, left_out) = match reader {
+            Some((format, left_out)) => (Some(format), left_out),
+            None => (None, Vec::new()),
+        };
         // A directory of partitions is only meaningful read as one hive dataset. Told
         // rather than stat'ed: the caller already knows what this is, and on a share that
         // has gone away a `stat` here would freeze the thread reading the keys — the same
         // reason the size below is left to the `Open` handler.
         let options = OpenOptions {
             hive,
+            read_as_plain_files_of: lake,
+            format,
+            left_out,
             ..OpenOptions::default()
         };
         self.input_mode = InputMode::Normal;
@@ -9151,8 +9323,19 @@ impl App {
         let path_for_event = display_path.or_else(|| paths.first().cloned());
         let slot = self.pending_lazyframe_result.clone();
         self.spawn_bg(status, move |task_gen, tx| {
-            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options) {
+            // What the read passed over rides back with the options it was asked for,
+            // so the dataset can say what it left out. Seeded with what the caller
+            // already knows and overwritten by what the read finds: a folder on disk is
+            // the read's own answer, because it is the pass that decides, while for a
+            // prefix in an object store Polars does the listing and never sees the
+            // other formats — there the home screen's listing is the only witness.
+            let mut left_out = options.left_out.clone();
+            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut left_out) {
                 Ok(lf) => {
+                    let options = OpenOptions {
+                        left_out,
+                        ..options
+                    };
                     let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
                     // A newer scan already landed; this result is obsolete.
                     let dominated = guard.as_ref().is_some_and(|(g, _)| *g > task_gen);
@@ -10029,12 +10212,66 @@ impl App {
         // fails never gets here, which is what keeps the dataset still on screen
         // showing its own figures.
         state.set_measurements(meter);
+        // What the open did, as against what it found. The one place both are known:
+        // the scan has reported what it passed over, the caller has said whether this
+        // is a lake table's plain files, and the state that will carry the notes is in
+        // hand. See `DataTableState::open_notes` for why they are not the other notes.
+        state.set_open_notes(crate::notes::from_the_open(
+            &options.left_out,
+            options.read_as_plain_files_of,
+        ));
+        // And the half of it that cannot be missed: the row count on screen is a true
+        // count of the files and a wrong one of the table.
+        state.set_not_the_table(options.read_as_plain_files_of);
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         if path.is_some_and(source::scans_in_place) {
             state.set_remote_source();
         }
         Ok((state, label))
+    }
+
+    /// Scan a prefix in an object store with the reader its format calls for.
+    ///
+    /// Every cloud path went to `scan_parquet` whatever was under it, so a prefix of
+    /// CSV came back "Could not read from S3. Check credentials and URL" — a false
+    /// statement about the user's login, made about a folder datui could see the
+    /// contents of. Polars' other scans take the same `CloudOptions` and do their own
+    /// listing; nothing was passing them.
+    ///
+    /// Parquet keeps its own branch at each call site: it is the only one with hive
+    /// partitioning, which is a Parquet-only capability in this reader, and it is the
+    /// path every cloud dataset took before this existed.
+    ///
+    /// `None` when the format is not one of these, which sends the caller back to the
+    /// Parquet scan it always made.
+    #[cfg(feature = "cloud")]
+    fn scan_cloud_prefix(
+        url: &str,
+        cloud_opts: CloudOptions,
+        format: FileFormat,
+        glob: bool,
+    ) -> Option<Result<LazyFrame>> {
+        use polars::prelude::{LazyCsvReader, LazyFileListReader};
+        let pl_path = PlRefPath::new(url);
+        let named = |e: polars::error::PolarsError| {
+            color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
+        };
+        let lf = match format {
+            FileFormat::Csv => LazyCsvReader::new(pl_path)
+                .with_cloud_options(Some(cloud_opts))
+                .with_glob(glob)
+                .finish()
+                .map_err(named),
+            FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
+                .with_cloud_options(Some(cloud_opts))
+                .finish()
+                .map_err(named),
+            // Parquet has its own branch, and the rest have no multi-file cloud reader
+            // in Polars — an ORC or Avro prefix is still a file at a time.
+            _ => return None,
+        };
+        Some(lf)
     }
 
     /// The plain URL and Polars options for one object-store path, through the source
@@ -10228,10 +10465,17 @@ impl App {
     /// Takes the cloud config by reference rather than reading `self`, so the same
     /// code can run on a background thread — scanning is where the wall-clock time
     /// goes for CSV (schema inference) and for hive directories with many files.
+    /// `left_out` is what the read passed over, by format and count, for the caller to
+    /// say in a note. Only a folder of more than one format fills it: the read takes
+    /// the commonest format and this is what the rest were. Written here rather than
+    /// worked out by the caller because this is the pass that decides, and a second
+    /// opinion formed from a second directory read is a second answer waiting to
+    /// disagree.
     fn build_lazyframe_from_paths_with(
         cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
         options: &OpenOptions,
+        left_out: &mut Vec<(FileFormat, usize)>,
     ) -> Result<LazyFrame> {
         let path = &paths[0];
         match source::input_source(path) {
@@ -10254,8 +10498,16 @@ impl App {
                 {
                     let (full, cloud_opts) =
                         Self::resolve_cloud_url(Path::new(&format!("s3://{url}")), cloud)?;
-                    let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
+                    // The reader the prefix's own format calls for, when the listing
+                    // said what that is. Only Parquet falls through to the scan below.
+                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                        && let Some(lf) =
+                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                    {
+                        return lf;
+                    }
+                    let pl_path = PlRefPath::new(full.as_str());
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
                     } else {
@@ -10290,8 +10542,16 @@ impl App {
                 {
                     let (full, cloud_opts) =
                         Self::resolve_cloud_url(Path::new(&format!("gs://{url}")), cloud)?;
-                    let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
+                    // The reader the prefix's own format calls for, when the listing
+                    // said what that is. Only Parquet falls through to the scan below.
+                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                        && let Some(lf) =
+                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                    {
+                        return lf;
+                    }
+                    let pl_path = PlRefPath::new(full.as_str());
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
                     } else {
@@ -10323,6 +10583,14 @@ impl App {
                 {
                     let (full, cloud_opts) = Self::resolve_cloud_url(Path::new(&url), cloud)?;
                     let is_glob = source::is_prefix_or_glob(&full);
+                    // The reader the prefix's own format calls for, when the listing
+                    // said what that is. Only Parquet falls through to the scan below.
+                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                        && let Some(lf) =
+                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                    {
+                        return lf;
+                    }
                     let args = ScanArgsParquet {
                         cloud_options: Some(cloud_opts),
                         hive_options: if is_glob {
@@ -10354,7 +10622,12 @@ impl App {
             source::InputSource::Local(_) => {}
         }
 
-        if paths.len() == 1 && options.hive {
+        // One path that is a directory, whether or not `--hive` said so: naming a
+        // folder is the request to read it, and the dispatch below is what picks the
+        // reader for what it holds. Behind `options.hive` alone, every route that
+        // reached here with a directory and without the flag fell through to the
+        // Parquet scan and answered `Unsupported file type`.
+        if paths.len() == 1 && (options.hive || path.is_dir()) {
             let path_str = path.as_os_str().to_string_lossy();
             let is_single_file = path.exists()
                 && path.is_file()
@@ -10407,14 +10680,31 @@ impl App {
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
-                            return Self::build_lazyframe_from_paths_with(cloud, &files, &nested);
+                            return Self::build_lazyframe_from_paths_with(
+                                cloud, &files, &nested, left_out,
+                            );
                         }
-                        crate::discover::FolderFormat::NotOneTable => {
-                            return Err(color_eyre::eyre::eyre!(
-                                "{} does not hold one kind of data file, so there is \
-                                 no single table to read. Open a file inside it instead.",
-                                path.display()
-                            ));
+                        crate::discover::FolderFormat::Mixed {
+                            format: found,
+                            files,
+                            passed_over,
+                        } => {
+                            // The commonest format is the table. A folder of a thousand
+                            // CSVs and one stray JSON is a folder of CSVs, and refusing
+                            // the whole of it over the stray was datui deciding that a
+                            // folder it could read was not worth reading.
+                            let nested = OpenOptions {
+                                hive: false,
+                                format: Some(options.format.unwrap_or(found)),
+                                ..options.clone()
+                            };
+                            let lf = Self::build_lazyframe_from_paths_with(
+                                cloud, &files, &nested, left_out,
+                            )?;
+                            // After the call, which reads a flat folder of one format
+                            // and leaves nothing out of its own.
+                            *left_out = passed_over;
+                            return Ok(lf);
                         }
                     }
                 }
@@ -15557,12 +15847,9 @@ impl App {
                 // list only grows, and after MAX_CONCURRENT_PROBES roots no further
                 // root is ever probed for the rest of the session.
                 self.home_probes_inflight.retain(|p| p != root);
+                let landed = rows.is_some();
                 match rows {
-                    Some(rows) => {
-                        self.home.probe_ready(root.clone(), rows.clone());
-                        #[cfg(feature = "cloud")]
-                        self.peek_cloud_folders(root);
-                    }
+                    Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
                     None => self.home.probe_failed(root.clone()),
                 }
                 // An account read with its keys because the sign-in has no data role
@@ -15588,11 +15875,29 @@ impl App {
                 // Rebuild so the listing picks the result up; the probe is the only
                 // thing that ever reads a remote root.
                 self.home_refresh();
+                // And then ask about the rows it brought. After the rebuild, never
+                // before: the picker reads `visible()`, which is written by the
+                // rebuild, so a peek asked between `probe_ready` and here looks at the
+                // previous listing and finds nothing in it to ask about.
+                //
+                // Asked here at all because a listing that lands while the cursor is
+                // already where it will stay may draw no further frame, and the frame
+                // is what otherwise notices.
+                #[cfg(feature = "cloud")]
+                if landed {
+                    self.peek_cloud_folders();
+                }
+                #[cfg(not(feature = "cloud"))]
+                let _ = landed;
                 None
             }
             AppEvent::HomeCloudKinds { kinds } => {
                 let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
                 for (folder, kind) in kinds {
+                    // Answered: out of the in-flight set and into the one the rows are
+                    // labelled from. Every folder asked about comes back, so nothing
+                    // stays in `peeking` and nothing is asked twice.
+                    self.home.peeking.remove(folder);
                     self.home.cloud_kinds.insert(folder.clone(), kind.clone());
                 }
                 for root in roots {
@@ -17935,6 +18240,11 @@ impl Widget for &mut App {
             }
         });
         controls = controls.with_status_message(status_msg);
+        controls = controls.with_not_the_table(
+            self.data_table_state
+                .as_ref()
+                .and_then(|s| s.not_the_table()),
+        );
         controls = controls.with_notes_pending(
             self.app_config.display.notes_accent
                 && self
@@ -17969,11 +18279,11 @@ impl Widget for &mut App {
                 .listed()
                 .iter()
                 .filter(|r| {
-                    // Not the row that opens the folder being browsed. Its kind is the
-                    // folder's, so it counts as a dataset, and it is the same dataset as
-                    // the folder — the figure this comment calls a lie, counted twice.
-                    matches!(r, home::Row::Entry { entry, .. }
-                        if entry.kind.is_known_dataset() && !entry.opens_whole_folder)
+                    // The door is not among these: its kind is the folder's, so it
+                    // would count as a dataset and be the same dataset as the folder —
+                    // the figure this comment calls a lie, counted twice. It is a
+                    // `Row::Door` and not an entry, so nothing here has to exclude it.
+                    matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset())
                 })
                 .count();
             // State, not actions: how many datasets are listed and what order they
@@ -18443,8 +18753,15 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             starting_at_home = true;
         }
         RunInput::Paths(paths, opts) => {
-            app.set_loading_phase("Scanning input", 10);
-            tx.send(AppEvent::Open(paths, opts))?;
+            // A folder named here is read the way `Enter` reads its row, which may be
+            // by opening the home screen on it rather than by loading anything.
+            match app.open_the_path_named_on_the_command_line(paths, opts) {
+                Some(event) => {
+                    app.set_loading_phase("Scanning input", 10);
+                    tx.send(event)?;
+                }
+                None => starting_at_home = true,
+            }
         }
         RunInput::LazyFrame(lf, opts) => {
             app.set_loading_phase("Scanning input", 10);

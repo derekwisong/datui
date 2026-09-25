@@ -7,9 +7,9 @@ datasets are fast without any of this. When one is not:
 schema and row count come from the footer. JSON, Avro, Excel and ORC are read
 whole before the table appears; see [Formats](../user-guide/loading-data.md#formats).
 
-**Open a hive directory, not a glob.** `datui --hive /data/events/` is faster
-than `datui --hive "/data/events/**/*.parquet"`, and the schema is read from one
-file rather than all of them.
+**Open a hive directory, not a glob.** `datui /data/events/` is faster than
+`datui --hive "/data/events/**/*.parquet"`, and the schema is read from one file
+rather than all of them.
 
 **Query before you pivot.** Pivot has to read every affected row to discover
 the new column names. Filter or query down first.

@@ -235,16 +235,15 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
 /// no way to read them together at all.
 ///
 /// Built from the listing already on screen, so it costs nothing to look at.
-#[cfg(feature = "cloud")]
+///
+/// Not behind `feature = "cloud"`, though it was while the row belonged to a bucket.
+/// Since it is offered in every folder, the gate left a `--no-default-features` build
+/// with no second door at all, local folders included, while the help text and three
+/// doc pages described it unconditionally. Only the remote classifier needs the gate.
 fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     // Not a folder: a `cloud://<id>/<account>` place stands for an Azure storage
     // account, whose children are containers and which has no URL to open.
     if cloud_account(dir).is_some() {
-        return None;
-    }
-    // Nothing in it to open. An empty folder is the one place a second door leads
-    // nowhere, and a row promising to read nothing is worse than no row.
-    if rows.is_empty() {
         return None;
     }
     let folders: Vec<String> = rows
@@ -271,10 +270,39 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     // URL asks the working directory about a file called `s3:` — and a mount is not
     // read because the rows in hand came from the probe that already paid for it.
     let (kind, holds) = if remote || is_object_store_url(dir) {
-        crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects)
+        #[cfg(feature = "cloud")]
+        {
+            crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects)
+        }
+        // Without the cloud feature there is no remote classifier to ask, and reading
+        // the share here is the one thing this branch exists to avoid. The door is
+        // still offered — that is the whole of what it promises — and carries no kind,
+        // which costs it the lake check and nothing else: its label is suppressed
+        // either way, because the row is about the folder rather than in it.
+        #[cfg(not(feature = "cloud"))]
+        {
+            let _ = (&folders, &objects);
+            (EntryKind::Unknown, Default::default())
+        }
     } else {
         crate::discover::look_at_directory(dir)
     };
+    // Nothing in it to open. An empty folder is the one place a second door leads
+    // nowhere, and a row promising to read nothing is worse than no row. A folder
+    // holding only a `_SUCCESS` is that folder too.
+    //
+    // Asked of what the folder holds and not only of what the listing showed, because
+    // the two differ on the folder that most needs the door: Spark and GBIF write part
+    // files with no extension, no name in there says data, so nothing is listed — and a
+    // guard on the rows alone made that folder a dead end, nothing listed and no way to
+    // read it, though the open reads it by its bytes perfectly well. Files nothing
+    // could name count here for that reason, and so do subfolders, whose data is a
+    // level down.
+    let nothing_to_open =
+        rows.is_empty() && holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0;
+    if nothing_to_open {
+        return None;
+    }
     // What the row says it opens, not whether it opens: a hive folder is read through
     // its partitions and everything else through its files.
     let what = if kind == EntryKind::Hive {
@@ -420,6 +448,19 @@ pub struct Section {
     /// exactly like a configured one with only that word to tell them apart.
     pub origin: Option<&'static str>,
     pub rows: Vec<Entry>,
+    /// The row that opens the folder this section lists, as one table. Its own row,
+    /// not one of `rows`.
+    ///
+    /// Kept apart because its path *is* the folder's — with a trailing slash, which
+    /// `PathBuf` compares and hashes away — so as a row among the others it was the
+    /// same key as the folder's row one level up in every path-keyed map. That cost a
+    /// real bug once: measuring the door wrote a kind-less measurement into the
+    /// folder's slot, the folder upstairs was then taken for already looked into, and
+    /// it kept `Unknown` — no label, no `holds` line, no place in the count — for the
+    /// rest of the session. A guard per walker would have to be added again by every
+    /// walker written after it, so the collision is gone instead: nothing that walks
+    /// `rows` or matches [`Row::Entry`] can reach the door.
+    pub door: Option<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
     /// What to say instead of the bare word "unavailable".
@@ -660,6 +701,11 @@ pub enum Row<'a> {
         /// How many recents live there, whether or not the filter shows them.
         held: usize,
     },
+    /// The door that opens the folder being browsed as one table. See [`Section::door`].
+    ///
+    /// Not an `Entry` row, deliberately: it carries the folder's own path, so anything
+    /// that keys a map by row path would write the door's answer into the folder's slot.
+    Door { section: usize, entry: &'a Entry },
     /// What the cap on `RECENT` is hiding: `… 13 more in 5 places`.
     More {
         section: usize,
@@ -673,6 +719,7 @@ impl Row<'_> {
         match self {
             Row::Header { section, .. }
             | Row::Entry { section, .. }
+            | Row::Door { section, .. }
             | Row::Place { section, .. }
             | Row::More { section, .. } => *section,
         }
@@ -713,6 +760,9 @@ pub fn place_is_browsable(path: &Path) -> bool {
 pub enum RowKey {
     Header(String),
     Entry(PathBuf),
+    /// The door, by the folder it opens. Its own variant for the same reason the row
+    /// is: keyed as an `Entry` it would put the cursor on the folder's row instead.
+    Door(PathBuf),
     Place(PathBuf),
     More(String),
 }
@@ -774,6 +824,13 @@ pub struct HomeState {
     pub pending_enrich: bool,
     /// The same, for rows on screen nothing has looked into yet.
     pub pending_classify: bool,
+    /// The same, for cloud folders on screen nothing has peeked into yet.
+    pub pending_peek: bool,
+    /// Cloud folders with a peek out. Their own set rather than a claim written into
+    /// [`Self::cloud_kinds`]: a claim is an answer, and writing one before the request
+    /// comes back put `dir` on a row that had a count and staked "never again this
+    /// session" on a request that might fail.
+    pub peeking: std::collections::HashSet<PathBuf>,
     /// Row and column counts already read, keyed by path. Reading a Parquet footer
     /// is cheap; reading several hundred of them is not, so results are kept for the
     /// session and each dataset is measured once.
@@ -846,6 +903,8 @@ impl Default for HomeState {
             measure_in_flight: false,
             classify_in_flight: false,
             pending_classify: false,
+            pending_peek: false,
+            peeking: std::collections::HashSet::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
@@ -1014,6 +1073,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: source.is_some_and(|s| s.busy()),
             grouped_by_place: false,
+            door: None,
             place_labels: Default::default(),
         });
         annotate(&mut sections, known, network_check, &mounts);
@@ -1037,14 +1097,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let unavailable = remote && unreachable.contains(&dir);
         // The first row inside any folder opens the whole of it, since `Enter` on the
         // rows below opens one file. The other door.
-        #[cfg(feature = "cloud")]
-        let rows = {
-            let mut rows = rows;
-            if let Some(whole) = whole_folder_row(&dir, &rows, remote) {
-                rows.insert(0, whole);
-            }
-            rows
-        };
+        let door = whole_folder_row(&dir, &rows, remote);
         sections.push(Section {
             // The URL without a source ID: the title bar's trail already says which
             // source, and `s3://lab@data` is not a name anyone would write. An Azure
@@ -1078,6 +1131,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            door,
             place_labels: Default::default(),
         });
         annotate(&mut sections, known, network_check, &mounts);
@@ -1120,6 +1174,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // a configured directory, with `recent` at the far end of the rule the
             // only thing saying why they were there. Now they are rows of this one.
             grouped_by_place: true,
+            door: None,
             place_labels,
         });
     }
@@ -1204,6 +1259,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 remote_root: root.network.then(|| root.path.clone()),
                 waiting,
                 grouped_by_place: false,
+                door: None,
                 place_labels: Default::default(),
             },
         ));
@@ -1235,6 +1291,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            door: None,
             place_labels: Default::default(),
         });
     }
@@ -1256,6 +1313,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            door: None,
             place_labels: Default::default(),
         });
     }
@@ -1755,6 +1813,7 @@ impl HomeState {
             Row::Header { section, .. } => RowKey::Header(title(section)?),
             Row::More { section, .. } => RowKey::More(title(section)?),
             Row::Entry { entry, .. } => RowKey::Entry(entry.path.clone()),
+            Row::Door { entry, .. } => RowKey::Door(entry.path.clone()),
             Row::Place { path, .. } => RowKey::Place(path),
         })
     }
@@ -1774,6 +1833,7 @@ impl HomeState {
         let rows = self.visible();
         let found = rows.iter().position(|row| match (row, &key) {
             (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
+            (Row::Door { entry, .. }, RowKey::Door(path)) => entry.path == *path,
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
             (Row::Header { section, .. }, RowKey::Header(title))
             | (Row::More { section, .. }, RowKey::More(title)) => self
@@ -2211,6 +2271,7 @@ impl HomeState {
                     remote_root: None,
                     waiting: false,
                     grouped_by_place: false,
+                    door: None,
                     place_labels: Default::default(),
                 });
             }
@@ -2260,6 +2321,7 @@ impl HomeState {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            door: None,
             place_labels: Default::default(),
         });
     }
@@ -2302,26 +2364,24 @@ impl HomeState {
 
     fn rows(&self, capped: bool) -> Vec<Row<'_>> {
         let mut out: Vec<Row<'_>> = Vec::new();
-        // The row that opens the folder being browsed is a door, not something to
-        // search for. Its name carries the words `all files`, which a fuzzy filter
-        // matches for most of the alphabet — `sal` found it beside `sales.parquet` —
-        // so it steps out of the way while a filter is on, and comes back when it is
-        // cleared. It also stays first whatever the sort, because being the first row
-        // inside a folder is the whole of what it is.
-        let is_the_whole_folder = |row: &Entry| row.opens_whole_folder;
         for (si, section) in self.sections.iter().enumerate() {
             let mut matched: Vec<(&Entry, i32)> = section
                 .rows
                 .iter()
-                .filter(|row| self.filter.is_empty() || !is_the_whole_folder(row))
                 .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
                 .collect();
 
             // A section with nothing to show is dropped, unless it is standing in for
             // a root the user named or is currently in, where its absence would be
             // more confusing than an empty heading, or its rows are still on the way.
+            //
+            // A door is something to show. A folder of part files written with no
+            // extension lists nothing — no name in it says data — and the door is the
+            // only way to read it; dropped here, the whole section went with it and the
+            // folder was a dead end that the open could have read.
             let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
-            if matched.is_empty() && !(keep_empty && self.filter.is_empty()) {
+            let has_door = section.door.is_some() && self.filter.is_empty();
+            if matched.is_empty() && !has_door && !(keep_empty && self.filter.is_empty()) {
                 continue;
             }
 
@@ -2358,28 +2418,33 @@ impl HomeState {
                 }
             }
 
-            // After every sort, because it is not one of the things being ordered.
-            if let Some(at) = matched.iter().position(|(e, _)| is_the_whole_folder(e)) {
-                let row = matched.remove(at);
-                matched.insert(0, row);
-            }
-
             let collapsed = self.section_folded(section);
             out.push(Row::Header {
                 section: si,
                 // What the section holds, which the door is not: it is a way to open
-                // the folder those rows are in, so counting it makes a folder of three
-                // files say four. The chip already said the right number under a
-                // filter, where the door steps out of the way, and the wrong one
-                // without — the same count meaning two things.
-                matches: matched
-                    .iter()
-                    .filter(|(e, _)| !e.opens_whole_folder)
-                    .count(),
+                // the folder those rows are in, so counting it would make a folder of
+                // three files say four. It is not among `rows`, so nothing here has to
+                // take it back out.
+                matches: matched.len(),
                 collapsed,
             });
             if collapsed {
                 continue;
+            }
+            // First inside the folder, before the rows and whatever the sort, because
+            // being the first row inside a folder is the whole of what it is.
+            //
+            // Not while a filter is on. Its name carries the words `all files`, which a
+            // fuzzy filter matches for most of the alphabet — `sal` found it beside
+            // `sales.parquet` — so it steps out of the way and comes back when the
+            // filter is cleared.
+            if let Some(door) = section.door.as_ref()
+                && self.filter.is_empty()
+            {
+                out.push(Row::Door {
+                    section: si,
+                    entry: door,
+                });
             }
             if section.grouped_by_place {
                 out.extend(self.rows_by_place(si, section, &matched, capped));
@@ -2483,11 +2548,22 @@ impl HomeState {
     }
 
     /// The highlighted row, when it is a dataset rather than a section header.
+    ///
+    /// The door counts: it is something to open, and every caller here wants what the
+    /// cursor is on. What it must not be is a row in a path-keyed map, which is why it
+    /// is [`Row::Door`] and not an entry among the section's rows.
     pub fn selected_entry(&self) -> Option<Entry> {
         match self.visible().get(self.selected) {
-            Some(Row::Entry { entry, .. }) => Some((*entry).clone()),
+            Some(Row::Entry { entry, .. }) | Some(Row::Door { entry, .. }) => {
+                Some((*entry).clone())
+            }
             _ => None,
         }
+    }
+
+    /// Whether the cursor is on the door rather than on something in the folder.
+    pub fn selection_is_the_door(&self) -> bool {
+        matches!(self.visible().get(self.selected), Some(Row::Door { .. }))
     }
 
     /// The recents that live in `place`: what `Delete` on its row forgets.
@@ -2619,22 +2695,61 @@ impl HomeState {
         }
     }
 
-    /// The folders of a cloud listing not yet peeked into, at most `limit`, in the order
-    /// they are listed.
-    pub fn cloud_folders_to_peek(&self, root: &Path, limit: usize) -> Vec<PathBuf> {
-        if !is_object_store_url(root) {
+    /// The cloud folders on or near the screen that nothing has peeked into, at most
+    /// `limit`, the highlighted row first.
+    ///
+    /// [`Self::unclassified_visible`]'s cloud twin, and deliberately the same shape: a
+    /// peek is a request, and the rows worth spending one on are the rows somebody is
+    /// looking at. It used to take the first forty-eight folders of each listing, once
+    /// per session — so a bucket of two hundred prefixes had its first forty-eight
+    /// labelled and the rest reading `dir` for good, however long you spent on them,
+    /// while paging straight past the first forty-eight spent forty-eight requests on
+    /// rows nobody saw. The cap and its never-again claim both go: the bound is what
+    /// the cursor rests on.
+    pub fn cloud_folders_to_peek(&self, limit: usize) -> Vec<PathBuf> {
+        if limit == 0 {
             return Vec::new();
         }
-        self.probed
-            .get(root)
-            .into_iter()
-            .flatten()
-            .filter(|row| {
-                row.kind == EntryKind::Directory && !self.cloud_kinds.contains_key(&row.path)
-            })
-            .take(limit)
-            .map(|row| row.path.clone())
-            .collect()
+        let rows = self.visible();
+        let height = if self.view_height == 0 {
+            limit
+        } else {
+            self.view_height
+        };
+        let top = self.scroll.min(rows.len());
+        let ahead = top.saturating_add(2 * height).min(rows.len());
+        let behind = top.saturating_sub(height);
+
+        let mut out: Vec<PathBuf> = Vec::new();
+        let order = std::iter::once(self.selected)
+            .chain(top..ahead)
+            .chain(behind..top);
+        for row in order.filter_map(|i| rows.get(i)) {
+            let Row::Entry { entry, .. } = row else {
+                continue;
+            };
+            // A folder in an object store, by its URL: `read_dir` on an `s3://` path
+            // asks the working directory about a file called `s3:` and truthfully finds
+            // nothing, which is why these have a pass of their own.
+            if !is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
+                continue;
+            }
+            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
+                continue;
+            }
+            // Asked and answered, or asked and still out.
+            if self.cloud_kinds.contains_key(&entry.path) || self.peeking.contains(&entry.path) {
+                continue;
+            }
+            if out.contains(&entry.path) {
+                continue;
+            }
+            out.push(entry.path.clone());
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
     }
 
     /// Record that a probe could not read the root.
@@ -2674,20 +2789,6 @@ impl HomeState {
                 continue;
             };
             if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
-                continue;
-            }
-            // The door into the folder being browsed is a view of that folder, not a
-            // row of its own: its path *is* the folder's, and `PathBuf` compares and
-            // hashes a trailing slash away, so measuring it writes into the slot the
-            // folder's own row uses one level up. That write carries no kind — the
-            // door's kind did not change — and `folders_to_look_into` then takes the
-            // slot being occupied as the row having been looked into, so the folder
-            // upstairs kept `Unknown` and lost its label for the rest of the session.
-            //
-            // It still *reads* that slot, so once anything has measured the folder the
-            // door shows those numbers, which is every time you stepped into it from
-            // the listing above.
-            if entry.opens_whole_folder {
                 continue;
             }
             // What a row *is* settles it before where it lives does, because the kind
@@ -2808,7 +2909,11 @@ impl HomeState {
     /// Fold known measurements into the rows currently listed.
     pub fn apply_measurements(&mut self) {
         for section in &mut self.sections {
-            for row in &mut section.rows {
+            // The door as well, whose path is the folder's: it *reads* that slot on
+            // purpose, so stepping into a folder the listing above already measured
+            // shows those numbers instead of a blank. Reading was never the problem —
+            // writing was, and nothing writes the door's own answer anywhere now.
+            for row in section.rows.iter_mut().chain(section.door.iter_mut()) {
                 if let Some(m) = self.enriched.get(&row.path) {
                     row.rows = m.rows;
                     row.cols = m.cols;
@@ -2841,7 +2946,7 @@ impl HomeState {
         let rows = self.visible();
         self.selected = rows
             .iter()
-            .position(|r| matches!(r, Row::Entry { .. }))
+            .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }))
             .unwrap_or(0);
     }
 
@@ -2908,7 +3013,21 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         // settles it; anything else stays Unknown rather than being called a plain
         // directory, which would contradict the same dataset listed under its root as
         // `hive` once that root's probe lands.
-        if discover::is_data_file(path) {
+        //
+        // An extension datui has no reader for settles it too. `s3://bucket/data.dat`
+        // is certainly not a prefix, and calling it Unknown sent → into an empty
+        // listing with nothing to say why (#283). Excluding Unknown from what → enters
+        // was the other way to fix that, and it is the label deciding access one
+        // indirection along — every row on a share is Unknown before anything has
+        // looked into it. So the row is named instead. A trailing slash is a prefix
+        // whatever is in the name, which is what `exports/` and `2024.01.15/` are.
+        let named = path.to_string_lossy();
+        let dotted = !named.ends_with('/')
+            && named
+                .rsplit('/')
+                .next()
+                .is_some_and(|last| last.trim_start_matches('.').contains('.'));
+        if discover::is_data_file(path) || dotted {
             EntryKind::File
         } else {
             EntryKind::Unknown
@@ -3109,10 +3228,19 @@ mod holds_flow_tests {
         assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
     }
 
+    /// A peek is a request, so it is spent on the row the cursor is on.
+    ///
+    /// The picker took the first forty-eight folders of each listing, once per session:
+    /// a bucket of two hundred prefixes had forty-eight labelled and the rest reading
+    /// `dir` however long you spent on them, and paging straight past those
+    /// forty-eight spent every request on rows nobody saw.
     #[test]
-    fn only_folders_nothing_has_looked_into_are_queued_for_a_peek() {
+    fn a_peek_goes_to_the_row_the_cursor_is_on_and_is_never_asked_twice() {
         let root = std::path::PathBuf::from("s3://bucket/warehouse");
-        let mut home = HomeState::default();
+        let mut home = HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
         let rows: Vec<Entry> = ["a", "b", "c", "d", "e"]
             .iter()
             .map(|n| {
@@ -3121,16 +3249,35 @@ mod holds_flow_tests {
                 row
             })
             .collect();
-        home.probed.insert(root.clone(), rows);
-        // One already answered, so four are left to ask about.
+        home.probe_ready(root.clone(), rows);
+        home.browsing = Some(root.clone());
+        home.rebuild(&[], &[]);
+        // One already answered, and one with a request already out.
         home.cloud_kinds
             .insert(root.join("b"), (EntryKind::MultiFile, counted(3)));
+        home.peeking.insert(root.join("c"));
 
-        let asked = home.cloud_folders_to_peek(&root, 3);
+        // The cursor on `e`, the last row: it is asked about first, though four rows
+        // above it have never been looked into. That is the whole change.
+        home.selected = home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "e"))
+            .expect("the row is listed");
+        let asked = home.cloud_folders_to_peek(3);
+        assert_eq!(
+            asked.first(),
+            Some(&root.join("e")),
+            "the highlighted row is the one about to be acted on"
+        );
         assert_eq!(asked.len(), 3, "the budget is a budget");
         assert!(
             !asked.contains(&root.join("b")),
             "a folder already looked into is not asked again"
+        );
+        assert!(
+            !asked.contains(&root.join("c")),
+            "nor one with a request already out"
         );
     }
 
@@ -3153,6 +3300,7 @@ mod holds_flow_tests {
             remote_root: None,
             waiting: false,
             grouped_by_place: false,
+            door: None,
             place_labels: Default::default(),
         });
         // A measurement of a file carries no `holds`, and the same struct measures both.

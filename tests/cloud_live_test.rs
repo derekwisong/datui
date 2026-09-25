@@ -247,9 +247,22 @@ fn pump_until(
                 eprintln!("crash: {crash}");
             }
         }
+        // A frame, then the ask that follows one, because that is the loop this stands
+        // in for. What is worth measuring, classifying or peeking into is decided from
+        // what the last frame drew — a pump that only drains events models an app whose
+        // window is never painted, where none of those passes ever runs.
+        draw_a_frame(app);
+        app.request_what_the_frame_needs();
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     done(app)
+}
+
+/// Render off-screen, for the passes that read what the last frame drew.
+fn draw_a_frame(app: &mut datui::App) {
+    let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(app, area, &mut buf);
 }
 
 fn key(code: crossterm::event::KeyCode) -> datui::AppEvent {
@@ -333,9 +346,13 @@ fn enter_source(
 }
 
 /// Put the cursor on the visible row with this name, and say whether it was found.
+///
+/// The `(all files)` row counts: it is a row on screen with a name, drawn like any
+/// other. What it is not is one of its section's `rows` — it is `Row::Door`, because
+/// its path is the folder's and a path-keyed map cannot tell the two apart.
 fn select_row(app: &mut datui::App, name: &str) -> bool {
     for (index, row) in app.home.visible().iter().enumerate() {
-        if let datui::home::Row::Entry { entry, .. } = row
+        if let datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. } = row
             && entry.name == name
         {
             app.home.selected = index;
@@ -1825,7 +1842,11 @@ fn partitioned_cloud_folders_are_hive_datasets() {
     assert!(enter_source(&mut app, &rx, "public"));
     let row_kind = |app: &datui::App, name: &str| {
         app.home.visible().iter().find_map(|row| match row {
-            datui::home::Row::Entry { entry, .. } if entry.name == name => Some(entry.kind),
+            datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. }
+                if entry.name == name =>
+            {
+                Some(entry.kind)
+            }
             _ => None,
         })
     };

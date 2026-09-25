@@ -616,3 +616,10 @@ jobs:
           done
           cargo check --no-default-features || failed=1
           exit $failed
+
+      # A check compiles the configuration; it does not run it. The `(all files)` row
+      # was behind `feature = "cloud"` long after it stopped being a cloud row, so a
+      # build without the feature had no second door at all — and every test that says
+      # otherwise passed, because none of them ran in that configuration.
+      - name: Test without default features
+        run: cargo test --no-default-features

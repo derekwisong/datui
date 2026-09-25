@@ -257,30 +257,34 @@ holds costs one keystroke rather than access to it.
 That row carries no label of its own: every other label counts what is directly
 inside a folder, and this row reads the whole of it. Nor is it a search result —
 while a filter is typed it steps out of the way, and it comes back when the
-filter is cleared. A folder datui lists nothing in — an empty one, or one
-holding only files it does not show — has no such row.
+filter is cleared. Only a folder with nothing in it at all — empty, or holding
+nothing but a writer's own markers — has no such row.
 
-What datui can then *read* is a narrower question than what it will open, and
-this release has not finished widening it.
+### The door does not refuse
 
-On disk, a folder of one format and a hive tree of Parquet read as one table,
-and a folder holding more than one kind of data file says so. A folder whose
-data is in subfolders reads only if that data is Parquet; if it is not, the
-error names Parquet about a folder that has none, which is a rough edge this
-release has not reached yet.
+Whatever the folder is, the door reads it and says what it did. What it says is
+in the Notes tab, which the <kbd>i</kbd> key opens.
 
-In a bucket, only Parquet is read in place. A prefix whose files datui can see
-are not Parquet — CSV, JSON, or nothing it has a reader for — says what it holds
-and does not read, rather than reporting a problem with your credentials, which
-is what it used to do.
+| Folder | Read as | What it says |
+|---|---|---|
+| One format, or a hive tree of Parquet | One table | — |
+| Parquet files that are separate tables | One table, unioned by name | which columns are in which files |
+| More than one format | The commonest of them; Parquet wins a tie | what it passed over, by format and count |
+| `delta`, `iceberg`, `hudi` | The plain files under the table | that they are not the table, plus a chip by the row count |
+| Files written with no extension | What their first bytes say: Parquet, Arrow, Avro or ORC | — |
+| A prefix of CSV or NDJSON in a bucket | One table, with that reader | — |
+| A prefix holding nothing datui reads | Refused, naming what is there | — |
 
-A prefix with no data files directly inside is still tried, sub-folders and all,
-since the files below it may be Parquet and nothing has looked. If they are not,
-the read fails with that same message about credentials; widening this is
-phase 4's work, not phase 3's.
+A lake table's files are the one read worth being careful with. A log beside the
+data says which files are live, and datui does not read that log yet — so the
+files include rows a delete tombstoned, versions an update replaced, and both
+sides of a compaction. The row count on screen is a true count of the files and
+a wrong count of the table, which is why it carries `not the Delta table` beside
+it as well as the note.
 
-A `delta`, `iceberg` or `hudi` root is refused by this row on both routes, as it
-is by <kbd>Enter</kbd> on the folder above it, for the reason below.
+A folder whose data is in `key=value` subfolders reads as one table when that
+data is Parquet. Hive partitioning is a Parquet-only capability in the reader
+datui uses; for anything else, open one partition.
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
 hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single
@@ -299,7 +303,8 @@ offer the table as one dataset — the files a delete or an update tombstoned ar
 still on disk, every rewritten version is there together, and compaction leaves
 both sides in place, so reading them as one table gives rows the table does not
 have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
-files can be opened one at a time, and say so when they do.
+files can be opened one at a time, and say so when they do. The `(all files)`
+row in there will read them all together, labelled; see above.
 
 A row on a network share that nothing has looked at yet — a recent one, say, where
 reading it just to list it is how a dead mount freezes a file browser — is looked

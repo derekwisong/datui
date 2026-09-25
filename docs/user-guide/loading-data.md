@@ -3,11 +3,26 @@
 ```bash
 datui data.parquet                             # a file
 datui jan.csv feb.csv mar.csv                  # files of the same shape, as one table
-datui --hive /data/events/                     # a hive-partitioned directory
-datui --hive "/data/events/**/*.parquet"       # or a glob (quote it)
+datui /data/events/                            # a folder, read the way Enter reads its row
+datui --hive "/data/events/**/*.parquet"       # a glob (quote it)
 datui s3://bucket/path/file.parquet            # S3, GCS (gs://) or HTTP(S)
 datui --format csv https://example.com/export  # force the format when the name gives no hint
 ```
+
+## Folders
+
+`datui <folder>` does what <kbd>Enter</kbd> on that folder's row does on the
+[home screen](home-screen.md), and needs no flag:
+
+| The folder | What happens |
+|---|---|
+| A hive tree, or files that are one table | Opens as one table |
+| Separate tables, more than one format, or no data directly inside | The home screen, browsed into it — one keystroke from either a file or the union |
+| A Delta, Iceberg or Hudi root | The home screen, browsed into it, saying datui does not read the table itself yet |
+
+Before 0.4.0 a folder was `Unsupported file type` unless `--hive` was passed.
+`--hive` still means what it always did: read this as partitioned, which is the
+answer for a glob and for a layout that does not say so itself.
 
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
@@ -59,8 +74,9 @@ file and reads the whole thing into memory instead.
 ## Hive-partitioned data
 
 A directory tree whose segments are `key=value` (`year=2024/month=01/...`)
-opens as one table with `--hive`. Pass the root directory or a glob; a glob
-usually needs quoting so your shell leaves it alone. Only Parquet is supported.
+opens as one table. Pass the root directory, which needs no flag, or a glob with
+`--hive`; a glob usually needs quoting so your shell leaves it alone. Only
+Parquet is supported — for a hive tree of anything else, open one partition.
 
 Partition columns appear first in the table and on the **Partitions** tab of the
 [Info panel](dataset-info.md). On disk, a directory is faster to open than a glob:

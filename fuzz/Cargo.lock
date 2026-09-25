@@ -1259,6 +1259,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures",
+ "globset",
  "http",
  "ignore",
  "object_store",

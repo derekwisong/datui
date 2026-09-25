@@ -7330,14 +7330,15 @@ fn test_a_folder_opened_as_one_dataset_is_read_as_what_it_holds() {
 /// Parquet. A test that only checked that nothing loaded would pass either way and be
 /// about nothing.
 #[test]
-fn test_a_folder_of_two_formats_says_it_is_not_one_table() {
+fn test_a_folder_of_two_formats_is_read_as_the_one_it_mostly_holds() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join("a.csv"), "a\n1\n").unwrap();
-    std::fs::write(tmp.path().join("b.json"), "[{\"a\":1}]").unwrap();
+    std::fs::write(tmp.path().join("b.csv"), "a\n2\n").unwrap();
+    std::fs::write(tmp.path().join("c.json"), "[{\"a\":1}]").unwrap();
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let complaint = pump_open_until_error(
+    pump_open_until_loaded(
         &mut app,
         &rx,
         vec![tmp.path().to_path_buf()],
@@ -7345,18 +7346,18 @@ fn test_a_folder_of_two_formats_says_it_is_not_one_table() {
             hive: true,
             ..OpenOptions::default()
         },
-    )
-    .expect("two formats are not one table, so the open should fail");
+    );
 
-    assert!(
-        complaint.contains("does not hold one kind of data file"),
-        "the folder is what is wrong, so the folder is what it should say: {complaint}"
+    let table = app
+        .data_table_state
+        .as_ref()
+        .expect("two CSVs and a stray JSON is a folder of CSVs");
+    assert_eq!(table.headers(), vec!["a"], "read as CSV, not as JSON");
+    assert_eq!(
+        table.num_rows_if_valid(),
+        Some(2),
+        "both CSVs, and not the JSON beside them"
     );
-    assert!(
-        !complaint.contains("PAR1"),
-        "nothing here was ever Parquet: {complaint}"
-    );
-    assert!(app.data_table_state.is_none(), "nothing should have loaded");
 }
 
 /// A folder of CSVs with some unrelated folder beside them is still a folder of CSVs.
@@ -7505,7 +7506,9 @@ fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
         .visible()
         .iter()
         .filter_map(|r| match r {
-            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. } => {
+                Some(entry.name.clone())
+            }
             _ => None,
         })
         .collect();
@@ -7538,9 +7541,7 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("every folder carries the row");
     app.home.selected = row;
 
@@ -7582,14 +7583,17 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
     );
 }
 
-/// A lake table is not a folder of Parquet files, however much it looks like one.
+/// The door into a lake table reads its files, and says they are not the table.
 ///
-/// Reading one as a union counts tombstoned rows, every rewritten version and both
-/// sides of a compaction. `enrich` will not so much as count a lake table for that
-/// reason, and the row above says datui does not read them yet — so the door into the
-/// folder must not quietly do it. #237, reached through the door phase 3 opens.
+/// A lake table is not a folder of Parquet files however much it looks like one:
+/// reading one as a union counts tombstoned rows, every rewritten version and both
+/// sides of a compaction. Refusing it, though, left a folder the user could see and
+/// could not read at all — and this row is the promise that no label locks you out.
+/// So the read is labelled instead of refused: a note in the panel, a chip beside the
+/// row count, and the row one level up still goes inside and says datui does not read
+/// the table itself yet. All three, because each on its own is missable.
 #[test]
-fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
+fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let events = tmp.path().join("events");
     std::fs::create_dir_all(events.join("_delta_log")).unwrap();
@@ -7616,9 +7620,7 @@ fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the folder carries the row");
     app.home.selected = row;
     assert_eq!(
@@ -7627,16 +7629,46 @@ fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
         "the listing under it is a Delta table"
     );
 
-    let next = app.event(&key(KeyCode::Enter));
-    assert!(
-        next.is_none(),
-        "the door must not open a lake table as plain Parquet"
+    // It opens, and the open carries what it is.
+    let options = match app.event(&key(KeyCode::Enter)) {
+        Some(AppEvent::Open(_, options)) => options,
+        _ => panic!("the door opens the folder it names, whatever the label says"),
+    };
+    assert_eq!(
+        options.read_as_plain_files_of,
+        Some("Delta"),
+        "and the open says these are a Delta table's files, not the table"
     );
-    let said = app.home.status.clone().unwrap_or_default();
-    assert!(said.contains("Delta"), "and must say why: {said:?}");
+
+    // The note and the chip, from that one field. Both, because the note is a tab away
+    // and the chip is in the corner: each on its own is missable.
+    let notes = datui::notes::from_the_open(&[], options.read_as_plain_files_of);
+    assert_eq!(notes.len(), 1, "one note, about the read");
     assert!(
-        !said.contains("files under it"),
-        "that is what going inside says, and this row is already inside: {said:?}"
+        notes[0].summary.contains("Delta") && notes[0].summary.contains("deleted rows"),
+        "it names the format and what the count includes: {:?}",
+        notes[0].summary
+    );
+
+    // And the row one level up still goes inside rather than reading it.
+    let (tx, _rx) = mpsc::channel();
+    let mut up = App::new(tx, common::test_runtime());
+    up.enter_home();
+    up.home.browsing = Some(tmp.path().to_path_buf());
+    up.home.rebuild(&[], &[]);
+    let row = up
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
+        .expect("the folder is listed");
+    up.home.selected = row;
+    assert!(up.event(&key(KeyCode::Enter)).is_none());
+    assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
+    let said = up.home.status.clone().unwrap_or_default();
+    assert!(
+        said.contains("Delta") && said.contains("files under it"),
+        "the row above is where datui says it does not read the table: {said:?}"
     );
 }
 
@@ -7659,9 +7691,7 @@ fn test_the_door_opens_a_folder_by_the_folder_route() {
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the folder carries the row");
     app.home.selected = row;
 
@@ -7766,9 +7796,7 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
             .visible()
             .iter()
             .find_map(|r| match r {
-                datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder => {
-                    Some(entry.kind)
-                }
+                datui::home::Row::Door { entry, .. } => Some(entry.kind),
                 _ => None,
             })
             .expect("the folder carries the row")
@@ -7787,23 +7815,27 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
     );
 }
 
-/// A prefix in an object store is scanned as Parquet whatever is in it, so a prefix of
-/// CSV used to answer "Could not read from S3. Check credentials and URL" — a false
-/// statement about a login that is fine. The door made that reachable: this row used to
-/// exist only where the listing had already found Parquet.
+/// A prefix in an object store is read with the reader its own listing calls for.
+///
+/// Every cloud path went to `scan_parquet` whatever was under it, so a prefix of CSV
+/// answered "Could not read from S3. Check credentials and URL" — a false statement
+/// about a login that is fine. The listing has already counted what is there and it is
+/// on screen, so picking the reader from it costs no request. What is left refused is
+/// a prefix holding nothing datui has a multi-file reader for, and that refusal names
+/// what is there rather than blaming the connection.
 ///
 /// A fresh app per shape, because opening sets `busy` and the next key would be read
 /// against a screen that is no longer the home screen.
 #[cfg(feature = "cloud")]
 #[test]
-fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
+fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     use datui::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     // Press Enter on the door of a prefix holding these names, and say what happened.
     // A name with a dot in it stands for an object, the rest for sub-prefixes; a name
     // with an `=` in it is a partition, the way a listing hands one over.
-    fn door(prefix: &str, names: &[&str]) -> (bool, String) {
+    fn door(prefix: &str, names: &[&str]) -> (Option<OpenOptions>, String) {
         let place = PathBuf::from(prefix);
         let rows: Vec<Entry> = names
             .iter()
@@ -7829,75 +7861,83 @@ fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
             .home
             .visible()
             .iter()
-            .position(
-                |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-            )
+            .position(|r| matches!(r, datui::home::Row::Door { .. }))
             .expect("the prefix carries the row");
         app.home.selected = row;
-        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
-        (opened, app.home.status.clone().unwrap_or_default())
+        let event = app.event(&key(KeyCode::Enter));
+        let options = match event {
+            Some(AppEvent::Open(_, options)) => Some(options),
+            _ => None,
+        };
+        (options, app.home.status.clone().unwrap_or_default())
     }
 
-    // Data files, none of them Parquet: refused, naming what is there.
-    let (opened, said) = door("s3://bucket/exports", &["a.csv", "b.csv", "c.csv"]);
-    assert!(!opened, "it must not send a scan that can only fail");
-    assert!(said.contains("3 csv"), "it says what is there: {said:?}");
+    // Data files, none of them Parquet: read as what they are.
+    let (options, said) = door("s3://bucket/exports", &["a.csv", "b.csv", "c.csv"]);
+    let options = options.expect("a prefix of CSV is a prefix datui can read");
+    assert_eq!(options.format, Some(datui::FileFormat::Csv));
     assert!(
         !said.to_lowercase().contains("credential"),
-        "and does not blame a login that is fine: {said:?}"
+        "and nothing blames a login that is fine: {said:?}"
     );
 
-    // Two formats, neither Parquet: both named. `label()` would say `mixed`, which is a
-    // word rather than a count and says nothing about what is there.
-    let (opened, said) = door("s3://bucket/pair", &["a.csv", "b.json"]);
-    assert!(!opened);
-    assert!(said.contains("1 csv"), "{said:?}");
-    assert!(said.contains("1 json"), "{said:?}");
-    assert!(!said.contains("mixed"), "{said:?}");
+    // Two formats, neither Parquet: the commonest is the reader, and the rest is said.
+    // `label()` would call this `mixed`, a word rather than a count.
+    let (options, _) = door("s3://bucket/pair", &["a.csv", "a2.csv", "b.json"]);
+    let options = options.expect("a prefix of mostly CSV reads as CSV");
+    assert_eq!(options.format, Some(datui::FileFormat::Csv));
+    assert_eq!(
+        options.left_out,
+        vec![(datui::FileFormat::Json, 1)],
+        "and the dataset can say what it passed over"
+    );
 
     // Nothing datui has a reader for. `holds.formats` is empty here, so a test written
     // over the formats alone let it through and the scan came back blaming the login.
-    let (opened, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
-    assert!(!opened);
+    let (options, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
+    assert!(options.is_none());
     assert!(said.contains("nothing datui can read"), "{said:?}");
     assert!(!said.to_lowercase().contains("credential"), "{said:?}");
 
-    // Parquet opens — the one case this row existed for before any of the refusals
-    // above were written. Without this, a guard that refused everything would pass
-    // every other assertion here.
-    let (opened, _) = door("s3://bucket/parts", &["part-0.parquet", "part-1.parquet"]);
-    assert!(
-        opened,
+    // Parquet opens by its own route, which is the only one with hive partitioning
+    // behind it and the one every cloud dataset took before any of this. The listing
+    // already calls this prefix a dataset, so no reader is named and the scan makes the
+    // Parquet call it always made. Without this case, a change that named a reader for
+    // everything would pass every other assertion here.
+    let (options, _) = door("s3://bucket/parts", &["part-0.parquet", "part-1.parquet"]);
+    assert_eq!(
+        options.map(|o| o.format),
+        Some(None),
         "a prefix of Parquet is what a cloud folder reads as"
     );
 
     // No data files at all: tried, because the files below may be Parquet and nothing
     // here has looked.
-    let (opened, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
+    let (options, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
     assert!(
-        opened,
+        options.is_some(),
         "nothing counted directly inside is not a reason to refuse"
     );
 
     // Including with unreadable files beside the sub-prefixes: a README at the top says
     // nothing about what is under `by_year/`.
-    let (opened, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
+    let (options, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
     assert!(
-        opened,
+        options.is_some(),
         "a sub-prefix may hold Parquet, and nothing here has looked"
     );
 
     // And a hive root with one stray data file beside its partitions. `formats` holds
-    // only the stray, so a refusal reading the formats alone saw a prefix of CSV and
-    // turned away a prefix the row one level up opens — the door added to guarantee
-    // access refusing what the label already promised.
-    let (opened, said) = door(
+    // only the stray, so picking the reader from it would read the whole root as CSV —
+    // a prefix the listing already calls a dataset keeps the route its label named.
+    let (options, said) = door(
         "s3://bucket/events",
         &["date=2024-01-01", "date=2024-01-02", "manifest.csv"],
     );
-    assert!(
-        opened,
-        "a hive root is read through its partitions, not through the stray beside them: {said:?}"
+    assert_eq!(
+        options.map(|o| o.format),
+        Some(None),
+        "a hive root is read through its partitions, not as the stray beside them: {said:?}"
     );
 }
 
@@ -8000,13 +8040,331 @@ fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() 
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the folder carries the row");
     app.home.selected = row;
     assert!(
         matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
         "the door opens what the rule declined to open in one key"
     );
+}
+
+/// `datui <dir>` does what `Enter` on that folder's row does.
+///
+/// A directory used to be `Unsupported file type` unless `--hive` was passed, while
+/// pyarrow, Polars, pandas and Spark all open one. Naming a folder is the request to
+/// read it, so the command line answers the same as the other two doors onto a path.
+#[test]
+fn test_the_command_line_reads_a_folder_the_way_enter_does() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parquet = |dir: &Path, name: &str, mut frame: DataFrame| {
+        std::fs::create_dir_all(dir).unwrap();
+        ParquetWriter::new(File::create(dir.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    };
+    let table = |cols: &[&str]| {
+        DataFrame::new(
+            1,
+            cols.iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect(),
+        )
+        .unwrap()
+    };
+
+    let app = || {
+        let (tx, _rx) = mpsc::channel();
+        App::new(tx, common::test_runtime())
+    };
+    let named = |app: &mut App, dir: &Path| {
+        app.open_the_path_named_on_the_command_line(vec![dir.to_path_buf()], OpenOptions::default())
+    };
+
+    // One table across several files: read as one, on the folder route.
+    let one = tmp.path().join("one");
+    parquet(&one, "a.parquet", table(&["id", "ts"]));
+    parquet(&one, "b.parquet", table(&["id", "ts"]));
+    let mut a = app();
+    match named(&mut a, &one) {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![one.clone()]);
+            assert!(options.hive, "the folder route is what reads a directory");
+        }
+        _ => panic!("a folder of one table opens as one table"),
+    }
+
+    // Separate tables: a place to look inside, browsed into rather than refused. The
+    // `(all files)` row in there is the keystroke that unions them anyway.
+    let several = tmp.path().join("several");
+    parquet(&several, "by_block.parquet", table(&["block", "fee"]));
+    parquet(
+        &several,
+        "daily.parquet",
+        table(&["day", "price", "volume"]),
+    );
+    let mut b = app();
+    assert!(
+        named(&mut b, &several).is_none(),
+        "a folder of separate tables is somewhere to look, not a refusal"
+    );
+    assert_eq!(b.home.browsing.as_deref(), Some(several.as_path()));
+    assert_eq!(b.input_mode, InputMode::Home);
+
+    // A hive root reads as one table too, and still by the folder route.
+    let hive = tmp.path().join("hive");
+    parquet(&hive.join("day=1"), "part.parquet", table(&["id"]));
+    parquet(&hive.join("day=2"), "part.parquet", table(&["id"]));
+    let mut c = app();
+    assert!(
+        matches!(named(&mut c, &hive), Some(AppEvent::Open(_, o)) if o.hive),
+        "a hive root is read through its partitions"
+    );
+
+    // A lake root is not a folder of Parquet files, however much it looks like one.
+    let delta = tmp.path().join("delta");
+    std::fs::create_dir_all(delta.join("_delta_log")).unwrap();
+    std::fs::write(
+        delta.join("_delta_log").join("00000000000000000000.json"),
+        "{}",
+    )
+    .unwrap();
+    parquet(&delta, "part-00000.parquet", table(&["id"]));
+    let mut d = app();
+    assert!(named(&mut d, &delta).is_none(), "it is not read as Parquet");
+    assert_eq!(d.home.browsing.as_deref(), Some(delta.as_path()));
+    assert!(
+        d.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("Delta")),
+        "and it says why: {:?}",
+        d.home.status
+    );
+
+    // And the read really happens: the event the rule returns, pumped, is the table.
+    let (tx, rx) = mpsc::channel();
+    let mut loaded = App::new(tx, common::test_runtime());
+    let event = loaded
+        .open_the_path_named_on_the_command_line(vec![one.clone()], OpenOptions::default())
+        .expect("a folder of one table opens");
+    let AppEvent::Open(paths, options) = event else {
+        panic!("the rule opens it")
+    };
+    pump_open_until_loaded(&mut loaded, &rx, paths, options);
+    assert_eq!(
+        loaded.data_table_state.as_ref().map(|s| s.num_rows),
+        Some(2),
+        "one row from each file, read as one table"
+    );
+
+    // A file is untouched, and so is `--hive`, which is an answer already given.
+    let mut e = app();
+    assert!(matches!(
+        e.open_the_path_named_on_the_command_line(
+            vec![one.join("a.parquet")],
+            OpenOptions::default()
+        ),
+        Some(AppEvent::Open(..))
+    ));
+    let mut f = app();
+    let forced = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    assert!(
+        matches!(
+            f.open_the_path_named_on_the_command_line(vec![several.clone()], forced),
+            Some(AppEvent::Open(..))
+        ),
+        "--hive still means read this as one, whatever the folder looks like"
+    );
+}
+
+/// A folder of several formats is read as the commonest, and says what it left out.
+///
+/// Refusing the whole of a thousand CSVs over one stray JSON was datui deciding that a
+/// folder it could read was not worth reading. It reads it now — and a read that
+/// silently drops a file is the other half of the same mistake, so the dataset says
+/// which formats were passed over and how many of each.
+#[test]
+fn test_a_mixed_folder_reads_as_the_commonest_format_and_says_what_it_left_out() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path();
+    for name in ["a.csv", "b.csv", "c.csv"] {
+        std::fs::write(dir.join(name), b"x,y\n1,2\n").unwrap();
+    }
+    std::fs::write(dir.join("notes.json"), b"{\"x\": 1}").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the folder opens rather than being refused over the stray");
+    assert_eq!(state.num_rows, 3, "one row from each CSV");
+
+    let notes = state.notes();
+    let said = notes
+        .iter()
+        .find(|n| n.summary.contains("more than one format"))
+        .unwrap_or_else(|| panic!("the read says what it left out, got {notes:?}"));
+    assert!(
+        said.summary.contains("1 json"),
+        "by format and count: {:?}",
+        said.summary
+    );
+    assert!(
+        state.has_notes(),
+        "and the Info key offers it, which is the only way anyone finds out"
+    );
+}
+
+/// A remote row datui has no reader for is named a file, not left Unknown.
+///
+/// `entry_for_path` had a name and nothing else to go on, and left anything whose
+/// extension it did not recognize as `Unknown` — which → enters. So a Recent of
+/// `s3://bucket/data.dat` took → into an empty prefix listing with no explanation and
+/// Esc as the only way out (#283). Excluding `Unknown` from what → enters was the other
+/// way to fix it, and it is the label deciding access one indirection along: before
+/// anything has looked into it, every row on a share is `Unknown`, including every
+/// folder that costs most to reach. So the row is named instead.
+#[test]
+fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
+    let kind = |url: &str| {
+        let mut home = datui::home::HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
+        home.rebuild(&[], &[PathBuf::from(url)]);
+        home.sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .find(|r| r.path == Path::new(url))
+            .map(|r| r.kind)
+            .unwrap_or_else(|| panic!("{url} is listed under RECENT"))
+    };
+
+    // An extension datui reads: a file, as it always was.
+    assert_eq!(
+        kind("s3://bucket/data.psv"),
+        datui::discover::EntryKind::File
+    );
+    // One it does not: still a file. It is certainly not a prefix.
+    assert_eq!(
+        kind("s3://bucket/data.dat"),
+        datui::discover::EntryKind::File,
+        "→ must not offer to go inside it"
+    );
+    // No extension: genuinely ambiguous — it may be a prefix, or a part file written
+    // without one — so it stays Unknown and → goes in, which is the trade #279 made.
+    assert_eq!(
+        kind("s3://bucket/exports"),
+        datui::discover::EntryKind::Unknown
+    );
+    // A trailing slash is a prefix whatever the name has in it.
+    assert_eq!(
+        kind("s3://bucket/2024.01.15/"),
+        datui::discover::EntryKind::Unknown,
+        "a dotted prefix is not a file"
+    );
+}
+
+/// A folder of files written without extensions opens as one table.
+///
+/// Spark and GBIF both write part files with no extension. `occurrence.parquet/000001`
+/// is read by its folder's name; the same files under a folder named anything else were
+/// not data at all as far as datui was concerned — nothing listed them and nothing
+/// opened them. The bytes say what the names do not, and they are asked once, of the
+/// folder somebody is opening, never of a folder somebody is looking at.
+#[test]
+fn test_a_folder_of_files_written_without_extensions_still_opens() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parts = tmp.path().join("parts");
+    std::fs::create_dir_all(&parts).unwrap();
+    let mut frame = DataFrame::new(1, vec![Column::new("id".into(), &[1i32])]).unwrap();
+    for name in ["000000", "000001"] {
+        ParquetWriter::new(File::create(parts.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    // The names settle nothing, so the folder is a place to look inside.
+    assert_eq!(
+        datui::discover::classify_directory(&parts),
+        datui::discover::EntryKind::Directory,
+        "no name in there says data"
+    );
+
+    // And the read finds them anyway.
+    match datui::discover::folder_format(&parts) {
+        datui::discover::FolderFormat::One(format, files) => {
+            assert_eq!(format, datui::FileFormat::Parquet);
+            assert_eq!(files.len(), 2, "both of them");
+        }
+        other => panic!("the bytes say Parquet, got {other:?}"),
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![parts.clone()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().map(|s| s.num_rows),
+        Some(2),
+        "one row from each part"
+    );
+
+    // And it is reachable from the home screen: the folder is a place to look inside,
+    // and the door inside it reads the whole of what it holds. Two keys, which is the
+    // rule for every folder the nesting test turns away — not a dead end, which is what
+    // a folder nothing listed and nothing opened was.
+    let (tx, _rx) = mpsc::channel();
+    let mut home = App::new(tx, common::test_runtime());
+    home.enter_home();
+    home.home.browsing = Some(parts.clone());
+    home.home.rebuild(&[], &[]);
+    let door = home
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
+        .expect("the folder carries the door");
+    home.home.selected = door;
+    assert!(
+        matches!(home.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        "the door opens it"
+    );
+
+    // A folder whose names do say something is not opened file by file to find out.
+    // `LICENSE` beside the Parquet is not sniffed, and not read.
+    let named = tmp.path().join("named");
+    std::fs::create_dir_all(&named).unwrap();
+    ParquetWriter::new(File::create(named.join("a.parquet")).unwrap())
+        .finish(&mut frame)
+        .unwrap();
+    std::fs::write(named.join("LICENSE"), b"MIT").unwrap();
+    match datui::discover::folder_format(&named) {
+        datui::discover::FolderFormat::One(datui::FileFormat::Parquet, files) => {
+            assert_eq!(files.len(), 1, "the LICENSE is not one of them");
+        }
+        other => panic!("the names settled it, got {other:?}"),
+    }
 }

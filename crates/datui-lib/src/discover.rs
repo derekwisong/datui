@@ -485,6 +485,53 @@ mod parquet_key_tests {
     }
 }
 
+/// What a file with no usable extension turns out to be, from the bytes at its start.
+///
+/// Every format datui reads as a folder puts a fixed signature at the front — Parquet
+/// at both ends, and the other three at the front alone. A name is the cheap answer and
+/// the one every listing uses; this is the expensive one, and it is asked only of a
+/// folder somebody is opening, never of a folder somebody is looking at.
+///
+/// Spark and GBIF both write part files with no extension — `occurrence.parquet/000001`
+/// is read by its folder's name, and the same files under a folder named anything else
+/// were not data at all as far as datui was concerned.
+///
+/// CSV and JSON are deliberately absent: they have no signature, and guessing from the
+/// first line is a parse rather than a look.
+pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let read = {
+        let mut file = std::fs::File::open(path).ok()?;
+        // A short read is the whole file: a signature that does not fit is not one.
+        let mut filled = 0;
+        loop {
+            match file.read(&mut head[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(_) => return None,
+            }
+        }
+        filled
+    };
+    let head = &head[..read];
+    if head.starts_with(b"PAR1") {
+        // Both ends, because `PAR1` at the front alone is a truncated write — the
+        // footer is what a Parquet reader actually needs.
+        return has_parquet_magic(path).then_some(crate::FileFormat::Parquet);
+    }
+    if head.starts_with(b"ARROW1") {
+        return Some(crate::FileFormat::Arrow);
+    }
+    if head.starts_with(b"Obj\x01") {
+        return Some(crate::FileFormat::Avro);
+    }
+    if head.starts_with(b"ORC") {
+        return Some(crate::FileFormat::Orc);
+    }
+    None
+}
+
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.
 pub fn has_parquet_magic(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
@@ -572,15 +619,27 @@ pub(crate) fn folder_and_name(path: &Path) -> String {
     }
 }
 
-/// Commonest first, and by name where two formats tie, so the line reads the same way
-/// twice running.
+/// Commonest first, Parquet ahead of anything it ties with, then by name, so the line
+/// reads the same way twice running.
+///
+/// One order, by name of format, for everything that ranks a folder's formats: the
+/// local label, the local read that picks a reader, and the cloud label. They agreed on
+/// the common case and not on a tie — a folder of two CSV and two Parquet was *labelled*
+/// `2 csv · 2 parquet` and *read* as Parquet, so the row said one thing and `Enter` did
+/// another. Parquet wins the tie because it is the format a folder of data files is most
+/// likely to be about and the one every other route reads in place.
 ///
 /// Named rather than written inline because `read_dir` order is exactly what it exists
 /// to remove, and a fixture on disk cannot pin an order that depends on it: the tie is
-/// the whole point and only a caller choosing the input order can put one there. The
-/// cloud route sorts its own counts the same way over `&'static str`.
+/// the whole point and only a caller choosing the input order can put one there.
+pub(crate) fn rank_formats(a: (&str, usize), b: (&str, usize)) -> std::cmp::Ordering {
+    b.1.cmp(&a.1)
+        .then_with(|| (a.0 != "parquet").cmp(&(b.0 != "parquet")))
+        .then_with(|| a.0.cmp(b.0))
+}
+
 fn order_formats(counts: &mut [(crate::FileFormat, usize)]) {
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(b.0.name())));
+    counts.sort_by(|a, b| rank_formats((a.0.name(), a.1), (b.0.name(), b.1)));
 }
 
 /// Whether a listing entry is bookkeeping rather than data.
@@ -628,9 +687,16 @@ pub enum FolderFormat {
     /// Every data file directly in the folder reads as this one format, and these are
     /// the files. Sorted, because a concatenation's row order is its file order.
     One(crate::FileFormat, Vec<PathBuf>),
-    /// The files name more than one format, or one datui has no reader for. Whatever
-    /// the folder is, it is not a single table.
-    NotOneTable,
+    /// The files name more than one format. The commonest of them is the table — a
+    /// folder of a thousand CSVs and one stray JSON is a folder of CSVs — and the rest
+    /// are counted by format so the read can say what it passed over. Parquet wins a
+    /// tie, because it is the format a folder of data files is most likely to be about
+    /// and the one every other route here reads in place.
+    Mixed {
+        format: crate::FileFormat,
+        files: Vec<PathBuf>,
+        passed_over: Vec<(crate::FileFormat, usize)>,
+    },
     /// The folder settles nothing by itself: it holds no readable data file directly,
     /// or it has subfolders and so may hold its data below. A hive dataset looks like
     /// this — its files are a level down, under `key=value`.
@@ -656,9 +722,12 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
         return FolderFormat::Deeper;
     };
 
-    let mut format: Option<crate::FileFormat> = None;
-    let mut files = Vec::new();
-    let mut mixed = false;
+    // Every format the folder names, with the files of each. A folder of one format
+    // takes the only entry; a folder of several takes the commonest and reports the
+    // rest, which is what stops one stray file deciding a folder cannot be read.
+    let mut by_format: Vec<(crate::FileFormat, Vec<PathBuf>)> = Vec::new();
+    // Files whose names say nothing, kept in case their bytes do. See below.
+    let mut nameless: Vec<PathBuf> = Vec::new();
     let mut partitioned = false;
     for entry in iter.flatten() {
         let path = entry.path();
@@ -688,14 +757,49 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
             continue;
         }
         let Some(found) = data_format(&path) else {
+            // A name that says nothing. Kept rather than dropped, because the bytes may
+            // still say what it is — see below, where they are asked.
+            if path.extension().is_none() {
+                nameless.push(path);
+            }
             continue;
         };
-        match format {
-            Some(seen) if seen != found => mixed = true,
-            Some(_) => {}
-            None => format = Some(found),
+        match by_format.iter_mut().find(|(f, _)| *f == found) {
+            Some((_, of_that_format)) => of_that_format.push(path),
+            None => by_format.push((found, vec![path])),
         }
-        files.push(path);
+    }
+
+    // Files with no extension, in a folder whose names settled nothing. Spark and GBIF
+    // both write part files this way; `occurrence.parquet/000001` is read by its
+    // folder's name, and the same files under a folder named anything else were not
+    // data at all as far as datui was concerned — the folder was `dir` and its files
+    // were not listed.
+    //
+    // Only when the names have nothing to say. A folder of Parquet with a `LICENSE` in
+    // it is a folder of Parquet, and opening the `LICENSE` to find out is a read per
+    // file for an answer already given.
+    //
+    // A spread rather than every one, for the reason `sample_footers` takes a spread:
+    // the cost is one open per file, and a folder written by one job holds one kind of
+    // thing. They have to agree — a folder where the ends disagree is not one table by
+    // any reading — and then all of them are taken as that format, because a scan that
+    // reads what it can and says what it could not is what happens to the odd one out.
+    if by_format.is_empty() && !nameless.is_empty() {
+        nameless.sort();
+        let mut picks = vec![0, nameless.len() / 2, nameless.len() - 1];
+        picks.dedup();
+        let sniffed: Vec<crate::FileFormat> = picks
+            .iter()
+            .filter_map(|i| nameless.get(*i))
+            .filter_map(|f| sniff_format(f))
+            .collect();
+        if sniffed.len() == picks.len()
+            && let Some(found) = sniffed.first().copied()
+            && sniffed.iter().all(|f| *f == found)
+        {
+            by_format.push((found, nameless));
+        }
     }
 
     // Decided after the whole listing rather than at the first entry that could settle
@@ -705,16 +809,25 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
     if partitioned {
         return FolderFormat::Deeper;
     }
-    if mixed {
-        return FolderFormat::NotOneTable;
-    }
 
-    match format {
-        Some(format) => {
-            files.sort();
-            FolderFormat::One(format, files)
+    // The one order every route ranks a folder's formats by, so the reader this picks
+    // is the format the label names.
+    by_format.sort_by(|a, b| rank_formats((a.0.name(), a.1.len()), (b.0.name(), b.1.len())));
+    let mut by_format = by_format.into_iter();
+    let Some((format, mut files)) = by_format.next() else {
+        return FolderFormat::Deeper;
+    };
+    files.sort();
+    let passed_over: Vec<(crate::FileFormat, usize)> =
+        by_format.map(|(f, of_that)| (f, of_that.len())).collect();
+    if passed_over.is_empty() {
+        FolderFormat::One(format, files)
+    } else {
+        FolderFormat::Mixed {
+            format,
+            files,
+            passed_over,
         }
-        None => FolderFormat::Deeper,
     }
 }
 
@@ -2334,6 +2447,38 @@ mod classification_tests {
                 (FileFormat::Json, 2)
             ]
         );
+    }
+
+    /// The label and the read name the same format, including on a tie.
+    ///
+    /// They agreed on the common case and not on a tie: the label sorted equal counts
+    /// by name and the read put Parquet first, so a folder of two CSV and two Parquet
+    /// was labelled `2 csv · 2 parquet` and opened as Parquet. One order now, and this
+    /// is the case that tells the two orders apart.
+    #[test]
+    fn the_label_and_the_read_pick_the_same_format_on_a_tie() {
+        use crate::FileFormat;
+        let tmp = tempfile::TempDir::new().unwrap();
+        for name in ["a.csv", "b.csv", "c.parquet", "d.parquet"] {
+            std::fs::write(tmp.path().join(name), b"x").unwrap();
+        }
+
+        let (_, holds) = look_at_directory(tmp.path());
+        assert_eq!(
+            holds.formats.first().map(|(f, n)| (f.as_str(), *n)),
+            Some(("parquet", 2)),
+            "the label names Parquet first: {:?}",
+            holds.formats
+        );
+
+        match folder_format(tmp.path()) {
+            FolderFormat::Mixed { format, .. } => assert_eq!(
+                format,
+                FileFormat::Parquet,
+                "and so does the reader the open picks"
+            ),
+            other => panic!("a folder of two formats is mixed, got {other:?}"),
+        }
     }
 
     #[test]

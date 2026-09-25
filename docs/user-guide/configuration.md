@@ -39,7 +39,7 @@ of the same name override them per run.
 
 ```toml
 [file_loading]
-delimiter = 44                # ASCII code of the separator. Omit for auto-detect
+delimiter = 44                # ASCII code of the separator. Omit for the format's own
 has_header = true             # Omit for auto-detect
 skip_lines = 0                # Lines to skip before the header
 skip_rows = 0                 # Rows to skip after it

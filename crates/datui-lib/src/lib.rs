@@ -4723,6 +4723,12 @@ impl OpenOptions {
         self
     }
 
+    /// The separator a delimited file is read with: `--delimiter` when given, else
+    /// the one its format implies (`FileFormat::separator`).
+    pub fn separator_or(&self, format_default: u8) -> u8 {
+        self.delimiter.unwrap_or(format_default)
+    }
+
     pub fn with_compression(mut self, compression: CompressionFormat) -> Self {
         self.compression = Some(compression);
         self
@@ -7067,7 +7073,12 @@ impl App {
         self.path = path.clone();
         if let Some(ref p) = path {
             self.original_file_format = Self::export_format_for(p, options);
-            self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
+            let format_default = options
+                .format
+                .or_else(|| FileFormat::from_path(p))
+                .and_then(FileFormat::separator)
+                .unwrap_or(b',');
+            self.original_file_delimiter = Some(options.separator_or(format_default));
         } else {
             self.original_file_format = None;
             self.original_file_delimiter = None;
@@ -10429,6 +10440,7 @@ impl App {
         cloud_opts: CloudOptions,
         format: FileFormat,
         glob: bool,
+        delimiter: Option<u8>,
     ) -> Option<Result<LazyFrame>> {
         use polars::prelude::{LazyCsvReader, LazyFileListReader};
         let pl_path = PlRefPath::new(url);
@@ -10437,6 +10449,7 @@ impl App {
         };
         let lf = match format {
             FileFormat::Csv => LazyCsvReader::new(pl_path)
+                .with_separator(delimiter.unwrap_or(b','))
                 .with_cloud_options(Some(cloud_opts))
                 .with_glob(glob)
                 .finish()
@@ -10685,6 +10698,7 @@ impl App {
     /// how a folder had been stacked never appeared outside the tests.
     fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
         crate::schema_union::ReadAs {
+            delimiter: options.delimiter,
             has_header: options.has_header,
             skip_rows: options.skip_rows,
             skip_lines: options.skip_lines,
@@ -10730,8 +10744,13 @@ impl App {
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
                     if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
-                        && let Some(lf) =
-                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                        && let Some(lf) = Self::scan_cloud_prefix(
+                            &full,
+                            cloud_opts.clone(),
+                            format,
+                            is_glob,
+                            options.delimiter,
+                        )
                     {
                         return lf;
                     }
@@ -10774,8 +10793,13 @@ impl App {
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
                     if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
-                        && let Some(lf) =
-                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                        && let Some(lf) = Self::scan_cloud_prefix(
+                            &full,
+                            cloud_opts.clone(),
+                            format,
+                            is_glob,
+                            options.delimiter,
+                        )
                     {
                         return lf;
                     }
@@ -10814,8 +10838,13 @@ impl App {
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
                     if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
-                        && let Some(lf) =
-                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                        && let Some(lf) = Self::scan_cloud_prefix(
+                            &full,
+                            cloud_opts.clone(),
+                            format,
+                            is_glob,
+                            options.delimiter,
+                        )
                     {
                         return lf;
                     }

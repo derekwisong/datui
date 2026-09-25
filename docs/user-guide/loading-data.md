@@ -65,7 +65,7 @@ larger than memory is fine. The others are read whole before the table appears.
 
 | Option | Config key | What it does |
 |---|---|---|
-| `--delimiter 9` | `delimiter` | Column separator as an ASCII code. Auto-detected when unset |
+| `--delimiter 9` | `delimiter` | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
 | `--no-header true` | `has_header` | The first row is data, not names |
 | `--skip-lines N`, `--skip-rows N`, `--skip-tail-rows N` | `skip_lines`, `skip_rows` | Ignore a preamble or a footer |
 | `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`). Repeatable |

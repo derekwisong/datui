@@ -9064,3 +9064,107 @@ fn test_a_folder_with_no_data_is_not_forced_open() {
     }
     assert_eq!(app.home.browsing.as_deref(), Some(src.as_path()));
 }
+
+/// Options as the binary builds them from these arguments and this config text.
+fn options_as_the_binary_does(argv: &[&str], config: &str) -> OpenOptions {
+    use clap::Parser;
+    let args = datui_cli::Args::try_parse_from(argv).expect("parses");
+    let config: datui::config::AppConfig = toml::from_str(config).expect("config parses");
+    OpenOptions::from_args_and_config(&args, &config)
+}
+
+fn open_and_collect(paths: Vec<PathBuf>, options: OpenOptions) -> (App, DataFrame) {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, paths, options);
+    let df = app
+        .data_table_state
+        .as_ref()
+        .expect("the file opened")
+        .lf
+        .clone()
+        .collect()
+        .unwrap();
+    (app, df)
+}
+
+fn names(df: &DataFrame) -> Vec<String> {
+    df.get_column_names()
+        .iter()
+        .map(|n| n.to_string())
+        .collect()
+}
+
+/// `--delimiter` is what the file is read with (#290), on every CSV route: one file,
+/// several, and a compressed one read both lazily and in memory.
+#[test]
+fn test_delimiter_flag_splits_the_columns() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let body = "id|name|city\n1|ann|oslo\n2|bob|rome\n";
+    let one = tmp.path().join("one.csv");
+    let two = tmp.path().join("two.csv");
+    std::fs::write(&one, body).unwrap();
+    std::fs::write(&two, body).unwrap();
+    let gz = tmp.path().join("zipped.csv.gz");
+    let mut enc =
+        flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::default());
+    std::io::Write::write_all(&mut enc, body.as_bytes()).unwrap();
+    enc.finish().unwrap();
+
+    let (_, df) = open_and_collect(
+        vec![one.clone()],
+        options_as_the_binary_does(&["datui", "x"], ""),
+    );
+    assert_eq!(names(&df), ["id|name|city"], "without the flag: one column");
+
+    let with_flag = |extra: &[&str]| {
+        let mut argv = vec!["datui", "x", "--delimiter", "124"];
+        argv.extend_from_slice(extra);
+        options_as_the_binary_does(&argv, "")
+    };
+    for (what, paths, opts) in [
+        ("one file", vec![one.clone()], with_flag(&[])),
+        ("two files", vec![one.clone(), two.clone()], with_flag(&[])),
+        ("gzip, lazily", vec![gz.clone()], with_flag(&[])),
+        (
+            "gzip, in memory",
+            vec![gz.clone()],
+            with_flag(&["--decompress-in-memory", "true"]),
+        ),
+    ] {
+        let rows = 2 * paths.len();
+        let (_, df) = open_and_collect(paths, opts);
+        assert_eq!(names(&df), ["id", "name", "city"], "{what}");
+        assert_eq!(df.height(), rows, "{what}");
+    }
+}
+
+/// The flag outranks the separator a `.tsv` implies, and export offers whatever the
+/// file was read with.
+#[test]
+fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let tsv = tmp.path().join("data.tsv");
+    std::fs::write(&tsv, "a;b\tc\n1;2\t3\n").unwrap();
+
+    let export_default = |app: &mut App| {
+        app.event(&key(KeyCode::Char('e')));
+        app.export_modal.csv_delimiter_input.value().to_string()
+    };
+
+    let (mut app, df) = open_and_collect(
+        vec![tsv.clone()],
+        options_as_the_binary_does(&["datui", "x"], ""),
+    );
+    assert_eq!(names(&df), ["a;b", "c"]);
+    assert_eq!(export_default(&mut app), "\t");
+
+    let (mut app, df) = open_and_collect(
+        vec![tsv],
+        options_as_the_binary_does(&["datui", "x", "--delimiter", "59"], ""),
+    );
+    assert_eq!(names(&df), ["a", "b\tc"]);
+    assert_eq!(export_default(&mut app), ";");
+}

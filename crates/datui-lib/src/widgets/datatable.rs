@@ -2399,7 +2399,9 @@ impl DataTableState {
     /// Infer CSV schema with minimal read (one row) for building null_values when both global and per-column are set.
     fn csv_schema_for_null_values(path: &Path, options: &OpenOptions) -> Result<Arc<Schema>> {
         let pl_path = PlRefPath::try_from_path(path)?;
-        let mut reader = LazyCsvReader::new(pl_path).with_n_rows(Some(1));
+        let mut reader = LazyCsvReader::new(pl_path)
+            .with_n_rows(Some(1))
+            .with_separator(options.separator_or(b','));
         if let Some(skip_lines) = options.skip_lines {
             reader = reader.with_skip_lines(skip_lines);
         }
@@ -2829,7 +2831,9 @@ impl DataTableState {
                         }
                         read_options.ignore_errors = options.ignore_errors;
                         read_options = read_options.map_parse_options(|opts| {
-                            let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
+                            let o = opts
+                                .with_separator(options.separator_or(b','))
+                                .with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
                                 Some(n) => o.with_null_values(Some(n.clone())),
                                 None => o,
@@ -2873,7 +2877,9 @@ impl DataTableState {
                         }
                         read_options.ignore_errors = options.ignore_errors;
                         read_options = read_options.map_parse_options(|opts| {
-                            let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
+                            let o = opts
+                                .with_separator(options.separator_or(b','))
+                                .with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
                                 Some(n) => o.with_null_values(Some(n.clone())),
                                 None => o,
@@ -2917,7 +2923,9 @@ impl DataTableState {
                         }
                         read_options.ignore_errors = options.ignore_errors;
                         read_options = read_options.map_parse_options(|opts| {
-                            let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
+                            let o = opts
+                                .with_separator(options.separator_or(b','))
+                                .with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
                                 Some(n) => o.with_null_values(Some(n.clone())),
                                 None => o,
@@ -2966,6 +2974,7 @@ impl DataTableState {
                         if let Some(n) = options.infer_schema_length {
                             reader = reader.with_infer_schema_length(Some(n));
                         }
+                        reader = reader.with_separator(options.separator_or(b','));
                         reader = reader.with_ignore_errors(options.ignore_errors);
                         reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
                         reader = match &nv_temp {
@@ -3010,6 +3019,7 @@ impl DataTableState {
                     if let Some(n) = options.infer_schema_length {
                         reader = reader.with_infer_schema_length(Some(n));
                     }
+                    reader = reader.with_separator(options.separator_or(b','));
                     reader = reader.with_ignore_errors(options.ignore_errors);
                     reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
                     reader = match &nv {
@@ -3083,6 +3093,7 @@ impl DataTableState {
             if let Some(n) = options.infer_schema_length {
                 reader = reader.with_infer_schema_length(Some(n));
             }
+            reader = reader.with_separator(options.separator_or(b','));
             reader = reader.with_ignore_errors(options.ignore_errors);
             reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
             reader = match &nv {
@@ -3351,7 +3362,8 @@ impl DataTableState {
 
     pub fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
         let pl_path = PlRefPath::try_from_path(path)?;
-        let mut reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
+        let mut reader =
+            LazyCsvReader::new(pl_path).with_separator(options.separator_or(delimiter));
         if let Some(skip_lines) = options.skip_lines {
             reader = reader.with_skip_lines(skip_lines);
         }
@@ -8428,6 +8440,56 @@ mod tests {
         assert!(state.schema.contains("id"));
         assert!(state.schema.contains("name"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `--delimiter` reaches the in-memory readers of every compression, and the
+    /// one-row read that per-column null values are built from (#290).
+    #[test]
+    fn test_delimiter_reaches_every_csv_reader() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"id|name\n1|NA\n2|x\n";
+        let bz = dir.path().join("t.csv.bz2");
+        let mut enc =
+            bzip2::write::BzEncoder::new(File::create(&bz).unwrap(), bzip2::Compression::best());
+        enc.write_all(body).unwrap();
+        enc.finish().unwrap();
+        let xz = dir.path().join("t.csv.xz");
+        let mut enc = xz2::write::XzEncoder::new(File::create(&xz).unwrap(), 6);
+        enc.write_all(body).unwrap();
+        enc.finish().unwrap();
+        let plain = dir.path().join("t.csv");
+        std::fs::write(&plain, body).unwrap();
+
+        let in_memory = OpenOptions {
+            delimiter: Some(b'|'),
+            decompress_in_memory: true,
+            ..Default::default()
+        };
+        // A global and a per-column value together make the read ask for the schema;
+        // the column's own value replaces the global one, so only `x` is null.
+        let null_values = OpenOptions {
+            delimiter: Some(b'|'),
+            null_values: Some(vec!["NA".into(), "name=x".into()]),
+            ..Default::default()
+        };
+        for (what, path, opts) in [
+            ("bzip2", &bz, &in_memory),
+            ("xz", &xz, &in_memory),
+            ("null values", &plain, &null_values),
+        ] {
+            let state = DataTableState::from_csv(path, opts).unwrap();
+            let df = state.lf.clone().collect().unwrap();
+            let names: Vec<_> = df
+                .get_column_names()
+                .iter()
+                .map(|n| n.to_string())
+                .collect();
+            assert_eq!(names, ["id", "name"], "{what}");
+            if opts.null_values.is_some() {
+                assert_eq!(df.column("name").unwrap().null_count(), 1, "{what}");
+            }
+        }
     }
 
     #[test]

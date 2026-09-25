@@ -287,6 +287,7 @@ impl SkippedFiles {
 /// pass.
 #[derive(Debug, Clone)]
 pub struct ReadAs {
+    pub delimiter: Option<u8>,
     pub has_header: Option<bool>,
     pub skip_rows: Option<usize>,
     pub skip_lines: Option<usize>,
@@ -306,6 +307,7 @@ impl Default for ReadAs {
     /// `ReadAs::default()`.
     fn default() -> Self {
         Self {
+            delimiter: None,
             has_header: None,
             skip_rows: None,
             skip_lines: None,
@@ -322,7 +324,7 @@ impl Default for ReadAs {
 /// answer comes from its footer and has its own path; this is for the rest, where the
 /// names are at the front of the file — a CSV header line, an NDJSON object's keys —
 /// and Polars' own schema inference is what reads them, so the names are the ones the
-/// open will use, delimiter detection and all.
+/// open will use, separator and all.
 ///
 /// `None` for a format whose schema cannot be had without reading the whole file, and
 /// for a file that would not parse. Both mean "no evidence", which every caller here
@@ -344,7 +346,9 @@ pub fn column_schema_of(
             // Read the way the open will read it. Where the header is and how far the
             // reader looks before settling a type both change what comes back, and a
             // sample that used its own answers would describe a file nobody opened.
+            let separator = as_read.delimiter.or(format.separator()).unwrap_or(b',');
             let mut reader = LazyCsvReader::new(pl_path)
+                .with_separator(separator)
                 .with_try_parse_dates(as_read.try_parse_dates)
                 .with_ignore_errors(as_read.ignore_errors);
             if let Some(has_header) = as_read.has_header {
@@ -1914,6 +1918,32 @@ fn scan_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sample reads with the separator the open reads with: the format's own, or
+    /// `--delimiter` over it. A sample that split on `,` regardless would see one
+    /// column in every TSV and PSV and in any CSV the flag was needed for.
+    #[test]
+    fn the_sample_splits_on_the_separator_the_open_uses() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = |name: &str, body: &str, format, delimiter| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            let as_read = ReadAs {
+                delimiter,
+                ..ReadAs::default()
+            };
+            column_schema_of(&path, format, &as_read)
+                .unwrap()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
+        };
+        use crate::FileFormat::{Csv, Psv, Tsv};
+        assert_eq!(names("a.tsv", "a\tb\n1\t2\n", Tsv, None), ["a", "b"]);
+        assert_eq!(names("a.psv", "a|b\n1|2\n", Psv, None), ["a", "b"]);
+        assert_eq!(names("a.csv", "a|b\n1|2\n", Csv, None), ["a|b"]);
+        assert_eq!(names("b.csv", "a|b\n1|2\n", Csv, Some(b'|')), ["a", "b"]);
+    }
 
     fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
         let mut schema = Schema::with_capacity(columns.len());

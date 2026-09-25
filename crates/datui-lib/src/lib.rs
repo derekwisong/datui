@@ -4607,6 +4607,14 @@ pub struct OpenOptions {
     /// that it is never silent: a note and a chip in the control bar say so, and both
     /// are load-bearing.
     pub read_as_plain_files_of: Option<&'static str>,
+    /// Set when the folder's own files do not all carry the same columns, so the table
+    /// is their union rather than a stack.
+    ///
+    /// Only for the formats with no footer. A Parquet dataset's footers are read
+    /// anyway, and say this per column and per file in far more detail — which columns,
+    /// in how many files, and where — so saying it twice would be one vague note above
+    /// several exact ones.
+    pub files_disagree: bool,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
@@ -4652,6 +4660,7 @@ impl OpenOptions {
             skip_tail_rows: None,
             left_out: Vec::new(),
             read_as_plain_files_of: None,
+            files_disagree: false,
             compression: None,
             format: None,
             pages_lookahead: None,
@@ -5254,6 +5263,22 @@ impl Drop for GenerationLease {
 /// with that key and it was not dropped: the caller keeps it and offers it again once
 /// the app is idle.
 pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
+
+/// What a read of a folder found out about itself on the way through.
+///
+/// Filled by the pass that actually picks the files and the reader, and carried back on
+/// the options so the dataset can say it in the Notes. Everything here is about what
+/// datui *did*, not about what the data is — the footer notes are the other half, and
+/// they are written later, by whatever read the footers.
+#[derive(Debug, Clone, Default)]
+pub struct ReadReport {
+    /// Data files in the folder this read passed over, by format and count. A folder of
+    /// more than one format is read as the commonest of them; this is the rest.
+    pub left_out: Vec<(FileFormat, usize)>,
+    /// Whether the files read do not all carry the same columns. See
+    /// [`OpenOptions::files_disagree`].
+    pub files_disagree: bool,
+}
 
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
 #[derive(Clone)]
@@ -9329,11 +9354,15 @@ impl App {
             // the read's own answer, because it is the pass that decides, while for a
             // prefix in an object store Polars does the listing and never sees the
             // other formats — there the home screen's listing is the only witness.
-            let mut left_out = options.left_out.clone();
-            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut left_out) {
+            let mut report = ReadReport {
+                left_out: options.left_out.clone(),
+                files_disagree: options.files_disagree,
+            };
+            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut report) {
                 Ok(lf) => {
                     let options = OpenOptions {
-                        left_out,
+                        left_out: report.left_out,
+                        files_disagree: report.files_disagree,
                         ..options
                     };
                     let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -10219,6 +10248,7 @@ impl App {
         state.set_open_notes(crate::notes::from_the_open(
             &options.left_out,
             options.read_as_plain_files_of,
+            options.files_disagree,
         ));
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
@@ -10465,17 +10495,33 @@ impl App {
     /// Takes the cloud config by reference rather than reading `self`, so the same
     /// code can run on a background thread — scanning is where the wall-clock time
     /// goes for CSV (schema inference) and for hive directories with many files.
-    /// `left_out` is what the read passed over, by format and count, for the caller to
-    /// say in a note. Only a folder of more than one format fills it: the read takes
-    /// the commonest format and this is what the rest were. Written here rather than
-    /// worked out by the caller because this is the pass that decides, and a second
-    /// opinion formed from a second directory read is a second answer waiting to
-    /// disagree.
+    /// Whether the files about to be read as one table do not all carry the same
+    /// columns, for the note that says so.
+    ///
+    /// Only for the formats with no footer. A Parquet dataset's footers are read anyway
+    /// and produce the exact version of this — which columns, in how many files, and
+    /// where — so a second, vaguer note above those would be noise.
+    ///
+    /// A spread of the files rather than all of them, the same three
+    /// [`crate::schema_union::names_nest`] samples for the label, and for the same
+    /// reason: this runs on the way into a read the user is waiting for.
+    fn files_disagree(files: &[PathBuf], format: FileFormat) -> bool {
+        if format == FileFormat::Parquet {
+            return false;
+        }
+        crate::schema_union::names_nest(files, format) == Some(false)
+    }
+
+    /// `found` is what the read has to say about itself, for the caller to put in the
+    /// dataset's notes: which data files it passed over, and whether the files it did
+    /// read carry the same columns. Written here rather than worked out by the caller
+    /// because this is the pass that decides, and a second opinion formed from a second
+    /// directory read is a second answer waiting to disagree.
     fn build_lazyframe_from_paths_with(
         cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
         options: &OpenOptions,
-        left_out: &mut Vec<(FileFormat, usize)>,
+        report: &mut ReadReport,
     ) -> Result<LazyFrame> {
         let path = &paths[0];
         match source::input_source(path) {
@@ -10675,13 +10721,14 @@ impl App {
                             // list of files typed on the command line goes through. An
                             // explicit `--format` is the user's own answer and outranks
                             // what the names say.
+                            report.files_disagree |= Self::files_disagree(&files, found);
                             let nested = OpenOptions {
                                 hive: false,
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
                             return Self::build_lazyframe_from_paths_with(
-                                cloud, &files, &nested, left_out,
+                                cloud, &files, &nested, report,
                             );
                         }
                         crate::discover::FolderFormat::Mixed {
@@ -10693,17 +10740,18 @@ impl App {
                             // CSVs and one stray JSON is a folder of CSVs, and refusing
                             // the whole of it over the stray was datui deciding that a
                             // folder it could read was not worth reading.
+                            report.files_disagree |= Self::files_disagree(&files, found);
                             let nested = OpenOptions {
                                 hive: false,
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
                             let lf = Self::build_lazyframe_from_paths_with(
-                                cloud, &files, &nested, left_out,
+                                cloud, &files, &nested, report,
                             )?;
                             // After the call, which reads a flat folder of one format
                             // and leaves nothing out of its own.
-                            *left_out = passed_over;
+                            report.left_out = passed_over;
                             return Ok(lf);
                         }
                     }

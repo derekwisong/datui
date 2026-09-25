@@ -1290,6 +1290,7 @@ fn enrich_dataset(entry: &mut Entry) {
         };
     if !reads_as_parquet {
         entry.size = None;
+        judge_by_names(entry);
         return;
     }
 
@@ -1494,6 +1495,58 @@ fn files_nest(sampled: &[Vec<String>]) -> bool {
         .map(|names| crate::schema_union::top_level_columns(names))
         .collect();
     per_file.len() < 2 || crate::schema_union::is_nested(&per_file)
+}
+
+/// Ask a folder with no footers whether its files are one table, by the names at the
+/// front of them.
+///
+/// The same rule as [`files_nest`] on the same evidence — the column names — from the
+/// only place a CSV or an NDJSON file keeps them. Without this a folder of forty
+/// unrelated CSVs was labelled `40 csv`, `Enter` promised one table because nothing had
+/// looked, and the read then refused it: the permissive rule with the strict reader,
+/// which is the pairing #275 exists to stop. Parquet has had the test since phase 3;
+/// this is the rest of the formats catching up.
+///
+/// Silence is optimism, as it is for an unreadable footer: too few files, a format
+/// whose schema costs a whole read, or a file that would not parse all leave the folder
+/// as its names suggested. That is only safe because the read behind it unions by name
+/// and widens types rather than failing — see `DataTableState::union_of_files`.
+fn judge_by_names(entry: &mut Entry) {
+    if entry.kind != EntryKind::MultiFile {
+        return;
+    }
+    let Some(format) = entry
+        .holds
+        .one_format()
+        .and_then(crate::FileFormat::from_name)
+    else {
+        return;
+    };
+    // The folder's own files, which is what the label counts and what the open reads.
+    // A `MultiFile` folder is flat by construction — a `key=value` below it would have
+    // made it `Hive` — so there is no subtree to walk for these.
+    let (FolderFormat::One(_, files) | FolderFormat::Mixed { files, .. }) =
+        folder_format(&entry.path)
+    else {
+        return;
+    };
+    if crate::schema_union::names_nest(&files, format) == Some(false) {
+        // The union of what is in there, so searching the home screen by column still
+        // finds the folder that has one — the same thing the Parquet path keeps when it
+        // downgrades.
+        let mut union: Vec<String> = Vec::new();
+        for file in &files {
+            for name in crate::schema_union::column_names_of(file, format).unwrap_or_default() {
+                if !union.contains(&name) {
+                    union.push(name);
+                }
+            }
+        }
+        let cols = (!union.is_empty()).then_some(union.len());
+        entry.columns = union;
+        entry.cols_sampled = false;
+        downgrade_to_directory(entry, cols);
+    }
 }
 
 /// A folder whose files turned out to be separate tables is a place to look inside.

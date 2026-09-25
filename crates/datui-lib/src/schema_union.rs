@@ -273,6 +273,58 @@ impl SkippedFiles {
     }
 }
 
+/// The column names one data file holds, read as cheaply as its format allows.
+///
+/// The evidence [`is_nested`] wants, for the formats that have no footer. Parquet's
+/// answer comes from its footer and has its own path; this is for the rest, where the
+/// names are at the front of the file — a CSV header line, an NDJSON object's keys —
+/// and Polars' own schema inference is what reads them, so the names are the ones the
+/// open will use, delimiter detection and all.
+///
+/// `None` for a format whose schema cannot be had without reading the whole file, and
+/// for a file that would not parse. Both mean "no evidence", which every caller here
+/// treats as it treats an unreadable footer: the folder keeps the kind its names
+/// suggested, and the read that follows is lenient enough to survive being wrong.
+///
+/// Deliberately not JSON: a `.json` file is one document, and its keys are only known
+/// once it has been parsed. Sampling three of those in a listing pass is a read of
+/// three whole files for a label.
+pub fn column_names_of(path: &std::path::Path, format: crate::FileFormat) -> Option<Vec<String>> {
+    use polars::prelude::{LazyCsvReader, LazyFileListReader, LazyJsonLineReader};
+    let pl_path = PlRefPath::try_from_path(path).ok()?;
+    let lf = match format {
+        crate::FileFormat::Csv | crate::FileFormat::Tsv | crate::FileFormat::Psv => {
+            LazyCsvReader::new(pl_path).finish().ok()?
+        }
+        crate::FileFormat::Jsonl => LazyJsonLineReader::new(pl_path).finish().ok()?,
+        _ => return None,
+    };
+    let schema = lf.clone().collect_schema().ok()?;
+    Some(schema.iter_names().map(|n| n.to_string()).collect())
+}
+
+/// Whether a spread of a folder's files agree, by the names at the front of them.
+///
+/// [`crate::discover::files_nest`]'s twin for the formats with no footer, and the same
+/// shape on purpose: the ends and the middle, because names sort and a folder written
+/// table by table can start with several files of the same table. Fewer than two
+/// readable answers decide nothing, which is what an unreadable footer means too.
+///
+/// `None` where there was not enough evidence to say either way.
+pub fn names_nest(files: &[std::path::PathBuf], format: crate::FileFormat) -> Option<bool> {
+    if files.len() < 2 {
+        return None;
+    }
+    let mut picks = vec![0, files.len() / 2, files.len() - 1];
+    picks.dedup();
+    let sampled: Vec<Vec<String>> = picks
+        .iter()
+        .filter_map(|i| files.get(*i))
+        .filter_map(|f| column_names_of(f, format))
+        .collect();
+    (sampled.len() >= 2).then(|| is_nested(&sampled))
+}
+
 /// Whether every file's columns are contained in the widest file's.
 ///
 /// The one shape schema evolution produces, and the one that reads cleanly as a union:

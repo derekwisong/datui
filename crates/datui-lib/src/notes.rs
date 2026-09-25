@@ -492,8 +492,26 @@ fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
 /// folder is a lake table being read as its plain files. Neither is a defect in the
 /// data — they are what datui chose to do, and #275's rule is that datui never refuses
 /// a read the user asked for and always says what it did instead.
-pub fn from_the_open(left_out: &[(crate::FileFormat, usize)], lake: Option<&str>) -> Vec<Note> {
+pub fn from_the_open(
+    left_out: &[(crate::FileFormat, usize)],
+    lake: Option<&str>,
+    files_disagree: bool,
+) -> Vec<Note> {
     let mut notes = Vec::new();
+    if files_disagree {
+        // Said once, in one sentence, because this is all the read knows: these formats
+        // carry no footer, so there is no per-column tally behind it. A Parquet dataset
+        // gets the exact version instead — which columns, in how many files, and where
+        // — from footers it had to read anyway.
+        notes.push(Note {
+            summary: "the folder's files do not all have the same columns; the table has \
+                      every column any of them has, and a row from a file without one \
+                      reads null"
+                .to_string(),
+            scope: "in a spread of this folder's files".to_string(),
+            read_as_text: None,
+        });
+    }
     if let Some(format) = lake {
         notes.push(Note {
             // The strongest sentence the panel has, because it is the one place a

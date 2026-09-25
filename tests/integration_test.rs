@@ -7642,7 +7642,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
 
     // The note and the chip, from that one field. Both, because the note is a tab away
     // and the chip is in the corner: each on its own is missable.
-    let notes = datui::notes::from_the_open(&[], options.read_as_plain_files_of);
+    let notes = datui::notes::from_the_open(&[], options.read_as_plain_files_of, false);
     assert_eq!(notes.len(), 1, "one note, about the read");
     assert!(
         notes[0].summary.contains("Delta") && notes[0].summary.contains("deleted rows"),
@@ -8367,4 +8367,75 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
         }
         other => panic!("the names settled it, got {other:?}"),
     }
+}
+
+/// The nesting rule reaches the formats that have no footer.
+///
+/// A folder of forty unrelated CSVs was labelled `40 csv`, `Enter` promised one table
+/// because nothing had looked, and the read then refused it — the permissive rule with
+/// the strict reader, which is the pairing #275 exists to stop. The names at the front
+/// of a CSV are the same evidence `is_nested` takes from a Parquet footer, so the same
+/// rule now answers for both.
+#[test]
+fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let folder = |name: &str, files: &[&str]| {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, body) in files.iter().enumerate() {
+            std::fs::write(dir.join(format!("part-{i}.csv")), body).unwrap();
+        }
+        dir
+    };
+    let looked_at = |dir: &Path| {
+        let mut entry = datui::discover::Entry::directory(dir);
+        entry.kind = datui::discover::EntryKind::Unknown;
+        datui::home::look_into(&entry)
+    };
+
+    // Files that agree: one table, as before.
+    let same = folder("same", &["a,b\n1,2\n", "a,b\n3,4\n", "a,b\n5,6\n"]);
+    assert_eq!(
+        looked_at(&same).kind,
+        datui::discover::EntryKind::MultiFile,
+        "identical headers are one table"
+    );
+
+    // A column added along the way: still one table. This is the shape the rule is for,
+    // and the one a stricter test would refuse.
+    let drift = folder(
+        "drift",
+        &["id,ts\n1,5\n", "id,ts\n2,6\n", "id,ts,region\n3,7,eu\n"],
+    );
+    assert_eq!(
+        looked_at(&drift).kind,
+        datui::discover::EntryKind::MultiFile,
+        "a column added later is schema drift, not separate tables"
+    );
+
+    // Separate tables: somewhere to look inside, not one table.
+    let apart = folder("apart", &["a,b\n1,2\n", "x,y,z\n3,4,5\n", "q\n9\n"]);
+    let judged = looked_at(&apart);
+    assert_eq!(
+        judged.kind,
+        datui::discover::EntryKind::Directory,
+        "files that each bring something the others lack are not one table"
+    );
+    assert_eq!(
+        judged.rows, None,
+        "and no row count, which would be a sum of unrelated things"
+    );
+    assert!(
+        judged.columns.iter().any(|c| c == "q"),
+        "but the union of columns, so a column search still finds the folder: {:?}",
+        judged.columns
+    );
+
+    // Two files are the fewest that can disagree; one decides nothing.
+    let alone = folder("alone", &["a,b\n1,2\n"]);
+    assert_eq!(
+        looked_at(&alone).kind,
+        datui::discover::EntryKind::Directory,
+        "a folder of one data file was never a multi-file dataset"
+    );
 }

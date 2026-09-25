@@ -38,7 +38,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any folder <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -211,73 +211,74 @@ modified    3 days ago
 
 None of this reads the data itself. Row and column counts come from Parquet
 footers, summed over at most 64 files for hive and multi-file datasets. A larger
-one is not counted, and its columns come from a spread of the folder rather than
-all of it, so it shows `? × 39+`: neither figure is a total, and both say so. CSV
-and other formats that need a scan to count show neither. Below the counts,
-the pane lists the full schema of a Parquet dataset, each type in the color the
-table uses.
+one is not counted, and its columns come from a spread of the directory rather
+than all of it, so it shows `? × 39+`: neither figure is a total, and both say
+so. CSV and other formats that need a scan to count show neither. Below the
+counts, the pane lists the full schema of a Parquet dataset, each type in the
+color the table uses.
 
 ### What a row's label says
 
-A folder's label says what is directly inside it, from one listing:
+A directory's label says what is directly inside it, from one listing:
 
 | Label | Means |
 |---|---|
-| `hive` | It has a `key=value` child folder, and at least as many of those as data files |
+| `hive` | It has a `key=value` child directory, and at least as many of those as data files |
 | `delta` `iceberg` `hudi` | The format's marker is present |
 | `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
 | `mixed` | Data files of more than one format |
 | `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. In a bucket the word for the place is used instead: `prefix`, `bucket`, `container` |
 | `…` | Nothing has looked into it yet |
 
-A folder larger than the listing cap counts what it read and says so: `5000+
+A directory larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12
-parquet · 2 csv · 3 folders · 5 not read · 7 skipped (.crc, _SUCCESS, _committed_1727,
-_started_1727, …)` — every
-file in the folder is in one of those counts. `skipped` is a name beginning with
-`_` or `.`, or ending `_$folder$` — where every engine puts its own files, where
-a repository puts `.git`, and what s3n and EMR write to stand in for a folder. A
-`key=value` name is a partition whatever it begins with, so a dataset partitioned
-on `_date` is not skipped; a marker named after one, `year=2024_$folder$`, still
-is. The first four skipped are named.
+parquet · 2 csv · 3 directories · 5 not read · 7 skipped (.crc, _SUCCESS,
+_committed_1727, _started_1727, …)` — every file in the directory is in one of
+those counts. `skipped` is a name beginning with `_` or `.`, or ending
+`_$folder$` — where every engine puts its own files, where a repository puts
+`.git`, and what s3n and EMR write to stand in for a folder. A `key=value` name
+is a partition whatever it begins with, so a dataset partitioned on `_date` is
+not skipped; a marker named after one, `year=2024_$folder$`, still is. The first
+four skipped are named.
 
-A label describes; it does not promise what <kbd>Enter</kbd> will do. A folder of
-fifteen unrelated tables reads `15 parquet` and is still a place to look inside.
+A label describes; it does not promise what <kbd>Enter</kbd> will do. A
+directory of fifteen unrelated tables reads `15 parquet` and is still a place to
+look inside.
 
-### Two doors into every folder
+### Two doors into every directory
 
-Every folder has two doors, and neither depends on the label being right.
+Every directory has two doors, and neither depends on the label being right.
 
-<kbd>→</kbd> goes inside any folder, to reach a single partition or a single
-file. <kbd>Esc</kbd> comes back out. The first row in there is `<folder> (all
-files)`, or `(all partitions)` for a hive folder, and it opens the whole folder
-whatever the folder is labelled — so a label that is wrong about what the folder
-holds costs one keystroke rather than access to it.
+<kbd>→</kbd> goes inside any directory, to reach a single partition or a single
+file. <kbd>Esc</kbd> comes back out. The first row in there is `<directory> (all
+files)`, or `(all partitions)` for a hive directory, and it opens the whole
+directory whatever the directory is labelled — so a label that is wrong about
+what the directory holds costs one keystroke rather than access to it.
 
 The control bar says which key is which, for the row under the cursor:
 
 | It says | <kbd>Enter</kbd> will |
 |---|---|
-| `Enter Open all` | read the whole folder as one table; <kbd>→</kbd> goes inside instead |
-| `Enter Inside` | step into the folder — the same as <kbd>→</kbd>, so only one is offered |
+| `Enter Open all` | read the whole directory as one table; <kbd>→</kbd> goes inside instead |
+| `Enter Inside` | step into the directory — the same as <kbd>→</kbd>, so only one is offered |
 | `Enter Open` | load the file on the row |
 | `Enter Look` | find out what the row is, then do whichever of those it calls for |
 
-On a folder <kbd>Enter</kbd> steps into, the details pane on the right says where
-the whole of it can be read: the first row inside.
+On a directory <kbd>Enter</kbd> steps into, the details pane on the right says
+where the whole of it can be read: the first row inside.
 
 That row carries no label of its own: every other label counts what is directly
-inside a folder, and this row reads the whole of it. Nor is it a search result —
-while a filter is typed it steps out of the way, and it comes back when the
-filter is cleared. Only a folder with nothing in it at all — empty, or holding
-nothing but a writer's own markers — has no such row.
+inside a directory, and this row reads the whole of it. Nor is it a search
+result — while a filter is typed it steps out of the way, and it comes back when
+the filter is cleared. Only a directory with nothing in it at all — empty, or
+holding nothing but a writer's own markers — has no such row.
 
 ### The door does not refuse
 
-Whatever the folder is, the door reads it and says what it did. What it says is
-in the Notes tab, which the <kbd>i</kbd> key opens.
+Whatever the directory is, the door reads it and says what it did. What it says
+is in the Notes tab, which the <kbd>i</kbd> key opens.
 
-| Folder | Read as | What it says |
+| Directory | Read as | What it says |
 |---|---|---|
 | One format, or a hive tree of Parquet | One table | — |
 | Parquet, CSV or NDJSON files that differ | One table, unioned by name and widened by type | which columns differ, and whether a column was widened |
@@ -295,44 +296,46 @@ sides of a compaction. The row count on screen is a true count of the files and
 a wrong count of the table, which is why it carries `not the Delta table` beside
 it as well as the note.
 
-A folder whose data is in `key=value` subfolders reads as one table when that
-data is Parquet. Hive partitioning is a Parquet-only capability in the reader
-datui uses; for anything else, open one partition.
+A directory whose data is in `key=value` subdirectories reads as one table when
+that data is Parquet. Hive partitioning is a Parquet-only capability in the
+reader datui uses; for anything else, open one partition.
 
-A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
-hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single
-dataset.
+A directory of `key=value` partitions is `hive`, and a directory of Parquet
+files that hold the same table is one dataset. Both open with <kbd>Enter</kbd>
+as a single dataset.
 
-Sharing a file extension is not enough to make a folder one table. A database
+Sharing a file extension is not enough to make a directory one table. A database
 exported one file per table — `circuits.csv`, `drivers.csv`, `laps.csv` — looks
 identical from its names, and reading it as one table would union things that
-share no columns. So the columns decide: datui compares a spread of the folder's
-files, and one whose files each bring something the others lack is left as a
-directory to look inside.
+share no columns. So the columns decide: datui compares a spread of the
+directory's files, and one whose files each bring something the others lack is
+left as a directory to look inside.
 
 Where those columns are read from depends on the format, and nothing else does.
-A Parquet file keeps them in its footer, a CSV on its header line, an NDJSON file
-in the keys of its first object — all at one end of the file, and all read by the
-same reader that would open it, from a spread of three files whatever the folder's
-size.
+A Parquet file keeps them in its footer, a CSV on its header line, an NDJSON
+file in the keys of its first object — all at one end of the file, and all read
+by the same reader that would open it, from a spread of three files whatever the
+directory's size.
 
 Only those three formats are judged, and only those three are unioned. Arrow,
 Avro, ORC and a `.json` document keep their columns nowhere cheap to reach, so
 nothing looks at them before the open — and a union with no rule in front of it
 and nothing to say behind it is the thing this rule exists to remove, not
-something to spread further. Those folders still refuse when their files differ,
-and the message names the file the read stopped at.
+something to spread further. Those directories still refuse when their files
+differ, and the message names the file the read stopped at.
 
-A folder of headerless files is a case of its own. datui reads a CSV as having a
-header, so each file gives its first row of *data* as the column names — and
-reading such a folder as one table would stack those rows as headings and fill
-the rest with nulls. datui does not offer it as one table, and says so when you
-open it through the door: pass `--no-header` to read those rows as data.
+A directory of headerless files is a case of its own. datui reads a CSV as
+having a header, so each file gives its first row of *data* as the column names
+— and reading such a directory as one table would stack those rows as headings
+and fill the rest with nulls. datui does not offer it as one table, and says so
+when you open it through the door: pass `--no-header` to read those rows as
+data.
 
 The reading is a sample, three files — the ends and the middle, stepping past
-files with nothing in them — so it costs the same on a folder of four files as on
-one of forty thousand. As with Parquet's footers, a folder whose disagreement
-lies only in the files the sample did not open is read as one table.
+files with nothing in them — so it costs the same on a directory of four files
+as on one of forty thousand. As with Parquet's footers, a directory whose
+disagreement lies only in the files the sample did not open is read as one
+table.
 
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not
@@ -356,10 +359,10 @@ meanwhile, and the keys keep being read. If the share never answers,
 | Hudi | `.hoodie/` |
 | Iceberg | `metadata/` holding a `*.metadata.json`, beside `data/` |
 
-In a bucket the Iceberg test is `metadata/` beside `data/` with no Parquet at the
-root: looking inside `metadata/` would be a second listing, and the layout is
-enough. So a folder that happens to hold both names is labelled `iceberg` there.
-It is still somewhere to go, which a table read as one table is not.
+In a bucket the Iceberg test is `metadata/` beside `data/` with no Parquet at
+the root: looking inside `metadata/` would be a second listing, and the layout
+is enough. So a directory that happens to hold both names is labelled `iceberg`
+there. It is still somewhere to go, which a table read as one table is not.
 
 The test is whether every file's columns are in the widest file's. That is the
 shape schema evolution makes — a file written before a column existed has all of
@@ -369,16 +372,17 @@ five columns to fifty.
 
 A file that brings a column no other file has, such as a renamed one, fails it.
 Nothing in a footer separates a rename from two tables that happen to share most
-of their columns, so the folder is left as a place to look inside — and the first
-row in there opens the union anyway. That is the trade: a strict test costs a
-keystroke, where a lenient one costs a folder read as a table it is not.
+of their columns, so the directory is left as a place to look inside — and the
+first row in there opens the union anyway. That is the trade: a strict test
+costs a keystroke, where a lenient one costs a directory read as a table it is
+not.
 
 The columns come from footers that are read anyway to count the rows, so locally
-this costs nothing. In a bucket, three of the folder's files are read while you
-browse — one small ranged request each, never a whole object — and a folder that
-cannot be read keeps the label its names suggested.
+this costs nothing. In a bucket, three of the directory's files are read while
+you browse — one small ranged request each, never a whole object — and a
+directory that cannot be read keeps the label its names suggested.
 
-### Folders not looked into yet
+### Directories not looked into yet
 
 | Label | Means |
 |---|---|
@@ -387,12 +391,12 @@ cannot be read keeps the label its names suggested.
 
 Telling the two apart costs a directory read each — a round trip apiece on a
 network share, so a directory of thousands of partitions would be minutes before
-the listing appeared. No listing pays for it, however small. Every folder is
+the listing appeared. No listing pays for it, however small. Every directory is
 drawn as `…` straight away, and the rows on screen are looked into a screenful
-at a time as you scroll, the highlighted row first. A folder datui has measured
-before keeps what it found, so one whose files turned out to be separate tables
-is not offered as one dataset again while you wait for its footers to be read a
-second time.
+at a time as you scroll, the highlighted row first. A directory datui has
+measured before keeps what it found, so one whose files turned out to be
+separate tables is not offered as one dataset again while you wait for its
+footers to be read a second time.
 
 Labels never re-order the list when they arrive, so a row cannot move out from
 under the cursor. <kbd>Enter</kbd> on a `…` row looks into it first, so it opens
@@ -423,7 +427,7 @@ objects open like files, and opened objects go into `RECENT` like any other path
 |---|---|
 | S3 and S3-compatible | source › bucket › prefix › object |
 | Google Cloud | source › project › bucket › prefix › object |
-| Azure | source › account › container › folder › blob |
+| Azure | source › account › container › directory › blob |
 | Public datasets | source › dataset › prefix › object |
 
 ```
@@ -551,7 +555,7 @@ generated list is a snapshot and does not receive later catalog updates
 automatically. See [Configuration](configuration.md#cloud) for the fields.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
-objects some tools leave to stand for folders.
+objects some tools leave to stand for directories.
 
 ### What a cloud row shows
 
@@ -559,17 +563,18 @@ Inside a bucket: name, size and modification time, which is what a listing
 returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
 
-Folders are looked inside, a few at a time, once each listing lands: one small
-listing request per folder, for at most 48 of them. A folder of `key=value`
-partitions is then labelled `hive`, and every other folder by what it holds —
-`12 parquet`, `3 csv` — like a local one. A prefix with no data file directly
-inside keeps the word for the place, `prefix`, rather than becoming `dir` the
-moment the peek lands. A folder of Parquet files whose schemas agree is offered
-as one dataset; see [Two doors into every folder](#two-doors-into-every-folder).
-Deciding that last one reads the footers of up to three of the folder's files, a
-few kilobytes each; nothing else here reads an object, and nothing reads a whole
-one. <kbd>Enter</kbd> opens it as one dataset, with the partitions as columns;
-<kbd>→</kbd> goes inside instead, where the first row opens the whole folder
+Directories are looked inside, a few at a time, once each listing lands: one
+small listing request per directory, for at most 48 of them. A directory of
+`key=value` partitions is then labelled `hive`, and every other directory by
+what it holds — `12 parquet`, `3 csv` — like a local one. A prefix with no data
+file directly inside keeps the word for the place, `prefix`, rather than
+becoming `dir` the moment the peek lands. A directory of Parquet files whose
+schemas agree is offered as one dataset; see [Two doors into every
+directory](#two-doors-into-every-directory). Deciding that last one reads the
+footers of up to three of the directory's files, a few kilobytes each; nothing
+else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd> opens
+it as one dataset, with the partitions as columns;
+<kbd>→</kbd> goes inside instead, where the first row opens the whole directory
 again.
 
 A partitioned dataset whose files gained columns over time, such as a blockchain's

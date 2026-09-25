@@ -28,8 +28,8 @@ pub const DEFAULT_AZURE_ENV: &str = "azure-env";
 /// The built-in `Public datasets` source.
 pub const PUBLIC: &str = "public";
 
-/// Data anyone can read: a bucket, container or folder, with what the details pane says
-/// about it.
+/// Data anyone can read: a bucket, container or directory, with what the details pane
+/// says about it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(default)]
 pub struct Dataset {

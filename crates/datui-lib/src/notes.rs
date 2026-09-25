@@ -213,10 +213,10 @@ pub fn left_out_note(
 
 /// Files that hold no rows at all.
 ///
-/// A partition written for a day nothing happened, or a job that produced a header and
-/// no data. Worth saying because the dataset then has fewer days of data than it has
-/// folders, and a reader counting folders would get the wrong answer — but it is not a
-/// fault, and a pipeline that writes a file per day will have some.
+/// A partition written for a day nothing happened, or a job that produced a header and no
+/// data. Worth saying because the dataset then has fewer days of data than it has
+/// directories, and a reader counting directories would get the wrong answer — but it is
+/// not a fault, and a pipeline that writes a file per day will have some.
 ///
 /// Counts without dividing: how many of the files datui read hold nothing is a fact
 /// about those files, and the scope line says which files those were.
@@ -347,7 +347,7 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     })
 }
 
-/// Folders that do not all partition by the same keys.
+/// Directories that do not all partition by the same keys.
 ///
 /// Says the shape and stops there. What it *costs* is not something this note can see.
 /// The scan reads its partition columns off one branch of the tree, and which branch
@@ -396,7 +396,7 @@ fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
     }
     Some(Note {
         summary: format!(
-            "the folders do not all partition by the same keys: {}",
+            "the directories do not all partition by the same keys: {}",
             clauses.join(", ")
         ),
         scope: format!(
@@ -431,14 +431,14 @@ fn text_note(column: &PlSmallStr, scope: &str) -> Note {
     }
 }
 
-/// Files in the folder that are not Parquet, and so are not in the table.
+/// Files in the directory that are not Parquet, and so are not in the table.
 ///
 /// Only the ones somebody might have meant as data. A writer leaves `_SUCCESS`, `.crc`
-/// and `_metadata` beside what it wrote, and saying so on every folder a job produced
-/// would put an accent on the Info key for the most ordinary thing a folder can
+/// and `_metadata` beside what it wrote, and saying so on every directory a job produced
+/// would put an accent on the Info key for the most ordinary thing a directory can
 /// contain — the same reason the small-files note waits for a threshold rather than
-/// firing on every folder with more than one file in it. Where the note does fire it
-/// counts them beside what it is about, so the numbers are the folder's rather than a
+/// firing on every directory with more than one file in it. Where the note does fire it
+/// counts them beside what it is about, so the numbers are the directory's rather than a
 /// selection from it — as far as the listing saw, which is not the same as all of it:
 /// a subtree it could not read, or one below the depth it stops at, is in neither.
 fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
@@ -458,7 +458,7 @@ fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
         }
     };
     // An object with nothing in it is a write that stopped, and saying so is the point;
-    // the rest is counted beside it so the total is the folder's, not a selection.
+    // the rest is counted beside it so the total is the directory's, not a selection.
     let mut said = Vec::new();
     if empty > 0 {
         said.push(format!(
@@ -479,19 +479,19 @@ fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
         said.push(format!("{} a writer left behind", files(bookkeeping)));
     }
     Some(Note {
-        summary: format!("in the folder, {}", said.join(", ")),
-        scope: "in this folder's listing".to_string(),
+        summary: format!("in the directory, {}", said.join(", ")),
+        scope: "in this directory's listing".to_string(),
         read_as_text: None,
     })
 }
 
 /// What the open itself has to say, before a footer has been read.
 ///
-/// Two facts, both decided by the route that opened the folder rather than by anything
-/// in the data: which of the folder's data files this read passed over, and whether the
-/// folder is a lake table being read as its plain files. Neither is a defect in the
-/// data — they are what datui chose to do, and #275's rule is that datui never refuses
-/// a read the user asked for and always says what it did instead.
+/// Two facts, both decided by the route that opened the directory rather than by anything
+/// in the data: which of the directory's data files this read passed over, and whether
+/// the directory is a lake table being read as its plain files. Neither is a defect in
+/// the data — they are what datui chose to do, and #275's rule is that datui never
+/// refuses a read the user asked for and always says what it did instead.
 pub fn from_the_open(
     left_out: &[(crate::FileFormat, usize)],
     lake: Option<&str>,
@@ -504,12 +504,12 @@ pub fn from_the_open(
     // how many files, and where — from footers it had to read anyway.
     //
     // The scope says a spread, because that is what was looked at: three files, the
-    // ends and the middle, whatever the folder's size.
-    let scope = || "in a spread of this folder's files".to_string();
+    // ends and the middle, whatever the directory's size.
+    let scope = || "in a spread of this directory's files".to_string();
     if files_differ.columns {
         notes.push(Note {
             summary: concat!(
-                "the folder's files do not all have the same columns; the table has ",
+                "the directory's files do not all have the same columns; the table has ",
                 "every column any of them has, and a row from a file without one ",
                 "reads null"
             )
@@ -551,7 +551,7 @@ pub fn from_the_open(
             summary: format!(
                 "these are the files under a {format} table, not the table:                  deleted rows and old versions are counted"
             ),
-            scope: format!("in this {format} table's folder"),
+            scope: format!("in this {format} table's directory"),
             read_as_text: None,
         });
     }
@@ -562,10 +562,10 @@ pub fn from_the_open(
             .collect();
         notes.push(Note {
             summary: format!(
-                "the folder holds more than one format and was read as the commonest;                  {} not read",
+                "the directory holds more than one format and was read as the commonest;                  {} not read",
                 said.join(", ")
             ),
-            scope: "in this folder's listing".to_string(),
+            scope: "in this directory's listing".to_string(),
             read_as_text: None,
         });
     }
@@ -733,22 +733,22 @@ mod tests {
         };
 
         let cases = vec![
-            // --- folders that disagree about what they are partitioned by ---
+            // --- directories that disagree about what they are partitioned by ---
             Shape {
-                what: "one folder under another key",
+                what: "one directory under another key",
                 files: vec![
                     file(&[("id", DataType::Int64)], 1),
                     file(&[("id", DataType::Int64)], 1),
                 ],
                 paths: vec!["d/date=1/a.parquet", "d/dt=2/b.parquet"],
                 expected: vec![
-                    "the folders do not all partition by the same keys: 1 file by \
+                    "the directories do not all partition by the same keys: 1 file by \
                      date, 1 file by dt",
                 ],
                 ..Shape::default()
             },
             Shape {
-                what: "folders that agree",
+                what: "directories that agree",
                 files: vec![
                     file(&[("id", DataType::Int64)], 1),
                     file(&[("id", DataType::Int64)], 1),
@@ -838,23 +838,23 @@ mod tests {
                 ],
                 // `m=03` is March and so is `m=3` — a backfill beside a job. March
                 // lacks the column, so "none before m=3" says it starts at a month
-                // whose folder does not have it.
+                // whose directory does not have it.
                 paths: vec!["d/m=03/a.parquet", "d/m=3/b.parquet", "d/m=4/c.parquet"],
                 expected: vec!["fee is in 2 of 3 files; absent from the rest, not null"],
                 ..Shape::default()
             },
             Shape {
-                what: "a column of a dataset whose folders name their keys in two orders",
+                what: "a column of a dataset whose directories name their keys in two orders",
                 files: vec![
                     file(&[("id", DataType::Int64)], 1),
                     file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
                 ],
-                // Hive matches partition columns by name, so these two folders are one
-                // partition written both ways round. Saying the column begins at the
+                // Hive matches partition columns by name, so these two directories are
+                // one partition written both ways round. Saying the column begins at the
                 // second would be saying it begins where the first is.
                 paths: vec!["d/m=03/y=2024/a.parquet", "d/y=2024/m=03/b.parquet"],
                 // And nothing else says so: the layouts note compares which keys a
-                // folder uses, not the order it writes them in, so these two agree.
+                // directory uses, not the order it writes them in, so these two agree.
                 // This note staying quiet is the only thing between a reader and a
                 // sentence about a place that is written down twice.
                 expected: vec!["fee is in 1 of 2 files; absent from the rest, not null"],
@@ -907,12 +907,12 @@ mod tests {
                     file(&[("id", DataType::Int64)], 1),
                 ],
                 // The file without it is at `y=2024/m=03`, which is under `y=2024`.
-                // "only y=2024" would send a reader to a folder that holds it.
+                // "only y=2024" would send a reader to a directory that holds it.
                 paths: vec!["d/y=2024/a.parquet", "d/y=2024/m=03/b.parquet"],
                 expected: vec![
                     "fee is in 1 of 2 files; absent from the rest, not null",
                     // Ragged depth is a disagreement in its own right, and says so.
-                    "the folders do not all partition by the same keys: 1 file by m/y, \
+                    "the directories do not all partition by the same keys: 1 file by m/y, \
                      1 file by y",
                 ],
                 ..Shape::default()
@@ -937,10 +937,10 @@ mod tests {
                     file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
                     file(&[("id", DataType::Int64)], 1),
                 ],
-                // One file at the root beside the partition folders. Half the files
+                // One file at the root beside the partition directories. Half the files
                 // that have `fee` are not under `date=2024-01-02`, so there is no
                 // "only" to be had — and saying it anyway sends a reader to the
-                // wrong folder, which is worse than the count on its own.
+                // wrong directory, which is worse than the count on its own.
                 paths: vec![
                     "d/aaa.parquet",
                     "d/date=2024-01-02/b.parquet",

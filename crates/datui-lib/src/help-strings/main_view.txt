@@ -49,7 +49,7 @@ While busy:
   at once.
 
 Empty cells:
-  A folder of Parquet files may hold files that disagree, so an empty cell
+  A directory of Parquet files may hold files that disagree, so an empty cell
   says which kind of empty it is:
     null         the data's own null
     absent       the file this row came from has no such column

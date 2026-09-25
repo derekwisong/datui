@@ -29,9 +29,9 @@ pub struct ToolServer {
 /// The placeholder keys `mc` writes into the aliases it creates for you.
 const MC_PLACEHOLDER_KEYS: [&str; 2] = ["YOUR-ACCESS-KEY-HERE", "YOUR-SECRET-KEY-HERE"];
 
-/// Where `mc` keeps `config.json`: `MC_CONFIG_DIR`, else a folder in the home directory
-/// named after the binary: `.mc` (or `.mcli`, as some distributions package it), and
-/// without the dot on Windows.
+/// Where `mc` keeps `config.json`: `MC_CONFIG_DIR`, else a directory in the home
+/// directory named after the binary: `.mc` (or `.mcli`, as some distributions package
+/// it), and without the dot on Windows.
 pub fn mc_config_paths(env: &Environment<'_>) -> Vec<PathBuf> {
     if let Some(dir) = (env.var)("MC_CONFIG_DIR").filter(|v| !v.trim().is_empty()) {
         return vec![PathBuf::from(dir.trim()).join("config.json")];
@@ -42,12 +42,12 @@ pub fn mc_config_paths(env: &Environment<'_>) -> Vec<PathBuf> {
     ["mc", "mcli"]
         .iter()
         .map(|name| {
-            let folder = if env.windows {
+            let directory = if env.windows {
                 name.to_string()
             } else {
                 format!(".{name}")
             };
-            home.join(folder).join("config.json")
+            home.join(directory).join("config.json")
         })
         .collect()
 }

@@ -620,11 +620,11 @@ fn gcs_store(
         .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))
 }
 
-/// How many entries one peek inside a folder reads: enough to tell partitions from
-/// files, and a single request however large the folder is.
+/// How many entries one peek inside a directory reads: enough to tell partitions from
+/// files, and a single request however large the directory is.
 const PEEK_KEYS: usize = 100;
 
-/// What a cloud folder holds, from the first page of a delimited listing of it:
+/// What a cloud directory holds, from the first page of a delimited listing of it:
 /// `Hive` when its children are `key=value` partitions, `MultiFile` when they are
 /// Parquet files, else `Directory`. One request; nothing is read from any object.
 pub async fn peek_kind(
@@ -690,7 +690,7 @@ async fn peek_page(
         )
         .await
         .map_err(|e| format!("{e}"))?;
-    let folders: Vec<String> = page
+    let directories: Vec<String> = page
         .result
         .common_prefixes
         .iter()
@@ -702,7 +702,7 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    let (kind, holds) = look_at_page(&prefix, &folders, &objects, page.page_token.as_deref());
+    let (kind, holds) = look_at_page(&prefix, &directories, &objects, page.page_token.as_deref());
     if kind != crate::discover::EntryKind::MultiFile {
         return Ok((kind, holds));
     }
@@ -716,18 +716,18 @@ async fn peek_page(
     ))
 }
 
-/// Parquet footers read to decide whether a folder is one table.
+/// Parquet footers read to decide whether a directory is one table.
 ///
-/// Three is enough to catch a folder of separate tables, whose files have nothing in
+/// Three is enough to catch a directory of separate tables, whose files have nothing in
 /// common with each other, while costing a fraction of what counting the dataset does.
-/// A folder that survives this is read as one table and its real schema union is built
+/// A directory that survives this is read as one table and its real schema union is built
 /// at open time, where every footer is read.
 const VERIFY_FOOTERS: usize = 3;
 
-/// Which of a folder's files to read, spread across the listing rather than taken from
+/// Which of a directory's files to read, spread across the listing rather than taken from
 /// its head.
 ///
-/// Keys come back in lexicographic order, so the first files of a folder written table
+/// Keys come back in lexicographic order, so the first files of a directory written table
 /// by table can easily be the same table — `circuits`, `constructor_standings`,
 /// `constructors` — while its ends never are.
 fn footers_to_verify(files: usize) -> Vec<usize> {
@@ -738,7 +738,7 @@ fn footers_to_verify(files: usize) -> Vec<usize> {
     }
 }
 
-/// Whether a folder the listing called `multi` holds one table, from a few of its
+/// Whether a directory the listing called `multi` holds one table, from a few of its
 /// footers. `None` when it could not be decided, and the listing's answer stands: the
 /// optimistic reading is the reversible one.
 async fn verified_kind(
@@ -828,24 +828,24 @@ async fn kind_from_footers(
 /// worth getting wrong: asked backwards, every single-page prefix reads `100+ parquet`
 /// and every prefix with more behind it reads an exact hundred nobody counted.
 ///
-/// A prefix with more behind it counted what it saw and says so, the way a local folder
-/// past `MAX_ENTRIES_PER_DIR` does.
+/// A prefix with more behind it counted what it saw and says so, the way a local
+/// directory past `MAX_ENTRIES_PER_DIR` does.
 fn look_at_page(
     prefix: &str,
-    folders: &[String],
+    directories: &[String],
     objects: &[(String, u64)],
     next_page: Option<&str>,
 ) -> (crate::discover::EntryKind, crate::discover::Holds) {
-    let (kind, mut holds) = look_at_listing(prefix, folders, objects);
+    let (kind, mut holds) = look_at_listing(prefix, directories, objects);
     holds.truncated = next_page.is_some();
     (kind, holds)
 }
 
 /// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
-/// gives them for a local folder. A prefix's row is labelled from the second.
+/// gives them for a local directory. A prefix's row is labelled from the second.
 pub fn look_at_listing(
     prefix: &str,
-    folders: &[String],
+    directories: &[String],
     objects: &[(String, u64)],
 ) -> (crate::discover::EntryKind, crate::discover::Holds) {
     use crate::discover::EntryKind;
@@ -856,13 +856,13 @@ pub fn look_at_listing(
             .unwrap_or("")
             .to_string()
     };
-    // Prefixes a writer made for itself are not folders anybody put data in, by the
+    // Prefixes a writer made for itself are not directories anybody put data in, by the
     // same test the objects get. `_temporary/` beside two Parquet files counted toward
-    // the majority and tipped a folder the local route called one dataset. The lake
+    // the majority and tipped a directory the local route called one dataset. The lake
     // markers below still look at every prefix — `_delta_log` is exactly the name this
     // skips, and it is a specification rather than a stray.
     // The prefix's own key, before anything counts it. A console makes a folder by
-    // writing a zero-byte object at its key, and listing that folder hands it straight
+    // writing a zero-byte object at its key, and listing that directory hands it straight
     // back: it stands for the prefix being listed, not for anything in it. Dropped once,
     // here, because the three counts below each missed it in their own way — `.` in the
     // name carried it past `is_empty_marker` into `not_read`, and a `_temporary/` prefix
@@ -875,7 +875,7 @@ pub fn look_at_listing(
         .collect();
     let objects = objects.as_slice();
 
-    let counted: Vec<&String> = folders
+    let counted: Vec<&String> = directories
         .iter()
         .filter(|f| !crate::discover::is_bookkeeping(&last(f)))
         .collect();
@@ -892,18 +892,18 @@ pub fn look_at_listing(
             !name.is_empty()
                 && !crate::discover::is_bookkeeping(&name)
                 && !is_empty_marker(&name, *size)
-                && !(*size == 0 && folders.iter().any(|f| last(f) == name))
+                && !(*size == 0 && directories.iter().any(|f| last(f) == name))
         })
         .map(|(key, _)| key)
         .collect();
     // Of those, the ones named as something datui reads. A `README.md` beside two
     // Parquet files is neither a marker nor data, and counting it as data made this
-    // route answer `dir` where the local one said `multi` — the same folder, two
+    // route answer `dir` where the local one said `multi` — the same directory, two
     // answers, which is what one vocabulary is for.
     let files: Vec<&&String> = present
         .iter()
         .filter(|key| {
-            // Or a part file with no extension inside a `.parquet` folder, which is
+            // Or a part file with no extension inside a `.parquet` directory, which is
             // data by where it sits rather than by what it is called.
             crate::discover::data_format(std::path::Path::new(key.as_str())).is_some()
                 || crate::discover::is_parquet_key(key)
@@ -923,10 +923,10 @@ pub fn look_at_listing(
             None => counts.push((format, 1)),
         }
     }
-    // The same order the local routes rank by, so a prefix and the folder it mirrors
+    // The same order the local routes rank by, so a prefix and the directory it mirrors
     // name the same format — including on a tie, where Parquet wins.
     counts.sort_by(|a, b| crate::discover::rank_formats((a.0, a.1), (b.0, b.1)));
-    // Prefixes as well as objects: `_temporary/` is a writer's own folder and is
+    // Prefixes as well as objects: `_temporary/` is a writer's own directory and is
     // counted as skipped on disk, so a Spark output prefix must not read `2 parquet`
     // here and `2 parquet · 1 skipped (_temporary)` there.
     // An empty object with no dot and no prefix beside it: `present` drops it as a
@@ -940,7 +940,7 @@ pub fn look_at_listing(
             !name.is_empty()
                 && is_empty_marker(&name, *size)
                 && !crate::discover::is_bookkeeping(&name)
-                && !folders.iter().any(|f| last(f) == name)
+                && !directories.iter().any(|f| last(f) == name)
         })
         .map(|(key, _)| last(key))
         .collect();
@@ -948,9 +948,9 @@ pub fn look_at_listing(
         .iter()
         // A zero-byte object beside a prefix of the same name is that prefix, written
         // by a console: counted once, under the prefix, as the local route counts it.
-        .filter(|(key, size)| !(*size == 0 && folders.iter().any(|f| last(f) == last(key))))
+        .filter(|(key, size)| !(*size == 0 && directories.iter().any(|f| last(f) == last(key))))
         .map(|(key, _)| last(key))
-        .chain(folders.iter().map(|f| last(f)))
+        .chain(directories.iter().map(|f| last(f)))
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
         .collect();
     skipped_names.sort();
@@ -964,7 +964,7 @@ pub fn look_at_listing(
             .into_iter()
             .map(|(f, n)| (f.to_string(), n))
             .collect(),
-        folders: counted.len(),
+        directories: counted.len(),
         partitions,
         // Present, not a writer's own, and not named as anything datui reads — plus
         // the empty placeholders standing for no folder, which `present` dropped.
@@ -977,11 +977,11 @@ pub fn look_at_listing(
     // below says "one table" and is right about the schema and wrong about the rows.
     // The markers are prefixes in the listing that already happened, so this costs
     // nothing.
-    let folder = |name: &str| folders.iter().any(|f| last(f) == name);
-    if folder("_delta_log") {
+    let directory = |name: &str| directories.iter().any(|f| last(f) == name);
+    if directory("_delta_log") {
         return (EntryKind::Delta, holds);
     }
-    if folder(".hoodie") {
+    if directory(".hoodie") {
         return (EntryKind::Hudi, holds);
     }
     let parquet = files
@@ -993,17 +993,17 @@ pub fn look_at_listing(
     // than at the root. Whether `metadata/` holds a `*.metadata.json` is not asked, as
     // it is locally — that is a second listing, and this is the layout the spec
     // describes. So this is the looser of the two rules, and deliberately: a project
-    // folder that happens to hold `data/` and `metadata/` is mislabelled and still
+    // directory that happens to hold `data/` and `metadata/` is mislabelled and still
     // browsable, where a real Iceberg table read as one table is wrong about the rows.
     // A README beside them does not disqualify it.
-    if folder("metadata") && folder("data") && parquet == 0 {
+    if directory("metadata") && directory("data") && parquet == 0 {
         return (EntryKind::Iceberg, holds);
     }
-    // Everything the listing reported that is not a writer's own file, which is what
-    // the local route counts: its `else` arm puts a stray it cannot read into `not_read`
-    // and still counts it as seen. The orphan markers are exactly that stray — dropped
-    // from `present` because they are empty — so leaving them out here made a folder of
-    // two Parquet files and five of them `dir` on disk and `multi` in a bucket.
+    // Everything the listing reported that is not a writer's own file, which is what the
+    // local route counts: its `else` arm puts a stray it cannot read into `not_read` and
+    // still counts it as seen. The orphan markers are exactly that stray — dropped from
+    // `present` because they are empty — so leaving them out here made a directory of two
+    // Parquet files and five of them `dir` on disk and `multi` in a bucket.
     let seen = counted.len() + present.len() + orphan_markers.len();
     // The local route's rule, unchanged: see `discover::classify_directory` for why a
     // majority here refuses real hive roots.
@@ -1168,7 +1168,7 @@ pub fn is_refusal(error: &str) -> bool {
 /// leaves behind, and the marker some tools write in place of a folder.
 ///
 /// Narrower than [`crate::discover::is_bookkeeping`] on purpose. That one answers "does
-/// this count as data", which decides a folder's kind; this one answers "is there
+/// this count as data", which decides a directory's kind; this one answers "is there
 /// anything here to open", which decides whether a row is shown at all. A leading `_` is
 /// enough for the first and not for the second: `_manifest.parquet` is a real object
 /// somebody may want to look at, and the local listing has always shown its equivalent.
@@ -1180,8 +1180,8 @@ pub fn is_marker(name: &str) -> bool {
 }
 
 /// An empty object with no extension: a marker some tool left for a folder, whether or
-/// not the folder still has anything in it (`yellow/year=2032` beside no `year=2032/`).
-/// Nothing datui opens is both empty and nameless.
+/// not the directory still has anything in it (`yellow/year=2032` beside no
+/// `year=2032/`). Nothing datui opens is both empty and nameless.
 pub fn is_empty_marker(name: &str, size: u64) -> bool {
     size == 0 && !name.contains('.')
 }
@@ -1249,7 +1249,7 @@ async fn list_level(
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
-            opens_whole_folder: false,
+            opens_whole_directory: false,
         });
     }
 
@@ -1258,7 +1258,7 @@ async fn list_level(
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         // A key ending in a slash is how consoles fake a folder. It is not data, and
         // offering it as openable would be offering a zero-byte file. So is an empty
-        // object named like a folder beside it, or like the folder being listed.
+        // object named like a directory beside it, or like the directory being listed.
         if name.is_empty()
             || is_marker(&name)
             || crate::azure::is_folder_marker(&location, object.size, &prefixes)
@@ -1279,16 +1279,16 @@ async fn list_level(
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
-            opens_whole_folder: false,
+            opens_whole_directory: false,
         });
     }
 
     Ok(rows)
 }
 
-/// One level of an Azure container or folder. Accounts with hierarchical namespace list
-/// each folder as a prefix and as an empty blob of the same name; only the prefix is
-/// kept.
+/// One level of an Azure container or directory. Accounts with hierarchical namespace
+/// list each directory as a prefix and as an empty blob of the same name; only the prefix
+/// is kept.
 async fn list_azure_objects(
     resolved: &crate::cloud_sources::Resolved,
 ) -> Result<Vec<crate::discover::Entry>, String> {
@@ -1345,7 +1345,7 @@ async fn list_azure_objects(
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
-            opens_whole_folder: false,
+            opens_whole_directory: false,
         });
     }
     Ok(rows)
@@ -1539,15 +1539,15 @@ pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool>
 /// endpoint or an emulator, which are left to the signed path.
 fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
     let encode = |key: &str| key.split('/').map(urlencode).collect::<Vec<_>>().join("/");
-    // The object, or for a prefix or glob the folder part to list one key from.
+    // The object, or for a prefix or glob the directory part to list one key from.
     let split = |key: &str| -> (String, bool) {
         let before_glob = key.split('*').next().unwrap_or("");
         if key.contains('*') || key.is_empty() || key.ends_with('/') {
-            let folder = match before_glob.rsplit_once('/') {
-                Some((folder, _)) => format!("{folder}/"),
+            let directory = match before_glob.rsplit_once('/') {
+                Some((directory, _)) => format!("{directory}/"),
                 None => String::new(),
             };
-            (folder, true)
+            (directory, true)
         } else {
             (key.to_string(), false)
         }
@@ -1567,9 +1567,9 @@ fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
                 format!("https://{bucket}.s3.{region}.amazonaws.com")
             };
             Some(match split(key) {
-                (folder, true) => format!(
+                (directory, true) => format!(
                     "{base}/?list-type=2&max-keys=1&prefix={}",
-                    urlencode(&folder)
+                    urlencode(&directory)
                 ),
                 (object, false) => format!("{base}/{}", encode(&object)),
             })
@@ -1579,9 +1579,9 @@ fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
             let key = resolved.url.split_once("://")?.1;
             let key = key.split_once('/').map_or("", |(_, key)| key);
             Some(match split(key) {
-                (folder, true) => format!(
+                (directory, true) => format!(
                     "https://storage.googleapis.com/storage/v1/b/{bucket}/o?maxResults=1&prefix={}",
-                    urlencode(&folder)
+                    urlencode(&directory)
                 ),
                 (object, false) => {
                     format!(
@@ -1598,9 +1598,9 @@ fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
             let (account, container, key) = crate::source::azure_parts(&resolved.url)?;
             let base = format!("https://{account}.blob.core.windows.net/{container}");
             Some(match split(&key) {
-                (folder, true) => format!(
+                (directory, true) => format!(
                     "{base}?restype=container&comp=list&maxresults=1&prefix={}",
-                    urlencode(&folder)
+                    urlencode(&directory)
                 ),
                 (object, false) => format!("{base}/{}", encode(&object)),
             })
@@ -1976,7 +1976,7 @@ mod tests {
 
     /// The listing helpers every test below shares: a prefix's sub-prefixes and its
     /// objects, in the shapes `look_at_listing` takes.
-    fn folders(names: &[&str]) -> Vec<String> {
+    fn directories(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| n.to_string()).collect()
     }
 
@@ -1987,26 +1987,26 @@ mod tests {
     #[test]
     fn the_prefix_being_listed_is_not_something_it_holds() {
         // A console makes a folder by writing a zero-byte object at its key, and
-        // listing that folder hands the key straight back. It stands for the prefix
+        // listing that directory hands the key straight back. It stands for the prefix
         // being listed rather than for anything in it, and each of the three counts
         // missed it in its own way before it was dropped once, up front.
         let holds = look_at_listing(
             "out/sub/",
-            &folders(&[]),
+            &directories(&[]),
             &objects(&[("out/sub/", 0), ("out/sub/a.parquet", 5)]),
         )
         .1;
         assert_eq!(holds.formats, vec![("parquet".to_string(), 1)]);
         assert_eq!(holds.not_read, 0, "the prefix is not a file it cannot read");
         assert_eq!(holds.skipped, 0);
-        assert_eq!(holds.folders, 0);
+        assert_eq!(holds.directories, 0);
     }
 
     #[test]
     fn sub_prefixes_count_against_a_prefix_being_one_table() {
         // Two Parquet objects under ten sub-prefixes is a place to look inside, which
         // is what the local route calls it. Leaving the prefixes out of `seen` made the
-        // majority a formality and the same folder answered `dir` on disk and `multi`
+        // majority a formality and the same directory answered `dir` on disk and `multi`
         // in a bucket.
         let subs: Vec<String> = (0..10).map(|i| format!("out/sub{i}/")).collect();
         let (kind, holds) = look_at_listing(
@@ -2016,16 +2016,21 @@ mod tests {
         );
         assert_eq!(kind, crate::discover::EntryKind::Directory);
         assert_eq!(holds.label(), "2 parquet");
-        assert_eq!(holds.folders, 10);
+        assert_eq!(holds.directories, 10);
     }
 
     #[test]
     fn a_consoles_folder_placeholder_is_not_also_a_file_it_cannot_read() {
         // `out/sub/` made by a console is a zero-byte object at `out/sub` and a prefix
-        // `out/sub/`. The listing reports both; they are one folder.
-        let holds = look_at_listing("out/", &folders(&["out/sub/"]), &objects(&[("out/sub", 0)])).1;
-        assert_eq!(holds.folders, 1);
-        assert_eq!(holds.not_read, 0, "the placeholder is the folder itself");
+        // `out/sub/`. The listing reports both; they are one directory.
+        let holds = look_at_listing(
+            "out/",
+            &directories(&["out/sub/"]),
+            &objects(&[("out/sub", 0)]),
+        )
+        .1;
+        assert_eq!(holds.directories, 1);
+        assert_eq!(holds.not_read, 0, "the placeholder is the directory itself");
         assert_eq!(holds.label(), "dir");
     }
 
@@ -2037,7 +2042,7 @@ mod tests {
         // cannot read per partition.
         let holds = look_at_listing(
             "out/",
-            &folders(&["out/year=2024/", "out/year=2025/"]),
+            &directories(&["out/year=2024/", "out/year=2025/"]),
             &objects(&[("out/year=2024_$folder$", 0), ("out/year=2025_$folder$", 0)]),
         )
         .1;
@@ -2050,8 +2055,8 @@ mod tests {
     fn partitions_carry_a_prefix_only_while_they_are_the_most_of_it() {
         // The boundary the rule turns on, which neither route had a test for: as many
         // partitions as data files is a hive root with a few files beside it, one more
-        // data file than partitions is a folder that happens to hold a `key=value`.
-        let parts = folders(&["out/year=2024/", "out/year=2025/"]);
+        // data file than partitions is a directory that happens to hold a `key=value`.
+        let parts = directories(&["out/year=2024/", "out/year=2025/"]);
         let two = objects(&[("out/a.parquet", 5), ("out/b.parquet", 5)]);
         assert_eq!(
             look_at_listing("out/", &parts, &two).0,
@@ -2080,7 +2085,7 @@ mod tests {
         // to look inside on disk.
         let (kind, holds) = look_at_listing(
             "yellow/",
-            &folders(&[]),
+            &directories(&[]),
             &objects(&[
                 ("yellow/a.parquet", 5),
                 ("yellow/b.parquet", 5),
@@ -2106,12 +2111,12 @@ mod tests {
             .collect();
         // The page is all datui asked for, so the count is a floor and the label says
         // it. Without the `+` a hundred is an exact hundred nobody counted.
-        let holds = look_at_page("out/", &folders(&[]), &keys, Some("next-page-token")).1;
+        let holds = look_at_page("out/", &directories(&[]), &keys, Some("next-page-token")).1;
         assert!(holds.truncated);
         assert_eq!(holds.label(), "100+ parquet");
         // And the last page, which the store answers with no token at all, counts what
         // is there.
-        let holds = look_at_page("out/", &folders(&[]), &keys, None).1;
+        let holds = look_at_page("out/", &directories(&[]), &keys, None).1;
         assert!(!holds.truncated);
         assert_eq!(holds.label(), "100 parquet");
     }
@@ -2123,7 +2128,7 @@ mod tests {
         let keys: Vec<(String, u64)> = (0..30)
             .map(|i| (format!("out/.part-{i:05}.parquet.crc"), 8u64))
             .collect();
-        let holds = look_at_listing("out/", &folders(&[]), &keys).1;
+        let holds = look_at_listing("out/", &directories(&[]), &keys).1;
         assert_eq!(holds.skipped, 30, "all of them are counted");
         assert_eq!(
             holds.skipped_names.len(),
@@ -2133,10 +2138,10 @@ mod tests {
 
         // And they are the first few *by name*, not the first few the store listed.
         // The objects and the prefixes arrive as two runs, so without a sort the pane
-        // names a different four here than the local route names for the same folder.
+        // names a different four here than the local route names for the same directory.
         let holds = look_at_listing(
             "out/",
-            &folders(&["out/_temporary/"]),
+            &directories(&["out/_temporary/"]),
             &objects(&[("out/_SUCCESS", 0), ("out/.part.crc", 8)]),
         )
         .1;
@@ -2157,7 +2162,7 @@ mod tests {
         // 2 csv` on one visit and `2 csv · 2 json` on the next.
         let holds = look_at_listing(
             "out/",
-            &folders(&[]),
+            &directories(&[]),
             &objects(&[
                 ("out/a.json", 5),
                 ("out/b.json", 5),
@@ -2171,7 +2176,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_is_classified_by_one_page_of_its_listing() {
+    fn a_directory_is_classified_by_one_page_of_its_listing() {
         use crate::discover::EntryKind;
         // Each listing under the prefix it is a listing of. The prefix is only read to
         // drop the prefix's own key, which `the_prefix_being_listed_is_not_something_it_holds`
@@ -2180,7 +2185,7 @@ mod tests {
         assert_eq!(
             look_at_listing(
                 "v1.0/btc/blocks/",
-                &folders(&[
+                &directories(&[
                     "v1.0/btc/blocks/date=2009-01-03/",
                     "v1.0/btc/blocks/date=2009-01-09/"
                 ]),
@@ -2192,7 +2197,7 @@ mod tests {
         assert_eq!(
             look_at_listing(
                 "gbif/occurrence.parquet/",
-                &folders(&[]),
+                &directories(&[]),
                 &objects(&[
                     ("gbif/occurrence.parquet/000001", 10),
                     ("gbif/occurrence.parquet/000002", 10)
@@ -2205,7 +2210,7 @@ mod tests {
         assert_eq!(
             look_at_listing(
                 "a/",
-                &folders(&[]),
+                &directories(&[]),
                 &objects(&[("a/x.csv", 5), ("a/y.csv", 5)])
             )
             .0,
@@ -2215,14 +2220,19 @@ mod tests {
         assert_eq!(
             look_at_listing(
                 "a/",
-                &folders(&["a/by_year/", "a/by_station/"]),
+                &directories(&["a/by_year/", "a/by_station/"]),
                 &objects(&[])
             )
             .0,
             EntryKind::Directory
         );
         assert_eq!(
-            look_at_listing("a/", &folders(&["a/b/"]), &objects(&[("a/one.parquet", 5)])).0,
+            look_at_listing(
+                "a/",
+                &directories(&["a/b/"]),
+                &objects(&[("a/one.parquet", 5)])
+            )
+            .0,
             EntryKind::Directory,
             "one file is a file to open, not a dataset"
         );
@@ -2231,7 +2241,7 @@ mod tests {
     /// A lake table's data files agree on a schema, so the one-table rule says `multi`
     /// and is right about the schema and wrong about the rows.
     #[test]
-    fn a_lake_table_is_not_a_folder_of_parquet_files() {
+    fn a_lake_table_is_not_a_directory_of_parquet_files() {
         use crate::discover::EntryKind;
         let parts = objects(&[
             ("t/part-00000.parquet", 10),
@@ -2240,33 +2250,38 @@ mod tests {
         ]);
 
         assert_eq!(
-            look_at_listing("t/", &folders(&["t/_delta_log/"]), &parts).0,
+            look_at_listing("t/", &directories(&["t/_delta_log/"]), &parts).0,
             EntryKind::Delta
         );
         assert_eq!(
-            look_at_listing("t/", &folders(&["t/.hoodie/"]), &parts).0,
+            look_at_listing("t/", &directories(&["t/.hoodie/"]), &parts).0,
             EntryKind::Hudi
         );
         assert_eq!(
-            look_at_listing("t/", &folders(&["t/metadata/", "t/data/"]), &objects(&[])).0,
+            look_at_listing(
+                "t/",
+                &directories(&["t/metadata/", "t/data/"]),
+                &objects(&[])
+            )
+            .0,
             EntryKind::Iceberg
         );
 
         // The plain name alone is not the marker.
         assert_eq!(
-            look_at_listing("t/", &folders(&["t/metadata/"]), &parts).0,
+            look_at_listing("t/", &directories(&["t/metadata/"]), &parts).0,
             EntryKind::MultiFile,
-            "a folder called metadata beside part files is not an Iceberg table"
+            "a directory called metadata beside part files is not an Iceberg table"
         );
         assert_eq!(
-            look_at_listing("t/", &folders(&["t/metadata/", "t/data/"]), &parts).0,
+            look_at_listing("t/", &directories(&["t/metadata/", "t/data/"]), &parts).0,
             EntryKind::MultiFile,
             "an Iceberg root holds its data under data/, not beside it"
         );
         assert_eq!(
             look_at_listing(
                 "t/",
-                &folders(&["t/metadata/", "t/data/"]),
+                &directories(&["t/metadata/", "t/data/"]),
                 &objects(&[("t/README.md", 20)])
             )
             .0,
@@ -2274,9 +2289,9 @@ mod tests {
             "but something else beside them does not disqualify it"
         );
         assert_eq!(
-            look_at_listing("t/", &folders(&[]), &parts).0,
+            look_at_listing("t/", &directories(&[]), &parts).0,
             EntryKind::MultiFile,
-            "and a folder of part files with no log is still one table"
+            "and a directory of part files with no log is still one table"
         );
     }
 
@@ -2307,7 +2322,7 @@ mod tests {
         // One thing named twice — the object and the prefix — is one skipped entry,
         // and an empty object standing for no folder is a file nothing can read, which
         // is what the local route calls it.
-        let folders = ["out/_temporary/".to_string()];
+        let directories = ["out/_temporary/".to_string()];
         let objects: Vec<(String, u64)> = [
             ("out/_temporary", 12u64),
             ("out/NOTES", 0),
@@ -2317,7 +2332,7 @@ mod tests {
         .iter()
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
-        let holds = look_at_listing("out", &folders, &objects).1;
+        let holds = look_at_listing("out", &directories, &objects).1;
         assert_eq!(
             holds.line(true).as_deref(),
             Some("2 parquet · 1 not read · 1 skipped (_temporary)")
@@ -2325,7 +2340,7 @@ mod tests {
 
         // The folder's own marker stands for the prefix being listed, not for
         // anything in it: a console makes a folder by writing a zero-byte object at
-        // its key, and listing that folder hands it straight back.
+        // its key, and listing that directory hands it straight back.
         let own_marker: Vec<(String, u64)> = [("out", 0u64), ("out/a.parquet", 100)]
             .iter()
             .map(|(k, s)| ((*k).to_string(), *s))
@@ -3013,7 +3028,7 @@ mod one_table_tests {
         bytes
     }
 
-    /// Put `files` in a store and ask what the folder is.
+    /// Put `files` in a store and ask what the directory is.
     fn kind_of(files: &[(&str, &[&str])]) -> Option<crate::discover::EntryKind> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -3036,7 +3051,7 @@ mod one_table_tests {
 
     /// The shape that prompted this, as it sits in a bucket: one file per table.
     #[test]
-    fn separate_tables_in_a_bucket_are_a_folder() {
+    fn separate_tables_in_a_bucket_are_a_directory() {
         let kind = kind_of(&[
             ("circuits.parquet", &["circuit_id", "lat", "lng"]),
             ("drivers.parquet", &["driver_id", "code", "nationality"]),
@@ -3072,7 +3087,7 @@ mod one_table_tests {
 
     /// Nothing readable means nothing decided, and the listing's answer stands.
     #[test]
-    fn a_folder_that_cannot_be_read_is_left_as_it_was() {
+    fn a_directory_that_cannot_be_read_is_left_as_it_was() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let objects = vec![
@@ -3088,7 +3103,7 @@ mod one_table_tests {
         assert_eq!(kind_of(&[("only.parquet", &["a", "b"])]), None);
     }
 
-    /// The ends of a listing are where a table-per-file folder differs; its head can
+    /// The ends of a listing are where a table-per-file directory differs; its head can
     /// be three files of the same table by alphabetical accident.
     #[test]
     fn the_files_read_span_the_listing() {

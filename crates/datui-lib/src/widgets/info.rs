@@ -453,8 +453,8 @@ pub struct DataTableInfo<'a> {
 ///
 /// Told `None` rather than a number, because what a state holds before it has been
 /// counted is how far its buffer reached — printed under a heading that says "total",
-/// that reads as the size of the dataset. On a folder of thousands of files still being
-/// counted it would say `Rows (total): 70` beside a control bar showing a spinner.
+/// that reads as the size of the dataset. On a directory of thousands of files still
+/// being counted it would say `Rows (total): 70` beside a control bar showing a spinner.
 fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
     match rows {
         Some(rows) => format!("Rows (total): {} · Columns: {}", format_int(rows), columns),
@@ -1074,11 +1074,11 @@ impl<'a> DataTableInfo<'a> {
 /// How long a stretch took, in a unit that does not round it away.
 ///
 /// Milliseconds under a second, to two places. Most of these figures are under a
-/// second — a local folder of a few files is walked in a fraction of a millisecond —
+/// second — a local directory of a few files is walked in a fraction of a millisecond —
 /// and in seconds to two places every one of them prints `0.00s`, which reads as "not
 /// measured" rather than "quick".
 ///
-/// Two places rather than one because a one-file folder's listing really is tens of
+/// Two places rather than one because a one-file directory's listing really is tens of
 /// microseconds. There is still a floor: under five microseconds this prints
 /// `0.00 ms`. Nothing datui can do makes a five-microsecond walk legible, and a figure
 /// that small is honestly reported as none.
@@ -1449,7 +1449,7 @@ mod tests {
             "a local open made none, and says nothing rather than saying zero: {shown}"
         );
 
-        // One of a thing is one of a thing. A one-file folder and a single remote
+        // One of a thing is one of a thing. A one-file directory and a single remote
         // object both reach this, and "1 files read" is what the counts are for.
         let just_one = std::sync::Arc::new(Meter::default());
         just_one.listed(Duration::from_millis(1), Some(1), false);

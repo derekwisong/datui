@@ -57,7 +57,7 @@ pub struct PassCount {
 
 /// How far a dataset's footer pass has got, for the loading screen to read.
 ///
-/// Opening a folder of many files reads a footer from each before a row is shown, and
+/// Opening a directory of many files reads a footer from each before a row is shown, and
 /// on a few thousand files that is seconds of a screen that says only "Caching schema".
 /// The count is what makes the wait legible: a number that climbs is a wait, and a
 /// number that stops is a problem.
@@ -226,23 +226,23 @@ pub enum ColumnRange {
     NoneBefore(String),
 }
 
-/// What a dataset's listing walked past: files under the folder that are not read.
+/// What a dataset's listing walked past: files under the directory that are not read.
 ///
 /// Split by whether anyone could have meant them as data, which is a question about
 /// where a file is rather than what it is called.
 ///
-/// **A file beside the data** — a `.csv` in a folder that also holds Parquet — is one
+/// **A file beside the data** — a `.csv` in a directory that also holds Parquet — is one
 /// somebody may have expected in the table. That is worth saying.
 ///
 /// **A file somewhere else** is infrastructure. Delta keeps its log in `_delta_log/`,
 /// Hudi in `.hoodie/`, Iceberg in a plain `metadata/` beside the data; a bucket made
 /// through a console is full of zero-byte folder markers. Naming those conventions one
-/// by one is a game with no end — the test that holds for all of them is that a folder
+/// by one is a game with no end — the test that holds for all of them is that a directory
 /// with no Parquet in it is nobody's table, whatever it is called.
 ///
-/// Not a complete accounting of the folder: a subtree that cannot be read, or one below
-/// the depth the walk stops at, is neither listed nor counted. What the note says is
-/// how many files were passed over among those it saw.
+/// Not a complete accounting of the directory: a subtree that cannot be read, or one
+/// below the depth the walk stops at, is neither listed nor counted. What the note says
+/// is how many files were passed over among those it saw.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkippedFiles {
     /// Files a writer leaves beside the data: a name beginning `_` or `.`.
@@ -280,7 +280,7 @@ impl SkippedFiles {
 /// wrong, does not work: `OpenOptions::from_args_and_config` fills in
 /// `infer_schema_length` and `parse_strings` on every run with no flags at all, so a
 /// predicate over "did the user set anything" is true every time and the sample never
-/// runs. That shipped once — the notes about how a folder was stacked never appeared
+/// runs. That shipped once — the notes about how a directory was stacked never appeared
 /// outside the tests, which built `OpenOptions::default()` and saw `None` in both.
 ///
 /// [`Default`] is what Polars' own readers do, which is what the home screen's opens
@@ -297,9 +297,9 @@ pub struct ReadAs {
 }
 
 impl Default for ReadAs {
-    /// What a folder opened from the home screen is read with: `OpenOptions::default()`
-    /// plus `hive`, whose `csv_try_parse_dates()` is true because `parse_strings` is
-    /// unset there.
+    /// What a directory opened from the home screen is read with:
+    /// `OpenOptions::default()` plus `hive`, whose `csv_try_parse_dates()` is true
+    /// because `parse_strings` is unset there.
     ///
     /// Written out rather than derived. A derived `Default` gives `try_parse_dates:
     /// false`, which is not what any caller wants and differs from what the read does —
@@ -328,7 +328,7 @@ impl Default for ReadAs {
 ///
 /// `None` for a format whose schema cannot be had without reading the whole file, and
 /// for a file that would not parse. Both mean "no evidence", which every caller here
-/// treats as it treats an unreadable footer: the folder keeps the kind its names
+/// treats as it treats an unreadable footer: the directory keeps the kind its names
 /// suggested, and the read that follows is lenient enough to survive being wrong.
 ///
 /// Deliberately not JSON: a `.json` file is one document, and its keys are only known
@@ -386,7 +386,7 @@ pub fn column_schema_of(
 /// and it is not obvious: a writer that emits a header even on a day with no rows
 /// leaves a three-byte file holding `""`, which Polars reads as a single unnamed
 /// column — and a schema of one unnamed column is contained in *every* wider schema, so
-/// it nests inside anything and says a folder is one table however many tables are
+/// it nests inside anything and says a directory is one table however many tables are
 /// really in it.
 ///
 /// Measured on a real share: a month of stock data holding dividends, splits, tickers
@@ -412,16 +412,16 @@ fn is_an_empty_file(schema: &[(String, DataType)]) -> bool {
 /// screen's column index as if they were column names.
 ///
 /// Polars cannot tell the two apart either, and neither can anyone: a first row reading
-/// `alice,30` is a header or it is not, and only the file knows. What is decidable is
-/// the case that matters — every name a number — because a header of nothing but
-/// numbers is vanishingly rare and a row of them is the common headerless shape. Where
-/// it fires the answer is "no evidence", which leaves the folder as its names suggested
-/// and the read to union what it finds.
+/// `alice,30` is a header or it is not, and only the file knows. What is decidable is the
+/// case that matters — every name a number — because a header of nothing but numbers is
+/// vanishingly rare and a row of them is the common headerless shape. Where it fires the
+/// answer is "no evidence", which leaves the directory as its names suggested and the
+/// read to union what it finds.
 fn names_are_names(names: &[String]) -> bool {
     !names.is_empty() && !names.iter().all(|n| n.trim().parse::<f64>().is_ok())
 }
 
-/// What a spread of a folder's files says about whether they are one table.
+/// What a spread of a directory's files says about whether they are one table.
 ///
 /// One sampling, read once, answering both questions asked of it: whether the files
 /// nest, which decides what `Enter` does, and whether they agree, which decides what
@@ -440,7 +440,7 @@ pub struct Sampled {
     pub columns_differ: bool,
     /// Whether a column they share is held in two different types. The half a name test
     /// cannot see: `amount` is an Int64 in one file and a String in the next because
-    /// one row said `N/A`, and the read widens it to String for the whole folder
+    /// one row said `N/A`, and the read widens it to String for the whole directory
     /// without a word unless this says so.
     pub types_differ: bool,
     /// How many files were actually read, so a caller can say whether a count over them
@@ -449,7 +449,7 @@ pub struct Sampled {
     /// Whether the files appear to have no header row, so what came back as names is
     /// each file's first row of *data*.
     ///
-    /// datui reads a CSV as having a header, so such a folder cannot be read as one
+    /// datui reads a CSV as having a header, so such a directory cannot be read as one
     /// table at all without `--no-header`: every file contributes its own first row as
     /// column names and the union is a wide sheet of nulls. Neither a nesting verdict
     /// nor a note about columns means anything here — this is the thing to say instead.
@@ -459,7 +459,7 @@ pub struct Sampled {
 impl Sampled {
     /// How the files differ, for the note that says so.
     pub fn disagreement(&self) -> Disagreement {
-        // A headerless folder has one thing wrong with it, and the other two would be
+        // A headerless directory has one thing wrong with it, and the other two would be
         // said about column names that are really data.
         if self.headerless {
             return Disagreement {
@@ -475,11 +475,11 @@ impl Sampled {
     }
 }
 
-/// How a folder's files differed, as the read found them.
+/// How a directory's files differed, as the read found them.
 ///
-/// Two separate facts because they are two separate things to say, and a folder can be
+/// Two separate facts because they are two separate things to say, and a directory can be
 /// either, both or neither: a column some files lack is the ordinary shape of schema
-/// drift, and a column held in two types is what forces the whole folder to the wider
+/// drift, and a column held in two types is what forces the whole directory to the wider
 /// one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Disagreement {
@@ -497,31 +497,31 @@ impl Disagreement {
 
 /// Read a spread of `files` and say what they are.
 ///
-/// The ends and the middle, because names sort and a folder written table by table can
-/// start with several files of the same table. Three reads whatever the folder's size:
-/// this runs in a listing pass and on the way into an open, and a folder of forty
-/// thousand files must cost the same as a folder of four.
+/// The ends and the middle, because names sort and a directory written table by table can
+/// start with several files of the same table. Three reads whatever the directory's size:
+/// this runs in a listing pass and on the way into an open, and a directory of forty
+/// thousand files must cost the same as a directory of four.
 pub fn sample_files(
     files: &[std::path::PathBuf],
     format: crate::FileFormat,
     as_read: &ReadAs,
 ) -> Sampled {
     // Enough files to see a disagreement, and a bound on the reads it takes to find
-    // them. A folder written daily has empty days in it — a Saturday's file of nothing
+    // them. A directory written daily has empty days in it — a Saturday's file of nothing
     // — and those carry no columns, so a spread that lands on two of them learns
-    // nothing and the folder goes unjudged. Measured on a real share: a month of stock
+    // nothing and the directory goes unjudged. Measured on a real share: a month of stock
     // data holding three different tables came back as one, because the first and
     // middle files of that month were a three-byte file and an empty one.
     const WANTED: usize = 3;
     const TRIES: usize = 12;
     let last = files.len().saturating_sub(1);
-    // Three anchors — the ends and the middle — because names sort, so a folder written
-    // table by table holds each table in a contiguous run and the three land in
+    // Three anchors — the ends and the middle — because names sort, so a directory
+    // written table by table holds each table in a contiguous run and the three land in
     // different runs. Spreading the reads evenly instead is worse, and measurably: the
     // first files that happen to be readable then come from one run, agree with each
-    // other, and the folder is called one table.
+    // other, and the directory is called one table.
     //
-    // From each anchor, step forward past files with nothing in them. A folder written
+    // From each anchor, step forward past files with nothing in them. A directory written
     // daily has empty days in it — forty per cent of one real month — and an anchor
     // that lands on one learns nothing, while a neighbour of it is in the same run and
     // answers for that run.
@@ -544,7 +544,7 @@ pub fn sample_files(
             let Some(file) = files.get(i) else { continue };
             tried += 1;
             // A file with nothing in it has no columns to disagree about, and is not
-            // evidence about the folder either way. Its neighbour is asked instead.
+            // evidence about the directory either way. Its neighbour is asked instead.
             if let Some(schema) = column_schema_of(file, format, as_read)
                 && !is_an_empty_file(&schema)
             {
@@ -573,7 +573,7 @@ pub fn sample_files(
         .map(|f| f.iter().map(|(n, _)| n.clone()).collect())
         .collect();
     // A file whose "names" are its first row of data. Said rather than guessed around:
-    // the folder cannot be read as one table without `--no-header`, so there is no
+    // the directory cannot be read as one table without `--no-header`, so there is no
     // nesting verdict worth reaching and no note about columns worth writing. `nests`
     // stays `Some(false)` so `Enter` steps inside rather than silently building a sheet
     // of nulls, and the columns are dropped rather than offered to the search index as
@@ -598,7 +598,7 @@ pub fn sample_files(
             }
         }
     }
-    // Not `!nests`: a folder can nest and still be missing a column from one file,
+    // Not `!nests`: a directory can nest and still be missing a column from one file,
     // which is the ordinary shape of schema drift and exactly what the note is for.
     let widest = names.iter().map(|f| f.len()).max().unwrap_or(0);
     out.columns_differ = names.iter().any(|f| f.len() != widest) || !nests;
@@ -614,7 +614,7 @@ pub fn sample_files(
 /// brings a column no other file has, or it does not.
 ///
 /// This replaced a containment ratio against a 0.5 threshold. The ratio was measured
-/// and the threshold sat in a wide gap, but every counter-example found was a folder
+/// and the threshold sat in a wide gap, but every counter-example found was a directory
 /// landing on the wrong side of a number: two tables joined on one key scored exactly
 /// 0.5, and a dataset grown from ten columns to fifty with one dropped along the way
 /// scored 0.196 — *below* the 0.200 of unrelated tables sharing a key. A dataset that
@@ -623,11 +623,11 @@ pub fn sample_files(
 /// instead of the number: not "how much do these agree" but "does any file bring
 /// something the others cannot account for".
 ///
-/// A folder that fails this is not refused. It is one keystroke further away — the row
+/// A directory that fails this is not refused. It is one keystroke further away — the row
 /// goes inside instead of opening, and the `(all files)` row inside it opens the union
 /// anyway. That is what makes a strict rule affordable here.
 ///
-/// Fewer than two files is one table by definition, and so is a folder whose files all
+/// Fewer than two files is one table by definition, and so is a directory whose files all
 /// have no columns to disagree about.
 pub fn is_nested(files: &[Vec<String>]) -> bool {
     let Some(widest) = files.iter().max_by_key(|f| f.len()) else {
@@ -696,7 +696,7 @@ pub struct DatasetSchema {
     pub column_ranges: HashMap<PlSmallStr, ColumnRange>,
     /// The distinct ways the dataset's files are partitioned, and how many files are
     /// laid out each way, commonest first. One entry, or none, for a dataset whose
-    /// folders agree — which is nearly all of them.
+    /// directories agree — which is nearly all of them.
     ///
     /// From the names of every file, not from the footers: this is the one thing the
     /// listing knows that reading a file cannot tell you.
@@ -739,9 +739,9 @@ impl DatasetSchema {
 
     /// The dataset with the ways its files are partitioned counted from their names.
     ///
-    /// `root` is the dataset as opened; the keys are taken from below it. A folder
+    /// `root` is the dataset as opened; the keys are taken from below it. A directory
     /// above the root is not in dispute — opening `run=7/` for a dataset partitioned
-    /// by date does not make `run` one of the things its folders disagree about, and
+    /// by date does not make `run` one of the things its directories disagree about, and
     /// counting it made every file look like it disagreed with every other.
     ///
     /// Keys are compared as a *set*: `y=1/m=1` and `m=2/y=2` partition by the same two
@@ -818,7 +818,7 @@ impl DatasetSchema {
             with: Vec<String>,
             without: Vec<String>,
             /// A file that has it and sits under no partition at all — one at the root
-            /// beside the partition folders. There is no "all under" to be had then:
+            /// beside the partition directories. There is no "all under" to be had then:
             /// the column is somewhere this cannot name.
             unplaced: bool,
         }
@@ -947,7 +947,7 @@ impl DatasetSchema {
                 // And the boundary is a boundary: a partition half of whose files have
                 // the column is not one the column begins at.
                 // And the boundary is a boundary: not the same place under another
-                // spelling, and not one folder inside the other.
+                // spelling, and not one directory inside the other.
                 (!same_place(&ends, &begins)
                     && !partition_holds(&begins, &ends)
                     && !partition_holds(&ends, &begins))
@@ -1083,8 +1083,8 @@ pub fn union_sampled(
 ///
 /// A footer datui could not read is a file Polars cannot read either, and left in the
 /// scan it does not merely go unread: the first page takes the whole dataset down with
-/// it, so a folder with one file mid-write opens on an error rather than on the rows of
-/// its other files. The dataset still counts them — that is what the note is for — but
+/// it, so a directory with one file mid-write opens on an error rather than on the rows
+/// of its other files. The dataset still counts them — that is what the note is for — but
 /// the scan is over the ones that will open.
 pub fn readable_paths<'a>(paths: &'a [String], unreadable: &[usize]) -> Cow<'a, [String]> {
     if unreadable.is_empty() {
@@ -1236,7 +1236,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
 /// Whether one partition path holds another: `y=2024` holds `y=2024/m=03`, and a file
 /// in the second is a file in the first.
 ///
-/// Compared as places rather than as strings. `only y=2024` is a claim about a folder
+/// Compared as places rather than as strings. `only y=2024` is a claim about a directory
 /// tree, so a file at `y=2024/m=03` without the column is a file under `y=2024`
 /// without it, and the claim is false — even though the two strings differ.
 fn partition_holds(outer: &str, inner: &str) -> bool {
@@ -1248,10 +1248,10 @@ fn partition_holds(outer: &str, inner: &str) -> bool {
 
 /// Whether two partition paths name the same place, however they are written.
 ///
-/// `m=03` is March and so is `m=3`: a backfill that wrote one beside a job that wrote
-/// the other leaves two folders for one month. And hive columns are matched by name, so
-/// `y=2024/m=03` and `m=03/y=2024` are one partition written in two orders. Neither
-/// pair is equal as a string, and a claim about either is a claim about both.
+/// `m=03` is March and so is `m=3`: a backfill that wrote one beside a job that wrote the
+/// other leaves two directories for one month. And hive columns are matched by name, so
+/// `y=2024/m=03` and `m=03/y=2024` are one partition written in two orders. Neither pair
+/// is equal as a string, and a claim about either is a claim about both.
 fn same_place(a: &str, b: &str) -> bool {
     fn sorted(path: &str) -> Vec<&str> {
         let mut segments: Vec<&str> = path.split('/').collect();
@@ -1282,8 +1282,8 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
                 let digits = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
                 let (na, nb) = (digits(a), digits(b));
                 // Leading zeros do not make a number bigger: `m=03` and `m=3` are one
-                // month, and this says so. Two folders spelling it both ways are two
-                // folders for one place, which `same_place` is about.
+                // month, and this says so. Two directories spelling it both ways are two
+                // directories for one place, which `same_place` is about.
                 let (xs, ys) = (&a[..na], &b[..nb]);
                 fn trim(s: &[u8]) -> &[u8] {
                     let lead = s.iter().take_while(|c| **c == b'0').count();
@@ -1316,7 +1316,7 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// partition is a place, and a place is where the path says it is. One consequence is
 /// that `y=2024/m=03` and `m=03/y=2024` are written differently while naming one
 /// partition — hive matches its columns by name, not by position. Nothing else notices:
-/// the layouts note compares which keys a folder uses, not the order, so those two
+/// the layouts note compares which keys a directory uses, not the order, so those two
 /// agree. `same_place` is what keeps a note off a place that is written down twice.
 fn partition_values_of(path: &str) -> Vec<String> {
     #[cfg(windows)]
@@ -1958,7 +1958,7 @@ mod tests {
         })
     }
 
-    /// Column sets for a folder, one slice per file.
+    /// Column sets for a directory, one slice per file.
     fn cols(files: &[&[&str]]) -> Vec<Vec<String>> {
         files
             .iter()
@@ -1975,7 +1975,7 @@ mod tests {
         out
     }
 
-    /// The shapes a folder of one table takes. Scores are what the statistic gives
+    /// The shapes a directory of one table takes. Scores are what the statistic gives
     /// today; the assertion is only that each is read as one table.
     #[test]
     fn one_table_whatever_its_files_did_over_time() {
@@ -2008,12 +2008,13 @@ mod tests {
         }
     }
 
-    /// Folders that a union would read correctly, and that this rule turns away anyway.
+    /// Directories that a union would read correctly, and that this rule turns away
+    /// anyway.
     ///
     /// Two files that each bring a column the other lacks are not a dataset that grew:
-    /// nothing datui can see separates a rename from two tables that happen to share
-    /// most of their columns. The scorer that came before this took them as one table,
-    /// and took a folder of six unrelated tables as one table too, because no statistic
+    /// nothing datui can see separates a rename from two tables that happen to share most
+    /// of their columns. The scorer that came before this took them as one table, and
+    /// took a directory of six unrelated tables as one table too, because no statistic
     /// over column overlap can tell the two apart.
     ///
     /// Turning them away is cheap by design. The row goes inside instead of opening,
@@ -2037,7 +2038,7 @@ mod tests {
         }
     }
 
-    /// Folders that hold separate tables, including ones that share columns.
+    /// Directories that hold separate tables, including ones that share columns.
     #[test]
     fn separate_tables_are_not_one_table() {
         for (what, files) in [
@@ -2047,7 +2048,7 @@ mod tests {
                 cols(&[&["id", "a", "b"], &["id", "x", "y"], &["id", "p", "q"]]),
             ),
             (
-                // A season of Formula 1 as six tables in one folder, the columns read
+                // A season of Formula 1 as six tables in one directory, the columns read
                 // from the footers of gs://pitscope-prod-data/jolpica/1950/. Every one
                 // carries `season`, and two of them most of a race's identity, so this
                 // is the shape a rule that only asks whether columns are shared calls
@@ -2137,7 +2138,7 @@ mod tests {
     /// Growth is the shape this rule is built around, and the one the scorer before it
     /// could not hold on to: a dataset grown from five columns to fifty, with one
     /// dropped along the way, scored 0.196 — below the 0.200 of six unrelated tables
-    /// sharing a key. Asked as nesting, the same two folders are not close.
+    /// sharing a key. Asked as nesting, the same two directories are not close.
     #[test]
     fn growth_nests_where_unrelated_tables_do_not() {
         assert!(is_nested(&grew(10, 5, 50)));
@@ -2173,15 +2174,15 @@ mod tests {
         ];
         assert_eq!(files[0], vec!["id", "tags", "refs"]);
         assert!(is_nested(&files), "the same three columns, written twice");
-        // Without the flattening each brings two leaves the other lacks, and the folder
-        // is demoted.
+        // Without the flattening each brings two leaves the other lacks, and the
+        // directory is demoted.
         assert!(!is_nested(&[old_writer, new_writer]));
     }
 
     /// A file with no columns cannot disagree: it brings nothing the widest file
     /// cannot account for, which is the whole question.
     #[test]
-    fn an_empty_file_does_not_decide_the_folder() {
+    fn an_empty_file_does_not_decide_the_directory() {
         assert!(is_nested(&cols(&[&["a", "b"], &[], &["a", "b"]])));
         assert!(is_nested(&cols(&[&[], &[]])), "nothing to disagree about");
     }
@@ -2911,7 +2912,7 @@ mod tests {
         // A backslash separates on Windows and is an ordinary character in a Linux
         // file name. Splitting on it everywhere would break a legitimate name and
         // invent a layout difference out of one directory, which would fire this note
-        // on a dataset whose folders agree perfectly.
+        // on a dataset whose directories agree perfectly.
         #[cfg(windows)]
         assert_eq!(
             keys(r"data\date=2024-01-01\a.parquet"),
@@ -2932,13 +2933,13 @@ mod tests {
         );
     }
 
-    /// A dataset whose folders do not all partition by the same keys.
+    /// A dataset whose directories do not all partition by the same keys.
     ///
     /// The note says the shape and claims nothing about what it costs: a rename that
     /// stops the dataset opening, and one stray unpartitioned file that turns hive
-    /// reading off and leaves the same folders readable, look identical from here.
+    /// reading off and leaves the same directories readable, look identical from here.
     #[test]
-    fn folders_that_partition_differently_are_counted_each_way() {
+    fn directories_that_partition_differently_are_counted_each_way() {
         let note = |root: &str, paths: &[&str]| -> Option<crate::notes::Note> {
             let footers = vec![
                 Some(FileSchema {
@@ -2960,7 +2961,7 @@ mod tests {
         assert_eq!(
             note("d", &["d/date=1/a.parquet", "d/date=2/b.parquet"]),
             None,
-            "folders that agree have nothing to say"
+            "directories that agree have nothing to say"
         );
         assert_eq!(
             note("d", &["d/a.parquet", "d/b.parquet"]),
@@ -2979,8 +2980,8 @@ mod tests {
                 &["d/run=7/loose.parquet", "d/run=7/date=1/a.parquet"]
             ),
             None,
-            "a key=value folder above the dataset as it was opened is not one of the \
-             things its folders disagree about — and these two files are where that \
+            "a key=value directory above the dataset as it was opened is not one of the \
+             things its directories disagree about — and these two files are where that \
              matters, since counting `run` would make the one without a key of its \
              own a second layout"
         );
@@ -3004,10 +3005,10 @@ mod tests {
                 "d/dt=4/e.parquet",
             ],
         )
-        .expect("the folders disagree");
+        .expect("the directories disagree");
         assert_eq!(
             renamed.summary,
-            "the folders do not all partition by the same keys: 3 files by date, \
+            "the directories do not all partition by the same keys: 3 files by date, \
              1 file by dt"
         );
         assert_eq!(
@@ -3026,10 +3027,10 @@ mod tests {
                 "d/loose.parquet",
             ],
         )
-        .expect("the folders disagree");
+        .expect("the directories disagree");
         assert_eq!(
             loose.summary,
-            "the folders do not all partition by the same keys: 2 files by m/y, \
+            "the directories do not all partition by the same keys: 2 files by m/y, \
              1 file by date"
         );
         assert_eq!(
@@ -3063,7 +3064,7 @@ mod tests {
             crate::notes::from_dataset(&dataset)
                 .into_iter()
                 .find(|note| note.summary.contains("partition by the same keys"))
-                .expect("the folders disagree")
+                .expect("the directories disagree")
                 .summary
         };
 
@@ -3104,12 +3105,12 @@ mod tests {
                 "d/cc=1/c.parquet",
                 "d/dd=1/e.parquet",
             ]),
-            "the folders do not all partition by the same keys: 1 file by aa, \
+            "the directories do not all partition by the same keys: 1 file by aa, \
              1 file by bb, 2 files by 2 other ways"
         );
         assert_eq!(
             note(&["d/aa=1/a.parquet", "d/bb=1/b.parquet", "d/cc=1/c.parquet"]),
-            "the folders do not all partition by the same keys: 1 file by aa, \
+            "the directories do not all partition by the same keys: 1 file by aa, \
              1 file by bb, 1 file by 1 other way",
             "and one of them is one way, not one ways"
         );
@@ -3123,7 +3124,7 @@ mod tests {
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert_eq!(
             note(&many),
-            "the folders do not all partition by the same keys: 1 file by k000, \
+            "the directories do not all partition by the same keys: 1 file by k000, \
              1 file by k001, 98 files by 98 other ways"
         );
         let owned: Vec<String> = many.iter().map(|p| p.to_string()).collect();
@@ -3302,7 +3303,7 @@ mod tests {
         assert!(!partition_holds("y=2024", "y=2025"));
         assert!(
             !partition_holds("y=202", "y=2024"),
-            "a prefix of the spelling is not a folder above it"
+            "a prefix of the spelling is not a directory above it"
         );
         assert!(!partition_holds("y=2024/m=03", "y=2024"));
     }

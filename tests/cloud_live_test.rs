@@ -349,7 +349,7 @@ fn enter_source(
 ///
 /// The `(all files)` row counts: it is a row on screen with a name, drawn like any
 /// other. What it is not is one of its section's `rows` — it is `Row::Door`, because
-/// its path is the folder's and a path-keyed map cannot tell the two apart.
+/// its path is the directory's and a path-keyed map cannot tell the two apart.
 fn select_row(app: &mut datui::App, name: &str) -> bool {
     for (index, row) in app.home.visible().iter().enumerate() {
         if let datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. } = row
@@ -1026,7 +1026,7 @@ fn an_aws_bucket_browses_and_opens_through_the_active_profile() {
 }
 
 /// Open every file under `edge/` in the test container and bucket: names with spaces,
-/// non-ASCII, `+ = & #`, `%`, an uppercase extension, no extension, deep folders.
+/// non-ASCII, `+ = & #`, `%`, an uppercase extension, no extension, deep directories.
 ///
 /// ```bash
 /// DATUI_LIVE_EDGE="abfss://datui-test@<account>.dfs.core.windows.net/edge/,s3://<bucket>/edge/" \
@@ -1393,7 +1393,7 @@ fn public_data_quirks() {
     let places = cloud_sources::take_public_places();
     println!("public places found: {places:?}");
 
-    // Azure Open Datasets: hive folders with marker blobs beside them.
+    // Azure Open Datasets: hive directories with marker blobs beside them.
     let yellow = runtime
         .block_on(cloud_browse::list_objects(
             "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/yellow/",
@@ -1687,13 +1687,13 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
                 &format!("abfss://datui-test@{account}.dfs.core.windows.net/demo/"),
                 &config,
             ))
-            .expect("a folder lists with the SAS");
+            .expect("a directory lists with the SAS");
         assert!(rows.iter().any(|r| r.name == "penguins.parquet"));
     }
 }
 
 /// Azurite through `AZURE_STORAGE_CONNECTION_STRING=UseDevelopmentStorage=true`: the
-/// account lists its containers, a folder lists, and a Parquet file opens.
+/// account lists its containers, a directory lists, and a Parquet file opens.
 ///
 /// ```bash
 /// npx azurite-blob --location /tmp/azurite --blobPort 10000 &
@@ -1743,7 +1743,7 @@ fn azurite_through_a_development_connection_string() {
             "abfss://demo@devstoreaccount1.dfs.core.windows.net/small/",
             &config,
         ))
-        .expect("a folder lists");
+        .expect("a directory lists");
     assert!(rows.iter().any(|r| r.name == "data.parquet"), "{rows:?}");
     let headers = open_url(
         "abfss://demo@devstoreaccount1.dfs.core.windows.net/small/data.parquet",
@@ -1828,12 +1828,12 @@ fn secret_commands_env_files_and_credentials_files() {
     datui::cloud_env::load(&CloudConfig::default(), dir.path());
 }
 
-/// Partitioned folders in a public dataset are labelled `hive` once peeked into, open
+/// Partitioned directories in a public dataset are labelled `hive` once peeked into, open
 /// as one dataset with their partition column, and can still be browsed with →, where
-/// a row opens the whole folder.
+/// a row opens the whole directory.
 #[test]
 #[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
-fn partitioned_cloud_folders_are_hive_datasets() {
+fn partitioned_cloud_directories_are_hive_datasets() {
     if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
         eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
         return;
@@ -1869,7 +1869,7 @@ fn partitioned_cloud_folders_are_hive_datasets() {
     println!("{}", screen_text(&mut app, 120, 20));
     assert!(labelled, "blocks and transactions are partitioned by date");
 
-    // → goes inside, where one row stands for the whole folder.
+    // → goes inside, where one row stands for the whole directory.
     assert!(select_row(&mut app, "blocks"));
     app.event(&key(crossterm::event::KeyCode::Right));
     assert!(
@@ -1883,7 +1883,7 @@ fn partitioned_cloud_folders_are_hive_datasets() {
     println!("{}", screen_text(&mut app, 120, 20));
     app.event(&key(crossterm::event::KeyCode::Backspace));
 
-    // Enter opens the folder as one dataset, with the partition as a column.
+    // Enter opens the directory as one dataset, with the partition as a column.
     step(&mut app, "blocks");
     let loaded = pump_until(&mut app, &rx, 120, |app| {
         app.data_table_state.is_some() && !app.is_busy()
@@ -1915,7 +1915,7 @@ fn partitioned_cloud_folders_are_hive_datasets() {
         "the last rows, not the first: {text}"
     );
 
-    // A folder of Parquet part files with no extension is one dataset too.
+    // A directory of Parquet part files with no extension is one dataset too.
     let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
     let runtime = common::test_runtime();
     let snapshot = runtime
@@ -2017,10 +2017,10 @@ fn bitcoin_transactions_open_count_and_reach_any_row() {
     println!("{}", screen_text(&mut app, 200, 12));
 }
 
-/// A folder is offered as one table only when its files agree on a schema, and the
+/// A directory is offered as one table only when its files agree on a schema, and the
 /// question is settled from a few footers while browsing rather than by opening it.
 ///
-/// Public datasets, so this needs no credentials. The negative case — a folder holding
+/// Public datasets, so this needs no credentials. The negative case — a directory holding
 /// one Parquet file per table — has no public home worth hard-coding; the in-memory
 /// tests in `cloud_browse` cover it from both directions.
 #[test]
@@ -2034,7 +2034,7 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
     let config = CloudConfig::default();
 
     // One GBIF snapshot: many part files, all the same table, and named `000001`
-    // rather than anything ending `.parquet` — only the folder says what they are.
+    // rather than anything ending `.parquet` — only the directory says what they are.
     let parts = "s3://gbif-open-data-us-east-1/occurrence/2026-06-01/occurrence.parquet/";
     let (kind, holds) = runtime
         .block_on(cloud_browse::peek_kind(parts, &config))

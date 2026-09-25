@@ -28,8 +28,8 @@ toggles.
 
 ## Notes
 
-A folder of Parquet files rarely holds files that agree, and rarely holds only
-files with something in them. Where datui notices either, it says so:
+A directory of Parquet files rarely holds files that agree, and rarely holds
+only files with something in them. Where datui notices either, it says so:
 
 | Note | From |
 |---|---|
@@ -40,11 +40,11 @@ files with something in them. Where datui notices either, it says so:
 | A file holds no rows at all | The footers |
 | Row groups are large enough that a page of rows costs much more than a page | The footers |
 | There are very many files and the middle one holds very little | The listing and the footers |
-| The folders do not all partition by the same keys | The file names |
+| The directories do not all partition by the same keys | The file names |
 | A file's footer could not be read, so it was left out | The footers |
-| Files in the folder are not Parquet, so they are not in the table | The listing |
-| The folder held more than one format and was read as the commonest; what was passed over | The listing |
-| These are a Delta, Iceberg or Hudi table's plain files, not the table | The folder's markers |
+| Files in the directory are not Parquet, so they are not in the table | The listing |
+| The directory held more than one format and was read as the commonest; what was passed over | The listing |
+| These are a Delta, Iceberg or Hudi table's plain files, not the table | The directory's markers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 
 The last two are notes about the read rather than about the data, and they are
@@ -56,22 +56,22 @@ count of the table.
 Where the files that have a column fall into a shape worth naming, the note says so
 as well as counting them: `fee is in 4,001 of 6,541 files, none before
 date=2010-07-18` is a field a feed started sending, and `oops is in 1 of 6,541
-files, only date=2024-03-02` is one folder's mistake. Only those two shapes —
+files, only date=2024-03-02` is one directory's mistake. Only those two shapes —
 a column scattered across a dataset is just a count. `none before` also needs the
-folders to sort the way you would read them: where partition values are not
+directories to sort the way you would read them: where partition values are not
 zero-padded, `part=10` comes before `part=2` in the listing and there is no
 honest way to say where a column starts, so nothing is said. A dataset whose footers were
 sampled gets no such phrase: a file whose footer was not read looks like a file
 missing nothing, and a range drawn over those would be a guess.
 
-A folder of Parquet files often holds other things, and what matters is where
-they are rather than what they are called. A file in a folder that holds data is
-one somebody may have meant to be in the table — a `.csv` beside the parts — and
-that is counted and said. A file in a folder with no data anywhere beneath it is
-somebody's plumbing: a table format's log, a manifest directory, a folder of
-images. Delta and Hudi name theirs with a leading `_` or `.`, Iceberg does not,
-and the next format will do something else again; none of them is a mistake and
-datui says nothing about any of them on its own.
+A directory of Parquet files often holds other things, and what matters is where
+they are rather than what they are called. A file in a directory that holds data
+is one somebody may have meant to be in the table — a `.csv` beside the parts —
+and that is counted and said. A file in a directory with no data anywhere
+beneath it is somebody's plumbing: a table format's log, a manifest directory, a
+directory of images. Delta and Hudi name theirs with a leading `_` or `.`,
+Iceberg does not, and the next format will do something else again; none of them
+is a mistake and datui says nothing about any of them on its own.
 
 An object with nothing in it and a name that says Parquet is the exception worth
 leading with: a write that stopped. In a bucket nothing else can see it — the
@@ -81,13 +81,13 @@ thing. One with nothing in it and no such
 name is a folder marker — a console leaves one per partition — and is plumbing
 like the rest.
 
-What it counts is what the listing saw. A folder it could not read, or one
+What it counts is what the listing saw. A directory it could not read, or one
 deeper than datui walks, is not in the total.
 
-Every note says what it is based on — `in all 6,541 footers`, or
-`in 20,000 of 200,000 footers (sample)` — so a count never stands for files
-datui has not looked at. A cloud folder that is still reading its footers behind
-the data says `in 2 of 6,541 footers (sample)` until they land, and the notes are
+Every note says what it is based on — `in all 6,541 footers`, or `in 20,000 of
+200,000 footers (sample)` — so a count never stands for files datui has not
+looked at. A cloud directory that is still reading its footers behind the data
+says `in 2 of 6,541 footers (sample)` until they land, and the notes are
 rewritten from all of them when they do. None of them costs a read of its own:
 they come from the footers the schema and the row count already needed.
 
@@ -128,11 +128,11 @@ At the foot of the **Resources** tab, what this dataset has cost: finding it,
 reading its footers, and fetching the page on screen.
 
 **Listing** and **Footers** are there for the datasets datui finds and reads
-itself — a folder of Parquet opened with `--hive`, a remote prefix, a remote glob,
-and a single remote object. Anything else is handed straight to Polars, which does
-not report what it did: a single local file, a CSV, a local folder opened without
-`--hive`, and a folder or a prefix opened with `single_spine_schema = false` all
-show neither row, and no Total.
+itself — a directory of Parquet opened with `--hive`, a remote prefix, a remote
+glob, and a single remote object. Anything else is handed straight to Polars,
+which does not report what it did: a single local file, a CSV, a local directory
+opened without `--hive`, and a directory or a prefix opened with
+`single_spine_schema = false` all show neither row, and no Total.
 
 **Last page** is there whichever route opened the dataset, because datui asks for
 the rows on screen and times the answer either way. A dataset already known to be
@@ -171,22 +171,22 @@ the bytes they returned, and the Total carries them too. Those reads datui
 issues itself, sixty-four at a time, so it can count them exactly.
 
 **No Listing row reports requests, and a local dataset reports none anywhere.**
-A local folder is walked rather than requested, so there are none to report; and
-every remote listing hands its paging to the object store, which does not say
-how many round trips it took. Every figure here is one datui produced itself,
-and where it cannot count something it shows nothing rather than a zero, because
-a zero reads as "none" rather than "not measured".
+A local directory is walked rather than requested, so there are none to report;
+and every remote listing hands its paging to the object store, which does not
+say how many round trips it took. Every figure here is one datui produced
+itself, and where it cannot count something it shows nothing rather than a zero,
+because a zero reads as "none" rather than "not measured".
 
 **"Footers read" is not the number of files.** A footer is read more than once
-on most datasets — one large enough to open before its footers are read has
-them read again behind the open, and one whose open could not settle its row
-count reads them again to count — so a three-file folder commonly reports six.
-The figure is what the reads cost, which is the point of it; the size of the
-dataset is on the Listing row.
+on most datasets — one large enough to open before its footers are read has them
+read again behind the open, and one whose open could not settle its row count
+reads them again to count — so a three-file directory commonly reports six. The
+figure is what the reads cost, which is the point of it; the size of the dataset
+is on the Listing row.
 
 A count pass has to find the files before it can read them, so its walk of the
-folder is in the Footers time too. Only the open's own search is on the Listing
-row.
+directory is in the Footers time too. Only the open's own search is on the
+Listing row.
 
 Counting is measured once. It runs again whenever the row count is invalidated
 — clearing a filter does it — and those later passes are re-work on a dataset

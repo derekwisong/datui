@@ -3,38 +3,39 @@
 ```bash
 datui data.parquet                             # a file
 datui jan.csv feb.csv mar.csv                  # files of the same shape, as one table
-datui /data/events/                            # a folder, read the way Enter reads its row
+datui /data/events/                            # a directory, read the way Enter reads its row
 datui --hive "/data/events/**/*.parquet"       # a glob (quote it)
 datui s3://bucket/path/file.parquet            # S3, GCS (gs://) or HTTP(S)
 datui --format csv https://example.com/export  # force the format when the name gives no hint
 ```
 
-## Folders
+## Directories
 
-`datui <folder>` does what <kbd>Enter</kbd> on that folder's row does on the
-[home screen](home-screen.md), and needs no flag:
+`datui <directory>` does what <kbd>Enter</kbd> on that directory's row does on
+the [home screen](home-screen.md), and needs no flag:
 
-| The folder | What happens |
+| The directory | What happens |
 |---|---|
 | A hive tree, or files that are one table | Opens as one table |
 | Separate tables, more than one format, or no data directly inside | The home screen, browsed into it — one keystroke from either a file or the union |
 | A Delta, Iceberg or Hudi root | The home screen, browsed into it, saying datui does not read the table itself yet |
 
-Before 0.4.0 a folder was `Unsupported file type` unless `--hive` was passed.
+Before 0.4.0 a directory was `Unsupported file type` unless `--hive` was passed.
 `--hive` still means what it always did: read this as partitioned, which is the
 answer for a glob and for a layout that does not say so itself.
 
-Finding out which of those a folder is means reading footers, or the front of a
-spread of its files, so a folder of large Parquet takes a moment. datui draws the
-screen first and names the folder it is looking at, and
+Finding out which of those a directory is means reading footers, or the front of
+a spread of its files, so a directory of large Parquet takes a moment. datui
+draws the screen first and names the directory it is looking at, and
 <kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> work throughout.
 
-Working out which of those a folder is means reading the front of a few of its
-files, and datui reads them the way it is about to read the whole folder —
-`--no-header`, `--skip-rows`, `--skip-lines`, `--infer-schema-length` and the rest
-all apply. So `datui --no-header exports/` judges the folder as headerless, finds
-its files stack, and opens it; without the flag the same folder is judged with a
-header, its files do not agree, and the home screen opens on it instead.
+Working out which of those a directory is means reading the front of a few of
+its files, and datui reads them the way it is about to read the whole directory
+— `--no-header`, `--skip-rows`, `--skip-lines`, `--infer-schema-length` and the
+rest all apply. So `datui --no-header exports/` judges the directory as
+headerless, finds its files stack, and opens it; without the flag the same
+directory is judged with a header, its files do not agree, and the home screen
+opens on it instead.
 
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
@@ -116,8 +117,8 @@ schema:
 
 The **Schema** tab of the [Info panel](dataset-info.md) says which footers the
 schema came from. Past 20,000 files, a sample spread evenly across them stands
-in and the tab says so; so does a cloud folder that is still reading the rest of
-its footers behind the data.
+in and the tab says so; so does a cloud directory that is still reading the rest
+of its footers behind the data.
 
 An empty cell says which kind of empty it is, so a gap in the data is never
 confused with a gap in the files:
@@ -183,7 +184,7 @@ While those footers are being read they are counted, `Reading footers: 1,203 of
 6,541`, and nothing is said once they have landed. Past 20,000 files the number
 it counts towards is the sample it reads, not the files there are.
 
-A folder in the cloud of more than 64 files does not wait for that count. It
+A directory in the cloud of more than 64 files does not wait for that count. It
 opens from the first file and the last, by name, and reads the rest behind the
 data, with the count in the control bar rather than on a loading screen. Datui
 fetches sixty-four footers at once, so up to that many arrive in the time one of
@@ -200,12 +201,12 @@ count is not shown at all rather than shown wrong, and the Notes are scoped to
 columns off until you come back to the data, because widening the scan underneath
 one would take away the columns it was built from.
 
-Local folders do not do this. Reading every footer of 2,048 local files takes
-under 7 ms once the directory is in the page cache, nine tenths of which is the
-directory walk rather than the footers, so there is nothing worth showing a
-half-built dataset for. A folder on a network share is a different matter, and
-one on a cold disk is slower than this figure suggests; neither is slow enough to
-be worth opening a dataset twice for.
+Local directories do not do this. Reading every footer of 2,048 local files
+takes under 7 ms once the directory is in the page cache, nine tenths of which
+is the directory walk rather than the footers, so there is nothing worth showing
+a half-built dataset for. A directory on a network share is a different matter,
+and one on a cold disk is slower than this figure suggests; neither is slow
+enough to be worth opening a dataset twice for.
 
 Where a dataset has more than ten thousand files and the middle one is under a
 mebibyte, the Notes tab says so, and says how many of them were opened for their
@@ -213,28 +214,29 @@ footers before a row was. Fewer, larger files would do less of that work; the
 remedy is upstream in whatever writes them, but knowing where the wait went is
 worth something on its own.
 
-datui reads a partitioned folder's columns off one branch of the tree, which is
-right for nearly every dataset. Where a pipeline changed its partition key partway
-through — `date=` becoming `dt=` — the Notes tab says so, counted from every
-file's name:
+datui reads a partitioned directory's columns off one branch of the tree, which
+is right for nearly every dataset. Where a pipeline changed its partition key
+partway through — `date=` becoming `dt=` — the Notes tab says so, counted from
+every file's name:
 
-    the folders do not all partition by the same keys: 3 files by date, 1 file by dt
+    the directories do not all partition by the same keys: 3 files by date, 1
+    file by dt
 
 What that costs varies, which is why the note does not say. Usually every file
 under the other key fails the scan and the dataset does not open at all. But the
 partition columns are read from the **first file name in the dataset**, so one
-unpartitioned file that sorts above the partition folders — `data.parquet` sorts
-above `date=`, `loose.parquet` does not — means no file's key is checked and the
-same folders read perfectly well with the partition column null. Renaming that
-file changes which of the two you get. Either way the note tells you which keys to
-look at.
+unpartitioned file that sorts above the partition directories — `data.parquet`
+sorts above `date=`, `loose.parquet` does not — means no file's key is checked
+and the same directories read perfectly well with the partition column null.
+Renaming that file changes which of the two you get. Either way the note tells
+you which keys to look at.
 
-Two folders that use the same keys in a different order — `y=/m=` and `m=/y=` —
-are not a disagreement: hive columns are matched by name, and such a dataset reads
-fine. Nothing is said about a `key=value` folder *above* the one you opened
-either, since that is not in dispute. The note is silent when
-`--single-spine-schema false` is set, because that route does not look at the file
-names this way.
+Two directories that use the same keys in a different order — `y=/m=` and
+`m=/y=` — are not a disagreement: hive columns are matched by name, and such a
+dataset reads fine. Nothing is said about a `key=value` directory *above* the
+one you opened either, since that is not in dispute. The note is silent when
+`--single-spine-schema false` is set, because that route does not look at the
+file names this way.
 
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file.

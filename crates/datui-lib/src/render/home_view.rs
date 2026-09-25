@@ -81,17 +81,17 @@ fn type_color(dtype: &polars::prelude::DataType, ctx: &RenderContext) -> ratatui
 /// be had without scanning it, and inventing one would be worse than a blank.
 /// `unmeasured` puts an ellipsis where the shape would go: the row is a dataset
 /// nothing has read yet, and a blank there beside rows that have a shape reads as
-/// broken. The same admission the label makes for a folder nothing has looked into.
+/// broken. The same admission the label makes for a directory nothing has looked into.
 fn meta_columns(entry: &Entry, unmeasured: bool) -> String {
     // A dataset too large to count still knows its width. Showing `? x 158` says more
     // than a blank, and the `?` is an admission rather than a guess.
     let times = glyphs::get().times;
-    // A column count read from a spread of a folder rather than all of it is a floor,
+    // A column count read from a spread of a directory rather than all of it is a floor,
     // so it says so, the way the row count already says `?` when it is out of reach.
     let more = if entry.cols_sampled { "+" } else { "" };
     let shape = match (entry.rows, entry.cols) {
         (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
-        // `?` says a count is out of reach. A folder that is not one table has no row
+        // `?` says a count is out of reach. A directory that is not one table has no row
         // count to be out of reach — a sum over unrelated tables is not a number — so
         // it shows its width alone. Named, not multiplied: `× 72` in a column whose
         // neighbours read `1.2M × 72` is an operator with nothing on its left, and a
@@ -379,7 +379,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // the request for more is made after the frame, not during it.
     app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
     app.home.pending_classify = !app.home.unclassified_visible(1).is_empty();
-    app.home.pending_peek = !app.home.cloud_folders_to_peek(1).is_empty();
+    app.home.pending_peek = !app.home.cloud_directories_to_peek(1).is_empty();
     let awaiting = app.home.awaiting_listing().map(|d| d.to_path_buf());
     let since = match awaiting {
         Some(_) => Some(
@@ -437,9 +437,9 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     }
 
     // Guidance shows whenever there is nothing openable — not only when the list is
-    // literally empty. A first run in a directory holding one folder would otherwise
-    // present a bare listing with no hint of what datui is for, which is the worst
-    // possible first impression for a screen meant to be the way in.
+    // literally empty. A first run in a directory holding one subdirectory would
+    // otherwise present a bare listing with no hint of what datui is for, which is the
+    // worst possible first impression for a screen meant to be the way in.
     //
     // Counted over every section, folded or not: with everything folded the headers
     // are the content, and a hint that says there is nothing here would be wrong.
@@ -548,8 +548,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 ));
             }
             // Drawn exactly like an entry, because to look at it is one: a row in
-            // the folder's list with a name, a shape and a size. What it is not is a
-            // row *of* the folder, which is why it arrives here by its own variant.
+            // the directory's list with a name, a shape and a size. What it is not is a
+            // row *of* the directory, which is why it arrives here by its own variant.
             crate::home::Row::Door { entry, .. } => {
                 lines.push(entry_line(
                     entry,
@@ -1066,7 +1066,7 @@ fn entry_line<'a>(
         // sub-prefixes would flip from `prefix` to `dir` the moment its peek landed.
         //
         // The same order the details pane takes, or the row and the pane beside it
-        // disagree about one folder.
+        // disagree about one directory.
         EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
             (Some(curated), _) => {
                 shows_curated = true;
@@ -1097,12 +1097,12 @@ fn entry_line<'a>(
             kind
         }
     };
-    // The row that opens the folder being browsed carries none of this: not a label,
+    // The row that opens the directory being browsed carries none of this: not a label,
     // not the curated word a source gives the place, not the source id that stands in
-    // where a label would be. Every one of them is about the folder, and this row is
+    // where a label would be. Every one of them is about the directory, and this row is
     // the door — `bigquery (all files)  dataset` says the door is the dataset, and
     // under a named source the cell filled with the id instead.
-    let (kind, shows_curated, shows_source) = if entry.opens_whole_folder {
+    let (kind, shows_curated, shows_source) = if entry.opens_whole_directory {
         ("", false, false)
     } else {
         (kind, shows_curated, shows_source)
@@ -1117,7 +1117,7 @@ fn entry_line<'a>(
     };
     // Hive and multi-file datasets wear a flat chip; the rest stay as a word. Never on
     // an empty label: the chip is drawn by taking the cell apart again below, and a
-    // dataset row can now have no label at all — the row that opens the folder being
+    // dataset row can now have no label at all — the row that opens the directory being
     // browsed. A chip made of nothing was a panic in the renderer.
     let kind_is_chip = matched_column.is_none()
         && !kind.is_empty()
@@ -1558,10 +1558,10 @@ fn preview_head(
     }
     let described = entry.label();
     let kind = match entry.kind {
-        // The door into this folder carries no label, and none of the words that stand
-        // in for one: see `Entry::opens_whole_folder`. Ahead of the arm below, which
+        // The door into this directory carries no label, and none of the words that stand
+        // in for one: see `Entry::opens_whole_directory`. Ahead of the arm below, which
         // reaches for the place word before it ever consults the label.
-        _ if entry.opens_whole_folder => "",
+        _ if entry.opens_whole_directory => "",
         // Only when there is data to count. A prefix holding nothing but sub-prefixes
         // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
         // inside an object store the service's own word is the right one.
@@ -1578,7 +1578,7 @@ fn preview_head(
         facts.push(("kind", kind.to_string(), plain));
     }
     // What one listing of it found, when that is more than the label already said. A
-    // folder of one format with nothing else in it boils down to itself, and printing
+    // directory of one format with nothing else in it boils down to itself, and printing
     // `kind  12 parquet` above `holds  12 parquet` says it twice.
     // Without the partition count when the `partitions` fact below carries one: they
     // count the same thing under different caps — five thousand entries here against
@@ -1798,20 +1798,20 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // repeating either is a sentence to read past on every row.
             let reading = app.home_schema_pending(&entry.path);
             // Whether there will actually be a door in there to point at. An empty
-            // folder gets none, nor does one holding only a writer's own markers, and
+            // directory gets none, nor does one holding only a writer's own markers, and
             // promising a row that is not there is worse than saying nothing — it is
             // the row a new user would go looking for on the strength of this sentence.
             //
-            // The filter on *this* listing is not a reason to withhold it: stepping
-            // into a folder clears the filter before the listing inside it is built, so
-            // the door will be there — and a user with a filter typed is the one most
-            // likely to be lost.
+            // The filter on *this* listing is not a reason to withhold it: stepping into
+            // a directory clears the filter before the listing inside it is built, so the
+            // door will be there — and a user with a filter typed is the one most likely
+            // to be lost.
             let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
             let note = match entry.kind {
-                // Where the other door is. A folder datui will not read as one table is
-                // the row a new user is most likely to be stuck on — the label says
-                // what is in there, Enter steps into it, and nothing until now said
-                // that the way to read the whole of it is one row further in.
+                // Where the other door is. A directory datui will not read as one table
+                // is the row a new user is most likely to be stuck on — the label says
+                // what is in there, Enter steps into it, and nothing until now said that
+                // the way to read the whole of it is one row further in.
                 EntryKind::Directory if door_in_there => INSIDE_AND_THE_DOOR,
                 EntryKind::Directory => "",
                 EntryKind::Unknown => "Not read yet.",
@@ -1836,14 +1836,14 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         .render(area, buf);
 }
 
-/// What the pane says on a folder `Enter` steps into rather than opens.
+/// What the pane says on a directory `Enter` steps into rather than opens.
 ///
 /// Written with `concat!` rather than a `\` continuation: `cargo fmt` joins a
 /// continued literal back onto one line and keeps the indentation with it, which once
 /// put twenty spaces into the middle of this sentence. See
 /// `the_pane_s_guidance_has_no_holes_in_it`.
 const INSIDE_AND_THE_DOOR: &str = concat!(
-    "Enter goes inside. The first row in there reads the whole folder ",
+    "Enter goes inside. The first row in there reads the whole directory ",
     "as one table."
 );
 
@@ -1911,9 +1911,9 @@ fn place_details(
 /// Said up front so the name does not change shape a frame later when the label lands;
 /// the `…` beside it already carries the part that is not known.
 fn shows_as_a_place(entry: &Entry) -> bool {
-    // The row that opens the folder being browsed is an action, not a place: → does
+    // The row that opens the directory being browsed is an action, not a place: → does
     // nothing on it, so a trailing slash offers a step that is not there.
-    if entry.opens_whole_folder {
+    if entry.opens_whole_directory {
         return false;
     }
     if entry.kind == EntryKind::Directory {
@@ -1966,15 +1966,15 @@ mod tests {
             columns: Vec::new(),
             cost: Default::default(),
             holds: Default::default(),
-            opens_whole_folder: false,
+            opens_whole_directory: false,
         }
     }
 
-    /// The row and the pane beside it say the same word about one folder. They are two
+    /// The row and the pane beside it say the same word about one directory. They are two
     /// renderers with the same question to answer, and answering it in two orders is
     /// how a list says `12 parquet` while the pane says `dataset`.
     #[test]
-    fn the_row_and_the_pane_agree_on_what_a_folder_is() {
+    fn the_row_and_the_pane_agree_on_what_a_directory_is() {
         let ctx = RenderContext::for_test();
         let mut entry = row("s3://bucket/occurrence", EntryKind::Directory);
         entry.holds = crate::discover::Holds {
@@ -2032,22 +2032,22 @@ mod tests {
     }
 
     /// And the pane beside it says the same word. The two take the same order through
-    /// two separate matches, so a folder with nothing counted in it can read `prefix`
+    /// two separate matches, so a directory with nothing counted in it can read `prefix`
     /// on the row and `dir` in the pane — the one disagreement this is all arranged to
     /// stop, on the row a search is about.
-    /// The row that opens the folder being browsed has no label, and in a bucket a
-    /// folder of Parquet files is a kind that wears its label as a chip. The chip is
+    /// The row that opens the directory being browsed has no label, and in a bucket a
+    /// directory of Parquet files is a kind that wears its label as a chip. The chip is
     /// drawn by taking the cell apart again, so a chip made of nothing indexed past the
     /// end of an empty string and brought the renderer down — on a real GCS prefix,
     /// where CI found it and no test here had put the two together.
     #[test]
-    fn the_row_that_opens_a_folder_draws_without_a_label() {
+    fn the_row_that_opens_a_directory_draws_without_a_label() {
         let ctx = RenderContext::for_test();
         let mut drawn: Vec<(EntryKind, String)> = Vec::new();
         for kind in [EntryKind::MultiFile, EntryKind::Hive, EntryKind::Directory] {
             let mut door = row("gs://cloud-samples-data/bigquery/us-states", kind);
             door.name = "us-states (all files)".to_string();
-            door.opens_whole_folder = true;
+            door.opens_whole_directory = true;
             door.holds = crate::discover::Holds {
                 formats: vec![("parquet".to_string(), 9)],
                 ..Default::default()
@@ -2071,11 +2071,11 @@ mod tests {
         }
 
         // Nor does a curated place word or a source id stand in for the label it does
-        // not have. Both are about the folder; this row is the door into it, and
+        // not have. Both are about the directory; this row is the door into it, and
         // `bigquery (all files)  dataset` says the door is the dataset.
         let mut door = row("s3://lab@bucket/exports", EntryKind::Directory);
         door.name = "exports (all files)".to_string();
-        door.opens_whole_folder = true;
+        door.opens_whole_directory = true;
         let known = ["lab".to_string()];
         let text: String = entry_line(
             &door,
@@ -2102,10 +2102,10 @@ mod tests {
 
         // And the pane beside it says the same nothing. It takes the place word through
         // a second match of its own, which is how the row and the pane come to disagree
-        // about one folder.
+        // about one directory.
         let mut door = row("s3://bucket/warehouse", EntryKind::Directory);
         door.name = "warehouse (all files)".to_string();
-        door.opens_whole_folder = true;
+        door.opens_whole_directory = true;
         let pane = preview_text(&door, 60);
         assert!(pane.contains("warehouse (all files)"), "{pane}");
         assert!(
@@ -2152,13 +2152,13 @@ mod tests {
         assert!(!pane.contains("prefix"), "{pane}");
     }
 
-    /// A row count that is out of reach says `?`. A folder that is not one table has
+    /// A row count that is out of reach says `?`. A directory that is not one table has
     /// none to be out of reach, and must not read like a dataset too big to count.
     #[test]
-    fn a_folder_of_separate_tables_shows_its_width_without_a_question_mark() {
-        let mut folder = row("/data/consolidated", EntryKind::Directory);
-        folder.cols = Some(72);
-        let shape = meta_columns(&folder, false);
+    fn a_directory_of_separate_tables_shows_its_width_without_a_question_mark() {
+        let mut directory = row("/data/consolidated", EntryKind::Directory);
+        directory.cols = Some(72);
+        let shape = meta_columns(&directory, false);
         assert!(shape.contains("72 cols"), "{shape}");
         assert!(!shape.contains('?'), "{shape}");
         assert!(
@@ -2478,8 +2478,9 @@ mod tests {
         }
     }
 
-    /// A dot in a folder's name does not make it a file. A local row nothing has looked
-    /// into came from a listing that saw a directory, so the name is not the evidence.
+    /// A dot in a directory's name does not make it a file. A local row nothing has
+    /// looked into came from a listing that saw a directory, so the name is not the
+    /// evidence.
     #[test]
     fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
         let ctx = RenderContext::for_test();
@@ -2750,12 +2751,12 @@ mod tests {
     }
 
     #[test]
-    fn a_local_folder_keeps_its_slash_however_its_name_is_spelled() {
+    fn a_local_directory_keeps_its_slash_however_its_name_is_spelled() {
         for name in ["project.old", "v1.2", "site.com", "datui.git", "plain"] {
             let entry = row(&format!("/home/derek/{name}"), EntryKind::Unknown);
             assert!(
                 shows_as_a_place(&entry),
-                "{name} is a folder the listing saw"
+                "{name} is a directory the listing saw"
             );
         }
     }
@@ -2856,10 +2857,10 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_does_not_say_what_a_folder_holds_twice() {
+    fn the_pane_does_not_say_what_a_directory_holds_twice() {
         let mut entry = Entry::for_test(std::path::Path::new("/data/consolidated"), "consolidated");
         entry.kind = EntryKind::Directory;
-        // A folder of one format and nothing else: the label and the line are the same
+        // A directory of one format and nothing else: the label and the line are the same
         // words, and `kind  12 parquet` above `holds  12 parquet` says it twice.
         entry.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 12)],
@@ -2875,10 +2876,10 @@ mod tests {
 
         // With anything else beside them the line says more than the label, and both
         // belong.
-        entry.holds.folders = 3;
+        entry.holds.directories = 3;
         let text = preview_text(&entry, 60);
         assert!(text.contains("holds"), "{text}");
-        assert!(text.contains("3 folders"), "{text}");
+        assert!(text.contains("3 directories"), "{text}");
     }
 
     #[test]

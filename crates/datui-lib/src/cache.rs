@@ -396,7 +396,7 @@ pub struct DatasetFacts {
     pub size: u64,
     pub rows: Option<usize>,
     pub cols: Option<usize>,
-    /// Whether `cols` is a floor rather than a total: the folder was too large to read
+    /// Whether `cols` is a floor rather than a total: the directory was too large to read
     /// every footer of, so it was sampled. Restored with the count, or the row would
     /// present a sample as a total the next time it is listed.
     #[serde(default)]
@@ -419,9 +419,9 @@ pub struct DatasetFacts {
     /// remote dataset may not get a second chance at.
     #[serde(default)]
     pub cost: crate::discover::Cost,
-    /// What one listing of the folder found in it, which is what its label says.
+    /// What one listing of the directory found in it, which is what its label says.
     /// Restored beside `kind` and gated by the same classifier version: both are what
-    /// looking into the folder produced, and a build that classified differently
+    /// looking into the directory produced, and a build that classified differently
     /// counted differently too.
     #[serde(default, skip_serializing_if = "crate::discover::Holds::is_empty")]
     pub holds: crate::discover::Holds,

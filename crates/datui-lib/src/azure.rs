@@ -270,7 +270,7 @@ pub fn service_principal(var: &dyn Fn(&str) -> Option<String>) -> Option<Service
     })
 }
 
-/// Whether `az` has been used on this machine: its config folder exists. Not proof the
+/// Whether `az` has been used on this machine: its config directory exists. Not proof the
 /// login is still good, which only asking can tell.
 pub fn az_login_evidence(env: &Environment<'_>) -> bool {
     let dir = match (env.var)("AZURE_CONFIG_DIR").filter(|v| !v.trim().is_empty()) {
@@ -289,7 +289,8 @@ pub fn powershell_login_evidence(env: &Environment<'_>) -> bool {
 }
 
 fn powershell_context(env: &Environment<'_>) -> Option<PathBuf> {
-    // `~/.Azure` on every platform; on Windows it is the same folder as `az`'s `.azure`.
+    // `~/.Azure` on every platform; on Windows it is the same directory as `az`'s
+    // `.azure`.
     Some(
         env.home
             .as_ref()?
@@ -696,15 +697,15 @@ pub fn check_read(
     path: &str,
     settings: &AzureSettings,
 ) -> Result<(), String> {
-    let folder = match path.trim_start_matches('/').rsplit_once('/') {
-        Some((folder, _)) => format!("{folder}/"),
+    let directory = match path.trim_start_matches('/').rsplit_once('/') {
+        Some((directory, _)) => format!("{directory}/"),
         None => String::new(),
     };
     let url = format!(
         "{}{}?restype=container&comp=list&maxresults=1&prefix={}",
         settings.blob_endpoint_for(account),
         crate::cloud_browse::urlencode(container),
-        crate::cloud_browse::urlencode(&folder)
+        crate::cloud_browse::urlencode(&directory)
     );
     send_signed(&url, account, settings).map(|_| ())
 }
@@ -1152,7 +1153,7 @@ pub fn polars_options(
 }
 
 /// Whether a listed object is only a folder marker. Accounts with hierarchical
-/// namespace list every folder twice, once as a prefix and once as an empty blob of
+/// namespace list every directory twice, once as a prefix and once as an empty blob of
 /// the same name; the blob is not data.
 pub fn is_folder_marker(name: &str, size: u64, prefixes: &[String]) -> bool {
     size == 0 && prefixes.iter().any(|p| p.trim_end_matches('/') == name)

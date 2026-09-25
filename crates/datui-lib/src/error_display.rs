@@ -9,10 +9,10 @@ use std::path::Path;
 
 /// Format a PolarsError as a user-facing message by matching on its variant.
 pub fn user_message_from_polars(err: &PolarsError) -> String {
-    // Polars' words first, then the tidying every one of them wants: its query plan
-    // taken off the end, and the one shape worth rewriting said as a folder rather than
-    // as two schemas printed in full. Done here, around the match, so no arm can be
-    // added that forgets it.
+    // Polars' words first, then the tidying every one of them wants: its query plan taken
+    // off the end, and the one shape worth rewriting said as a directory rather than as
+    // two schemas printed in full. Done here, around the match, so no arm can be added
+    // that forgets it.
     let said = polars_words(err);
     if is_union_schema_error(&said) {
         return union_schema_message(&said);
@@ -203,7 +203,7 @@ fn file_in_plan(plan: &str) -> Option<&str> {
     (!file.is_empty()).then_some(file)
 }
 
-/// Files that could not be stacked into one table, said as a folder rather than as a
+/// Files that could not be stacked into one table, said as a directory rather than as a
 /// pair of schemas.
 ///
 /// Polars prints both schemas in full — every field and dtype of each — which for two
@@ -215,7 +215,7 @@ fn is_union_schema_error(msg: &str) -> bool {
     // Only the phrase a multi-file read produces. `unable to vstack` was here too and
     // matched far more than it meant: `DataFrame::vstack` stitches the row buffer and
     // builds a segment in the data-quality pass, both on a single open file with no
-    // folder in sight — and this message would have told the user to open one file
+    // directory in sight — and this message would have told the user to open one file
     // instead, throwing the real cause away to do it.
     msg.contains("'union'/'concat' inputs should all have the same schema")
 }
@@ -289,7 +289,7 @@ mod tests {
 
     /// A real message datui produced, with Polars' plan on the end of it.
     ///
-    /// Captured from a folder of three CSVs that share no columns, before the reader
+    /// Captured from a directory of three CSVs that share no columns, before the reader
     /// learned to union them. The plan is four lines of internals around one fact worth
     /// keeping — the file it stopped at.
     #[test]
@@ -338,7 +338,7 @@ mod tests {
             without_the_query_plan(two_scans)
         );
 
-        // `unable to vstack` is not a folder problem: the row buffer and the
+        // `unable to vstack` is not a directory problem: the row buffer and the
         // data-quality pass both stitch frames of one open file with it.
         assert!(
             !is_union_schema_error("unable to vstack, column names don't match: \"a\" and \"b\""),

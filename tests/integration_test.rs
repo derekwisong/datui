@@ -8134,7 +8134,7 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
             assert_eq!(paths, vec![one.clone()]);
             assert!(
                 options.hive,
-                "the directory route is what reads a directory"
+                "the look-then-open route is what reads a directory"
             );
         }
         _ => panic!("a directory of one table opens as one table"),

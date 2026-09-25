@@ -555,7 +555,7 @@ generated list is a snapshot and does not receive later catalog updates
 automatically. See [Configuration](configuration.md#cloud) for the fields.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
-objects some tools leave to stand for directories.
+objects some tools leave to stand for folders.
 
 ### What a cloud row shows
 

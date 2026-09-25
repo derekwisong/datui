@@ -219,8 +219,7 @@ is right for nearly every dataset. Where a pipeline changed its partition key
 partway through — `date=` becoming `dt=` — the Notes tab says so, counted from
 every file's name:
 
-    the directories do not all partition by the same keys: 3 files by date, 1
-    file by dt
+    the directories do not all partition by the same keys: 3 files by date, 1 file by dt
 
 What that costs varies, which is why the note does not say. Usually every file
 under the other key fails the scan and the dataset does not open at all. But the

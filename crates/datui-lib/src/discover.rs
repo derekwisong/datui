@@ -144,8 +144,8 @@ pub struct Holds {
     /// kept as a string so a record written by one build reads in the next.
     #[serde(default)]
     pub formats: Vec<(String, usize)>,
-    /// Subdirectories, partitions among them. Written as `folders` before 0.4.0; the
-    /// alias keeps a record from then readable.
+    /// Subdirectories, partitions among them. Development builds of 0.4.0 wrote it as
+    /// `folders`; the alias keeps a cache from one of those readable.
     #[serde(default, alias = "folders")]
     pub directories: usize,
     /// `key=value` subdirectories, which are also counted in `directories`.

@@ -81,8 +81,8 @@ WHERE THESE COME FROM, IN ORDER
                     be, and, on a share or in a store, what it is on. Whole
                     places are shown up to a third of the list, then "… N more
                     in M places" stands for the rest. A recent nothing has
-                    measured shows … for its shape until an open of it fills it
-                    in
+                    measured shows … for its shape until an open of it fills
+                    it in
   Current directory Where you launched datui
   Cloud             One row per cloud source. Enter lists its buckets
   Configured        Directories from [data] directories, in the order listed

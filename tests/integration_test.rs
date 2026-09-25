@@ -8433,21 +8433,35 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
 
     // A headerless file gives its first row of *data* as the names, because datui
-    // reads a CSV as having a header. Two files of one table then look like separate
-    // tables — and those values would go on to the home screen's column index as if
-    // they were column names. Every name a number is the decidable case, and it means
-    // no evidence: the folder keeps what its names suggested.
+    // reads a CSV as having a header. datui cannot read such a folder as one table at
+    // all without `--no-header`: every file would contribute its own first row as
+    // column names and the union would be a wide sheet of nulls. So it is not offered
+    // as one — and the data values are not offered as column names either.
     let headless = folder("headless", &["1,2\n3,4\n", "5,6\n", "7,8\n"]);
     let judged = looked_at(&headless);
     assert_eq!(
         judged.kind,
-        datui::discover::EntryKind::MultiFile,
-        "a row of numbers is not a disagreement about columns"
+        datui::discover::EntryKind::Directory,
+        "a folder datui can only read as nulls is not one table"
     );
     assert!(
         judged.columns.is_empty(),
         "and data values are not offered as column names: {:?}",
         judged.columns
+    );
+    // Opened anyway, through the door, it says what it is seeing and what to do.
+    let said = datui::notes::from_the_open(
+        &[],
+        None,
+        datui::schema_union::Disagreement {
+            headerless: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        said.iter()
+            .any(|n| n.summary.contains("no header row") && n.summary.contains("--no-header")),
+        "got {said:?}"
     );
 
     // Compression does not hide the header: it is still at the front of the file.
@@ -8552,6 +8566,25 @@ fn test_the_bar_says_what_enter_will_really_do() {
             ),
             _ => unreachable!("no other shape is asserted here"),
         }
+    }
+
+    // The shapes that are not entries at all. Each does something different and each
+    // said "Open" before, which is the wrong first impression on three more rows.
+    let (tx, _rx) = mpsc::channel();
+    let mut other = App::new(tx, common::test_runtime());
+    other.enter_home();
+    other.home.browsing = Some(tmp.path().to_path_buf());
+    other.home.rebuild(&[], &[]);
+    let at = |app: &mut App, want: fn(&datui::home::Row) -> bool| {
+        app.home.visible().iter().position(want)
+    };
+    if let Some(i) = at(&mut other, |r| matches!(r, datui::home::Row::Header { .. })) {
+        other.home.selected = i;
+        assert_eq!(
+            other.what_enter_does(),
+            datui::WhatEnter::FoldsSection,
+            "Enter folds a section header; it does not open anything"
+        );
     }
 
     // And the door, which reads whatever it is standing in.

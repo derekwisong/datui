@@ -61,6 +61,12 @@ pub enum EntryKind {
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
 ///
+/// 5: a folder of CSV or NDJSON is judged by the names at the front of its files, the
+/// way a folder of Parquet is judged by its footers — so one a 4 called `multi` on its
+/// filenames alone may be a place to look inside. A cached kind is restored without
+/// looking again, so a record written by 4 would keep the answer this build exists to
+/// correct (#275 follow-up).
+///
 /// 4: a folder's row carries what one listing of it found, beside its kind, and the two
 /// are restored together — a record written by 3 carries the kind and not the count, and
 /// a row given a kind from the cache is never looked into again (#275, phase 2).
@@ -69,7 +75,7 @@ pub enum EntryKind {
 /// extension strings, and one bookkeeping predicate. A folder of `.arrow` beside `.ipc`
 /// was `dir` and is now one dataset; a folder whose ninth entry decided it was answered
 /// by whatever the filesystem returned first (#275, phase 1).
-pub const CLASSIFIER_VERSION: u32 = 4;
+pub const CLASSIFIER_VERSION: u32 = 5;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -1544,8 +1550,11 @@ fn judge_by_names(entry: &mut Entry) {
         // runs on the thread that opens a path named on the command line. `cols_sampled`
         // is what says the count is a floor.
         let cols = (!sampled.columns.is_empty()).then_some(sampled.columns.len());
+        // A floor only when there were files the sample did not open. A folder of two
+        // or three had every one read, and `N+ cols` on that row claims a hedge the
+        // count does not need — the Parquet path next door works this out the same way.
+        entry.cols_sampled = sampled.read < files.len();
         entry.columns = sampled.columns;
-        entry.cols_sampled = true;
         downgrade_to_directory(entry, cols);
     }
 }

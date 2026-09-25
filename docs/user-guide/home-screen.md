@@ -323,11 +323,16 @@ and nothing to say behind it is the thing this rule exists to remove, not
 something to spread further. Those folders still refuse when their files differ,
 and the message names the file the read stopped at.
 
-A file with no header is not judged either. datui reads a CSV as having one, so a
-headerless file gives its first row of data as the column names — and two files
-of the same table then look like separate tables. Where every name is a number,
-which is the common shape, datui takes it as no evidence rather than as a
-disagreement.
+A folder of headerless files is a case of its own. datui reads a CSV as having a
+header, so each file gives its first row of *data* as the column names — and
+reading such a folder as one table would stack those rows as headings and fill
+the rest with nulls. datui does not offer it as one table, and says so when you
+open it through the door: pass `--no-header` to read those rows as data.
+
+The reading is a sample, three files — the ends and the middle, stepping past
+files with nothing in them — so it costs the same on a folder of four files as on
+one of forty thousand. As with Parquet's footers, a folder whose disagreement
+lies only in the files the sample did not open is read as one table.
 
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not

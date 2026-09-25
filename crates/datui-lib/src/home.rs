@@ -298,9 +298,7 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     // read it, though the open reads it by its bytes perfectly well. Files nothing
     // could name count here for that reason, and so do subfolders, whose data is a
     // level down.
-    let nothing_to_open =
-        rows.is_empty() && holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0;
-    if nothing_to_open {
+    if rows.is_empty() && holds_nothing_to_open(&holds) {
         return None;
     }
     // What the row says it opens, not whether it opens: a hive folder is read through
@@ -343,6 +341,16 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     entry.name = format!("{name} ({what})");
     entry.opens_whole_folder = true;
     Some(entry)
+}
+
+/// Whether a folder holds nothing a `(all files)` row could read.
+///
+/// The door's own test, named so the details pane can ask it too: the pane tells the
+/// user where the whole of a folder can be read, and on a folder with no door that is a
+/// promise nothing keeps. One function, or the two drift and the sentence outlives the
+/// row it points at.
+pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
+    holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0
 }
 
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.

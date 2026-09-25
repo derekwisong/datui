@@ -5286,8 +5286,13 @@ pub enum WhatEnter {
     GoesInside,
     /// Look at the row first, then do whichever of the above the answer calls for.
     LooksFirst,
-    /// Fold or unfold a section; browse a place; show the rest of `RECENT`.
-    Other,
+    /// Fold or unfold a section.
+    FoldsSection,
+    /// Show the rest of `RECENT`.
+    ShowsMore,
+    /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
+    /// browse and says so.
+    Explains,
 }
 
 impl App {
@@ -5305,12 +5310,12 @@ impl App {
                 return if home::place_is_browsable(path) {
                     WhatEnter::GoesInside
                 } else {
-                    WhatEnter::Other
+                    WhatEnter::Explains
                 };
             }
-            Some(home::Row::Header { .. }) | Some(home::Row::More { .. }) | None => {
-                return WhatEnter::Other;
-            }
+            Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
+            Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
+            None => return WhatEnter::Explains,
             // The door reads the folder it names whatever that folder is labelled — the
             // lake tables included, which is the one row that reads them at all.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensFolder,
@@ -10567,7 +10572,7 @@ impl App {
     /// where — so a second, vaguer note above those would be noise.
     ///
     /// A spread of the files rather than all of them, the same three
-    /// [`crate::schema_union::names_nest`] samples for the label, and for the same
+    /// [`crate::schema_union::sample_files`] reads for the label, and for the same
     /// reason: this runs on the way into a read the user is waiting for.
     fn files_disagree(
         files: &[PathBuf],
@@ -10581,22 +10586,33 @@ impl App {
         if format == FileFormat::Parquet {
             return Default::default();
         }
-        // The sample reads each file with the reader's own defaults. Where the user has
-        // changed what those mean — where the header is, which rows to skip, how far to
-        // look before settling a type — the sample is reading something else than the
-        // open will, and a note written from it would be about a file nobody opened.
-        // `--no-header` is the one that matters: every file's columns become
-        // `column_1..N` for the real read and stack perfectly, while the sample takes
-        // the first row of data for names and finds them all different.
-        let parsing_changed = options.has_header.is_some()
-            || options.skip_rows.is_some()
-            || options.skip_lines.is_some()
-            || options.skip_tail_rows.is_some()
-            || options.infer_schema_length.is_some();
-        if parsing_changed {
+        if Self::parsing_is_the_user_s_answer(options) {
             return Default::default();
         }
         crate::schema_union::sample_files(files, format).disagreement()
+    }
+
+    /// Whether the user has told datui how to read these files, in a way that moves
+    /// where the columns are or changes what type they come out as.
+    ///
+    /// The sample reads each file with the reader's own defaults and nothing else, so
+    /// where any of these is set it is reading a different file than the open will, and
+    /// anything decided from it is about a read that never happened. With
+    /// `--null-value N/A` the read keeps `amount` an Int64 while the sample sees an
+    /// Int64 beside a String and would report a widening the table never did; with
+    /// `--no-header` the read names every file's columns `column_1..N` and they stack
+    /// perfectly, while the sample takes each file's first row of data for names and
+    /// finds them all different.
+    fn parsing_is_the_user_s_answer(options: &OpenOptions) -> bool {
+        options.has_header.is_some()
+            || options.skip_rows.is_some()
+            || options.skip_lines.is_some()
+            || options.skip_tail_rows.is_some()
+            || options.infer_schema_length.is_some()
+            || options.ignore_errors
+            || options.parse_strings.is_some()
+            || !options.parse_dates
+            || options.null_values.is_some()
     }
 
     /// `found` is what the read has to say about itself, for the caller to put in the

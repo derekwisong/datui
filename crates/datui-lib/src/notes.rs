@@ -518,6 +518,18 @@ pub fn from_the_open(
             read_as_text: None,
         });
     }
+    if files_differ.headerless {
+        notes.push(Note {
+            summary: concat!(
+                "these files look like they have no header row, so datui is reading ",
+                "each file's first row of data as its column names — pass ",
+                "--no-header to read those rows as data instead"
+            )
+            .to_string(),
+            scope: scope(),
+            read_as_text: None,
+        });
+    }
     if files_differ.types {
         notes.push(Note {
             summary: concat!(

@@ -160,7 +160,9 @@ pub fn home_control_keys(
         crate::WhatEnter::OpensFolder => "Open all",
         crate::WhatEnter::GoesInside => "Inside",
         crate::WhatEnter::LooksFirst => "Look",
-        crate::WhatEnter::OpensFile | crate::WhatEnter::Other => "Open",
+        crate::WhatEnter::FoldsSection => "Fold",
+        crate::WhatEnter::ShowsMore => "Show all",
+        crate::WhatEnter::OpensFile | crate::WhatEnter::Explains => "Open",
     };
     let mut keys = vec![("Enter", enter_says), (g.updown, "Move")];
 

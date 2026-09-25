@@ -1798,12 +1798,15 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // repeating either is a sentence to read past on every row.
             let reading = app.home_schema_pending(&entry.path);
             // Whether there will actually be a door in there to point at. An empty
-            // folder gets none — nor does one holding only a writer's own markers —
-            // and neither does any folder while a filter is typed, because the door
-            // steps out of the way of a filter. Promising a row that is not there is
-            // worse than saying nothing, and it is the row a new user would go looking
-            // for on the strength of this sentence.
-            let door_in_there = app.home.filter.is_empty() && !nothing_to_open(&entry.holds);
+            // folder gets none, nor does one holding only a writer's own markers, and
+            // promising a row that is not there is worse than saying nothing — it is
+            // the row a new user would go looking for on the strength of this sentence.
+            //
+            // The filter on *this* listing is not a reason to withhold it: stepping
+            // into a folder clears the filter before the listing inside it is built, so
+            // the door will be there — and a user with a filter typed is the one most
+            // likely to be lost.
+            let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
             let note = match entry.kind {
                 // Where the other door is. A folder datui will not read as one table is
                 // the row a new user is most likely to be stuck on — the label says
@@ -1831,15 +1834,6 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     Paragraph::new(lines)
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
-}
-
-/// Whether a folder has nothing in it worth a `(all files)` row.
-///
-/// The same test [`crate::home::whole_folder_row`] makes before building one, asked
-/// here so the pane does not point at a row that will not be there. Kept in step by
-/// `the_pane_only_promises_a_door_that_exists`.
-fn nothing_to_open(holds: &crate::discover::Holds) -> bool {
-    holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0
 }
 
 /// What the pane says on a folder `Enter` steps into rather than opens.

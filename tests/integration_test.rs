@@ -7815,23 +7815,27 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
     );
 }
 
-/// A prefix in an object store is scanned as Parquet whatever is in it, so a prefix of
-/// CSV used to answer "Could not read from S3. Check credentials and URL" — a false
-/// statement about a login that is fine. The door made that reachable: this row used to
-/// exist only where the listing had already found Parquet.
+/// A prefix in an object store is read with the reader its own listing calls for.
+///
+/// Every cloud path went to `scan_parquet` whatever was under it, so a prefix of CSV
+/// answered "Could not read from S3. Check credentials and URL" — a false statement
+/// about a login that is fine. The listing has already counted what is there and it is
+/// on screen, so picking the reader from it costs no request. What is left refused is
+/// a prefix holding nothing datui has a multi-file reader for, and that refusal names
+/// what is there rather than blaming the connection.
 ///
 /// A fresh app per shape, because opening sets `busy` and the next key would be read
 /// against a screen that is no longer the home screen.
 #[cfg(feature = "cloud")]
 #[test]
-fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
+fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     use datui::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     // Press Enter on the door of a prefix holding these names, and say what happened.
     // A name with a dot in it stands for an object, the rest for sub-prefixes; a name
     // with an `=` in it is a partition, the way a listing hands one over.
-    fn door(prefix: &str, names: &[&str]) -> (bool, String) {
+    fn door(prefix: &str, names: &[&str]) -> (Option<OpenOptions>, String) {
         let place = PathBuf::from(prefix);
         let rows: Vec<Entry> = names
             .iter()
@@ -7860,70 +7864,80 @@ fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
             .position(|r| matches!(r, datui::home::Row::Door { .. }))
             .expect("the prefix carries the row");
         app.home.selected = row;
-        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
-        (opened, app.home.status.clone().unwrap_or_default())
+        let event = app.event(&key(KeyCode::Enter));
+        let options = match event {
+            Some(AppEvent::Open(_, options)) => Some(options),
+            _ => None,
+        };
+        (options, app.home.status.clone().unwrap_or_default())
     }
 
-    // Data files, none of them Parquet: refused, naming what is there.
-    let (opened, said) = door("s3://bucket/exports", &["a.csv", "b.csv", "c.csv"]);
-    assert!(!opened, "it must not send a scan that can only fail");
-    assert!(said.contains("3 csv"), "it says what is there: {said:?}");
+    // Data files, none of them Parquet: read as what they are.
+    let (options, said) = door("s3://bucket/exports", &["a.csv", "b.csv", "c.csv"]);
+    let options = options.expect("a prefix of CSV is a prefix datui can read");
+    assert_eq!(options.format, Some(datui::FileFormat::Csv));
     assert!(
         !said.to_lowercase().contains("credential"),
-        "and does not blame a login that is fine: {said:?}"
+        "and nothing blames a login that is fine: {said:?}"
     );
 
-    // Two formats, neither Parquet: both named. `label()` would say `mixed`, which is a
-    // word rather than a count and says nothing about what is there.
-    let (opened, said) = door("s3://bucket/pair", &["a.csv", "b.json"]);
-    assert!(!opened);
-    assert!(said.contains("1 csv"), "{said:?}");
-    assert!(said.contains("1 json"), "{said:?}");
-    assert!(!said.contains("mixed"), "{said:?}");
+    // Two formats, neither Parquet: the commonest is the reader, and the rest is said.
+    // `label()` would call this `mixed`, a word rather than a count.
+    let (options, _) = door("s3://bucket/pair", &["a.csv", "a2.csv", "b.json"]);
+    let options = options.expect("a prefix of mostly CSV reads as CSV");
+    assert_eq!(options.format, Some(datui::FileFormat::Csv));
+    assert_eq!(
+        options.left_out,
+        vec![(datui::FileFormat::Json, 1)],
+        "and the dataset can say what it passed over"
+    );
 
     // Nothing datui has a reader for. `holds.formats` is empty here, so a test written
     // over the formats alone let it through and the scan came back blaming the login.
-    let (opened, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
-    assert!(!opened);
+    let (options, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
+    assert!(options.is_none());
     assert!(said.contains("nothing datui can read"), "{said:?}");
     assert!(!said.to_lowercase().contains("credential"), "{said:?}");
 
-    // Parquet opens — the one case this row existed for before any of the refusals
-    // above were written. Without this, a guard that refused everything would pass
-    // every other assertion here.
-    let (opened, _) = door("s3://bucket/parts", &["part-0.parquet", "part-1.parquet"]);
-    assert!(
-        opened,
+    // Parquet opens by its own route, which is the only one with hive partitioning
+    // behind it and the one every cloud dataset took before any of this. The listing
+    // already calls this prefix a dataset, so no reader is named and the scan makes the
+    // Parquet call it always made. Without this case, a change that named a reader for
+    // everything would pass every other assertion here.
+    let (options, _) = door("s3://bucket/parts", &["part-0.parquet", "part-1.parquet"]);
+    assert_eq!(
+        options.map(|o| o.format),
+        Some(None),
         "a prefix of Parquet is what a cloud folder reads as"
     );
 
     // No data files at all: tried, because the files below may be Parquet and nothing
     // here has looked.
-    let (opened, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
+    let (options, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
     assert!(
-        opened,
+        options.is_some(),
         "nothing counted directly inside is not a reason to refuse"
     );
 
     // Including with unreadable files beside the sub-prefixes: a README at the top says
     // nothing about what is under `by_year/`.
-    let (opened, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
+    let (options, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
     assert!(
-        opened,
+        options.is_some(),
         "a sub-prefix may hold Parquet, and nothing here has looked"
     );
 
     // And a hive root with one stray data file beside its partitions. `formats` holds
-    // only the stray, so a refusal reading the formats alone saw a prefix of CSV and
-    // turned away a prefix the row one level up opens — the door added to guarantee
-    // access refusing what the label already promised.
-    let (opened, said) = door(
+    // only the stray, so picking the reader from it would read the whole root as CSV —
+    // a prefix the listing already calls a dataset keeps the route its label named.
+    let (options, said) = door(
         "s3://bucket/events",
         &["date=2024-01-01", "date=2024-01-02", "manifest.csv"],
     );
-    assert!(
-        opened,
-        "a hive root is read through its partitions, not through the stray beside them: {said:?}"
+    assert_eq!(
+        options.map(|o| o.format),
+        Some(None),
+        "a hive root is read through its partitions, not as the stray beside them: {said:?}"
     );
 }
 

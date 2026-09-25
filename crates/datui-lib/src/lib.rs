@@ -8457,6 +8457,34 @@ impl App {
         }
     }
 
+    /// The reader a prefix in an object store calls for, from what its listing counted.
+    ///
+    /// The commonest format, which is the same rule a folder on disk follows — and
+    /// `rank_formats` is the same order, so a prefix and the folder it mirrors pick the
+    /// same reader. `None` when nothing there has a multi-file reader, which is where
+    /// the refusal that names what is there belongs.
+    ///
+    /// Parquet included and returned as itself: the cloud branches compare against it
+    /// and take their own path, which is the one every cloud dataset took before any of
+    /// this, and the only one with hive partitioning behind it.
+    #[cfg(feature = "cloud")]
+    fn cloud_prefix_format(
+        holds: &discover::Holds,
+    ) -> Option<(FileFormat, Vec<(FileFormat, usize)>)> {
+        let (name, _) = holds.formats.first()?;
+        let format = FileFormat::from_name(name).filter(|f| f.reads_many_files())?;
+        // And what taking the commonest passes over. The local read reports its own —
+        // it is the pass that decides — but here Polars does the listing and never sees
+        // the other formats, so the note has to be written from the listing on screen.
+        let left_out = holds
+            .formats
+            .iter()
+            .skip(1)
+            .filter_map(|(name, n)| FileFormat::from_name(name).map(|f| (f, *n)))
+            .collect();
+        Some((format, left_out))
+    }
+
     /// What to say when the user asks to open a lake table: datui goes inside it rather
     /// than reading it, and the reason is not guessable from the row.
     ///
@@ -8519,34 +8547,39 @@ impl App {
             // chip in the control bar, and `Enter` on the row one level up still goes
             // inside and says datui does not read the table itself yet.
             let lake = entry.kind.lake_name();
-            // A prefix in an object store is scanned as Parquet whatever is in it —
-            // every cloud path returns before the folder-format dispatch is reached —
-            // so a prefix of CSV answers "Could not read from S3. Check credentials and
-            // URL", which is a false statement about the user's login. The door made
-            // that reachable: the row used to exist only where the listing had already
-            // found Parquet. What it holds is counted and on screen, so saying so costs
-            // no request. #275 phase 4 is where these read.
-            // Not asked of a prefix the listing already calls a dataset. A hive root
-            // is read through its partitions, and one stray `manifest.csv` beside them
-            // is not what it holds — but it is the only thing in `formats`, so the
-            // refusal below saw a folder of CSV. The row one level up opens that prefix
-            // and always has; the door added to guarantee access was refusing it.
+            // A prefix in an object store used to be scanned as Parquet whatever was
+            // in it — every cloud path returns before the folder-format dispatch is
+            // reached — so a prefix of CSV answered "Could not read from S3. Check
+            // credentials and URL", a false statement about the user's login. What the
+            // prefix holds was counted by the listing and is on screen, so the reader
+            // is picked from it, which costs no request. Only a prefix the listing
+            // already calls a dataset is left alone: a hive root is read through its
+            // partitions, and one stray `manifest.csv` beside them is not what it
+            // holds — but it is the only thing in `formats`.
+            let mut reader = None;
+            #[cfg(feature = "cloud")]
             if home::is_object_store_url(&entry.path)
                 && !matches!(
                     entry.kind,
                     discover::EntryKind::Hive | discover::EntryKind::MultiFile
                 )
-                && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
             {
-                self.home.status = Some(what);
-                return None;
+                reader = Self::cloud_prefix_format(&entry.holds);
+                // Nothing here datui has a reader for. The listing is on screen, so the
+                // refusal names what is there rather than blaming the connection.
+                if reader.is_none()
+                    && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
+                {
+                    self.home.status = Some(what);
+                    return None;
+                }
             }
             // `hive: true` says read this as one, which is the whole of what the row
             // promises — it is also what carries partition columns through, for a
             // folder the dispatch sends down the hive route. The cloud route returns
             // before the dispatch is reached.
             let folder = home::folder_dataset_url(&entry.path);
-            return Some(self.home_open_folder(folder, true, lake));
+            return Some(self.home_open_folder_as(folder, true, lake, reader));
         }
         // A row nothing has looked at is looked at before it is opened, rather than
         // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
@@ -8721,6 +8754,26 @@ impl App {
         hive: bool,
         lake: Option<&'static str>,
     ) -> AppEvent {
+        self.home_open_folder_as(path, hive, lake, None)
+    }
+
+    /// As [`Self::home_open_folder`], naming the reader to use.
+    ///
+    /// For a prefix in an object store, where nothing downstream reads the listing: the
+    /// cloud branches scan before the folder-format dispatch is reached, so the format
+    /// the listing counted has to travel with the open or the scan falls back to
+    /// Parquet, which is what it always did.
+    fn home_open_folder_as(
+        &mut self,
+        path: PathBuf,
+        hive: bool,
+        lake: Option<&'static str>,
+        reader: Option<(FileFormat, Vec<(FileFormat, usize)>)>,
+    ) -> AppEvent {
+        let (format, left_out) = match reader {
+            Some((format, left_out)) => (Some(format), left_out),
+            None => (None, Vec::new()),
+        };
         // A directory of partitions is only meaningful read as one hive dataset. Told
         // rather than stat'ed: the caller already knows what this is, and on a share that
         // has gone away a `stat` here would freeze the thread reading the keys — the same
@@ -8728,6 +8781,8 @@ impl App {
         let options = OpenOptions {
             hive,
             read_as_plain_files_of: lake,
+            format,
+            left_out,
             ..OpenOptions::default()
         };
         self.input_mode = InputMode::Normal;
@@ -9248,9 +9303,12 @@ impl App {
         let slot = self.pending_lazyframe_result.clone();
         self.spawn_bg(status, move |task_gen, tx| {
             // What the read passed over rides back with the options it was asked for,
-            // so the dataset can say what it left out. Only a folder of more than one
-            // format has anything to put here.
-            let mut left_out = Vec::new();
+            // so the dataset can say what it left out. Seeded with what the caller
+            // already knows and overwritten by what the read finds: a folder on disk is
+            // the read's own answer, because it is the pass that decides, while for a
+            // prefix in an object store Polars does the listing and never sees the
+            // other formats — there the home screen's listing is the only witness.
+            let mut left_out = options.left_out.clone();
             match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut left_out) {
                 Ok(lf) => {
                     let options = OpenOptions {
@@ -10152,6 +10210,49 @@ impl App {
         Ok((state, label))
     }
 
+    /// Scan a prefix in an object store with the reader its format calls for.
+    ///
+    /// Every cloud path went to `scan_parquet` whatever was under it, so a prefix of
+    /// CSV came back "Could not read from S3. Check credentials and URL" — a false
+    /// statement about the user's login, made about a folder datui could see the
+    /// contents of. Polars' other scans take the same `CloudOptions` and do their own
+    /// listing; nothing was passing them.
+    ///
+    /// Parquet keeps its own branch at each call site: it is the only one with hive
+    /// partitioning, which is a Parquet-only capability in this reader, and it is the
+    /// path every cloud dataset took before this existed.
+    ///
+    /// `None` when the format is not one of these, which sends the caller back to the
+    /// Parquet scan it always made.
+    #[cfg(feature = "cloud")]
+    fn scan_cloud_prefix(
+        url: &str,
+        cloud_opts: CloudOptions,
+        format: FileFormat,
+        glob: bool,
+    ) -> Option<Result<LazyFrame>> {
+        use polars::prelude::{LazyCsvReader, LazyFileListReader};
+        let pl_path = PlRefPath::new(url);
+        let named = |e: polars::error::PolarsError| {
+            color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
+        };
+        let lf = match format {
+            FileFormat::Csv => LazyCsvReader::new(pl_path)
+                .with_cloud_options(Some(cloud_opts))
+                .with_glob(glob)
+                .finish()
+                .map_err(named),
+            FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
+                .with_cloud_options(Some(cloud_opts))
+                .finish()
+                .map_err(named),
+            // Parquet has its own branch, and the rest have no multi-file cloud reader
+            // in Polars — an ORC or Avro prefix is still a file at a time.
+            _ => return None,
+        };
+        Some(lf)
+    }
+
     /// The plain URL and Polars options for one object-store path, through the source
     /// it names or belongs to (`cloud_sources::resolve`).
     #[cfg(feature = "cloud")]
@@ -10376,8 +10477,16 @@ impl App {
                 {
                     let (full, cloud_opts) =
                         Self::resolve_cloud_url(Path::new(&format!("s3://{url}")), cloud)?;
-                    let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
+                    // The reader the prefix's own format calls for, when the listing
+                    // said what that is. Only Parquet falls through to the scan below.
+                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                        && let Some(lf) =
+                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                    {
+                        return lf;
+                    }
+                    let pl_path = PlRefPath::new(full.as_str());
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
                     } else {
@@ -10412,8 +10521,16 @@ impl App {
                 {
                     let (full, cloud_opts) =
                         Self::resolve_cloud_url(Path::new(&format!("gs://{url}")), cloud)?;
-                    let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
+                    // The reader the prefix's own format calls for, when the listing
+                    // said what that is. Only Parquet falls through to the scan below.
+                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                        && let Some(lf) =
+                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                    {
+                        return lf;
+                    }
+                    let pl_path = PlRefPath::new(full.as_str());
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
                     } else {
@@ -10445,6 +10562,14 @@ impl App {
                 {
                     let (full, cloud_opts) = Self::resolve_cloud_url(Path::new(&url), cloud)?;
                     let is_glob = source::is_prefix_or_glob(&full);
+                    // The reader the prefix's own format calls for, when the listing
+                    // said what that is. Only Parquet falls through to the scan below.
+                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                        && let Some(lf) =
+                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                    {
+                        return lf;
+                    }
                     let args = ScanArgsParquet {
                         cloud_options: Some(cloud_opts),
                         hive_options: if is_glob {

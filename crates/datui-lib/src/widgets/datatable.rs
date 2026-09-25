@@ -925,6 +925,13 @@ impl DataTableState {
     /// folder whose files are not one table is gone inside, not unioned, and this is
     /// what the `(all files)` row behind it reads with.
     ///
+    /// **Only for the formats that rule can judge**, which is CSV and NDJSON here, and
+    /// Parquet through `lenient_scan` elsewhere. Arrow, Avro, ORC and `.json` keep
+    /// their columns nowhere cheap to reach, so nothing looks at them before the open
+    /// and nothing could say what a union of them had done — a silent union with no
+    /// gate in front of it and no note behind it is the pairing this whole change
+    /// exists to remove, not something to spread further.
+    ///
     /// Identical schemas stack exactly as before: diagonal over one schema is vertical,
     /// and nothing is widened where nothing differs.
     fn union_of_files() -> polars::prelude::UnionArgs {
@@ -964,7 +971,7 @@ impl DataTableState {
             let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
             lazy_frames.push(lf);
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
@@ -1033,7 +1040,7 @@ impl DataTableState {
             let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
             lazy_frames.push(lf);
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
@@ -1103,7 +1110,7 @@ impl DataTableState {
             let df = polars::io::avro::AvroReader::new(file).finish()?;
             lazy_frames.push(df.lazy());
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
@@ -1448,7 +1455,7 @@ impl DataTableState {
             let df = Self::arrow_record_batches_to_dataframe(&batches)?;
             lazy_frames.push(df.lazy());
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
@@ -3328,7 +3335,7 @@ impl DataTableState {
             };
             lazy_frames.push(lf);
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,

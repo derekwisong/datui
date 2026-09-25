@@ -1525,26 +1525,27 @@ fn judge_by_names(entry: &mut Entry) {
     // The folder's own files, which is what the label counts and what the open reads.
     // A `MultiFile` folder is flat by construction — a `key=value` below it would have
     // made it `Hive` — so there is no subtree to walk for these.
-    let (FolderFormat::One(_, files) | FolderFormat::Mixed { files, .. }) =
-        folder_format(&entry.path)
-    else {
+    //
+    // `One` and nothing else. `one_format` above already returned for a folder of more
+    // than one format, and `look_at_directory` only calls a folder `MultiFile` when its
+    // formats agree, so `Mixed` cannot arrive here — matching it as well read as
+    // coverage this does not have. A folder of forty disjoint CSVs beside one stray
+    // `.json` is a `Directory` before it reaches this, and goes inside for that reason
+    // rather than for this one.
+    let FolderFormat::One(_, files) = folder_format(&entry.path) else {
         return;
     };
-    if crate::schema_union::names_nest(&files, format) == Some(false) {
-        // The union of what is in there, so searching the home screen by column still
+    let sampled = crate::schema_union::sample_files(&files, format);
+    if sampled.nests == Some(false) {
+        // The columns the sample found, so searching the home screen by column still
         // finds the folder that has one — the same thing the Parquet path keeps when it
-        // downgrades.
-        let mut union: Vec<String> = Vec::new();
-        for file in &files {
-            for name in crate::schema_union::column_names_of(file, format).unwrap_or_default() {
-                if !union.contains(&name) {
-                    union.push(name);
-                }
-            }
-        }
-        let cols = (!union.is_empty()).then_some(union.len());
-        entry.columns = union;
-        entry.cols_sampled = false;
+        // downgrades. From the spread that was read rather than from every file: a
+        // folder of forty thousand CSVs must cost what a folder of four costs, and this
+        // runs on the thread that opens a path named on the command line. `cols_sampled`
+        // is what says the count is a floor.
+        let cols = (!sampled.columns.is_empty()).then_some(sampled.columns.len());
+        entry.columns = sampled.columns;
+        entry.cols_sampled = true;
         downgrade_to_directory(entry, cols);
     }
 }

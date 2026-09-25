@@ -280,7 +280,8 @@ in the Notes tab, which the <kbd>i</kbd> key opens.
 | Folder | Read as | What it says |
 |---|---|---|
 | One format, or a hive tree of Parquet | One table | — |
-| Files that are separate tables | One table, unioned by name | which columns are in which files, or that they differ |
+| Parquet, CSV or NDJSON files that differ | One table, unioned by name and widened by type | which columns differ, and whether a column was widened |
+| Arrow, Avro, ORC or JSON files that differ | Refused, naming the file it stopped at | — |
 | More than one format | The commonest of them; Parquet wins a tie | what it passed over, by format and count |
 | `delta`, `iceberg`, `hudi` | The plain files under the table | that they are not the table, plus a chip by the row count |
 | Files written with no extension | What their first bytes say: Parquet, Arrow, Avro or ORC | — |
@@ -312,9 +313,21 @@ directory to look inside.
 Where those columns are read from depends on the format, and nothing else does.
 A Parquet file keeps them in its footer, a CSV on its header line, an NDJSON file
 in the keys of its first object — all at one end of the file, and all read by the
-same reader that would open it. A format that keeps its columns nowhere cheap to
-reach, such as a `.json` document, is not judged at all: the folder stays as its
-names suggested, and the read behind it unions by name rather than refusing.
+same reader that would open it, from a spread of three files whatever the folder's
+size.
+
+Only those three formats are judged, and only those three are unioned. Arrow,
+Avro, ORC and a `.json` document keep their columns nowhere cheap to reach, so
+nothing looks at them before the open — and a union with no rule in front of it
+and nothing to say behind it is the thing this rule exists to remove, not
+something to spread further. Those folders still refuse when their files differ,
+and the message names the file the read stopped at.
+
+A file with no header is not judged either. datui reads a CSV as having one, so a
+headerless file gives its first row of data as the column names — and two files
+of the same table then look like separate tables. Where every name is a number,
+which is the common shape, datui takes it as no evidence rather than as a
+disagreement.
 
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not

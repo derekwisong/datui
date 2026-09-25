@@ -7642,7 +7642,8 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
 
     // The note and the chip, from that one field. Both, because the note is a tab away
     // and the chip is in the corner: each on its own is missable.
-    let notes = datui::notes::from_the_open(&[], options.read_as_plain_files_of, false);
+    let notes =
+        datui::notes::from_the_open(&[], options.read_as_plain_files_of, Default::default());
     assert_eq!(notes.len(), 1, "one note, about the read");
     assert!(
         notes[0].summary.contains("Delta") && notes[0].summary.contains("deleted rows"),
@@ -8571,4 +8572,148 @@ fn test_the_bar_says_what_enter_will_really_do() {
         app.event(&key(KeyCode::Enter)),
         Some(AppEvent::Open(..))
     ));
+}
+
+/// A place row under `RECENT` gets the verb its key actually has.
+///
+/// Enter browses into the place, which is what → does on it too. The bar read
+/// `Enter Open … → Inside`: the wrong verb, plus the two-chips-for-one-outcome the
+/// labelling exists to remove. Neither the key-pumping test nor the bar's own tests
+/// covered a place row, because both were written over entries.
+#[test]
+fn test_a_place_row_says_inside_and_says_it_once() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let held = tmp.path().join("exports");
+    std::fs::create_dir_all(&held).unwrap();
+    let file = held.join("sales.csv");
+    std::fs::write(&file, "a,b\n1,2\n").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[], std::slice::from_ref(&file));
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { .. }))
+        .expect("a recent under a place row");
+    app.home.selected = row;
+
+    assert_eq!(
+        app.what_enter_does(),
+        datui::WhatEnter::GoesInside,
+        "Enter browses the place, which is what → does"
+    );
+
+    // And Enter really does browse, so the label is not a guess.
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.home.browsing.as_deref(), Some(held.as_path()));
+}
+
+/// The pane does not point at a door that will not be there.
+///
+/// `whole_folder_row` gives no `(all files)` row to a folder with nothing in it, nor
+/// to any folder while a filter is typed — and the pane said "the first row in there
+/// reads the whole folder as one table" for every plain directory regardless.
+#[test]
+fn test_the_pane_only_promises_a_door_that_exists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let empty = tmp.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let full = tmp.path().join("full");
+    std::fs::create_dir_all(&full).unwrap();
+    std::fs::write(full.join("a.csv"), "a,b\n1,2\n").unwrap();
+    std::fs::write(full.join("b.csv"), "x,y,z\n3,4,5\n").unwrap();
+
+    let pane = |app: &mut App, name: &str| {
+        let row = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        app.home.selected = row;
+        let area = ratatui::layout::Rect::new(0, 0, 120, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&mut *app, area, &mut buf);
+        // The pane wraps and pads, so a sentence spans rows with a border and a run of
+        // spaces in the middle. Flattened to single spaces so the text can be looked
+        // for as it reads.
+        let raw = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        raw.replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    app.home.measure_now(16);
+    app.home.classify_now(16);
+    app.home.rebuild(&[], &[]);
+
+    let shown = pane(&mut app, "full");
+    assert!(
+        shown.contains("first row in there"),
+        "a folder with something in it has the door to point at: {shown}"
+    );
+    assert!(
+        !pane(&mut app, "empty").contains("first row in there"),
+        "an empty folder has none, so nothing points at one"
+    );
+}
+
+/// A read that widened a column's type says so, and one with no rule behind it does
+/// not widen at all.
+///
+/// `to_supertypes` was added for exactly this case — one `N/A` makes `amount` a String
+/// in one file and an Int64 in the next — and the note was written from the column
+/// *names*, which agree. So the folder opened with `amount` silently text for every
+/// row, where before it had failed loudly.
+#[test]
+fn test_widening_a_column_is_never_silent() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let drifted = tmp.path().join("drifted");
+    std::fs::create_dir_all(&drifted).unwrap();
+    std::fs::write(drifted.join("a.csv"), "id,amount\n1,10\n").unwrap();
+    std::fs::write(drifted.join("b.csv"), "id,amount\n2,N/A\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![drifted.clone()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    let state = app.data_table_state.as_ref().expect("it opens");
+    let notes = state.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.summary.contains("more than one type")),
+        "the widening is reported: {notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.summary.contains("same columns")),
+        "and not as a disagreement about columns, which these files do not have: {notes:?}"
+    );
+
+    // The names agreeing is what made this invisible, so assert they do.
+    assert_eq!(state.headers(), vec!["id", "amount"]);
 }

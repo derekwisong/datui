@@ -41,8 +41,9 @@ NAVIGATION
 
   It does not refuse. A folder of more than one format is read as the commonest
   of them, a lake table as the plain files under it, files written with no
-  extension by what their first bytes say, and files that do not agree on
-  columns as the union of them, where a row from a file without one reads null.
+  extension by what their first bytes say, and Parquet, CSV or NDJSON files that
+  do not agree as the union of them, where a row from a file without a column
+  reads null and a column held in two types is read as the wider.
   Each of those says what it did in the Notes tab, and a lake table's files also
   carry a chip beside the row count, because that count includes rows a delete
   tombstoned and versions an update replaced. The one folder still refused is a

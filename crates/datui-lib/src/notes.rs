@@ -495,20 +495,38 @@ fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
 pub fn from_the_open(
     left_out: &[(crate::FileFormat, usize)],
     lake: Option<&str>,
-    files_disagree: bool,
+    files_differ: crate::schema_union::Disagreement,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
-    if files_disagree {
-        // Said once, in one sentence, because this is all the read knows: these formats
-        // carry no footer, so there is no per-column tally behind it. A Parquet dataset
-        // gets the exact version instead — which columns, in how many files, and where
-        // — from footers it had to read anyway.
+    // What the read had to do to stack them, in the words of what it actually found.
+    // These formats carry no footer, so there is no per-column tally behind either
+    // sentence; a Parquet dataset gets the exact version instead — which columns, in
+    // how many files, and where — from footers it had to read anyway.
+    //
+    // The scope says a spread, because that is what was looked at: three files, the
+    // ends and the middle, whatever the folder's size.
+    let scope = || "in a spread of this folder's files".to_string();
+    if files_differ.columns {
         notes.push(Note {
-            summary: "the folder's files do not all have the same columns; the table has \
-                      every column any of them has, and a row from a file without one \
-                      reads null"
-                .to_string(),
-            scope: "in a spread of this folder's files".to_string(),
+            summary: concat!(
+                "the folder's files do not all have the same columns; the table has ",
+                "every column any of them has, and a row from a file without one ",
+                "reads null"
+            )
+            .to_string(),
+            scope: scope(),
+            read_as_text: None,
+        });
+    }
+    if files_differ.types {
+        notes.push(Note {
+            summary: concat!(
+                "a column is held in more than one type across the files, so it is ",
+                "read as the wider of them — a number stored as text in one file ",
+                "makes the whole column text, and it sorts and filters as text"
+            )
+            .to_string(),
+            scope: scope(),
             read_as_text: None,
         });
     }

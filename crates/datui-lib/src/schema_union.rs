@@ -289,7 +289,10 @@ impl SkippedFiles {
 /// Deliberately not JSON: a `.json` file is one document, and its keys are only known
 /// once it has been parsed. Sampling three of those in a listing pass is a read of
 /// three whole files for a label.
-pub fn column_names_of(path: &std::path::Path, format: crate::FileFormat) -> Option<Vec<String>> {
+pub fn column_schema_of(
+    path: &std::path::Path,
+    format: crate::FileFormat,
+) -> Option<Vec<(String, DataType)>> {
     use polars::prelude::{LazyCsvReader, LazyFileListReader, LazyJsonLineReader};
     let pl_path = PlRefPath::try_from_path(path).ok()?;
     let lf = match format {
@@ -300,8 +303,22 @@ pub fn column_names_of(path: &std::path::Path, format: crate::FileFormat) -> Opt
         _ => return None,
     };
     let schema = lf.clone().collect_schema().ok()?;
-    let names: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
-    names_are_names(&names).then_some(names)
+    let fields: Vec<(String, DataType)> = schema
+        .iter()
+        .map(|(name, dtype)| (name.to_string(), dtype.clone()))
+        .collect();
+    let names: Vec<&String> = fields.iter().map(|(n, _)| n).collect();
+    names_are_names(&names).then_some(fields)
+}
+
+/// Just the names, for the rule that only wants those.
+pub fn column_names_of(path: &std::path::Path, format: crate::FileFormat) -> Option<Vec<String>> {
+    Some(
+        column_schema_of(path, format)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+    )
 }
 
 /// Whether what came back are column names at all, or the first row of a file that has
@@ -318,30 +335,112 @@ pub fn column_names_of(path: &std::path::Path, format: crate::FileFormat) -> Opt
 /// numbers is vanishingly rare and a row of them is the common headerless shape. Where
 /// it fires the answer is "no evidence", which leaves the folder as its names suggested
 /// and the read to union what it finds.
-fn names_are_names(names: &[String]) -> bool {
+fn names_are_names(names: &[&String]) -> bool {
     !names.is_empty() && !names.iter().all(|n| n.trim().parse::<f64>().is_ok())
 }
 
-/// Whether a spread of a folder's files agree, by the names at the front of them.
+/// What a spread of a folder's files says about whether they are one table.
 ///
-/// [`crate::discover::files_nest`]'s twin for the formats with no footer, and the same
-/// shape on purpose: the ends and the middle, because names sort and a folder written
-/// table by table can start with several files of the same table. Fewer than two
-/// readable answers decide nothing, which is what an unreadable footer means too.
-///
-/// `None` where there was not enough evidence to say either way.
-pub fn names_nest(files: &[std::path::PathBuf], format: crate::FileFormat) -> Option<bool> {
-    if files.len() < 2 {
-        return None;
+/// One sampling, read once, answering both questions asked of it: whether the files
+/// nest, which decides what `Enter` does, and whether they agree, which decides what
+/// the dataset says about itself. Taking them separately meant reading the same three
+/// files twice and, worse, letting the two answers disagree.
+#[derive(Debug, Clone, Default)]
+pub struct Sampled {
+    /// Every column name any sampled file has, first seen first. Empty when nothing
+    /// could be read.
+    pub columns: Vec<String>,
+    /// Whether every sampled file's columns are within the widest one's. `None` where
+    /// fewer than two files could be read, which decides nothing.
+    pub nests: Option<bool>,
+    /// Whether a column one file has is missing from another. The table is then their
+    /// union, and a row from a file without the column reads null.
+    pub columns_differ: bool,
+    /// Whether a column they share is held in two different types. The half a name test
+    /// cannot see: `amount` is an Int64 in one file and a String in the next because
+    /// one row said `N/A`, and the read widens it to String for the whole folder
+    /// without a word unless this says so.
+    pub types_differ: bool,
+}
+
+impl Sampled {
+    /// How the files differ, for the note that says so.
+    pub fn disagreement(&self) -> Disagreement {
+        Disagreement {
+            columns: self.columns_differ,
+            types: self.types_differ,
+        }
     }
-    let mut picks = vec![0, files.len() / 2, files.len() - 1];
+}
+
+/// How a folder's files differed, as the read found them.
+///
+/// Two separate facts because they are two separate things to say, and a folder can be
+/// either, both or neither: a column some files lack is the ordinary shape of schema
+/// drift, and a column held in two types is what forces the whole folder to the wider
+/// one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Disagreement {
+    pub columns: bool,
+    pub types: bool,
+}
+
+impl Disagreement {
+    pub fn any(&self) -> bool {
+        self.columns || self.types
+    }
+}
+
+/// Read a spread of `files` and say what they are.
+///
+/// The ends and the middle, because names sort and a folder written table by table can
+/// start with several files of the same table. Three reads whatever the folder's size:
+/// this runs in a listing pass and on the way into an open, and a folder of forty
+/// thousand files must cost the same as a folder of four.
+pub fn sample_files(files: &[std::path::PathBuf], format: crate::FileFormat) -> Sampled {
+    let mut picks = vec![0, files.len() / 2, files.len().saturating_sub(1)];
     picks.dedup();
-    let sampled: Vec<Vec<String>> = picks
+    let read: Vec<Vec<(String, DataType)>> = picks
         .iter()
         .filter_map(|i| files.get(*i))
-        .filter_map(|f| column_names_of(f, format))
+        .filter_map(|f| column_schema_of(f, format))
         .collect();
-    (sampled.len() >= 2).then(|| is_nested(&sampled))
+
+    let mut out = Sampled::default();
+    for file in &read {
+        for (name, _) in file {
+            if !out.columns.iter().any(|c| c == name) {
+                out.columns.push(name.clone());
+            }
+        }
+    }
+    if read.len() < 2 {
+        return out;
+    }
+    let names: Vec<Vec<String>> = read
+        .iter()
+        .map(|f| f.iter().map(|(n, _)| n.clone()).collect())
+        .collect();
+    let nests = is_nested(&names);
+    out.nests = Some(nests);
+    // A column two files hold in two types is a disagreement the names cannot show.
+    let mut types: HashMap<&str, &DataType> = HashMap::new();
+    let mut typed_apart = false;
+    for (name, dtype) in read.iter().flatten() {
+        match types.get(name.as_str()) {
+            Some(seen) if *seen != dtype => typed_apart = true,
+            Some(_) => {}
+            None => {
+                types.insert(name.as_str(), dtype);
+            }
+        }
+    }
+    // Not `!nests`: a folder can nest and still be missing a column from one file,
+    // which is the ordinary shape of schema drift and exactly what the note is for.
+    let widest = names.iter().map(|f| f.len()).max().unwrap_or(0);
+    out.columns_differ = names.iter().any(|f| f.len() != widest) || !nests;
+    out.types_differ = typed_apart;
+    out
 }
 
 /// Whether every file's columns are contained in the widest file's.

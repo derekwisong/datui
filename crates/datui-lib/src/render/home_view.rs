@@ -1797,15 +1797,24 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // is, and the control bar already says what Enter does; a sentence
             // repeating either is a sentence to read past on every row.
             let reading = app.home_schema_pending(&entry.path);
+            // Whether there will actually be a door in there to point at. An empty
+            // folder gets none — nor does one holding only a writer's own markers —
+            // and neither does any folder while a filter is typed, because the door
+            // steps out of the way of a filter. Promising a row that is not there is
+            // worse than saying nothing, and it is the row a new user would go looking
+            // for on the strength of this sentence.
+            let door_in_there = app.home.filter.is_empty() && !nothing_to_open(&entry.holds);
             let note = match entry.kind {
                 // Where the other door is. A folder datui will not read as one table is
                 // the row a new user is most likely to be stuck on — the label says
                 // what is in there, Enter steps into it, and nothing until now said
                 // that the way to read the whole of it is one row further in.
-                EntryKind::Directory => INSIDE_AND_THE_DOOR,
+                EntryKind::Directory if door_in_there => INSIDE_AND_THE_DOOR,
+                EntryKind::Directory => "",
                 EntryKind::Unknown => "Not read yet.",
                 // The log says which files are live, and datui does not read it.
-                k if k.is_lake_table() => INSIDE_A_LAKE_TABLE,
+                k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
+                k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
                 _ if crate::home::is_object_store_url(&entry.path) => "Read when opened.",
                 _ if reading => "Reading…",
                 _ => "Schema needs a full read.",
@@ -1822,6 +1831,15 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     Paragraph::new(lines)
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
+}
+
+/// Whether a folder has nothing in it worth a `(all files)` row.
+///
+/// The same test [`crate::home::whole_folder_row`] makes before building one, asked
+/// here so the pane does not point at a row that will not be there. Kept in step by
+/// `the_pane_only_promises_a_door_that_exists`.
+fn nothing_to_open(holds: &crate::discover::Holds) -> bool {
+    holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0
 }
 
 /// What the pane says on a folder `Enter` steps into rather than opens.

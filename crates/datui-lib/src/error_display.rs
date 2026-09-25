@@ -188,8 +188,15 @@ fn without_the_query_plan(msg: &str) -> String {
 }
 
 /// The path in a plan fragment's scan node: `Csv SCAN [/data/one.csv]`.
+///
+/// The one under the marker, not the first in the plan. A plan with more than one scan
+/// — a union branch, a join — names them all, and the first is rarely the one that
+/// failed; picking it makes a specific, checkable claim about the wrong file, which is
+/// worse than saying nothing.
 fn file_in_plan(plan: &str) -> Option<&str> {
-    let at = plan.find(" SCAN [")? + " SCAN [".len();
+    const MARKER: &str = "FAILED HERE";
+    let from = plan.find(MARKER).map_or(0, |at| at + MARKER.len());
+    let at = plan[from..].find(" SCAN [")? + from + " SCAN [".len();
     let rest = &plan[at..];
     let end = rest.find(']')?;
     let file = rest[..end].trim();
@@ -205,8 +212,12 @@ fn file_in_plan(plan: &str) -> Option<&str> {
 /// left when even that cannot reconcile them, and the useful answer is which file and
 /// what to do, not the two schemas.
 fn is_union_schema_error(msg: &str) -> bool {
+    // Only the phrase a multi-file read produces. `unable to vstack` was here too and
+    // matched far more than it meant: `DataFrame::vstack` stitches the row buffer and
+    // builds a segment in the data-quality pass, both on a single open file with no
+    // folder in sight — and this message would have told the user to open one file
+    // instead, throwing the real cause away to do it.
     msg.contains("'union'/'concat' inputs should all have the same schema")
-        || msg.contains("unable to vstack")
 }
 
 fn union_schema_message(msg: &str) -> String {
@@ -317,6 +328,21 @@ mod tests {
         assert_eq!(
             without_the_query_plan("Column not found: region"),
             "Column not found: region"
+        );
+
+        // More than one scan in the plan: the one under the marker, not the first.
+        let two_scans = "Column not found: region\n\nResolved plan until failure:\n\n                         Parquet SCAN [/data/a.parquet]\nUNION\n                         \t---> FAILED HERE RESOLVING THIS_NODE <---\n                         Csv SCAN [/data/b.csv]";
+        assert!(
+            without_the_query_plan(two_scans).ends_with("It stopped at /data/b.csv."),
+            "got {:?}",
+            without_the_query_plan(two_scans)
+        );
+
+        // `unable to vstack` is not a folder problem: the row buffer and the
+        // data-quality pass both stitch frames of one open file with it.
+        assert!(
+            !is_union_schema_error("unable to vstack, column names don't match: \"a\" and \"b\""),
+            "a single-file vstack must keep its own message"
         );
     }
 

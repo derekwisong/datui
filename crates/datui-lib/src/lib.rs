@@ -15847,16 +15847,9 @@ impl App {
                 // list only grows, and after MAX_CONCURRENT_PROBES roots no further
                 // root is ever probed for the rest of the session.
                 self.home_probes_inflight.retain(|p| p != root);
+                let landed = rows.is_some();
                 match rows {
-                    Some(rows) => {
-                        self.home.probe_ready(root.clone(), rows.clone());
-                        // The rows the listing just brought are on screen now, so the
-                        // frame after this asks for the ones the cursor is on. Asked
-                        // here too, because a listing that lands while the cursor is
-                        // already where it will stay draws no further frame that would.
-                        #[cfg(feature = "cloud")]
-                        self.peek_cloud_folders();
-                    }
+                    Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
                     None => self.home.probe_failed(root.clone()),
                 }
                 // An account read with its keys because the sign-in has no data role
@@ -15882,6 +15875,20 @@ impl App {
                 // Rebuild so the listing picks the result up; the probe is the only
                 // thing that ever reads a remote root.
                 self.home_refresh();
+                // And then ask about the rows it brought. After the rebuild, never
+                // before: the picker reads `visible()`, which is written by the
+                // rebuild, so a peek asked between `probe_ready` and here looks at the
+                // previous listing and finds nothing in it to ask about.
+                //
+                // Asked here at all because a listing that lands while the cursor is
+                // already where it will stay may draw no further frame, and the frame
+                // is what otherwise notices.
+                #[cfg(feature = "cloud")]
+                if landed {
+                    self.peek_cloud_folders();
+                }
+                #[cfg(not(feature = "cloud"))]
+                let _ = landed;
                 None
             }
             AppEvent::HomeCloudKinds { kinds } => {

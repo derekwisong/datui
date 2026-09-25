@@ -549,7 +549,7 @@ pub fn from_the_open(
             // rows on disk, an update leaves the version it replaced, and compaction
             // leaves both sides — all of them counted here.
             summary: format!(
-                "these are the files under a {format} table, not the table:                  deleted rows and old versions are counted"
+                "these are the files under a {format} table, not the table: deleted rows and old versions are counted"
             ),
             scope: format!("in this {format} table's directory"),
             read_as_text: None,
@@ -562,7 +562,7 @@ pub fn from_the_open(
             .collect();
         notes.push(Note {
             summary: format!(
-                "the directory holds more than one format and was read as the commonest;                  {} not read",
+                "the directory holds more than one format and was read as the commonest; {} not read",
                 said.join(", ")
             ),
             scope: "in this directory's listing".to_string(),
@@ -659,9 +659,29 @@ fn widening_note(column: &ColumnDrift, chosen: &str, scope: &str) -> Option<Note
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::schema_union::{FileSchema, union_file_schemas};
     use polars::prelude::{DataType, Field, Schema, TimeUnit, TimeZone};
     use std::sync::Arc;
+
+    /// rustfmt joins a `\`-continued literal back onto one line with its indentation
+    /// inside, which put eighteen spaces into the middle of two of these sentences.
+    #[test]
+    fn the_notes_from_an_open_have_no_holes_in_them() {
+        let notes = from_the_open(
+            &[(crate::FileFormat::Json, 1)],
+            Some("Delta"),
+            crate::schema_union::Disagreement {
+                columns: true,
+                types: true,
+                headerless: true,
+            },
+        );
+        assert!(notes.len() >= 3, "{notes:?}");
+        for note in &notes {
+            assert!(!note.summary.contains("  "), "{:?}", note.summary);
+        }
+    }
 
     fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
         let mut schema = Schema::with_capacity(columns.len());

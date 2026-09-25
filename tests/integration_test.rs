@@ -8431,6 +8431,39 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
         judged.columns
     );
 
+    // A headerless file gives its first row of *data* as the names, because datui
+    // reads a CSV as having a header. Two files of one table then look like separate
+    // tables — and those values would go on to the home screen's column index as if
+    // they were column names. Every name a number is the decidable case, and it means
+    // no evidence: the folder keeps what its names suggested.
+    let headless = folder("headless", &["1,2\n3,4\n", "5,6\n", "7,8\n"]);
+    let judged = looked_at(&headless);
+    assert_eq!(
+        judged.kind,
+        datui::discover::EntryKind::MultiFile,
+        "a row of numbers is not a disagreement about columns"
+    );
+    assert!(
+        judged.columns.is_empty(),
+        "and data values are not offered as column names: {:?}",
+        judged.columns
+    );
+
+    // Compression does not hide the header: it is still at the front of the file.
+    let zipped = tmp.path().join("zipped");
+    std::fs::create_dir_all(&zipped).unwrap();
+    for (name, body) in [("a.csv.gz", "a,b\n1,2\n"), ("b.csv.gz", "x,y,z\n3,4,5\n")] {
+        let file = File::create(zipped.join(name)).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, body.as_bytes()).unwrap();
+        gz.finish().unwrap();
+    }
+    assert_eq!(
+        looked_at(&zipped).kind,
+        datui::discover::EntryKind::Directory,
+        "a gzipped CSV is judged by its header like any other"
+    );
+
     // Two files are the fewest that can disagree; one decides nothing.
     let alone = folder("alone", &["a,b\n1,2\n"]);
     assert_eq!(

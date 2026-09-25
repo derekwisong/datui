@@ -300,7 +300,26 @@ pub fn column_names_of(path: &std::path::Path, format: crate::FileFormat) -> Opt
         _ => return None,
     };
     let schema = lf.clone().collect_schema().ok()?;
-    Some(schema.iter_names().map(|n| n.to_string()).collect())
+    let names: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
+    names_are_names(&names).then_some(names)
+}
+
+/// Whether what came back are column names at all, or the first row of a file that has
+/// no header.
+///
+/// datui reads a CSV as having a header, so a headerless one gives its first row of
+/// *data* as the names: two files of the same table come back `["1", "2"]` and
+/// `["5", "6"]` and look like separate tables, and those values would go on to the home
+/// screen's column index as if they were column names.
+///
+/// Polars cannot tell the two apart either, and neither can anyone: a first row reading
+/// `alice,30` is a header or it is not, and only the file knows. What is decidable is
+/// the case that matters — every name a number — because a header of nothing but
+/// numbers is vanishingly rare and a row of them is the common headerless shape. Where
+/// it fires the answer is "no evidence", which leaves the folder as its names suggested
+/// and the read to union what it finds.
+fn names_are_names(names: &[String]) -> bool {
+    !names.is_empty() && !names.iter().all(|n| n.trim().parse::<f64>().is_ok())
 }
 
 /// Whether a spread of a folder's files agree, by the names at the front of them.

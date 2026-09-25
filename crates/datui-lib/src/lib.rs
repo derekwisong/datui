@@ -5171,12 +5171,6 @@ pub enum AppEvent {
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
     BackgroundWorkFinished,
-    /// Look at a path off the interface thread, then do with it whatever it turns out to
-    /// need — browse into it, say it is a lake table, or open it.
-    ///
-    /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
-    /// screen is full of paths on mounts that may not answer. Doing them where the keys
-    /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
     /// A folder named on the command line: look at it on a worker, then do with it
     /// whatever `Enter` on its row would do.
     ///
@@ -5190,8 +5184,22 @@ pub enum AppEvent {
         generation: u64,
         path: PathBuf,
         kind: discover::EntryKind,
+        /// Whether the folder holds data files directly inside it.
+        ///
+        /// `EntryKind::Directory` covers both a folder of separate tables and one with
+        /// no data in it at all, and the two want opposite things from an option that
+        /// says where the header is: the first is read as one table, the second has no
+        /// table to read and the home screen is the answer. Forcing the one-table route
+        /// on `~/src` ends in an error modal, not a table.
+        holds_data_files: bool,
         options: Box<OpenOptions>,
     },
+    /// Look at a path off the interface thread, then do with it whatever it turns out to
+    /// need — browse into it, say it is a lake table, or open it.
+    ///
+    /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
+    /// screen is full of paths on mounts that may not answer. Doing them where the keys
+    /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
     ClassifyThenOpen {
         path: PathBuf,
         /// A jump — a path typed at `~` — rather than a row that was already listed. Esc
@@ -8874,6 +8882,7 @@ impl App {
         &mut self,
         dir: PathBuf,
         kind: discover::EntryKind,
+        holds_data_files: bool,
         mut options: OpenOptions,
     ) -> Option<AppEvent> {
         // The user has said how to read these files, so datui does not then judge them
@@ -8886,7 +8895,8 @@ impl App {
         // still a lake root and a hive tree is still read through its partitions,
         // whatever the CSV options say.
         if kind == discover::EntryKind::Directory
-            && Self::the_user_said_where_the_columns_are(&options)
+            && holds_data_files
+            && Self::the_columns_are_not_where_the_rule_looked(&options)
         {
             options.hive = true;
             self.set_loading_phase("Scanning input", 10);
@@ -10710,13 +10720,21 @@ impl App {
     /// first row of *data* for names, finds them all different, calls the folder
     /// separate tables and opens the home screen instead.
     ///
-    /// Only the three that move where the columns are, and only because all three are
-    /// unset unless the user names them. A wider test is a trap: `from_args_and_config`
+    /// Only where they move it *away* from where the rule looked.
+    /// `has_header: Some(true)` and `skip_rows: Some(0)` say the same thing the rule
+    /// assumed, so they change nothing and are no reason to stop asking it.
+    ///
+    /// "Did the user set this" is the wrong question twice over. `from_args_and_config`
     /// fills in `infer_schema_length` and `parse_strings` on every run with no flags at
-    /// all, so a predicate including those is true every time — which would send every
-    /// folder down the one-table route and never open the home screen again.
-    fn the_user_said_where_the_columns_are(options: &OpenOptions) -> bool {
-        options.has_header.is_some() || options.skip_rows.is_some() || options.skip_lines.is_some()
+    /// all, so a predicate including those is true every time — that shipped in #287
+    /// and made the notes it guarded unreachable to anyone. And these three come from
+    /// the config file as well as the command line, so `has_header = true` in
+    /// `~/.config/datui/config.toml` would make it true every time as well, for a
+    /// setting that agrees with the rule.
+    fn the_columns_are_not_where_the_rule_looked(options: &OpenOptions) -> bool {
+        options.has_header == Some(false)
+            || options.skip_rows.is_some_and(|n| n > 0)
+            || options.skip_lines.is_some_and(|n| n > 0)
     }
 
     /// `found` is what the read has to say about itself, for the caller to put in the
@@ -17088,13 +17106,26 @@ impl App {
                 // The same words the loading screen shows, so the control bar and the
                 // screen above it do not name the wait two different ways.
                 self.spawn_bg(Self::LOOKING_AT_A_FOLDER, move |task_gen, tx| {
-                    let mut entry = discover::Entry::directory(&looking);
-                    entry.kind = discover::EntryKind::Unknown;
-                    let kind = home::look_into(&entry).kind;
+                    // A panic here used to unwind through `run()` and report a crash,
+                    // because the look was made on the way to the first frame. On a
+                    // worker it is swallowed with the dropped handle instead, and
+                    // nothing would ever be sent: the spinner would stay up and the
+                    // folder unopened for as long as the user waited. Caught, so the
+                    // answer is "a directory" and the home screen opens on it.
+                    let looked = std::panic::catch_unwind(|| {
+                        let mut entry = discover::Entry::directory(&looking);
+                        entry.kind = discover::EntryKind::Unknown;
+                        home::look_into(&entry)
+                    });
+                    let (kind, holds_data_files) = match looked {
+                        Ok(entry) => (entry.kind, entry.holds.data_files() > 0),
+                        Err(_) => (discover::EntryKind::Directory, false),
+                    };
                     let _ = tx.send(AppEvent::FolderLookedAt {
                         generation: task_gen,
                         path: looking,
                         kind,
+                        holds_data_files,
                         options: Box::new(options),
                     });
                 });
@@ -17104,6 +17135,7 @@ impl App {
                 generation,
                 path,
                 kind,
+                holds_data_files,
                 options,
             } => {
                 // The user pressed Ctrl+O and went to the home screen, or opened
@@ -17113,14 +17145,21 @@ impl App {
                 // Both tests: the folder, because a newer look replaces an older one,
                 // and the generation, because other work bumps that when it takes the
                 // screen over.
-                if self.looking_at_folder.as_deref() != Some(path.as_path())
+                // Taken before either test, so no path out of here leaves it set. Left
+                // behind, the next `abandon_load` from anywhere would find it and clear
+                // `busy` for work it does not own.
+                let waiting_for = self.looking_at_folder.take();
+                if waiting_for.as_deref() != Some(path.as_path())
                     || *generation != self.task_generation
                 {
                     return None;
                 }
-                self.looking_at_folder = None;
-                let outcome =
-                    self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone());
+                let outcome = self.open_the_folder_looked_at(
+                    path.clone(),
+                    *kind,
+                    *holds_data_files,
+                    (**options).clone(),
+                );
                 // Only when nothing follows. An `Open` keeps the wait up — it sets its
                 // own phase and `busy` — and clearing them here would draw one frame
                 // with the spinner stopped and the keys held during the look replayed

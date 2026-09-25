@@ -285,7 +285,7 @@ impl SkippedFiles {
 ///
 /// [`Default`] is what Polars' own readers do, which is what the home screen's opens
 /// pass.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ReadAs {
     pub has_header: Option<bool>,
     pub skip_rows: Option<usize>,
@@ -295,13 +295,23 @@ pub struct ReadAs {
     pub try_parse_dates: bool,
 }
 
-impl ReadAs {
-    /// What Polars does when nothing says otherwise, which is what a folder opened from
-    /// the home screen is read with.
-    pub fn defaults() -> Self {
+impl Default for ReadAs {
+    /// What a folder opened from the home screen is read with: `OpenOptions::default()`
+    /// plus `hive`, whose `csv_try_parse_dates()` is true because `parse_strings` is
+    /// unset there.
+    ///
+    /// Written out rather than derived. A derived `Default` gives `try_parse_dates:
+    /// false`, which is not what any caller wants and differs from what the read does —
+    /// two defaults for one thing, and the wrong one reachable by anybody typing
+    /// `ReadAs::default()`.
+    fn default() -> Self {
         Self {
+            has_header: None,
+            skip_rows: None,
+            skip_lines: None,
+            infer_schema_length: None,
+            ignore_errors: false,
             try_parse_dates: true,
-            ..Default::default()
         }
     }
 }

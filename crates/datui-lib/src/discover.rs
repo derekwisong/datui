@@ -1545,7 +1545,7 @@ fn judge_by_names(entry: &mut Entry) {
     // The command line's own options reach the read through `files_disagree`, and where
     // they move the header they keep the rule off this folder entirely.
     let sampled =
-        crate::schema_union::sample_files(&files, format, &crate::schema_union::ReadAs::defaults());
+        crate::schema_union::sample_files(&files, format, &crate::schema_union::ReadAs::default());
     if sampled.nests == Some(false) {
         // The columns the sample found, so searching the home screen by column still
         // finds the folder that has one — the same thing the Parquet path keeps when it

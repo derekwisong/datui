@@ -8901,3 +8901,107 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
         app.home.browsing
     );
 }
+
+/// A setting that agrees with what the rule assumed is not a reason to stop asking it.
+///
+/// `has_header` and the skips reach `OpenOptions` from the config file as well as the
+/// command line, so a guard over "did anyone set this" is true on every run for anyone
+/// with `has_header = true` in `~/.config/datui/config.toml` — and every folder they
+/// name is then forced down the one-table route, `datui .` included. The question is
+/// whether the header is somewhere other than where the rule looked.
+#[test]
+fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let apart = tmp.path().join("apart");
+    std::fs::create_dir_all(&apart).unwrap();
+    std::fs::write(apart.join("a.csv"), "id,ts\n1,2\n").unwrap();
+    std::fs::write(apart.join("b.csv"), "x,y,z\n3,4,5\n").unwrap();
+
+    let settle = |options: OpenOptions| {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        let mut next = app.open_the_path_named_on_the_command_line(vec![apart.clone()], options);
+        loop {
+            if app.home.browsing.is_some() {
+                return None;
+            }
+            match next.take() {
+                Some(AppEvent::Open(paths, options)) => return Some((paths, options)),
+                Some(ev) => next = app.event(&ev),
+                None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
+                    Ok(ev) => next = Some(ev),
+                    Err(_) => panic!("the chain stopped without settling"),
+                },
+            }
+        }
+    };
+
+    // A header where one is expected, and a skip of nothing: the same thing the rule
+    // assumed, so the folder of separate tables is still somewhere to look inside.
+    for agrees in [
+        OpenOptions {
+            has_header: Some(true),
+            ..OpenOptions::default()
+        },
+        OpenOptions {
+            skip_rows: Some(0),
+            skip_lines: Some(0),
+            ..OpenOptions::default()
+        },
+    ] {
+        assert!(
+            settle(agrees).is_none(),
+            "a setting the rule already assumed does not force the one-table route"
+        );
+    }
+
+    // Moving the header does change it.
+    assert!(
+        settle(OpenOptions {
+            has_header: Some(false),
+            ..OpenOptions::default()
+        })
+        .is_some(),
+        "where the columns are not where the rule looked, the rule is not asked"
+    );
+}
+
+/// A folder with no data files in it is never forced down the one-table route.
+///
+/// `EntryKind::Directory` covers a folder of separate tables *and* one with nothing
+/// readable in it. Opening the second as one table reaches the Parquet hive scan on a
+/// tree that has no Parquet, so `datui ~/src --no-header` ended in an error modal
+/// rather than the home screen it used to give.
+#[test]
+fn test_a_folder_with_no_data_is_not_forced_open() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("nested")).unwrap();
+    std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let mut next = app.open_the_path_named_on_the_command_line(
+        vec![src.clone()],
+        OpenOptions {
+            has_header: Some(false),
+            ..OpenOptions::default()
+        },
+    );
+    loop {
+        if app.home.browsing.is_some() {
+            break;
+        }
+        match next.take() {
+            Some(AppEvent::Open(..)) => {
+                panic!("a folder with nothing readable in it has no table to open")
+            }
+            Some(ev) => next = app.event(&ev),
+            None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
+                Ok(ev) => next = Some(ev),
+                Err(_) => panic!("the chain stopped without settling"),
+            },
+        }
+    }
+    assert_eq!(app.home.browsing.as_deref(), Some(src.as_path()));
+}

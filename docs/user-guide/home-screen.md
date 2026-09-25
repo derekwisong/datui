@@ -254,6 +254,18 @@ files)`, or `(all partitions)` for a hive folder, and it opens the whole folder
 whatever the folder is labelled — so a label that is wrong about what the folder
 holds costs one keystroke rather than access to it.
 
+The control bar says which key is which, for the row under the cursor:
+
+| It says | <kbd>Enter</kbd> will |
+|---|---|
+| `Enter Open all` | read the whole folder as one table; <kbd>→</kbd> goes inside instead |
+| `Enter Inside` | step into the folder — the same as <kbd>→</kbd>, so only one is offered |
+| `Enter Open` | load the file on the row |
+| `Enter Look` | find out what the row is, then do whichever of those it calls for |
+
+On a folder <kbd>Enter</kbd> steps into, the details pane on the right says where
+the whole of it can be read: the first row inside.
+
 That row carries no label of its own: every other label counts what is directly
 inside a folder, and this row reads the whole of it. Nor is it a search result —
 while a filter is typed it steps out of the way, and it comes back when the
@@ -268,7 +280,7 @@ in the Notes tab, which the <kbd>i</kbd> key opens.
 | Folder | Read as | What it says |
 |---|---|---|
 | One format, or a hive tree of Parquet | One table | — |
-| Parquet files that are separate tables | One table, unioned by name | which columns are in which files |
+| Files that are separate tables | One table, unioned by name | which columns are in which files, or that they differ |
 | More than one format | The commonest of them; Parquet wins a tie | what it passed over, by format and count |
 | `delta`, `iceberg`, `hudi` | The plain files under the table | that they are not the table, plus a chip by the row count |
 | Files written with no extension | What their first bytes say: Parquet, Arrow, Avro or ORC | — |
@@ -291,11 +303,18 @@ hold the same table is one dataset. Both open with <kbd>Enter</kbd> as a single
 dataset.
 
 Sharing a file extension is not enough to make a folder one table. A database
-exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,
-`laps.parquet` — looks identical from its names, and reading it as one table
-would union things that share no columns. So the footers decide: datui compares
-the columns of the folder's files, and a folder whose files each bring something
-the others lack is left as a directory to look inside.
+exported one file per table — `circuits.csv`, `drivers.csv`, `laps.csv` — looks
+identical from its names, and reading it as one table would union things that
+share no columns. So the columns decide: datui compares a spread of the folder's
+files, and one whose files each bring something the others lack is left as a
+directory to look inside.
+
+Where those columns are read from depends on the format, and nothing else does.
+A Parquet file keeps them in its footer, a CSV on its header line, an NDJSON file
+in the keys of its first object — all at one end of the file, and all read by the
+same reader that would open it. A format that keeps its columns nowhere cheap to
+reach, such as a `.json` document, is not judged at all: the folder stays as its
+names suggested, and the read behind it unions by name rather than refusing.
 
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not

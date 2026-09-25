@@ -505,6 +505,7 @@ mod classify_batch_tests {
             .collect();
         home::Listing {
             sections: vec![home::Section {
+                door: None,
                 title: "SHARE".into(),
                 subtitle: None,
                 origin: None,
@@ -8098,9 +8099,13 @@ impl App {
                         .unwrap_or_else(|_| entry.path.clone())
                         == target
                 }
-                home::Row::Header { .. } | home::Row::Place { .. } | home::Row::More { .. } => {
-                    false
-                }
+                // Not the door: its path is the folder's, so an open file whose
+                // folder is being browsed would put the cursor on the row that
+                // opens the whole folder rather than on the file itself.
+                home::Row::Header { .. }
+                | home::Row::Place { .. }
+                | home::Row::More { .. }
+                | home::Row::Door { .. } => false,
             }) {
                 self.home.selected = idx;
             }
@@ -8364,10 +8369,10 @@ impl App {
     ///
     /// `Enter` on it opens the folder whatever the label says, and → on it would
     /// descend into where it already is.
+    /// Asked of the row's variant rather than of a flag on the entry it carries: the
+    /// door is a `Row::Door` now, so this is one match instead of a clone.
     fn selection_opens_the_whole_folder(&self) -> bool {
-        self.home
-            .selected_entry()
-            .is_some_and(|entry| entry.opens_whole_folder)
+        self.home.selection_is_the_door()
     }
 
     /// The highlighted row, when → goes inside it.
@@ -17988,11 +17993,11 @@ impl Widget for &mut App {
                 .listed()
                 .iter()
                 .filter(|r| {
-                    // Not the row that opens the folder being browsed. Its kind is the
-                    // folder's, so it counts as a dataset, and it is the same dataset as
-                    // the folder — the figure this comment calls a lie, counted twice.
-                    matches!(r, home::Row::Entry { entry, .. }
-                        if entry.kind.is_known_dataset() && !entry.opens_whole_folder)
+                    // The door is not among these: its kind is the folder's, so it
+                    // would count as a dataset and be the same dataset as the folder —
+                    // the figure this comment calls a lie, counted twice. It is a
+                    // `Row::Door` and not an entry, so nothing here has to exclude it.
+                    matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset())
                 })
                 .count();
             // State, not actions: how many datasets are listed and what order they

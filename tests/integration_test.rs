@@ -7506,7 +7506,9 @@ fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
         .visible()
         .iter()
         .filter_map(|r| match r {
-            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. } => {
+                Some(entry.name.clone())
+            }
             _ => None,
         })
         .collect();
@@ -7539,9 +7541,7 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("every folder carries the row");
     app.home.selected = row;
 
@@ -7617,9 +7617,7 @@ fn test_the_door_into_a_lake_table_does_not_read_it_as_parquet() {
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the folder carries the row");
     app.home.selected = row;
     assert_eq!(
@@ -7660,9 +7658,7 @@ fn test_the_door_opens_a_folder_by_the_folder_route() {
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the folder carries the row");
     app.home.selected = row;
 
@@ -7767,9 +7763,7 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
             .visible()
             .iter()
             .find_map(|r| match r {
-                datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder => {
-                    Some(entry.kind)
-                }
+                datui::home::Row::Door { entry, .. } => Some(entry.kind),
                 _ => None,
             })
             .expect("the folder carries the row")
@@ -7830,9 +7824,7 @@ fn test_the_cloud_door_does_not_blame_credentials_for_a_format() {
             .home
             .visible()
             .iter()
-            .position(
-                |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-            )
+            .position(|r| matches!(r, datui::home::Row::Door { .. }))
             .expect("the prefix carries the row");
         app.home.selected = row;
         let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
@@ -8001,9 +7993,7 @@ fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() 
         .home
         .visible()
         .iter()
-        .position(
-            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.opens_whole_folder),
-        )
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the folder carries the row");
     app.home.selected = row;
     assert!(

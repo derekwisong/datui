@@ -546,6 +546,23 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
+            // Drawn exactly like an entry, because to look at it is one: a row in
+            // the folder's list with a name, a shape and a size. What it is not is a
+            // row *of* the folder, which is why it arrives here by its own variant.
+            crate::home::Row::Door { entry, .. } => {
+                lines.push(entry_line(
+                    entry,
+                    selected,
+                    name_width,
+                    show_meta,
+                    None,
+                    &app.home.filter,
+                    None,
+                    app.home.place_kind(&entry.path),
+                    0,
+                    ctx,
+                ));
+            }
             crate::home::Row::Place {
                 path,
                 label,
@@ -2407,6 +2424,7 @@ mod tests {
     fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
         let ctx = RenderContext::for_test();
         let section = Section {
+            door: None,
             title: "/mnt/data".to_string(),
             subtitle: Some("nfs4".to_string()),
             origin: Some("configured"),
@@ -2718,6 +2736,7 @@ mod tests {
         // A search heading carries the path it searched, which is easily longer than
         // the terminal. The note is context; the title is what the section is.
         let section = Section {
+            door: None,
             title: "Found".to_string(),
             subtitle: Some(
                 "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
@@ -3182,6 +3201,7 @@ mod tests {
         // Trimming the note first is the point: a header that says only where it
         // looked, and not what it is, has lost the more useful half.
         let section = Section {
+            door: None,
             title: "Found".to_string(),
             subtitle: Some("x".repeat(200)),
             origin: None,

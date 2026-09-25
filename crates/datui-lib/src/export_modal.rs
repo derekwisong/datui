@@ -133,7 +133,7 @@ impl ExportModal {
         self.csv_delimiter_input = TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
-        // The separator the file was read with, so a round trip keeps its layout.
+        // `--delimiter` if the file was read with one, else a comma.
         let delimiter_char = file_delimiter.unwrap_or(b',');
         self.csv_delimiter_input
             .set_value(format!("{}", delimiter_char as char));

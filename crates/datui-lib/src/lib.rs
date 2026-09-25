@@ -7068,12 +7068,9 @@ impl App {
         self.path = path.clone();
         if let Some(ref p) = path {
             self.original_file_format = Self::export_format_for(p, options);
-            let format_default = options
-                .format
-                .or_else(|| FileFormat::from_path(p))
-                .and_then(FileFormat::separator)
-                .unwrap_or(b',');
-            self.original_file_delimiter = Some(options.separator_or(format_default));
+            // A comma unless the user named a separator. A `.tsv` exports as CSV, to a
+            // `.csv` by default, and a tab there would reopen as one column.
+            self.original_file_delimiter = Some(options.separator_or(b','));
         } else {
             self.original_file_format = None;
             self.original_file_delimiter = None;
@@ -10459,7 +10456,11 @@ impl App {
                 DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
                     .finish()
                     .map_err(named)
-                    .and_then(|lf| DataTableState::apply_skip_tail_rows_csv(lf, options))
+                    .and_then(|lf| {
+                        DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| {
+                            e.wrap_err(format!("Could not read {} as {}", url, format.name()))
+                        })
+                    })
             }
             FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
                 .with_cloud_options(Some(cloud_opts))

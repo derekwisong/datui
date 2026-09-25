@@ -9140,8 +9140,9 @@ fn test_delimiter_flag_splits_the_columns() {
     }
 }
 
-/// The flag outranks the separator a `.tsv` implies, and export offers whatever the
-/// file was read with.
+/// The flag outranks the separator a `.tsv` implies, and export offers it. Without the
+/// flag export offers a comma, not the tab: a `.tsv` exports as CSV, to a `.csv` by
+/// default, and a tab there reopens as one column.
 #[test]
 fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
     common::isolate_cache();
@@ -9159,7 +9160,7 @@ fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
         options_as_the_binary_does(&["datui", "x"], ""),
     );
     assert_eq!(names(&df), ["a;b", "c"]);
-    assert_eq!(export_default(&mut app), "\t");
+    assert_eq!(export_default(&mut app), ",");
 
     let (mut app, df) = open_and_collect(
         vec![tsv],

@@ -4774,18 +4774,13 @@ impl OpenOptions {
     pub fn from_args_and_config(args: &cli::Args, config: &AppConfig) -> Self {
         let mut opts = OpenOptions::new();
 
-        // File loading options: CLI args override config
-        opts.delimiter = args.delimiter.or(config.file_loading.delimiter);
-        opts.skip_lines = args.skip_lines.or(config.file_loading.skip_lines);
-        opts.skip_rows = args.skip_rows.or(config.file_loading.skip_rows);
-        opts.skip_tail_rows = args.skip_tail_rows.or(config.file_loading.skip_tail_rows);
-
-        // Handle has_header: CLI no_header flag overrides config
-        opts.has_header = if let Some(no_header) = args.no_header {
-            Some(!no_header)
-        } else {
-            config.file_loading.has_header
-        };
+        // A file's layout: command line only. Set in config, these applied to every
+        // file opened and silently cut rows from the ones they did not describe (#289).
+        opts.delimiter = args.delimiter;
+        opts.skip_lines = args.skip_lines;
+        opts.skip_rows = args.skip_rows;
+        opts.skip_tail_rows = args.skip_tail_rows;
+        opts.has_header = args.no_header.map(|no_header| !no_header);
 
         // Compression: CLI only (auto-detect from extension when not specified)
         opts.compression = args.compression;
@@ -15508,16 +15503,11 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
-                    // Load config to get delimiter preference
-                    let config_delimiter = AppConfig::load(APP_NAME)
-                        .ok()
-                        .and_then(|config| config.file_loading.delimiter);
                     self.export_modal.open(
                         self.original_file_format,
                         self.history_limit,
                         &self.theme,
                         self.original_file_delimiter,
-                        config_delimiter,
                     );
                     self.export_modal.offer_source_file = self
                         .data_table_state

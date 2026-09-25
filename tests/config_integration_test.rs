@@ -176,9 +176,9 @@ fn test_config_display_settings() {
 #[test]
 fn test_config_file_loading_settings() {
     let mut config = AppConfig::default();
-    config.file_loading.delimiter = Some(b'\t');
-    config.file_loading.has_header = Some(false);
-    config.file_loading.skip_lines = Some(2);
+    config.file_loading.infer_schema_length = Some(5000);
+    config.file_loading.ignore_errors = Some(true);
+    config.file_loading.parse_dates = Some(false);
 
     let args = Args {
         paths: vec![std::path::PathBuf::from("test.csv")],
@@ -225,9 +225,9 @@ fn test_config_file_loading_settings() {
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
 
-    assert_eq!(opts.delimiter, Some(b'\t'));
-    assert_eq!(opts.has_header, Some(false));
-    assert_eq!(opts.skip_lines, Some(2));
+    assert_eq!(opts.infer_schema_length, Some(5000));
+    assert!(opts.ignore_errors);
+    assert!(!opts.parse_dates);
 }
 
 #[test]

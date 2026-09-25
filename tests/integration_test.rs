@@ -9168,3 +9168,30 @@ fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
     assert_eq!(names(&df), ["a", "b\tc"]);
     assert_eq!(export_default(&mut app), ";");
 }
+
+/// A file's layout in `[file_loading]` no longer reaches the open (#289). It used to
+/// apply to every file, and `skip_rows = 2` turned this one's third row into its header.
+#[test]
+fn test_layout_keys_in_config_do_not_reach_the_open() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let csv = tmp.path().join("plain.csv");
+    std::fs::write(&csv, "id,name\n1,ann\n2,bob\n3,cid\n").unwrap();
+    let config = "[file_loading]\n\
+                  delimiter = 59\n\
+                  has_header = false\n\
+                  skip_lines = 1\n\
+                  skip_rows = 2\n\
+                  skip_tail_rows = 1\n";
+
+    let opts = options_as_the_binary_does(&["datui", "x"], config);
+    assert_eq!(opts.delimiter, None);
+    assert_eq!(opts.has_header, None);
+    assert_eq!(opts.skip_lines, None);
+    assert_eq!(opts.skip_rows, None);
+    assert_eq!(opts.skip_tail_rows, None);
+
+    let (_, df) = open_and_collect(vec![csv], opts);
+    assert_eq!(names(&df), ["id", "name"]);
+    assert_eq!(df.height(), 3);
+}

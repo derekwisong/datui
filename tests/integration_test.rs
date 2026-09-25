@@ -8074,20 +8074,41 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         .unwrap()
     };
 
+    // An app and the channel its background work answers on. The look at a folder is
+    // an event now, not a call, so the test drives the same chain `run()` does.
     let app = || {
-        let (tx, _rx) = mpsc::channel();
-        App::new(tx, common::test_runtime())
+        let (tx, rx) = mpsc::channel();
+        (App::new(tx, common::test_runtime()), rx)
     };
-    let named = |app: &mut App, dir: &Path| {
-        app.open_the_path_named_on_the_command_line(vec![dir.to_path_buf()], OpenOptions::default())
+    let named_with =
+        |app: &mut App, rx: &mpsc::Receiver<AppEvent>, dir: &Path, options: OpenOptions| {
+            let mut next =
+                app.open_the_path_named_on_the_command_line(vec![dir.to_path_buf()], options);
+            // Follow the chain to whatever it settles on: the look goes to a worker and
+            // answers here, and what it answers with is the decision.
+            loop {
+                match next.take() {
+                    Some(AppEvent::Open(paths, options)) => {
+                        return Some(AppEvent::Open(paths, options));
+                    }
+                    Some(ev) => next = app.event(&ev),
+                    None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
+                        Ok(ev) => next = Some(ev),
+                        Err(_) => return None,
+                    },
+                }
+            }
+        };
+    let named = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, dir: &Path| {
+        named_with(app, rx, dir, OpenOptions::default())
     };
 
     // One table across several files: read as one, on the folder route.
     let one = tmp.path().join("one");
     parquet(&one, "a.parquet", table(&["id", "ts"]));
     parquet(&one, "b.parquet", table(&["id", "ts"]));
-    let mut a = app();
-    match named(&mut a, &one) {
+    let (mut a, rx_a) = app();
+    match named(&mut a, &rx_a, &one) {
         Some(AppEvent::Open(paths, options)) => {
             assert_eq!(paths, vec![one.clone()]);
             assert!(options.hive, "the folder route is what reads a directory");
@@ -8104,9 +8125,9 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         "daily.parquet",
         table(&["day", "price", "volume"]),
     );
-    let mut b = app();
+    let (mut b, rx_b) = app();
     assert!(
-        named(&mut b, &several).is_none(),
+        named(&mut b, &rx_b, &several).is_none(),
         "a folder of separate tables is somewhere to look, not a refusal"
     );
     assert_eq!(b.home.browsing.as_deref(), Some(several.as_path()));
@@ -8116,9 +8137,9 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
     let hive = tmp.path().join("hive");
     parquet(&hive.join("day=1"), "part.parquet", table(&["id"]));
     parquet(&hive.join("day=2"), "part.parquet", table(&["id"]));
-    let mut c = app();
+    let (mut c, rx_c) = app();
     assert!(
-        matches!(named(&mut c, &hive), Some(AppEvent::Open(_, o)) if o.hive),
+        matches!(named(&mut c, &rx_c, &hive), Some(AppEvent::Open(_, o)) if o.hive),
         "a hive root is read through its partitions"
     );
 
@@ -8131,8 +8152,11 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
     )
     .unwrap();
     parquet(&delta, "part-00000.parquet", table(&["id"]));
-    let mut d = app();
-    assert!(named(&mut d, &delta).is_none(), "it is not read as Parquet");
+    let (mut d, rx_d) = app();
+    assert!(
+        named(&mut d, &rx_d, &delta).is_none(),
+        "it is not read as Parquet"
+    );
     assert_eq!(d.home.browsing.as_deref(), Some(delta.as_path()));
     assert!(
         d.home
@@ -8143,12 +8167,9 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         d.home.status
     );
 
-    // And the read really happens: the event the rule returns, pumped, is the table.
-    let (tx, rx) = mpsc::channel();
-    let mut loaded = App::new(tx, common::test_runtime());
-    let event = loaded
-        .open_the_path_named_on_the_command_line(vec![one.clone()], OpenOptions::default())
-        .expect("a folder of one table opens");
+    // And the read really happens: the whole chain, look and all, is the table.
+    let (mut loaded, rx) = app();
+    let event = named(&mut loaded, &rx, &one).expect("a folder of one table opens");
     let AppEvent::Open(paths, options) = event else {
         panic!("the rule opens it")
     };
@@ -8159,8 +8180,8 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         "one row from each file, read as one table"
     );
 
-    // A file is untouched, and so is `--hive`, which is an answer already given.
-    let mut e = app();
+    // A file is untouched, and not even looked at: it goes straight to the open.
+    let (mut e, _rx_e) = app();
     assert!(matches!(
         e.open_the_path_named_on_the_command_line(
             vec![one.join("a.parquet")],
@@ -8168,7 +8189,8 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         ),
         Some(AppEvent::Open(..))
     ));
-    let mut f = app();
+    // `--hive` is an answer already given, so it is not second-guessed either.
+    let (mut f, _rx_f) = app();
     let forced = OpenOptions {
         hive: true,
         ..OpenOptions::default()
@@ -8179,6 +8201,24 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
             Some(AppEvent::Open(..))
         ),
         "--hive still means read this as one, whatever the folder looks like"
+    );
+
+    // And so is `--no-header`. The rule takes each file's first row of data for its
+    // column names, finds them all different and calls the folder separate tables — so
+    // without this it sends the user to the home screen, for a folder the flag reads
+    // perfectly as one table.
+    let headless = tmp.path().join("headless");
+    std::fs::create_dir_all(&headless).unwrap();
+    std::fs::write(headless.join("a.csv"), "alice,30\nbob,25\n").unwrap();
+    std::fs::write(headless.join("b.csv"), "carol,41\n").unwrap();
+    let (mut g, rx_g) = app();
+    let told = OpenOptions {
+        has_header: Some(false),
+        ..OpenOptions::default()
+    };
+    assert!(
+        named_with(&mut g, &rx_g, &headless, told).is_some(),
+        "the user has said how to read these; datui does not judge them by another reading"
     );
 }
 
@@ -8749,4 +8789,49 @@ fn test_widening_a_column_is_never_silent() {
 
     // The names agreeing is what made this invisible, so assert they do.
     assert_eq!(state.headers(), vec!["id", "amount"]);
+}
+
+/// Naming a folder on the command line draws a frame before it reads anything.
+///
+/// Looking at a folder reads footers, or the front of a spread of its files, and for a
+/// folder of large Parquet that is seconds — 4.6 of them on a real one, and seventeen
+/// on one with a deep subtree. It used to happen in `run()` before the first
+/// `terminal.draw`, so the whole of it was a blank terminal: no name, no spinner, and
+/// no key that worked. The look is an event now, carried out on a worker after the
+/// first frame.
+#[test]
+fn test_looking_at_a_folder_happens_after_the_first_frame() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let folder = tmp.path().join("data");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("a.csv"), "a,b\n1,2\n").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let event = app
+        .open_the_path_named_on_the_command_line(vec![folder.clone()], OpenOptions::default())
+        .expect("a folder is something to act on");
+
+    // The call hands back work to do rather than having done it. Nothing has been
+    // decided yet: no home screen, no load.
+    match &event {
+        AppEvent::LookThenOpenFolder(dir, _) => assert_eq!(dir, &folder),
+        _ => panic!("the folder is looked at on a worker, not on the way to the first frame"),
+    }
+    assert!(
+        app.home.browsing.is_none() && app.data_table_state.is_none(),
+        "and the look has not run yet, so nothing has been opened or browsed into"
+    );
+
+    // A file is not looked at at all — there is nothing to find out — so it keeps
+    // going straight to the open and pays for no frame.
+    let (tx, _rx) = mpsc::channel();
+    let mut on_a_file = App::new(tx, common::test_runtime());
+    assert!(matches!(
+        on_a_file.open_the_path_named_on_the_command_line(
+            vec![folder.join("a.csv")],
+            OpenOptions::default()
+        ),
+        Some(AppEvent::Open(..))
+    ));
 }

@@ -24,6 +24,15 @@ Before 0.4.0 a folder was `Unsupported file type` unless `--hive` was passed.
 `--hive` still means what it always did: read this as partitioned, which is the
 answer for a glob and for a layout that does not say so itself.
 
+Finding out which of those a folder is means reading footers, or the front of a
+spread of its files, so a folder of large Parquet takes a moment. datui draws the
+screen first and names the folder it is looking at, and
+<kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> work throughout.
+
+Options that say how to read the files are taken as the answer, not second-guessed:
+with `--no-header`, `--skip-rows` or `--null-value`, a folder is read as one table
+rather than judged by a reading datui was told not to make.
+
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
 [configuration file](configuration.md#file-loading).

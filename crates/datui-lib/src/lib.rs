@@ -5177,6 +5177,21 @@ pub enum AppEvent {
     /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
     /// screen is full of paths on mounts that may not answer. Doing them where the keys
     /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
+    /// A folder named on the command line: look at it on a worker, then do with it
+    /// whatever `Enter` on its row would do.
+    ///
+    /// The look reads footers, or the front of a spread of files, which for a folder of
+    /// large Parquet is seconds. It is an event rather than a call so the first frame
+    /// is drawn before it starts, and the wait has the folder's name on it, a spinner
+    /// and a way out.
+    LookThenOpenFolder(PathBuf, OpenOptions),
+    /// What the look found, back from the worker.
+    FolderLookedAt {
+        generation: u64,
+        path: PathBuf,
+        kind: discover::EntryKind,
+        options: Box<OpenOptions>,
+    },
     ClassifyThenOpen {
         path: PathBuf,
         /// A jump — a path typed at `~` — rather than a row that was already listed. Esc
@@ -6874,6 +6889,17 @@ impl App {
     /// What the control bar says while a path is being looked at. Named so the answer can
     /// take down its own line without clearing one that belongs to something else.
     const LOOKING: &'static str = "Looking...";
+
+    /// The wait while a folder named on the command line is looked at: which files it
+    /// holds, and whether they are one table. Seconds, for a folder of large Parquet.
+    pub const LOOKING_AT_A_FOLDER: &'static str = "Looking at the folder";
+
+    /// Put the path on the loading screen, so a wait says what it is waiting for.
+    fn name_what_is_loading(&mut self, path: PathBuf) {
+        if let LoadingState::Loading { file_path, .. } = &mut self.loading_state {
+            *file_path = Some(path);
+        }
+    }
 
     /// Work already running that the re-read after a join would cancel.
     ///
@@ -8800,7 +8826,7 @@ impl App {
     pub fn open_the_path_named_on_the_command_line(
         &mut self,
         paths: Vec<PathBuf>,
-        mut options: OpenOptions,
+        options: OpenOptions,
     ) -> Option<AppEvent> {
         // Several paths are a list of files to read together, and `--hive` is an answer
         // already given. Neither is a question about what one folder is.
@@ -8809,9 +8835,37 @@ impl App {
             return Some(AppEvent::Open(paths, options));
         };
 
-        let mut entry = discover::Entry::directory(&dir);
-        entry.kind = discover::EntryKind::Unknown;
-        let kind = home::look_into(&entry).kind;
+        // Looking at a folder reads its footers, or the front of a spread of its files.
+        // For a folder of large Parquet that is seconds — 4.6 of them on a real one —
+        // and this runs before the first frame is drawn, so doing it here is a blank
+        // terminal for the whole of it: no name, no spinner, no way out. It goes to a
+        // worker, and the answer comes back as an event like every other read.
+        Some(AppEvent::LookThenOpenFolder(dir, options))
+    }
+
+    /// Act on what the look at a folder named on the command line found.
+    ///
+    /// The other half of [`Self::open_the_path_named_on_the_command_line`], which is
+    /// where the reasoning for the rule itself is.
+    fn open_the_folder_looked_at(
+        &mut self,
+        dir: PathBuf,
+        kind: discover::EntryKind,
+        mut options: OpenOptions,
+    ) -> Option<AppEvent> {
+        // The user has said how to read these files, so datui does not then judge them
+        // by a reading it was told not to make. `--no-header` is the one that matters:
+        // the rule takes each file's first row of data for its column names, finds them
+        // all different, calls the folder separate tables, and drops the user on the
+        // home screen — for a folder the flag would have read perfectly as one table.
+        //
+        // Only where the folder is otherwise a place to look inside: a lake root is
+        // still a lake root and a hive tree is still read through its partitions,
+        // whatever the CSV options say.
+        if kind == discover::EntryKind::Directory && Self::parsing_is_the_user_s_answer(&options) {
+            options.hive = true;
+            return Some(AppEvent::Open(vec![dir], options));
+        }
 
         // A lake table's files are not its rows, so the home screen is opened on it and
         // says why — the same sentence the row gives, because it is the same refusal.
@@ -8828,7 +8882,7 @@ impl App {
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
         ) {
             options.hive = true;
-            return Some(AppEvent::Open(paths, options));
+            return Some(AppEvent::Open(vec![dir], options));
         }
         // A place to look inside. `datui .` is this, and so is a folder of separate
         // tables — where the `(all files)` row inside is the one keystroke that unions
@@ -16971,6 +17025,46 @@ impl App {
                 }
                 None
             }
+            AppEvent::LookThenOpenFolder(dir, options) => {
+                // The name on the wait, so the first frame says which folder is being
+                // looked at rather than sitting blank. `spawn_bg` puts the throbber up
+                // and the keys that survive it — Ctrl+C, Ctrl+O — keep working, which
+                // is the whole of what doing this on the event thread cost.
+                let looking = dir.clone();
+                let options = options.clone();
+                self.set_loading_phase(Self::LOOKING_AT_A_FOLDER, 5);
+                self.name_what_is_loading(looking.clone());
+                self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
+                    let mut entry = discover::Entry::directory(&looking);
+                    entry.kind = discover::EntryKind::Unknown;
+                    let kind = home::look_into(&entry).kind;
+                    let _ = tx.send(AppEvent::FolderLookedAt {
+                        generation: task_gen,
+                        path: looking,
+                        kind,
+                        options: Box::new(options),
+                    });
+                });
+                None
+            }
+            AppEvent::FolderLookedAt {
+                generation,
+                path,
+                kind,
+                options,
+            } => {
+                // Superseded: the user pressed Ctrl+O and went to the home screen, or
+                // opened something else while this was reading. Their choice is the one
+                // on screen, and this answer is about a folder nobody is waiting for.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                self.busy = false;
+                if self.status_message.as_deref() == Some(Self::LOOKING) {
+                    self.status_message = None;
+                }
+                self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone())
+            }
             AppEvent::ClassifyThenOpen { path, jump } => {
                 // A second Enter replaces the first rather than being refused. Every key
                 // acts on the home screen even while `busy`, so a second one is
@@ -18905,10 +18999,23 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         }
         RunInput::Paths(paths, opts) => {
             // A folder named here is read the way `Enter` reads its row, which may be
-            // by opening the home screen on it rather than by loading anything.
+            // by opening the home screen on it rather than by loading anything. The
+            // looking is an event, not a call: it is sent here and carried out after
+            // the first frame, so a folder that takes seconds to look at says which
+            // folder it is looking at while it does.
             match app.open_the_path_named_on_the_command_line(paths, opts) {
                 Some(event) => {
-                    app.set_loading_phase("Scanning input", 10);
+                    // The first frame is drawn before any event is handled, so what it
+                    // says has to be set here — the handler's own phase lands a frame
+                    // later, and "Scanning input" on a folder nothing has read yet is
+                    // the wrong word for the wait the user is actually in.
+                    match &event {
+                        AppEvent::LookThenOpenFolder(dir, _) => {
+                            app.set_loading_phase(App::LOOKING_AT_A_FOLDER, 5);
+                            app.name_what_is_loading(dir.clone());
+                        }
+                        _ => app.set_loading_phase("Scanning input", 10),
+                    }
                     tx.send(event)?;
                 }
                 None => starting_at_home = true,

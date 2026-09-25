@@ -4001,21 +4001,29 @@ fn test_partitioned_cloud_folders_are_labelled_and_open_whole() {
             ),
         ],
     );
-    // Every folder is to be peeked at, once.
-    assert_eq!(home.cloud_folders_to_peek(&btc, 48).len(), 2);
+    // Every folder on screen is to be peeked at, once. The picker reads the listing,
+    // so the rows have to be on it.
+    home.browsing = Some(btc.clone());
+    home.rebuild(&[], &[]);
+    assert_eq!(home.cloud_folders_to_peek(48).len(), 2);
     home.cloud_kinds
         .insert(blocks.clone(), (EntryKind::Hive, Default::default()));
     home.apply_cloud_kinds(&btc);
     assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
     assert_eq!(home.probed[&btc][1].kind, EntryKind::Directory);
-    assert_eq!(home.cloud_folders_to_peek(&btc, 48).len(), 1);
+    home.rebuild(&[], &[]);
+    assert_eq!(home.cloud_folders_to_peek(48).len(), 1);
     // A later listing of the same place keeps what was found.
     home.probe_ready(btc.clone(), vec![folder(&blocks, "blocks")]);
     assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
-    assert!(
-        home.cloud_folders_to_peek(Path::new("/local/dir"), 48)
-            .is_empty()
-    );
+    // Nothing local is ever queued for a peek: `read_dir` on an `s3://` path is a
+    // different question from a listing request, and a local folder is the other pass.
+    let mut local = HomeState {
+        browsing: Some(Path::new("/local/dir").to_path_buf()),
+        ..Default::default()
+    };
+    local.rebuild(&[], &[]);
+    assert!(local.cloud_folders_to_peek(48).is_empty());
 
     // Inside it, one row stands for every partition.
     home.probe_ready(

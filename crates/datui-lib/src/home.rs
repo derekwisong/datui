@@ -824,6 +824,13 @@ pub struct HomeState {
     pub pending_enrich: bool,
     /// The same, for rows on screen nothing has looked into yet.
     pub pending_classify: bool,
+    /// The same, for cloud folders on screen nothing has peeked into yet.
+    pub pending_peek: bool,
+    /// Cloud folders with a peek out. Their own set rather than a claim written into
+    /// [`Self::cloud_kinds`]: a claim is an answer, and writing one before the request
+    /// comes back put `dir` on a row that had a count and staked "never again this
+    /// session" on a request that might fail.
+    pub peeking: std::collections::HashSet<PathBuf>,
     /// Row and column counts already read, keyed by path. Reading a Parquet footer
     /// is cheap; reading several hundred of them is not, so results are kept for the
     /// session and each dataset is measured once.
@@ -896,6 +903,8 @@ impl Default for HomeState {
             measure_in_flight: false,
             classify_in_flight: false,
             pending_classify: false,
+            pending_peek: false,
+            peeking: std::collections::HashSet::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
@@ -2686,22 +2695,61 @@ impl HomeState {
         }
     }
 
-    /// The folders of a cloud listing not yet peeked into, at most `limit`, in the order
-    /// they are listed.
-    pub fn cloud_folders_to_peek(&self, root: &Path, limit: usize) -> Vec<PathBuf> {
-        if !is_object_store_url(root) {
+    /// The cloud folders on or near the screen that nothing has peeked into, at most
+    /// `limit`, the highlighted row first.
+    ///
+    /// [`Self::unclassified_visible`]'s cloud twin, and deliberately the same shape: a
+    /// peek is a request, and the rows worth spending one on are the rows somebody is
+    /// looking at. It used to take the first forty-eight folders of each listing, once
+    /// per session — so a bucket of two hundred prefixes had its first forty-eight
+    /// labelled and the rest reading `dir` for good, however long you spent on them,
+    /// while paging straight past the first forty-eight spent forty-eight requests on
+    /// rows nobody saw. The cap and its never-again claim both go: the bound is what
+    /// the cursor rests on.
+    pub fn cloud_folders_to_peek(&self, limit: usize) -> Vec<PathBuf> {
+        if limit == 0 {
             return Vec::new();
         }
-        self.probed
-            .get(root)
-            .into_iter()
-            .flatten()
-            .filter(|row| {
-                row.kind == EntryKind::Directory && !self.cloud_kinds.contains_key(&row.path)
-            })
-            .take(limit)
-            .map(|row| row.path.clone())
-            .collect()
+        let rows = self.visible();
+        let height = if self.view_height == 0 {
+            limit
+        } else {
+            self.view_height
+        };
+        let top = self.scroll.min(rows.len());
+        let ahead = top.saturating_add(2 * height).min(rows.len());
+        let behind = top.saturating_sub(height);
+
+        let mut out: Vec<PathBuf> = Vec::new();
+        let order = std::iter::once(self.selected)
+            .chain(top..ahead)
+            .chain(behind..top);
+        for row in order.filter_map(|i| rows.get(i)) {
+            let Row::Entry { entry, .. } = row else {
+                continue;
+            };
+            // A folder in an object store, by its URL: `read_dir` on an `s3://` path
+            // asks the working directory about a file called `s3:` and truthfully finds
+            // nothing, which is why these have a pass of their own.
+            if !is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
+                continue;
+            }
+            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
+                continue;
+            }
+            // Asked and answered, or asked and still out.
+            if self.cloud_kinds.contains_key(&entry.path) || self.peeking.contains(&entry.path) {
+                continue;
+            }
+            if out.contains(&entry.path) {
+                continue;
+            }
+            out.push(entry.path.clone());
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
     }
 
     /// Record that a probe could not read the root.
@@ -3180,10 +3228,19 @@ mod holds_flow_tests {
         assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
     }
 
+    /// A peek is a request, so it is spent on the row the cursor is on.
+    ///
+    /// The picker took the first forty-eight folders of each listing, once per session:
+    /// a bucket of two hundred prefixes had forty-eight labelled and the rest reading
+    /// `dir` however long you spent on them, and paging straight past those
+    /// forty-eight spent every request on rows nobody saw.
     #[test]
-    fn only_folders_nothing_has_looked_into_are_queued_for_a_peek() {
+    fn a_peek_goes_to_the_row_the_cursor_is_on_and_is_never_asked_twice() {
         let root = std::path::PathBuf::from("s3://bucket/warehouse");
-        let mut home = HomeState::default();
+        let mut home = HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
         let rows: Vec<Entry> = ["a", "b", "c", "d", "e"]
             .iter()
             .map(|n| {
@@ -3192,16 +3249,35 @@ mod holds_flow_tests {
                 row
             })
             .collect();
-        home.probed.insert(root.clone(), rows);
-        // One already answered, so four are left to ask about.
+        home.probe_ready(root.clone(), rows);
+        home.browsing = Some(root.clone());
+        home.rebuild(&[], &[]);
+        // One already answered, and one with a request already out.
         home.cloud_kinds
             .insert(root.join("b"), (EntryKind::MultiFile, counted(3)));
+        home.peeking.insert(root.join("c"));
 
-        let asked = home.cloud_folders_to_peek(&root, 3);
+        // The cursor on `e`, the last row: it is asked about first, though four rows
+        // above it have never been looked into. That is the whole change.
+        home.selected = home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "e"))
+            .expect("the row is listed");
+        let asked = home.cloud_folders_to_peek(3);
+        assert_eq!(
+            asked.first(),
+            Some(&root.join("e")),
+            "the highlighted row is the one about to be acted on"
+        );
         assert_eq!(asked.len(), 3, "the budget is a budget");
         assert!(
             !asked.contains(&root.join("b")),
             "a folder already looked into is not asked again"
+        );
+        assert!(
+            !asked.contains(&root.join("c")),
+            "nor one with a request already out"
         );
     }
 

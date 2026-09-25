@@ -8003,6 +8003,10 @@ impl App {
         if std::mem::take(&mut self.home.pending_classify) {
             self.request_home_classifications();
         }
+        #[cfg(feature = "cloud")]
+        if std::mem::take(&mut self.home.pending_peek) {
+            self.peek_cloud_folders();
+        }
     }
 
     /// Ask a worker what the rows on screen are.
@@ -8272,8 +8276,12 @@ impl App {
     /// a prefix of twelve CSV objects is a `Directory` — only Parquet is read in place —
     /// and it is still `12 csv`, which is the count the row is labelled from.
     ///
-    /// An answer that says neither is dropped, because each send costs a listing
-    /// rebuild, and that reads the dataset index on the thread drawing the frame.
+    /// An answer that says neither is replaced by "a directory, and nothing to say
+    /// about it" rather than dropped. The folder still has to come back — that is what
+    /// takes it out of `peeking` and holds the one-request-per-folder promise — and
+    /// once the request has been made, "nothing to say" is a real answer rather than
+    /// the claim it was when it was being written before the request. What this decides
+    /// is whether the peek's own words are kept.
     ///
     /// "Says something" is `Holds::is_empty`, not the formats alone. The row is not the
     /// only thing an answer reaches: the details pane draws the whole `holds` line, so a
@@ -8281,9 +8289,8 @@ impl App {
     /// sub-prefixes has `12 folders`. Testing the formats dropped both, and the same
     /// folders on disk said both things.
     ///
-    /// The cost is real and is the reason this is not simply `true`: each send rebuilds
-    /// the listing on the thread drawing the frame, and a warehouse of forty-eight
-    /// database prefixes goes from no sends to twelve. `Holds::is_empty` is the line
+    /// The cost is real and is the reason the distinction is kept: each batch rebuilds
+    /// the listing on the thread drawing the frame. `Holds::is_empty` is the line
     /// because it is the same question the pane asks before drawing the line at all.
     ///
     /// One shape it lets through buys nothing today: a `Holds` whose only field is
@@ -8291,34 +8298,38 @@ impl App {
     /// data file keeps the word for its place rather than becoming `dir+`, so the `+`
     /// has nowhere to land on this route. It is let through because the alternative is
     /// a second, narrower definition of "says something" that would drift from the
-    /// first — and #275 phase 6 gives the `+` somewhere to land.
+    /// first.
     #[cfg(feature = "cloud")]
     fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
         answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
     }
 
-    /// Look inside the folders a cloud listing returned, a few at a time, so the ones
-    /// that are datasets say `hive` or `multi` and open as one. One small listing
-    /// request per folder, and at most `PEEKS_PER_LISTING` of them per listing; each
-    /// folder is peeked at once per session.
+    /// Look inside the cloud folders the cursor is on or near, so the ones that are
+    /// datasets say `hive` or `multi` and open as one. One small listing request per
+    /// folder, and each folder is peeked at once per session.
     ///
     /// A folder the listing takes for `multi` costs a little more: up to three ranged
     /// reads of a few kilobytes each, to ask the footers whether its files are really
     /// one table. Nothing else reads an object, and nothing reads a whole one.
+    ///
+    /// Driven by the cursor rather than by the listing. It used to take the first
+    /// forty-eight folders of each listing, once: a bucket of two hundred prefixes had
+    /// forty-eight labelled and the rest reading `dir` for the session however long you
+    /// spent on them, and paging straight past those forty-eight spent the requests on
+    /// rows nobody saw. The budget is the same shape as the local classify pass now —
+    /// what is on screen, a batch at a time, the highlighted row first.
     #[cfg(feature = "cloud")]
-    fn peek_cloud_folders(&mut self, root: &Path) {
-        const PEEKS_PER_LISTING: usize = 48;
+    fn peek_cloud_folders(&mut self) {
         const PEEKS_AT_ONCE: usize = 4;
-        let folders = self.home.cloud_folders_to_peek(root, PEEKS_PER_LISTING);
+        let folders = self.home.cloud_folders_to_peek(PEEKS_AT_ONCE);
         if folders.is_empty() {
             return;
         }
-        // Claimed now, so a rebuild before the answers arrive does not ask again.
+        // Out, not answered. A second pass before these land must not ask again, and an
+        // answer written here instead would be a claim — `dir` on a row that has a
+        // count, and "never again this session" staked on a request that may fail.
         for folder in &folders {
-            self.home.cloud_kinds.insert(
-                folder.clone(),
-                (discover::EntryKind::Directory, Default::default()),
-            );
+            self.home.peeking.insert(folder.clone());
         }
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
@@ -8336,13 +8347,23 @@ impl App {
             }
             // Sent a few at a time: the labels fill in as they are found, without a
             // rebuild per folder.
+            //
+            // Every folder asked about is sent back, including the ones whose peek
+            // decided nothing and the ones whose request failed. That is what takes
+            // them out of `peeking` and what holds the one-request-per-folder promise
+            // — and an answer of "a directory, and nothing to say about it" is a real
+            // answer once the request has been made, which is what it was not while it
+            // was being written before the request.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                if let Ok((folder, Ok(answer))) = joined
-                    && Self::peek_tells_a_row_something(&answer)
-                {
-                    found.push((folder, answer));
-                }
+                let Ok((folder, answer)) = joined else {
+                    continue;
+                };
+                let answer = answer
+                    .ok()
+                    .filter(Self::peek_tells_a_row_something)
+                    .unwrap_or((discover::EntryKind::Directory, Default::default()));
+                found.push((folder, answer));
                 if found.len() >= PEEKS_AT_ONCE {
                     let _ = tx.send(AppEvent::HomeCloudKinds {
                         kinds: std::mem::take(&mut found),
@@ -15829,8 +15850,12 @@ impl App {
                 match rows {
                     Some(rows) => {
                         self.home.probe_ready(root.clone(), rows.clone());
+                        // The rows the listing just brought are on screen now, so the
+                        // frame after this asks for the ones the cursor is on. Asked
+                        // here too, because a listing that lands while the cursor is
+                        // already where it will stay draws no further frame that would.
                         #[cfg(feature = "cloud")]
-                        self.peek_cloud_folders(root);
+                        self.peek_cloud_folders();
                     }
                     None => self.home.probe_failed(root.clone()),
                 }
@@ -15862,6 +15887,10 @@ impl App {
             AppEvent::HomeCloudKinds { kinds } => {
                 let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
                 for (folder, kind) in kinds {
+                    // Answered: out of the in-flight set and into the one the rows are
+                    // labelled from. Every folder asked about comes back, so nothing
+                    // stays in `peeking` and nothing is asked twice.
+                    self.home.peeking.remove(folder);
                     self.home.cloud_kinds.insert(folder.clone(), kind.clone());
                 }
                 for root in roots {

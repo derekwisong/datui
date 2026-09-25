@@ -745,20 +745,28 @@ async fn verified_kind(
     resolved: &crate::cloud_sources::Resolved,
     objects: &[(String, u64)],
 ) -> Option<crate::discover::EntryKind> {
-    // Azure lists through a different store, which `store_for_bucket` cannot build.
-    if crate::source::azure_parts(&resolved.url).is_some() {
-        return None;
-    }
-    let (provider, bucket, _) = split_bucket_url(&resolved.url)?;
-    let store = store_for_bucket(
-        provider,
-        &bucket,
-        &resolved.s3,
-        resolved.signing == Signing::Unsigned,
-        resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
-        resolved.google_credentials.as_deref(),
-    )
-    .ok()?;
+    // Azure lists through a store `store_for_bucket` cannot build — it needs the
+    // account as well as the container — but `azure::store` builds one, and the read
+    // that follows is the same ranged fetch. Skipped here, an Azure prefix of separate
+    // tables kept the listing's optimistic `multi` and opened as one table, which is
+    // the answer every other provider's footers overturn.
+    let store = match crate::source::azure_parts(&resolved.url) {
+        Some((account, container, _)) => {
+            crate::azure::store(&account, &container, &resolved.azure).ok()?
+        }
+        None => {
+            let (provider, bucket, _) = split_bucket_url(&resolved.url)?;
+            store_for_bucket(
+                provider,
+                &bucket,
+                &resolved.s3,
+                resolved.signing == Signing::Unsigned,
+                resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
+                resolved.google_credentials.as_deref(),
+            )
+            .ok()?
+        }
+    };
     kind_from_footers(&store, objects).await
 }
 

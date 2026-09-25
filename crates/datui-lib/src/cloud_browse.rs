@@ -915,7 +915,9 @@ pub fn look_at_listing(
             None => counts.push((format, 1)),
         }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    // The same order the local routes rank by, so a prefix and the folder it mirrors
+    // name the same format — including on a tie, where Parquet wins.
+    counts.sort_by(|a, b| crate::discover::rank_formats((a.0, a.1), (b.0, b.1)));
     // Prefixes as well as objects: `_temporary/` is a writer's own folder and is
     // counted as skipped on disk, so a Spark output prefix must not read `2 parquet`
     // here and `2 parquet · 1 skipped (_temporary)` there.

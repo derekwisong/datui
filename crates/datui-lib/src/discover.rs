@@ -572,15 +572,27 @@ pub(crate) fn folder_and_name(path: &Path) -> String {
     }
 }
 
-/// Commonest first, and by name where two formats tie, so the line reads the same way
-/// twice running.
+/// Commonest first, Parquet ahead of anything it ties with, then by name, so the line
+/// reads the same way twice running.
+///
+/// One order, by name of format, for everything that ranks a folder's formats: the
+/// local label, the local read that picks a reader, and the cloud label. They agreed on
+/// the common case and not on a tie — a folder of two CSV and two Parquet was *labelled*
+/// `2 csv · 2 parquet` and *read* as Parquet, so the row said one thing and `Enter` did
+/// another. Parquet wins the tie because it is the format a folder of data files is most
+/// likely to be about and the one every other route reads in place.
 ///
 /// Named rather than written inline because `read_dir` order is exactly what it exists
 /// to remove, and a fixture on disk cannot pin an order that depends on it: the tie is
-/// the whole point and only a caller choosing the input order can put one there. The
-/// cloud route sorts its own counts the same way over `&'static str`.
+/// the whole point and only a caller choosing the input order can put one there.
+pub(crate) fn rank_formats(a: (&str, usize), b: (&str, usize)) -> std::cmp::Ordering {
+    b.1.cmp(&a.1)
+        .then_with(|| (a.0 != "parquet").cmp(&(b.0 != "parquet")))
+        .then_with(|| a.0.cmp(b.0))
+}
+
 fn order_formats(counts: &mut [(crate::FileFormat, usize)]) {
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(b.0.name())));
+    counts.sort_by(|a, b| rank_formats((a.0.name(), a.1), (b.0.name(), b.1)));
 }
 
 /// Whether a listing entry is bookkeeping rather than data.
@@ -712,16 +724,9 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
         return FolderFormat::Deeper;
     }
 
-    // Commonest first, Parquet ahead of anything it ties with, then by name so the
-    // answer does not depend on the order the directory read returned.
-    by_format.sort_by(|a, b| {
-        b.1.len()
-            .cmp(&a.1.len())
-            .then_with(|| {
-                (a.0 != crate::FileFormat::Parquet).cmp(&(b.0 != crate::FileFormat::Parquet))
-            })
-            .then_with(|| a.0.name().cmp(b.0.name()))
-    });
+    // The one order every route ranks a folder's formats by, so the reader this picks
+    // is the format the label names.
+    by_format.sort_by(|a, b| rank_formats((a.0.name(), a.1.len()), (b.0.name(), b.1.len())));
     let mut by_format = by_format.into_iter();
     let Some((format, mut files)) = by_format.next() else {
         return FolderFormat::Deeper;
@@ -2356,6 +2361,38 @@ mod classification_tests {
                 (FileFormat::Json, 2)
             ]
         );
+    }
+
+    /// The label and the read name the same format, including on a tie.
+    ///
+    /// They agreed on the common case and not on a tie: the label sorted equal counts
+    /// by name and the read put Parquet first, so a folder of two CSV and two Parquet
+    /// was labelled `2 csv · 2 parquet` and opened as Parquet. One order now, and this
+    /// is the case that tells the two orders apart.
+    #[test]
+    fn the_label_and_the_read_pick_the_same_format_on_a_tie() {
+        use crate::FileFormat;
+        let tmp = tempfile::TempDir::new().unwrap();
+        for name in ["a.csv", "b.csv", "c.parquet", "d.parquet"] {
+            std::fs::write(tmp.path().join(name), b"x").unwrap();
+        }
+
+        let (_, holds) = look_at_directory(tmp.path());
+        assert_eq!(
+            holds.formats.first().map(|(f, n)| (f.as_str(), *n)),
+            Some(("parquet", 2)),
+            "the label names Parquet first: {:?}",
+            holds.formats
+        );
+
+        match folder_format(tmp.path()) {
+            FolderFormat::Mixed { format, .. } => assert_eq!(
+                format,
+                FileFormat::Parquet,
+                "and so does the reader the open picks"
+            ),
+            other => panic!("a folder of two formats is mixed, got {other:?}"),
+        }
     }
 
     #[test]

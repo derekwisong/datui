@@ -6209,6 +6209,19 @@ pub struct App {
     classify_inflight: Option<ClassifyRequest>,
     /// Ids for those, so a superseded answer can be told from the one being waited on.
     classify_requests: u64,
+    /// The folder a `LookThenOpenFolder` is being looked at, if any.
+    ///
+    /// The look takes seconds on a folder of large Parquet, and Ctrl+O works throughout
+    /// — that is the point of it being off the startup thread — so the user can be
+    /// somewhere else by the time it answers. `abandon_load` puts it down with
+    /// everything else that belonged to the screen being left, and an answer that finds
+    /// nothing outstanding touches nothing. Without it the look landed seventeen
+    /// seconds later and took the user off the home screen they had chosen.
+    ///
+    /// Its own field rather than `task_generation`, which `abandon_load` deliberately
+    /// does not bump: a load abandoned is not a newer load, and bumping it there would
+    /// discard answers that other waiting work still wants.
+    looking_at_folder: Option<PathBuf>,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -7505,6 +7518,7 @@ impl App {
             home_generation: 0,
             classify_inflight: None,
             classify_requests: 0,
+            looking_at_folder: None,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -8192,6 +8206,15 @@ impl App {
         if self.classify_inflight.take().is_some() {
             self.busy = false;
             self.home.status = None;
+        }
+        // And the look at a folder named on the command line, for the same reason: it
+        // takes seconds, Ctrl+O works throughout, and its answer must not take the user
+        // off the screen they went to instead.
+        if self.looking_at_folder.take().is_some() {
+            self.busy = false;
+            if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
+                self.status_message = None;
+            }
         }
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
@@ -17034,7 +17057,10 @@ impl App {
                 let options = options.clone();
                 self.set_loading_phase(Self::LOOKING_AT_A_FOLDER, 5);
                 self.name_what_is_loading(looking.clone());
-                self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
+                self.looking_at_folder = Some(looking.clone());
+                // The same words the loading screen shows, so the control bar and the
+                // screen above it do not name the wait two different ways.
+                self.spawn_bg(Self::LOOKING_AT_A_FOLDER, move |task_gen, tx| {
                     let mut entry = discover::Entry::directory(&looking);
                     entry.kind = discover::EntryKind::Unknown;
                     let kind = home::look_into(&entry).kind;
@@ -17053,14 +17079,21 @@ impl App {
                 kind,
                 options,
             } => {
-                // Superseded: the user pressed Ctrl+O and went to the home screen, or
-                // opened something else while this was reading. Their choice is the one
-                // on screen, and this answer is about a folder nobody is waiting for.
-                if *generation != self.task_generation {
+                // The user pressed Ctrl+O and went to the home screen, or opened
+                // something else, while this was reading. Their choice is the one on
+                // screen, and this is the answer to a question nobody is waiting for.
+                //
+                // Both tests: the folder, because a newer look replaces an older one,
+                // and the generation, because other work bumps that when it takes the
+                // screen over.
+                if self.looking_at_folder.as_deref() != Some(path.as_path())
+                    || *generation != self.task_generation
+                {
                     return None;
                 }
+                self.looking_at_folder = None;
                 self.busy = false;
-                if self.status_message.as_deref() == Some(Self::LOOKING) {
+                if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
                     self.status_message = None;
                 }
                 self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone())

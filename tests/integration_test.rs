@@ -8835,3 +8835,52 @@ fn test_looking_at_a_folder_happens_after_the_first_frame() {
         Some(AppEvent::Open(..))
     ));
 }
+
+/// Going home while a folder is being looked at is not undone when the look lands.
+///
+/// The look can take seconds, and Ctrl+O works throughout — which is the point of
+/// moving it off the startup thread. So the user can be somewhere else by the time it
+/// answers, and the answer must not take them back.
+#[test]
+fn test_a_look_that_lands_after_the_user_left_is_dropped() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let folder = tmp.path().join("one");
+    std::fs::create_dir_all(&folder).unwrap();
+    for name in ["a.csv", "b.csv"] {
+        std::fs::write(folder.join(name), "id,ts\n1,2\n").unwrap();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let event = app
+        .open_the_path_named_on_the_command_line(vec![folder.clone()], OpenOptions::default())
+        .expect("a folder is looked at");
+    app.event(&event);
+
+    // Ctrl+O while the look is out: the user is at the home screen now.
+    app.enter_home();
+    assert_eq!(app.input_mode, InputMode::Home);
+
+    // The look lands. It must find nothing waiting for it.
+    let mut landed = None;
+    while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(4000)) {
+        if matches!(ev, AppEvent::FolderLookedAt { .. }) {
+            landed = app.event(&ev);
+            break;
+        }
+    }
+    assert!(
+        landed.is_none(),
+        "the answer to a question the user walked away from does not open anything"
+    );
+    assert_eq!(
+        app.input_mode,
+        InputMode::Home,
+        "and does not take them off the screen they chose"
+    );
+    assert!(
+        app.home.browsing.is_none(),
+        "nor browse them into the folder they left: {:?}",
+        app.home.browsing
+    );
+}

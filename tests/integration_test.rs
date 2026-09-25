@@ -8001,3 +8001,135 @@ fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() 
         "the door opens what the rule declined to open in one key"
     );
 }
+
+/// `datui <dir>` does what `Enter` on that folder's row does.
+///
+/// A directory used to be `Unsupported file type` unless `--hive` was passed, while
+/// pyarrow, Polars, pandas and Spark all open one. Naming a folder is the request to
+/// read it, so the command line answers the same as the other two doors onto a path.
+#[test]
+fn test_the_command_line_reads_a_folder_the_way_enter_does() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parquet = |dir: &Path, name: &str, mut frame: DataFrame| {
+        std::fs::create_dir_all(dir).unwrap();
+        ParquetWriter::new(File::create(dir.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    };
+    let table = |cols: &[&str]| {
+        DataFrame::new(
+            1,
+            cols.iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect(),
+        )
+        .unwrap()
+    };
+
+    let app = || {
+        let (tx, _rx) = mpsc::channel();
+        App::new(tx, common::test_runtime())
+    };
+    let named = |app: &mut App, dir: &Path| {
+        app.open_the_path_named_on_the_command_line(vec![dir.to_path_buf()], OpenOptions::default())
+    };
+
+    // One table across several files: read as one, on the folder route.
+    let one = tmp.path().join("one");
+    parquet(&one, "a.parquet", table(&["id", "ts"]));
+    parquet(&one, "b.parquet", table(&["id", "ts"]));
+    let mut a = app();
+    match named(&mut a, &one) {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![one.clone()]);
+            assert!(options.hive, "the folder route is what reads a directory");
+        }
+        _ => panic!("a folder of one table opens as one table"),
+    }
+
+    // Separate tables: a place to look inside, browsed into rather than refused. The
+    // `(all files)` row in there is the keystroke that unions them anyway.
+    let several = tmp.path().join("several");
+    parquet(&several, "by_block.parquet", table(&["block", "fee"]));
+    parquet(
+        &several,
+        "daily.parquet",
+        table(&["day", "price", "volume"]),
+    );
+    let mut b = app();
+    assert!(
+        named(&mut b, &several).is_none(),
+        "a folder of separate tables is somewhere to look, not a refusal"
+    );
+    assert_eq!(b.home.browsing.as_deref(), Some(several.as_path()));
+    assert_eq!(b.input_mode, InputMode::Home);
+
+    // A hive root reads as one table too, and still by the folder route.
+    let hive = tmp.path().join("hive");
+    parquet(&hive.join("day=1"), "part.parquet", table(&["id"]));
+    parquet(&hive.join("day=2"), "part.parquet", table(&["id"]));
+    let mut c = app();
+    assert!(
+        matches!(named(&mut c, &hive), Some(AppEvent::Open(_, o)) if o.hive),
+        "a hive root is read through its partitions"
+    );
+
+    // A lake root is not a folder of Parquet files, however much it looks like one.
+    let delta = tmp.path().join("delta");
+    std::fs::create_dir_all(delta.join("_delta_log")).unwrap();
+    std::fs::write(
+        delta.join("_delta_log").join("00000000000000000000.json"),
+        "{}",
+    )
+    .unwrap();
+    parquet(&delta, "part-00000.parquet", table(&["id"]));
+    let mut d = app();
+    assert!(named(&mut d, &delta).is_none(), "it is not read as Parquet");
+    assert_eq!(d.home.browsing.as_deref(), Some(delta.as_path()));
+    assert!(
+        d.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("Delta")),
+        "and it says why: {:?}",
+        d.home.status
+    );
+
+    // And the read really happens: the event the rule returns, pumped, is the table.
+    let (tx, rx) = mpsc::channel();
+    let mut loaded = App::new(tx, common::test_runtime());
+    let event = loaded
+        .open_the_path_named_on_the_command_line(vec![one.clone()], OpenOptions::default())
+        .expect("a folder of one table opens");
+    let AppEvent::Open(paths, options) = event else {
+        panic!("the rule opens it")
+    };
+    pump_open_until_loaded(&mut loaded, &rx, paths, options);
+    assert_eq!(
+        loaded.data_table_state.as_ref().map(|s| s.num_rows),
+        Some(2),
+        "one row from each file, read as one table"
+    );
+
+    // A file is untouched, and so is `--hive`, which is an answer already given.
+    let mut e = app();
+    assert!(matches!(
+        e.open_the_path_named_on_the_command_line(
+            vec![one.join("a.parquet")],
+            OpenOptions::default()
+        ),
+        Some(AppEvent::Open(..))
+    ));
+    let mut f = app();
+    let forced = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    assert!(
+        matches!(
+            f.open_the_path_named_on_the_command_line(vec![several.clone()], forced),
+            Some(AppEvent::Open(..))
+        ),
+        "--hive still means read this as one, whatever the folder looks like"
+    );
+}

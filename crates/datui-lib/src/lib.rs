@@ -8532,9 +8532,10 @@ impl App {
                 self.home.status = Some(what);
                 return None;
             }
-            // `hive: true` is what puts the open on the local folder route at all:
-            // without it a directory is `Unsupported file type`. The cloud route
-            // returns before it is read.
+            // `hive: true` says read this as one, which is the whole of what the row
+            // promises — it is also what carries partition columns through, for a
+            // folder the dispatch sends down the hive route. The cloud route returns
+            // before the dispatch is reached.
             let folder = home::folder_dataset_url(&entry.path);
             return Some(self.home_open_path(folder, true));
         }
@@ -8618,6 +8619,66 @@ impl App {
             return Some(self.home_open_path(home::folder_dataset_url(&path), false));
         }
         Some(self.home_open_path(path, folder))
+    }
+
+    /// What `datui <path>` does with a directory: the same rule as `Enter` on its row.
+    ///
+    /// A directory used to be `Unsupported file type` unless `--hive` was passed, while
+    /// pyarrow, Polars, pandas and Spark all open one. Naming a folder *is* the request
+    /// to read it, so the three doors onto a path — the highlighted row, the `~` prompt
+    /// and the command line — now answer the same: a hive root or a folder whose files
+    /// are one table opens as one table, and a folder that is a place to look inside
+    /// opens the home screen browsed into it, one keystroke from either file or union.
+    ///
+    /// The folder is looked into here rather than guessed at, because that is what the
+    /// rule is: [`home::look_into`] is the same call the home screen's background pass
+    /// makes, footers and all. On the command line it is on this thread, before the
+    /// first frame, which is where the user is already waiting for the path they named.
+    ///
+    /// `--hive` is untouched. It names a glob or forces partition columns, and it is
+    /// still the only way to say "read this as partitioned" about something whose
+    /// layout does not say so itself.
+    ///
+    /// Returns the event to send, or `None` when the app is now at the home screen.
+    pub fn open_the_path_named_on_the_command_line(
+        &mut self,
+        paths: Vec<PathBuf>,
+        mut options: OpenOptions,
+    ) -> Option<AppEvent> {
+        // Several paths are a list of files to read together, and `--hive` is an answer
+        // already given. Neither is a question about what one folder is.
+        let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
+        let Some(dir) = single.filter(|p| p.is_dir()) else {
+            return Some(AppEvent::Open(paths, options));
+        };
+
+        let mut entry = discover::Entry::directory(&dir);
+        entry.kind = discover::EntryKind::Unknown;
+        let kind = home::look_into(&entry).kind;
+
+        // A lake table's files are not its rows, so the home screen is opened on it and
+        // says why — the same sentence the row gives, because it is the same refusal.
+        if let Some(note) = Self::lake_table_note(kind) {
+            self.enter_home();
+            self.home_jump_into(dir);
+            self.home.status = Some(note);
+            return None;
+        }
+        // One table: read it. `hive` is what puts the open on the folder route, where
+        // what the folder holds picks the reader.
+        if matches!(
+            kind,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile
+        ) {
+            options.hive = true;
+            return Some(AppEvent::Open(paths, options));
+        }
+        // A place to look inside. `datui .` is this, and so is a folder of separate
+        // tables — where the `(all files)` row inside is the one keystroke that unions
+        // them anyway.
+        self.enter_home();
+        self.home_jump_into(dir);
+        None
     }
 
     /// Browse into `path` as a jump, from wherever the user was.
@@ -10368,7 +10429,12 @@ impl App {
             source::InputSource::Local(_) => {}
         }
 
-        if paths.len() == 1 && options.hive {
+        // One path that is a directory, whether or not `--hive` said so: naming a
+        // folder is the request to read it, and the dispatch below is what picks the
+        // reader for what it holds. Behind `options.hive` alone, every route that
+        // reached here with a directory and without the flag fell through to the
+        // Parquet scan and answered `Unsupported file type`.
+        if paths.len() == 1 && (options.hive || path.is_dir()) {
             let path_str = path.as_os_str().to_string_lossy();
             let is_single_file = path.exists()
                 && path.is_file()
@@ -18467,8 +18533,15 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             starting_at_home = true;
         }
         RunInput::Paths(paths, opts) => {
-            app.set_loading_phase("Scanning input", 10);
-            tx.send(AppEvent::Open(paths, opts))?;
+            // A folder named here is read the way `Enter` reads its row, which may be
+            // by opening the home screen on it rather than by loading anything.
+            match app.open_the_path_named_on_the_command_line(paths, opts) {
+                Some(event) => {
+                    app.set_loading_phase("Scanning input", 10);
+                    tx.send(event)?;
+                }
+                None => starting_at_home = true,
+            }
         }
         RunInput::LazyFrame(lf, opts) => {
             app.set_loading_phase("Scanning input", 10);

@@ -63,13 +63,15 @@ larger than memory is fine. The others are read whole before the table appears.
 
 ### CSV options
 
-They apply to `.tsv` and `.psv` files too.
+They apply to `.tsv` and `.psv` files too. A CSV prefix in a bucket takes all of
+them except `--parse-strings`.
 
 | Option | Config key | What it does |
 |---|---|---|
 | `--delimiter 9` | | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
 | `--no-header true` | | The first row is data, not names |
-| `--skip-lines N`, `--skip-rows N`, `--skip-tail-rows N` | | Ignore a preamble or a footer |
+| `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
+| `--skip-tail-rows N` | | Ignore a footer. Counts every row first: on a CSV prefix in a bucket, that downloads every file before the table opens |
 | `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`). Repeatable |
 | `--infer-schema-length 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
 | `--ignore-errors true` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |

@@ -10435,7 +10435,7 @@ impl App {
         cloud_opts: CloudOptions,
         format: FileFormat,
         glob: bool,
-        delimiter: Option<u8>,
+        options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
         use polars::prelude::{LazyCsvReader, LazyFileListReader};
         let pl_path = PlRefPath::new(url);
@@ -10443,12 +10443,24 @@ impl App {
             color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
         };
         let lf = match format {
-            FileFormat::Csv => LazyCsvReader::new(pl_path)
-                .with_separator(delimiter.unwrap_or(b','))
-                .with_cloud_options(Some(cloud_opts))
-                .with_glob(glob)
-                .finish()
-                .map_err(named),
+            FileFormat::Csv => {
+                // The flags the user gave mean what they mean for a local file.
+                let reader = || {
+                    LazyCsvReader::new(pl_path.clone())
+                        .with_cloud_options(Some(cloud_opts.clone()))
+                        .with_glob(glob)
+                };
+                let nv = match DataTableState::build_null_values_with(options, || {
+                    DataTableState::csv_schema_for_null_values(reader(), options)
+                }) {
+                    Ok(nv) => nv,
+                    Err(e) => return Some(Err(e)),
+                };
+                DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
+                    .finish()
+                    .map_err(named)
+                    .and_then(|lf| DataTableState::apply_skip_tail_rows_csv(lf, options))
+            }
             FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
                 .with_cloud_options(Some(cloud_opts))
                 .finish()
@@ -10744,7 +10756,7 @@ impl App {
                             cloud_opts.clone(),
                             format,
                             is_glob,
-                            options.delimiter,
+                            options,
                         )
                     {
                         return lf;
@@ -10793,7 +10805,7 @@ impl App {
                             cloud_opts.clone(),
                             format,
                             is_glob,
-                            options.delimiter,
+                            options,
                         )
                     {
                         return lf;
@@ -10838,7 +10850,7 @@ impl App {
                             cloud_opts.clone(),
                             format,
                             is_glob,
-                            options.delimiter,
+                            options,
                         )
                     {
                         return lf;
@@ -19186,5 +19198,67 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                 app.spawn_async_collect("Loading buffer...");
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "cloud"))]
+mod cloud_csv_prefix_tests {
+    use super::*;
+
+    /// A CSV prefix in a bucket is read with the flags the user gave, not Polars'
+    /// defaults. Driven through a local glob, which is the same reader with the object
+    /// store swapped for the filesystem.
+    #[test]
+    fn a_csv_prefix_is_read_with_the_users_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let preamble = "exported by x\nid;name\n1;NA\n2;bob\n3;FOOTER\n";
+        std::fs::write(dir.path().join("a.csv"), preamble).unwrap();
+        let glob = format!("{}/*.csv", dir.path().display());
+        let options = OpenOptions {
+            delimiter: Some(b';'),
+            skip_lines: Some(1),
+            skip_tail_rows: Some(1),
+            null_values: Some(vec!["NA".into()]),
+            ..OpenOptions::default()
+        };
+        let df = App::scan_cloud_prefix(
+            &glob,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &options,
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .unwrap();
+        let names: Vec<_> = df
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(names, ["id", "name"]);
+        assert_eq!(df.height(), 2);
+        assert_eq!(df.column("name").unwrap().null_count(), 1);
+
+        // Global and per-column null values together read the columns from the
+        // prefix itself.
+        let options = OpenOptions {
+            null_values: Some(vec!["NA".into(), "name=bob".into()]),
+            ..options
+        };
+        let df = App::scan_cloud_prefix(
+            &glob,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &options,
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(df.column("name").unwrap().null_count(), 1);
+        assert_eq!(df.column("id").unwrap().null_count(), 0);
     }
 }

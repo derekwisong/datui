@@ -13,7 +13,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. With no PATH, datui opens its home screen so you can pick a dataset |
 | `--skip-lines <SKIP_LINES>` | Skip this many lines when reading a file |
 | `--skip-rows <SKIP_ROWS>` | Skip this many rows when reading a file |
-| `--skip-tail-rows <N>` | Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage) |
+| `--skip-tail-rows <N>` | Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage). Counts every row first; on a prefix in a bucket that downloads every file |
 | `--no-header <NO_HEADER>` | Specify that the file has no header |
 | `--delimiter <DELIMITER>` | Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `\|` for .psv |
 | `--infer-schema-length <N>` | Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce risk of wrong type (e.g. int then N/A) |

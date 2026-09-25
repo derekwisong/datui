@@ -63,6 +63,8 @@ larger than memory is fine. The others are read whole before the table appears.
 
 ### CSV options
 
+They apply to `.tsv` and `.psv` files too.
+
 | Option | Config key | What it does |
 |---|---|---|
 | `--delimiter 9` | | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |

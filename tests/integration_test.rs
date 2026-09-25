@@ -9195,3 +9195,25 @@ fn test_layout_keys_in_config_do_not_reach_the_open() {
     assert_eq!(names(&df), ["id", "name"]);
     assert_eq!(df.height(), 3);
 }
+
+/// TSV and PSV are read by the CSV reader, so the CSV options mean the same for them:
+/// trimmed names, null values, the tail skip. They used to honor only the header and
+/// the leading skips.
+#[test]
+fn test_tsv_and_psv_take_every_csv_option() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for (name, sep) in [("data.tsv", "\t"), ("data.psv", "|")] {
+        let path = tmp.path().join(name);
+        let body = format!("id{sep} name\n1{sep}NA\n2{sep}bob\n3{sep}FOOTER\n");
+        std::fs::write(&path, body).unwrap();
+        let opts = options_as_the_binary_does(
+            &["datui", "x", "--null-value", "NA", "--skip-tail-rows", "1"],
+            "",
+        );
+        let (_, df) = open_and_collect(vec![path], opts);
+        assert_eq!(names(&df), ["id", "name"], "{name}");
+        assert_eq!(df.height(), 2, "{name}");
+        assert_eq!(df.column("name").unwrap().null_count(), 1, "{name}");
+    }
+}

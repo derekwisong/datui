@@ -22,7 +22,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--compression <COMPRESSION>` | Specify the compression format explicitly (gzip, zstd, bzip2, xz) If not specified, compression is auto-detected from file extension |
 | `--format <FORMAT>` | Force file format (parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel). By default format is auto-detected from the file extension. Use this for URLs or paths without an extension |
 | `--debug` | Enable debug mode to show operational information |
-| `--hive` | Enable Hive-style partitioning for directory or glob paths; ignored for a single file |
+| `--hive` | Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file |
 | `--single-spine-schema <BOOL>` | Infer Hive/partitioned Parquet schema from one file for faster load (default: true). Set to false to use full schema scan |
 | `--parse-dates <BOOL>` | Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true |
 | `--parse-strings <COL>` | Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float. Default: applied to all string columns. Use --parse-strings=COL (repeatable) to limit to specific columns, or --no-parse-strings to disable |

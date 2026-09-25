@@ -50,6 +50,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any folder, or on a place row under `RECENT`, goes inside it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
+| <kbd>Enter</kbd> on `(all files)` | Read the whole folder as one table, whatever its label. The first row inside every folder |
 | type | Filter by name or column name, and search below the working directory |
 | <kbd>~</kbd> | Type a path; <kbd>Tab</kbd> completes |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |

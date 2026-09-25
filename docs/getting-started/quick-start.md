@@ -8,8 +8,8 @@ Five minutes from install to your first chart. Not installed yet? See
 ```bash
 datui data.parquet                          # one file
 datui part-1.csv part-2.csv                 # several files of the same shape, as one table
-datui --hive /data/events/                  # a hive-partitioned directory
-datui --hive s3://bucket/events/            # the same, in S3 (also gs:// and https://)
+datui /data/events/                         # a folder: read as one table, or browsed into
+datui s3://bucket/events/                   # the same, in S3 (also gs:// and https://)
 datui                                       # no path: the home screen
 ```
 

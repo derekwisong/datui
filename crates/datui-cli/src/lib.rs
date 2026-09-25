@@ -249,7 +249,7 @@ pub struct Args {
     #[arg(long = "debug", action)]
     pub debug: bool,
 
-    /// Enable Hive-style partitioning for directory or glob paths; ignored for a single file
+    /// Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file
     #[arg(long = "hive", action)]
     pub hive: bool,
 

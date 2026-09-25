@@ -43,7 +43,15 @@ files with something in them. Where datui notices either, it says so:
 | The folders do not all partition by the same keys | The file names |
 | A file's footer could not be read, so it was left out | The footers |
 | Files in the folder are not Parquet, so they are not in the table | The listing |
+| The folder held more than one format and was read as the commonest; what was passed over | The listing |
+| These are a Delta, Iceberg or Hudi table's plain files, not the table | The folder's markers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
+
+The last two are notes about the read rather than about the data, and they are
+the only ones settled before a footer is read. A lake table's files carry a chip
+beside the row count as well: that count includes rows a delete tombstoned and
+versions an update replaced, so it is a true count of the files and a wrong
+count of the table.
 
 Where the files that have a column fall into a shape worth naming, the note says so
 as well as counting them: `fee is in 4,001 of 6,541 files, none before

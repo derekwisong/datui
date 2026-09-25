@@ -485,6 +485,53 @@ mod parquet_key_tests {
     }
 }
 
+/// What a file with no usable extension turns out to be, from the bytes at its start.
+///
+/// Every format datui reads as a folder puts a fixed signature at the front — Parquet
+/// at both ends, and the other three at the front alone. A name is the cheap answer and
+/// the one every listing uses; this is the expensive one, and it is asked only of a
+/// folder somebody is opening, never of a folder somebody is looking at.
+///
+/// Spark and GBIF both write part files with no extension — `occurrence.parquet/000001`
+/// is read by its folder's name, and the same files under a folder named anything else
+/// were not data at all as far as datui was concerned.
+///
+/// CSV and JSON are deliberately absent: they have no signature, and guessing from the
+/// first line is a parse rather than a look.
+pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let read = {
+        let mut file = std::fs::File::open(path).ok()?;
+        // A short read is the whole file: a signature that does not fit is not one.
+        let mut filled = 0;
+        loop {
+            match file.read(&mut head[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(_) => return None,
+            }
+        }
+        filled
+    };
+    let head = &head[..read];
+    if head.starts_with(b"PAR1") {
+        // Both ends, because `PAR1` at the front alone is a truncated write — the
+        // footer is what a Parquet reader actually needs.
+        return has_parquet_magic(path).then_some(crate::FileFormat::Parquet);
+    }
+    if head.starts_with(b"ARROW1") {
+        return Some(crate::FileFormat::Arrow);
+    }
+    if head.starts_with(b"Obj\x01") {
+        return Some(crate::FileFormat::Avro);
+    }
+    if head.starts_with(b"ORC") {
+        return Some(crate::FileFormat::Orc);
+    }
+    None
+}
+
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.
 pub fn has_parquet_magic(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
@@ -679,6 +726,8 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
     // takes the only entry; a folder of several takes the commonest and reports the
     // rest, which is what stops one stray file deciding a folder cannot be read.
     let mut by_format: Vec<(crate::FileFormat, Vec<PathBuf>)> = Vec::new();
+    // Files whose names say nothing, kept in case their bytes do. See below.
+    let mut nameless: Vec<PathBuf> = Vec::new();
     let mut partitioned = false;
     for entry in iter.flatten() {
         let path = entry.path();
@@ -708,11 +757,48 @@ pub fn folder_format(dir: &Path) -> FolderFormat {
             continue;
         }
         let Some(found) = data_format(&path) else {
+            // A name that says nothing. Kept rather than dropped, because the bytes may
+            // still say what it is — see below, where they are asked.
+            if path.extension().is_none() {
+                nameless.push(path);
+            }
             continue;
         };
         match by_format.iter_mut().find(|(f, _)| *f == found) {
             Some((_, of_that_format)) => of_that_format.push(path),
             None => by_format.push((found, vec![path])),
+        }
+    }
+
+    // Files with no extension, in a folder whose names settled nothing. Spark and GBIF
+    // both write part files this way; `occurrence.parquet/000001` is read by its
+    // folder's name, and the same files under a folder named anything else were not
+    // data at all as far as datui was concerned — the folder was `dir` and its files
+    // were not listed.
+    //
+    // Only when the names have nothing to say. A folder of Parquet with a `LICENSE` in
+    // it is a folder of Parquet, and opening the `LICENSE` to find out is a read per
+    // file for an answer already given.
+    //
+    // A spread rather than every one, for the reason `sample_footers` takes a spread:
+    // the cost is one open per file, and a folder written by one job holds one kind of
+    // thing. They have to agree — a folder where the ends disagree is not one table by
+    // any reading — and then all of them are taken as that format, because a scan that
+    // reads what it can and says what it could not is what happens to the odd one out.
+    if by_format.is_empty() && !nameless.is_empty() {
+        nameless.sort();
+        let mut picks = vec![0, nameless.len() / 2, nameless.len() - 1];
+        picks.dedup();
+        let sniffed: Vec<crate::FileFormat> = picks
+            .iter()
+            .filter_map(|i| nameless.get(*i))
+            .filter_map(|f| sniff_format(f))
+            .collect();
+        if sniffed.len() == picks.len()
+            && let Some(found) = sniffed.first().copied()
+            && sniffed.iter().all(|f| *f == found)
+        {
+            by_format.push((found, nameless));
         }
     }
 

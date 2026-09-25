@@ -246,11 +246,6 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     if cloud_account(dir).is_some() {
         return None;
     }
-    // Nothing in it to open. An empty folder is the one place a second door leads
-    // nowhere, and a row promising to read nothing is worse than no row.
-    if rows.is_empty() {
-        return None;
-    }
     let folders: Vec<String> = rows
         .iter()
         .filter(|r| r.kind != EntryKind::File)
@@ -292,6 +287,22 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     } else {
         crate::discover::look_at_directory(dir)
     };
+    // Nothing in it to open. An empty folder is the one place a second door leads
+    // nowhere, and a row promising to read nothing is worse than no row. A folder
+    // holding only a `_SUCCESS` is that folder too.
+    //
+    // Asked of what the folder holds and not only of what the listing showed, because
+    // the two differ on the folder that most needs the door: Spark and GBIF write part
+    // files with no extension, no name in there says data, so nothing is listed — and a
+    // guard on the rows alone made that folder a dead end, nothing listed and no way to
+    // read it, though the open reads it by its bytes perfectly well. Files nothing
+    // could name count here for that reason, and so do subfolders, whose data is a
+    // level down.
+    let nothing_to_open =
+        rows.is_empty() && holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0;
+    if nothing_to_open {
+        return None;
+    }
     // What the row says it opens, not whether it opens: a hive folder is read through
     // its partitions and everything else through its files.
     let what = if kind == EntryKind::Hive {
@@ -2354,8 +2365,14 @@ impl HomeState {
             // A section with nothing to show is dropped, unless it is standing in for
             // a root the user named or is currently in, where its absence would be
             // more confusing than an empty heading, or its rows are still on the way.
+            //
+            // A door is something to show. A folder of part files written with no
+            // extension lists nothing — no name in it says data — and the door is the
+            // only way to read it; dropped here, the whole section went with it and the
+            // folder was a dead end that the open could have read.
             let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
-            if matched.is_empty() && !(keep_empty && self.filter.is_empty()) {
+            let has_door = section.door.is_some() && self.filter.is_empty();
+            if matched.is_empty() && !has_door && !(keep_empty && self.filter.is_empty()) {
                 continue;
             }
 
@@ -2948,7 +2965,21 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         // settles it; anything else stays Unknown rather than being called a plain
         // directory, which would contradict the same dataset listed under its root as
         // `hive` once that root's probe lands.
-        if discover::is_data_file(path) {
+        //
+        // An extension datui has no reader for settles it too. `s3://bucket/data.dat`
+        // is certainly not a prefix, and calling it Unknown sent → into an empty
+        // listing with nothing to say why (#283). Excluding Unknown from what → enters
+        // was the other way to fix that, and it is the label deciding access one
+        // indirection along — every row on a share is Unknown before anything has
+        // looked into it. So the row is named instead. A trailing slash is a prefix
+        // whatever is in the name, which is what `exports/` and `2024.01.15/` are.
+        let named = path.to_string_lossy();
+        let dotted = !named.ends_with('/')
+            && named
+                .rsplit('/')
+                .next()
+                .is_some_and(|last| last.trim_start_matches('.').contains('.'));
+        if discover::is_data_file(path) || dotted {
             EntryKind::File
         } else {
             EntryKind::Unknown

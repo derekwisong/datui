@@ -8215,3 +8215,142 @@ fn test_a_mixed_folder_reads_as_the_commonest_format_and_says_what_it_left_out()
         "and the Info key offers it, which is the only way anyone finds out"
     );
 }
+
+/// A remote row datui has no reader for is named a file, not left Unknown.
+///
+/// `entry_for_path` had a name and nothing else to go on, and left anything whose
+/// extension it did not recognize as `Unknown` — which → enters. So a Recent of
+/// `s3://bucket/data.dat` took → into an empty prefix listing with no explanation and
+/// Esc as the only way out (#283). Excluding `Unknown` from what → enters was the other
+/// way to fix it, and it is the label deciding access one indirection along: before
+/// anything has looked into it, every row on a share is `Unknown`, including every
+/// folder that costs most to reach. So the row is named instead.
+#[test]
+fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
+    let kind = |url: &str| {
+        let mut home = datui::home::HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
+        home.rebuild(&[], &[PathBuf::from(url)]);
+        home.sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .find(|r| r.path == Path::new(url))
+            .map(|r| r.kind)
+            .unwrap_or_else(|| panic!("{url} is listed under RECENT"))
+    };
+
+    // An extension datui reads: a file, as it always was.
+    assert_eq!(
+        kind("s3://bucket/data.psv"),
+        datui::discover::EntryKind::File
+    );
+    // One it does not: still a file. It is certainly not a prefix.
+    assert_eq!(
+        kind("s3://bucket/data.dat"),
+        datui::discover::EntryKind::File,
+        "→ must not offer to go inside it"
+    );
+    // No extension: genuinely ambiguous — it may be a prefix, or a part file written
+    // without one — so it stays Unknown and → goes in, which is the trade #279 made.
+    assert_eq!(
+        kind("s3://bucket/exports"),
+        datui::discover::EntryKind::Unknown
+    );
+    // A trailing slash is a prefix whatever the name has in it.
+    assert_eq!(
+        kind("s3://bucket/2024.01.15/"),
+        datui::discover::EntryKind::Unknown,
+        "a dotted prefix is not a file"
+    );
+}
+
+/// A folder of files written without extensions opens as one table.
+///
+/// Spark and GBIF both write part files with no extension. `occurrence.parquet/000001`
+/// is read by its folder's name; the same files under a folder named anything else were
+/// not data at all as far as datui was concerned — nothing listed them and nothing
+/// opened them. The bytes say what the names do not, and they are asked once, of the
+/// folder somebody is opening, never of a folder somebody is looking at.
+#[test]
+fn test_a_folder_of_files_written_without_extensions_still_opens() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parts = tmp.path().join("parts");
+    std::fs::create_dir_all(&parts).unwrap();
+    let mut frame = DataFrame::new(1, vec![Column::new("id".into(), &[1i32])]).unwrap();
+    for name in ["000000", "000001"] {
+        ParquetWriter::new(File::create(parts.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    }
+
+    // The names settle nothing, so the folder is a place to look inside.
+    assert_eq!(
+        datui::discover::classify_directory(&parts),
+        datui::discover::EntryKind::Directory,
+        "no name in there says data"
+    );
+
+    // And the read finds them anyway.
+    match datui::discover::folder_format(&parts) {
+        datui::discover::FolderFormat::One(format, files) => {
+            assert_eq!(format, datui::FileFormat::Parquet);
+            assert_eq!(files.len(), 2, "both of them");
+        }
+        other => panic!("the bytes say Parquet, got {other:?}"),
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![parts.clone()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().map(|s| s.num_rows),
+        Some(2),
+        "one row from each part"
+    );
+
+    // And it is reachable from the home screen: the folder is a place to look inside,
+    // and the door inside it reads the whole of what it holds. Two keys, which is the
+    // rule for every folder the nesting test turns away — not a dead end, which is what
+    // a folder nothing listed and nothing opened was.
+    let (tx, _rx) = mpsc::channel();
+    let mut home = App::new(tx, common::test_runtime());
+    home.enter_home();
+    home.home.browsing = Some(parts.clone());
+    home.home.rebuild(&[], &[]);
+    let door = home
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
+        .expect("the folder carries the door");
+    home.home.selected = door;
+    assert!(
+        matches!(home.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        "the door opens it"
+    );
+
+    // A folder whose names do say something is not opened file by file to find out.
+    // `LICENSE` beside the Parquet is not sniffed, and not read.
+    let named = tmp.path().join("named");
+    std::fs::create_dir_all(&named).unwrap();
+    ParquetWriter::new(File::create(named.join("a.parquet")).unwrap())
+        .finish(&mut frame)
+        .unwrap();
+    std::fs::write(named.join("LICENSE"), b"MIT").unwrap();
+    match datui::discover::folder_format(&named) {
+        datui::discover::FolderFormat::One(datui::FileFormat::Parquet, files) => {
+            assert_eq!(files.len(), 1, "the LICENSE is not one of them");
+        }
+        other => panic!("the names settled it, got {other:?}"),
+    }
+}

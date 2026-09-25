@@ -8439,3 +8439,103 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
         "a folder of one data file was never a multi-file dataset"
     );
 }
+
+/// The control bar says what Enter will really do, on a row of every shape.
+///
+/// `WhatEnter` is a prediction the renderer reads and `home_open_selected` is the thing
+/// that decides, so the two can drift. This is what stops them: one row of each shape,
+/// Enter pressed on it, and the prediction checked against what actually happened.
+#[test]
+fn test_the_bar_says_what_enter_will_really_do() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let table = |cols: &[&str]| {
+        DataFrame::new(
+            1,
+            cols.iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect(),
+        )
+        .unwrap()
+    };
+    let parquet = |dir: &Path, name: &str, mut frame: DataFrame| {
+        std::fs::create_dir_all(dir).unwrap();
+        ParquetWriter::new(File::create(dir.join(name)).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+    };
+
+    // One table across two files; separate tables; a lake root; and a plain file.
+    let one = tmp.path().join("one");
+    parquet(&one, "a.parquet", table(&["id", "ts"]));
+    parquet(&one, "b.parquet", table(&["id", "ts"]));
+    let apart = tmp.path().join("apart");
+    parquet(&apart, "by_block.parquet", table(&["block", "fee"]));
+    parquet(&apart, "daily.parquet", table(&["day", "price"]));
+    let delta = tmp.path().join("delta");
+    std::fs::create_dir_all(delta.join("_delta_log")).unwrap();
+    std::fs::write(delta.join("_delta_log").join("0.json"), "{}").unwrap();
+    parquet(&delta, "part-0.parquet", table(&["id"]));
+    parquet(tmp.path(), "loose.parquet", table(&["id"]));
+
+    // Each row, classified the way the background pass would, then Enter pressed on it.
+    for (name, expected) in [
+        ("one", datui::WhatEnter::OpensFolder),
+        ("apart", datui::WhatEnter::GoesInside),
+        ("delta", datui::WhatEnter::GoesInside),
+        ("loose.parquet", datui::WhatEnter::OpensFile),
+    ] {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.enter_home();
+        app.home.browsing = Some(tmp.path().to_path_buf());
+        app.home.rebuild(&[], &[]);
+        app.home.measure_now(16);
+        app.home.classify_now(16);
+        app.home.rebuild(&[], &[]);
+
+        let row = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        app.home.selected = row;
+
+        let predicted = app.what_enter_does();
+        assert_eq!(predicted, expected, "prediction for {name}");
+
+        let was = app.home.browsing.clone();
+        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
+        let went_inside = app.home.browsing != was;
+        match expected {
+            datui::WhatEnter::OpensFolder | datui::WhatEnter::OpensFile => assert!(
+                opened && !went_inside,
+                "{name}: the bar promised an open and Enter did {opened}/{went_inside}"
+            ),
+            datui::WhatEnter::GoesInside => assert!(
+                went_inside && !opened,
+                "{name}: the bar promised to go inside and Enter did {opened}/{went_inside}"
+            ),
+            _ => unreachable!("no other shape is asserted here"),
+        }
+    }
+
+    // And the door, which reads whatever it is standing in.
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(apart.clone());
+    app.home.rebuild(&[], &[]);
+    let door = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Door { .. }))
+        .expect("the folder carries the door");
+    app.home.selected = door;
+    assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensFolder);
+    assert!(matches!(
+        app.event(&key(KeyCode::Enter)),
+        Some(AppEvent::Open(..))
+    ));
+}

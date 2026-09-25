@@ -5264,6 +5264,66 @@ impl Drop for GenerationLease {
 /// the app is idle.
 pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 
+/// What <kbd>Enter</kbd> will do on the highlighted row.
+///
+/// Written so the control bar and the details pane can say it before it happens.
+/// Every folder has two doors and the labels no longer decide access, which is only
+/// worth anything if the screen says which key is which — a bar reading `Enter Open` on
+/// a row where `Enter` goes inside teaches the wrong thing on the first try, and the
+/// first try is the one that forms the impression.
+///
+/// A prediction, so it can drift from [`App::home_open_selected`], which is the thing
+/// that actually decides. `test_the_bar_says_what_enter_will_really_do` pumps `Enter`
+/// on one row of every shape and asserts the two agreed; that test is the reason this
+/// is safe to read from the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhatEnter {
+    /// Load the file on the row.
+    OpensFile,
+    /// Read the whole folder as one table: a hive root, a folder whose files are one
+    /// table, or the `(all files)` row.
+    OpensFolder,
+    /// Step into the folder. What `→` does too, on these rows.
+    GoesInside,
+    /// Look at the row first, then do whichever of the above the answer calls for.
+    LooksFirst,
+    /// Fold or unfold a section; browse a place; show the rest of `RECENT`.
+    Other,
+}
+
+impl App {
+    /// See [`WhatEnter`].
+    pub fn what_enter_does(&self) -> WhatEnter {
+        match self.home.selected_row() {
+            Some(home::Row::Place { .. }) | Some(home::Row::More { .. }) => {
+                return WhatEnter::Other;
+            }
+            _ => {}
+        }
+        if self.home.selection_is_header() {
+            return WhatEnter::Other;
+        }
+        // The door reads the folder it names whatever that folder is labelled — the
+        // lake tables included, which is the one row that reads them at all.
+        if self.home.selection_is_the_door() {
+            return WhatEnter::OpensFolder;
+        }
+        let Some(entry) = self.home.selected_entry() else {
+            return WhatEnter::Other;
+        };
+        match entry.kind {
+            discover::EntryKind::Unknown => WhatEnter::LooksFirst,
+            discover::EntryKind::File => WhatEnter::OpensFile,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensFolder,
+            // A plain directory, and a lake table, whose files are not its rows.
+            discover::EntryKind::Directory
+            | discover::EntryKind::Delta
+            | discover::EntryKind::Iceberg
+            | discover::EntryKind::Hudi => WhatEnter::GoesInside,
+        }
+    }
+}
+
 /// What a read of a folder found out about itself on the way through.
 ///
 /// Filled by the pass that actually picks the files and the reader, and carried back on

@@ -111,6 +111,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             !app.home.filter.is_empty(),
             app.data_table_state.is_some(),
             app.selected_folder_to_enter().is_some(),
+            app.what_enter_does(),
         )),
     }
 }
@@ -138,6 +139,7 @@ pub fn home_control_keys(
     has_filter: bool,
     has_data: bool,
     on_a_folder: bool,
+    enter: crate::WhatEnter,
 ) -> Vec<(&'static str, &'static str)> {
     // Named keys are spelled out — "Enter", "Tab", "Bksp" — matching the analysis and
     // chart bars, and avoiding U+23CE and U+21E5, which plenty of terminal fonts do
@@ -148,7 +150,19 @@ pub fn home_control_keys(
     // the right, so the way out comes before the conveniences. At 70 columns this is
     // the difference between seeing "Esc Quit" and seeing nothing about leaving.
     let g = crate::glyphs::get();
-    let mut keys = vec![("Enter", "Open"), (g.updown, "Move")];
+    // Enter is labelled with what it will do on *this* row, not with the word "Open".
+    // On a folder whose files are not one table, Enter goes inside — and a bar saying
+    // "Open" there taught the wrong thing on the first try, which is the try that forms
+    // the impression. `Open all` is the promise the `(all files)` row and every folder
+    // that reads as one table keep; `Inside` is what the other folders do, and the same
+    // thing `→` does, so those two rows are given one chip between them below.
+    let enter_says = match enter {
+        crate::WhatEnter::OpensFolder => "Open all",
+        crate::WhatEnter::GoesInside => "Inside",
+        crate::WhatEnter::LooksFirst => "Look",
+        crate::WhatEnter::OpensFile | crate::WhatEnter::Other => "Open",
+    };
+    let mut keys = vec![("Enter", enter_says), (g.updown, "Move")];
 
     if path_input_active {
         keys.push(("Esc", "Cancel"));
@@ -174,14 +188,18 @@ pub fn home_control_keys(
         if browsing != Browse::Listing {
             keys.push(("Bksp", "Up"));
         }
-        if on_a_folder {
-            // → does not fold on this row, it goes inside the folder — and nothing else
-            // on screen says that door exists. One chip, not two beside it: the bar is
-            // cut from the right and this hint is already near that end, so `← Fold`
-            // alongside would cost eleven more columns and be the first thing lost. ←
-            // still folds, and says so on every other row.
+        // → does not fold on a folder row, it goes inside — and nothing else on screen
+        // says that door exists. One chip, not two beside it: the bar is cut from the
+        // right and this hint is already near that end, so `← Fold` alongside would
+        // cost eleven more columns and be the first thing lost. ← still folds, and says
+        // so on every other row.
+        //
+        // Not when Enter goes inside as well. Two chips for one outcome is the bar
+        // implying a choice that is not there, and the column it costs is better spent
+        // on a key that does something else.
+        if on_a_folder && enter != crate::WhatEnter::GoesInside {
             keys.push((g.arrow_right, "Inside"));
-        } else if browsing == Browse::Listing {
+        } else if !on_a_folder && browsing == Browse::Listing {
             // Only the root listing has sections to fold. The listing browsed into is
             // the whole screen, never folds, and a chip saying otherwise is a promise
             // the keys do not keep.
@@ -223,12 +241,16 @@ mod tests {
         out
     }
 
+    /// What Enter does on a row that is not a folder, for the tests that are about
+    /// something else.
+    const OPENS: crate::WhatEnter = crate::WhatEnter::OpensFile;
+
     #[test]
     fn home_bar_never_advertises_bare_q_as_quit() {
         // The bug this guards: the bar said "q Quit" while `q` typed into the filter,
         // so there was no discoverable way to leave the home screen.
         for (p, b, f, d, n) in all_states() {
-            for (key, _) in home_control_keys(p, b, f, d, n) {
+            for (key, _) in home_control_keys(p, b, f, d, n, OPENS) {
                 assert_ne!(
                     key, "q",
                     "bare `q` advertised in state (path={p}, browsing={b:?}, filter={f}, data={d}, folder={n})"
@@ -240,7 +262,7 @@ mod tests {
     #[test]
     fn home_bar_always_offers_a_way_out() {
         for (p, b, f, d, n) in all_states() {
-            let keys = home_control_keys(p, b, f, d, n);
+            let keys = home_control_keys(p, b, f, d, n, OPENS);
             assert!(
                 keys.iter().any(|(_, label)| *label == "Quit"),
                 "no quit offered in state (path={p}, browsing={b:?}, filter={f}, data={d}, folder={n})"
@@ -253,7 +275,7 @@ mod tests {
         // A narrow terminal cuts the bar from the right. Whatever survives has to
         // include how to leave.
         for (p, b, f, d, n) in all_states() {
-            let keys = home_control_keys(p, b, f, d, n);
+            let keys = home_control_keys(p, b, f, d, n, OPENS);
             // Esc while there is a layer to back out of; Ctrl+C at the top, where
             // Esc does nothing and is not offered.
             let way_out = keys
@@ -272,7 +294,7 @@ mod tests {
     fn home_bar_labels_esc_with_what_it_will_do() {
         // Esc escalates, so the label has to track the state rather than say "Back".
         let esc = |p, b, f, d| {
-            home_control_keys(p, b, f, d, false)
+            home_control_keys(p, b, f, d, false, OPENS)
                 .into_iter()
                 .find(|(key, _)| *key == "Esc")
                 .map(|(_, label)| label)
@@ -289,13 +311,55 @@ mod tests {
         assert_eq!(esc(true, Browse::Listing, false, false), Some("Cancel"));
     }
 
+    /// Enter is labelled with what it will do on this row, and the two doors are two
+    /// chips only where they are two different things.
+    ///
+    /// A bar reading `Enter Open` on a folder Enter steps into teaches the wrong thing
+    /// on the first try, and the first try is the one that forms the impression.
+    #[test]
+    fn home_bar_labels_enter_with_what_it_will_do() {
+        let g = crate::glyphs::get();
+        let bar =
+            |folder, enter| home_control_keys(false, Browse::AtStart, false, false, folder, enter);
+        let label = |keys: &[(&'static str, &'static str)], k: &str| {
+            keys.iter().find(|(key, _)| *key == k).map(|(_, l)| *l)
+        };
+
+        // A folder that reads as one table: Enter opens all of it, → goes inside. Two
+        // doors, both advertised, because they are two different outcomes.
+        let one_table = bar(true, crate::WhatEnter::OpensFolder);
+        assert_eq!(label(&one_table, "Enter"), Some("Open all"));
+        assert_eq!(label(&one_table, g.arrow_right), Some("Inside"));
+
+        // A folder that is somewhere to look: Enter and → do the same thing, so the bar
+        // says it once rather than implying a choice that is not there.
+        let look_inside = bar(true, crate::WhatEnter::GoesInside);
+        assert_eq!(label(&look_inside, "Enter"), Some("Inside"));
+        assert_eq!(
+            label(&look_inside, g.arrow_right),
+            None,
+            "one outcome, one chip: {look_inside:?}"
+        );
+
+        // A file: unchanged.
+        assert_eq!(
+            label(&bar(false, crate::WhatEnter::OpensFile), "Enter"),
+            Some("Open")
+        );
+        // A row nothing has looked into says so rather than promising either.
+        assert_eq!(
+            label(&bar(true, crate::WhatEnter::LooksFirst), "Enter"),
+            Some("Look")
+        );
+    }
+
     /// On a folder that opens as one dataset, → does not fold — it goes inside. The bar
     /// is the only thing on screen that says so.
     #[test]
     fn home_bar_offers_inside_only_on_a_dataset_folder() {
         let g = crate::glyphs::get();
         let labels = |folder| {
-            home_control_keys(false, Browse::Listing, false, false, folder)
+            home_control_keys(false, Browse::Listing, false, false, folder, OPENS)
                 .into_iter()
                 .collect::<Vec<_>>()
         };
@@ -333,7 +397,7 @@ mod tests {
     fn home_bar_offers_fold_only_on_the_root_listing() {
         let g = crate::glyphs::get();
         let has_fold = |b| {
-            home_control_keys(false, b, false, false, false)
+            home_control_keys(false, b, false, false, false, OPENS)
                 .iter()
                 .any(|(key, _)| *key == g.updown_lr)
         };
@@ -345,7 +409,7 @@ mod tests {
     #[test]
     fn home_bar_offers_up_only_while_browsing() {
         let has_up = |b| {
-            home_control_keys(false, b, false, false, false)
+            home_control_keys(false, b, false, false, false, OPENS)
                 .iter()
                 .any(|(_, label)| *label == "Up")
         };

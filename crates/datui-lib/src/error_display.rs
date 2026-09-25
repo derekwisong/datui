@@ -9,6 +9,18 @@ use std::path::Path;
 
 /// Format a PolarsError as a user-facing message by matching on its variant.
 pub fn user_message_from_polars(err: &PolarsError) -> String {
+    // Polars' words first, then the tidying every one of them wants: its query plan
+    // taken off the end, and the one shape worth rewriting said as a folder rather than
+    // as two schemas printed in full. Done here, around the match, so no arm can be
+    // added that forgets it.
+    let said = polars_words(err);
+    if is_union_schema_error(&said) {
+        return union_schema_message(&said);
+    }
+    without_the_query_plan(&said)
+}
+
+fn polars_words(err: &PolarsError) -> String {
     use polars::prelude::PolarsError as PE;
 
     match err {
@@ -154,6 +166,63 @@ pub fn user_message_from_report(report: &color_eyre::eyre::Report, path: Option<
     }
 }
 
+/// Polars' own words, with its query plan taken off the end.
+///
+/// When a scan fails inside a plan, Polars appends the plan it had resolved so far —
+/// several lines of `Resolved plan until failure:`, an arrow reading `FAILED HERE
+/// RESOLVING THIS_NODE`, and a fragment naming the node. On a terminal that lands in an
+/// error modal as a paragraph of internals above the one sentence that matters.
+///
+/// The one part of it worth keeping is the file the scan stopped at, which the plan
+/// names and the message above it usually does not.
+fn without_the_query_plan(msg: &str) -> String {
+    let Some(cut) = msg.find("Resolved plan until failure:") else {
+        return msg.to_string();
+    };
+    let (said, plan) = msg.split_at(cut);
+    let said = said.trim_end();
+    match file_in_plan(plan) {
+        Some(file) => format!("{said}\nIt stopped at {file}."),
+        None => said.to_string(),
+    }
+}
+
+/// The path in a plan fragment's scan node: `Csv SCAN [/data/one.csv]`.
+fn file_in_plan(plan: &str) -> Option<&str> {
+    let at = plan.find(" SCAN [")? + " SCAN [".len();
+    let rest = &plan[at..];
+    let end = rest.find(']')?;
+    let file = rest[..end].trim();
+    (!file.is_empty()).then_some(file)
+}
+
+/// Files that could not be stacked into one table, said as a folder rather than as a
+/// pair of schemas.
+///
+/// Polars prints both schemas in full — every field and dtype of each — which for two
+/// forty-column files is a screen of braces, and neither is labelled with the file it
+/// came from. Since #275 the reader unions by name and widens types, so this is what is
+/// left when even that cannot reconcile them, and the useful answer is which file and
+/// what to do, not the two schemas.
+fn is_union_schema_error(msg: &str) -> bool {
+    msg.contains("'union'/'concat' inputs should all have the same schema")
+        || msg.contains("unable to vstack")
+}
+
+fn union_schema_message(msg: &str) -> String {
+    let mut said = "These files cannot be read as one table: they disagree on a column \
+                    in a way datui cannot reconcile by widening its type."
+        .to_string();
+    if let Some(file) = file_in_plan(msg) {
+        said.push_str(&format!("\nIt stopped at {file}."));
+    }
+    said.push_str(
+        "\nTry: open one file on its own, or --format / --infer-schema-length to settle \
+         the types.",
+    );
+    said
+}
+
 /// Light cleanup for ComputeError messages: strip Polars-internal phrasing.
 fn simplify_compute_message(msg: &str) -> String {
     if is_csv_parse_type_error(msg) {
@@ -206,6 +275,50 @@ fn short_csv_parse_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real message datui produced, with Polars' plan on the end of it.
+    ///
+    /// Captured from a folder of three CSVs that share no columns, before the reader
+    /// learned to union them. The plan is four lines of internals around one fact worth
+    /// keeping — the file it stopped at.
+    #[test]
+    fn a_polars_query_plan_is_not_shown_to_the_user() {
+        let raw = "Operation not allowed: 'union'/'concat' inputs should all have the \
+                   same schema,got\nSchema { fields: {\"a\": Int64, \"b\": Int64} } and \
+                   \nSchema { fields: {\"q\": Int64} }\n\nResolved plan until failure:\n\n\
+                   \t---> FAILED HERE RESOLVING THIS_NODE <---\nCsv SCAN \
+                   [/data/mixed/two.csv]\nPROJECT */3 COLUMNS\nESTIMATED ROWS: 2";
+
+        let said = union_schema_message(raw);
+        assert!(
+            !said.contains("FAILED HERE") && !said.contains("PROJECT"),
+            "the plan is gone: {said:?}"
+        );
+        assert!(
+            !said.contains("Schema {"),
+            "and so are two schemas printed in full: {said:?}"
+        );
+        assert!(
+            said.contains("/data/mixed/two.csv"),
+            "but the file it stopped at is kept: {said:?}"
+        );
+
+        // And the general case, for every other error Polars hangs a plan on.
+        let other = "Column not found: region\n\nResolved plan until failure:\n\n\
+                     \t---> FAILED HERE RESOLVING THIS_NODE <---\nParquet SCAN \
+                     [/data/events/part-7.parquet]\nPROJECT 3/9 COLUMNS";
+        let tidied = without_the_query_plan(other);
+        assert_eq!(
+            tidied, "Column not found: region\nIt stopped at /data/events/part-7.parquet.",
+            "got {tidied:?}"
+        );
+
+        // A message with no plan on it is untouched.
+        assert_eq!(
+            without_the_query_plan("Column not found: region"),
+            "Column not found: region"
+        );
+    }
 
     #[test]
     fn test_user_message_from_io_not_found() {

@@ -598,6 +598,21 @@ jobs:
         with:
           shared-key: features
 
+      # The tests below read fixtures the generator writes, and it needs Polars. Never
+      # reached while the checks above failed, so this job had never needed them.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Generate sample data
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/python scripts/generate_sample_data.py
+
       # Every feature alone and none at all. The full powerset would be sixteen polars
       # builds to catch interactions that have never actually broken; each feature on its
       # own is where the missing dependencies show up.

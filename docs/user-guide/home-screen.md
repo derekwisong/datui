@@ -227,8 +227,9 @@ A directory's label says what is directly inside it, from one listing:
 | `delta` `iceberg` `hudi` | The format's marker is present |
 | `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
 | `mixed` | Data files of more than one format |
-| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. In a bucket the word for the place is used instead: `prefix`, `bucket`, `container` |
+| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. The top of a store says `bucket` or `container` instead |
 | `…` | Nothing has looked into it yet |
+| spinner | A directory in a bucket being looked into |
 
 A directory larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12
@@ -425,10 +426,10 @@ objects open like files, and opened objects go into `RECENT` like any other path
 
 | Source | Levels |
 |---|---|
-| S3 and S3-compatible | source › bucket › prefix › object |
-| Google Cloud | source › project › bucket › prefix › object |
+| S3 and S3-compatible | source › bucket › directory › object |
+| Google Cloud | source › project › bucket › directory › object |
 | Azure | source › account › container › directory › blob |
-| Public datasets | source › dataset › prefix › object |
+| Public datasets | source › dataset › directory › object |
 
 ```
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
@@ -584,12 +585,11 @@ Inside a bucket: name, size and modification time, which is what a listing
 returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
 
-Directories are looked inside, a few at a time, once each listing lands: one
-small listing request per directory, for at most 48 of them. A directory of
-`key=value` partitions is then labelled `hive`, and every other directory by
-what it holds — `12 parquet`, `3 csv` — like a local one. A prefix with no data
-file directly inside keeps the word for the place, `prefix`, rather than
-becoming `dir` the moment the peek lands. A directory of Parquet files whose
+Directories on screen are looked inside, a few at a time, the highlighted row
+first: one small listing request each, with a spinner in the label until it
+answers. A directory of `key=value` partitions is then labelled `hive`, and
+every other directory by what it holds — `12 parquet`, `3 csv`, or `dir` — like
+a local one. A directory of Parquet files whose
 schemas agree is offered as one dataset; see [Two doors into every
 directory](#two-doors-into-every-directory). Deciding that last one reads the
 footers of up to three of the directory's files, a few kilobytes each; nothing

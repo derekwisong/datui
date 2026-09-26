@@ -113,15 +113,16 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// What to call a place inside an object store: a bucket, or a prefix within one.
+/// What to call the top of a place in an object store: a source, an account, a bucket
+/// or a container.
 ///
-/// `None` for anything that is not an object-store URL, and for objects themselves,
-/// which are named by their own kind like any other file.
+/// `None` for anything else, including a directory inside a bucket: that is labelled by
+/// what it holds, like a local one, and a spinner stands in until it has been looked
+/// into. `prefix` said nothing a user could act on.
 ///
 /// Worth the few lines. A bucket labelled `dir` is not wrong so much as unhelpful: the
 /// word that tells you what you are looking at is the one the service uses for it, and
-/// the distinction between a bucket and a prefix is exactly the one that decides whether
-/// stepping out of it leaves the store.
+/// it is exactly what decides whether stepping out of it leaves the store.
 pub fn object_place_label(path: &Path) -> Option<&'static str> {
     if cloud_source_id(path).is_some() {
         return Some("source");
@@ -131,11 +132,7 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
     }
     let text = path.to_string_lossy();
     if let Some((_, _, key)) = crate::source::azure_parts(&text) {
-        return Some(if key.trim_matches('/').is_empty() {
-            "container"
-        } else {
-            "prefix"
-        });
+        return key.trim_matches('/').is_empty().then_some("container");
     }
     let (scheme, rest) = text.split_once("://")?;
     if !matches!(scheme, "s3" | "s3a" | "gs" | "gcs") {
@@ -145,11 +142,7 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
     if rest.is_empty() {
         return None;
     }
-    Some(if rest.contains('/') {
-        "prefix"
-    } else {
-        "bucket"
-    })
+    (!rest.contains('/')).then_some("bucket")
 }
 
 /// How a cloud source is addressed on the home screen: `cloud://<id>`. Not a URL any
@@ -2166,6 +2159,24 @@ impl HomeState {
             .cloned()
     }
 
+    /// Where a directory in an object store is in being looked into: `Some(true)` while
+    /// its peek is out, `Some(false)` before one is asked, `None` once it has answered
+    /// or when the row is not such a directory, or already says what it holds.
+    pub fn cloud_look(&self, entry: &Entry) -> Option<bool> {
+        if entry.kind != EntryKind::Directory
+            || !entry.holds.is_empty()
+            || !is_object_store_url(&entry.path)
+            || is_cloud_place(&entry.path)
+            || object_place_label(&entry.path).is_some()
+        {
+            return None;
+        }
+        if self.peeking.contains(&entry.path) {
+            return Some(true);
+        }
+        (!self.cloud_kinds.contains_key(&entry.path)).then_some(false)
+    }
+
     /// What to call a place a source names itself: a public dataset.
     pub fn place_kind(&self, path: &Path) -> Option<&'static str> {
         if let Some((id, _)) = cloud_account(path) {
@@ -3223,6 +3234,34 @@ mod holds_flow_tests {
             "15 parquet",
             "the placeholder erased a count the row already had"
         );
+    }
+
+    #[test]
+    fn a_cloud_directory_waits_then_looks_then_answers() {
+        let path = std::path::PathBuf::from("gs://pitscope/seasons");
+        let mut row = Entry::for_test(&path, "seasons");
+        row.kind = EntryKind::Directory;
+        let mut home = HomeState::default();
+
+        assert_eq!(home.cloud_look(&row), Some(false), "not asked yet");
+        home.peeking.insert(path.clone());
+        assert_eq!(home.cloud_look(&row), Some(true), "being looked into");
+        home.peeking.remove(&path);
+        home.cloud_kinds.insert(path.clone(), in_flight());
+        assert_eq!(home.cloud_look(&row), None, "answered");
+
+        // A row that already says what it holds, a bucket, and a local directory never
+        // wait on a peek.
+        let mut counted_row = Entry::for_test(&path.join("x"), "x");
+        counted_row.kind = EntryKind::Directory;
+        counted_row.holds = counted(3);
+        assert_eq!(home.cloud_look(&counted_row), None);
+        let mut bucket = Entry::for_test(std::path::Path::new("gs://pitscope"), "pitscope");
+        bucket.kind = EntryKind::Directory;
+        assert_eq!(home.cloud_look(&bucket), None);
+        let mut local = Entry::for_test(std::path::Path::new("/data/seasons"), "seasons");
+        local.kind = EntryKind::Directory;
+        assert_eq!(home.cloud_look(&local), None);
     }
 
     #[test]

@@ -47,8 +47,8 @@ NAVIGATION
   of those says what it did in the Notes tab, and a lake table's files also
   carry a chip beside the row count, because that count includes rows a delete
   tombstoned and versions an update replaced. The one directory still refused is
-  a prefix in a bucket holding nothing datui has a reader for, and it names what
-  is there.
+  one in a bucket holding nothing datui has a reader for, and it names what is
+  there.
 
   A directory's label says what is directly inside it: hive, delta, iceberg,
   hudi, a count and a format ("12 parquet"), "mixed" for more than one format,
@@ -76,13 +76,13 @@ FINDING
 
 WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, grouped under the directory
-                    or bucket prefix each lives in, newest place first. The
+                    each lives in, local or in a bucket, newest place first. The
                     place row names the directory, what datui last found it to
                     be, and, on a share or in a store, what it is on. Whole
                     places are shown up to a third of the list, then "… N more
                     in M places" stands for the rest. A recent nothing has
-                    measured shows … for its shape until an open of it fills
-                    it in
+                    measured shows … for its shape until an open of it fills it
+                    in
   Current directory Where you launched datui
   Cloud             One row per cloud source. Enter lists its buckets
   Configured        Directories from [data] directories, in the order listed

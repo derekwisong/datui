@@ -19235,7 +19235,9 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             || app.len_count_inflight.is_some()
             || app.chart_preparing()
             || (app.input_mode == InputMode::Home
-                && (app.home.awaiting_listing().is_some() || app.home.sections_waiting()));
+                && (app.home.awaiting_listing().is_some()
+                    || app.home.sections_waiting()
+                    || !app.home.peeking.is_empty()));
         let poll_ms = if pump.replaying() {
             0
         } else if spinning {

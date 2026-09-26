@@ -4226,7 +4226,8 @@ fn test_azure_steps_through_account_container_and_directory() {
 
     assert_eq!(object_place_label(account), Some("account"));
     assert_eq!(object_place_label(container), Some("container"));
-    assert_eq!(object_place_label(directory), Some("prefix"));
+    // A directory is labelled by what it holds, like a local one.
+    assert_eq!(object_place_label(directory), None);
 
     assert_eq!(
         home.parent_of(directory),

@@ -17,6 +17,9 @@ pub fn user_message_from_polars(err: &PolarsError) -> String {
     if is_union_schema_error(&said) {
         return union_schema_message(&said);
     }
+    if let Some(differ) = files_columns_differ(&said) {
+        return differ;
+    }
     without_the_query_plan(&said)
 }
 
@@ -234,6 +237,31 @@ fn union_schema_message(msg: &str) -> String {
     said
 }
 
+/// Files whose columns could not be lined up, said as files rather than as schemas.
+///
+/// Polars says this merging the schemas it inferred from each file of a directory:
+/// `schema names differ: got 39, expected 25`, where 39 and 25 are column *names* — the
+/// first row of a file with no header, read as one. Read as counts, it points nowhere.
+fn files_columns_differ(msg: &str) -> Option<String> {
+    let how = if let Some(rest) = msg.split("schema names differ: got ").nth(1) {
+        let (got, expected) = rest.split_once(", expected ")?;
+        let expected = expected.lines().next().unwrap_or(expected).trim();
+        format!(
+            "one has a column named `{}` where another has `{expected}`",
+            got.trim()
+        )
+    } else if msg.contains("schema lengths differ") {
+        "they have different numbers of columns".to_string()
+    } else {
+        return None;
+    };
+    Some(format!(
+        "These files cannot be read as one table: their columns differ — {how}.\n\
+         Try: open one file on its own. If the files have no header row, --no-header \
+         reads their columns by position."
+    ))
+}
+
 /// Light cleanup for ComputeError messages: strip Polars-internal phrasing.
 fn simplify_compute_message(msg: &str) -> String {
     if is_csv_parse_type_error(msg) {
@@ -286,6 +314,30 @@ fn short_csv_parse_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The census directory in `cloud-samples-data`: two headerless CSVs and one with a
+    /// header, so the names Polars compares are a first row's values.
+    #[test]
+    fn files_whose_columns_differ_are_said_as_files() {
+        let said = user_message_from_polars(&PolarsError::ComputeError(
+            "schema names differ: got 39, expected 25".into(),
+        ));
+        assert!(said.contains("cannot be read as one table"), "{said}");
+        assert!(
+            said.contains("a column named `39` where another has `25`"),
+            "{said}"
+        );
+        assert!(said.contains("--no-header"), "{said}");
+        assert!(!said.contains("schema"), "no Polars words left: {said}");
+
+        let said =
+            user_message_from_polars(&PolarsError::ComputeError("schema lengths differ".into()));
+        assert!(said.contains("different numbers of columns"), "{said}");
+
+        let other =
+            user_message_from_polars(&PolarsError::ComputeError("something else entirely".into()));
+        assert!(!other.contains("one table"), "{other}");
+    }
 
     /// A real message datui produced, with Polars' plan on the end of it.
     ///

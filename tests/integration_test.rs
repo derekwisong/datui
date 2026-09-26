@@ -4036,6 +4036,11 @@ fn test_a_uniform_dataset_has_no_notes() {
     assert!(!state.notes_unseen(), "so no accent either");
 }
 
+/// A `/`-separated path as this platform writes it.
+fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// Asking an export to name each row's file keeps the absent-versus-null distinction
 /// once the data has left datui: `extra` is empty in both rows, but only one of them
 /// came from a file that had the column.
@@ -4063,12 +4068,12 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines[0], "date,id,extra,source_file");
     assert!(
-        lines[1].ends_with("date=2024-01-01/data.parquet"),
+        lines[1].ends_with(&native("date=2024-01-01/data.parquet")),
         "the first row came from the file without `extra`: {}",
         lines[1]
     );
     assert!(
-        lines[2].ends_with("date=2024-01-02/data.parquet"),
+        lines[2].ends_with(&native("date=2024-01-02/data.parquet")),
         "and the second from the one that has it, holding a real null: {}",
         lines[2]
     );
@@ -6236,8 +6241,11 @@ fn app_with_recents_in_two_places(
     seed_store: bool,
 ) -> (App, Vec<PathBuf>) {
     common::isolate_cache();
-    let here = tmp.path().join("here");
-    let there = tmp.path().join("there");
+    // As the store keeps them: `/var` is `/private/var` on macOS, and a Windows temp
+    // directory is named `RUNNER~1` until canonicalized.
+    let root = tmp.path().canonicalize().unwrap();
+    let here = root.join("here");
+    let there = root.join("there");
     std::fs::create_dir_all(&here).unwrap();
     std::fs::create_dir_all(&there).unwrap();
     let recents = vec![
@@ -8746,7 +8754,8 @@ fn test_the_pane_only_promises_a_door_that_exists() {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        raw.replace('│', " ")
+        // `|` is the border in the ASCII glyph set.
+        raw.replace(['│', '|'], " ")
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")

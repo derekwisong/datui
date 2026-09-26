@@ -1394,8 +1394,11 @@ mod tests {
 
     #[test]
     fn not_signed_in_needs_azure_tooling() {
+        // Joined with the host's separator, which is what `split_paths` splits on:
+        // `:` is one long directory on Windows.
+        let path = std::env::join_paths(["/opt/az/bin", "/usr/bin"]).unwrap();
         let vars: HashMap<&str, String> = [
-            ("PATH", "/opt/az/bin:/usr/bin".to_string()),
+            ("PATH", path.to_string_lossy().into_owned()),
             (
                 "PSModulePath",
                 "/home/u/.local/share/powershell/Modules".to_string(),

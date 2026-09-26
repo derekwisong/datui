@@ -70,7 +70,7 @@ all of them except `--parse-strings`.
 | Option | Config key | What it does |
 |---|---|---|
 | `--delimiter 9` | | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
-| `--no-header true` | | The first row is data, not names |
+| `--no-header true` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
 | `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
 | `--skip-tail-rows N` | | Ignore a footer. Counts every row first: on a directory in a bucket, that downloads every file before the table opens |
 | `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`). Repeatable |

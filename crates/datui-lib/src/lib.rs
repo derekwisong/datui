@@ -5399,6 +5399,10 @@ pub struct ReadReport {
     pub left_out: Vec<(FileFormat, usize)>,
     /// How the files read differed. See [`OpenOptions::files_disagree`].
     pub files_disagree: crate::schema_union::Disagreement,
+    /// The reader the files were read with, where the read chose it: a directory's
+    /// commonest format, or a file's extension. Carried back as `OpenOptions::format`,
+    /// so what is on screen knows whether it has a header row to turn off.
+    pub format: Option<FileFormat>,
 }
 
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
@@ -6368,6 +6372,14 @@ pub struct App {
     load_from_home: bool,
     /// The path an open was asked for, recorded as a recent when its dataset installs.
     recent_on_install: Option<PathBuf>,
+    /// The paths an open was asked for, kept with the options it installed with once it
+    /// does: what `H` opens again with its header turned the other way.
+    opening: Option<Vec<PathBuf>>,
+    opened: Option<(Vec<PathBuf>, OpenOptions)>,
+    /// The URL `http_temp_path` was downloaded from. Opening it again reads that copy
+    /// rather than downloading it again, which is how `H` re-reads a downloaded file.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    downloaded_from: Option<PathBuf>,
     /// Where the last load-ahead was asked from. See [`App::load_ahead`].
     loaded_ahead_from: Option<(u64, usize, usize, usize)>,
     /// LazyFrame produced by a background scan, tagged with the generation that
@@ -7192,6 +7204,9 @@ impl App {
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
         self.load_from_home = false;
+        if let Some(paths) = self.opening.take() {
+            self.opened = Some((paths, options.clone()));
+        }
         if let Some(path) = self.recent_on_install.take() {
             // Off the opening path. Recording a recent is a convenience that nothing
             // waits on, and it takes a lock several instances may be contending for --
@@ -7776,6 +7791,10 @@ impl App {
             awaiting_dataset: false,
             load_from_home: false,
             recent_on_install: None,
+            opening: None,
+            opened: None,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            downloaded_from: None,
             loaded_ahead_from: None,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -8467,6 +8486,7 @@ impl App {
         self.awaiting_dataset = false;
         self.load_from_home = false;
         self.recent_on_install = None;
+        self.opening = None;
         // And a collect that was waiting behind this load goes with it. Left standing,
         // it runs the moment the load's lease comes back — reading the dataset the user
         // walked away from, at the home screen, with `busy` set and every key held.
@@ -9883,12 +9903,14 @@ impl App {
             let mut report = ReadReport {
                 left_out: options.left_out.clone(),
                 files_disagree: options.files_disagree,
+                format: None,
             };
             match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut report) {
                 Ok(lf) => {
                     let options = OpenOptions {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
+                        format: report.format.or(options.format),
                         ..options
                     };
                     let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -10775,10 +10797,22 @@ impl App {
         // the scan has reported what it passed over, the caller has said whether this
         // is a lake table's plain files, and the state that will carry the notes is in
         // hand. See `DataTableState::open_notes` for why they are not the other notes.
+        // A delimited file read with a header whose names are all numbers: its first
+        // row of data, most likely, which `H` reads as data instead.
+        let names_look_like_data = options.format.and_then(FileFormat::separator).is_some()
+            && options.has_header != Some(false)
+            && !crate::schema_union::names_are_names(
+                &state
+                    .schema
+                    .iter_names()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>(),
+            );
         state.set_open_notes(crate::notes::from_the_open(
             &options.left_out,
             options.read_as_plain_files_of,
             options.files_disagree,
+            names_look_like_data,
         ));
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
@@ -11389,6 +11423,7 @@ impl App {
                         || (path.is_file() && crate::discover::has_parquet_magic(path))))
                 .then_some(FileFormat::Parquet)
             });
+        report.format = effective_format;
 
         let lf = if paths.len() > 1 {
             match effective_format {
@@ -15413,6 +15448,21 @@ impl App {
         match event.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => Some(AppEvent::Exit),
             KeyCode::Char('R') => Some(AppEvent::Reset),
+            // Read the dataset again with its first row the other way: as column names,
+            // or as data under `column_1`, `column_2`, …. Only delimited text has a
+            // header to turn off; anything else carries its own names, and this does
+            // nothing there.
+            KeyCode::Char('H') => {
+                let (paths, options) = self.opened.clone()?;
+                options.format.and_then(FileFormat::separator)?;
+                let options = OpenOptions {
+                    has_header: Some(!options.has_header.unwrap_or(true)),
+                    ..options
+                };
+                self.set_loading_phase("Scanning input", 10);
+                self.name_what_is_loading(paths[0].clone());
+                Some(AppEvent::Open(paths, options))
+            }
             KeyCode::Char('N') => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.toggle_row_numbers();
@@ -16091,9 +16141,15 @@ impl App {
                 if &expanded != paths {
                     return Some(AppEvent::Open(expanded, options.clone()));
                 }
+                // The last download goes, unless this is opening it again.
                 #[cfg(any(feature = "http", feature = "cloud"))]
-                if let Some(ref p) = self.http_temp_path.take() {
-                    let _ = std::fs::remove_file(p);
+                if let Some(p) = self.http_temp_path.take() {
+                    if paths.len() == 1 && self.downloaded_from.as_ref() == Some(&paths[0]) {
+                        self.http_temp_path = Some(p);
+                    } else {
+                        let _ = std::fs::remove_file(&p);
+                        self.downloaded_from = None;
+                    }
                 }
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
@@ -16126,6 +16182,7 @@ impl App {
                 // what is installed may be a download's temporary copy.
                 let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
                 self.recent_on_install = (!is_local || first.exists()).then(|| first.clone());
+                self.opening = Some(paths.clone());
                 let file_size = match source::input_source(first) {
                     source::InputSource::Local(_) => {
                         std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
@@ -16153,6 +16210,8 @@ impl App {
             AppEvent::OpenLazyFrame(lf, options) => {
                 // A frame handed over has no path to go back to.
                 self.recent_on_install = None;
+                self.opening = None;
+                self.opened = None;
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
                 // A new counter for a new load. Abandoning a load cancels nothing —
@@ -16249,6 +16308,15 @@ impl App {
                     }
                     Some(AppEvent::DoDecompress(paths.clone(), options.clone()))
                 } else {
+                    // Opened again, and downloaded already: read the copy on hand. `H`
+                    // re-reads a downloaded file this way rather than fetching it again.
+                    #[cfg(any(feature = "http", feature = "cloud"))]
+                    if paths.len() == 1
+                        && self.downloaded_from.as_ref() == Some(&paths[0])
+                        && let Some(temp) = self.http_temp_path.clone().filter(|t| t.exists())
+                    {
+                        return Some(AppEvent::DoLoadFromHttpTemp(temp, options.clone()));
+                    }
                     // The size probe is a network round trip, so it runs off the event
                     // thread and the confirmation modal is raised when it answers.
                     #[cfg(feature = "http")]
@@ -16706,6 +16774,10 @@ impl App {
                     return None;
                 }
                 self.http_temp_path = Some(temp_path.clone());
+                // The URL the load was opened as, which is what opening it again names.
+                if let LoadingState::Loading { file_path, .. } = &self.loading_state {
+                    self.downloaded_from = file_path.clone();
+                }
                 if let LoadingState::Loading {
                     file_path,
                     file_size,
@@ -16868,7 +16940,11 @@ impl App {
                     return None;
                 }
                 let path = paths[0].clone();
-                let options_owned = options.clone();
+                // Only a CSV comes this way; said, so it can have its header turned off.
+                let options_owned = OpenOptions {
+                    format: options.format.or(Some(FileFormat::Csv)),
+                    ..options.clone()
+                };
                 let schema_slot = self.pending_schema_result.clone();
                 self.spawn_bg("Decompressing...", move |task_gen, tx| {
                     match Self::decompressed_csv_state(&path, &options_owned) {
@@ -17368,6 +17444,7 @@ impl App {
                     // Generation matched but slot was empty or stale — loading failed silently.
                     self.awaiting_dataset = false;
                     self.recent_on_install = None;
+                    self.opening = None;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
@@ -17736,6 +17813,7 @@ impl App {
                     let back_home = self.awaiting_dataset && self.load_from_home;
                     self.load_from_home = false;
                     self.recent_on_install = None;
+                    self.opening = None;
                     self.awaiting_dataset = false;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;

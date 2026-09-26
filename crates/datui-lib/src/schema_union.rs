@@ -417,7 +417,7 @@ fn is_an_empty_file(schema: &[(String, DataType)]) -> bool {
 /// vanishingly rare and a row of them is the common headerless shape. Where it fires the
 /// answer is "no evidence", which leaves the directory as its names suggested and the
 /// read to union what it finds.
-fn names_are_names(names: &[String]) -> bool {
+pub(crate) fn names_are_names(names: &[String]) -> bool {
     !names.is_empty() && !names.iter().all(|n| n.trim().parse::<f64>().is_ok())
 }
 

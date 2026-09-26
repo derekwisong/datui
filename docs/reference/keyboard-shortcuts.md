@@ -32,6 +32,7 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>N</kbd> | Toggle row numbers |
 | <kbd>F</kbd> | Toggle [digit grouping](../user-guide/configuration.md#number-formatting) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
+| <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |

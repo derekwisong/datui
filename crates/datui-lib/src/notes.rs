@@ -496,6 +496,7 @@ pub fn from_the_open(
     left_out: &[(crate::FileFormat, usize)],
     lake: Option<&str>,
     files_differ: crate::schema_union::Disagreement,
+    names_look_like_data: bool,
 ) -> Vec<Note> {
     let mut notes = Vec::new();
     // What the read had to do to stack them, in the words of what it actually found.
@@ -522,11 +523,24 @@ pub fn from_the_open(
         notes.push(Note {
             summary: concat!(
                 "these files look like they have no header row, so datui is reading ",
-                "each file's first row of data as its column names — pass ",
-                "--no-header to read those rows as data instead"
+                "each file's first row of data as its column names — press H, or pass ",
+                "--no-header, to read those rows as data instead"
             )
             .to_string(),
             scope: scope(),
+            read_as_text: None,
+        });
+    }
+    // The same shape in one file: every column name a number, which a header almost
+    // never is and a first row of data often is.
+    if names_look_like_data && !files_differ.headerless {
+        notes.push(Note {
+            summary: concat!(
+                "the column names look like data, as if the file has no header row — ",
+                "press H to read the first row as data"
+            )
+            .to_string(),
+            scope: "from the column names".to_string(),
             read_as_text: None,
         });
     }
@@ -676,6 +690,7 @@ mod tests {
                 types: true,
                 headerless: true,
             },
+            false,
         );
         assert!(notes.len() >= 3, "{notes:?}");
         for note in &notes {

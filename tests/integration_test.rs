@@ -7799,8 +7799,12 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
 
     // The note and the chip, from that one field. Both, because the note is a tab away
     // and the chip is in the corner: each on its own is missable.
-    let notes =
-        datui::notes::from_the_open(&[], options.read_as_plain_files_of, Default::default());
+    let notes = datui::notes::from_the_open(
+        &[],
+        options.read_as_plain_files_of,
+        Default::default(),
+        false,
+    );
     assert_eq!(notes.len(), 1, "one note, about the read");
     assert!(
         notes[0].summary.contains("Delta") && notes[0].summary.contains("deleted rows"),
@@ -8670,6 +8674,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
             headerless: true,
             ..Default::default()
         },
+        false,
     );
     assert!(
         said.iter()
@@ -9374,4 +9379,140 @@ fn test_tsv_and_psv_take_every_csv_option() {
         assert_eq!(df.height(), 2, "{name}");
         assert_eq!(df.column("name").unwrap().null_count(), 1, "{name}");
     }
+}
+
+/// Run the app's events, from `first`, until it is idle with nothing left to do,
+/// agreeing to any download it asks about.
+fn settle_from(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: AppEvent) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut next = Some(first);
+    while std::time::Instant::now() < deadline {
+        match next.take() {
+            Some(ev) => next = app.event(&ev),
+            // A download is asked about first; Yes has the focus.
+            None if app.awaiting_download_confirmation() => next = Some(key(KeyCode::Enter)),
+            None => match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                Ok(ev) => next = Some(ev),
+                Err(_) if !app.is_busy() => return,
+                Err(_) => {}
+            },
+        }
+    }
+    panic!("the app did not settle");
+}
+
+fn column_names(app: &App) -> Vec<String> {
+    app.data_table_state
+        .as_ref()
+        .expect("a dataset")
+        .schema
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect()
+}
+
+/// `H` reads a headerless CSV's first row as data, under generated names, and back.
+/// The Info notes say so first: every column name a number is a first row of data.
+#[test]
+fn h_turns_a_csv_header_off_and_on() {
+    common::isolate_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("adult.csv");
+    std::fs::write(&path, "39,77516\n50,83311\n38,215646\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![path], OpenOptions::default()),
+    );
+    assert_eq!(column_names(&app), ["39", "77516"]);
+    let notes = app.data_table_state.as_ref().unwrap().notes();
+    assert!(
+        notes.iter().any(|n| n.summary.contains("press H")),
+        "{notes:?}"
+    );
+
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    assert_eq!(column_names(&app), ["column_1", "column_2"]);
+    let notes = app.data_table_state.as_ref().unwrap().notes();
+    assert!(
+        !notes.iter().any(|n| n.summary.contains("press H")),
+        "read as data, there is nothing to say: {notes:?}"
+    );
+
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    assert_eq!(column_names(&app), ["39", "77516"]);
+}
+
+/// A format that carries its own column names has no header to turn off.
+#[test]
+fn h_does_nothing_on_parquet() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let path = PathBuf::from("tests/sample-data/people.parquet");
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![path], OpenOptions::default()),
+    );
+    let before = column_names(&app);
+    assert!(app.event(&key(KeyCode::Char('H'))).is_none());
+    assert!(!app.is_busy());
+    assert_eq!(column_names(&app), before);
+}
+
+/// A CSV over HTTP is read again from the copy already downloaded, not fetched again.
+#[test]
+fn h_rereads_a_download_from_the_copy_on_hand() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    common::isolate_cache();
+    let body = "39,77516\n50,83311\n38,215646\n";
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/adult.csv", listener.local_addr().unwrap());
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let counter = fetched.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let get = head.starts_with(b"GET");
+            if get {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{}",
+                body.len(),
+                if get { body } else { "" }
+            );
+        }
+    });
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![PathBuf::from(&url)], OpenOptions::default()),
+    );
+    assert_eq!(column_names(&app), ["39", "77516"]);
+    let downloads = fetched.load(Ordering::SeqCst);
+    assert!(downloads >= 1, "it was downloaded");
+
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    assert_eq!(column_names(&app), ["column_1", "column_2"]);
+    assert_eq!(
+        fetched.load(Ordering::SeqCst),
+        downloads,
+        "read again from the copy on hand"
+    );
 }

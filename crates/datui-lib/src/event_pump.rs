@@ -1220,4 +1220,175 @@ mod tests {
         assert!(held(&p).is_empty());
         assert_eq!(p.app.home.filter, "x");
     }
+
+    /// A pump with `rows` rows loaded, named `r0000` on, so a row on screen can be
+    /// told from every other.
+    fn numbered_pump(rows: usize) -> (EventPump, tempfile::TempDir) {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("numbered.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        writeln!(file, "name").unwrap();
+        for i in 0..rows {
+            writeln!(file, "r{i:04}").unwrap();
+        }
+        drop(file);
+
+        let mut pump = pump();
+        pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut pump);
+        // The frame sizes the table, and the collect it owes runs, as in `run()`.
+        rendered(&mut pump.app);
+        if let Some(state) = pump.app.data_table_state.as_mut()
+            && std::mem::take(&mut state.needs_recollect)
+        {
+            pump.app.spawn_async_collect(App::LOADING_BUFFER);
+        }
+        settle(&mut pump);
+        rendered(&mut pump.app);
+        (pump, dir)
+    }
+
+    fn table(pump: &EventPump) -> &crate::widgets::datatable::DataTableState {
+        pump.app.data_table_state.as_ref().expect("a dataset")
+    }
+
+    /// Page inside the buffer until the view is near enough its end to load ahead.
+    fn page_to_the_edge(pump: &mut EventPump) {
+        for _ in 0..50 {
+            if table(pump).wants_to_load_ahead() {
+                return;
+            }
+            pump.terminal_key(plain(KeyCode::PageDown)).unwrap();
+            assert!(
+                !pump.app.is_busy(),
+                "paging inside the buffer fetches nothing"
+            );
+            rendered(&mut pump.app);
+        }
+        panic!("the view never came near the end of the buffer");
+    }
+
+    /// Paging towards the end of the buffer grows it before the view gets there, and
+    /// nothing waits on that: no `busy`, no message, keys still live.
+    #[test]
+    fn paging_near_the_end_of_the_buffer_loads_ahead_quietly() {
+        let (mut p, _dir) = numbered_pump(2000);
+        page_to_the_edge(&mut p);
+        let end = table(&p).buffered_end();
+
+        p.app.request_what_the_frame_needs();
+        assert!(
+            p.app
+                .collect_inflight
+                .is_some_and(|inflight| !inflight.waited_on),
+            "a load-ahead went out"
+        );
+        assert!(!p.app.is_busy(), "and nothing waits on it");
+        assert_eq!(p.app.status_message, None);
+
+        for _ in 0..100 {
+            p.wait_and_drain(Duration::from_millis(100)).unwrap();
+            if p.app.collect_inflight.is_none() {
+                break;
+            }
+        }
+        assert!(
+            table(&p).buffered_end() > end,
+            "the buffer grew ahead of the view"
+        );
+        assert!(!p.app.is_busy());
+
+        // Asked once for a position: the next frame does not ask again.
+        let generation = p.app.task_generation;
+        p.app.request_what_the_frame_needs();
+        p.app.request_what_the_frame_needs();
+        assert!(p.app.task_generation - generation <= 1);
+    }
+
+    /// PageDown held while a load-ahead is out waits on it rather than fetching the same
+    /// rows again, and the repeats become one press: one fetch, nothing piled up.
+    #[test]
+    fn holding_pagedown_during_a_load_ahead_waits_on_it() {
+        let (mut p, _dir) = numbered_pump(2000);
+        page_to_the_edge(&mut p);
+        let state = table(&p);
+        let (start, end, page) = (
+            state.buffered_start(),
+            state.buffered_end(),
+            state.visible_rows,
+        );
+        let dataset = state.len_generation();
+        // Out, and bringing the next few pages: no thread, so it stays out.
+        let generation = p.app.task_generation;
+        p.app.collect_inflight = Some(crate::InflightCollect {
+            began: std::time::Instant::now(),
+            files: None,
+            generation,
+            dataset,
+            start,
+            end: end + 10 * page,
+            waited_on: false,
+        });
+
+        // As `run()` takes them: a key, then whatever it set going.
+        for _ in 0..30 {
+            p.terminal_key(plain(KeyCode::PageDown)).unwrap();
+            p.drain().unwrap();
+        }
+        assert_eq!(
+            p.app.task_generation, generation,
+            "no second fetch went out"
+        );
+        assert!(
+            p.app
+                .collect_inflight
+                .is_some_and(|inflight| inflight.waited_on),
+            "the page that left the buffer waits on the load-ahead"
+        );
+        assert!(p.app.is_busy());
+        assert!(held(&p).len() <= 1, "held repeats coalesce: {:?}", held(&p));
+    }
+
+    /// A page whose rows are still coming draws the last page that was whole, not a
+    /// page of blanks under the new position.
+    #[test]
+    fn a_page_still_loading_draws_the_last_whole_one() {
+        let (mut p, _dir) = numbered_pump(2000);
+        assert!(rendered(&mut p.app).contains("r0000"));
+        let state = p.app.data_table_state.as_mut().unwrap();
+        assert!(
+            state.slide_table(1500),
+            "far past the buffer, so a fetch is owed"
+        );
+
+        let screen = rendered(&mut p.app);
+        assert!(screen.contains("r0000"), "the page before stays up");
+    }
+
+    /// A fetch goes unmentioned while it is young, so paging does not blink a sentence
+    /// over the key chips; one that takes a while says what it is doing.
+    #[test]
+    fn the_bar_says_loading_only_once_a_fetch_takes_a_while() {
+        let (mut p, _dir) = numbered_pump(200);
+        let dataset = table(&p).len_generation();
+        p.app.busy = true;
+        p.app.status_message = Some(App::LOADING_BUFFER.to_string());
+        p.app.collect_inflight = Some(crate::InflightCollect {
+            began: std::time::Instant::now(),
+            files: None,
+            generation: p.app.task_generation,
+            dataset,
+            start: 0,
+            end: 200,
+            waited_on: true,
+        });
+        assert!(!rendered(&mut p.app).contains("Loading buffer"));
+
+        if let Some(inflight) = p.app.collect_inflight.as_mut() {
+            inflight.began -= Duration::from_secs(1);
+        }
+        assert!(rendered(&mut p.app).contains("Loading buffer"));
+    }
 }

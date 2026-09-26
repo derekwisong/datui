@@ -200,6 +200,8 @@ pub struct DataTableState {
     /// When set, column scroll (scroll_left/scroll_right) only re-slices columns without re-collecting from LazyFrame.
     buffered_df: Option<DataFrame>,
     proximity_threshold: usize,
+    /// The first row of the last page drawn whole. See [`Self::start_to_draw`].
+    drawn_start: usize,
     row_numbers: bool,
     row_start_index: usize,
     /// Last applied pivot spec, if current lf is result of a pivot. Used for templates.
@@ -639,8 +641,9 @@ impl DataTableState {
             buffered_end_row: 0,
             buffered_df: None,
             proximity_threshold: 0, // Will be set when visible_rows is known
-            row_numbers: false,     // Will be set from options
-            row_start_index: 1,     // Will be set from options
+            drawn_start: 0,
+            row_numbers: false, // Will be set from options
+            row_start_index: 1, // Will be set from options
             last_pivot_spec: None,
             last_melt_spec: None,
             partition_columns: None,
@@ -752,6 +755,7 @@ impl DataTableState {
             buffered_end_row: 0,
             buffered_df: None,
             proximity_threshold: 0,
+            drawn_start: 0,
             row_numbers: options.row_numbers,
             row_start_index: options.row_start_index,
             last_pivot_spec: None,
@@ -3423,7 +3427,7 @@ impl DataTableState {
         }
         // Update proximity threshold based on visible rows
         if self.visible_rows > 0 {
-            self.proximity_threshold = self.visible_rows;
+            self.proximity_threshold = self.proximity();
         }
 
         // Run len() only when lf has changed (query, filter, sort, pivot, melt, reset, drill).
@@ -3891,7 +3895,7 @@ impl DataTableState {
         num_rows_override: Option<usize>,
     ) -> Option<CollectRequest> {
         if self.visible_rows > 0 {
-            self.proximity_threshold = self.visible_rows;
+            self.proximity_threshold = self.proximity();
         }
 
         if let Some(n) = num_rows_override {
@@ -5413,6 +5417,71 @@ impl DataTableState {
                     Some(scroll_df)
                 };
             }
+        }
+    }
+
+    /// Whether the view is inside the buffer and within a page of one of its ends, with
+    /// more data past that end: where a collect would grow the buffer, if one ran. A
+    /// scroll that stays inside the buffer runs none, so the growing waited until the
+    /// view had left it — and the page was blank while it happened.
+    pub fn wants_to_load_ahead(&self) -> bool {
+        if self.visible_rows == 0
+            || self.buffered_df.is_none()
+            || !self.page_on_hand(self.start_row)
+        {
+            return false;
+        }
+        let near = self.proximity();
+        let view_end = self.start_row
+            + self
+                .visible_rows
+                .min(self.num_rows_bound().saturating_sub(self.start_row));
+        let behind =
+            self.start_row - self.buffered_start_row <= near && self.buffered_start_row > 0;
+        let ahead = self.buffered_end_row - view_end <= near
+            && self.buffered_end_row < self.num_rows_bound();
+        behind || ahead
+    }
+
+    /// How close the view comes to an end of the buffer before the buffer grows past
+    /// it: half the reach ahead, and never under a page. A page was the whole margin, and
+    /// a cloud fetch takes longer than the next PageDown does to cross it.
+    fn proximity(&self) -> usize {
+        (self.reach_rows(self.pages_lookahead) / 2).max(self.visible_rows)
+    }
+
+    /// Where the view and the buffer are, to tell one load-ahead attempt from the next.
+    pub fn buffer_position(&self) -> (u64, usize, usize, usize) {
+        (
+            self.len_generation(),
+            self.start_row,
+            self.buffered_start_row,
+            self.buffered_end_row,
+        )
+    }
+
+    /// Whether every row of the page starting at `start` is in the buffer.
+    fn page_on_hand(&self, start: usize) -> bool {
+        let bound = self.num_rows_bound();
+        let end = start + self.visible_rows.min(bound.saturating_sub(start));
+        self.buffered_df.is_some()
+            && self.buffered_end_row > 0
+            && start >= self.buffered_start_row
+            && end <= self.buffered_end_row
+    }
+
+    /// The first row to draw: the view's own once its rows are on hand, and until then
+    /// the last page that was drawn whole. The view moves the moment a key asks, before
+    /// its rows are fetched, and drawn from there it was half a page of rows over half a
+    /// page of nothing until the fetch landed.
+    fn start_to_draw(&mut self) -> usize {
+        if self.page_on_hand(self.start_row) {
+            self.drawn_start = self.start_row;
+            self.start_row
+        } else if self.page_on_hand(self.drawn_start) {
+            self.drawn_start
+        } else {
+            self.start_row
         }
     }
 
@@ -7172,6 +7241,8 @@ impl StatefulWidget for DataTable {
         }
         // If suppress_error_display is true, continue rendering the table normally
 
+        let start_row = state.start_to_draw();
+
         // Captures the scrollable area plus whether columns exist off-screen to the left/right,
         // so a header-row indicator can be drawn after the table is rendered.
         // Tuple: (scrollable_area, more_columns_left, columns_hidden_to_the_right).
@@ -7179,7 +7250,7 @@ impl StatefulWidget for DataTable {
 
         // Calculate row number column width if enabled
         let row_num_width = if state.row_numbers {
-            let max_row_num = state.start_row + state.visible_rows.saturating_sub(1) + 1; // +1 for 1-based, +1 for potential
+            let max_row_num = start_row + state.visible_rows.saturating_sub(1) + 1; // +1 for 1-based, +1 for potential
             max_row_num.to_string().len().max(1) as u16 + 1 // +1 for spacing
         } else {
             0
@@ -7233,7 +7304,7 @@ impl StatefulWidget for DataTable {
                     row_num_area,
                     buf,
                     RowNumbersParams {
-                        start_row: state.start_row,
+                        start_row,
                         visible_rows: state.visible_rows,
                         num_rows: state.num_rows,
                         row_start_index: state.row_start_index,
@@ -7263,7 +7334,7 @@ impl StatefulWidget for DataTable {
                 };
 
                 // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let offset = start_row.saturating_sub(state.buffered_start_row);
                 let slice_len = state
                     .visible_rows
                     .min(locked_df.height().saturating_sub(offset));
@@ -7275,7 +7346,7 @@ impl StatefulWidget for DataTable {
                         buf,
                         &mut state.table_state,
                         false,
-                        state.start_row,
+                        start_row,
                     );
                 }
             }
@@ -7307,7 +7378,7 @@ impl StatefulWidget for DataTable {
             // Render scrollable columns
             if let Some(df) = state.df.as_ref() {
                 // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let offset = start_row.saturating_sub(state.buffered_start_row);
                 let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
                 if offset < df.height() && slice_len > 0 {
                     let sliced_df = df.slice(offset as i64, slice_len);
@@ -7318,7 +7389,7 @@ impl StatefulWidget for DataTable {
                         buf,
                         &mut state.table_state,
                         false,
-                        state.start_row,
+                        start_row,
                     );
                     scroll_indicator = Some((
                         adjusted_scrollable_area,
@@ -7341,7 +7412,7 @@ impl StatefulWidget for DataTable {
                     row_num_area,
                     buf,
                     RowNumbersParams {
-                        start_row: state.start_row,
+                        start_row,
                         visible_rows: state.visible_rows,
                         num_rows: state.num_rows,
                         row_start_index: state.row_start_index,
@@ -7358,7 +7429,7 @@ impl StatefulWidget for DataTable {
                 };
 
                 // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let offset = start_row.saturating_sub(state.buffered_start_row);
                 let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
                 if offset < df.height() && slice_len > 0 {
                     let sliced_df = df.slice(offset as i64, slice_len);
@@ -7369,7 +7440,7 @@ impl StatefulWidget for DataTable {
                         buf,
                         &mut state.table_state,
                         false,
-                        state.start_row,
+                        start_row,
                     );
                     scroll_indicator = Some((
                         data_area,
@@ -7379,7 +7450,7 @@ impl StatefulWidget for DataTable {
                 }
             } else {
                 // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let offset = start_row.saturating_sub(state.buffered_start_row);
                 let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
                 if offset < df.height() && slice_len > 0 {
                     let sliced_df = df.slice(offset as i64, slice_len);
@@ -7390,7 +7461,7 @@ impl StatefulWidget for DataTable {
                         buf,
                         &mut state.table_state,
                         false,
-                        state.start_row,
+                        start_row,
                     );
                     scroll_indicator = Some((
                         area,

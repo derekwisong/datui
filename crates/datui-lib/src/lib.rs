@@ -169,11 +169,12 @@ mod export_format_tests {
             dataset,
             start: 0,
             end: 50,
+            waited_on: true,
         });
 
         // The frame that sized the table asks again: the collect on its way covers
         // the view, so nothing new is planned.
-        assert!(app.spawn_async_collect("Loading buffer..."));
+        assert!(app.spawn_async_collect(App::LOADING_BUFFER));
         assert_eq!(app.task_generation, generation);
 
         // A filter changes the data underneath; those rows no longer answer.
@@ -2292,7 +2293,7 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
-        app.spawn_async_collect("Loading buffer...");
+        app.spawn_async_collect(App::LOADING_BUFFER);
 
         // Two answers are in flight here — the pass's and the collect's — and either
         // can reach the queue first. Taking whatever arrives first and calling it the
@@ -3830,7 +3831,7 @@ pub mod tests {
             "which is not the count the pass is bringing, and nothing else will take it"
         );
 
-        app.spawn_async_collect("Loading buffer...");
+        app.spawn_async_collect(App::LOADING_BUFFER);
         assert!(
             app.len_count_inflight.is_some(),
             "so it is taken, rather than the row count spinning while the query is open"
@@ -5114,6 +5115,12 @@ pub enum AppEvent {
     BackgroundCollectReady {
         generation: u64,
     },
+    /// A buffer collect failed. Reported as a `BackgroundError` when something waited
+    /// on it; a load-ahead's failure is left for the page that needs those rows.
+    BackgroundCollectFailed {
+        generation: u64,
+        message: String,
+    },
     /// Background task completed: exact row count for the current LazyFrame. Applied to
     /// `data_table_state` only if `len_generation` still matches (the data is unchanged).
     /// Runs concurrently with — and independently of — the first buffer paint, so the
@@ -6036,6 +6043,10 @@ struct InflightCollect {
     dataset: u64,
     start: usize,
     end: usize,
+    /// Whether anything waits on it. A load-ahead starts with nobody waiting: it sets no
+    /// `busy`, says nothing, and its end touches neither. A scroll that finds its rows
+    /// already on the way waits on it from then, and it ends like any collect.
+    waited_on: bool,
 }
 
 impl InflightCollect {
@@ -6356,6 +6367,8 @@ pub struct App {
     load_from_home: bool,
     /// The path an open was asked for, recorded as a recent when its dataset installs.
     recent_on_install: Option<PathBuf>,
+    /// Where the last load-ahead was asked from. See [`App::load_ahead`].
+    loaded_ahead_from: Option<(u64, usize, usize, usize)>,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -6885,7 +6898,7 @@ impl App {
             // dropped the buffer either way, so falling through is the difference
             // between a table and an empty one.
         }
-        self.spawn_async_collect("Loading buffer...");
+        self.spawn_async_collect(Self::LOADING_BUFFER);
     }
 
     /// Run a buffer collect that was asked for while other work was waiting on the
@@ -6980,6 +6993,55 @@ impl App {
     /// The wait while a directory named on the command line is looked at: which files it
     /// holds, and whether they are one table. Seconds, for a directory of large Parquet.
     pub const LOOKING_AT_A_DIRECTORY: &'static str = "Looking at the directory";
+
+    /// The wait while the rows for the view are fetched.
+    pub const LOADING_BUFFER: &'static str = "Loading buffer...";
+
+    /// How long a fetch goes unmentioned. A local page lands well inside it, and the key
+    /// chips staying put is the difference between paging and a bar that blinks a
+    /// sentence on every screen.
+    const A_FETCH_WORTH_SAYING: std::time::Duration = std::time::Duration::from_millis(300);
+
+    /// Grow the buffer before the view reaches its end, rather than once it has.
+    ///
+    /// Nothing waits on it: no `busy`, no message, and keys go on paging through the
+    /// rows on hand. One at a time — a scroll that outruns it either waits on it, when it
+    /// is bringing the rows asked for, or supersedes it by the generation, as any newer
+    /// collect does. Never when a bump would strand other work.
+    fn load_ahead(&mut self) {
+        if self.busy
+            || self.collect_owed.is_some()
+            || self
+                .collect_inflight
+                .is_some_and(|inflight| inflight.generation == self.task_generation)
+        {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        // Asked of each position once. Planning can give back the buffer on hand — a
+        // row group too large to add under the caps — and asking again every frame
+        // would plan it again every frame.
+        let position = state.buffer_position();
+        if !state.wants_to_load_ahead() || self.loaded_ahead_from == Some(position) {
+            return;
+        }
+        self.loaded_ahead_from = Some(position);
+        if self.work_a_bump_would_strand() {
+            return;
+        }
+        self.spawn_collect(None);
+    }
+
+    /// Whether the bar is still keeping quiet about a fetch for the view.
+    fn fetch_too_young_to_mention(&self) -> bool {
+        self.status_message.as_deref() == Some(Self::LOADING_BUFFER)
+            && self.collect_inflight.is_some_and(|inflight| {
+                inflight.generation == self.task_generation
+                    && inflight.began.elapsed() < Self::A_FETCH_WORTH_SAYING
+            })
+    }
 
     /// Put the path on the loading screen, so a wait says what it is waiting for.
     fn name_what_is_loading(&mut self, path: PathBuf) {
@@ -7175,7 +7237,7 @@ impl App {
                 progress_percent: 70,
             };
         }
-        self.status_message = Some("Loading buffer...".to_string());
+        self.status_message = Some(Self::LOADING_BUFFER.to_string());
     }
 
     /// Ensures file path has an extension when user did not provide one; only adds
@@ -7191,6 +7253,12 @@ impl App {
     /// still unknown, so the first screen renders immediately. For large/partitioned/remote
     /// datasets the count can take a long time; it runs silently and concurrently.
     pub fn spawn_async_collect(&mut self, status: &str) -> bool {
+        self.spawn_collect(Some(status))
+    }
+
+    /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead that nothing
+    /// waits on. See [`InflightCollect::waited_on`].
+    fn spawn_collect(&mut self, status: Option<&str>) -> bool {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
@@ -7240,6 +7308,17 @@ impl App {
         let covered = self
             .collect_inflight
             .is_some_and(|inflight| inflight.covers(self.task_generation, state));
+        // The rows asked for are already on the way in a load-ahead: wait on that one
+        // rather than fetch them twice.
+        if covered
+            && let Some(status) = status
+            && let Some(inflight) = self.collect_inflight.as_mut()
+            && !inflight.waited_on
+        {
+            inflight.waited_on = true;
+            self.busy = true;
+            self.status_message = Some(status.to_string());
+        }
         let request = (!covered).then(|| state.prepare_async_collect(None));
         let Some(Some(request)) = request else {
             // Nothing to ride in: the view is covered, or the buffer on hand serves it.
@@ -7271,6 +7350,10 @@ impl App {
             if count.is_some() {
                 self.len_count_inflight = None;
             }
+            // A load-ahead is not owed: nobody asked for it.
+            let Some(status) = status else {
+                return false;
+            };
             self.collect_owed = Some((self.dataset_generation, status.to_string()));
             return true;
         }
@@ -7285,6 +7368,7 @@ impl App {
             dataset: state.len_generation(),
             start: request.buffer_start,
             end: request.buffer_end,
+            waited_on: status.is_some(),
         });
         let collect_slot = self.pending_collect_result.clone();
         self.spawn_bg_replaceable(status, move |task_gen, tx| {
@@ -7317,7 +7401,7 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(AppEvent::BackgroundError {
+                    let _ = tx.send(AppEvent::BackgroundCollectFailed {
                         generation: task_gen,
                         message: crate::error_display::user_message_from_polars(&e),
                     });
@@ -7345,7 +7429,7 @@ impl App {
         F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
     {
         let lease = self.lease_the_generation();
-        self.spawn_bg_inner(status, Some(lease), work);
+        self.spawn_bg_inner(Some(status), Some(lease), work);
     }
 
     /// Spawn background work whose answer, thrown away by a bump, is simply asked for
@@ -7357,21 +7441,25 @@ impl App {
     ///
     /// This is the one exemption, and `the_collect_is_the_only_unleased_spawn` fails if
     /// a second one appears.
-    fn spawn_bg_replaceable<F>(&mut self, status: &str, work: F)
+    ///
+    /// With no `status` it sets neither `busy` nor a message: a load-ahead.
+    fn spawn_bg_replaceable<F>(&mut self, status: Option<&str>, work: F)
     where
         F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
     {
         self.spawn_bg_inner(status, None, work);
     }
 
-    fn spawn_bg_inner<F>(&mut self, status: &str, lease: Option<GenerationLease>, work: F)
+    fn spawn_bg_inner<F>(&mut self, status: Option<&str>, lease: Option<GenerationLease>, work: F)
     where
         F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
     {
         let task_gen = self.task_generation;
         let tx = self.events.clone();
-        self.busy = true;
-        self.status_message = Some(status.to_string());
+        if let Some(status) = status {
+            self.busy = true;
+            self.status_message = Some(status.to_string());
+        }
         self.runtime.spawn_blocking(move || {
             // Dropped after `work` returns, and on the way out of a panic too.
             let _lease = lease;
@@ -7475,7 +7563,7 @@ impl App {
         F: FnOnce(&mut crate::widgets::datatable::DataTableState) -> bool,
     {
         let needs = self.data_table_state.as_mut().is_some_and(scroll);
-        if !needs || !self.spawn_async_collect("Loading buffer...") {
+        if !needs || !self.spawn_async_collect(Self::LOADING_BUFFER) {
             self.busy = false;
             self.status_message = None;
         }
@@ -7684,6 +7772,7 @@ impl App {
             awaiting_dataset: false,
             load_from_home: false,
             recent_on_install: None,
+            loaded_ahead_from: None,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -8278,6 +8367,9 @@ impl App {
     /// and the reading is a worker's job — this thread only decides what is worth
     /// asking about.
     pub fn request_what_the_frame_needs(&mut self) {
+        if self.input_mode == InputMode::Normal {
+            self.load_ahead();
+        }
         if self.input_mode != InputMode::Home {
             return;
         }
@@ -15371,7 +15463,7 @@ impl App {
                     self.sync_sort_filter_modal();
                 }
                 if drilled_up {
-                    self.spawn_async_collect("Loading buffer...");
+                    self.spawn_async_collect(Self::LOADING_BUFFER);
                     return None;
                 }
                 // Escape no longer exits - use 'q' or Ctrl-C to exit
@@ -15573,7 +15665,7 @@ impl App {
                     false
                 };
                 if drilled {
-                    self.spawn_async_collect("Loading buffer...");
+                    self.spawn_async_collect(Self::LOADING_BUFFER);
                 }
                 None
             }
@@ -16765,7 +16857,7 @@ impl App {
                 // to collect, and it is the one that takes the loading screen down. Two
                 // copies of that cleanup, one of them unreachable and less careful about
                 // an export's `loading_state`, is an invitation to fix the wrong one.
-                self.spawn_async_collect("Loading buffer...");
+                self.spawn_async_collect(Self::LOADING_BUFFER);
                 None
             }
             AppEvent::DoDecompress(paths, options) => {
@@ -16810,7 +16902,7 @@ impl App {
                 None
             }
             AppEvent::Collect => {
-                self.spawn_async_collect("Loading buffer...");
+                self.spawn_async_collect(Self::LOADING_BUFFER);
                 None
             }
             AppEvent::DoScrollDown => self.handle_scroll(|s| s.page_down()),
@@ -17146,6 +17238,12 @@ impl App {
             }
             AppEvent::BackgroundCollectReady { generation } => {
                 if *generation == self.task_generation {
+                    // A load-ahead's end is nobody's wait ending: whatever else is busy
+                    // meanwhile keeps its throbber and its message.
+                    let waited_on = self
+                        .collect_inflight
+                        .as_ref()
+                        .is_none_or(|inflight| inflight.waited_on);
                     // Timed to here rather than to the next paint: this is the moment
                     // the rows exist to be drawn, and the frame that draws them costs
                     // the same whatever the page cost to fetch.
@@ -17167,12 +17265,34 @@ impl App {
                     {
                         state.apply_async_collect(result);
                     }
-                    self.loading_state = LoadingState::Idle;
-                    self.status_message = None;
-                    self.busy = false;
+                    if waited_on {
+                        self.loading_state = LoadingState::Idle;
+                        self.status_message = None;
+                        self.busy = false;
+                    }
                 }
                 // Stale results (generation mismatch) are silently ignored —
                 // busy stays true until the current generation's result arrives.
+                None
+            }
+            AppEvent::BackgroundCollectFailed {
+                generation,
+                message,
+            } => {
+                if *generation != self.task_generation {
+                    return None;
+                }
+                let waited_on = self
+                    .collect_inflight
+                    .as_ref()
+                    .is_none_or(|inflight| inflight.waited_on);
+                if waited_on {
+                    return Some(AppEvent::BackgroundError {
+                        generation: *generation,
+                        message: message.clone(),
+                    });
+                }
+                self.collect_inflight = None;
                 None
             }
             AppEvent::BackgroundFootersJoined { .. } => {
@@ -17402,53 +17522,56 @@ impl App {
                 // next dataset behind it is the wait again, wearing a different hat.
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
-                self.spawn_bg_replaceable(Self::LOOKING_AT_A_DIRECTORY, move |task_gen, tx| {
-                    #[cfg(feature = "cloud")]
-                    if home::is_object_store_url(&looking) {
-                        let url = looking.to_string_lossy().into_owned();
-                        let peeked = wait_on_runtime(&runtime, async move {
-                            crate::cloud_browse::peek_kind(&url, &cloud).await
-                        })
-                        .and_then(Result::ok);
-                        let (kind, holds) = match peeked {
-                            Some((kind, holds)) => (kind, Some(Box::new(holds))),
-                            None => (discover::EntryKind::Unknown, None),
+                self.spawn_bg_replaceable(
+                    Some(Self::LOOKING_AT_A_DIRECTORY),
+                    move |task_gen, tx| {
+                        #[cfg(feature = "cloud")]
+                        if home::is_object_store_url(&looking) {
+                            let url = looking.to_string_lossy().into_owned();
+                            let peeked = wait_on_runtime(&runtime, async move {
+                                crate::cloud_browse::peek_kind(&url, &cloud).await
+                            })
+                            .and_then(Result::ok);
+                            let (kind, holds) = match peeked {
+                                Some((kind, holds)) => (kind, Some(Box::new(holds))),
+                                None => (discover::EntryKind::Unknown, None),
+                            };
+                            let _ = tx.send(AppEvent::DirectoryLookedAt {
+                                generation: task_gen,
+                                path: looking,
+                                kind,
+                                holds,
+                                options: Box::new(options),
+                            });
+                            return;
+                        }
+                        // A panic here used to unwind through `run()` and report a crash,
+                        // because the look was made on the way to the first frame. On a
+                        // worker it is swallowed with the dropped handle instead, and nothing
+                        // would ever be sent: the spinner would stay up and the directory
+                        // unopened for as long as the user waited. Caught, so the answer is
+                        // "a directory" and the home screen opens on it. Read the way this
+                        // open will read them, so the rule judges the directory the user is
+                        // about to see rather than one nobody will open.
+                        let as_read = Self::read_as(&options);
+                        let looked = std::panic::catch_unwind(|| {
+                            let mut entry = discover::Entry::directory(&looking);
+                            entry.kind = discover::EntryKind::Unknown;
+                            home::look_into_as(&entry, &as_read)
+                        });
+                        let kind = match looked {
+                            Ok(entry) => entry.kind,
+                            Err(_) => discover::EntryKind::Directory,
                         };
                         let _ = tx.send(AppEvent::DirectoryLookedAt {
                             generation: task_gen,
                             path: looking,
                             kind,
-                            holds,
+                            holds: None,
                             options: Box::new(options),
                         });
-                        return;
-                    }
-                    // A panic here used to unwind through `run()` and report a crash,
-                    // because the look was made on the way to the first frame. On a
-                    // worker it is swallowed with the dropped handle instead, and nothing
-                    // would ever be sent: the spinner would stay up and the directory
-                    // unopened for as long as the user waited. Caught, so the answer is
-                    // "a directory" and the home screen opens on it. Read the way this
-                    // open will read them, so the rule judges the directory the user is
-                    // about to see rather than one nobody will open.
-                    let as_read = Self::read_as(&options);
-                    let looked = std::panic::catch_unwind(|| {
-                        let mut entry = discover::Entry::directory(&looking);
-                        entry.kind = discover::EntryKind::Unknown;
-                        home::look_into_as(&entry, &as_read)
-                    });
-                    let kind = match looked {
-                        Ok(entry) => entry.kind,
-                        Err(_) => discover::EntryKind::Directory,
-                    };
-                    let _ = tx.send(AppEvent::DirectoryLookedAt {
-                        generation: task_gen,
-                        path: looking,
-                        kind,
-                        holds: None,
-                        options: Box::new(options),
-                    });
-                });
+                    },
+                );
                 None
             }
             AppEvent::DirectoryLookedAt {
@@ -17705,7 +17828,7 @@ impl App {
                     state.reset();
                     state.defer_collect = false;
                 }
-                self.spawn_async_collect("Loading buffer...");
+                self.spawn_async_collect(Self::LOADING_BUFFER);
                 // Clear active template when resetting
                 self.active_template_id = None;
                 None
@@ -18880,7 +19003,9 @@ impl Widget for &mut App {
                 }
             }
             LoadingState::Idle => {
-                if self.busy {
+                if self.fetch_too_young_to_mention() {
+                    None
+                } else if self.busy {
                     self.status_message.clone()
                 } else if let Some((read, total)) = self
                     .footers_this_frame
@@ -19511,7 +19636,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                 && state.needs_recollect
             {
                 state.needs_recollect = false;
-                app.spawn_async_collect("Loading buffer...");
+                app.spawn_async_collect(App::LOADING_BUFFER);
             }
         }
     }

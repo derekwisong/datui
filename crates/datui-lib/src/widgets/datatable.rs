@@ -252,6 +252,7 @@ struct GroupedView {
 /// The query bar a result came from, with its text. At most one is active at a time.
 enum ActiveQuery {
     Dsl(String),
+    #[cfg(feature = "sql")]
     Sql(String),
     Fuzzy(String),
 }
@@ -834,6 +835,7 @@ impl DataTableState {
         self.reset_view_state(locked_columns_count);
         match query {
             ActiveQuery::Dsl(q) => self.active_query = q,
+            #[cfg(feature = "sql")]
             ActiveQuery::Sql(q) => self.active_sql_query = q,
             ActiveQuery::Fuzzy(q) => self.active_fuzzy_query = q,
         }

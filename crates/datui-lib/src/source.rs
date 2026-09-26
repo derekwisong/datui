@@ -163,6 +163,7 @@ pub(crate) fn url_path_extension(url: &str) -> (String, Option<String>) {
 /// The extension a downloaded copy of `url` should keep, so it opens as what it is:
 /// `csv.gz` rather than `gz` for a compressed file, since a temporary `.gz` does not
 /// say what is inside it.
+#[cfg(any(feature = "http", feature = "cloud"))]
 pub(crate) fn download_suffix(url: &str) -> Option<String> {
     let (path_part, ext) = url_path_extension(url);
     let ext = ext?;
@@ -319,6 +320,7 @@ mod tests {
         assert_eq!(ext.as_deref(), Some("csv"));
     }
 
+    #[cfg(any(feature = "http", feature = "cloud"))]
     #[test]
     fn a_download_keeps_what_the_compressed_file_holds() {
         assert_eq!(

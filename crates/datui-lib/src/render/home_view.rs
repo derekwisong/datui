@@ -1782,6 +1782,17 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         width,
         ctx,
     );
+    // Why the row that reads a bucket directory whole cannot, before Enter is pressed:
+    // what it holds is on the row already, and nothing here has a reader.
+    #[cfg(feature = "cloud")]
+    if entry.opens_whole_directory
+        && let Some(why) = crate::App::why_a_door_reads_nothing(&entry)
+    {
+        lines.push(Line::from(Span::styled(
+            why,
+            Style::default().fg(ctx.warning),
+        )));
+    }
     // What the source's listing said about this place: an Azure account's
     // subscription, region and namespace.
     if let Some(details) = app.home.place_details(&entry.path) {
@@ -1932,6 +1943,14 @@ fn place_details(
     let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
     for (key, value, style) in facts {
         lines.push(fact_line(key, value, key_w, style, ctx));
+    }
+    // Said before Enter is pressed rather than after: Enter does nothing here.
+    if !crate::home::place_is_browsable(path) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "No listing over HTTP. Open a file under it.",
+            Style::default().fg(ctx.dimmed),
+        )));
     }
     lines
 }

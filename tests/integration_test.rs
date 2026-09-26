@@ -6522,6 +6522,9 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
         .map(|x| buf[(x, area.height - 1)].symbol().to_string())
         .collect();
     assert!(!bar.contains("Inside"), "{bar:?}");
+    // And the details pane says why, before Enter is pressed.
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(screen.contains("No listing over HTTP"), "{screen}");
 
     app.event(&key(KeyCode::Enter));
     assert_eq!(app.home.browsing, None);
@@ -6533,8 +6536,10 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
         "{:?}",
         app.home.status
     );
+    // The line answers the last key: the next one takes it down.
     app.event(&key(KeyCode::Right));
     assert_eq!(app.home.browsing, None);
+    assert_eq!(app.home.status, None, "gone at the next key");
 }
 
 /// The bar's count is of what is listed, which the header and the `more` row agree on.
@@ -6785,6 +6790,17 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
     );
 }
 
+/// The note on the heading of the directory being browsed, once its listing is in:
+/// where entering a lake table says the table itself is not read.
+fn lake_heading(app: &mut App) -> String {
+    app.home.rebuild(&[], &[]);
+    app.home
+        .sections
+        .first()
+        .and_then(|section| section.subtitle.clone())
+        .unwrap_or_default()
+}
+
 /// A Delta table's root is not a directory of Parquet files, and the home screen says so.
 ///
 /// Its data files agree on a schema, so the one-table rule called it `multi` and Enter
@@ -6857,9 +6873,9 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
         "Enter went inside the table"
     );
     assert!(app.data_table_state.is_none(), "and opened nothing");
-    let status = app.home.status.clone().unwrap_or_default();
+    let status = lake_heading(&mut app);
     assert!(
-        status.contains("Delta") && status.contains("not read"),
+        status.contains("delta") && status.contains("not read"),
         "and says why: {status:?}"
     );
 }
@@ -6896,9 +6912,9 @@ fn test_a_lake_table_typed_as_a_path_is_gone_inside_not_opened() {
         Some(table.as_path()),
         "the path went inside the table"
     );
-    let status = app.home.status.clone().unwrap_or_default();
+    let status = lake_heading(&mut app);
     assert!(
-        status.contains("Delta") && status.contains("not read"),
+        status.contains("delta") && status.contains("not read"),
         "and says why: {status:?}"
     );
 }
@@ -7158,9 +7174,9 @@ fn test_right_into_a_lake_table_says_why() {
     )));
 
     assert_eq!(app.home.browsing.as_deref(), Some(table.as_path()));
-    let status = app.home.status.clone().unwrap_or_default();
+    let status = lake_heading(&mut app);
     assert!(
-        status.contains("Delta") && status.contains("not read"),
+        status.contains("delta") && status.contains("not read"),
         "→ says why it is showing files rather than a table: {status:?}"
     );
 }
@@ -7245,9 +7261,9 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
         Some(table.as_path()),
         "the worker found a Delta root, and Enter went inside it"
     );
-    let status = app.home.status.clone().unwrap_or_default();
+    let status = lake_heading(&mut app);
     assert!(
-        status.contains("Delta") && status.contains("not read"),
+        status.contains("delta") && status.contains("not read"),
         "and says why: {status:?}"
     );
 }
@@ -7807,9 +7823,9 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     up.home.selected = row;
     assert!(up.event(&key(KeyCode::Enter)).is_none());
     assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
-    let said = up.home.status.clone().unwrap_or_default();
+    let said = lake_heading(&mut up);
     assert!(
-        said.contains("Delta") && said.contains("files under it"),
+        said.contains("delta") && said.contains("not read"),
         "the row above is where datui says it does not read the table: {said:?}"
     );
 }
@@ -8320,12 +8336,8 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
     );
     assert_eq!(d.home.browsing.as_deref(), Some(delta.as_path()));
     assert!(
-        d.home
-            .status
-            .as_deref()
-            .is_some_and(|s| s.contains("Delta")),
-        "and it says why: {:?}",
-        d.home.status
+        lake_heading(&mut d).contains("delta"),
+        "and its heading says why"
     );
 
     // And the read really happens: the whole chain, look and all, is the table.

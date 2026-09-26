@@ -5148,7 +5148,7 @@ fn a_load_chosen_at_home_fails_at_home() {
     // The one that did load is, and recording is off-thread, so that is waited for.
     let cache = datui::CacheManager::new("datui").expect("cache");
     let recorded = |path: &std::path::Path| {
-        let path = path.canonicalize().unwrap();
+        let path = datui::canonical::canonicalize(path).unwrap();
         cache.load_recents().contains(&path)
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

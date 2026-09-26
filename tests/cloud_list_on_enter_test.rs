@@ -102,6 +102,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     // SAFETY: the only test in this binary, and set before the runtime starts.
     unsafe {
         std::env::set_var("DATUI_TEST_KEY", "key");
+        std::env::set_var("GONE_KEY", "gone-key");
         std::env::set_var("DATUI_TEST_SECRET", "secret");
         std::env::set_var("CACHED_KEY", "cached-key");
         std::env::set_var("CACHED_SECRET", "cached-secret");
@@ -110,19 +111,23 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
         std::env::set_var("AWS_SECRET_ACCESS_KEY", "found-secret");
     }
     let (endpoint, requests) = counting_server("fast-bucket");
+    // Keys of their own: the same server with the same key would be one source.
+    let lab = |name: &str, key: &str| datui::config::CloudSourceConfig {
+        name: name.to_string(),
+        kind: Some("s3".to_string()),
+        endpoint_url: Some(endpoint.clone()),
+        region: Some("us-east-1".to_string()),
+        access_key_id_env: Some(key.to_string()),
+        secret_access_key_env: Some("DATUI_TEST_SECRET".to_string()),
+        ..Default::default()
+    };
 
     let mut config = datui::config::AppConfig::default();
     config.data.use_desktop_recents = false;
     config.cloud.sources = vec![
-        datui::config::CloudSourceConfig {
-            name: "lab".to_string(),
-            kind: Some("s3".to_string()),
-            endpoint_url: Some(endpoint),
-            region: Some("us-east-1".to_string()),
-            access_key_id_env: Some("DATUI_TEST_KEY".to_string()),
-            secret_access_key_env: Some("DATUI_TEST_SECRET".to_string()),
-            ..Default::default()
-        },
+        lab("lab", "DATUI_TEST_KEY"),
+        // Hidden from elsewhere after its row is drawn.
+        lab("gone", "GONE_KEY"),
         // AWS itself, so its buckets are plain `s3://bucket` URLs that need the source
         // remembered. Never listed here: a request to it would leave the machine.
         datui::config::CloudSourceConfig {
@@ -178,7 +183,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     // Long enough for a listing that was going to start to have reached the server.
     pump(&mut app, &rx, 1, |_| false);
     let ids: Vec<&str> = app.home.cloud.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["cached", "lab"], "found logins are not shown");
+    assert_eq!(ids, ["cached", "gone", "lab"], "found logins are not shown");
     assert_eq!(requests.load(Ordering::SeqCst), 0, "no request at launch");
     let lab = source(&app, "lab");
     assert_eq!(lab.status, datui::home::CloudStatus::Unlisted);
@@ -220,4 +225,24 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     app.event(&key(crossterm::event::KeyCode::Enter));
     pump(&mut app, &rx, 1, |_| false);
     assert_eq!(requests.load(Ordering::SeqCst), 1, "listed once a session");
+
+    // A source gone since its row was drawn says so, rather than waiting for good.
+    app.event(&key(crossterm::event::KeyCode::Backspace));
+    assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
+        && row_shown(app, "gone")));
+    datui::CacheManager::new("datui")
+        .expect("isolated cache")
+        .hide_cloud_source("gone");
+    select(&mut app, "gone");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    assert!(
+        pump(&mut app, &rx, 5, |app| matches!(
+            &source(app, "gone").status,
+            datui::home::CloudStatus::Failed { short, .. } if short == "not found"
+        )),
+        "{:?}",
+        source(&app, "gone")
+    );
+    assert!(app.home.awaiting_listing().is_none(), "nothing to wait for");
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
 }

@@ -291,9 +291,10 @@ wins, and nothing is exported, so no program datui starts sees them. It is off
 unless you list files: reading whatever `.env` sits in the current directory,
 unasked, would be reading secrets you did not mean to hand over.
 
-`discover` and `list_on_start` are described in
-[The Home Screen](home-screen.md#which-sources-appear); `--cloud-discover`
-overrides `discover` for one run.
+See [The Home Screen](home-screen.md) for
+[`discover`](home-screen.md#which-sources-appear) and
+[`list_on_start`](home-screen.md#loading). `--cloud-discover` overrides `discover`
+for one run.
 
 `instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
 an EC2 instance role, a GCE service account, an Azure VM's managed identity. That

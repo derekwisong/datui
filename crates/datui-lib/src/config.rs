@@ -497,8 +497,7 @@ pub struct CloudConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discover: Option<CloudDiscover>,
     /// List every source's buckets when the home screen opens. Off: a source is listed
-    /// when it is entered or on Ctrl+R, so launching datui sends no request and runs no
-    /// credential command.
+    /// when it is entered or on Ctrl+R, and its credential command runs only then.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list_on_start: Option<bool>,
 }
@@ -574,13 +573,8 @@ impl TryFrom<CloudDiscoverValue> for CloudDiscover {
         match value {
             CloudDiscoverValue::Switch(true) => Ok(CloudDiscover::All),
             CloudDiscoverValue::Switch(false) => Ok(CloudDiscover::None),
-            CloudDiscoverValue::Word(word) => match word.trim().to_ascii_lowercase().as_str() {
-                "all" => Ok(CloudDiscover::All),
-                "none" => Ok(CloudDiscover::None),
-                _ => Err(format!(
-                    "cloud.discover: \"{word}\" is not true, false, \"all\", \"none\" or a list of kinds"
-                )),
-            },
+            // The command line's form: "all", "none", or "s3,gcs".
+            CloudDiscoverValue::Word(word) => word.parse(),
             CloudDiscoverValue::Kinds(kinds) => CloudDiscover::from_kinds(&kinds),
         }
     }

@@ -7873,35 +7873,59 @@ impl App {
         self.runtime.spawn(async move {
             let mut hidden = cache.load_hidden_cloud_sources();
             hidden.extend(cloud.hide.iter().cloned());
-            let sources: Vec<crate::cloud_sources::Source> = {
+            let listings = cache.load_cloud_listings();
+            let cached_for = |source: &crate::cloud_sources::Source| {
+                listings
+                    .get(&source.id)
+                    .filter(|l| l.fingerprint == source.fingerprint())
+            };
+            let found = {
                 let env = crate::cloud_browse::Environment::current();
-                crate::cloud_sources::on_home(crate::cloud_sources::discover(&cloud, &env), &cloud)
-            }
-            .into_iter()
-            .filter(|s| !hidden.contains(&s.id))
-            .map(|mut source| {
-                if source.id == crate::cloud_sources::PUBLIC {
-                    add_public_places(&mut source, &cache.load_public_places());
+                crate::cloud_sources::discover(&cloud, &env)
+            };
+            // Every source, shown or not: a bucket under Recent opens with the login that
+            // listed it, whether or not that source is on the home screen.
+            for source in &found {
+                if let Some(cached) = cached_for(source) {
+                    crate::cloud_sources::remember_listed(source, &cached.buckets);
                 }
-                source
-            })
-            .collect();
-
-            if only.is_none() {
-                let listings = cache.load_cloud_listings();
-                let rows = sources
-                    .iter()
-                    .map(|source| {
-                        let cached = listings
-                            .get(&source.id)
-                            .filter(|l| l.fingerprint == source.fingerprint());
-                        if let Some(cached) = cached {
-                            crate::cloud_sources::remember_listed(source, &cached.buckets);
+            }
+            let sources: Vec<crate::cloud_sources::Source> =
+                crate::cloud_sources::on_home(found, &cloud)
+                    .into_iter()
+                    .filter(|s| !hidden.contains(&s.id))
+                    .map(|mut source| {
+                        if source.id == crate::cloud_sources::PUBLIC {
+                            add_public_places(&mut source, &cache.load_public_places());
                         }
-                        home_cloud_source(source, cached, list)
+                        source
                     })
                     .collect();
-                let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
+
+            match &only {
+                None => {
+                    let rows = sources
+                        .iter()
+                        .map(|source| home_cloud_source(source, cached_for(source), list))
+                        .collect();
+                    let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
+                }
+                // Gone since its row was drawn: a profile removed, a source hidden
+                // elsewhere. Said, so the row does not wait on an answer never coming.
+                Some(id) if !sources.iter().any(|s| &s.id == id) => {
+                    let _ = tx.send(AppEvent::HomeCloudListed {
+                        id: id.clone(),
+                        buckets: Vec::new(),
+                        details: Vec::new(),
+                        failure: Some((
+                            "not found".to_string(),
+                            format!("{id} is gone or hidden. Ctrl+R at the top looks again."),
+                        )),
+                        listed_at: std::time::SystemTime::now(),
+                    });
+                    return;
+                }
+                Some(_) => {}
             }
             if !list {
                 return;

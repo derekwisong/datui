@@ -473,7 +473,7 @@ listed, and no credential command (`aws`, `gcloud`, `az`, a profile's
 
 | To list | Do |
 |---|---|
-| One source | <kbd>Enter</kbd> on it. Once a session |
+| One source | <kbd>Enter</kbd> or <kbd>→</kbd> on it. Once a session |
 | Every source on screen | <kbd>Ctrl</kbd>+<kbd>R</kbd> |
 | Every source, at launch | `[cloud] list_on_start = true` |
 
@@ -483,7 +483,8 @@ slow endpoint holds up only its own row.
 A recent from a named S3-compatible source shows the name beside it, or
 `source not found: <name>` once that source has left the config.
 
-Typing also matches bucket names already listed, from every source, in `Found`:
+Typing also matches bucket names already listed, this session or an earlier one,
+from every source, in `Found`:
 `Lab MinIO › data` and `onprem › data` stay two rows.
 
 <kbd>Delete</kbd> on a source hides it until `datui --clear-cache`. To hide one
@@ -518,7 +519,7 @@ To show only some kinds of login found on the machine, or none:
 |---|---|---|
 | unset, `true` or `"all"` | `all` | Every login found |
 | `false` or `"none"` | `none` | None |
-| `["gcs"]`, `["s3", "azure"]` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc` and s3cmd |
+| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
 
 `[[cloud.sources]]` entries and public datasets appear whatever it says. The flag
 overrides the config for one run.

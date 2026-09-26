@@ -2256,6 +2256,7 @@ fn test_completion_extends_to_an_unambiguous_prefix() {
 #[cfg(windows)]
 #[test]
 fn test_completion_follows_windows_separators() {
+    use datui::home::complete_path;
     let tmp = TempDir::new().unwrap();
     fs::create_dir_all(tmp.path().join("data").join("sales")).unwrap();
 

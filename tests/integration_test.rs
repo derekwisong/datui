@@ -5087,11 +5087,10 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
     }
     let model = row_of(&app, "model.onnx").expect("listed");
     app.home.selected = model;
+    // Enter does nothing: the row is dimmed and its pane says why.
+    app.home.status = None;
     assert!(app.event(&key(KeyCode::Enter)).is_none(), "nothing opened");
-    assert_eq!(
-        app.home.status.as_deref(),
-        Some("datui does not read .onnx files")
-    );
+    assert_eq!(app.home.status, None);
 
     app.event(&ctrl_a);
     assert!(row_of(&app, "model.onnx").is_none());
@@ -5181,10 +5180,8 @@ fn a_load_chosen_at_home_fails_at_home() {
     while rx.try_recv().is_ok() {}
     type_at_prompt(&mut app, &model);
     assert!(rx.try_recv().is_err(), "nothing was opened");
-    assert_eq!(
-        app.home.status.as_deref(),
-        Some("datui does not read .onnx files")
-    );
+    // A typed path has no row to dim, so the line says it.
+    assert_eq!(app.home.status.as_deref(), Some(datui::discover::NO_READER));
 }
 
 /// The one-file schema types partition columns the way a full scan does.

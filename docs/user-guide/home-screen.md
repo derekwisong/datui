@@ -246,8 +246,9 @@ four skipped are named.
 
 A listing shows the files datui can read. <kbd>Ctrl</kbd>+<kbd>A</kbd> shows the
 rest too, such as `README.md` or `model.onnx`, dimmed and after the directories,
-and hides them again. <kbd>Enter</kbd> on one says `datui does not read .onnx
-files` beside the prompt instead of opening or downloading it.
+and hides them again. <kbd>Enter</kbd> does nothing on one; its details pane
+says datui has no reader for it. A path to one typed at <kbd>~</kbd> says so
+beside the prompt instead of opening or downloading it.
 
 A file that fails to load is reported on the home screen, where it was chosen;
 <kbd>Esc</kbd> still returns to the dataset open before.

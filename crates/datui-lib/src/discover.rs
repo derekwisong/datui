@@ -609,22 +609,26 @@ pub fn data_extension(path: &Path) -> Option<String> {
     crate::FileFormat::from_extension(parts[idx]).map(|_| parts[idx].to_string())
 }
 
-/// Why datui will not open a file, when its name already says: an extension no reader
+/// What the home screen says of a file [`unreadable_by_name`] turns away.
+pub const NO_READER: &str = "datui has no reader for this file";
+
+/// Whether a file's name already says datui will not open it: an extension no reader
 /// takes, under any compression suffix. A bare `data.gz` is left to the open, which
-/// looks inside.
-pub fn unreadable_by_name(path: &Path) -> Option<String> {
-    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+/// looks inside, and so is a name with no extension.
+pub fn unreadable_by_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
     let parts: Vec<&str> = name.rsplit('.').collect();
     let compressed = |last: &str| COMPRESSION_EXTENSIONS.contains(&last);
     let ext = match parts[..] {
         [last, inner, _, ..] if compressed(last) => inner,
-        [last, _] if compressed(last) => return None,
+        [last, _] if compressed(last) => return false,
         [last, _, ..] => last,
-        _ => return None,
+        _ => return false,
     };
-    crate::FileFormat::from_extension(ext)
-        .is_none()
-        .then(|| format!("datui does not read .{ext} files"))
+    crate::FileFormat::from_extension(ext).is_none()
 }
 
 /// The format a file's name says it holds, compression suffix walked past.
@@ -3676,14 +3680,9 @@ mod classification_tests {
     #[test]
     fn a_name_no_reader_takes_is_refused_before_opening() {
         let refused = |name: &str| unreadable_by_name(std::path::Path::new(name));
-        assert_eq!(
-            refused("gs://b/ml/onnx/pipeline_rf.onnx").as_deref(),
-            Some("datui does not read .onnx files")
-        );
-        assert_eq!(
-            refused("model.onnx.gz").as_deref(),
-            Some("datui does not read .onnx files")
-        );
+        assert!(refused("gs://b/ml/onnx/pipeline_rf.onnx"));
+        assert!(refused("model.onnx.gz"));
+        assert!(refused("README.md"));
         for readable in [
             "a.csv",
             "a.CSV",
@@ -3693,7 +3692,7 @@ mod classification_tests {
             "data.gz",
             "part-0000",
         ] {
-            assert_eq!(refused(readable), None, "{readable}");
+            assert!(!refused(readable), "{readable}");
         }
     }
 }

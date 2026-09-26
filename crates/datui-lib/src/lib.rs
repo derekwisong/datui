@@ -8932,11 +8932,8 @@ impl App {
             go_inside(self, path);
             return None;
         }
+        // Nothing: the row is dimmed and its details pane says why.
         if kind == discover::EntryKind::Other {
-            self.home.status = Some(
-                discover::unreadable_by_name(&path)
-                    .unwrap_or_else(|| "datui has no reader for this file".to_string()),
-            );
             return None;
         }
         // A lake table's files are not its rows: the ones a delete or an update
@@ -8958,12 +8955,11 @@ impl App {
             // A prefix, not a directory: the scan is what walks it.
             return Some(self.home_open_path(home::directory_dataset_url(&path), false));
         }
-        // Said here, where the file was chosen, rather than after a download and a
-        // load that could only end the same way.
-        if kind == discover::EntryKind::File
-            && let Some(why) = discover::unreadable_by_name(&path)
-        {
-            self.home.status = Some(why);
+        // Said here, where the file was named, rather than after a download and a load
+        // that could only end the same way. A row would be dimmed; a typed path has no
+        // row, so the line says it.
+        if kind == discover::EntryKind::File && discover::unreadable_by_name(&path) {
+            self.home.status = Some(discover::NO_READER.to_string());
             return None;
         }
         Some(self.home_open_path(path, directory))

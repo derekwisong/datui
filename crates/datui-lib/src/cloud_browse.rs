@@ -1278,7 +1278,7 @@ async fn list_level(
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         let path = PathBuf::from(format!("{base}/{location}"));
         // No extension is left openable: a part file with none may well be Parquet.
-        let kind = if crate::discover::unreadable_by_name(&path).is_some() {
+        let kind = if crate::discover::unreadable_by_name(&path) {
             crate::discover::EntryKind::Other
         } else {
             crate::discover::EntryKind::File

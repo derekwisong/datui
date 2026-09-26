@@ -2427,6 +2427,9 @@ pub mod tests {
             !bar.contains("Rows: 70"),
             "a partial is not a total: {bar:?}"
         );
+        // And the spinner standing in for it turns. Nothing is `busy` and no count is
+        // in flight, which is all the run loop used to ask.
+        assert!(app.something_is_spinning());
     }
 
     /// A pass that brings no count still leaves rows on screen.
@@ -6766,6 +6769,44 @@ impl App {
     /// every open, and abandoning one does not stop it: without this, giving up on a
     /// large local directory and going back to the dataset you had would leave that
     /// dataset's control bar counting footers belonging to the directory you left.
+    /// Whether the row count on the control bar is on its way, so a spinner stands in
+    /// for it. Asked by the bar, and by the run loop, which turns the spinner: the
+    /// two disagreed while a dataset read its own footers, and the spinner sat still.
+    pub fn row_count_pending(&self) -> bool {
+        // A load in flight counts as pending: the number `data_table_state` still holds
+        // belongs to the dataset being replaced, and printing it beside the incoming
+        // file's name would read as the new one's.
+        // A dataset still reading its own footers counts too: it declines the ordinary
+        // count because that pass is bringing one, so nothing is "in flight" — and the
+        // number it holds meanwhile is only as far as the buffer reaches. Printed
+        // plainly, a prefix of six thousand files reads `Rows: 70`.
+        self.len_count_inflight.is_some()
+            || self.awaiting_dataset
+            // A re-read owed to a dataset whose footers could not be read is a count
+            // that is coming: the collect it is waiting to run is what starts one. The
+            // dataset has already stopped saying it counts itself later (it gave up on
+            // the pass the moment that pass failed), so without this the bar falls
+            // through to printing the number it happens to hold — which is only as far
+            // as the buffer reached. A prefix of six thousand files reads `Rows: 70`,
+            // plainly, for as long as the work in front of the errand takes.
+            || self.reread_owed.is_some()
+            || self
+                .data_table_state
+                .as_ref()
+                .is_some_and(|state| state.counts_itself_later())
+    }
+
+    /// Whether a spinner is on screen, so the run loop turns it and redraws.
+    pub fn something_is_spinning(&self) -> bool {
+        self.busy
+            || self.row_count_pending()
+            || self.chart_preparing()
+            || (self.input_mode == InputMode::Home
+                && (self.home.awaiting_listing().is_some()
+                    || self.home.sections_waiting()
+                    || !self.home.peeking.is_empty()))
+    }
+
     fn dataset_is_still_reading_its_footers(&self) -> bool {
         self.data_table_state
             .as_ref()
@@ -18957,27 +18998,7 @@ impl Widget for &mut App {
         //  - in flight   -> spinner (still being computed)
         //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
         //  - otherwise    -> the number
-        // A load in flight counts as pending: the number `data_table_state` still holds
-        // belongs to the dataset being replaced, and printing it beside the incoming
-        // file's name would read as the new one's.
-        // A dataset still reading its own footers counts too: it declines the ordinary
-        // count because that pass is bringing one, so nothing is "in flight" — and the
-        // number it holds meanwhile is only as far as the buffer reaches. Printed
-        // plainly, a prefix of six thousand files reads `Rows: 70`.
-        let count_pending = self.len_count_inflight.is_some()
-            || self.awaiting_dataset
-            // A re-read owed to a dataset whose footers could not be read is a count
-            // that is coming: the collect it is waiting to run is what starts one. The
-            // dataset has already stopped saying it counts itself later (it gave up on
-            // the pass the moment that pass failed), so without this the bar falls
-            // through to printing the number it happens to hold — which is only as far
-            // as the buffer reached. A prefix of six thousand files reads `Rows: 70`,
-            // plainly, for as long as the work in front of the errand takes.
-            || self.reread_owed.is_some()
-            || self
-                .data_table_state
-                .as_ref()
-                .is_some_and(|state| state.counts_itself_later());
+        let count_pending = self.row_count_pending();
         let count_unknown = !count_pending
             && self.data_table_state.as_ref().is_some_and(|s| {
                 !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())
@@ -19448,13 +19469,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         // Poll with a shorter timeout when busy so the throbber animates (~30fps).
         // 33ms is plenty for a spinner and halves redraw load vs. 60fps. Held keys
         // waiting on an idle app replay one per iteration, so then there is no wait.
-        let spinning = app.busy
-            || app.len_count_inflight.is_some()
-            || app.chart_preparing()
-            || (app.input_mode == InputMode::Home
-                && (app.home.awaiting_listing().is_some()
-                    || app.home.sections_waiting()
-                    || !app.home.peeking.is_empty()));
+        let spinning = app.something_is_spinning();
         let poll_ms = if pump.replaying() {
             0
         } else if spinning {

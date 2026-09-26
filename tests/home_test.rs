@@ -656,6 +656,38 @@ fn test_desktop_recents_can_be_turned_off() {
     assert!(!off.use_desktop_recents);
 }
 
+/// Files datui cannot read start hidden unless the config shows them, and a later
+/// layer that leaves the key out does not turn it back off.
+#[test]
+fn test_unreadable_files_can_be_shown_from_the_start() {
+    use datui::config::{AppConfig, DataConfig};
+    assert!(
+        !DataConfig::default().show_unreadable_files,
+        "hidden by default"
+    );
+
+    let mut config = AppConfig::default();
+    let mut shown = AppConfig::default();
+    shown.data.show_unreadable_files = true;
+    config.merge(shown);
+    config.merge(AppConfig::default());
+    assert!(config.data.show_unreadable_files);
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    assert!(
+        !app.home.hide_unreadable,
+        "the home screen starts showing them"
+    );
+}
+
 #[test]
 fn test_desktop_places_are_listed_but_never_expanded() {
     // The guarantee this feature rests on: a directory the desktop mentioned appears

@@ -61,7 +61,7 @@ Datasets are grouped by where they came from, in this order:
 
 | Section | Contents | Chip | Starts |
 |---|---|---|---|
-| `RECENT` | Datasets you have opened, grouped under the directory or prefix each lives in | | open |
+| `RECENT` | Datasets you have opened, grouped under the directory each lives in, local or in a bucket | | open |
 | current directory | Where you launched datui | `current directory` | open |
 | `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
 | configured directories | `[data] directories`, in the order listed | `configured` | open |
@@ -77,13 +77,13 @@ list rows or more, a blank line separates the sections.
 
 ### Recent
 
-Every dataset you have opened sits under a **place row**: the directory or
-bucket prefix it lives in, newest place first. The place row names the path,
+Every dataset you have opened sits under a **place row**: the directory it
+lives in, local or in a bucket, newest place first. The place row names the path,
 what datui last found the place to be (`hive`, `12 parquet`) when it has seen
 it, and, on a network share or in an object store, what it is on. A sort orders
 the rows inside each place and never flattens the section.
 
-A Parquet dataset opened from a bucket, as one object or as a prefix, shows the
+A Parquet dataset opened from a bucket, as one object or as a directory, shows the
 rows, columns and label the open learned. One nothing has measured yet shows
 `…` for its shape.
 
@@ -227,8 +227,10 @@ A directory's label says what is directly inside it, from one listing:
 | `delta` `iceberg` `hudi` | The format's marker is present |
 | `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
 | `mixed` | Data files of more than one format |
-| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. In a bucket the word for the place is used instead: `prefix`, `bucket`, `container` |
+| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. The top of a store says `bucket` or `container` instead |
 | `…` | Nothing has looked into it yet |
+| spinner | A directory in a bucket being looked into |
+| `?` | Looking into a directory in a bucket failed; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again |
 
 A directory larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12
@@ -286,8 +288,8 @@ is in the Notes tab, which the <kbd>i</kbd> key opens.
 | More than one format | The commonest of them; Parquet wins a tie | what it passed over, by format and count |
 | `delta`, `iceberg`, `hudi` | The plain files under the table | that they are not the table, plus a chip by the row count |
 | Files written with no extension | What their first bytes say: Parquet, Arrow, Avro or ORC | — |
-| A prefix of CSV or NDJSON in a bucket | One table, with that reader | — |
-| A prefix holding nothing datui reads | Refused, naming what is there | — |
+| A directory of CSV or NDJSON in a bucket | One table, with that reader | — |
+| A directory in a bucket holding nothing datui reads | Refused, naming what is there | — |
 
 A lake table's files are the one read worth being careful with. A log beside the
 data says which files are live, and datui does not read that log yet — so the
@@ -420,15 +422,15 @@ Local disk is dimmed; the rest are colored.
 ## Cloud storage
 
 Every object store datui can read is one row under `CLOUD`. <kbd>Enter</kbd> on a
-row lists what is inside, one level at a time; prefixes descend like directories,
+row lists what is inside, one level at a time; directories in a bucket descend like local ones,
 objects open like files, and opened objects go into `RECENT` like any other path.
 
 | Source | Levels |
 |---|---|
-| S3 and S3-compatible | source › bucket › prefix › object |
-| Google Cloud | source › project › bucket › prefix › object |
+| S3 and S3-compatible | source › bucket › directory › object |
+| Google Cloud | source › project › bucket › directory › object |
 | Azure | source › account › container › directory › blob |
-| Public datasets | source › dataset › prefix › object |
+| Public datasets | source › dataset › directory › object |
 
 ```
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
@@ -584,12 +586,11 @@ Inside a bucket: name, size and modification time, which is what a listing
 returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
 
-Directories are looked inside, a few at a time, once each listing lands: one
-small listing request per directory, for at most 48 of them. A directory of
-`key=value` partitions is then labelled `hive`, and every other directory by
-what it holds — `12 parquet`, `3 csv` — like a local one. A prefix with no data
-file directly inside keeps the word for the place, `prefix`, rather than
-becoming `dir` the moment the peek lands. A directory of Parquet files whose
+Directories on screen are looked inside, a few at a time, the highlighted row
+first: one small listing request each, with a spinner in the label until it
+answers. A directory of `key=value` partitions is then labelled `hive`, and
+every other directory by what it holds — `12 parquet`, `3 csv`, or `dir` — like
+a local one. A directory of Parquet files whose
 schemas agree is offered as one dataset; see [Two doors into every
 directory](#two-doors-into-every-directory). Deciding that last one reads the
 footers of up to three of the directory's files, a few kilobytes each; nothing

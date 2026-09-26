@@ -1763,7 +1763,7 @@ impl HomeState {
                 let key = if network {
                     path.clone()
                 } else {
-                    path.canonicalize().unwrap_or_else(|_| path.clone())
+                    crate::canonical::canonicalize(&path).unwrap_or_else(|_| path.clone())
                 };
                 if seen.contains(&key) {
                     return;
@@ -3194,7 +3194,9 @@ pub fn display_path(path: &Path) -> String {
         if rest.as_os_str().is_empty() {
             return "~".to_string();
         }
-        return format!("~/{}", rest.display());
+        // The platform's separator, so Windows reads `~\data\a.csv` rather than a
+        // mix of the two.
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display());
     }
     path.display().to_string()
 }
@@ -3206,7 +3208,10 @@ pub fn display_path(path: &Path) -> String {
 /// worker — never in response to a keystroke on the interface thread.
 pub fn complete_path(typed: &str) -> (String, usize) {
     let expanded = expand_user_path(typed);
-    let typed_ends_in_sep = typed.ends_with('/');
+    // `\` is a separator on Windows too, and what a Windows user types: `C:\data\`
+    // completed the name `data` in `C:\` instead of listing inside it.
+    let is_separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let typed_ends_in_sep = typed.ends_with(is_separator);
 
     let (dir, prefix) = if typed_ends_in_sep {
         (expanded.clone(), String::new())
@@ -3251,9 +3256,15 @@ pub fn complete_path(typed: &str) -> (String, usize) {
     completed.truncate(typed.len() - prefix.len());
     completed.push_str(&shared);
 
-    // A single directory gets its separator, so the next Tab descends into it.
-    if names.len() == 1 && dir.join(&shared).is_dir() && !completed.ends_with('/') {
-        completed.push('/');
+    // A single directory gets its separator, so the next Tab descends into it: the one
+    // already being typed, so `C:\Users\` does not become `C:\Users/`.
+    if names.len() == 1 && dir.join(&shared).is_dir() && !completed.ends_with(is_separator) {
+        let separator = typed
+            .chars()
+            .rev()
+            .find(|c| is_separator(*c))
+            .unwrap_or(std::path::MAIN_SEPARATOR);
+        completed.push(separator);
     }
     (completed, names.len())
 }
@@ -3274,6 +3285,18 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 #[cfg(test)]
 mod holds_flow_tests {
     use super::*;
+
+    /// A path under the home directory is written the way it is typed back: `~\` on
+    /// Windows, and `~\` typed at the prompt expands.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_home_path_is_shown_and_typed_with_backslashes() {
+        let home = dirs::home_dir().unwrap();
+        let path = home.join("data").join("a.csv");
+        let shown = display_path(&path);
+        assert_eq!(shown, r"~\data\a.csv");
+        assert_eq!(expand_user_path(&shown), path);
+    }
 
     /// The last segment of a Windows path is after its last `\`, so a dot higher up
     /// does not make a directory a file.

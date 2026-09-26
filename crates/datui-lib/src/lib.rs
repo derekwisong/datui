@@ -43,6 +43,7 @@ pub mod aws_profiles;
 #[cfg(feature = "cloud")]
 pub mod azure;
 pub mod cache;
+pub mod canonical;
 pub mod chart_data;
 pub mod chart_export;
 pub mod chart_export_modal;
@@ -8491,14 +8492,11 @@ impl App {
         self.home.folds = self.cache.load_folds();
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
-            let target = open_path
-                .canonicalize()
-                .unwrap_or_else(|_| open_path.clone());
+            let target =
+                crate::canonical::canonicalize(&open_path).unwrap_or_else(|_| open_path.clone());
             if let Some(idx) = self.home.visible().iter().position(|row| match row {
                 home::Row::Entry { entry, .. } => {
-                    entry
-                        .path
-                        .canonicalize()
+                    crate::canonical::canonicalize(&entry.path)
                         .unwrap_or_else(|_| entry.path.clone())
                         == target
                 }
@@ -14427,12 +14425,12 @@ impl App {
 
                         // Auto-populate exact_path (absolute) - canonicalize to ensure absolute path
                         let absolute_path = if path.is_absolute() {
-                            path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+                            crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
                         } else {
                             // If relative, make it absolute from current dir
                             if let Ok(cwd) = std::env::current_dir() {
                                 let abs = cwd.join(path);
-                                abs.canonicalize().unwrap_or(abs)
+                                crate::canonical::canonicalize(&abs).unwrap_or(abs)
                             } else {
                                 path.to_path_buf()
                             }
@@ -14444,12 +14442,12 @@ impl App {
                         // Auto-populate relative_path from current working directory
                         if let Ok(cwd) = std::env::current_dir() {
                             let abs_path = if path.is_absolute() {
-                                path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+                                crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
                             } else {
                                 let abs = cwd.join(path);
-                                abs.canonicalize().unwrap_or(abs)
+                                crate::canonical::canonicalize(&abs).unwrap_or(abs)
                             };
-                            if let Ok(canonical_cwd) = cwd.canonicalize() {
+                            if let Ok(canonical_cwd) = crate::canonical::canonicalize(&cwd) {
                                 if let Ok(rel_path) = abs_path.strip_prefix(&canonical_cwd) {
                                     // Ensure relative path starts with ./ or just the path
                                     let rel_str = rel_path.to_string_lossy().to_string();

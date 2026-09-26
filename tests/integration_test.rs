@@ -5148,7 +5148,7 @@ fn a_load_chosen_at_home_fails_at_home() {
     // The one that did load is, and recording is off-thread, so that is waited for.
     let cache = datui::CacheManager::new("datui").expect("cache");
     let recorded = |path: &std::path::Path| {
-        let path = path.canonicalize().unwrap();
+        let path = datui::canonical::canonicalize(path).unwrap();
         cache.load_recents().contains(&path)
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -6372,7 +6372,7 @@ fn app_with_recents_in_two_places(
     common::isolate_cache();
     // As the store keeps them: `/var` is `/private/var` on macOS, and a Windows temp
     // directory is named `RUNNER~1` until canonicalized.
-    let root = tmp.path().canonicalize().unwrap();
+    let root = datui::canonical::canonicalize(tmp.path()).unwrap();
     let here = root.join("here");
     let there = root.join("there");
     std::fs::create_dir_all(&here).unwrap();

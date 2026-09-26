@@ -1529,7 +1529,8 @@ fn test_concurrent_recents_do_not_lose_entries() {
     // Comparing the raw one failed on those two platforms for a reason that has
     // nothing to do with concurrency, and it went unseen because they only run CI
     // on a release version.
-    let stored = |p: &std::path::PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+    let stored =
+        |p: &std::path::PathBuf| datui::canonical::canonicalize(p).unwrap_or_else(|_| p.clone());
 
     // The real invariant, and the one worth defending: the lock makes each
     // read-modify-write atomic, so no writer that got the lock can have its entry
@@ -1663,7 +1664,7 @@ fn test_a_single_recent_can_be_forgotten() {
     cache.push_recent(&keep);
     cache.push_recent(&drop);
 
-    cache.forget_recent(&drop.canonicalize().unwrap());
+    cache.forget_recent(&datui::canonical::canonicalize(&drop).unwrap());
 
     let recents = cache.load_recents();
     assert!(recents.iter().any(|p| p.ends_with("keep.parquet")));

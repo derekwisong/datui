@@ -30,7 +30,7 @@ pub struct Cost {
     pub files: Option<usize>,
     /// Requests datui made itself and can count, with the bytes they returned.
     ///
-    /// `None` on every listing, and not only the local ones: a folder is read rather
+    /// `None` on every listing, and not only the local ones: a directory is read rather
     /// than requested, and a remote prefix is one call whose round trips happen inside
     /// the object store, which does not say how many there were. A figure of zero would
     /// read as "no data moved" rather than "not measured here".
@@ -228,7 +228,7 @@ pub struct OpenReport {
 ///
 /// There is no way to clear one. Opening a dataset builds a new meter instead, for the
 /// reason the footer counter does: abandoning a load cancels nothing, so the reads of
-/// the folder that was walked away from are still running, and a meter they still held
+/// the directory that was walked away from are still running, and a meter they still held
 /// would go on adding their figures to the next dataset's.
 #[derive(Debug, Default)]
 pub struct Meter {
@@ -276,7 +276,7 @@ impl Meter {
         wire: Option<OverTheWire>,
     ) -> bool {
         // Only for an open this meter measured, and checked before the one shot rather
-        // than after it. A dataset opened by a route that reports nothing — a folder
+        // than after it. A dataset opened by a route that reports nothing — a directory
         // handed straight to Polars because `single_spine_schema` is off — still has
         // its rows counted afterwards, and that count writing here would raise a
         // section out of nothing whose every figure is work done after the dataset was

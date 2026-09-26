@@ -63,7 +63,7 @@ pub fn split_source_id(url: &str) -> (Option<&str>, std::borrow::Cow<'_, str>) {
 /// (`container@account.dfs.core.windows.net/path`), and `https://` on the blob or dfs
 /// endpoint (`account.blob.core.windows.net/container/path`). `az://container/path`
 /// does not name the account, so it is not one of them. The path comes back without a
-/// leading slash, and a trailing slash is kept, since it is what marks a folder.
+/// leading slash, and a trailing slash is kept, since it is what marks a directory.
 pub fn azure_parts(url: &str) -> Option<(String, String, String)> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();

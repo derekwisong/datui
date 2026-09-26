@@ -75,7 +75,7 @@ jobs:
             every_public_dataset_lists_and_opens \
             public_datasets_browse_and_open_from_the_home_screen \
             public_data_quirks \
-            partitioned_cloud_folders_are_hive_datasets
+            partitioned_cloud_directories_are_hive_datasets
 
   report:
     needs: check

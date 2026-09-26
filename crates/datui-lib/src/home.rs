@@ -214,9 +214,9 @@ pub fn is_object_store_url(path: &Path) -> bool {
         || crate::source::azure_parts(&text).is_some()
 }
 
-/// The URL that opens a cloud folder as one dataset: with its trailing slash, which is
+/// The URL that opens a cloud directory as one dataset: with its trailing slash, which is
 /// what makes it a prefix to scan rather than an object to fetch.
-pub fn folder_dataset_url(path: &Path) -> PathBuf {
+pub fn directory_dataset_url(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if text.ends_with('/') {
         path.to_path_buf()
@@ -225,28 +225,28 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
     }
 }
 
-/// A row that opens the folder being browsed as one table, whatever its label says.
+/// A row that opens the directory being browsed as one table, whatever its label says.
 ///
-/// The second of the two doors. A label describes what is directly inside a folder; it
-/// does not decide what the folder can give you, so every folder carries this row and
-/// the worst a wrong label can cost is one keystroke. It used to be offered in a bucket
-/// only, and there only for the two kinds the listing had already called a dataset —
-/// which is the same judgement twice, and left a local folder of separate tables with
-/// no way to read them together at all.
+/// The second of the two doors. A label describes what is directly inside a directory; it
+/// does not decide what the directory can give you, so every directory carries this row
+/// and the worst a wrong label can cost is one keystroke. It used to be offered in a
+/// bucket only, and there only for the two kinds the listing had already called a dataset
+/// — which is the same judgement twice, and left a local directory of separate tables
+/// with no way to read them together at all.
 ///
 /// Built from the listing already on screen, so it costs nothing to look at.
 ///
 /// Not behind `feature = "cloud"`, though it was while the row belonged to a bucket.
-/// Since it is offered in every folder, the gate left a `--no-default-features` build
-/// with no second door at all, local folders included, while the help text and three
+/// Since it is offered in every directory, the gate left a `--no-default-features` build
+/// with no second door at all, local directories included, while the help text and three
 /// doc pages described it unconditionally. Only the remote classifier needs the gate.
-fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
-    // Not a folder: a `cloud://<id>/<account>` place stands for an Azure storage
+fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
+    // Not a directory: a `cloud://<id>/<account>` place stands for an Azure storage
     // account, whose children are containers and which has no URL to open.
     if cloud_account(dir).is_some() {
         return None;
     }
-    let folders: Vec<String> = rows
+    let directories: Vec<String> = rows
         .iter()
         .filter(|r| r.kind != EntryKind::File)
         .map(|r| format!("{}/", r.name))
@@ -261,7 +261,7 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     // names, so `.hoodie` never reached it and a local Hudi table came back
     // `MultiFile` — the door then read its tombstones, two keystrokes after the row
     // above said datui does not read Hudi tables. And the cloud Iceberg rule is the
-    // looser of the two on purpose, name-shape only, so a plain folder holding `data/`
+    // looser of the two on purpose, name-shape only, so a plain directory holding `data/`
     // beside `metadata/` was refused as a lake table it is not.
     // Nothing remote is read here, which is the rule this whole branch is built on:
     // the call that freezes the interface is a listing of a share that has stopped
@@ -272,36 +272,36 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
     let (kind, holds) = if remote || is_object_store_url(dir) {
         #[cfg(feature = "cloud")]
         {
-            crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &folders, &objects)
+            crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &directories, &objects)
         }
         // Without the cloud feature there is no remote classifier to ask, and reading
         // the share here is the one thing this branch exists to avoid. The door is
         // still offered — that is the whole of what it promises — and carries no kind,
         // which costs it the lake check and nothing else: its label is suppressed
-        // either way, because the row is about the folder rather than in it.
+        // either way, because the row is about the directory rather than in it.
         #[cfg(not(feature = "cloud"))]
         {
-            let _ = (&folders, &objects);
+            let _ = (&directories, &objects);
             (EntryKind::Unknown, Default::default())
         }
     } else {
         crate::discover::look_at_directory(dir)
     };
-    // Nothing in it to open. An empty folder is the one place a second door leads
-    // nowhere, and a row promising to read nothing is worse than no row. A folder
-    // holding only a `_SUCCESS` is that folder too.
+    // Nothing in it to open. An empty directory is the one place a second door leads
+    // nowhere, and a row promising to read nothing is worse than no row. A directory
+    // holding only a `_SUCCESS` is that directory too.
     //
-    // Asked of what the folder holds and not only of what the listing showed, because
-    // the two differ on the folder that most needs the door: Spark and GBIF write part
+    // Asked of what the directory holds and not only of what the listing showed, because
+    // the two differ on the directory that most needs the door: Spark and GBIF write part
     // files with no extension, no name in there says data, so nothing is listed — and a
-    // guard on the rows alone made that folder a dead end, nothing listed and no way to
-    // read it, though the open reads it by its bytes perfectly well. Files nothing
-    // could name count here for that reason, and so do subfolders, whose data is a
+    // guard on the rows alone made that directory a dead end, nothing listed and no way
+    // to read it, though the open reads it by its bytes perfectly well. Files nothing
+    // could name count here for that reason, and so do subdirectories, whose data is a
     // level down.
     if rows.is_empty() && holds_nothing_to_open(&holds) {
         return None;
     }
-    // What the row says it opens, not whether it opens: a hive folder is read through
+    // What the row says it opens, not whether it opens: a hive directory is read through
     // its partitions and everything else through its files.
     let what = if kind == EntryKind::Hive {
         "all partitions"
@@ -309,7 +309,7 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
         "all files"
     };
     // Named the way the section title above it names the same place, or the two
-    // disagree about the folder you are standing in. A source id is not part of the
+    // disagree about the directory you are standing in. A source id is not part of the
     // name — `s3://lab@bucket` is titled `bucket` — and an Azure container is named by
     // container, not by the long URL its last component happens to be.
     //
@@ -331,26 +331,26 @@ fn whole_folder_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| plain.into_owned())
     };
-    let mut entry = Entry::directory(&folder_dataset_url(dir));
+    let mut entry = Entry::directory(&directory_dataset_url(dir));
     entry.kind = kind;
-    // What the listing you are looking at holds. Not the same tally as the folder's own
-    // row upstairs: that one was counted from one page of a peek and may say `100+`,
+    // What the listing you are looking at holds. Not the same tally as the directory's
+    // own row upstairs: that one was counted from one page of a peek and may say `100+`,
     // and this one is counted from rows a listing has already dropped its markers from,
-    // so it reports fewer skipped. Two views of one folder, each true of what it saw.
+    // so it reports fewer skipped. Two views of one directory, each true of what it saw.
     entry.holds = holds;
     entry.name = format!("{name} ({what})");
-    entry.opens_whole_folder = true;
+    entry.opens_whole_directory = true;
     Some(entry)
 }
 
-/// Whether a folder holds nothing a `(all files)` row could read.
+/// Whether a directory holds nothing a `(all files)` row could read.
 ///
-/// The door's own test, named so the details pane can ask it too: the pane tells the
-/// user where the whole of a folder can be read, and on a folder with no door that is a
+/// The door's own test, named so the details pane can ask it too: the pane tells the user
+/// where the whole of a directory can be read, and on a directory with no door that is a
 /// promise nothing keeps. One function, or the two drift and the sentence outlives the
 /// row it points at.
 pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
-    holds.formats.is_empty() && holds.folders == 0 && holds.not_read == 0
+    holds.formats.is_empty() && holds.directories == 0 && holds.not_read == 0
 }
 
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.
@@ -456,18 +456,18 @@ pub struct Section {
     /// exactly like a configured one with only that word to tell them apart.
     pub origin: Option<&'static str>,
     pub rows: Vec<Entry>,
-    /// The row that opens the folder this section lists, as one table. Its own row,
+    /// The row that opens the directory this section lists, as one table. Its own row,
     /// not one of `rows`.
     ///
-    /// Kept apart because its path *is* the folder's — with a trailing slash, which
-    /// `PathBuf` compares and hashes away — so as a row among the others it was the
-    /// same key as the folder's row one level up in every path-keyed map. That cost a
-    /// real bug once: measuring the door wrote a kind-less measurement into the
-    /// folder's slot, the folder upstairs was then taken for already looked into, and
-    /// it kept `Unknown` — no label, no `holds` line, no place in the count — for the
-    /// rest of the session. A guard per walker would have to be added again by every
-    /// walker written after it, so the collision is gone instead: nothing that walks
-    /// `rows` or matches [`Row::Entry`] can reach the door.
+    /// Kept apart because its path *is* the directory's — with a trailing slash, which
+    /// `PathBuf` compares and hashes away — so as a row among the others it was the same
+    /// key as the directory's row one level up in every path-keyed map. That cost a real
+    /// bug once: measuring the door wrote a kind-less measurement into the directory's
+    /// slot, the directory upstairs was then taken for already looked into, and it kept
+    /// `Unknown` — no label, no `holds` line, no place in the count — for the rest of the
+    /// session. A guard per walker would have to be added again by every walker written
+    /// after it, so the collision is gone instead: nothing that walks `rows` or matches
+    /// [`Row::Entry`] can reach the door.
     pub door: Option<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
@@ -622,14 +622,14 @@ pub struct Measured {
     /// dropped on the way to the screen -- so a hive dataset measured the ordinary
     /// way showed no partitions, and a compressed file no codec.
     pub cost: crate::discover::Cost,
-    /// What the footers said it is, when that differs from what its filenames
-    /// suggested: a folder whose files turn out to be separate tables is a directory,
-    /// not a dataset. `None` when measuring did not change what it is, which is the
-    /// ordinary case. See [`crate::discover::enrich`].
+    /// What the footers said it is, when that differs from what its filenames suggested:
+    /// a directory whose files turn out to be separate tables is a plain directory, not a
+    /// dataset. `None` when measuring did not change what it is, which is the ordinary
+    /// case. See [`crate::discover::enrich`].
     pub kind: Option<crate::discover::EntryKind>,
     /// What one listing of it found, which is what the row's label says. Carried for
     /// the same reason `cost` is: the classify pass is the only thing that counts a
-    /// local folder, and a count that stops here never reaches the screen.
+    /// local directory, and a count that stops here never reaches the screen.
     pub holds: crate::discover::Holds,
 }
 
@@ -709,10 +709,12 @@ pub enum Row<'a> {
         /// How many recents live there, whether or not the filter shows them.
         held: usize,
     },
-    /// The door that opens the folder being browsed as one table. See [`Section::door`].
+    /// The door that opens the directory being browsed as one table. See
+    /// [`Section::door`].
     ///
-    /// Not an `Entry` row, deliberately: it carries the folder's own path, so anything
-    /// that keys a map by row path would write the door's answer into the folder's slot.
+    /// Not an `Entry` row, deliberately: it carries the directory's own path, so anything
+    /// that keys a map by row path would write the door's answer into the directory's
+    /// slot.
     Door { section: usize, entry: &'a Entry },
     /// What the cap on `RECENT` is hiding: `… 13 more in 5 places`.
     More {
@@ -768,8 +770,8 @@ pub fn place_is_browsable(path: &Path) -> bool {
 pub enum RowKey {
     Header(String),
     Entry(PathBuf),
-    /// The door, by the folder it opens. Its own variant for the same reason the row
-    /// is: keyed as an `Entry` it would put the cursor on the folder's row instead.
+    /// The door, by the directory it opens. Its own variant for the same reason the row
+    /// is: keyed as an `Entry` it would put the cursor on the directory's row instead.
     Door(PathBuf),
     Place(PathBuf),
     More(String),
@@ -813,8 +815,8 @@ pub struct HomeState {
     pub unreachable: std::collections::HashSet<PathBuf>,
     /// Why a cloud listing was refused, when the service said.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
-    /// What cloud folders turned out to hold when peeked into: `hive` or `multi`.
-    /// Kept for the session, so a folder is peeked at once however often it is listed.
+    /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
+    /// Kept for the session, so a directory is peeked at once however often it is listed.
     pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
     /// How rows are ordered inside each section.
     pub sort: SortMode,
@@ -832,9 +834,9 @@ pub struct HomeState {
     pub pending_enrich: bool,
     /// The same, for rows on screen nothing has looked into yet.
     pub pending_classify: bool,
-    /// The same, for cloud folders on screen nothing has peeked into yet.
+    /// The same, for cloud directories on screen nothing has peeked into yet.
     pub pending_peek: bool,
-    /// Cloud folders with a peek out. Their own set rather than a claim written into
+    /// Cloud directories with a peek out. Their own set rather than a claim written into
     /// [`Self::cloud_kinds`]: a claim is an answer, and writing one before the request
     /// comes back put `dir` on a row that had a count and staked "never again this
     /// session" on a request that might fail.
@@ -1112,9 +1114,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             discover::scan_dir(&dir)
         };
         let unavailable = remote && unreachable.contains(&dir);
-        // The first row inside any folder opens the whole of it, since `Enter` on the
+        // The first row inside any directory opens the whole of it, since `Enter` on the
         // rows below opens one file. The other door.
-        let door = whole_folder_row(&dir, &rows, remote);
+        let door = whole_directory_row(&dir, &rows, remote);
         sections.push(Section {
             // The URL without a source ID: the title bar's trail already says which
             // source, and `s3://lab@data` is not a name anyone would write. An Azure
@@ -1376,12 +1378,12 @@ fn known_facts<'a>(
 /// A place that was itself measured on some earlier listing — as a row of its own
 /// parent, or as a dataset opened whole — has a label there, and the place row can
 /// carry it: `bitcoin/  2 parquet`. Only from a record this build's classifier would
-/// have written, and only a label that says something: `dir` is what every folder
+/// have written, and only a label that says something: `dir` is what every directory
 /// with no data files in it says, and a place holds recents, so it says nothing.
 ///
-/// A local place is held to the same fingerprint `apply_known_facts` asks of a folder:
+/// A local place is held to the same fingerprint `apply_known_facts` asks of a directory:
 /// its mtime, which moves when a file is added or removed. A record of `12 parquet`
-/// for a folder that has since lost ten would otherwise sit two rows above the live
+/// for a directory that has since lost ten would otherwise sit two rows above the live
 /// listing calling it `2 parquet`. A remote place cannot be stat'ed and is taken as
 /// recorded, as its rows are.
 fn place_labels(
@@ -1468,16 +1470,16 @@ fn apply_known_facts(
         return;
     };
 
-    // What a previous run found this folder to be. A listing no longer looks into a
-    // folder at all — that is a `read_dir` apiece, a round trip apiece on a share —
+    // What a previous run found this directory to be. A listing no longer looks into a
+    // directory at all — that is a `read_dir` apiece, a round trip apiece on a share —
     // so a row arrives `Unknown`, and this is the only thing that can answer for it
     // without reading the directory again.
     //
-    // Only for folders a previous run *measured*, which is narrower than it sounds:
-    // `facts_for` needs a size, and a folder only has one once its files were totalled
+    // Only for directories a previous run *measured*, which is narrower than it sounds:
+    // `facts_for` needs a size, and a directory only has one once its files were totalled
     // or sampled. A plain directory has nothing recorded and is classified again every
     // session — one `read_dir`, which is the cheap end of this. What it does cover is
-    // the expensive end: a folder whose files were read and found to be separate
+    // the expensive end: a directory whose files were read and found to be separate
     // tables stays a directory, rather than being offered as one dataset again until
     // its footers have been read a second time.
     //
@@ -1504,21 +1506,21 @@ fn apply_known_facts(
         if same_mtime {
             row.kind = kind;
             // What it holds comes back with the kind. They are one answer: a row given
-            // its kind from the cache is never looked into again, so a count left
-            // behind is left behind for the session — the row says `dir` about a folder
-            // of fifteen Parquet files, and `enrich` goes on to describe it by whatever
-            // is in its subfolders.
+            // its kind from the cache is never looked into again, so a count left behind
+            // is left behind for the session — the row says `dir` about a directory of
+            // fifteen Parquet files, and `enrich` goes on to describe it by whatever is
+            // in its subdirectories.
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
             // The kind and the count, and nothing measured. Both of those come from
-            // the folder's *names*, which is what a directory's mtime is a fingerprint
+            // the directory's *names*, which is what its mtime is a fingerprint
             // for: it moves when an entry is added, removed or renamed. What the
             // footers said — the width, the size, the column names — can change with
             // no entry added or removed at all, by one file being rewritten in place,
             // and a directory mtime cannot see that. `same_bytes` below is the
-            // fingerprint for those, it is a file's, and a folder has no size to offer
-            // it; so a folder of separate tables shows its width in the session that
+            // fingerprint for those, it is a file's, and a directory has no size to offer
+            // it; so a directory of separate tables shows its width in the session that
             // measured it and not after. That is the honest end of a weak key, and
             // #275 phase 6 gives it a real one by verifying under the cursor.
         }
@@ -1567,8 +1569,8 @@ fn apply_known_facts(
             row.kind = kind;
             // What it holds comes back with the kind. They are one answer: a row given
             // its kind from the cache is never looked into again, so without this it
-            // says `dir` about a folder of fifteen Parquet files for the rest of the
-            // session — and `enrich` describes it by whatever is in its subfolders.
+            // says `dir` about a directory of fifteen Parquet files for the rest of the
+            // session — and `enrich` describes it by whatever is in its subdirectories.
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
@@ -1994,8 +1996,8 @@ impl HomeState {
     /// — but it is somewhere to go, and a warehouse directory of fifty `delta` rows with
     /// "No datasets here." printed underneath them is plainly wrong.
     ///
-    /// So does a row nothing has looked into, for the same reason and more sharply: in
-    /// a fresh listing that is every folder in it, and any of them may turn out to be a
+    /// So does a row nothing has looked into, for the same reason and more sharply: in a
+    /// fresh listing that is every directory in it, and any of them may turn out to be a
     /// dataset. This is [`EntryKind::is_dataset`] rather than
     /// [`EntryKind::is_known_dataset`] on purpose — the question is whether there is
     /// anywhere to go, not how many datasets there are, which is what the control bar's
@@ -2392,10 +2394,10 @@ impl HomeState {
             // a root the user named or is currently in, where its absence would be
             // more confusing than an empty heading, or its rows are still on the way.
             //
-            // A door is something to show. A folder of part files written with no
+            // A door is something to show. A directory of part files written with no
             // extension lists nothing — no name in it says data — and the door is the
             // only way to read it; dropped here, the whole section went with it and the
-            // folder was a dead end that the open could have read.
+            // directory was a dead end that the open could have read.
             let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
             let has_door = section.door.is_some() && self.filter.is_empty();
             if matched.is_empty() && !has_door && !(keep_empty && self.filter.is_empty()) {
@@ -2438,8 +2440,8 @@ impl HomeState {
             let collapsed = self.section_folded(section);
             out.push(Row::Header {
                 section: si,
-                // What the section holds, which the door is not: it is a way to open
-                // the folder those rows are in, so counting it would make a folder of
+                // What the section holds, which the door is not: it is a way to open the
+                // directory those rows are in, so counting it would make a directory of
                 // three files say four. It is not among `rows`, so nothing here has to
                 // take it back out.
                 matches: matched.len(),
@@ -2448,8 +2450,8 @@ impl HomeState {
             if collapsed {
                 continue;
             }
-            // First inside the folder, before the rows and whatever the sort, because
-            // being the first row inside a folder is the whole of what it is.
+            // First inside the directory, before the rows and whatever the sort, because
+            // being the first row inside a directory is the whole of what it is.
             //
             // Not while a filter is on. Its name carries the words `all files`, which a
             // fuzzy filter matches for most of the alphabet — `sal` found it beside
@@ -2578,7 +2580,7 @@ impl HomeState {
         }
     }
 
-    /// Whether the cursor is on the door rather than on something in the folder.
+    /// Whether the cursor is on the door rather than on something in the directory.
     pub fn selection_is_the_door(&self) -> bool {
         matches!(self.visible().get(self.selected), Some(Row::Door { .. }))
     }
@@ -2712,18 +2714,18 @@ impl HomeState {
         }
     }
 
-    /// The cloud folders on or near the screen that nothing has peeked into, at most
+    /// The cloud directories on or near the screen that nothing has peeked into, at most
     /// `limit`, the highlighted row first.
     ///
     /// [`Self::unclassified_visible`]'s cloud twin, and deliberately the same shape: a
     /// peek is a request, and the rows worth spending one on are the rows somebody is
-    /// looking at. It used to take the first forty-eight folders of each listing, once
-    /// per session — so a bucket of two hundred prefixes had its first forty-eight
+    /// looking at. It used to take the first forty-eight directories of each listing,
+    /// once per session — so a bucket of two hundred prefixes had its first forty-eight
     /// labelled and the rest reading `dir` for good, however long you spent on them,
     /// while paging straight past the first forty-eight spent forty-eight requests on
-    /// rows nobody saw. The cap and its never-again claim both go: the bound is what
-    /// the cursor rests on.
-    pub fn cloud_folders_to_peek(&self, limit: usize) -> Vec<PathBuf> {
+    /// rows nobody saw. The cap and its never-again claim both go: the bound is what the
+    /// cursor rests on.
+    pub fn cloud_directories_to_peek(&self, limit: usize) -> Vec<PathBuf> {
         if limit == 0 {
             return Vec::new();
         }
@@ -2745,7 +2747,7 @@ impl HomeState {
             let Row::Entry { entry, .. } = row else {
                 continue;
             };
-            // A folder in an object store, by its URL: `read_dir` on an `s3://` path
+            // A directory in an object store, by its URL: `read_dir` on an `s3://` path
             // asks the working directory about a file called `s3:` and truthfully finds
             // nothing, which is why these have a pass of their own.
             if !is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
@@ -2865,7 +2867,7 @@ impl HomeState {
     /// buffer is what goes without.
     ///
     /// The highlighted row first because it is the one about to be acted on. → goes
-    /// inside a folder that holds one dataset and folds the section otherwise, and the
+    /// inside a directory that holds one dataset and folds the section otherwise, and the
     /// control bar offers the key on the same test, so both read better for the row
     /// being looked into in the first pass rather than the third.
     pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
@@ -2906,7 +2908,7 @@ impl HomeState {
             // A place in an object store is peeked into by listing it, not by reading
             // it: `read_dir` on an `s3://` URL asks the working directory about a file
             // called `s3:` and truthfully finds nothing. See
-            // [`HomeState::cloud_folders_to_peek`], which is that path.
+            // [`HomeState::cloud_directories_to_peek`], which is that path.
             if is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
                 continue;
             }
@@ -2926,8 +2928,8 @@ impl HomeState {
     /// Fold known measurements into the rows currently listed.
     pub fn apply_measurements(&mut self) {
         for section in &mut self.sections {
-            // The door as well, whose path is the folder's: it *reads* that slot on
-            // purpose, so stepping into a folder the listing above already measured
+            // The door as well, whose path is the directory's: it *reads* that slot on
+            // purpose, so stepping into a directory the listing above already measured
             // shows those numbers instead of a blank. Reading was never the problem —
             // writing was, and nothing writes the door's own answer anywhere now.
             for row in section.rows.iter_mut().chain(section.door.iter_mut()) {
@@ -3001,7 +3003,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         columns: Vec::new(),
         cost: Default::default(),
         holds: Default::default(),
-        opens_whole_folder: false,
+        opens_whole_directory: false,
     }
 }
 
@@ -3071,7 +3073,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         columns: Vec::new(),
         cost: Default::default(),
         holds,
-        opens_whole_folder: false,
+        opens_whole_directory: false,
     };
     if !remote && let Ok(meta) = std::fs::metadata(path) {
         if meta.is_file() {
@@ -3178,8 +3180,8 @@ mod holds_flow_tests {
         }
     }
 
-    /// The claim `peek_cloud_folders` stakes before its answers arrive, so a rebuild in
-    /// the meantime does not ask the store again: a `Directory` that counted nothing.
+    /// The claim `peek_cloud_directories` stakes before its answers arrive, so a rebuild
+    /// in the meantime does not ask the store again: a `Directory` that counted nothing.
     fn in_flight() -> (EntryKind, crate::discover::Holds) {
         (EntryKind::Directory, crate::discover::Holds::default())
     }
@@ -3247,9 +3249,9 @@ mod holds_flow_tests {
 
     /// A peek is a request, so it is spent on the row the cursor is on.
     ///
-    /// The picker took the first forty-eight folders of each listing, once per session:
-    /// a bucket of two hundred prefixes had forty-eight labelled and the rest reading
-    /// `dir` however long you spent on them, and paging straight past those
+    /// The picker took the first forty-eight directories of each listing, once per
+    /// session: a bucket of two hundred prefixes had forty-eight labelled and the rest
+    /// reading `dir` however long you spent on them, and paging straight past those
     /// forty-eight spent every request on rows nobody saw.
     #[test]
     fn a_peek_goes_to_the_row_the_cursor_is_on_and_is_never_asked_twice() {
@@ -3281,7 +3283,7 @@ mod holds_flow_tests {
             .iter()
             .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "e"))
             .expect("the row is listed");
-        let asked = home.cloud_folders_to_peek(3);
+        let asked = home.cloud_directories_to_peek(3);
         assert_eq!(
             asked.first(),
             Some(&root.join("e")),
@@ -3290,7 +3292,7 @@ mod holds_flow_tests {
         assert_eq!(asked.len(), 3, "the budget is a budget");
         assert!(
             !asked.contains(&root.join("b")),
-            "a folder already looked into is not asked again"
+            "a directory already looked into is not asked again"
         );
         assert!(
             !asked.contains(&root.join("c")),
@@ -3343,15 +3345,15 @@ mod known_facts_tests {
     use super::*;
     use crate::cache::DatasetFacts;
 
-    /// What a folder holds comes back with its kind, on both routes.
+    /// What a directory holds comes back with its kind, on both routes.
     ///
     /// A row given a kind from the cache is never looked into again — `look_into` only
     /// classifies an `Unknown`, and `unclassified_visible` skips anything else. So a
     /// count left behind is left behind for the session: the row says `dir` about a
-    /// folder of fifteen Parquet files, and `enrich` goes on to describe it by whatever
-    /// is in its subfolders.
+    /// directory of fifteen Parquet files, and `enrich` goes on to describe it by
+    /// whatever is in its subdirectories.
     #[test]
-    fn what_a_folder_holds_is_restored_beside_its_kind() {
+    fn what_a_directory_holds_is_restored_beside_its_kind() {
         let holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 15)],
             ..Default::default()
@@ -3366,13 +3368,13 @@ mod known_facts_tests {
             let facts = DatasetFacts {
                 mtime: 0,
                 size: 4096,
-                // A row count a folder's record has no business carrying, to prove
+                // A row count a directory's record has no business carrying, to prove
                 // the gate below still turns it away.
                 rows: Some(999),
                 cols: Some(72),
                 cols_sampled: false,
                 columns: vec!["lat".to_string()],
-                // A folder of separate tables: the kind the footers settled on, its
+                // A directory of separate tables: the kind the footers settled on, its
                 // width, and no row count, because a sum over them is not a number.
                 kind: Some(EntryKind::Directory),
                 classified_by: crate::discover::CLASSIFIER_VERSION,
@@ -3406,7 +3408,7 @@ mod known_facts_tests {
 
     /// A dataset's own counts are not restored beside its kind. `unmeasured_visible`
     /// skips a row that already has a row count, so restoring one would stop a `hive`
-    /// or a `multi` folder ever being measured again — and its size and its codec,
+    /// or a `multi` directory ever being measured again — and its size and its codec,
     /// which nothing else fills in, would be blank for the rest of the session.
     #[test]
     fn a_datasets_counts_are_measured_rather_than_restored() {

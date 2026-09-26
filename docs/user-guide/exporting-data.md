@@ -34,7 +34,7 @@ Numbers are written as raw values, whatever the
 
 ## Source file
 
-A folder of Parquet files that disagree — on disk or in the cloud — shows an
+A directory of Parquet files that disagree — on disk or in the cloud — shows an
 empty cell three ways:
 a null the data holds, a column the file was written without, and a column the
 file keeps in another type. See

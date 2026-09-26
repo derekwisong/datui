@@ -67,7 +67,7 @@ impl FileFormat {
     /// is a reminder at the right moment rather than a guarantee, since the author
     /// could extend the match and leave this list short. What that would cost is
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
-    /// `None` as "not Parquet", which is the direction that leaves counts off a folder
+    /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
     pub const ALL: [Self; 10] = [
         Self::Parquet,
@@ -91,10 +91,10 @@ impl FileFormat {
 
     /// Whether many files of this format can be read as one table.
     ///
-    /// Asked before a folder is offered as a dataset, so the home screen cannot promise
-    /// an open the reader has no route for. The open's own refusal is a match arm in
-    /// `datui-lib`, which asserts against this predicate on every debug run, so the two
-    /// cannot name different formats without a test saying so.
+    /// Asked before a directory is offered as a dataset, so the home screen cannot
+    /// promise an open the reader has no route for. The open's own refusal is a match arm
+    /// in `datui-lib`, which asserts against this predicate on every debug run, so the
+    /// two cannot name different formats without a test saying so.
     ///
     /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
     /// is sheets rather than rows, with nothing to concatenate. Reading the first two
@@ -122,7 +122,7 @@ impl FileFormat {
     ///
     /// `.txt` is deliberately absent. It was listed as data and had no reader, so a
     /// `README.txt` was offered on the home screen and refused when opened. Giving it
-    /// one is worse: a README beside two Parquet files would make the folder two
+    /// one is worse: a README beside two Parquet files would make the directory two
     /// formats and stop it opening at all. A genuinely tabular `.txt` opens with
     /// `--format csv`.
     pub fn from_extension(ext: &str) -> Option<Self> {
@@ -555,9 +555,9 @@ mod format_tests {
 
         // And the names themselves, because they are not only labels. `Holds` keeps a
         // format as this string and the dataset cache writes it out, so renaming one
-        // changes what every folder of that format reads *and* makes the records
+        // changes what every directory of that format reads *and* makes the records
         // already on disk unreadable — `from_name` then answers `None`, which the
-        // enrich gate takes for "not Parquet" and blanks the folder's size. The round
+        // enrich gate takes for "not Parquet" and blanks the directory's size. The round
         // trip above holds for any string; this is what says which.
         assert_eq!(
             FileFormat::ALL.map(|f| f.name()),

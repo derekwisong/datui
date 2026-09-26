@@ -492,8 +492,8 @@ mod classify_batch_tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// A listing of `n` folders nothing has looked into, under a directory that does
-    /// not exist — so a pass over them settles nothing and blocks on nothing.
+    /// A listing of `n` subdirectories nothing has looked into, under a directory that
+    /// does not exist — so a pass over them settles nothing and blocks on nothing.
     fn unlooked_at(n: usize) -> home::Listing {
         let rows = (0..n)
             .map(|i| {
@@ -1123,7 +1123,7 @@ mod template_rollback_tests {
         });
         assert!(
             app.data_table_state.as_ref().unwrap().drifts(),
-            "the folder drifts to begin with"
+            "the directory drifts to begin with"
         );
 
         let mut template = app
@@ -1542,11 +1542,11 @@ mod peek_answer_tests {
         // `Directory` — and it is still `12 csv`, which is the label the row draws.
         assert!(worth(&(EntryKind::Directory, counted("csv", 12))));
         // A prefix of sub-prefixes and a writer's own files draws no label of its own,
-        // but the pane has `12 folders · 3 skipped` to say, and says it on disk.
+        // but the pane has `12 directories · 3 skipped` to say, and says it on disk.
         assert!(worth(&(
             EntryKind::Directory,
             Holds {
-                folders: 12,
+                directories: 12,
                 skipped: 3,
                 ..Default::default()
             }
@@ -1649,7 +1649,7 @@ pub mod tests {
             assert_eq!(facts.classified_by, crate::discover::CLASSIFIER_VERSION);
             assert!(facts.columns.iter().any(|c| c == "amount"));
 
-            // A flat prefix is a folder of files; one object is a file.
+            // A flat prefix is a directory of files; one object is a file.
             let flat = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
             let (_, facts) = crate::App::facts_from_cloud_footers(
                 "s3://bucket/sales/",
@@ -1673,9 +1673,9 @@ pub mod tests {
         }
 
         /// `--hive` on a prefix with no trailing slash lists the prefix's files and is a
-        /// folder; on a single object it lists that object and is a file.
+        /// directory; on a single object it lists that object and is a file.
         #[test]
-        fn a_prefix_without_its_slash_is_still_a_folder() {
+        fn a_prefix_without_its_slash_is_still_a_directory() {
             let files = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
             let (_, facts) = crate::App::facts_from_cloud_footers(
                 "s3://bucket/sales",
@@ -2146,7 +2146,7 @@ pub mod tests {
     ///
     /// Abandoning a load cancels nothing, so the prefix the user pressed End on goes on
     /// reading its footers after they have left it. Without the dataset's name on it,
-    /// the key would be spent on whatever is on screen when they land — a folder the
+    /// the key would be spent on whatever is on screen when they land — a directory the
     /// user has only just opened jumping to its end on its own.
     #[test]
     fn end_pressed_at_one_dataset_does_not_move_the_next() {
@@ -2221,7 +2221,7 @@ pub mod tests {
         assert_eq!(
             app.data_table_state.as_ref().unwrap().start_row,
             0,
-            "the folder they opened is where they left it, at the top"
+            "the directory they opened is where they left it, at the top"
         );
     }
 
@@ -3308,8 +3308,8 @@ pub mod tests {
         );
     }
 
-    /// An End pressed on the folder the user walked away from does not move the one they
-    /// opened next.
+    /// An End pressed on the directory the user walked away from does not move the one
+    /// they opened next.
     ///
     /// `end_after_count` names a `len_generation`, which says nothing about which
     /// dataset it belonged to — so it has to be put down when a dataset is, the way
@@ -3353,12 +3353,12 @@ pub mod tests {
         app.apply_schema_ready(remote_state(100), None, &OpenOptions::default(), None);
         let theirs = app.data_table_state.as_ref().unwrap().len_generation();
 
-        // End on the first folder, before its count lands.
+        // End on the first directory, before its count lands.
         let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         assert_eq!(
             app.end_after_count,
             Some(theirs),
-            "the jump is waiting on that folder's count"
+            "the jump is waiting on that directory's count"
         );
 
         // And they open another one instead.
@@ -3366,10 +3366,10 @@ pub mod tests {
         app.apply_schema_ready(remote_state(500), None, &OpenOptions::default(), None);
         assert_eq!(
             app.end_after_count, None,
-            "the key they pressed in the folder they left does not come with them"
+            "the key they pressed in the directory they left does not come with them"
         );
 
-        // The first folder's count finally arrives.
+        // The first directory's count finally arrives.
         let mut follow = app.event(&AppEvent::BackgroundLenReady {
             len_generation: theirs,
             num_rows: 100,
@@ -3382,7 +3382,7 @@ pub mod tests {
         assert_ne!(
             app.end_after_count,
             Some(next),
-            "and the folder on screen has not inherited it"
+            "and the directory on screen has not inherited it"
         );
 
         // Even once its own count lands, as it would.
@@ -3397,7 +3397,7 @@ pub mod tests {
         assert_eq!(
             app.data_table_state.as_ref().unwrap().start_row,
             0,
-            "the folder they are looking at stays where they left it, at the top"
+            "the directory they are looking at stays where they left it, at the top"
         );
     }
 
@@ -3461,7 +3461,7 @@ pub mod tests {
     /// Skipping the lease is a deliberate act rather than an oversight.
     ///
     /// Two spawns do. The buffer collect, whose answer is simply asked for again if a
-    /// bump throws it away. And the look at a folder named on the command line, whose
+    /// bump throws it away. And the look at a directory named on the command line, whose
     /// answer is *meant* to be thrown away when the user moves on — leased, it made a
     /// seventeen-second look hold the next dataset's buffer collect behind it, after
     /// Ctrl+O had been offered as the way out.
@@ -3506,7 +3506,7 @@ pub mod tests {
                 found, expected,
                 "`{needle}` appears {found} times, not {expected}. Two spawns skip the \
                  lease on purpose: the buffer collect, whose answer is asked for again \
-                 if a bump throws it away, and the look at a folder named on the \
+                 if a bump throws it away, and the look at a directory named on the \
                  command line, whose answer is meant to be thrown away. Anything else \
                  that skips it can be stranded by a bump, silently. See GenerationLease."
             );
@@ -3838,8 +3838,8 @@ pub mod tests {
     ///
     /// Abandoning a load cancels nothing: the footers of a prefix the user has moved on
     /// from keep being read, and land afterwards. Without a generation that counts
-    /// datasets put on screen they would be joined to whatever is there now — a folder
-    /// gaining a column from a different folder entirely.
+    /// datasets put on screen they would be joined to whatever is there now — a directory
+    /// gaining a column from a different directory entirely.
     #[test]
     fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
         use crate::widgets::datatable::DataTableState;
@@ -3903,7 +3903,7 @@ pub mod tests {
         assert_eq!(
             app.data_table_state.as_ref().unwrap().get_column_order(),
             ["other"],
-            "the folder on screen does not gain a column from the folder before it"
+            "the directory on screen does not gain a column from the directory before it"
         );
         assert!(
             app.footers_held.is_none(),
@@ -4116,8 +4116,8 @@ pub mod tests {
     /// Held columns outlive the dataset they belong to: the user is inside a query when
     /// they arrive, so they wait — and the user may then open something else entirely
     /// rather than clear the query. Opening clears the slot but not what is already
-    /// held, and the first keypress on the new folder is where the held columns would
-    /// go in: one folder's schema, scan and file list installed into another.
+    /// held, and the first keypress on the new directory is where the held columns would
+    /// go in: one directory's schema, scan and file list installed into another.
     #[test]
     fn columns_held_for_one_dataset_are_not_given_to_the_next() {
         use crate::widgets::datatable::{DataTableState, FootersFound};
@@ -4181,7 +4181,7 @@ pub mod tests {
         assert_eq!(
             app.data_table_state.as_ref().unwrap().get_column_order(),
             ["other"],
-            "the folder now on screen is not given the last one's columns"
+            "the directory now on screen is not given the last one's columns"
         );
         assert!(
             app.footers_held.is_none(),
@@ -4594,26 +4594,26 @@ pub struct OpenOptions {
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
-    /// Data files in the folder being opened that this read passes over, by format and
+    /// Data files in the directory being opened that this read passes over, by format and
     /// count.
     ///
-    /// A folder of more than one format is read as the commonest of them — a thousand
-    /// CSVs and one stray JSON is a folder of CSVs — and this is what the stray was, so
-    /// the dataset can say what it left out rather than the folder being refused over
-    /// it. Empty for every other open, which is all of them but one.
+    /// A directory of more than one format is read as the commonest of them — a thousand
+    /// CSVs and one stray JSON is a directory of CSVs — and this is what the stray was,
+    /// so the dataset can say what it left out rather than the directory being refused
+    /// over it. Empty for every other open, which is all of them but one.
     pub left_out: Vec<(FileFormat, usize)>,
-    /// Set when the folder being opened is a lake table and this read is of its plain
+    /// Set when the directory being opened is a lake table and this read is of its plain
     /// files: `"Delta"`, `"Iceberg"` or `"Hudi"`.
     ///
     /// The files are not the table. A delete leaves its rows on disk, an update leaves
     /// the version it replaced, and compaction leaves both sides — so this read counts
     /// rows no query of the table would return. datui does it anyway, because the
-    /// alternative was a folder the user could see and could not read at all, and every
-    /// other engine at least lets you look. What makes it honest rather than wrong is
-    /// that it is never silent: a note and a chip in the control bar say so, and both
+    /// alternative was a directory the user could see and could not read at all, and
+    /// every other engine at least lets you look. What makes it honest rather than wrong
+    /// is that it is never silent: a note and a chip in the control bar say so, and both
     /// are load-bearing.
     pub read_as_plain_files_of: Option<&'static str>,
-    /// How the folder's own files differed, when they did.
+    /// How the directory's own files differed, when they did.
     ///
     /// Only for the formats with no footer. A Parquet dataset's footers are read
     /// anyway, and say this per column and per file in far more detail — which columns,
@@ -5010,7 +5010,7 @@ pub enum AppEvent {
         root: PathBuf,
         rows: Option<Vec<crate::discover::Entry>>,
     },
-    /// What peeking inside some folders of a cloud listing found: the ones that are
+    /// What peeking inside some directories of a cloud listing found: the ones that are
     /// partitioned or Parquet datasets.
     HomeCloudKinds {
         kinds: Vec<(
@@ -5178,16 +5178,16 @@ pub enum AppEvent {
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
     BackgroundWorkFinished,
-    /// A folder named on the command line: look at it on a worker, then do with it
+    /// A directory named on the command line: look at it on a worker, then do with it
     /// whatever `Enter` on its row would do.
     ///
-    /// The look reads footers, or the front of a spread of files, which for a folder of
-    /// large Parquet is seconds. It is an event rather than a call so the first frame
-    /// is drawn before it starts, and the wait has the folder's name on it, a spinner
+    /// The look reads footers, or the front of a spread of files, which for a directory
+    /// of large Parquet is seconds. It is an event rather than a call so the first frame
+    /// is drawn before it starts, and the wait has the directory's name on it, a spinner
     /// and a way out.
-    LookThenOpenFolder(PathBuf, OpenOptions),
+    LookThenOpenDirectory(PathBuf, OpenOptions),
     /// What the look found, back from the worker.
-    FolderLookedAt {
+    DirectoryLookedAt {
         generation: u64,
         path: PathBuf,
         kind: discover::EntryKind,
@@ -5288,7 +5288,7 @@ pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 /// What <kbd>Enter</kbd> will do on the highlighted row.
 ///
 /// Written so the control bar and the details pane can say it before it happens.
-/// Every folder has two doors and the labels no longer decide access, which is only
+/// Every directory has two doors and the labels no longer decide access, which is only
 /// worth anything if the screen says which key is which — a bar reading `Enter Open` on
 /// a row where `Enter` goes inside teaches the wrong thing on the first try, and the
 /// first try is the one that forms the impression.
@@ -5301,10 +5301,10 @@ pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 pub enum WhatEnter {
     /// Load the file on the row.
     OpensFile,
-    /// Read the whole folder as one table: a hive root, a folder whose files are one
-    /// table, or the `(all files)` row.
-    OpensFolder,
-    /// Step into the folder. What `→` does too, on these rows.
+    /// Read the whole directory as one table: a hive root, a directory whose files are
+    /// one table, or the `(all files)` row.
+    OpensDirectory,
+    /// Step into the directory. What `→` does too, on these rows.
     GoesInside,
     /// Look at the row first, then do whichever of the above the answer calls for.
     LooksFirst,
@@ -5320,9 +5320,9 @@ pub enum WhatEnter {
 impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
-        // One walk of the list, not four. Every `selected_*` helper rebuilds it, and
-        // this runs from the control bar on every frame, beside a `selected_folder_to_enter`
-        // that walks it once more.
+        // One walk of the list, not four. Every `selected_*` helper rebuilds it, and this
+        // runs from the control bar on every frame, beside a
+        // `selected_directory_to_enter` that walks it once more.
         let rows = self.home.visible();
         let entry = match rows.get(self.home.selected) {
             // A place row browses into the place, which is what `→` does on it too, so
@@ -5338,15 +5338,15 @@ impl App {
             Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
             None => return WhatEnter::Explains,
-            // The door reads the folder it names whatever that folder is labelled — the
-            // lake tables included, which is the one row that reads them at all.
-            Some(home::Row::Door { .. }) => return WhatEnter::OpensFolder,
+            // The door reads the directory it names whatever that directory is labelled —
+            // the lake tables included, which is the one row that reads them at all.
+            Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
             Some(home::Row::Entry { entry, .. }) => *entry,
         };
         match entry.kind {
             discover::EntryKind::Unknown => WhatEnter::LooksFirst,
             discover::EntryKind::File => WhatEnter::OpensFile,
-            discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensFolder,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensDirectory,
             // A plain directory, and a lake table, whose files are not its rows.
             discover::EntryKind::Directory
             | discover::EntryKind::Delta
@@ -5356,7 +5356,7 @@ impl App {
     }
 }
 
-/// What a read of a folder found out about itself on the way through.
+/// What a read of a directory found out about itself on the way through.
 ///
 /// Filled by the pass that actually picks the files and the reader, and carried back on
 /// the options so the dataset can say it in the Notes. Everything here is about what
@@ -5364,8 +5364,9 @@ impl App {
 /// they are written later, by whatever read the footers.
 #[derive(Debug, Clone, Default)]
 pub struct ReadReport {
-    /// Data files in the folder this read passed over, by format and count. A folder of
-    /// more than one format is read as the commonest of them; this is the rest.
+    /// Data files in the directory this read passed over, by format and count. A
+    /// directory of more than one format is read as the commonest of them; this is the
+    /// rest.
     pub left_out: Vec<(FileFormat, usize)>,
     /// How the files read differed. See [`OpenOptions::files_disagree`].
     pub files_disagree: crate::schema_union::Disagreement,
@@ -6045,7 +6046,7 @@ struct LenCount {
     files: Option<crate::widgets::datatable::FileCounter>,
     lf: LazyFrame,
     streaming: bool,
-    /// The open's meter. Counting a local folder re-reads every footer, which costs
+    /// The open's meter. Counting a local directory re-reads every footer, which costs
     /// what the open's own pass cost and is tallied with it.
     meter: Arc<crate::measurements::Meter>,
 }
@@ -6216,19 +6217,19 @@ pub struct App {
     classify_inflight: Option<ClassifyRequest>,
     /// Ids for those, so a superseded answer can be told from the one being waited on.
     classify_requests: u64,
-    /// The folder a `LookThenOpenFolder` is being looked at, if any.
+    /// The directory a `LookThenOpenDirectory` is being looked at, if any.
     ///
-    /// The look takes seconds on a folder of large Parquet, and Ctrl+O works throughout
-    /// — that is the point of it being off the startup thread — so the user can be
-    /// somewhere else by the time it answers. `abandon_load` puts it down with
+    /// The look takes seconds on a directory of large Parquet, and Ctrl+O works
+    /// throughout — that is the point of it being off the startup thread — so the user
+    /// can be somewhere else by the time it answers. `abandon_load` puts it down with
     /// everything else that belonged to the screen being left, and an answer that finds
-    /// nothing outstanding touches nothing. Without it the look landed seventeen
-    /// seconds later and took the user off the home screen they had chosen.
+    /// nothing outstanding touches nothing. Without it the look landed seventeen seconds
+    /// later and took the user off the home screen they had chosen.
     ///
     /// Its own field rather than `task_generation`, which `abandon_load` deliberately
     /// does not bump: a load abandoned is not a newer load, and bumping it there would
     /// discard answers that other waiting work still wants.
-    looking_at_folder: Option<PathBuf>,
+    looking_at_directory: Option<PathBuf>,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -6354,7 +6355,7 @@ pub struct App {
     dataset_generation: u64,
     /// End was pressed while a dataset was still reading its footers, which is where
     /// its end is coming from. Jump when they land — and only for that dataset, which
-    /// is what the generation is for: a folder the user pressed End on and then walked
+    /// is what the generation is for: a directory the user pressed End on and then walked
     /// away from must not move the view of the one they opened next. `end_after_count`
     /// alongside keys itself the same way, to `len_generation`.
     end_when_the_footers_land: Option<u64>,
@@ -6738,8 +6739,8 @@ impl App {
     ///
     /// Not the same question as whether a pass is running. The counter is shared with
     /// every open, and abandoning one does not stop it: without this, giving up on a
-    /// large local folder and going back to the dataset you had would leave that
-    /// dataset's control bar counting footers belonging to the folder you left.
+    /// large local directory and going back to the dataset you had would leave that
+    /// dataset's control bar counting footers belonging to the directory you left.
     fn dataset_is_still_reading_its_footers(&self) -> bool {
         self.data_table_state
             .as_ref()
@@ -6910,9 +6911,9 @@ impl App {
     /// take down its own line without clearing one that belongs to something else.
     const LOOKING: &'static str = "Looking...";
 
-    /// The wait while a folder named on the command line is looked at: which files it
-    /// holds, and whether they are one table. Seconds, for a folder of large Parquet.
-    pub const LOOKING_AT_A_FOLDER: &'static str = "Looking at the folder";
+    /// The wait while a directory named on the command line is looked at: which files it
+    /// holds, and whether they are one table. Seconds, for a directory of large Parquet.
+    pub const LOOKING_AT_A_DIRECTORY: &'static str = "Looking at the directory";
 
     /// Put the path on the loading screen, so a wait says what it is waiting for.
     fn name_what_is_loading(&mut self, path: PathBuf) {
@@ -7047,7 +7048,7 @@ impl App {
         self.end_when_the_footers_land = None;
         // Its companion, for the same reason. This one keys itself to a
         // `len_generation`, which says nothing about which dataset it belonged to, so
-        // without clearing it here an End pressed on the folder the user walked away
+        // without clearing it here an End pressed on the directory the user walked away
         // from is still live against the one they opened next.
         self.end_after_count = None;
         // One per dataset that reaches the screen, rather than one per open started:
@@ -7527,7 +7528,7 @@ impl App {
             home_generation: 0,
             classify_inflight: None,
             classify_requests: 0,
-            looking_at_folder: None,
+            looking_at_directory: None,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -8148,7 +8149,7 @@ impl App {
         }
         #[cfg(feature = "cloud")]
         if std::mem::take(&mut self.home.pending_peek) {
-            self.peek_cloud_folders();
+            self.peek_cloud_directories();
         }
     }
 
@@ -8216,12 +8217,12 @@ impl App {
             self.busy = false;
             self.home.status = None;
         }
-        // And the look at a folder named on the command line, for the same reason: it
+        // And the look at a directory named on the command line, for the same reason: it
         // takes seconds, Ctrl+O works throughout, and its answer must not take the user
         // off the screen they went to instead.
-        if self.looking_at_folder.take().is_some() {
+        if self.looking_at_directory.take().is_some() {
             self.busy = false;
-            if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
+            if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_DIRECTORY) {
                 self.status_message = None;
             }
         }
@@ -8267,9 +8268,9 @@ impl App {
                         .unwrap_or_else(|_| entry.path.clone())
                         == target
                 }
-                // Not the door: its path is the folder's, so an open file whose
-                // folder is being browsed would put the cursor on the row that
-                // opens the whole folder rather than on the file itself.
+                // Not the door: its path is the directory's, so an open file whose
+                // directory is being browsed would put the cursor on the row that
+                // opens the whole directory rather than on the file itself.
                 home::Row::Header { .. }
                 | home::Row::Place { .. }
                 | home::Row::More { .. }
@@ -8429,8 +8430,8 @@ impl App {
     /// and it is still `12 csv`, which is the count the row is labelled from.
     ///
     /// An answer that says neither is replaced by "a directory, and nothing to say
-    /// about it" rather than dropped. The folder still has to come back — that is what
-    /// takes it out of `peeking` and holds the one-request-per-folder promise — and
+    /// about it" rather than dropped. The directory still has to come back — that is what
+    /// takes it out of `peeking` and holds the one-request-per-directory promise — and
     /// once the request has been made, "nothing to say" is a real answer rather than
     /// the claim it was when it was being written before the request. What this decides
     /// is whether the peek's own words are kept.
@@ -8438,8 +8439,8 @@ impl App {
     /// "Says something" is `Holds::is_empty`, not the formats alone. The row is not the
     /// only thing an answer reaches: the details pane draws the whole `holds` line, so a
     /// prefix of a README and two PDFs has `3 not read` to report, and one of twelve
-    /// sub-prefixes has `12 folders`. Testing the formats dropped both, and the same
-    /// folders on disk said both things.
+    /// sub-prefixes has `12 directories`. Testing the formats dropped both, and the same
+    /// directories on disk said both things.
     ///
     /// The cost is real and is the reason the distinction is kept: each batch rebuilds
     /// the listing on the thread drawing the frame. `Holds::is_empty` is the line
@@ -8456,66 +8457,66 @@ impl App {
         answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
     }
 
-    /// Look inside the cloud folders the cursor is on or near, so the ones that are
+    /// Look inside the cloud directories the cursor is on or near, so the ones that are
     /// datasets say `hive` or `multi` and open as one. One small listing request per
-    /// folder, and each folder is peeked at once per session.
+    /// directory, and each directory is peeked at once per session.
     ///
-    /// A folder the listing takes for `multi` costs a little more: up to three ranged
+    /// A directory the listing takes for `multi` costs a little more: up to three ranged
     /// reads of a few kilobytes each, to ask the footers whether its files are really
     /// one table. Nothing else reads an object, and nothing reads a whole one.
     ///
     /// Driven by the cursor rather than by the listing. It used to take the first
-    /// forty-eight folders of each listing, once: a bucket of two hundred prefixes had
-    /// forty-eight labelled and the rest reading `dir` for the session however long you
-    /// spent on them, and paging straight past those forty-eight spent the requests on
-    /// rows nobody saw. The budget is the same shape as the local classify pass now —
+    /// forty-eight directories of each listing, once: a bucket of two hundred prefixes
+    /// had forty-eight labelled and the rest reading `dir` for the session however long
+    /// you spent on them, and paging straight past those forty-eight spent the requests
+    /// on rows nobody saw. The budget is the same shape as the local classify pass now —
     /// what is on screen, a batch at a time, the highlighted row first.
     #[cfg(feature = "cloud")]
-    fn peek_cloud_folders(&mut self) {
+    fn peek_cloud_directories(&mut self) {
         const PEEKS_AT_ONCE: usize = 4;
-        let folders = self.home.cloud_folders_to_peek(PEEKS_AT_ONCE);
-        if folders.is_empty() {
+        let directories = self.home.cloud_directories_to_peek(PEEKS_AT_ONCE);
+        if directories.is_empty() {
             return;
         }
         // Out, not answered. A second pass before these land must not ask again, and an
         // answer written here instead would be a claim — `dir` on a row that has a
         // count, and "never again this session" staked on a request that may fail.
-        for folder in &folders {
-            self.home.peeking.insert(folder.clone());
+        for directory in &directories {
+            self.home.peeking.insert(directory.clone());
         }
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
         self.runtime.spawn(async move {
             let permits = Arc::new(tokio::sync::Semaphore::new(PEEKS_AT_ONCE));
             let mut peeks = tokio::task::JoinSet::new();
-            for folder in folders {
+            for directory in directories {
                 let (permits, cloud) = (permits.clone(), cloud.clone());
                 peeks.spawn(async move {
                     let _permit = permits.acquire_owned().await;
                     let kind =
-                        crate::cloud_browse::peek_kind(&folder.to_string_lossy(), &cloud).await;
-                    (folder, kind)
+                        crate::cloud_browse::peek_kind(&directory.to_string_lossy(), &cloud).await;
+                    (directory, kind)
                 });
             }
             // Sent a few at a time: the labels fill in as they are found, without a
-            // rebuild per folder.
+            // rebuild per directory.
             //
-            // Every folder asked about is sent back, including the ones whose peek
+            // Every directory asked about is sent back, including the ones whose peek
             // decided nothing and the ones whose request failed. That is what takes
-            // them out of `peeking` and what holds the one-request-per-folder promise
+            // them out of `peeking` and what holds the one-request-per-directory promise
             // — and an answer of "a directory, and nothing to say about it" is a real
             // answer once the request has been made, which is what it was not while it
             // was being written before the request.
             let mut found = Vec::new();
             while let Some(joined) = peeks.join_next().await {
-                let Ok((folder, answer)) = joined else {
+                let Ok((directory, answer)) = joined else {
                     continue;
                 };
                 let answer = answer
                     .ok()
                     .filter(Self::peek_tells_a_row_something)
                     .unwrap_or((discover::EntryKind::Directory, Default::default()));
-                found.push((folder, answer));
+                found.push((directory, answer));
                 if found.len() >= PEEKS_AT_ONCE {
                     let _ = tx.send(AppEvent::HomeCloudKinds {
                         kinds: std::mem::take(&mut found),
@@ -8528,7 +8529,7 @@ impl App {
         });
     }
 
-    /// Browse into a directory, bucket or cloud folder.
+    /// Browse into a directory or bucket, local or remote.
     fn home_browse_into(&mut self, path: PathBuf) {
         if self.home.browsing.is_none() {
             self.home.browse_start = Some(path.clone());
@@ -8550,36 +8551,36 @@ impl App {
     }
 
     /// Whether the highlighted row is the `(all files)` row: the one that opens the
-    /// folder being browsed, and so is already inside it.
+    /// directory being browsed, and so is already inside it.
     ///
-    /// `Enter` on it opens the folder whatever the label says, and → on it would
+    /// `Enter` on it opens the directory whatever the label says, and → on it would
     /// descend into where it already is.
     /// Asked of the row's variant rather than of a flag on the entry it carries: the
     /// door is a `Row::Door` now, so this is one match instead of a clone.
-    fn selection_opens_the_whole_folder(&self) -> bool {
+    fn selection_opens_the_whole_directory(&self) -> bool {
         self.home.selection_is_the_door()
     }
 
     /// The highlighted row, when → goes inside it.
     ///
-    /// Every folder, whatever its label. A label describes what is directly inside; it
+    /// Every directory, whatever its label. A label describes what is directly inside; it
     /// no longer decides what can be reached, so the exception list this used to carry —
-    /// hive, multi and the three lake markers — is gone, and with it the folders that
+    /// hive, multi and the three lake markers — is gone, and with it the directories that
     /// had no way in because datui did not recognize how they were stored. What is left
-    /// out is what is not a folder: a file, a section header, and the row that opens the
-    /// folder you are already in.
+    /// out is what is not a directory: a file, a section header, and the row that opens
+    /// the directory you are already in.
     ///
     /// Local or remote. The split this used to carry — remote only — was never about
-    /// where the folder was: a cloud prefix simply could not be descended into until
+    /// where the directory was: a cloud prefix simply could not be descended into until
     /// there was a listing to descend with.
-    fn selected_folder_to_enter(&self) -> Option<PathBuf> {
+    fn selected_directory_to_enter(&self) -> Option<PathBuf> {
         // A place under `RECENT` is a directory to go inside, and → is one of its two
         // doors. It has no entry to ask about, so it is answered before one is looked for.
         if let Some(home::Row::Place { path, .. }) = self.home.selected_row() {
             return home::place_is_browsable(&path).then_some(path);
         }
         let entry = self.home.selected_entry()?;
-        if self.selection_opens_the_whole_folder() {
+        if self.selection_opens_the_whole_directory() {
             return None;
         }
         (entry.kind != discover::EntryKind::File).then_some(entry.path)
@@ -8587,7 +8588,7 @@ impl App {
 
     /// Why a prefix in an object store cannot be read as one table, when it cannot.
     ///
-    /// Every cloud path is scanned as Parquet — the folder-format dispatch is local
+    /// Every cloud path is scanned as Parquet — the directory-format dispatch is local
     /// only — so a prefix of anything else comes back "Could not read from S3. Check
     /// credentials and URL", which is a false statement about a login that is fine.
     /// What the prefix holds is already counted and on screen, so saying so costs no
@@ -8610,8 +8611,8 @@ impl App {
                 // Nothing datui has a reader for. Only a refusal when there is also
                 // nothing below: a prefix of sub-prefixes may hold Parquet a level
                 // down, and nothing here has looked.
-                (holds.not_read > 0 && holds.folders == 0).then(|| {
-                    "this prefix holds nothing datui can read — datui reads a folder in \
+                (holds.not_read > 0 && holds.directories == 0).then(|| {
+                    "this prefix holds nothing datui can read — datui reads a directory in \
                      an object store as Parquet only."
                         .to_string()
                 })
@@ -8623,7 +8624,7 @@ impl App {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "this prefix holds {held} — datui reads a folder in an object store \
+                    "this prefix holds {held} — datui reads a directory in an object store \
                      as Parquet only. Open one of the files below instead."
                 ))
             }
@@ -8632,9 +8633,9 @@ impl App {
 
     /// The reader a prefix in an object store calls for, from what its listing counted.
     ///
-    /// The commonest format, which is the same rule a folder on disk follows — and
-    /// `rank_formats` is the same order, so a prefix and the folder it mirrors pick the
-    /// same reader. `None` when nothing there has a multi-file reader, which is where
+    /// The commonest format, which is the same rule a directory on disk follows — and
+    /// `rank_formats` is the same order, so a prefix and the directory it mirrors pick
+    /// the same reader. `None` when nothing there has a multi-file reader, which is where
     /// the refusal that names what is there belongs.
     ///
     /// Parquet included and returned as itself: the cloud branches compare against it
@@ -8663,7 +8664,7 @@ impl App {
     ///
     /// `None` for anything else. Shared by the two doors onto a path — the highlighted
     /// row, and a path typed at `~` — because the second one had no lake check at all
-    /// and loaded the root as a folder of Parquet files, which is the whole of #237
+    /// and loaded the root as a directory of Parquet files, which is the whole of #237
     /// reached one keystroke differently.
     fn lake_table_note(kind: discover::EntryKind) -> Option<String> {
         kind.lake_name().map(|format| {
@@ -8703,25 +8704,25 @@ impl App {
             return None;
         }
         let entry = self.home.selected_entry()?;
-        // The `(all files)` row opens the folder it names, whatever the folder is
+        // The `(all files)` row opens the directory it names, whatever the directory is
         // labelled. That is the whole of what it is for: the label describes, and this
         // row is the promise that the description cannot lock you out. Sent straight to
         // the open, because `open_what_it_is` would read the label back and send a
-        // `dir` row inside the folder it is already in.
-        if self.selection_opens_the_whole_folder() {
-            // A lake table is not a folder of Parquet files however much it looks like
+        // `dir` row inside the directory it is already in.
+        if self.selection_opens_the_whole_directory() {
+            // A lake table is not a directory of Parquet files however much it looks like
             // one: reading it as one counts tombstoned rows, every rewritten version
             // and both sides of a compaction. So the read is labelled rather than
-            // refused. Refusing it left a folder the user could see and could not read
+            // refused. Refusing it left a directory the user could see and could not read
             // at all — this row is the promise that no label locks you out, and a
-            // refusal here is that promise broken on the one folder that needed it.
+            // refusal here is that promise broken on the one directory that needed it.
             // Until datui reads the log, its files are what there is, and what makes
             // that honest is that nothing about it is silent: a note in the panel, a
             // chip in the control bar, and `Enter` on the row one level up still goes
             // inside and says datui does not read the table itself yet.
             let lake = entry.kind.lake_name();
             // A prefix in an object store used to be scanned as Parquet whatever was
-            // in it — every cloud path returns before the folder-format dispatch is
+            // in it — every cloud path returns before the directory-format dispatch is
             // reached — so a prefix of CSV answered "Could not read from S3. Check
             // credentials and URL", a false statement about the user's login. What the
             // prefix holds was counted by the listing and is on screen, so the reader
@@ -8749,10 +8750,10 @@ impl App {
             }
             // `hive: true` says read this as one, which is the whole of what the row
             // promises — it is also what carries partition columns through, for a
-            // folder the dispatch sends down the hive route. The cloud route returns
+            // directory the dispatch sends down the hive route. The cloud route returns
             // before the dispatch is reached.
-            let folder = home::folder_dataset_url(&entry.path);
-            return Some(self.home_open_folder_as(folder, true, lake, reader));
+            let directory = home::directory_dataset_url(&entry.path);
+            return Some(self.home_open_directory_as(directory, true, lake, reader));
         }
         // A row nothing has looked at is looked at before it is opened, rather than
         // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
@@ -8823,29 +8824,30 @@ impl App {
             self.home.status = Some(note);
             return None;
         }
-        // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
+        // A cloud directory that is a dataset opens as one: its URL as a prefix, which is
         // what makes the open a scan of every file under it.
-        let folder = matches!(
+        let directory = matches!(
             kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
         );
-        if folder && home::is_object_store_url(&path) {
+        if directory && home::is_object_store_url(&path) {
             // A prefix, not a directory: the scan is what walks it.
-            return Some(self.home_open_path(home::folder_dataset_url(&path), false));
+            return Some(self.home_open_path(home::directory_dataset_url(&path), false));
         }
-        Some(self.home_open_path(path, folder))
+        Some(self.home_open_path(path, directory))
     }
 
     /// What `datui <path>` does with a directory: the same rule as `Enter` on its row.
     ///
     /// A directory used to be `Unsupported file type` unless `--hive` was passed, while
-    /// pyarrow, Polars, pandas and Spark all open one. Naming a folder *is* the request
-    /// to read it, so the three doors onto a path — the highlighted row, the `~` prompt
-    /// and the command line — now answer the same: a hive root or a folder whose files
-    /// are one table opens as one table, and a folder that is a place to look inside
-    /// opens the home screen browsed into it, one keystroke from either file or union.
+    /// pyarrow, Polars, pandas and Spark all open one. Naming a directory *is* the
+    /// request to read it, so the three doors onto a path — the highlighted row, the `~`
+    /// prompt and the command line — now answer the same: a hive root or a directory
+    /// whose files are one table opens as one table, and a directory that is a place to
+    /// look inside opens the home screen browsed into it, one keystroke from either file
+    /// or union.
     ///
-    /// The folder is looked into here rather than guessed at, because that is what the
+    /// The directory is looked into here rather than guessed at, because that is what the
     /// rule is: [`home::look_into`] is the same call the home screen's background pass
     /// makes, footers and all. On the command line it is on this thread, before the
     /// first frame, which is where the user is already waiting for the path they named.
@@ -8861,25 +8863,25 @@ impl App {
         options: OpenOptions,
     ) -> Option<AppEvent> {
         // Several paths are a list of files to read together, and `--hive` is an answer
-        // already given. Neither is a question about what one folder is.
+        // already given. Neither is a question about what one directory is.
         let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
         let Some(dir) = single.filter(|p| p.is_dir()) else {
             return Some(AppEvent::Open(paths, options));
         };
 
-        // Looking at a folder reads its footers, or the front of a spread of its files.
-        // For a folder of large Parquet that is seconds — 4.6 of them on a real one —
-        // and this runs before the first frame is drawn, so doing it here is a blank
-        // terminal for the whole of it: no name, no spinner, no way out. It goes to a
-        // worker, and the answer comes back as an event like every other read.
-        Some(AppEvent::LookThenOpenFolder(dir, options))
+        // Looking at a directory reads its footers, or the front of a spread of its
+        // files. For a directory of large Parquet that is seconds — 4.6 of them on a real
+        // one — and this runs before the first frame is drawn, so doing it here is a
+        // blank terminal for the whole of it: no name, no spinner, no way out. It goes to
+        // a worker, and the answer comes back as an event like every other read.
+        Some(AppEvent::LookThenOpenDirectory(dir, options))
     }
 
-    /// Act on what the look at a folder named on the command line found.
+    /// Act on what the look at a directory named on the command line found.
     ///
     /// The other half of [`Self::open_the_path_named_on_the_command_line`], which is
     /// where the reasoning for the rule itself is.
-    fn open_the_folder_looked_at(
+    fn open_the_directory_looked_at(
         &mut self,
         dir: PathBuf,
         kind: discover::EntryKind,
@@ -8889,7 +8891,7 @@ impl App {
         // read every file the way this open will, so `--no-header` and the skips have
         // already been accounted for by the rule rather than around it. Overriding
         // instead took three goes to get wrong in three different ways — it fired on
-        // config values, it fired on folders with nothing readable in them, and it
+        // config values, it fired on directories with nothing readable in them, and it
         // fired on Parquet, which no CSV setting can affect.
         //
         // A lake table's files are not its rows, so the home screen is opened on it and
@@ -8900,8 +8902,8 @@ impl App {
             self.home.status = Some(note);
             return None;
         }
-        // One table: read it. `hive` is what puts the open on the folder route, where
-        // what the folder holds picks the reader.
+        // One table: read it. `hive` is what puts the open on the directory route, where
+        // what the directory holds picks the reader.
         if matches!(
             kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
@@ -8912,7 +8914,7 @@ impl App {
             self.busy = true;
             return Some(AppEvent::Open(vec![dir], options));
         }
-        // A place to look inside. `datui .` is this, and so is a folder of separate
+        // A place to look inside. `datui .` is this, and so is a directory of separate
         // tables — where the `(all files)` row inside is the one keystroke that unions
         // them anyway.
         self.enter_home();
@@ -8940,27 +8942,27 @@ impl App {
     /// The recent entry is recorded by the `Open` handler, which every open goes
     /// through, so this does not record one itself.
     fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
-        self.home_open_folder(path, hive, None)
+        self.home_open_directory(path, hive, None)
     }
 
-    /// As [`Self::home_open_path`], and carrying whether the folder being read is a
+    /// As [`Self::home_open_path`], and carrying whether the directory being read is a
     /// lake table whose plain files this read is, so the dataset can say so.
-    fn home_open_folder(
+    fn home_open_directory(
         &mut self,
         path: PathBuf,
         hive: bool,
         lake: Option<&'static str>,
     ) -> AppEvent {
-        self.home_open_folder_as(path, hive, lake, None)
+        self.home_open_directory_as(path, hive, lake, None)
     }
 
-    /// As [`Self::home_open_folder`], naming the reader to use.
+    /// As [`Self::home_open_directory`], naming the reader to use.
     ///
     /// For a prefix in an object store, where nothing downstream reads the listing: the
-    /// cloud branches scan before the folder-format dispatch is reached, so the format
+    /// cloud branches scan before the directory-format dispatch is reached, so the format
     /// the listing counted has to travel with the open or the scan falls back to
     /// Parquet, which is what it always did.
-    fn home_open_folder_as(
+    fn home_open_directory_as(
         &mut self,
         path: PathBuf,
         hive: bool,
@@ -9080,11 +9082,11 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
-            KeyCode::Right => match self.selected_folder_to_enter() {
-                // Into a folder that opens as one dataset rather than opening it, to
+            KeyCode::Right => match self.selected_directory_to_enter() {
+                // Into a directory that opens as one dataset rather than opening it, to
                 // reach one partition or one file. This clears the filter, as browsing
                 // anywhere does.
-                Some(folder) => {
+                Some(directory) => {
                     // The same sentence Enter leaves, for the same reason: this is the
                     // door the control bar advertises on a lake row, and arriving inside
                     // one with no explanation is the silent wrong answer #237 is about.
@@ -9092,7 +9094,7 @@ impl App {
                         .home
                         .selected_entry()
                         .and_then(|entry| Self::lake_table_note(entry.kind));
-                    self.home_browse_into(folder);
+                    self.home_browse_into(directory);
                     if note.is_some() {
                         self.home.status = note;
                     }
@@ -9499,12 +9501,12 @@ impl App {
         let path_for_event = display_path.or_else(|| paths.first().cloned());
         let slot = self.pending_lazyframe_result.clone();
         self.spawn_bg(status, move |task_gen, tx| {
-            // What the read passed over rides back with the options it was asked for,
-            // so the dataset can say what it left out. Seeded with what the caller
-            // already knows and overwritten by what the read finds: a folder on disk is
-            // the read's own answer, because it is the pass that decides, while for a
-            // prefix in an object store Polars does the listing and never sees the
-            // other formats — there the home screen's listing is the only witness.
+            // What the read passed over rides back with the options it was asked for, so
+            // the dataset can say what it left out. Seeded with what the caller already
+            // knows and overwritten by what the read finds: a directory on disk is the
+            // read's own answer, because it is the pass that decides, while for a prefix
+            // in an object store Polars does the listing and never sees the other formats
+            // — there the home screen's listing is the only witness.
             let mut report = ReadReport {
                 left_out: options.left_out.clone(),
                 files_disagree: options.files_disagree,
@@ -9642,7 +9644,7 @@ struct CloudDataset {
     partition_columns: Vec<String>,
 }
 impl App {
-    /// Schema for a local folder of Parquet files: every column any of them has, from
+    /// Schema for a local directory of Parquet files: every column any of them has, from
     /// their footers, instead of `collect_schema()` over the whole set or one file's
     /// columns standing in for all.
     ///
@@ -9904,7 +9906,7 @@ impl App {
         // A staged open can only leave out what it has read: two footers, so an object
         // that will not parse anywhere but the two ends is in this scan and the first
         // page fails on it. That is a window, not a lost guarantee — the pass behind
-        // the open finds it and the join swaps in a scan without it — but for a folder
+        // the open finds it and the join swaps in a scan without it — but for a directory
         // with a file mid-write, a prefix over sixty-four objects shows an error where
         // a smaller one shows rows.
         let readable = crate::schema_union::readable_paths(&urls, &dataset.unreadable);
@@ -10179,18 +10181,18 @@ impl App {
                 .map(|f| f.row_group_rows.iter().sum::<usize>())
                 .sum()
         });
-        // A folder of files, unless the listing came back with the one object the URL
+        // A directory of files, unless the listing came back with the one object the URL
         // names — which is what `--hive` on a single object gets. The trailing slash is
         // not asked about: this route is entered for `--hive s3://bucket/sales` too.
-        let folder = !(files.len() == 1 && full.trim_end_matches('/').ends_with(&files[0].key));
-        let kind = if !folder {
+        let directory = !(files.len() == 1 && full.trim_end_matches('/').ends_with(&files[0].key));
+        let kind = if !directory {
             discover::EntryKind::File
         } else if !partition_columns.is_empty() {
             discover::EntryKind::Hive
         } else {
             discover::EntryKind::MultiFile
         };
-        let holds = if folder {
+        let holds = if directory {
             discover::Holds {
                 formats: vec![("parquet".to_string(), files.len())],
                 ..Default::default()
@@ -10416,7 +10418,7 @@ impl App {
     ///
     /// Every cloud path went to `scan_parquet` whatever was under it, so a prefix of
     /// CSV came back "Could not read from S3. Check credentials and URL" — a false
-    /// statement about the user's login, made about a folder datui could see the
+    /// statement about the user's login, made about a directory datui could see the
     /// contents of. Polars' other scans take the same `CloudOptions` and do their own
     /// listing; nothing was passing them.
     ///
@@ -10595,7 +10597,7 @@ impl App {
         //
         // Two guards, and the test holds them together rather than either alone: the
         // attempts take separate meters, and both full-scan arms hand back an empty
-        // one. A folder whose only Parquet is a writer's own bookkeeping — a
+        // one. A directory whose only Parquet is a writer's own bookkeeping — a
         // `_delta_log` checkpoint — reaches the screen through the second of those, so
         // `test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened`
         // fails when both are reverted and passes when either still stands. The
@@ -10680,7 +10682,7 @@ impl App {
         found: FileFormat,
     ) -> crate::schema_union::Disagreement {
         // The format the read will use, not the one the names suggested: an explicit
-        // `--format` outranks both, and judging a folder with a reader the open will
+        // `--format` outranks both, and judging a directory with a reader the open will
         // not use is a note about a read that never happened.
         let format = options.format.unwrap_or(found);
         if format == FileFormat::Parquet {
@@ -10703,7 +10705,7 @@ impl App {
     /// then bailed out of: `from_args_and_config` fills in `infer_schema_length` and
     /// `parse_strings` on every run with no flags at all, so a predicate over "did the
     /// user set anything" is true every time. That shipped once, and the notes about
-    /// how a folder had been stacked never appeared outside the tests.
+    /// how a directory had been stacked never appeared outside the tests.
     fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
         crate::schema_union::ReadAs {
             delimiter: options.delimiter,
@@ -10888,7 +10890,7 @@ impl App {
         }
 
         // One path that is a directory, whether or not `--hive` said so: naming a
-        // folder is the request to read it, and the dispatch below is what picks the
+        // directory is the request to read it, and the dispatch below is what picks the
         // reader for what it holds. Behind `options.hive` alone, every route that
         // reached here with a directory and without the flag fell through to the
         // Parquet scan and answered `Unsupported file type`.
@@ -10899,24 +10901,24 @@ impl App {
                 && !path_str.contains('*')
                 && !path_str.contains("**");
             if !is_single_file {
-                // What the folder holds picks the reader. A directory used to go
-                // straight to the Parquet scan whatever was in it, so a folder of
+                // What the directory holds picks the reader. A directory used to go
+                // straight to the Parquet scan whatever was in it, so a directory of
                 // `.json.gz` was opened by seeking each file's last four bytes for a
                 // `PAR1` that was never going to be there — the files were fine, the
                 // reader was never asked to be the right one.
                 if path.is_dir() {
-                    match crate::discover::folder_format(path) {
+                    match crate::discover::directory_format(path) {
                         // Flat and Parquet: the scan below is already right for it.
-                        crate::discover::FolderFormat::One(FileFormat::Parquet, _) => {}
-                        // Partitions, or an empty folder. The files are a level down
+                        crate::discover::DirectoryFormat::One(FileFormat::Parquet, _) => {}
+                        // Partitions, or an empty directory. The files are a level down
                         // under `key=value` and only the hive scan walks a tree — but
                         // hive partitioning is a Parquet-only capability in the reader
                         // datui uses (`HiveOptions::new_disabled()` is hard-coded for
                         // CSV and NDJSON), so partitions of anything else cannot be
                         // read as one table here. Saying which files they are beats
                         // Parquet's complaint that they do not end with `PAR1`.
-                        crate::discover::FolderFormat::Deeper => {
-                            if let crate::discover::FolderFormat::One(found, files) =
+                        crate::discover::DirectoryFormat::Deeper => {
+                            if let crate::discover::DirectoryFormat::One(found, files) =
                                 crate::discover::hive_leaf_format(path)
                                 && found != FileFormat::Parquet
                             {
@@ -10927,7 +10929,7 @@ impl App {
                                     .and_then(|f| crate::discover::data_extension(f))
                                     .unwrap_or_else(|| format!("{found:?}").to_lowercase());
                                 return Err(color_eyre::eyre::eyre!(
-                                    "{} is partitioned into key=value folders of .{} \
+                                    "{} is partitioned into key=value directories of .{} \
                                      files. datui reads hive partitioning for Parquet \
                                      only — open one partition instead.",
                                     path.display(),
@@ -10935,7 +10937,7 @@ impl App {
                                 ));
                             }
                         }
-                        crate::discover::FolderFormat::One(found, files) => {
+                        crate::discover::DirectoryFormat::One(found, files) => {
                             // Read as the files themselves, through the same readers a
                             // list of files typed on the command line goes through. An
                             // explicit `--format` is the user's own answer and outranks
@@ -10950,15 +10952,16 @@ impl App {
                                 cloud, &files, &nested, report,
                             );
                         }
-                        crate::discover::FolderFormat::Mixed {
+                        crate::discover::DirectoryFormat::Mixed {
                             format: found,
                             files,
                             passed_over,
                         } => {
-                            // The commonest format is the table. A folder of a thousand
-                            // CSVs and one stray JSON is a folder of CSVs, and refusing
-                            // the whole of it over the stray was datui deciding that a
-                            // folder it could read was not worth reading.
+                            // The commonest format is the table. A directory of a
+                            // thousand CSVs and one stray JSON is a directory of CSVs,
+                            // and refusing the whole of it over the stray was datui
+                            // deciding that a directory it could read was not worth
+                            // reading.
                             report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
@@ -10968,7 +10971,7 @@ impl App {
                             let lf = Self::build_lazyframe_from_paths_with(
                                 cloud, &files, &nested, report,
                             )?;
-                            // After the call, which reads a flat folder of one format
+                            // After the call, which reads a flat directory of one format
                             // and leaves nothing out of its own.
                             report.left_out = passed_over;
                             return Ok(lf);
@@ -10988,7 +10991,7 @@ impl App {
             }
         }
 
-        // A file with no extension may still be Parquet: a part file in a folder named
+        // A file with no extension may still be Parquet: a part file in a directory named
         // `.parquet`, or anything whose bytes say so. A regular file is only read when
         // nothing else settled it.
         let effective_format = options
@@ -11059,13 +11062,13 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
-                    // The home screen asks `reads_many_files` before it offers a folder
-                    // as one dataset, so a format that is refused here and offered there
-                    // would be a promise nothing keeps. Asserted rather than restated:
-                    // adding a format to this arm without the predicate fails every
-                    // debug run. The other direction — dropping one from the predicate
-                    // and not from here — this cannot see, and would hide a folder
-                    // datui can read rather than promise one it cannot.
+                    // The home screen asks `reads_many_files` before it offers a
+                    // directory as one dataset, so a format that is refused here and
+                    // offered there would be a promise nothing keeps. Asserted rather
+                    // than restated: adding a format to this arm without the predicate
+                    // fails every debug run. The other direction — dropping one from the
+                    // predicate and not from here — this cannot see, and would hide a
+                    // directory datui can read rather than promise one it cannot.
                     debug_assert!(
                         effective_format.is_none_or(|f| !f.reads_many_files()),
                         "this arm and FileFormat::reads_many_files must agree"
@@ -15711,7 +15714,7 @@ impl App {
                 self.task_generation = self.task_generation.wrapping_add(1);
                 // A new counter for a new load. Abandoning a load cancels nothing —
                 // the footers keep being read — so a shared one would go on reporting
-                // the abandoned folder's progress under the next file's name.
+                // the abandoned directory's progress under the next file's name.
                 //
                 // The meter needs no equivalent: it belongs to the dataset rather than
                 // to the app, so a load that never reaches the screen never has one
@@ -15771,7 +15774,7 @@ impl App {
                 self.task_generation = self.task_generation.wrapping_add(1);
                 // A new counter for a new load. Abandoning a load cancels nothing —
                 // the footers keep being read — so a shared one would go on reporting
-                // the abandoned folder's progress under the next file's name.
+                // the abandoned directory's progress under the next file's name.
                 //
                 // The meter needs no equivalent: it belongs to the dataset rather than
                 // to the app, so a load that never reaches the screen never has one
@@ -16147,7 +16150,7 @@ impl App {
                 // is what otherwise notices.
                 #[cfg(feature = "cloud")]
                 if landed {
-                    self.peek_cloud_folders();
+                    self.peek_cloud_directories();
                 }
                 #[cfg(not(feature = "cloud"))]
                 let _ = landed;
@@ -16155,12 +16158,14 @@ impl App {
             }
             AppEvent::HomeCloudKinds { kinds } => {
                 let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
-                for (folder, kind) in kinds {
+                for (directory, kind) in kinds {
                     // Answered: out of the in-flight set and into the one the rows are
-                    // labelled from. Every folder asked about comes back, so nothing
+                    // labelled from. Every directory asked about comes back, so nothing
                     // stays in `peeking` and nothing is asked twice.
-                    self.home.peeking.remove(folder);
-                    self.home.cloud_kinds.insert(folder.clone(), kind.clone());
+                    self.home.peeking.remove(directory);
+                    self.home
+                        .cloud_kinds
+                        .insert(directory.clone(), kind.clone());
                 }
                 for root in roots {
                     self.home.apply_cloud_kinds(&root);
@@ -16791,12 +16796,12 @@ impl App {
                     // it put up comes down with it.
                     //
                     // Retired, not asked again of the frame that is here. That frame can
-                    // belong to a dataset the user opened since — `end_after_count`
-                    // names a `len_generation`, which says nothing about which dataset —
-                    // and re-asking made the *new* dataset scroll itself to the end on
-                    // the strength of a key pressed in the old one. A jump the frame
-                    // change swallowed is a jump the user can make again; a jump that
-                    // arrives on its own, in a folder they did not press it in, is not.
+                    // belong to a dataset the user opened since — `end_after_count` names
+                    // a `len_generation`, which says nothing about which dataset — and
+                    // re-asking made the *new* dataset scroll itself to the end on the
+                    // strength of a key pressed in the old one. A jump the frame change
+                    // swallowed is a jump the user can make again; a jump that arrives on
+                    // its own, in a directory they did not press it in, is not.
                     self.retire_the_end_that_was_waiting();
                 }
                 None
@@ -17082,16 +17087,16 @@ impl App {
                 }
                 None
             }
-            AppEvent::LookThenOpenFolder(dir, options) => {
-                // The name on the wait, so the first frame says which folder is being
+            AppEvent::LookThenOpenDirectory(dir, options) => {
+                // The name on the wait, so the first frame says which directory is being
                 // looked at rather than sitting blank. `spawn_bg` puts the throbber up
                 // and the keys that survive it — Ctrl+C, Ctrl+O — keep working, which
                 // is the whole of what doing this on the event thread cost.
                 let looking = dir.clone();
                 let options = options.clone();
-                self.set_loading_phase(Self::LOOKING_AT_A_FOLDER, 5);
+                self.set_loading_phase(Self::LOOKING_AT_A_DIRECTORY, 5);
                 self.name_what_is_loading(looking.clone());
-                self.looking_at_folder = Some(looking.clone());
+                self.looking_at_directory = Some(looking.clone());
                 // The same words the loading screen shows, so the control bar and the
                 // screen above it do not name the wait two different ways.
                 // Unleased. A lease exists to make a bump wait for an answer that
@@ -17102,15 +17107,15 @@ impl App {
                 // parks in `collect_owed` until the abandoned look finally returns.
                 // Advertising Ctrl+O as the way out of the wait and then holding the
                 // next dataset behind it is the wait again, wearing a different hat.
-                self.spawn_bg_replaceable(Self::LOOKING_AT_A_FOLDER, move |task_gen, tx| {
+                self.spawn_bg_replaceable(Self::LOOKING_AT_A_DIRECTORY, move |task_gen, tx| {
                     // A panic here used to unwind through `run()` and report a crash,
                     // because the look was made on the way to the first frame. On a
-                    // worker it is swallowed with the dropped handle instead, and
-                    // nothing would ever be sent: the spinner would stay up and the
-                    // folder unopened for as long as the user waited. Caught, so the
-                    // answer is "a directory" and the home screen opens on it.
-                    // Read the way this open will read them, so the rule judges the
-                    // folder the user is about to see rather than one nobody will open.
+                    // worker it is swallowed with the dropped handle instead, and nothing
+                    // would ever be sent: the spinner would stay up and the directory
+                    // unopened for as long as the user waited. Caught, so the answer is
+                    // "a directory" and the home screen opens on it. Read the way this
+                    // open will read them, so the rule judges the directory the user is
+                    // about to see rather than one nobody will open.
                     let as_read = Self::read_as(&options);
                     let looked = std::panic::catch_unwind(|| {
                         let mut entry = discover::Entry::directory(&looking);
@@ -17121,7 +17126,7 @@ impl App {
                         Ok(entry) => entry.kind,
                         Err(_) => discover::EntryKind::Directory,
                     };
-                    let _ = tx.send(AppEvent::FolderLookedAt {
+                    let _ = tx.send(AppEvent::DirectoryLookedAt {
                         generation: task_gen,
                         path: looking,
                         kind,
@@ -17130,7 +17135,7 @@ impl App {
                 });
                 None
             }
-            AppEvent::FolderLookedAt {
+            AppEvent::DirectoryLookedAt {
                 generation,
                 path,
                 kind,
@@ -17140,32 +17145,32 @@ impl App {
                 // something else, while this was reading. Their choice is the one on
                 // screen, and this is the answer to a question nobody is waiting for.
                 //
-                // Both tests: the folder, because a newer look replaces an older one,
+                // Both tests: the directory, because a newer look replaces an older one,
                 // and the generation, because other work bumps that when it takes the
                 // screen over.
                 // Not ours: a newer look is out and this is an older answer, so the
                 // tracking belongs to that one and is left alone. Taking it here would
                 // strand the newer answer as unowned, and the app would sit on a
                 // loading screen with nothing left to clear it.
-                if self.looking_at_folder.as_deref() != Some(path.as_path()) {
+                if self.looking_at_directory.as_deref() != Some(path.as_path()) {
                     return None;
                 }
                 // Ours, so it is put down whatever happens next — including the
                 // generation test below. Left set, the next `abandon_load` from
                 // anywhere would find it and clear `busy` for work it does not own.
-                self.looking_at_folder = None;
+                self.looking_at_directory = None;
                 if *generation != self.task_generation {
                     return None;
                 }
                 let outcome =
-                    self.open_the_folder_looked_at(path.clone(), *kind, (**options).clone());
+                    self.open_the_directory_looked_at(path.clone(), *kind, (**options).clone());
                 // Only when nothing follows. An `Open` keeps the wait up — it sets its
                 // own phase and `busy` — and clearing them here would draw one frame
                 // with the spinner stopped and the keys held during the look replayed
                 // into an app that has no dataset yet, ahead of the load.
                 if outcome.is_none() {
                     self.busy = false;
-                    if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_FOLDER) {
+                    if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_DIRECTORY) {
                         self.status_message = None;
                     }
                 }
@@ -18621,8 +18626,8 @@ impl Widget for &mut App {
         if main_view_content == MainViewContent::Home {
             // Only things that can actually be opened. A directory is somewhere to
             // look, not a dataset, and counting it makes the figure a lie — and so
-            // does counting a folder nothing has looked into yet, which in a fresh
-            // listing is every folder in it.
+            // does counting a directory nothing has looked into yet, which in a fresh
+            // listing is every directory in it.
             // Past the cap on RECENT: a dataset the `more` row stands for is listed,
             // and the header above it counts it.
             let datasets = self
@@ -18630,8 +18635,8 @@ impl Widget for &mut App {
                 .listed()
                 .iter()
                 .filter(|r| {
-                    // The door is not among these: its kind is the folder's, so it
-                    // would count as a dataset and be the same dataset as the folder —
+                    // The door is not among these: its kind is the directory's, so it
+                    // would count as a dataset and be the same dataset as the directory —
                     // the figure this comment calls a lie, counted twice. It is a
                     // `Row::Door` and not an entry, so nothing here has to exclude it.
                     matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset())
@@ -19104,20 +19109,20 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             starting_at_home = true;
         }
         RunInput::Paths(paths, opts) => {
-            // A folder named here is read the way `Enter` reads its row, which may be
+            // A directory named here is read the way `Enter` reads its row, which may be
             // by opening the home screen on it rather than by loading anything. The
             // looking is an event, not a call: it is sent here and carried out after
-            // the first frame, so a folder that takes seconds to look at says which
-            // folder it is looking at while it does.
+            // the first frame, so a directory that takes seconds to look at says which
+            // directory it is looking at while it does.
             match app.open_the_path_named_on_the_command_line(paths, opts) {
                 Some(event) => {
                     // The first frame is drawn before any event is handled, so what it
                     // says has to be set here — the handler's own phase lands a frame
-                    // later, and "Scanning input" on a folder nothing has read yet is
+                    // later, and "Scanning input" on a directory nothing has read yet is
                     // the wrong word for the wait the user is actually in.
                     match &event {
-                        AppEvent::LookThenOpenFolder(dir, _) => {
-                            app.set_loading_phase(App::LOOKING_AT_A_FOLDER, 5);
+                        AppEvent::LookThenOpenDirectory(dir, _) => {
+                            app.set_loading_phase(App::LOOKING_AT_A_DIRECTORY, 5);
                             app.name_what_is_loading(dir.clone());
                         }
                         _ => app.set_loading_phase("Scanning input", 10),

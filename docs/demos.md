@@ -20,7 +20,7 @@ datasets and their details, then descends into BigQuery sample data.
 ![Cloud Browse Demo](demos/15-cloud-home-browse.gif)
 
 The local-first cut starts with populated recents and Central Park weather,
-then moves from the same home screen into NOAA's public Parquet folders. See
+then moves from the same home screen into NOAA's public Parquet directories. See
 [The Home Screen](user-guide/home-screen.md).
 
 ![Local and Cloud Demo](demos/16-cloud-home-local.gif)

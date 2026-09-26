@@ -178,7 +178,7 @@ pub async fn list_dataset_files(
     // Counted as they are passed over rather than walked again: the listing is the one
     // place that sees every name, and a note that says how many objects were not read
     // costs nothing here and a second listing anywhere else.
-    fn folder_of(key: &str) -> &str {
+    fn directory_of(key: &str) -> &str {
         key.rsplit_once('/').map_or("", |(dir, _)| dir)
     }
     let all: Vec<DatasetFile> = objects
@@ -193,7 +193,7 @@ pub async fn list_dataset_files(
     // Every segment below the prefix, not just the name: a `.json` inside `_delta_log/`
     // is the table's own record of itself, and its name alone does not say so. Empty
     // rather than the whole key when the prefix does not match, so a dataset that
-    // happens to live under a `_`-named folder is not written off entirely.
+    // happens to live under a `_`-named directory is not written off entirely.
     let bookkeeping_of = |key: &str| {
         key.strip_prefix(prefix)
             .unwrap_or("")
@@ -212,33 +212,37 @@ pub async fn list_dataset_files(
     // else's, and is neither read nor counted.
     let wanted = |f: &DatasetFile| pattern.is_none_or(|p| p.is_match(&f.key));
     let keep_of = |f: &DatasetFile| is_data(f) && wanted(f);
-    // Every folder with data anywhere beneath it, which is every folder on the way down
-    // to a file this keeps. What else is in one of those is beside somebody's data;
-    // what is anywhere else is somebody's infrastructure, whatever the format calls it
-    // — see `SkippedFiles`.
+    // Every directory with data anywhere beneath it, which is every directory on the way
+    // down to a file this keeps. What else is in one of those is beside somebody's data;
+    // what is anywhere else is somebody's infrastructure, whatever the format calls it —
+    // see `SkippedFiles`.
     let mut with_data: std::collections::HashSet<&str> = std::collections::HashSet::new();
     // From every object whose name says data, not only the ones kept: a write that
     // stopped leaves nothing behind, and a partition whose only file is that write
-    // would otherwise be a folder with no data in it — so the one skip most worth
+    // would otherwise be a directory with no data in it — so the one skip most worth
     // saying would be filed as plumbing, in exactly the case that matters.
     for f in all
         .iter()
         .filter(|f| !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key))
     {
-        let mut folder = folder_of(&f.key);
-        while !folder.is_empty() && with_data.insert(folder) {
-            folder = folder_of(folder);
+        let mut directory = directory_of(&f.key);
+        while !directory.is_empty() && with_data.insert(directory) {
+            directory = directory_of(directory);
         }
         with_data.insert("");
     }
     // A partition of a dataset is part of it even when its own files all failed to be
-    // Parquet: a day that landed as CSV is the mistake this note is for. A folder whose
-    // name carries a partition key, under one that holds data, is one of those. A
+    // Parquet: a day that landed as CSV is the mistake this note is for. A directory
+    // whose name carries a partition key, under one that holds data, is one of those. A
     // `metadata/` beside the data is not.
-    let beside_data = |folder: &str| {
-        with_data.contains(folder)
-            || (folder.rsplit('/').next().unwrap_or(folder).contains('=')
-                && with_data.contains(folder_of(folder)))
+    let beside_data = |directory: &str| {
+        with_data.contains(directory)
+            || (directory
+                .rsplit('/')
+                .next()
+                .unwrap_or(directory)
+                .contains('=')
+                && with_data.contains(directory_of(directory)))
     };
     let mut skipped = crate::schema_union::SkippedFiles::default();
     for f in &all {
@@ -250,7 +254,7 @@ pub async fn list_dataset_files(
         }
         let parquet_named = crate::discover::is_parquet_key(&f.key);
         if bookkeeping_of(&f.key)
-            || !beside_data(folder_of(&f.key))
+            || !beside_data(directory_of(&f.key))
             // Nothing in it and a name that never said data: a folder marker, which a
             // console writes one of per partition. Not a file anyone left behind by
             // mistake, and not a write that stopped either.
@@ -1342,7 +1346,7 @@ mod tests {
         assert_eq!(
             meter.listing().and_then(|c| c.files),
             Some(2),
-            "the listing found the two files the glob names — not the sibling folder \
+            "the listing found the two files the glob names — not the sibling directory \
              it does not. A starred key handed to the listing finds none of them"
         );
         assert_eq!(
@@ -1426,7 +1430,7 @@ mod tests {
         assert_eq!(
             keys,
             ["data/year=2024/a.parquet", "data/year=2025/b.parquet"],
-            "the two the glob names — not the sibling folder it does not, and not the \
+            "the two the glob names — not the sibling directory it does not, and not the \
              one outside the prefix altogether"
         );
 
@@ -1437,19 +1441,19 @@ mod tests {
         );
     }
 
-    /// A folder is the same table whether it is read from a disk or a bucket.
+    /// A directory is the same table whether it is read from a disk or a bucket.
     ///
     /// The two listings used to disagree in one direction: the local walk checked the
     /// extension, so it missed the `occurrence.parquet/part-00001` shape that Spark and
-    /// GBIF write, where the part files have no extension and only the folder name says
-    /// what they are. Both now ask `is_parquet_key`.
+    /// GBIF write, where the part files have no extension and only the directory name
+    /// says what they are. Both now ask `is_parquet_key`.
     ///
     /// The `_`-prefixed row of the fixture is not what this is testing — the local walk
     /// classified those as the writer's own bookkeeping before this change too. It is
     /// here because the two routes reaching the same answer by different means is the
     /// thing worth pinning, not just the one case that moved.
     #[test]
-    fn a_folder_is_the_same_table_from_a_disk_or_a_bucket() {
+    fn a_directory_is_the_same_table_from_a_disk_or_a_bucket() {
         use object_store::PutPayload;
         use polars::prelude::{ParquetWriter, df};
 
@@ -2306,11 +2310,11 @@ mod tests {
     ///
     /// Delta and Hudi put a `_` or a `.` on theirs and Iceberg does not — its log is a
     /// plain `metadata/` beside the data. Naming each convention is a game with no end,
-    /// so the test is where a file is: a folder with no Parquet in it is nobody's
+    /// so the test is where a file is: a directory with no Parquet in it is nobody's
     /// table. The same rule silences the zero-byte folder markers a console leaves,
     /// one per partition, which would otherwise read as hundreds of stopped writes.
     #[test]
-    fn a_folder_with_no_data_in_it_is_nobodys_table() {
+    fn a_directory_with_no_data_in_it_is_nobodys_table() {
         use object_store::PutPayload;
         use polars::prelude::{ParquetWriter, df};
 
@@ -2340,7 +2344,7 @@ mod tests {
                 ("t/data/date=1/part-1.parquet", Vec::new()),
                 ("t/data/date=1/README", Vec::new()),
                 // A whole partition whose only write stopped, two levels down, so no
-                // folder above it holds data either. Nothing readable is left anywhere
+                // directory above it holds data either. Nothing readable is left anywhere
                 // on that path — it is part of the dataset because the name of a file
                 // that was meant to be there says so, and the stopped write is the
                 // thing worth saying.

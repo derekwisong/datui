@@ -512,7 +512,7 @@ pub struct CloudSourceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public: Option<bool>,
     /// Buckets to show when the credentials can read but not list. For a public
-    /// source, URLs of buckets, containers or folders.
+    /// source, URLs of buckets, containers or directories.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub buckets: Vec<String>,
     /// Named public datasets with optional descriptive metadata.
@@ -974,7 +974,7 @@ fn public_dataset_name(url: &str) -> String {
 }
 
 /// Whether a public source's entry is a URL datui can read without a login: a bucket,
-/// container or folder on S3, Google Cloud or Azure. A source ID has no place in it.
+/// container or directory on S3, Google Cloud or Azure. A source ID has no place in it.
 fn public_url_is_valid(url: &str) -> bool {
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;

@@ -35,7 +35,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
         // the event that carries it out.
         _ => ("Loading", None, 0),
     };
-    // A folder of many files reads a footer from each before a row is shown, and on a
+    // A directory of many files reads a footer from each before a row is shown, and on a
     // few thousand that is seconds of a screen saying only "Caching schema". The count
     // is what makes the wait legible: a number climbing is a wait, a number stopped is
     // a problem. `App::loading_phase` decides it for the control bar too, so the two
@@ -155,7 +155,7 @@ mod tests {
     /// land.
     ///
     /// "Caching schema" is true of that wait but says nothing about its length; a
-    /// folder of thousands of files spends seconds there. A number that climbs is a
+    /// directory of thousands of files spends seconds there. A number that climbs is a
     /// wait, and a number that stops is a problem — neither is legible without it.
     #[test]
     fn the_footer_count_replaces_the_phase_while_it_is_running() {

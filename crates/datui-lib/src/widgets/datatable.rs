@@ -912,7 +912,7 @@ impl DataTableState {
     /// How the files of one dataset are stacked into one table.
     ///
     /// `diagonal`, so a file written before a column existed brings the rest of its
-    /// rows instead of refusing the whole folder; the column reads null for it, and
+    /// rows instead of refusing the whole directory; the column reads null for it, and
     /// the Notes say which files have it. `to_supertypes`, because a CSV column is
     /// typed by inference per file — one `N/A` makes `amount` a String in one file and
     /// an Int64 in the next — and without widening, name agreement is not enough to
@@ -922,7 +922,7 @@ impl DataTableState {
     /// `unify_schemas`, Spark's `mergeSchema`. They are the default here because a
     /// library that unions silently becomes wrong analysis downstream, while datui
     /// says what it did in the Notes and keeps `Enter` on the row conservative — a
-    /// folder whose files are not one table is gone inside, not unioned, and this is
+    /// directory whose files are not one table is gone inside, not unioned, and this is
     /// what the `(all files)` row behind it reads with.
     ///
     /// **Only for the formats that rule can judge**, which is CSV and NDJSON here, and
@@ -1753,10 +1753,10 @@ impl DataTableState {
 
     /// As [`Self::collect_parquet_files`], counting what it walked past.
     ///
-    /// A folder of Parquet files often holds other things, and datui reads none of
+    /// A directory of Parquet files often holds other things, and datui reads none of
     /// them. Which ones they are is the difference between bookkeeping and a mistake:
     /// `_SUCCESS` beside the data is a writer saying it finished, while three CSVs in
-    /// the same folder are three files somebody expected to be in the table.
+    /// the same directory are three files somebody expected to be in the table.
     fn collect_parquet_files_counting(
         dir: &Path,
         out: &mut Vec<PathBuf>,
@@ -1765,7 +1765,7 @@ impl DataTableState {
         max_depth: usize,
         // Carried down rather than read off each leaf: a `.json` is a mistake beside
         // the data and a record of it inside `_delta_log`, and its own name cannot say
-        // which. Every file under a writer's folder is that writer's.
+        // which. Every file under a writer's directory is that writer's.
         under_bookkeeping: bool,
     ) -> (bool, usize) {
         // A subtree too deep to walk reports no data, which makes everything above it
@@ -1777,7 +1777,7 @@ impl DataTableState {
         let Ok(entries) = fs::read_dir(dir) else {
             return (false, 0);
         };
-        // Held back until the folder has been read to the end: whether a file beside
+        // Held back until the directory has been read to the end: whether a file beside
         // the data is worth mentioning depends on whether there is any data beside it,
         // and that is not known until the last entry.
         let mut here: Vec<PathBuf> = Vec::new();
@@ -1801,20 +1801,20 @@ impl DataTableState {
                     bookkeeping,
                 );
                 data_below |= below;
-                // A partition of this folder that holds no data of its own hands its
+                // A partition of this directory that holds no data of its own hands its
                 // strays up: a day that landed as CSV is part of the dataset, and only
-                // the folder above can see that it is.
+                // the directory above can see that it is.
                 passed_over += deferred;
             } else if !bookkeeping
-                && crate::discover::is_parquet_key(&crate::discover::folder_and_name(&child))
+                && crate::discover::is_parquet_key(&crate::discover::directory_and_name(&child))
             {
-                // The same test the cloud listing uses, so a folder is the same table
-                // wherever it is read from. It gets the folder and the name rather than
-                // the whole path: one of the two shapes it knows lives in the folder
-                // name — Spark and GBIF write a dataset as
-                // `occurrence.parquet/part-00001`, where the part files have no
-                // extension of their own — and a whole path would reach it with
-                // backslashes on Windows, which that test does not split on.
+                // The same test the cloud listing uses, so a directory is the same table
+                // wherever it is read from. It gets the directory and the name rather
+                // than the whole path: one of the two shapes it knows lives in the
+                // directory name — Spark and GBIF write a dataset as
+                // `occurrence.parquet/part-00001`, where the part files have no extension
+                // of their own — and a whole path would reach it with backslashes on
+                // Windows, which that test does not split on.
                 here.push(child);
             } else if !bookkeeping {
                 passed_over += 1;
@@ -1824,22 +1824,23 @@ impl DataTableState {
         }
         let holds_data = data_below || !here.is_empty();
         out.append(&mut here);
-        // A folder whose own name carries a partition key is part of the dataset above
+        // A directory whose own name carries a partition key is part of the dataset above
         // it, whether or not its files turned out to be readable. Its strays go up to
         // be judged there rather than written off here.
         let partition = dir
             .file_name()
             .map(|n| n.to_string_lossy())
             .is_some_and(|n| n.contains('='));
-        // Never at the top: there is nothing above the dataset's own folder to hand
+        // Never at the top: there is nothing above the dataset's own directory to hand
         // them to, and the caller has nowhere to put them.
         if depth > 0 && !holds_data && partition && !under_bookkeeping {
             return (false, passed_over);
         }
-        // A folder with data anywhere beneath it is part of somebody's table, so what
-        // else is in there is beside their data. A folder with none is somebody's
-        // infrastructure — a manifest directory, a folder of images, a log under a name
-        // no convention covers — and nothing in it was ever going to be in this table.
+        // A directory with data anywhere beneath it is part of somebody's table, so what
+        // else is in there is beside their data. A directory with none is somebody's
+        // infrastructure — a manifest directory, a directory of images, a log under a
+        // name no convention covers — and nothing in it was ever going to be in this
+        // table.
         for _ in 0..passed_over {
             skipped.count(!holds_data);
         }
@@ -1870,10 +1871,10 @@ impl DataTableState {
     /// as it is read, so the loading screen can say how far it has got, and timing the
     /// listing and the footer pass separately into `meter`.
     ///
-    /// Separately because they are two different costs: finding the files is one walk
-    /// of the folder and reading their footers is one open per file, so a folder that
-    /// is slow to open is slow at one or the other. Neither records requests or bytes —
-    /// a local folder is read, not requested.
+    /// Separately because they are two different costs: finding the files is one walk of
+    /// the directory and reading their footers is one open per file, so a directory that
+    /// is slow to open is slow at one or the other. Neither records requests or bytes — a
+    /// local directory is read, not requested.
     pub fn footers_of_parquet_dir_reporting(
         dir: &Path,
         progress: &crate::schema_union::FooterProgress,
@@ -1890,10 +1891,10 @@ impl DataTableState {
         let listing_began = std::time::Instant::now();
         Self::collect_parquet_files_counting(dir, &mut files, &mut skipped, 0, MAX_DEPTH, false);
         // Load-bearing beyond reading in a predictable order. The scan hands these to
-        // Polars as they are, and Polars takes the hive schema from the first of them,
-        // so this decides whether a folder whose partition keys disagree opens with its
-        // partition column null or fails to open at all — see the two `folders_that`
-        // integration tests, which are the same folder differing by one file name.
+        // Polars as they are, and Polars takes the hive schema from the first of them, so
+        // this decides whether a directory whose partition keys disagree opens with its
+        // partition column null or fails to open at all — see the two `directories_that`
+        // integration tests, which are the same directory differing by one file name.
         //
         // No test here guards it: a listing a filesystem already returns in order is
         // indistinguishable from one this sorted, so any such test passes with the sort
@@ -1901,8 +1902,8 @@ impl DataTableState {
         // being a coin toss, which is not something a third test can assert.
         files.sort();
         // After the sort: the files are not found until they are in the order the scan
-        // will read them in, and on a folder of many files the sort is part of the wait.
-        // No test holds the boundary there — a listing and a sort of the same files
+        // will read them in, and on a directory of many files the sort is part of the
+        // wait. No test holds the boundary there — a listing and a sort of the same files
         // take an unpredictable share of one small number, so a test could only assert
         // that the total is the total.
         meter.listed(listing_began.elapsed(), Some(files.len()), false);
@@ -1993,12 +1994,12 @@ impl DataTableState {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         // Metered as a footer pass, because it is one: a local hive dataset whose open
-        // did not settle the count re-walks the folder and re-reads every footer to
+        // did not settle the count re-walks the directory and re-reads every footer to
         // take it. It runs on an ordinary three-file open, so leaving it out reported
         // about half of what reading the footers actually cost.
         // Timed from before the walk. This pass has to find the files again before it
         // can read them, and what the pass cost is both halves — timed from after the
-        // walk, that second walk of the whole folder is reported in no row at all, and
+        // walk, that second walk of the whole directory is reported in no row at all, and
         // the total is short by it.
         //
         // No test holds the boundary. A walk and the reads that follow it take an
@@ -4598,7 +4599,7 @@ impl DataTableState {
 
     /// A name for the source-file column that no column of `df` already has.
     ///
-    /// `source_file` is a name a dataset may well use itself — a folder of per-file
+    /// `source_file` is a name a dataset may well use itself — a directory of per-file
     /// extracts is exactly this feature's audience — and adding a column by a name
     /// already present replaces it, silently, in the file the user takes away.
     fn free_source_file_name(df: &DataFrame) -> String {
@@ -4661,7 +4662,7 @@ impl DataTableState {
     /// filter and sort have made of it. Empty when there is nothing to say.
     pub fn notes(&self) -> Vec<crate::notes::Note> {
         // What the read did first, because it is the frame everything below is about:
-        // a folder read as CSV with a JSON file left out, or a lake table read as its
+        // a directory read as CSV with a JSON file left out, or a lake table read as its
         // plain files, changes what every other note is a note about.
         self.open_notes
             .iter()
@@ -4699,7 +4700,7 @@ impl DataTableState {
         // be the only half, and the Notes tab does not appear and disappear as the
         // user sorts.
         //
-        // The open's own notes count: a folder read as one format with another left
+        // The open's own notes count: a directory read as one format with another left
         // out may have nothing else worth saying, and that is exactly the dataset whose
         // reader the user most wants to know about.
         !self.notes.is_empty() || !self.open_notes.is_empty()
@@ -9357,12 +9358,12 @@ mod tests {
     }
 
     #[test]
-    fn counting_a_folder_again_is_not_more_of_what_the_open_cost() {
-        // Counting runs whenever the row count is invalidated, and clearing a filter
-        // does it — so on a dataset somebody is exploring this function runs over and
-        // over. Each run re-walks the folder and re-reads every footer, and if each one
-        // were added the section headed by what opening the dataset cost would climb
-        // for as long as the session lasted.
+    fn counting_a_directory_again_is_not_more_of_what_the_open_cost() {
+        // Counting runs whenever the row count is invalidated, and clearing a filter does
+        // it — so on a dataset somebody is exploring this function runs over and over.
+        // Each run re-walks the directory and re-reads every footer, and if each one were
+        // added the section headed by what opening the dataset cost would climb for as
+        // long as the session lasted.
         let dir = tempfile::tempdir().unwrap();
         for day in 1..=3 {
             let d = dir.path().join(format!("date=2024-01-0{day}"));
@@ -10286,9 +10287,9 @@ mod tests {
 
     /// A local open measures finding the files and reading their footers separately.
     ///
-    /// Separately because they are separate costs and a folder that is slow to open is
-    /// slow at one of them; a single figure over both would say a folder is slow
-    /// without saying at what. Neither claims requests or bytes: a local folder is
+    /// Separately because they are separate costs and a directory that is slow to open is
+    /// slow at one of them; a single figure over both would say a directory is slow
+    /// without saying at what. Neither claims requests or bytes: a local directory is
     /// read, not requested, and a zero there would read as "nothing moved" rather than
     /// "not datui's to count".
     ///

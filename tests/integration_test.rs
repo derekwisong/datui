@@ -1621,7 +1621,7 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     );
 }
 
-/// Open a local folder of Parquet files and return the loaded app, or `None` if the
+/// Open a local directory of Parquet files and return the loaded app, or `None` if the
 /// open never finished.
 fn open_local_dataset(dir: &std::path::Path) -> App {
     open_local_dataset_with_channel(dir).0
@@ -1815,7 +1815,7 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
     let _ = painted(&mut app, &rx, &tx, area);
     assert!(
         app.data_table_state.as_ref().unwrap().notes_unseen(),
-        "the folders disagree, so there is a note and it has not been read"
+        "the directories disagree, so there is a note and it has not been read"
     );
     let (accented, accented_text) = bar_of(&mut app);
 
@@ -2220,7 +2220,7 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
 ///
 /// "in 2 of 3 files" says a column is unusual; "none before date=2024-01-02" says when
 /// it began, which for a field added to a feed is the whole question. Through a real
-/// folder rather than a hand-built footer list, because the partition it names comes
+/// directory rather than a hand-built footer list, because the partition it names comes
 /// from the file's own path.
 #[test]
 fn test_a_column_that_starts_partway_through_says_where_it_starts() {
@@ -2277,11 +2277,11 @@ fn test_a_column_only_one_partition_has_says_which() {
     );
 }
 
-/// Files in the folder that are not Parquet are counted, so a silent drop is not one.
+/// Files in the directory that are not Parquet are counted, so a silent drop is not one.
 ///
-/// A `.csv` sitting in a folder of Parquet is a file somebody thought was in the table.
-/// datui reads none of it and, until now, said nothing at all about it — which is the
-/// shape of problem this whole issue is about.
+/// A `.csv` sitting in a directory of Parquet is a file somebody thought was in the
+/// table. datui reads none of it and, until now, said nothing at all about it — which is
+/// the shape of problem this whole issue is about.
 #[test]
 fn test_files_that_are_not_parquet_are_counted_rather_than_dropped_in_silence() {
     let dir = tempfile::tempdir().unwrap();
@@ -2306,16 +2306,16 @@ fn test_files_that_are_not_parquet_are_counted_rather_than_dropped_in_silence() 
         .unwrap_or_else(|| panic!("no note about the files that were not read: {notes:#?}"));
     assert_eq!(
         skipped.summary,
-        "in the folder, 2 files are not Parquet, 1 file a writer left behind"
+        "in the directory, 2 files are not Parquet, 1 file a writer left behind"
     );
-    assert_eq!(skipped.scope, "in this folder's listing");
+    assert_eq!(skipped.scope, "in this directory's listing");
 }
 
-/// And a folder holding only what a writer leaves behind says nothing.
+/// And a directory holding only what a writer leaves behind says nothing.
 ///
 /// `_SUCCESS` beside the data is a job reporting that it finished. A note about it on
-/// every folder any job ever wrote would put an accent on the Info key for the most
-/// ordinary thing a folder can contain.
+/// every directory any job ever wrote would put an accent on the Info key for the most
+/// ordinary thing a directory can contain.
 #[test]
 fn test_a_writers_own_bookkeeping_is_not_worth_a_note() {
     let dir = tempfile::tempdir().unwrap();
@@ -2323,9 +2323,9 @@ fn test_a_writers_own_bookkeeping_is_not_worth_a_note() {
     std::fs::write(dir.path().join("_SUCCESS"), "").unwrap();
     std::fs::write(dir.path().join("date=2024-01-01/.data.parquet.crc"), "").unwrap();
     // A table format's own log. Everything in here belongs to the writer, whatever it
-    // is called — a folder of three hundred commits is six hundred files, and counting
+    // is called — a directory of three hundred commits is six hundred files, and counting
     // them as somebody's mistake would put an accent on the Info key for the most
-    // ordinary thing a folder of Parquet can be.
+    // ordinary thing a directory of Parquet can be.
     std::fs::create_dir_all(dir.path().join("_delta_log")).unwrap();
     for commit in 0..5 {
         std::fs::write(
@@ -2415,21 +2415,22 @@ fn test_a_write_that_stopped_is_said_to_have_stopped() {
     assert_eq!(
         said,
         [
-            "in the folder, 1 file is empty and was not read, 1 file is not Parquet, \
+            "in the directory, 1 file is empty and was not read, 1 file is not Parquet, \
           2 files a writer left behind"
         ],
         "the stopped write first, then the mistake, then the tidy-up"
     );
 }
 
-/// The same rule on disk as in a bucket: a folder with no data in it is nobody's table.
+/// The same rule on disk as in a bucket: a directory with no data in it is nobody's
+/// table.
 ///
 /// The cloud half of this has a test; the local half had none, and a mutant that made
 /// the rule never fire survived the whole suite. Iceberg keeps its log in a plain
 /// `metadata/` — no underscore, no dot — so the name convention alone reads a table's
 /// own files as somebody's mistakes.
 #[test]
-fn test_a_local_folder_with_no_data_in_it_is_nobodys_table() {
+fn test_a_local_directory_with_no_data_in_it_is_nobodys_table() {
     let dir = tempfile::tempdir().unwrap();
     write_parquet(dir.path(), "data/date=1", df!("id" => &[1i64]).unwrap());
     std::fs::create_dir_all(dir.path().join("metadata")).unwrap();
@@ -2445,10 +2446,10 @@ fn test_a_local_folder_with_no_data_in_it_is_nobodys_table() {
     let notes = state.notes();
     let about = notes
         .iter()
-        .find(|note| note.summary.starts_with("in the folder"))
+        .find(|note| note.summary.starts_with("in the directory"))
         .unwrap_or_else(|| panic!("no note about what was not read: {notes:#?}"));
     assert_eq!(
-        about.summary, "in the folder, 1 file is not Parquet, 3 files a writer left behind",
+        about.summary, "in the directory, 1 file is not Parquet, 3 files a writer left behind",
         "the csv in the partition that has no data of its own, and Iceberg's three"
     );
 }
@@ -2826,7 +2827,7 @@ fn test_reading_as_text_keeps_the_note_about_a_widened_type() {
 
 /// A partition written for a day nothing happened holds no rows, and datui says so.
 ///
-/// Worth saying because the dataset then has fewer days of data than it has folders,
+/// Worth saying because the dataset then has fewer days of data than it has directories,
 /// and the file is invisible in every other way: it adds no rows, changes no schema,
 /// and moves nothing on screen.
 #[test]
@@ -2837,7 +2838,8 @@ fn test_a_partition_that_holds_no_rows_is_worth_a_note() {
         "date=2024-01-01",
         df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
     );
-    // A day nothing happened: the folder is there, the file is there, the rows are not.
+    // A day nothing happened: the directory is there, the file is there, the rows are
+    // not.
     write_parquet(
         dir.path(),
         "date=2024-01-02",
@@ -2894,13 +2896,13 @@ fn test_a_dataset_whose_files_all_hold_rows_says_nothing_about_empty_ones() {
 /// A pipeline that renamed its partition key partway through.
 ///
 /// The note says the shape and claims nothing about what it costs. What it costs varies:
-/// this folder does not open at all, because the scan reads its partition columns off
+/// this directory does not open at all, because the scan reads its partition columns off
 /// one branch of the tree and the files under the other key fail it — but which branch
 /// wins is whatever the filesystem hands back first, so this asserts that *something*
 /// went wrong rather than which key won. An earlier version asserted the key, passed
 /// here and failed on CI.
 #[test]
-fn test_a_folder_whose_partition_key_changed_says_the_folders_differ() {
+fn test_a_directory_whose_partition_key_changed_says_the_directories_differ() {
     let dir = tempfile::tempdir().unwrap();
     for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
         write_parquet(
@@ -2921,7 +2923,7 @@ fn test_a_folder_whose_partition_key_changed_says_the_folders_differ() {
     let frame = painted(&mut app, &rx, &tx, area);
     assert!(
         frame.contains("Schema field not found"),
-        "a renamed key stops this folder opening, whichever key the scan took — the \
+        "a renamed key stops this directory opening, whichever key the scan took — the \
          note exists to explain a screen like this one:\n{frame}"
     );
 
@@ -2933,7 +2935,7 @@ fn test_a_folder_whose_partition_key_changed_says_the_folders_differ() {
         .unwrap_or_else(|| panic!("nothing said about the changed key: {notes:#?}"));
     assert_eq!(
         layout.summary,
-        "the folders do not all partition by the same keys: 3 files by date, 1 file by dt"
+        "the directories do not all partition by the same keys: 3 files by date, 1 file by dt"
     );
     assert_eq!(layout.scope, "in the names of 4 files");
 }
@@ -2944,12 +2946,12 @@ fn test_a_folder_whose_partition_key_changed_says_the_folders_differ() {
 /// first. The paths are handed to Polars sorted and it takes the hive schema from the
 /// first of them, so a `data.parquet` at the root (which sorts above both `date=` and
 /// `dt=`) means no file's key is ever checked and the column comes back null. Name it
-/// `loose.parquet` and the same folder will not open at all.
+/// `loose.parquet` and the same directory will not open at all.
 ///
 /// A byte sort of path strings, so this holds on any filesystem — and it is why the
 /// note says the shape and not the cost: it cannot see a filename's spelling.
 #[test]
-fn test_folders_that_differ_may_still_open_and_the_note_claims_only_the_shape() {
+fn test_directories_that_differ_may_still_open_and_the_note_claims_only_the_shape() {
     let dir = tempfile::tempdir().unwrap();
     for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
         write_parquet(
@@ -2963,7 +2965,7 @@ fn test_folders_that_differ_may_still_open_and_the_note_claims_only_the_shape() 
         "dt=2024-01-04",
         df!("id" => &[1i64], "n" => &[2i64]).unwrap(),
     );
-    // At the root, and named so that it sorts before both partition folders.
+    // At the root, and named so that it sorts before both partition directories.
     write_parquet(
         dir.path(),
         "",
@@ -2984,10 +2986,10 @@ fn test_folders_that_differ_may_still_open_and_the_note_claims_only_the_shape() 
     let layout = notes
         .iter()
         .find(|note| note.summary.contains("partition by the same keys"))
-        .unwrap_or_else(|| panic!("the folders still differ: {notes:#?}"));
+        .unwrap_or_else(|| panic!("the directories still differ: {notes:#?}"));
     assert_eq!(
         layout.summary,
-        "the folders do not all partition by the same keys: 3 files by date, 1 file by dt",
+        "the directories do not all partition by the same keys: 3 files by date, 1 file by dt",
         "said of a dataset that opened, which is why it says nothing about cost"
     );
     assert_eq!(
@@ -2996,9 +2998,9 @@ fn test_folders_that_differ_may_still_open_and_the_note_claims_only_the_shape() 
     );
 }
 
-/// The control: a folder partitioned the one way opens, and says nothing about keys.
+/// The control: a directory partitioned the one way opens, and says nothing about keys.
 #[test]
-fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
+fn test_a_directory_partitioned_the_one_way_says_nothing_about_its_keys() {
     let dir = tempfile::tempdir().unwrap();
     for day in ["date=2024-01-01", "date=2024-01-02"] {
         write_parquet(
@@ -3031,7 +3033,7 @@ fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
 /// the two are connected — with only those, pointing the open at the non-reporting
 /// pass leaves the feature completely dead in the running app and the suite green.
 #[test]
-fn test_opening_a_folder_reports_its_footers_to_the_app() {
+fn test_opening_a_directory_reports_its_footers_to_the_app() {
     let dir = tempfile::tempdir().unwrap();
     for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
         write_parquet(
@@ -3064,8 +3066,8 @@ fn test_opening_a_folder_reports_its_footers_to_the_app() {
 /// A second open starts its own count rather than inheriting the first one's.
 ///
 /// Abandoning a load cancels nothing — the footers keep being read — so a counter
-/// shared across loads reports the abandoned folder's progress under the next file's
-/// name, which is what a user opening a small CSV after a large folder would see.
+/// shared across loads reports the abandoned directory's progress under the next file's
+/// name, which is what a user opening a small CSV after a large directory would see.
 #[test]
 fn test_each_open_counts_its_own_footers() {
     let first = tempfile::tempdir().unwrap();
@@ -3136,7 +3138,7 @@ fn test_each_open_counts_its_own_footers() {
     );
     assert!(
         !frame.contains("6,541"),
-        "and the abandoned folder's count does not appear under the file that \
+        "and the abandoned directory's count does not appear under the file that \
          replaced it:\n{frame}"
     );
 }
@@ -3204,7 +3206,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
     // Said only for a dataset that is itself waiting. The counter is shared with every
     // open, and one abandoned half way through goes on counting: without the dataset's
-    // own say-so this bar would count a folder the user walked away from.
+    // own say-so this bar would count a directory the user walked away from.
     app.data_table_state
         .as_mut()
         .expect("a dataset")
@@ -3234,7 +3236,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         "the count it does have is shown: {bar:?}"
     );
 
-    // And says nothing for a dataset that is not the one waiting: the folder this user
+    // And says nothing for a dataset that is not the one waiting: the directory this user
     // gave up on goes on reading its footers, and this is not it.
     app.data_table_state
         .as_mut()
@@ -3247,7 +3249,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         .collect();
     assert!(
         !other.contains("Reading footers"),
-        "a count belonging to a folder the user left is not this dataset's: {other:?}"
+        "a count belonging to a directory the user left is not this dataset's: {other:?}"
     );
     app.data_table_state
         .as_mut()
@@ -3489,7 +3491,7 @@ fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
     );
 }
 
-/// The control for the test above: a folder whose files agree shows neither glyph, so
+/// The control for the test above: a directory whose files agree shows neither glyph, so
 /// the assertions there are about the data and not about some other part of the screen.
 #[test]
 fn test_a_uniform_dataset_shows_no_absent_or_conflicting_cells() {
@@ -3762,7 +3764,7 @@ fn test_analysing_a_union_of_scans_does_not_panic() {
     assert_eq!(results.total_rows, 4, "and counts every row");
 }
 
-/// Opening a folder whose files disagree leaves something to say, and the Info key
+/// Opening a directory whose files disagree leaves something to say, and the Info key
 /// carries a quiet accent until the panel has been opened.
 #[test]
 fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
@@ -4021,7 +4023,7 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
     }
 }
 
-/// A folder whose files agree has nothing to say, and nothing to show for it.
+/// A directory whose files agree has nothing to say, and nothing to show for it.
 #[test]
 fn test_a_uniform_dataset_has_no_notes() {
     let dir = tempfile::tempdir().unwrap();
@@ -4097,7 +4099,7 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
     );
 }
 
-/// A dataset may already have a column called `source_file` — a folder of per-file
+/// A dataset may already have a column called `source_file` — a directory of per-file
 /// extracts is exactly this feature's audience — and adding one by that name would
 /// replace it, silently, in the file the user takes away.
 #[test]
@@ -4299,7 +4301,7 @@ fn test_local_files_of_different_integer_widths_open_as_the_wider_one() {
     );
 }
 
-/// One unreadable file must not stop the rest of the folder from opening.
+/// One unreadable file must not stop the rest of the directory from opening.
 #[test]
 fn test_one_unreadable_local_file_does_not_stop_the_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -4325,7 +4327,7 @@ fn test_one_unreadable_local_file_does_not_stop_the_open() {
     );
     // The ids, not the partition names: `date=2024-01-01` and `date=2024-01-03` put a
     // `1` and a `3` on screen whatever the rows say, so checking for those characters
-    // is a check on the folder's own names.
+    // is a check on the directory's own names.
     let state = app.data_table_state.as_ref().unwrap();
     let ids = state
         .lf
@@ -4786,11 +4788,11 @@ fn test_len_generations_are_unique_across_datasets() {
     );
 }
 
-/// Browsing a directory of more than 64 folders: nothing is looked into while the
+/// Browsing a directory of more than 64 subdirectories: nothing is looked into while the
 /// listing is built, so no row is labelled from where it sits, and the rows the frame
 /// draws are looked into after it — on a worker, a screenful at a time.
 ///
-/// The bug this covers is #270: the first 64 folders of a 6,241-partition share read
+/// The bug this covers is #270: the first 64 directories of a 6,241-partition share read
 /// `multi`, and every identical one after them read `dir`.
 #[test]
 fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
@@ -4828,7 +4830,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
 
     // Then the rows that frame drew are looked into, and say what they are. Asked of
     // the rows on screen rather than the selected one: the cursor starts on the row that
-    // opens the whole folder, which is not one of the two hundred being looked into.
+    // opens the whole directory, which is not one of the two hundred being looked into.
     pump_home(&mut app, &rx, area, &mut buf, |app| {
         app.home.visible().iter().any(|row| match row {
             datui::home::Row::Entry { entry, .. } => entry.kind == datui::discover::EntryKind::Hive,
@@ -5869,7 +5871,7 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
     );
 }
 
-/// Opening a folder measures what it cost, and the Info panel says so.
+/// Opening a directory measures what it cost, and the Info panel says so.
 ///
 /// The end of the wiring rather than any one link in it: the open records into the
 /// meter the app holds, the panel is handed that same meter, and the Resources tab
@@ -5881,7 +5883,7 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
 /// Only the counts are asserted. The times are real elapsed times, so the only claim
 /// that holds on every machine is that they were taken.
 #[test]
-fn test_opening_a_folder_measures_it_and_the_info_panel_says_so() {
+fn test_opening_a_directory_measures_it_and_the_info_panel_says_so() {
     let dir = tempfile::tempdir().unwrap();
     for day in 1..=3 {
         write_parquet(
@@ -5921,7 +5923,7 @@ fn test_opening_a_folder_measures_it_and_the_info_panel_says_so() {
         "the listing found three files; got:\n{text}"
     );
     // Six, not three. The open reads a footer from each file, and then the count pass
-    // re-walks the folder and reads every footer again to settle the row count — which
+    // re-walks the directory and reads every footer again to settle the row count — which
     // happens on an ordinary three-file open, not only in some corner. Both are footer
     // reads and both cost what they cost, so the row says six.
     assert!(
@@ -5931,7 +5933,7 @@ fn test_opening_a_folder_measures_it_and_the_info_panel_says_so() {
     );
     assert!(
         !text.contains("requests"),
-        "a local folder is read, not requested, so no request count is claimed; got:\n{text}"
+        "a local directory is read, not requested, so no request count is claimed; got:\n{text}"
     );
 }
 
@@ -5939,11 +5941,11 @@ fn test_opening_a_folder_measures_it_and_the_info_panel_says_so() {
 /// built.
 ///
 /// The routes are tried cheapest first, and the early ones measure before they discover
-/// they cannot finish. A folder whose only Parquet sits under a `_delta_log` is the case
-/// that reaches the screen: the hive route walks it, counts the checkpoint as the
+/// they cannot finish. A directory whose only Parquet sits under a `_delta_log` is the
+/// case that reaches the screen: the hive route walks it, counts the checkpoint as the
 /// writer's own bookkeeping, records a listing of no files and a footer pass over none,
-/// and then gives up — while the full scan's glob does match the checkpoint and opens
-/// it. Sharing one meter across the attempts paints `0 files` on a dataset showing rows.
+/// and then gives up — while the full scan's glob does match the checkpoint and opens it.
+/// Sharing one meter across the attempts paints `0 files` on a dataset showing rows.
 #[test]
 fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
     let dir = tempfile::tempdir().unwrap();
@@ -5996,7 +5998,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
 /// A dataset Polars opened shows no measurements, even though its rows are counted
 /// afterwards.
 ///
-/// `--single-spine-schema false` turns off the footer pass and hands the folder
+/// `--single-spine-schema false` turns off the footer pass and hands the directory
 /// straight to Polars, so there is nothing for datui to report. But the row count is
 /// still taken from the footers afterwards, against the same dataset — and that pass
 /// writing into the meter would raise a section out of nothing, headed by what opening
@@ -6027,7 +6029,7 @@ fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
     let area = Rect::new(0, 0, 100, 30);
     let _ = painted(&mut app, &rx, &tx, area);
 
-    let state = app.data_table_state.as_ref().expect("the folder opened");
+    let state = app.data_table_state.as_ref().expect("the directory opened");
     assert_eq!(
         state.measurements().footers(),
         None,
@@ -6132,7 +6134,7 @@ fn test_a_second_open_measures_itself_and_not_the_dataset_before_it() {
     assert_eq!(
         files_of(&app),
         Some(1),
-        "and reports the one file it found, not the four both folders hold between them"
+        "and reports the one file it found, not the four both directories hold between them"
     );
 
     // A third open that fails leaves the second dataset up — and leaves its figures
@@ -6160,20 +6162,20 @@ fn test_a_second_open_measures_itself_and_not_the_dataset_before_it() {
     );
 }
 
-/// `→` goes inside a local folder that opens as one dataset, as it has always done in a
-/// bucket.
+/// `→` goes inside a local directory that opens as one dataset, as it has always done in
+/// a bucket.
 ///
-/// The gate was `is_object_store_url`, so on a local hive tree or a local folder of part
-/// files there was no way in at all: Enter opened the whole thing, `←`/`→` folded the
-/// section, and the files inside were unreachable from the home screen. That is the
-/// escape hatch for a folder classified wrongly, and locally there was none.
+/// The gate was `is_object_store_url`, so on a local hive tree or a local directory of
+/// part files there was no way in at all: Enter opened the whole thing, `←`/`→` folded
+/// the section, and the files inside were unreachable from the home screen. That is the
+/// escape hatch for a directory classified wrongly, and locally there was none.
 #[test]
-fn test_right_goes_inside_a_local_multi_file_folder() {
+fn test_right_goes_inside_a_local_multi_file_directory() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let folder = tmp.path().join("sales");
-    std::fs::create_dir_all(&folder).unwrap();
+    let directory = tmp.path().join("sales");
+    std::fs::create_dir_all(&directory).unwrap();
     for part in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
-        std::fs::write(folder.join(part), b"x").unwrap();
+        std::fs::write(directory.join(part), b"x").unwrap();
     }
 
     let (tx, _rx) = mpsc::channel();
@@ -6187,7 +6189,7 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     app.home.selected = row;
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
@@ -6196,7 +6198,7 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::discover::EntryKind::MultiFile),
-        "a folder of part files is offered as one dataset"
+        "a directory of part files is offered as one dataset"
     );
 
     // The bar says the door is there, since nothing else on screen does.
@@ -6217,8 +6219,8 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
 
     assert_eq!(
         app.home.browsing.as_deref(),
-        Some(folder.as_path()),
-        "→ browsed into the folder rather than folding the section"
+        Some(directory.as_path()),
+        "→ browsed into the directory rather than folding the section"
     );
 }
 
@@ -6277,7 +6279,7 @@ fn test_enter_on_a_place_row_browses_it() {
     let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
     let here = recents[0].parent().unwrap().to_path_buf();
 
-    // The bar says → goes inside, the same as on any folder.
+    // The bar says → goes inside, the same as on any directory.
     let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
@@ -6598,7 +6600,7 @@ fn test_enter_on_the_more_row_expands_recent() {
     );
 }
 
-/// The hint, and the descent, are only offered on a row that is a dataset folder.
+/// The hint, and the descent, are only offered on a row that is a dataset directory.
 /// `→` elsewhere goes on expanding the section, which on a visible row is already
 /// expanded and so does nothing.
 #[test]
@@ -6632,7 +6634,7 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
         .collect();
     assert!(
         !bar.contains("Inside"),
-        "a file is not a folder to go inside: {bar:?}"
+        "a file is not a directory to go inside: {bar:?}"
     );
 
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -6646,7 +6648,7 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
     );
 }
 
-/// A Delta table's root is not a folder of Parquet files, and the home screen says so.
+/// A Delta table's root is not a directory of Parquet files, and the home screen says so.
 ///
 /// Its data files agree on a schema, so the one-table rule called it `multi` and Enter
 /// read every file under it as one table — tombstoned rows back, every rewritten
@@ -6704,7 +6706,7 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
     );
     assert!(
         !listing.contains("multi"),
-        "and does not offer it as a folder of files: {listing}"
+        "and does not offer it as a directory of files: {listing}"
     );
 
     // Enter goes inside rather than reading every file under it as one table.
@@ -6769,7 +6771,7 @@ fn test_a_lake_table_typed_as_a_path_is_gone_inside_not_opened() {
 /// The guidance block is appended under the rows rather than shown instead of them, so a
 /// warehouse of fifty `delta` rows printed "No datasets here." underneath them.
 #[test]
-fn test_a_folder_of_lake_tables_does_not_say_there_is_nothing_here() {
+fn test_a_directory_of_lake_tables_does_not_say_there_is_nothing_here() {
     let tmp = tempfile::tempdir().expect("tempdir");
     for name in ["orders", "customers"] {
         let table = tmp.path().join(name);
@@ -6804,11 +6806,11 @@ fn test_a_folder_of_lake_tables_does_not_say_there_is_nothing_here() {
     );
 }
 
-/// `→` goes inside a lake table, as it does a hive or multi folder.
+/// `→` goes inside a lake table, as it does a hive or multi directory.
 ///
 /// A cloud Delta root used to be labelled `multi`, where `→` descended; recognizing it
 /// made `→` fold the section instead. Enter goes inside either way, so nothing was
-/// unreachable, but the key that means "look inside this folder" stopped meaning it on
+/// unreachable, but the key that means "look inside this directory" stopped meaning it on
 /// the one row where looking inside is all datui can do.
 #[test]
 fn test_right_goes_inside_a_lake_table() {
@@ -6872,8 +6874,8 @@ fn test_right_goes_inside_a_lake_table() {
 #[test]
 fn test_a_sampled_column_count_is_marked_on_screen() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let folder = tmp.path().join("events");
-    std::fs::create_dir_all(&folder).unwrap();
+    let directory = tmp.path().join("events");
+    std::fs::create_dir_all(&directory).unwrap();
 
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
@@ -6886,10 +6888,10 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     app.home.selected = row;
 
-    // As a folder past the footer budget comes back from measurement.
+    // As a directory past the footer budget comes back from measurement.
     for section in app.home.sections.iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "events") {
             entry.kind = datui::discover::EntryKind::MultiFile;
@@ -7200,7 +7202,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     app.home.selected = row;
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
@@ -7220,7 +7222,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
             assert_eq!(paths, vec![hive.clone()]);
             assert!(options.hive, "read as one partitioned dataset");
         }
-        _ => panic!("Enter on a hive folder opens it"),
+        _ => panic!("Enter on a hive directory opens it"),
     }
 
     // And a single file is not. (The open above left the home screen.)
@@ -7284,15 +7286,15 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     }
 }
 
-/// A folder datui offers as one dataset is read as whatever is actually in it.
+/// A directory datui offers as one dataset is read as whatever is actually in it.
 ///
-/// A folder the home screen labels `multi` is opened with `hive: true`, and every such
-/// folder used to go straight to the Parquet scanner however it was filled. A folder
-/// of CSVs therefore failed the way a folder of `.json.gz` did: Parquet seeks to the
-/// last four bytes looking for `PAR1`, finds something else, and says the file must
-/// end with it — a complaint about files that were never the problem.
+/// A directory the home screen labels `multi` is opened with `hive: true`, and every such
+/// directory used to go straight to the Parquet scanner however it was filled. A
+/// directory of CSVs therefore failed the way a directory of `.json.gz` did: Parquet
+/// seeks to the last four bytes looking for `PAR1`, finds something else, and says the
+/// file must end with it — a complaint about files that were never the problem.
 #[test]
-fn test_a_folder_opened_as_one_dataset_is_read_as_what_it_holds() {
+fn test_a_directory_opened_as_one_dataset_is_read_as_what_it_holds() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join("part-0.csv"), "a,b\n1,x\n2,y\n").unwrap();
     std::fs::write(tmp.path().join("part-1.csv"), "a,b\n3,z\n").unwrap();
@@ -7312,7 +7314,7 @@ fn test_a_folder_opened_as_one_dataset_is_read_as_what_it_holds() {
     let state = app
         .data_table_state
         .as_ref()
-        .expect("a folder of CSVs should open as one table of CSVs");
+        .expect("a directory of CSVs should open as one table of CSVs");
     let df = state.lf.clone().collect().unwrap();
     assert_eq!(
         df.height(),
@@ -7322,15 +7324,15 @@ fn test_a_folder_opened_as_one_dataset_is_read_as_what_it_holds() {
     );
 }
 
-/// A folder holding two different formats is not one table, and the complaint names
-/// the folder rather than Parquet's magic number.
+/// A directory holding two different formats is not one table, and the complaint names
+/// the directory rather than Parquet's magic number.
 ///
-/// Asserting on the message, not merely on the failure: opening this folder failed
+/// Asserting on the message, not merely on the failure: opening this directory failed
 /// before the fix too — with "must end with PAR1", about files nobody asked to be
 /// Parquet. A test that only checked that nothing loaded would pass either way and be
 /// about nothing.
 #[test]
-fn test_a_folder_of_two_formats_is_read_as_the_one_it_mostly_holds() {
+fn test_a_directory_of_two_formats_is_read_as_the_one_it_mostly_holds() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join("a.csv"), "a\n1\n").unwrap();
     std::fs::write(tmp.path().join("b.csv"), "a\n2\n").unwrap();
@@ -7351,7 +7353,7 @@ fn test_a_folder_of_two_formats_is_read_as_the_one_it_mostly_holds() {
     let table = app
         .data_table_state
         .as_ref()
-        .expect("two CSVs and a stray JSON is a folder of CSVs");
+        .expect("two CSVs and a stray JSON is a directory of CSVs");
     assert_eq!(table.headers(), vec!["a"], "read as CSV, not as JSON");
     assert_eq!(
         table.num_rows_if_valid(),
@@ -7360,14 +7362,15 @@ fn test_a_folder_of_two_formats_is_read_as_the_one_it_mostly_holds() {
     );
 }
 
-/// A folder of CSVs with some unrelated folder beside them is still a folder of CSVs.
+/// A directory of CSVs with some unrelated directory beside them is still a directory of
+/// CSVs.
 ///
-/// The other edge of the same rule: what sends a folder to the Parquet hive scan is a
+/// The other edge of the same rule: what sends a directory to the Parquet hive scan is a
 /// `key=value` partition under it, not merely having a subdirectory. Treating any
-/// subfolder as "the data is deeper" handed an ordinary folder of CSVs back to the
+/// subdirectory as "the data is deeper" handed an ordinary directory of CSVs back to the
 /// scan that cannot read them.
 #[test]
-fn test_a_folder_of_csvs_beside_an_unrelated_folder_still_reads_as_csvs() {
+fn test_a_directory_of_csvs_beside_an_unrelated_directory_still_reads_as_csvs() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("part-0.csv"), "id\n1\n2\n").unwrap();
     std::fs::write(dir.path().join("part-1.csv"), "id\n3\n").unwrap();
@@ -7377,7 +7380,7 @@ fn test_a_folder_of_csvs_beside_an_unrelated_folder_still_reads_as_csvs() {
     let state = app
         .data_table_state
         .as_ref()
-        .expect("a folder of CSVs should open as one table of CSVs");
+        .expect("a directory of CSVs should open as one table of CSVs");
     assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
 }
 
@@ -7386,7 +7389,7 @@ fn test_a_folder_of_csvs_beside_an_unrelated_folder_still_reads_as_csvs() {
 /// Hive partitioning is a Parquet-only capability in the reader datui uses, so a tree
 /// of `date=…/part.json` cannot be read as one table here. It used to reach the
 /// Parquet scan anyway and fail with "the file must end with PAR1" — a complaint
-/// about files nobody asked to be Parquet, naming neither the folder nor the format.
+/// about files nobody asked to be Parquet, naming neither the directory nor the format.
 #[test]
 fn test_a_hive_of_json_names_the_files_rather_than_parquets_magic_number() {
     let dir = tempfile::tempdir().unwrap();
@@ -7445,21 +7448,21 @@ fn test_a_nested_hive_of_parquet_still_opens() {
     assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
 }
 
-/// Two doors, on a folder datui does not recognize as anything.
+/// Two doors, on a directory datui does not recognize as anything.
 ///
-/// A folder holding a CSV and a JSON is `mixed`: no label datui has says it is one
+/// A directory holding a CSV and a JSON is `mixed`: no label datui has says it is one
 /// table, and before this the row could only be folded — `→` did nothing and `Enter`
-/// tried to open it as a dataset and said it could not. A folder whose storage
-/// convention datui does not know is exactly the folder a user most needs to get into,
+/// tried to open it as a dataset and said it could not. A directory whose storage
+/// convention datui does not know is exactly the directory a user most needs to get into,
 /// so both doors are open on it now: `→` steps inside, and the first row in there reads
 /// the whole of it.
 #[test]
-fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
+fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let folder = tmp.path().join("exports");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("sales.csv"), b"a,b\n1,2\n").unwrap();
-    std::fs::write(folder.join("notes.json"), b"{}").unwrap();
+    let directory = tmp.path().join("exports");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("sales.csv"), b"a,b\n1,2\n").unwrap();
+    std::fs::write(directory.join("notes.json"), b"{}").unwrap();
 
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
@@ -7472,7 +7475,7 @@ fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "exports"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     app.home.selected = row;
     app.home.classify_now(8);
     assert_eq!(
@@ -7494,8 +7497,8 @@ fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
     app.event(&key(KeyCode::Right));
     assert_eq!(
         app.home.browsing.as_deref(),
-        Some(folder.as_path()),
-        "→ went inside a folder datui has no name for"
+        Some(directory.as_path()),
+        "→ went inside a directory datui has no name for"
     );
 
     // And the first row in there is the other door. (The app rebuilds the listing on
@@ -7519,14 +7522,15 @@ fn test_both_doors_are_open_on_a_folder_datui_cannot_name() {
     );
 }
 
-/// The `(all files)` row opens the folder it names, whatever the folder is labelled.
+/// The `(all files)` row opens the directory it names, whatever the directory is
+/// labelled.
 ///
 /// The label describes; this row is the promise that the description cannot lock you
-/// out. A `mixed` folder is the case: `open_what_it_is` reads the label back, and a
+/// out. A `mixed` directory is the case: `open_what_it_is` reads the label back, and a
 /// `Directory` sent through it goes *inside* — which, on a row that is already inside,
 /// is nowhere.
 #[test]
-fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
+fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(tmp.path().join("sales.csv"), b"a,b\n1,2\n").unwrap();
     std::fs::write(tmp.path().join("notes.json"), b"{}").unwrap();
@@ -7542,12 +7546,12 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
-        .expect("every folder carries the row");
+        .expect("every directory carries the row");
     app.home.selected = row;
 
     let was = app.home.browsing.clone();
 
-    // → does nothing here. This row is inside the folder it opens, so going inside is
+    // → does nothing here. This row is inside the directory it opens, so going inside is
     // nowhere: it would re-enter the listing already on screen and lose the cursor and
     // the filter on the way. ← / → fold, the way they do on a file row. Checked before
     // Enter, because Enter puts the app in its loading view and the home bar is gone.
@@ -7564,7 +7568,7 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
     app.event(&key(KeyCode::Right));
     assert_eq!(
         app.home.browsing, was,
-        "→ on the row that opens this folder must not re-enter it"
+        "→ on the row that opens this directory must not re-enter it"
     );
     assert_eq!(
         app.home.selected, row,
@@ -7575,19 +7579,19 @@ fn test_enter_on_the_whole_folder_row_opens_rather_than_descending() {
     let next = app.event(&key(KeyCode::Enter));
     assert!(
         matches!(next, Some(AppEvent::Open(..))),
-        "Enter should open the folder rather than move the cursor"
+        "Enter should open the directory rather than move the cursor"
     );
     assert_eq!(
         app.home.browsing, was,
-        "and did not step into the folder it is already in"
+        "and did not step into the directory it is already in"
     );
 }
 
 /// The door into a lake table reads its files, and says they are not the table.
 ///
-/// A lake table is not a folder of Parquet files however much it looks like one:
+/// A lake table is not a directory of Parquet files however much it looks like one:
 /// reading one as a union counts tombstoned rows, every rewritten version and both
-/// sides of a compaction. Refusing it, though, left a folder the user could see and
+/// sides of a compaction. Refusing it, though, left a directory the user could see and
 /// could not read at all — and this row is the promise that no label locks you out.
 /// So the read is labelled instead of refused: a note in the panel, a chip beside the
 /// row count, and the row one level up still goes inside and says datui does not read
@@ -7621,7 +7625,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
-        .expect("the folder carries the row");
+        .expect("the directory carries the row");
     app.home.selected = row;
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
@@ -7632,7 +7636,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     // It opens, and the open carries what it is.
     let options = match app.event(&key(KeyCode::Enter)) {
         Some(AppEvent::Open(_, options)) => options,
-        _ => panic!("the door opens the folder it names, whatever the label says"),
+        _ => panic!("the door opens the directory it names, whatever the label says"),
     };
     assert_eq!(
         options.read_as_plain_files_of,
@@ -7662,7 +7666,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     up.home.selected = row;
     assert!(up.event(&key(KeyCode::Enter)).is_none());
     assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
@@ -7673,11 +7677,11 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     );
 }
 
-/// `hive: true` is what puts the open on the local folder route at all: without it a
-/// directory is `Unsupported file type`, and the whole of `folder_format`'s dispatch is
-/// behind it. The door row builds its own open, so nothing else pins the flag.
+/// `hive: true` is what puts the open on the local directory route at all: without it a
+/// directory is `Unsupported file type`, and the whole of `directory_format`'s dispatch
+/// is behind it. The door row builds its own open, so nothing else pins the flag.
 #[test]
-fn test_the_door_opens_a_folder_by_the_folder_route() {
+fn test_the_door_opens_a_directory_by_the_directory_route() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(tmp.path().join("a.csv"), b"x,y\n1,2\n").unwrap();
     std::fs::write(tmp.path().join("b.csv"), b"x,y\n3,4\n").unwrap();
@@ -7693,7 +7697,7 @@ fn test_the_door_opens_a_folder_by_the_folder_route() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
-        .expect("the folder carries the row");
+        .expect("the directory carries the row");
     app.home.selected = row;
 
     match app.event(&key(KeyCode::Enter)) {
@@ -7704,7 +7708,7 @@ fn test_the_door_opens_a_folder_by_the_folder_route() {
                 "without this the open is `Unsupported file type`"
             );
         }
-        _ => panic!("Enter on the door should open the folder"),
+        _ => panic!("Enter on the door should open the directory"),
     }
 }
 
@@ -7712,15 +7716,15 @@ fn test_the_door_opens_a_folder_by_the_folder_route() {
 ///
 /// On a share that is most rows: `entry_for_path` calls a remote path with no data
 /// extension `Unknown`, and a listing looks into nothing. Excluding `Unknown` from the
-/// door would put the folders that cost most to reach back behind a classification —
+/// door would put the directories that cost most to reach back behind a classification —
 /// the label deciding access again, one indirection along. A remote file with an odd
 /// extension is browsed into and shows an empty listing, which `Esc` backs out of.
 #[test]
 fn test_right_goes_inside_a_row_nothing_has_looked_into() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let folder = tmp.path().join("archive");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("one.parquet"), b"x").unwrap();
+    let directory = tmp.path().join("archive");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("one.parquet"), b"x").unwrap();
 
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
@@ -7733,7 +7737,7 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "archive"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     app.home.selected = row;
     // Deliberately not classified: this is what a listing hands over before anything
     // has looked into it, and what every row on a share looks like.
@@ -7745,23 +7749,23 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
     app.event(&key(KeyCode::Right));
     assert_eq!(
         app.home.browsing.as_deref(),
-        Some(folder.as_path()),
+        Some(directory.as_path()),
         "→ went inside without needing to know what it is first"
     );
 }
 
-/// Each route's folders are classified in that route's vocabulary.
+/// Each route's directories are classified in that route's vocabulary.
 ///
-/// The door used to ask the cloud classifier about a local folder, which got two
+/// The door used to ask the cloud classifier about a local directory, which got two
 /// answers wrong in opposite directions. `scan_dir` drops dotted names, so `.hoodie`
 /// never reached it and a local Hudi table came back `MultiFile` — the door then read
 /// its tombstones, two keystrokes after the row above said datui does not read Hudi
 /// tables yet. And the cloud Iceberg rule is the looser of the two on purpose, names
-/// only, so a plain folder holding `data/` beside `metadata/` was refused as a lake
+/// only, so a plain directory holding `data/` beside `metadata/` was refused as a lake
 /// table it is not: the second door closing on a false verdict, which is the whole
 /// thing phase 3 exists to stop.
 #[test]
-fn test_the_door_reads_a_local_folder_with_the_local_rules() {
+fn test_the_door_reads_a_local_directory_with_the_local_rules() {
     let tmp = tempfile::tempdir().expect("tempdir");
 
     // A Hudi table: the marker is a dotted name.
@@ -7780,7 +7784,7 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
             .unwrap();
     }
 
-    // And a plain folder that merely looks like an Iceberg table by its names.
+    // And a plain directory that merely looks like an Iceberg table by its names.
     let project = tmp.path().join("project");
     std::fs::create_dir_all(project.join("data")).unwrap();
     std::fs::create_dir_all(project.join("metadata")).unwrap();
@@ -7800,7 +7804,7 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
                 datui::home::Row::Door { entry, .. } => Some(entry.kind),
                 _ => None,
             })
-            .expect("the folder carries the row")
+            .expect("the directory carries the row")
     };
 
     assert_eq!(
@@ -7811,7 +7815,7 @@ fn test_the_door_reads_a_local_folder_with_the_local_rules() {
     assert_eq!(
         door_kind(&project),
         datui::discover::EntryKind::Directory,
-        "two folder names are not an Iceberg table: the local rule wants a \
+        "two directory names are not an Iceberg table: the local rule wants a \
          .metadata.json in one of them"
     );
 }
@@ -7909,7 +7913,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     assert_eq!(
         options.map(|o| o.format),
         Some(None),
-        "a prefix of Parquet is what a cloud folder reads as"
+        "a prefix of Parquet is what a cloud directory reads as"
     );
 
     // No data files at all: tried, because the files below may be Parquet and nothing
@@ -7942,10 +7946,10 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     );
 }
 
-/// The `N datasets` caption counts what is listed, not the way out of the folder.
+/// The `N datasets` caption counts what is listed, not the way out of the directory.
 ///
-/// The door's kind is the folder's, so it counts as a dataset — and it is the same
-/// dataset as the folder it opens, counted a second time, in the figure whose own
+/// The door's kind is the directory's, so it counts as a dataset — and it is the same
+/// dataset as the directory it opens, counted a second time, in the figure whose own
 /// comment says counting a place-to-look makes it a lie.
 #[test]
 fn test_the_caption_does_not_count_the_door_as_a_dataset() {
@@ -7983,15 +7987,15 @@ fn test_the_caption_does_not_count_the_door_as_a_dataset() {
     );
 }
 
-/// #275's done-when for this phase: from a folder the rule turns away, one table is
+/// #275's done-when for this phase: from a directory the rule turns away, one table is
 /// still reachable in two keystrokes.
 ///
-/// A folder whose files each bring a column the other lacks is a place to look inside
+/// A directory whose files each bring a column the other lacks is a place to look inside
 /// rather than a dataset — that is `is_nested`, and it is stricter than the containment
 /// threshold it replaced. What makes a strict rule affordable is the other door: `→`
 /// steps in, and the first row in there opens the union anyway.
 #[test]
-fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() {
+fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sales = tmp.path().join("sales");
     std::fs::create_dir_all(&sales).unwrap();
@@ -8021,7 +8025,7 @@ fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() 
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
-        .expect("the folder is listed");
+        .expect("the directory is listed");
     app.home.selected = row;
     app.home.classify_now(8);
     app.home.measure_now(8);
@@ -8042,7 +8046,7 @@ fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() 
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
-        .expect("the folder carries the row");
+        .expect("the directory carries the row");
     app.home.selected = row;
     assert!(
         matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
@@ -8050,13 +8054,13 @@ fn test_a_folder_the_nesting_rule_turns_away_is_still_two_keys_from_one_table() 
     );
 }
 
-/// `datui <dir>` does what `Enter` on that folder's row does.
+/// `datui <dir>` does what `Enter` on that directory's row does.
 ///
 /// A directory used to be `Unsupported file type` unless `--hive` was passed, while
-/// pyarrow, Polars, pandas and Spark all open one. Naming a folder is the request to
+/// pyarrow, Polars, pandas and Spark all open one. Naming a directory is the request to
 /// read it, so the command line answers the same as the other two doors onto a path.
 #[test]
-fn test_the_command_line_reads_a_folder_the_way_enter_does() {
+fn test_the_command_line_reads_a_directory_the_way_enter_does() {
     let tmp = tempfile::TempDir::new().unwrap();
     let parquet = |dir: &Path, name: &str, mut frame: DataFrame| {
         std::fs::create_dir_all(dir).unwrap();
@@ -8074,7 +8078,7 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         .unwrap()
     };
 
-    // An app and the channel its background work answers on. The look at a folder is
+    // An app and the channel its background work answers on. The look at a directory is
     // an event now, not a call, so the test drives the same chain `run()` does.
     let app = || {
         let (tx, rx) = mpsc::channel();
@@ -8120,7 +8124,7 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         named_with(app, rx, dir, options)
     };
 
-    // One table across several files: read as one, on the folder route.
+    // One table across several files: read as one, on the directory route.
     let one = tmp.path().join("one");
     parquet(&one, "a.parquet", table(&["id", "ts"]));
     parquet(&one, "b.parquet", table(&["id", "ts"]));
@@ -8128,9 +8132,12 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
     match named(&mut a, &rx_a, &one) {
         Some(AppEvent::Open(paths, options)) => {
             assert_eq!(paths, vec![one.clone()]);
-            assert!(options.hive, "the folder route is what reads a directory");
+            assert!(
+                options.hive,
+                "the look-then-open route is what reads a directory"
+            );
         }
-        _ => panic!("a folder of one table opens as one table"),
+        _ => panic!("a directory of one table opens as one table"),
     }
 
     // Separate tables: a place to look inside, browsed into rather than refused. The
@@ -8145,12 +8152,12 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
     let (mut b, rx_b) = app();
     assert!(
         named(&mut b, &rx_b, &several).is_none(),
-        "a folder of separate tables is somewhere to look, not a refusal"
+        "a directory of separate tables is somewhere to look, not a refusal"
     );
     assert_eq!(b.home.browsing.as_deref(), Some(several.as_path()));
     assert_eq!(b.input_mode, InputMode::Home);
 
-    // A hive root reads as one table too, and still by the folder route.
+    // A hive root reads as one table too, and still by the directory route.
     let hive = tmp.path().join("hive");
     parquet(&hive.join("day=1"), "part.parquet", table(&["id"]));
     parquet(&hive.join("day=2"), "part.parquet", table(&["id"]));
@@ -8160,7 +8167,7 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
         "a hive root is read through its partitions"
     );
 
-    // A lake root is not a folder of Parquet files, however much it looks like one.
+    // A lake root is not a directory of Parquet files, however much it looks like one.
     let delta = tmp.path().join("delta");
     std::fs::create_dir_all(delta.join("_delta_log")).unwrap();
     std::fs::write(
@@ -8186,7 +8193,7 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
 
     // And the read really happens: the whole chain, look and all, is the table.
     let (mut loaded, rx) = app();
-    let event = named(&mut loaded, &rx, &one).expect("a folder of one table opens");
+    let event = named(&mut loaded, &rx, &one).expect("a directory of one table opens");
     let AppEvent::Open(paths, options) = event else {
         panic!("the rule opens it")
     };
@@ -8217,12 +8224,12 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
             f.open_the_path_named_on_the_command_line(vec![several.clone()], forced),
             Some(AppEvent::Open(..))
         ),
-        "--hive still means read this as one, whatever the folder looks like"
+        "--hive still means read this as one, whatever the directory looks like"
     );
 
     // And so is `--no-header`. The rule takes each file's first row of data for its
-    // column names, finds them all different and calls the folder separate tables — so
-    // without this it sends the user to the home screen, for a folder the flag reads
+    // column names, finds them all different and calls the directory separate tables — so
+    // without this it sends the user to the home screen, for a directory the flag reads
     // perfectly as one table.
     let headless = tmp.path().join("headless");
     std::fs::create_dir_all(&headless).unwrap();
@@ -8239,14 +8246,14 @@ fn test_the_command_line_reads_a_folder_the_way_enter_does() {
     );
 }
 
-/// A folder of several formats is read as the commonest, and says what it left out.
+/// A directory of several formats is read as the commonest, and says what it left out.
 ///
 /// Refusing the whole of a thousand CSVs over one stray JSON was datui deciding that a
-/// folder it could read was not worth reading. It reads it now — and a read that
+/// directory it could read was not worth reading. It reads it now — and a read that
 /// silently drops a file is the other half of the same mistake, so the dataset says
 /// which formats were passed over and how many of each.
 #[test]
-fn test_a_mixed_folder_reads_as_the_commonest_format_and_says_what_it_left_out() {
+fn test_a_mixed_directory_reads_as_the_commonest_format_and_says_what_it_left_out() {
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path();
     for name in ["a.csv", "b.csv", "c.csv"] {
@@ -8269,7 +8276,7 @@ fn test_a_mixed_folder_reads_as_the_commonest_format_and_says_what_it_left_out()
     let state = app
         .data_table_state
         .as_ref()
-        .expect("the folder opens rather than being refused over the stray");
+        .expect("the directory opens rather than being refused over the stray");
     assert_eq!(state.num_rows, 3, "one row from each CSV");
 
     let notes = state.notes();
@@ -8296,7 +8303,7 @@ fn test_a_mixed_folder_reads_as_the_commonest_format_and_says_what_it_left_out()
 /// Esc as the only way out (#283). Excluding `Unknown` from what → enters was the other
 /// way to fix it, and it is the label deciding access one indirection along: before
 /// anything has looked into it, every row on a share is `Unknown`, including every
-/// folder that costs most to reach. So the row is named instead.
+/// directory that costs most to reach. So the row is named instead.
 #[test]
 fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
     let kind = |url: &str| {
@@ -8338,15 +8345,15 @@ fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
     );
 }
 
-/// A folder of files written without extensions opens as one table.
+/// A directory of files written without extensions opens as one table.
 ///
-/// Spark and GBIF both write part files with no extension. `occurrence.parquet/000001`
-/// is read by its folder's name; the same files under a folder named anything else were
-/// not data at all as far as datui was concerned — nothing listed them and nothing
+/// Spark and GBIF both write part files with no extension. `occurrence.parquet/000001` is
+/// read by its directory's name; the same files under a directory named anything else
+/// were not data at all as far as datui was concerned — nothing listed them and nothing
 /// opened them. The bytes say what the names do not, and they are asked once, of the
-/// folder somebody is opening, never of a folder somebody is looking at.
+/// directory somebody is opening, never of a directory somebody is looking at.
 #[test]
-fn test_a_folder_of_files_written_without_extensions_still_opens() {
+fn test_a_directory_of_files_written_without_extensions_still_opens() {
     let tmp = tempfile::TempDir::new().unwrap();
     let parts = tmp.path().join("parts");
     std::fs::create_dir_all(&parts).unwrap();
@@ -8357,7 +8364,7 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
             .unwrap();
     }
 
-    // The names settle nothing, so the folder is a place to look inside.
+    // The names settle nothing, so the directory is a place to look inside.
     assert_eq!(
         datui::discover::classify_directory(&parts),
         datui::discover::EntryKind::Directory,
@@ -8365,8 +8372,8 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
     );
 
     // And the read finds them anyway.
-    match datui::discover::folder_format(&parts) {
-        datui::discover::FolderFormat::One(format, files) => {
+    match datui::discover::directory_format(&parts) {
+        datui::discover::DirectoryFormat::One(format, files) => {
             assert_eq!(format, datui::FileFormat::Parquet);
             assert_eq!(files.len(), 2, "both of them");
         }
@@ -8390,10 +8397,10 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
         "one row from each part"
     );
 
-    // And it is reachable from the home screen: the folder is a place to look inside,
+    // And it is reachable from the home screen: the directory is a place to look inside,
     // and the door inside it reads the whole of what it holds. Two keys, which is the
-    // rule for every folder the nesting test turns away — not a dead end, which is what
-    // a folder nothing listed and nothing opened was.
+    // rule for every directory the nesting test turns away — not a dead end, which is
+    // what a directory nothing listed and nothing opened was.
     let (tx, _rx) = mpsc::channel();
     let mut home = App::new(tx, common::test_runtime());
     home.enter_home();
@@ -8404,14 +8411,14 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
-        .expect("the folder carries the door");
+        .expect("the directory carries the door");
     home.home.selected = door;
     assert!(
         matches!(home.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
         "the door opens it"
     );
 
-    // A folder whose names do say something is not opened file by file to find out.
+    // A directory whose names do say something is not opened file by file to find out.
     // `LICENSE` beside the Parquet is not sniffed, and not read.
     let named = tmp.path().join("named");
     std::fs::create_dir_all(&named).unwrap();
@@ -8419,8 +8426,8 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
         .finish(&mut frame)
         .unwrap();
     std::fs::write(named.join("LICENSE"), b"MIT").unwrap();
-    match datui::discover::folder_format(&named) {
-        datui::discover::FolderFormat::One(datui::FileFormat::Parquet, files) => {
+    match datui::discover::directory_format(&named) {
+        datui::discover::DirectoryFormat::One(datui::FileFormat::Parquet, files) => {
             assert_eq!(files.len(), 1, "the LICENSE is not one of them");
         }
         other => panic!("the names settled it, got {other:?}"),
@@ -8429,15 +8436,15 @@ fn test_a_folder_of_files_written_without_extensions_still_opens() {
 
 /// The nesting rule reaches the formats that have no footer.
 ///
-/// A folder of forty unrelated CSVs was labelled `40 csv`, `Enter` promised one table
+/// A directory of forty unrelated CSVs was labelled `40 csv`, `Enter` promised one table
 /// because nothing had looked, and the read then refused it — the permissive rule with
 /// the strict reader, which is the pairing #275 exists to stop. The names at the front
 /// of a CSV are the same evidence `is_nested` takes from a Parquet footer, so the same
 /// rule now answers for both.
 #[test]
-fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
+fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let folder = |name: &str, files: &[&str]| {
+    let directory = |name: &str, files: &[&str]| {
         let dir = tmp.path().join(name);
         std::fs::create_dir_all(&dir).unwrap();
         for (i, body) in files.iter().enumerate() {
@@ -8452,7 +8459,7 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     };
 
     // Files that agree: one table, as before.
-    let same = folder("same", &["a,b\n1,2\n", "a,b\n3,4\n", "a,b\n5,6\n"]);
+    let same = directory("same", &["a,b\n1,2\n", "a,b\n3,4\n", "a,b\n5,6\n"]);
     assert_eq!(
         looked_at(&same).kind,
         datui::discover::EntryKind::MultiFile,
@@ -8461,7 +8468,7 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
 
     // A column added along the way: still one table. This is the shape the rule is for,
     // and the one a stricter test would refuse.
-    let drift = folder(
+    let drift = directory(
         "drift",
         &["id,ts\n1,5\n", "id,ts\n2,6\n", "id,ts,region\n3,7,eu\n"],
     );
@@ -8472,7 +8479,7 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
 
     // Separate tables: somewhere to look inside, not one table.
-    let apart = folder("apart", &["a,b\n1,2\n", "x,y,z\n3,4,5\n", "q\n9\n"]);
+    let apart = directory("apart", &["a,b\n1,2\n", "x,y,z\n3,4,5\n", "q\n9\n"]);
     let judged = looked_at(&apart);
     assert_eq!(
         judged.kind,
@@ -8485,21 +8492,21 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
     assert!(
         judged.columns.iter().any(|c| c == "q"),
-        "but the union of columns, so a column search still finds the folder: {:?}",
+        "but the union of columns, so a column search still finds the directory: {:?}",
         judged.columns
     );
 
     // A headerless file gives its first row of *data* as the names, because datui
-    // reads a CSV as having a header. datui cannot read such a folder as one table at
+    // reads a CSV as having a header. datui cannot read such a directory as one table at
     // all without `--no-header`: every file would contribute its own first row as
     // column names and the union would be a wide sheet of nulls. So it is not offered
     // as one — and the data values are not offered as column names either.
-    let headless = folder("headless", &["1,2\n3,4\n", "5,6\n", "7,8\n"]);
+    let headless = directory("headless", &["1,2\n3,4\n", "5,6\n", "7,8\n"]);
     let judged = looked_at(&headless);
     assert_eq!(
         judged.kind,
         datui::discover::EntryKind::Directory,
-        "a folder datui can only read as nulls is not one table"
+        "a directory datui can only read as nulls is not one table"
     );
     assert!(
         judged.columns.is_empty(),
@@ -8537,11 +8544,11 @@ fn test_a_folder_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
 
     // Two files are the fewest that can disagree; one decides nothing.
-    let alone = folder("alone", &["a,b\n1,2\n"]);
+    let alone = directory("alone", &["a,b\n1,2\n"]);
     assert_eq!(
         looked_at(&alone).kind,
         datui::discover::EntryKind::Directory,
-        "a folder of one data file was never a multi-file dataset"
+        "a directory of one data file was never a multi-file dataset"
     );
 }
 
@@ -8584,7 +8591,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
 
     // Each row, classified the way the background pass would, then Enter pressed on it.
     for (name, expected) in [
-        ("one", datui::WhatEnter::OpensFolder),
+        ("one", datui::WhatEnter::OpensDirectory),
         ("apart", datui::WhatEnter::GoesInside),
         ("delta", datui::WhatEnter::GoesInside),
         ("loose.parquet", datui::WhatEnter::OpensFile),
@@ -8613,7 +8620,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
         let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
         let went_inside = app.home.browsing != was;
         match expected {
-            datui::WhatEnter::OpensFolder | datui::WhatEnter::OpensFile => assert!(
+            datui::WhatEnter::OpensDirectory | datui::WhatEnter::OpensFile => assert!(
                 opened && !went_inside,
                 "{name}: the bar promised an open and Enter did {opened}/{went_inside}"
             ),
@@ -8655,9 +8662,9 @@ fn test_the_bar_says_what_enter_will_really_do() {
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
-        .expect("the folder carries the door");
+        .expect("the directory carries the door");
     app.home.selected = door;
-    assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensFolder);
+    assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensDirectory);
     assert!(matches!(
         app.event(&key(KeyCode::Enter)),
         Some(AppEvent::Open(..))
@@ -8704,9 +8711,9 @@ fn test_a_place_row_says_inside_and_says_it_once() {
 
 /// The pane does not point at a door that will not be there.
 ///
-/// `whole_folder_row` gives no `(all files)` row to a folder with nothing in it, nor
-/// to any folder while a filter is typed — and the pane said "the first row in there
-/// reads the whole folder as one table" for every plain directory regardless.
+/// `whole_directory_row` gives no `(all files)` row to a directory with nothing in it,
+/// nor to any directory while a filter is typed — and the pane said "the first row in
+/// there reads the whole directory as one table" for every plain directory regardless.
 #[test]
 fn test_the_pane_only_promises_a_door_that_exists() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -8757,11 +8764,11 @@ fn test_the_pane_only_promises_a_door_that_exists() {
     let shown = pane(&mut app, "full");
     assert!(
         shown.contains("first row in there"),
-        "a folder with something in it has the door to point at: {shown}"
+        "a directory with something in it has the door to point at: {shown}"
     );
     assert!(
         !pane(&mut app, "empty").contains("first row in there"),
-        "an empty folder has none, so nothing points at one"
+        "an empty directory has none, so nothing points at one"
     );
 }
 
@@ -8770,7 +8777,7 @@ fn test_the_pane_only_promises_a_door_that_exists() {
 ///
 /// `to_supertypes` was added for exactly this case — one `N/A` makes `amount` a String
 /// in one file and an Int64 in the next — and the note was written from the column
-/// *names*, which agree. So the folder opened with `amount` silently text for every
+/// *names*, which agree. So the directory opened with `amount` silently text for every
 /// row, where before it had failed loudly.
 #[test]
 fn test_widening_a_column_is_never_silent() {
@@ -8808,32 +8815,32 @@ fn test_widening_a_column_is_never_silent() {
     assert_eq!(state.headers(), vec!["id", "amount"]);
 }
 
-/// Naming a folder on the command line draws a frame before it reads anything.
+/// Naming a directory on the command line draws a frame before it reads anything.
 ///
-/// Looking at a folder reads footers, or the front of a spread of its files, and for a
-/// folder of large Parquet that is seconds — 4.6 of them on a real one, and seventeen
+/// Looking at a directory reads footers, or the front of a spread of its files, and for a
+/// directory of large Parquet that is seconds — 4.6 of them on a real one, and seventeen
 /// on one with a deep subtree. It used to happen in `run()` before the first
 /// `terminal.draw`, so the whole of it was a blank terminal: no name, no spinner, and
 /// no key that worked. The look is an event now, carried out on a worker after the
 /// first frame.
 #[test]
-fn test_looking_at_a_folder_happens_after_the_first_frame() {
+fn test_looking_at_a_directory_happens_after_the_first_frame() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let folder = tmp.path().join("data");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("a.csv"), "a,b\n1,2\n").unwrap();
+    let directory = tmp.path().join("data");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("a.csv"), "a,b\n1,2\n").unwrap();
 
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let event = app
-        .open_the_path_named_on_the_command_line(vec![folder.clone()], OpenOptions::default())
-        .expect("a folder is something to act on");
+        .open_the_path_named_on_the_command_line(vec![directory.clone()], OpenOptions::default())
+        .expect("a directory is something to act on");
 
     // The call hands back work to do rather than having done it. Nothing has been
     // decided yet: no home screen, no load.
     match &event {
-        AppEvent::LookThenOpenFolder(dir, _) => assert_eq!(dir, &folder),
-        _ => panic!("the folder is looked at on a worker, not on the way to the first frame"),
+        AppEvent::LookThenOpenDirectory(dir, _) => assert_eq!(dir, &directory),
+        _ => panic!("the directory is looked at on a worker, not on the way to the first frame"),
     }
     assert!(
         app.home.browsing.is_none() && app.data_table_state.is_none(),
@@ -8846,14 +8853,14 @@ fn test_looking_at_a_folder_happens_after_the_first_frame() {
     let mut on_a_file = App::new(tx, common::test_runtime());
     assert!(matches!(
         on_a_file.open_the_path_named_on_the_command_line(
-            vec![folder.join("a.csv")],
+            vec![directory.join("a.csv")],
             OpenOptions::default()
         ),
         Some(AppEvent::Open(..))
     ));
 }
 
-/// Going home while a folder is being looked at is not undone when the look lands.
+/// Going home while a directory is being looked at is not undone when the look lands.
 ///
 /// The look can take seconds, and Ctrl+O works throughout — which is the point of
 /// moving it off the startup thread. So the user can be somewhere else by the time it
@@ -8861,17 +8868,17 @@ fn test_looking_at_a_folder_happens_after_the_first_frame() {
 #[test]
 fn test_a_look_that_lands_after_the_user_left_is_dropped() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let folder = tmp.path().join("one");
-    std::fs::create_dir_all(&folder).unwrap();
+    let directory = tmp.path().join("one");
+    std::fs::create_dir_all(&directory).unwrap();
     for name in ["a.csv", "b.csv"] {
-        std::fs::write(folder.join(name), "id,ts\n1,2\n").unwrap();
+        std::fs::write(directory.join(name), "id,ts\n1,2\n").unwrap();
     }
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let event = app
-        .open_the_path_named_on_the_command_line(vec![folder.clone()], OpenOptions::default())
-        .expect("a folder is looked at");
+        .open_the_path_named_on_the_command_line(vec![directory.clone()], OpenOptions::default())
+        .expect("a directory is looked at");
     app.event(&event);
 
     // Ctrl+O while the look is out: the user is at the home screen now.
@@ -8881,7 +8888,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
     // The look lands. It must find nothing waiting for it.
     let mut landed = None;
     while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(4000)) {
-        if matches!(ev, AppEvent::FolderLookedAt { .. }) {
+        if matches!(ev, AppEvent::DirectoryLookedAt { .. }) {
             landed = app.event(&ev);
             break;
         }
@@ -8897,7 +8904,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
     );
     assert!(
         app.home.browsing.is_none(),
-        "nor browse them into the folder they left: {:?}",
+        "nor browse them into the directory they left: {:?}",
         app.home.browsing
     );
 }
@@ -8906,7 +8913,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
 ///
 /// `has_header` and the skips reach `OpenOptions` from the config file as well as the
 /// command line, so a guard over "did anyone set this" is true on every run for anyone
-/// with `has_header = true` in `~/.config/datui/config.toml` — and every folder they
+/// with `has_header = true` in `~/.config/datui/config.toml` — and every directory they
 /// name is then forced down the one-table route, `datui .` included. The question is
 /// whether the header is somewhere other than where the rule looked.
 #[test]
@@ -8937,7 +8944,7 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
     };
 
     // A header where one is expected, and a skip of nothing: the same thing the rule
-    // assumed, so the folder of separate tables is still somewhere to look inside.
+    // assumed, so the directory of separate tables is still somewhere to look inside.
     for agrees in [
         OpenOptions {
             has_header: Some(true),
@@ -8968,14 +8975,14 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
     );
 }
 
-/// A CSV setting does not decide a folder of Parquet.
+/// A CSV setting does not decide a directory of Parquet.
 ///
 /// `has_header` and the skips are reader settings for delimited text. Nothing about
-/// them can change how a Parquet file is read, so a folder of Parquet must reach the
+/// them can change how a Parquet file is read, so a directory of Parquet must reach the
 /// same verdict whatever they say — which it does because the rule reads Parquet
 /// through its footers and the settings never touch that path.
 #[test]
-fn test_a_csv_setting_does_not_decide_a_folder_of_parquet() {
+fn test_a_csv_setting_does_not_decide_a_directory_of_parquet() {
     let tmp = tempfile::TempDir::new().unwrap();
     let apart = tmp.path().join("apart");
     std::fs::create_dir_all(&apart).unwrap();
@@ -9025,14 +9032,14 @@ fn test_a_csv_setting_does_not_decide_a_folder_of_parquet() {
     }
 }
 
-/// A folder with no data files in it is never forced down the one-table route.
+/// A directory with no data files in it is never forced down the one-table route.
 ///
-/// `EntryKind::Directory` covers a folder of separate tables *and* one with nothing
+/// `EntryKind::Directory` covers a directory of separate tables *and* one with nothing
 /// readable in it. Opening the second as one table reaches the Parquet hive scan on a
 /// tree that has no Parquet, so `datui ~/src --no-header` ended in an error modal
 /// rather than the home screen it used to give.
 #[test]
-fn test_a_folder_with_no_data_is_not_forced_open() {
+fn test_a_directory_with_no_data_is_not_forced_open() {
     let tmp = tempfile::TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(src.join("nested")).unwrap();
@@ -9053,7 +9060,7 @@ fn test_a_folder_with_no_data_is_not_forced_open() {
         }
         match next.take() {
             Some(AppEvent::Open(..)) => {
-                panic!("a folder with nothing readable in it has no table to open")
+                panic!("a directory with nothing readable in it has no table to open")
             }
             Some(ev) => next = app.event(&ev),
             None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {

@@ -8596,7 +8596,8 @@ impl App {
             return;
         };
         self.cache.forget_recent(&entry.path);
-        self.home.status = Some(format!("Forgot {}", entry.name));
+        // Nothing to say: the row going is the answer.
+        self.home.status = None;
         self.home_refresh();
     }
 
@@ -11664,7 +11665,7 @@ impl App {
                             self.confirmation_modal.hide();
                             self.cache.clear_recents();
                             self.home_refresh();
-                            self.home.status = Some("Recents forgotten".into());
+                            self.home.status = None;
                             return None;
                         }
                         if let Some(place) = self.pending_forget_place.take() {
@@ -11672,8 +11673,7 @@ impl App {
                             let paths = self.home.recents_in(&place);
                             self.cache.forget_recents(&paths);
                             self.home_refresh();
-                            self.home.status =
-                                Some(format!("Forgot {}", home::display_path(&place)));
+                            self.home.status = None;
                             return None;
                         }
                         // User confirmed overwrite: chart export first, then dataframe export

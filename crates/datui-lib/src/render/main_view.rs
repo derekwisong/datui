@@ -163,8 +163,12 @@ pub fn home_control_keys(
         crate::WhatEnter::FoldsSection => "Fold",
         crate::WhatEnter::ShowsMore => "Show all",
         crate::WhatEnter::OpensFile | crate::WhatEnter::Explains => "Open",
+        crate::WhatEnter::Nothing => "",
     };
     let mut keys = vec![("Enter", enter_says), (g.updown, "Move")];
+    if enter_says.is_empty() {
+        keys.remove(0);
+    }
 
     if path_input_active {
         keys.push(("Esc", "Cancel"));

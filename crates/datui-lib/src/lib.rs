@@ -5203,6 +5203,9 @@ pub enum AppEvent {
         generation: u64,
         path: PathBuf,
         kind: discover::EntryKind,
+        /// What a cloud directory's listing found, which picks its reader. `None` for a
+        /// local directory, and for a cloud one whose listing was refused.
+        holds: Option<Box<discover::Holds>>,
         options: Box<OpenOptions>,
     },
     /// Look at a path off the interface thread, then do with it whatever it turns out to
@@ -5327,6 +5330,8 @@ pub enum WhatEnter {
     /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
     /// browse and says so.
     Explains,
+    /// A file datui has no reader for. Enter says so, and the bar offers nothing.
+    Nothing,
 }
 
 impl App {
@@ -5358,6 +5363,7 @@ impl App {
         match entry.kind {
             discover::EntryKind::Unknown => WhatEnter::LooksFirst,
             discover::EntryKind::File => WhatEnter::OpensFile,
+            discover::EntryKind::Other => WhatEnter::Nothing,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensDirectory,
             // A plain directory, and a lake table, whose files are not its rows.
             discover::EntryKind::Directory
@@ -6341,6 +6347,12 @@ pub struct App {
     /// Separate from `load_active`, which stays set through the buffer collect that
     /// follows installation: by then the table on screen is the right one.
     awaiting_dataset: bool,
+    /// Whether the load in flight was chosen on the home screen, which is where its
+    /// failure is reported: the dataset left over from before is not what the user
+    /// was looking at when they chose.
+    load_from_home: bool,
+    /// The path an open was asked for, recorded as a recent when its dataset installs.
+    recent_on_install: Option<PathBuf>,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -7075,6 +7087,14 @@ impl App {
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
+        self.load_from_home = false;
+        if let Some(path) = self.recent_on_install.take() {
+            // Off the opening path. Recording a recent is a convenience that nothing
+            // waits on, and it takes a lock several instances may be contending for --
+            // opening a dataset must not queue behind another instance's bookkeeping.
+            let cache = self.cache.clone();
+            std::thread::spawn(move || cache.push_recent(&path));
+        }
         self.collect_inflight = None;
         self.parquet_metadata_cache = None;
         self.export_df = None;
@@ -7621,6 +7641,8 @@ impl App {
             task_generation: 0,
             load_active: false,
             awaiting_dataset: false,
+            load_from_home: false,
+            recent_on_install: None,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -8306,6 +8328,8 @@ impl App {
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
+        self.load_from_home = false;
+        self.recent_on_install = None;
         // And a collect that was waiting behind this load goes with it. Left standing,
         // it runs the moment the load's lease comes back — reading the dataset the user
         // walked away from, at the home screen, with `busy` set and every key held.
@@ -8669,7 +8693,11 @@ impl App {
         if self.selection_opens_the_whole_directory() {
             return None;
         }
-        (entry.kind != discover::EntryKind::File).then_some(entry.path)
+        (!matches!(
+            entry.kind,
+            discover::EntryKind::File | discover::EntryKind::Other
+        ))
+        .then_some(entry.path)
     }
 
     /// Why a prefix in an object store cannot be read as one table, when it cannot.
@@ -8904,6 +8932,10 @@ impl App {
             go_inside(self, path);
             return None;
         }
+        // Nothing: the row is dimmed and its details pane says why.
+        if kind == discover::EntryKind::Other {
+            return None;
+        }
         // A lake table's files are not its rows: the ones a delete or an update
         // tombstoned are still on disk, every rewritten version is here together, and
         // compaction leaves both sides in place. Going inside is what datui can honestly
@@ -8922,6 +8954,13 @@ impl App {
         if directory && home::is_object_store_url(&path) {
             // A prefix, not a directory: the scan is what walks it.
             return Some(self.home_open_path(home::directory_dataset_url(&path), false));
+        }
+        // Said here, where the file was named, rather than after a download and a load
+        // that could only end the same way. A row would be dimmed; a typed path has no
+        // row, so the line says it.
+        if kind == discover::EntryKind::File && discover::unreadable_by_name(&path) {
+            self.home.status = Some(discover::NO_READER.to_string());
+            return None;
         }
         Some(self.home_open_path(path, directory))
     }
@@ -8954,6 +8993,19 @@ impl App {
         // Several paths are a list of files to read together, and `--hive` is an answer
         // already given. Neither is a question about what one directory is.
         let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
+        // A cloud directory is looked at too, by one page of its listing: what is in it
+        // picks the reader, as it does for the `(all files)` row. Scanned blind, it was
+        // read as Parquet whatever it held. A glob, a file name or `--format` already
+        // says what to read.
+        #[cfg(feature = "cloud")]
+        if let Some(dir) = single.as_ref().filter(|p| {
+            home::is_object_store_url(p)
+                && options.format.is_none()
+                && !p.to_string_lossy().contains('*')
+                && !home::names_a_file(p)
+        }) {
+            return Some(AppEvent::LookThenOpenDirectory(dir.clone(), options));
+        }
         let Some(dir) = single.filter(|p| p.is_dir()) else {
             return Some(AppEvent::Open(paths, options));
         };
@@ -8974,8 +9026,14 @@ impl App {
         &mut self,
         dir: PathBuf,
         kind: discover::EntryKind,
+        holds: Option<&discover::Holds>,
         mut options: OpenOptions,
     ) -> Option<AppEvent> {
+        #[cfg(feature = "cloud")]
+        if home::is_object_store_url(&dir) {
+            return self.open_the_cloud_directory_looked_at(dir, kind, holds, options);
+        }
+        let _ = holds;
         // No override for the user's reader settings here, and none needed: the look
         // read every file the way this open will, so `--no-header` and the skips have
         // already been accounted for by the rule rather than around it. Overriding
@@ -9008,6 +9066,62 @@ impl App {
         // them anyway.
         self.enter_home();
         self.home_jump_into(dir);
+        None
+    }
+
+    /// As [`Self::open_the_directory_looked_at`], for a cloud directory: what `Enter`
+    /// on its `(all files)` row does, or a browse into it when there is no data
+    /// directly inside to read.
+    #[cfg(feature = "cloud")]
+    fn open_the_cloud_directory_looked_at(
+        &mut self,
+        dir: PathBuf,
+        kind: discover::EntryKind,
+        holds: Option<&discover::Holds>,
+        options: OpenOptions,
+    ) -> Option<AppEvent> {
+        let open = |app: &mut Self, path: PathBuf, options: OpenOptions| {
+            app.set_loading_phase("Scanning input", 10);
+            app.name_what_is_loading(path.clone());
+            app.busy = true;
+            Some(AppEvent::Open(vec![path], options))
+        };
+        // The listing was refused. The open says why, in the words of whatever
+        // refused it, which is what happened before anything looked.
+        let Some(holds) = holds else {
+            return open(self, dir, options);
+        };
+        if let Some(note) = Self::lake_table_note(kind) {
+            self.enter_home();
+            self.home_jump_into(dir);
+            self.home.status = Some(note);
+            return None;
+        }
+        let directory = home::directory_dataset_url(&dir);
+        if matches!(
+            kind,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile
+        ) {
+            let options = OpenOptions {
+                hive: true,
+                ..options
+            };
+            return open(self, directory, options);
+        }
+        if let Some((format, left_out)) = Self::cloud_prefix_format(holds) {
+            let options = OpenOptions {
+                hive: true,
+                format: Some(format),
+                left_out,
+                ..options
+            };
+            return open(self, directory, options);
+        }
+        // Only directories, or nothing datui reads: somewhere to look inside, with
+        // the reason when there is one.
+        self.enter_home();
+        self.home_jump_into(dir);
+        self.home.status = Self::why_a_cloud_prefix_cannot_be_read(holds);
         None
     }
 
@@ -9062,6 +9176,7 @@ impl App {
             Some((format, left_out)) => (Some(format), left_out),
             None => (None, Vec::new()),
         };
+        self.load_from_home = true;
         // A directory of partitions is only meaningful read as one hive dataset. Told
         // rather than stat'ed: the caller already knows what this is, and on a share that
         // has gone away a `stat` here would freeze the thread reading the keys — the same
@@ -9108,6 +9223,26 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
+                    // A URL is not stat'ed: `exists` asks the working directory about a
+                    // file called `gs:`. Its name decides, as it does for a recent — a
+                    // file opens, and anything else in a bucket is browsed, where the
+                    // listing says what is there.
+                    if home::is_object_store_url(&path) || home::is_cloud_place(&path) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
+                        let kind = if home::names_a_file(&path) {
+                            discover::EntryKind::File
+                        } else {
+                            discover::EntryKind::Directory
+                        };
+                        return self.open_what_it_is(path, kind, true);
+                    }
+                    // And an HTTP URL is one file.
+                    if !matches!(source::input_source(&path), source::InputSource::Local(_)) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
+                        return self.open_what_it_is(path, discover::EntryKind::File, true);
+                    }
                     // Whether it is there, whether it is a directory and what kind of one
                     // are three filesystem calls, and a typed path is exactly where a
                     // dead mount gets named. All three go to a worker when the mount is
@@ -9198,6 +9333,17 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Char('r') if ctrl => self.home_reload(),
+            KeyCode::Char('a') if ctrl => {
+                let on = self.home.selected_key();
+                self.home.hide_unreadable = !self.home.hide_unreadable;
+                self.home.status = Some(if self.home.hide_unreadable {
+                    "Hiding files datui cannot read".to_string()
+                } else {
+                    "Showing all files".to_string()
+                });
+                // The same row where it is still there; the cursor stays put otherwise.
+                self.home.reselect(on);
+            }
             KeyCode::Backspace => {
                 if self.home.filter.is_empty() {
                     self.home_ascend();
@@ -10531,7 +10677,14 @@ impl App {
         options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
         use polars::prelude::{LazyCsvReader, LazyFileListReader};
-        let pl_path = PlRefPath::new(url);
+        // A plain prefix is narrowed to the keys with an extension. A console's folder
+        // marker comes back from the listing as `data` for `data/`, which Polars reads
+        // as a file of a different kind from the rest and refuses the whole prefix.
+        let pl_path = if url.ends_with('/') && !url.contains('*') {
+            PlRefPath::new(format!("{url}**/*.*").as_str())
+        } else {
+            PlRefPath::new(url)
+        };
         let named = |e: polars::error::PolarsError| {
             color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
         };
@@ -15831,16 +15984,12 @@ impl App {
                 // doubly: `s3://bucket/warehouse/events/year=2024` is far more painful
                 // to retype than any local path, and it is recorded verbatim, since
                 // canonicalising a URL is meaningless.
+                //
+                // Recorded once the dataset is installed, not here: a file that fails
+                // to load is not one anybody wants to get back to. Kept as named, since
+                // what is installed may be a download's temporary copy.
                 let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
-                if !is_local || first.exists() {
-                    // Off the opening path. Recording a recent is a convenience that
-                    // nothing waits on, and it takes a lock several instances may be
-                    // contending for -- opening a dataset must not queue behind
-                    // another instance's bookkeeping.
-                    let cache = self.cache.clone();
-                    let path = first.clone();
-                    std::thread::spawn(move || cache.push_recent(&path));
-                }
+                self.recent_on_install = (!is_local || first.exists()).then(|| first.clone());
                 let file_size = match source::input_source(first) {
                     source::InputSource::Local(_) => {
                         std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
@@ -15866,6 +16015,8 @@ impl App {
                 Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
             }
             AppEvent::OpenLazyFrame(lf, options) => {
+                // A frame handed over has no path to go back to.
+                self.recent_on_install = None;
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
                 // A new counter for a new load. Abandoning a load cancels nothing —
@@ -17052,6 +17203,7 @@ impl App {
                     }
                     // Generation matched but slot was empty or stale — loading failed silently.
                     self.awaiting_dataset = false;
+                    self.recent_on_install = None;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
@@ -17207,7 +17359,29 @@ impl App {
                 // parks in `collect_owed` until the abandoned look finally returns.
                 // Advertising Ctrl+O as the way out of the wait and then holding the
                 // next dataset behind it is the wait again, wearing a different hat.
+                #[cfg(feature = "cloud")]
+                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_bg_replaceable(Self::LOOKING_AT_A_DIRECTORY, move |task_gen, tx| {
+                    #[cfg(feature = "cloud")]
+                    if home::is_object_store_url(&looking) {
+                        let url = looking.to_string_lossy().into_owned();
+                        let peeked = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::peek_kind(&url, &cloud).await
+                        })
+                        .and_then(Result::ok);
+                        let (kind, holds) = match peeked {
+                            Some((kind, holds)) => (kind, Some(Box::new(holds))),
+                            None => (discover::EntryKind::Unknown, None),
+                        };
+                        let _ = tx.send(AppEvent::DirectoryLookedAt {
+                            generation: task_gen,
+                            path: looking,
+                            kind,
+                            holds,
+                            options: Box::new(options),
+                        });
+                        return;
+                    }
                     // A panic here used to unwind through `run()` and report a crash,
                     // because the look was made on the way to the first frame. On a
                     // worker it is swallowed with the dropped handle instead, and nothing
@@ -17230,6 +17404,7 @@ impl App {
                         generation: task_gen,
                         path: looking,
                         kind,
+                        holds: None,
                         options: Box::new(options),
                     });
                 });
@@ -17239,6 +17414,7 @@ impl App {
                 generation,
                 path,
                 kind,
+                holds,
                 options,
             } => {
                 // The user pressed Ctrl+O and went to the home screen, or opened
@@ -17262,8 +17438,12 @@ impl App {
                 if *generation != self.task_generation {
                     return None;
                 }
-                let outcome =
-                    self.open_the_directory_looked_at(path.clone(), *kind, (**options).clone());
+                let outcome = self.open_the_directory_looked_at(
+                    path.clone(),
+                    *kind,
+                    holds.as_deref(),
+                    (**options).clone(),
+                );
                 // Only when nothing follows. An `Open` keeps the wait up — it sets its
                 // own phase and `busy` — and clearing them here would draw one frame
                 // with the spinner stopped and the keys held during the look replayed
@@ -17383,8 +17563,12 @@ impl App {
                 if *generation == self.task_generation {
                     self.collect_inflight = None;
                     self.analysis_modal.computing = None;
-                    // The load is over and installed nothing, so the previous dataset is
-                    // the current one again — and it is what the error modal sits over.
+                    // A load chosen at home fails at home, with the reason beside the
+                    // prompt once the modal is gone. Otherwise the previous dataset is
+                    // the current one again, and it is what the error modal sits over.
+                    let back_home = self.awaiting_dataset && self.load_from_home;
+                    self.load_from_home = false;
+                    self.recent_on_install = None;
                     self.awaiting_dataset = false;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
@@ -17392,6 +17576,10 @@ impl App {
                     // Kept so the home screen can say why, if that is where dismissing
                     // the error lands the user.
                     self.last_load_error = Some(message.clone());
+                    if back_home {
+                        self.enter_home();
+                        self.home.status = self.last_load_error.clone();
+                    }
                     self.error_modal.show(message.clone());
                 }
                 None
@@ -19373,5 +19561,131 @@ mod cloud_csv_prefix_tests {
         .unwrap();
         assert_eq!(df.column("name").unwrap().null_count(), 1);
         assert_eq!(df.column("id").unwrap().null_count(), 0);
+    }
+
+    /// With one source, `local`, whose endpoint refuses every connection: a browse
+    /// lists where it lands, and nothing here leaves the machine.
+    fn new_app() -> App {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut config = AppConfig::default();
+        config.cloud.sources = vec![crate::config::CloudSourceConfig {
+            name: "local".to_string(),
+            kind: Some("s3".to_string()),
+            endpoint_url: Some("http://127.0.0.1:9".to_string()),
+            ..Default::default()
+        }];
+        App::new_with_config(
+            tx,
+            crate::tests::test_runtime(),
+            Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        )
+    }
+
+    /// A cloud directory on the command line is listed before it is opened; a file, a
+    /// glob or `--format` is opened as named.
+    #[test]
+    fn a_cloud_directory_named_on_the_command_line_is_looked_at_first() {
+        let named = |path: &str, options: OpenOptions| {
+            new_app().open_the_path_named_on_the_command_line(vec![PathBuf::from(path)], options)
+        };
+        for directory in ["s3://local@b/census/data/", "s3://local@b/census"] {
+            assert!(matches!(
+                named(directory, OpenOptions::default()),
+                Some(AppEvent::LookThenOpenDirectory(..))
+            ));
+        }
+        let csv = OpenOptions {
+            format: Some(FileFormat::Csv),
+            ..OpenOptions::default()
+        };
+        for (path, options) in [
+            ("s3://local@b/census/data/test.csv", OpenOptions::default()),
+            ("s3://local@b/census/**/*.csv", OpenOptions::default()),
+            ("s3://local@b/census/data/", csv),
+        ] {
+            assert!(
+                matches!(named(path, options), Some(AppEvent::Open(..))),
+                "{path}"
+            );
+        }
+    }
+
+    /// What the listing found decides it, as it does for the `(all files)` row.
+    #[test]
+    fn a_cloud_directory_opens_as_its_listing_says() {
+        use discover::{EntryKind, Holds};
+        let dir = PathBuf::from("s3://local@b/census/data");
+        let holding = |formats: &[(&str, usize)], directories| Holds {
+            formats: formats.iter().map(|(f, n)| (f.to_string(), *n)).collect(),
+            directories,
+            ..Holds::default()
+        };
+
+        // CSV files: read as CSV, as a prefix.
+        let mut app = new_app();
+        let csv = holding(&[("csv", 3)], 0);
+        let Some(AppEvent::Open(paths, options)) = app.open_the_directory_looked_at(
+            dir.clone(),
+            EntryKind::Directory,
+            Some(&csv),
+            OpenOptions::default(),
+        ) else {
+            panic!("a directory of CSV opens");
+        };
+        assert_eq!(paths, [PathBuf::from("s3://local@b/census/data/")]);
+        assert_eq!(options.format, Some(FileFormat::Csv));
+
+        // Only directories: browsed.
+        let mut app = new_app();
+        let subdirectories = holding(&[], 1);
+        assert!(
+            app.open_the_directory_looked_at(
+                dir.clone(),
+                EntryKind::Directory,
+                Some(&subdirectories),
+                OpenOptions::default(),
+            )
+            .is_none()
+        );
+        assert_eq!(app.input_mode, InputMode::Home);
+        assert_eq!(app.home.browsing.as_deref(), Some(dir.as_path()));
+
+        // A listing that was refused: opened as named, so the error is the store's.
+        let mut app = new_app();
+        assert!(matches!(
+            app.open_the_directory_looked_at(
+                dir.clone(),
+                EntryKind::Unknown,
+                None,
+                OpenOptions::default(),
+            ),
+            Some(AppEvent::Open(paths, _)) if paths == [dir.clone()]
+        ));
+    }
+
+    /// A folder marker listed beside the files is not read as one of them. Polars
+    /// refused the whole prefix over it: "different file extensions".
+    #[test]
+    fn a_folder_marker_in_a_csv_prefix_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.csv"), "id\n1\n").unwrap();
+        std::fs::write(dir.path().join("b.csv"), "id\n2\n").unwrap();
+        std::fs::write(dir.path().join("data"), "placeholder").unwrap();
+        let prefix = format!("{}/", dir.path().display());
+        let df = App::scan_cloud_prefix(
+            &prefix,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &OpenOptions::default(),
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(df.height(), 2);
     }
 }

@@ -182,17 +182,25 @@ fn test_single_data_file_directory_is_navigable() {
 }
 
 #[test]
-fn test_scan_skips_dotfiles_and_non_data() {
+fn test_scan_skips_dotfiles_and_lists_non_data_last() {
     let tmp = TempDir::new().unwrap();
     touch(tmp.path(), "good.parquet");
     touch(tmp.path(), ".hidden.parquet");
     touch(tmp.path(), "notes.md");
+    touch(tmp.path(), "sub/a.parquet");
 
-    let names: Vec<String> = discover::scan_dir(tmp.path())
+    let listed: Vec<(String, EntryKind)> = discover::scan_dir(tmp.path())
         .into_iter()
-        .map(|e| e.name)
+        .map(|e| (e.name, e.kind))
         .collect();
-    assert_eq!(names, vec!["good.parquet"]);
+    assert_eq!(
+        listed,
+        vec![
+            ("good.parquet".to_string(), EntryKind::File),
+            ("sub".to_string(), EntryKind::Unknown),
+            ("notes.md".to_string(), EntryKind::Other),
+        ]
+    );
 }
 
 #[test]
@@ -327,6 +335,24 @@ fn test_filter_narrows_the_listing() {
 
     home.filter = "zzz".to_string();
     assert!(visible_names(&home).is_empty());
+}
+
+#[test]
+fn test_files_datui_cannot_read_are_hidden_until_shown() {
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "sales.parquet");
+    touch(tmp.path(), "README.md");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    assert!(!visible_names(&home).contains(&"README.md".to_string()));
+    assert!(visible_names(&home).contains(&"sales.parquet".to_string()));
+
+    home.hide_unreadable = false;
+    assert!(visible_names(&home).contains(&"README.md".to_string()));
 }
 
 #[test]

@@ -52,11 +52,12 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section. The control bar names which, for the row you are on |
 | <kbd>Enter</kbd> on `(all files)` | Read the whole directory as one table, whatever its label. The first row inside every directory |
 | type | Filter by name or column name, and search below the working directory |
-| <kbd>~</kbd> | Type a path; <kbd>Tab</kbd> completes |
+| <kbd>~</kbd> | Type a path or URL; <kbd>Tab</kbd> completes a path |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List what is on screen, ignoring what is cached |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, directory, then to the open data |

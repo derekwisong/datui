@@ -5055,6 +5055,135 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     );
 }
 
+/// A file datui cannot read is hidden until Ctrl+A shows it, and says why on Enter.
+#[test]
+fn a_file_datui_cannot_read_is_hidden_until_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("sales.csv"), "a\n1\n").unwrap();
+    std::fs::write(dir.path().join("model.onnx"), "onnx").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.enter_home();
+    app.event(&key(KeyCode::Char('~')));
+    for c in dir.path().to_str().unwrap().chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    app.event(&key(KeyCode::Enter));
+    let ctrl_a = AppEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    app.event(&ctrl_a);
+    assert!(app.home.filter.is_empty(), "Ctrl+A is not typed");
+
+    let row_of = |app: &App, name: &str| {
+        app.home.visible().iter().position(
+            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name),
+        )
+    };
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        if row_of(&app, "model.onnx").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let model = row_of(&app, "model.onnx").expect("listed");
+    app.home.selected = model;
+    // Enter does nothing: the row is dimmed and its pane says why.
+    app.home.status = None;
+    assert!(app.event(&key(KeyCode::Enter)).is_none(), "nothing opened");
+    assert_eq!(app.home.status, None);
+
+    app.event(&ctrl_a);
+    assert!(row_of(&app, "model.onnx").is_none());
+    assert!(row_of(&app, "sales.csv").is_some());
+}
+
+/// A load chosen at home that fails is reported at home. It used to put the error over
+/// the dataset open before, which is not where the user was when they chose.
+#[test]
+fn a_load_chosen_at_home_fails_at_home() {
+    common::ensure_sample_data();
+    let first = PathBuf::from("tests/sample-data/people.parquet");
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.parquet");
+    std::fs::write(&broken, "not parquet").unwrap();
+
+    let area = Rect::new(0, 0, 120, 40);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Open(vec![first], OpenOptions::default()))
+        .unwrap();
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        if app.data_table_state.is_some() && !app.is_busy() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(app.data_table_state.is_some());
+
+    app.event(&ctrl_o());
+    let type_at_prompt = |app: &mut App, path: &std::path::Path| {
+        app.event(&key(KeyCode::Char('~')));
+        for c in path.to_str().unwrap().chars() {
+            app.event(&key(KeyCode::Char(c)));
+        }
+        if let Some(next) = app.event(&key(KeyCode::Enter)) {
+            tx.send(next).unwrap();
+        }
+    };
+    type_at_prompt(&mut app, &broken);
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        if !app.is_busy() && app.input_mode == InputMode::Home {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(app.input_mode, InputMode::Home);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    assert!(rendered_text(&buf).contains("Failed to load"));
+
+    // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
+    // The one that did load is, and recording is off-thread, so that is waited for.
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    let recorded = |path: &std::path::Path| {
+        let path = path.canonicalize().unwrap();
+        cache.load_recents().contains(&path)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !recorded(std::path::Path::new("tests/sample-data/people.parquet"))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(recorded(std::path::Path::new(
+        "tests/sample-data/people.parquet"
+    )));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!recorded(&broken), "a file that failed is not a recent");
+
+    // Dismissed, the reason stays beside the prompt.
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("broken.parquet"))
+    );
+
+    // A file no reader takes is refused before anything is read.
+    let model = dir.path().join("model.onnx");
+    std::fs::write(&model, "onnx").unwrap();
+    app.home.status = None;
+    while rx.try_recv().is_ok() {}
+    type_at_prompt(&mut app, &model);
+    assert!(rx.try_recv().is_err(), "nothing was opened");
+    // A typed path has no row to dim, so the line says it.
+    assert_eq!(app.home.status.as_deref(), Some(datui::discover::NO_READER));
+}
+
 /// The one-file schema types partition columns the way a full scan does.
 #[test]
 fn test_hive_partition_types_match_full_scan() {

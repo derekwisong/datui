@@ -244,3 +244,50 @@ fn a_failed_peek_stops_spinning_and_is_not_an_answer() {
         Some(datui::home::CloudLook::Failed)
     );
 }
+
+/// A URL typed at `~` is not looked for on disk. It said "No such path" for every one.
+#[test]
+fn a_url_typed_at_the_prompt_is_browsed_or_opened() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    common::isolate_cache();
+    let mut config = datui::config::AppConfig::default();
+    config.data.use_desktop_recents = false;
+    // A browse lists the place it lands on; this one never answers, so nothing
+    // leaves the machine.
+    config.cloud.sources = vec![source("local", &silent_server())];
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    let type_at_prompt = |app: &mut datui::App, text: &str| {
+        let key = |code| datui::AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        app.event(&key(KeyCode::Char('~')));
+        for c in text.chars() {
+            app.event(&key(KeyCode::Char(c)));
+        }
+        app.event(&key(KeyCode::Enter))
+    };
+
+    // No extension: a directory, browsed.
+    let directory = "s3://local@bucket/bigquery/census";
+    assert!(type_at_prompt(&mut app, directory).is_none());
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(std::path::Path::new(directory))
+    );
+    assert!(!app.home.path_input_active);
+
+    // A data file: opened.
+    let file = "s3://local@bucket/bigquery/census/data/test.csv";
+    let opened = type_at_prompt(&mut app, file);
+    assert!(
+        matches!(&opened, Some(datui::AppEvent::Open(paths, _)) if paths == &[std::path::PathBuf::from(file)]),
+        "a file typed at ~ should open"
+    );
+}

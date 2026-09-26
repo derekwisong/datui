@@ -25,6 +25,9 @@ pub const MAX_ENTRIES_PER_DIR: usize = 5_000;
 pub enum EntryKind {
     /// A single data file.
     File,
+    /// A file datui has no reader for. Hidden on the home screen until `Ctrl+A` shows
+    /// it, dimmed, so a directory can be seen as it is.
+    Other,
     /// A directory of `key=value` partitions — one dataset, not a tree to walk.
     Hive,
     /// A directory of similarly-shaped data files, openable as one table.
@@ -81,7 +84,7 @@ impl EntryKind {
     /// Short label shown next to the entry name.
     pub fn label(self) -> &'static str {
         match self {
-            EntryKind::File => "",
+            EntryKind::File | EntryKind::Other => "",
             EntryKind::Hive => "hive",
             EntryKind::MultiFile => "multi",
             EntryKind::Delta => "delta",
@@ -98,7 +101,7 @@ impl EntryKind {
     /// hive directory directly, and descending into one is not possible anyway
     /// without the listing this deliberately has not fetched.
     pub fn is_dataset(self) -> bool {
-        !matches!(self, EntryKind::Directory) && !self.is_lake_table()
+        !matches!(self, EntryKind::Directory | EntryKind::Other) && !self.is_lake_table()
     }
 
     /// Whether this row is *known* to be a dataset.
@@ -604,6 +607,28 @@ pub fn data_extension(path: &Path) -> Option<String> {
         idx -= 1;
     }
     crate::FileFormat::from_extension(parts[idx]).map(|_| parts[idx].to_string())
+}
+
+/// What the home screen says of a file [`unreadable_by_name`] turns away.
+pub const NO_READER: &str = "datui has no reader for this file";
+
+/// Whether a file's name already says datui will not open it: an extension no reader
+/// takes, under any compression suffix. A bare `data.gz` is left to the open, which
+/// looks inside, and so is a name with no extension.
+pub fn unreadable_by_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    let parts: Vec<&str> = name.rsplit('.').collect();
+    let compressed = |last: &str| COMPRESSION_EXTENSIONS.contains(&last);
+    let ext = match parts[..] {
+        [last, inner, _, ..] if compressed(last) => inner,
+        [last, _] if compressed(last) => return false,
+        [last, _, ..] => last,
+        _ => return false,
+    };
+    crate::FileFormat::from_extension(ext).is_none()
 }
 
 /// The format a file's name says it holds, compression suffix walked past.
@@ -1188,9 +1213,11 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
             EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
+        } else if meta.is_file() {
+            EntryKind::Other
         } else {
-            // Not data, not a directory, or not a regular file. A FIFO named
-            // `x.parquet` is a listing entry datui must never offer to open.
+            // Not a directory or a regular file. A FIFO named `x.parquet` is a
+            // listing entry datui must never offer to open.
             continue;
         };
 
@@ -1217,7 +1244,12 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
 /// is late.
 fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
-        let group = |k: EntryKind| if k.is_known_dataset() { 0 } else { 1 };
+        // Data, then directories, then what datui cannot read.
+        let group = |k: EntryKind| match k {
+            k if k.is_known_dataset() => 0,
+            EntryKind::Other => 2,
+            _ => 1,
+        };
         group(a.kind).cmp(&group(b.kind)).then_with(|| {
             a.name
                 .to_ascii_lowercase()
@@ -1261,7 +1293,7 @@ pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
         // one that has not been looked at. Nor for a lake table: summing the footers
         // under one counts tombstoned rows, every rewritten version and both sides of
         // a compaction, which is the whole reason it is not offered as a dataset.
-        EntryKind::Directory | EntryKind::Unknown => {}
+        EntryKind::Directory | EntryKind::Unknown | EntryKind::Other => {}
         EntryKind::Delta | EntryKind::Iceberg | EntryKind::Hudi => {}
     }
 }
@@ -1977,7 +2009,7 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
             entry.path.clone()
         }
         EntryKind::Hive | EntryKind::MultiFile => first_parquet_under(&entry.path, 0)?,
-        EntryKind::Directory | EntryKind::Unknown => return None,
+        EntryKind::Directory | EntryKind::Unknown | EntryKind::Other => return None,
         // One data file's schema is not the table's: Iceberg field IDs and Delta
         // column mapping both mean a renamed column reads as two.
         EntryKind::Delta | EntryKind::Iceberg | EntryKind::Hudi => return None,
@@ -3642,6 +3674,25 @@ mod classification_tests {
                 "{column} in {:?}",
                 entry.columns
             );
+        }
+    }
+
+    #[test]
+    fn a_name_no_reader_takes_is_refused_before_opening() {
+        let refused = |name: &str| unreadable_by_name(std::path::Path::new(name));
+        assert!(refused("gs://b/ml/onnx/pipeline_rf.onnx"));
+        assert!(refused("model.onnx.gz"));
+        assert!(refused("README.md"));
+        for readable in [
+            "a.csv",
+            "a.CSV",
+            "a.csv.gz",
+            "a.parquet",
+            "a.xlsx",
+            "data.gz",
+            "part-0000",
+        ] {
+            assert!(!refused(readable), "{readable}");
         }
     }
 }

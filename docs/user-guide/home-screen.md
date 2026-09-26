@@ -41,11 +41,12 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
-| <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
+| <kbd>~</kbd> | Type a path or URL. <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen, ignoring what is cached |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
 | <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, then directory, then to the data you had open |
@@ -242,6 +243,15 @@ those counts. `skipped` is a name beginning with `_` or `.`, or ending
 is a partition whatever it begins with, so a dataset partitioned on `_date` is
 not skipped; a marker named after one, `year=2024_$folder$`, still is. The first
 four skipped are named.
+
+A listing shows the files datui can read. <kbd>Ctrl</kbd>+<kbd>A</kbd> shows the
+rest too, such as `README.md` or `model.onnx`, dimmed and after the directories,
+and hides them again. <kbd>Enter</kbd> does nothing on one; its details pane
+says datui has no reader for it. A path to one typed at <kbd>~</kbd> says so
+beside the prompt instead of opening or downloading it.
+
+A file that fails to load is reported on the home screen, where it was chosen;
+<kbd>Esc</kbd> still returns to the dataset open before.
 
 A label describes; it does not promise what <kbd>Enter</kbd> will do. A
 directory of fifteen unrelated tables reads `15 parquet` and is still a place to

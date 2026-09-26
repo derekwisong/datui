@@ -68,13 +68,15 @@ FINDING
                     Typing also searches below the working directory, and the
                     bucket names already listed; matches appear under "Found"
   Backspace         Delete a filter character
-  ~                 Type a path directly, for somewhere datui has not seen yet
+  ~                 Type a path or URL, for somewhere datui has not seen yet
   Tab               (while typing a path) complete it
   Delete            Forget the highlighted entry under Recent, or every recent
                     under the highlighted place row after confirming, or hide a
                     cloud source (--clear-cache shows it again)
   Shift+Delete      Forget every recent entry, after confirming
   Ctrl+U            Clear the filter or path input
+  Ctrl+A            Show or hide files datui cannot read. Hidden by default;
+                    shown, they are dimmed
 
 WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, grouped under the directory

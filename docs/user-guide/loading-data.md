@@ -295,7 +295,10 @@ billion rows costs a few files. <kbd>End</kbd> pressed before the count is in wa
 for it. A glob (`s3://bucket/events/*/*.parquet`) is expanded by datui: it lists the
 literal part of the key and matches the rest itself, so a glob opens as the same
 kind of dataset a prefix does, with the same schema union, row count and notes.
-Every other format, and anything
+A directory named without `--format` is listed first, and opens the way its
+`(all files)` row on the home screen does: CSV or JSON Lines files are read as one
+table in place, and a directory holding only directories opens the home screen
+browsed into it. Every other format, and anything
 over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
 you are asked first when it is large) and then opened like a local file. One
 remote path per run.

@@ -5203,6 +5203,9 @@ pub enum AppEvent {
         generation: u64,
         path: PathBuf,
         kind: discover::EntryKind,
+        /// What a cloud directory's listing found, which picks its reader. `None` for a
+        /// local directory, and for a cloud one whose listing was refused.
+        holds: Option<Box<discover::Holds>>,
         options: Box<OpenOptions>,
     },
     /// Look at a path off the interface thread, then do with it whatever it turns out to
@@ -8954,6 +8957,19 @@ impl App {
         // Several paths are a list of files to read together, and `--hive` is an answer
         // already given. Neither is a question about what one directory is.
         let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
+        // A cloud directory is looked at too, by one page of its listing: what is in it
+        // picks the reader, as it does for the `(all files)` row. Scanned blind, it was
+        // read as Parquet whatever it held. A glob, a file name or `--format` already
+        // says what to read.
+        #[cfg(feature = "cloud")]
+        if let Some(dir) = single.as_ref().filter(|p| {
+            home::is_object_store_url(p)
+                && options.format.is_none()
+                && !p.to_string_lossy().contains('*')
+                && !home::names_a_file(p)
+        }) {
+            return Some(AppEvent::LookThenOpenDirectory(dir.clone(), options));
+        }
         let Some(dir) = single.filter(|p| p.is_dir()) else {
             return Some(AppEvent::Open(paths, options));
         };
@@ -8974,8 +8990,14 @@ impl App {
         &mut self,
         dir: PathBuf,
         kind: discover::EntryKind,
+        holds: Option<&discover::Holds>,
         mut options: OpenOptions,
     ) -> Option<AppEvent> {
+        #[cfg(feature = "cloud")]
+        if home::is_object_store_url(&dir) {
+            return self.open_the_cloud_directory_looked_at(dir, kind, holds, options);
+        }
+        let _ = holds;
         // No override for the user's reader settings here, and none needed: the look
         // read every file the way this open will, so `--no-header` and the skips have
         // already been accounted for by the rule rather than around it. Overriding
@@ -9008,6 +9030,62 @@ impl App {
         // them anyway.
         self.enter_home();
         self.home_jump_into(dir);
+        None
+    }
+
+    /// As [`Self::open_the_directory_looked_at`], for a cloud directory: what `Enter`
+    /// on its `(all files)` row does, or a browse into it when there is no data
+    /// directly inside to read.
+    #[cfg(feature = "cloud")]
+    fn open_the_cloud_directory_looked_at(
+        &mut self,
+        dir: PathBuf,
+        kind: discover::EntryKind,
+        holds: Option<&discover::Holds>,
+        options: OpenOptions,
+    ) -> Option<AppEvent> {
+        let open = |app: &mut Self, path: PathBuf, options: OpenOptions| {
+            app.set_loading_phase("Scanning input", 10);
+            app.name_what_is_loading(path.clone());
+            app.busy = true;
+            Some(AppEvent::Open(vec![path], options))
+        };
+        // The listing was refused. The open says why, in the words of whatever
+        // refused it, which is what happened before anything looked.
+        let Some(holds) = holds else {
+            return open(self, dir, options);
+        };
+        if let Some(note) = Self::lake_table_note(kind) {
+            self.enter_home();
+            self.home_jump_into(dir);
+            self.home.status = Some(note);
+            return None;
+        }
+        let directory = home::directory_dataset_url(&dir);
+        if matches!(
+            kind,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile
+        ) {
+            let options = OpenOptions {
+                hive: true,
+                ..options
+            };
+            return open(self, directory, options);
+        }
+        if let Some((format, left_out)) = Self::cloud_prefix_format(holds) {
+            let options = OpenOptions {
+                hive: true,
+                format: Some(format),
+                left_out,
+                ..options
+            };
+            return open(self, directory, options);
+        }
+        // Only directories, or nothing datui reads: somewhere to look inside, with
+        // the reason when there is one.
+        self.enter_home();
+        self.home_jump_into(dir);
+        self.home.status = Self::why_a_cloud_prefix_cannot_be_read(holds);
         None
     }
 
@@ -17234,7 +17312,29 @@ impl App {
                 // parks in `collect_owed` until the abandoned look finally returns.
                 // Advertising Ctrl+O as the way out of the wait and then holding the
                 // next dataset behind it is the wait again, wearing a different hat.
+                #[cfg(feature = "cloud")]
+                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_bg_replaceable(Self::LOOKING_AT_A_DIRECTORY, move |task_gen, tx| {
+                    #[cfg(feature = "cloud")]
+                    if home::is_object_store_url(&looking) {
+                        let url = looking.to_string_lossy().into_owned();
+                        let peeked = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::peek_kind(&url, &cloud).await
+                        })
+                        .and_then(Result::ok);
+                        let (kind, holds) = match peeked {
+                            Some((kind, holds)) => (kind, Some(Box::new(holds))),
+                            None => (discover::EntryKind::Unknown, None),
+                        };
+                        let _ = tx.send(AppEvent::DirectoryLookedAt {
+                            generation: task_gen,
+                            path: looking,
+                            kind,
+                            holds,
+                            options: Box::new(options),
+                        });
+                        return;
+                    }
                     // A panic here used to unwind through `run()` and report a crash,
                     // because the look was made on the way to the first frame. On a
                     // worker it is swallowed with the dropped handle instead, and nothing
@@ -17257,6 +17357,7 @@ impl App {
                         generation: task_gen,
                         path: looking,
                         kind,
+                        holds: None,
                         options: Box::new(options),
                     });
                 });
@@ -17266,6 +17367,7 @@ impl App {
                 generation,
                 path,
                 kind,
+                holds,
                 options,
             } => {
                 // The user pressed Ctrl+O and went to the home screen, or opened
@@ -17289,8 +17391,12 @@ impl App {
                 if *generation != self.task_generation {
                     return None;
                 }
-                let outcome =
-                    self.open_the_directory_looked_at(path.clone(), *kind, (**options).clone());
+                let outcome = self.open_the_directory_looked_at(
+                    path.clone(),
+                    *kind,
+                    holds.as_deref(),
+                    (**options).clone(),
+                );
                 // Only when nothing follows. An `Open` keeps the wait up — it sets its
                 // own phase and `busy` — and clearing them here would draw one frame
                 // with the spinner stopped and the keys held during the look replayed
@@ -19401,6 +19507,110 @@ mod cloud_csv_prefix_tests {
         assert_eq!(df.column("name").unwrap().null_count(), 1);
         assert_eq!(df.column("id").unwrap().null_count(), 0);
     }
+
+    /// With one source, `local`, whose endpoint refuses every connection: a browse
+    /// lists where it lands, and nothing here leaves the machine.
+    fn new_app() -> App {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut config = AppConfig::default();
+        config.cloud.sources = vec![crate::config::CloudSourceConfig {
+            name: "local".to_string(),
+            kind: Some("s3".to_string()),
+            endpoint_url: Some("http://127.0.0.1:9".to_string()),
+            ..Default::default()
+        }];
+        App::new_with_config(
+            tx,
+            crate::tests::test_runtime(),
+            Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        )
+    }
+
+    /// A cloud directory on the command line is listed before it is opened; a file, a
+    /// glob or `--format` is opened as named.
+    #[test]
+    fn a_cloud_directory_named_on_the_command_line_is_looked_at_first() {
+        let named = |path: &str, options: OpenOptions| {
+            new_app().open_the_path_named_on_the_command_line(vec![PathBuf::from(path)], options)
+        };
+        for directory in ["s3://local@b/census/data/", "s3://local@b/census"] {
+            assert!(matches!(
+                named(directory, OpenOptions::default()),
+                Some(AppEvent::LookThenOpenDirectory(..))
+            ));
+        }
+        let csv = OpenOptions {
+            format: Some(FileFormat::Csv),
+            ..OpenOptions::default()
+        };
+        for (path, options) in [
+            ("s3://local@b/census/data/test.csv", OpenOptions::default()),
+            ("s3://local@b/census/**/*.csv", OpenOptions::default()),
+            ("s3://local@b/census/data/", csv),
+        ] {
+            assert!(
+                matches!(named(path, options), Some(AppEvent::Open(..))),
+                "{path}"
+            );
+        }
+    }
+
+    /// What the listing found decides it, as it does for the `(all files)` row.
+    #[test]
+    fn a_cloud_directory_opens_as_its_listing_says() {
+        use discover::{EntryKind, Holds};
+        let dir = PathBuf::from("s3://local@b/census/data");
+        let holding = |formats: &[(&str, usize)], directories| Holds {
+            formats: formats.iter().map(|(f, n)| (f.to_string(), *n)).collect(),
+            directories,
+            ..Holds::default()
+        };
+
+        // CSV files: read as CSV, as a prefix.
+        let mut app = new_app();
+        let csv = holding(&[("csv", 3)], 0);
+        let Some(AppEvent::Open(paths, options)) = app.open_the_directory_looked_at(
+            dir.clone(),
+            EntryKind::Directory,
+            Some(&csv),
+            OpenOptions::default(),
+        ) else {
+            panic!("a directory of CSV opens");
+        };
+        assert_eq!(paths, [PathBuf::from("s3://local@b/census/data/")]);
+        assert_eq!(options.format, Some(FileFormat::Csv));
+
+        // Only directories: browsed.
+        let mut app = new_app();
+        let subdirectories = holding(&[], 1);
+        assert!(
+            app.open_the_directory_looked_at(
+                dir.clone(),
+                EntryKind::Directory,
+                Some(&subdirectories),
+                OpenOptions::default(),
+            )
+            .is_none()
+        );
+        assert_eq!(app.input_mode, InputMode::Home);
+        assert_eq!(app.home.browsing.as_deref(), Some(dir.as_path()));
+
+        // A listing that was refused: opened as named, so the error is the store's.
+        let mut app = new_app();
+        assert!(matches!(
+            app.open_the_directory_looked_at(
+                dir.clone(),
+                EntryKind::Unknown,
+                None,
+                OpenOptions::default(),
+            ),
+            Some(AppEvent::Open(paths, _)) if paths == [dir.clone()]
+        ));
+    }
+
     /// A folder marker listed beside the files is not read as one of them. Polars
     /// refused the whole prefix over it: "different file extensions".
     #[test]

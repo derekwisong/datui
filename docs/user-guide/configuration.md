@@ -137,6 +137,7 @@ row_limit = 10000   # Rows used to build a chart, 1 to 10_000_000. Adjustable in
 [data]
 directories = ["/mnt/data", "~/datasets"]   # Places the home screen always lists
 use_desktop_recents = true                  # Offer directories from the desktop's recent-files list
+show_unreadable_files = false               # List files datui cannot read, dimmed; Ctrl+A flips it
 
 [data.search]                               # The recursive search typing starts
 enabled           = true

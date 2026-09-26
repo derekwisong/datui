@@ -1747,6 +1747,9 @@ pub struct DataConfig {
     /// Whether to also offer directories the desktop records you opening data from.
     /// Only the directories are used, never the file names.
     pub use_desktop_recents: bool,
+    /// Whether the home screen lists files datui has no reader for, dimmed, from the
+    /// start. `Ctrl+A` flips it for the session either way.
+    pub show_unreadable_files: bool,
     /// Recursive search of the working directory from the home screen's filter.
     pub search: SearchConfig,
 }
@@ -1875,6 +1878,7 @@ impl Default for DataConfig {
             // On by default: it only ever contributes *places*, and it is the one
             // thing that gives a fresh install somewhere to point you.
             use_desktop_recents: true,
+            show_unreadable_files: false,
             search: SearchConfig::default(),
         }
     }
@@ -1887,6 +1891,9 @@ impl DataConfig {
         }
         if other.use_desktop_recents != DataConfig::default().use_desktop_recents {
             self.use_desktop_recents = other.use_desktop_recents;
+        }
+        if other.show_unreadable_files != DataConfig::default().show_unreadable_files {
+            self.show_unreadable_files = other.show_unreadable_files;
         }
         self.search.merge(other.search);
     }
@@ -1920,6 +1927,11 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
          Only the DIRECTORIES are used, never the file names: that list often holds\n\
          things you would not want on a screen you are sharing.\n\
          Set false to ignore it entirely.",
+    ),
+    (
+        "show_unreadable_files",
+        "List files datui has no reader for (README.md, model.onnx) on the home screen,\n\
+         dimmed, instead of hiding them. Ctrl+A shows or hides them for the session.",
     ),
 ];
 

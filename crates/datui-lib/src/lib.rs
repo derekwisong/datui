@@ -7683,7 +7683,10 @@ impl App {
             data_table_state: None,
             footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
             footers_this_frame: None,
-            home: home::HomeState::default(),
+            home: home::HomeState {
+                hide_unreadable: !app_config.data.show_unreadable_files,
+                ..Default::default()
+            },
             home_probes_inflight: Vec::new(),
             #[cfg(feature = "cloud")]
             cloud_discovery_started: false,

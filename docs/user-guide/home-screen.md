@@ -57,6 +57,11 @@ Every letter types into the filter, so `json` finds json. The keys are:
 <kbd>Esc</kbd> never quits and <kbd>q</kbd> types a `q`. The control bar says
 what <kbd>Esc</kbd> will do next.
 
+When a key cannot do what it asks, the line beside the filter says why, until
+the next key. What stays true about a row is in its details pane, such as why a
+bucket directory's `(all files)` row reads nothing, and what stays true about
+the directory you are in is on its heading.
+
 ## Sections
 
 Datasets are grouped by where they came from, in this order:
@@ -356,7 +361,8 @@ offer the table as one dataset — the files a delete or an update tombstoned ar
 still on disk, every rewritten version is there together, and compaction leaves
 both sides in place, so reading them as one table gives rows the table does not
 have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
-files can be opened one at a time, and say so when they do. The `(all files)`
+files can be opened one at a time, and the heading says `delta · not read as a
+table` for as long as you are in there. The `(all files)`
 row in there will read them all together, labelled; see above.
 
 A row on a network share that nothing has looked at yet — a recent one, say, where

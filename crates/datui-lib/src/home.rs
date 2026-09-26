@@ -807,6 +807,9 @@ pub struct HomeState {
     /// Leave out files datui has no reader for. `Ctrl+A` flips it; they are hidden by
     /// default.
     pub hide_unreadable: bool,
+    /// The lake table being browsed, and its format. Said on its heading for as long as
+    /// the browse lasts, since it is a fact about the directory rather than an event.
+    pub lake_here: Option<(PathBuf, &'static str)>,
     /// Index into the flattened list of currently visible rows.
     pub selected: usize,
     /// First row of the last frame drawn, as an index into [`HomeState::visible`].
@@ -927,6 +930,7 @@ impl Default for HomeState {
             cloud: Vec::new(),
             filter: String::new(),
             hide_unreadable: true,
+            lake_here: None,
             selected: 0,
             scroll: 0,
             view_height: 0,
@@ -1837,6 +1841,17 @@ impl HomeState {
     pub fn apply_listing(&mut self, listing: Listing) {
         let previous = self.selected_key();
         self.sections = listing.sections;
+        // Browsing, the first section is the directory browsed.
+        if let (Some(browsing), Some((dir, format))) = (&self.browsing, &self.lake_here)
+            && browsing == dir
+            && let Some(section) = self.sections.first_mut()
+        {
+            let note = format!("{} · not read as a table", format.to_ascii_lowercase());
+            section.subtitle = Some(match section.subtitle.take() {
+                Some(state) => format!("{note} · {state}"),
+                None => note,
+            });
+        }
         // A rebuild replaces every section, and search results outlive rebuilds —
         // they came from a walk, not from this listing. Put them back.
         self.sync_search_section();

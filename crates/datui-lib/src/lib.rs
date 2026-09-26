@@ -8575,15 +8575,7 @@ impl App {
                 .and_then(|e| home::cloud_source_id(&e.path))
         {
             self.cache.hide_cloud_source(&id);
-            let label = self
-                .home
-                .cloud
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.label.clone())
-                .unwrap_or_else(|| id.clone());
             self.home.cloud.retain(|s| s.id != id);
-            self.home.status = Some(format!("Hid {label}. --clear-cache shows it again"));
             self.home_refresh();
             return;
         }
@@ -8844,6 +8836,23 @@ impl App {
     ///
     /// `None` for a prefix that may yet be Parquet: one holding Parquet, and one
     /// holding no data files at all, whose data may be a level down.
+    /// Why Enter on a bucket directory's `(all files)` row reads nothing, by the rule
+    /// Enter itself applies: a hive root or a directory of one table is read through
+    /// its files, and one with a reader for what it holds is read with that.
+    #[cfg(feature = "cloud")]
+    pub(crate) fn why_a_door_reads_nothing(entry: &discover::Entry) -> Option<String> {
+        if !home::is_object_store_url(&entry.path)
+            || matches!(
+                entry.kind,
+                discover::EntryKind::Hive | discover::EntryKind::MultiFile
+            )
+            || Self::cloud_prefix_format(&entry.holds).is_some()
+        {
+            return None;
+        }
+        Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
+    }
+
     #[cfg(feature = "cloud")]
     fn why_a_cloud_prefix_cannot_be_read(holds: &discover::Holds) -> Option<String> {
         let reads_parquet =
@@ -8905,19 +8914,6 @@ impl App {
             .filter_map(|(name, n)| FileFormat::from_name(name).map(|f| (f, *n)))
             .collect();
         Some((format, left_out))
-    }
-
-    /// What to say when the user asks to open a lake table: datui goes inside it rather
-    /// than reading it, and the reason is not guessable from the row.
-    ///
-    /// `None` for anything else. Shared by the two doors onto a path — the highlighted
-    /// row, and a path typed at `~` — because the second one had no lake check at all
-    /// and loaded the root as a directory of Parquet files, which is the whole of #237
-    /// reached one keystroke differently.
-    fn lake_table_note(kind: discover::EntryKind) -> Option<String> {
-        kind.lake_name().map(|format| {
-            format!("datui does not read {format} tables yet — these are the files under it")
-        })
     }
 
     /// Open the highlighted entry: toggle a section, descend into a directory, or
@@ -9074,9 +9070,9 @@ impl App {
         // tombstoned are still on disk, every rewritten version is here together, and
         // compaction leaves both sides in place. Going inside is what datui can honestly
         // do with one, and saying so is better than a silent wrong answer.
-        if let Some(note) = Self::lake_table_note(kind) {
+        if let Some(format) = kind.lake_name() {
+            self.home.lake_here = Some((path.clone(), format));
             go_inside(self, path);
-            self.home.status = Some(note);
             return None;
         }
         // A cloud directory that is a dataset opens as one: its URL as a prefix, which is
@@ -9177,10 +9173,10 @@ impl App {
         //
         // A lake table's files are not its rows, so the home screen is opened on it and
         // says why — the same sentence the row gives, because it is the same refusal.
-        if let Some(note) = Self::lake_table_note(kind) {
+        if let Some(format) = kind.lake_name() {
             self.enter_home();
+            self.home.lake_here = Some((dir.clone(), format));
             self.home_jump_into(dir);
-            self.home.status = Some(note);
             return None;
         }
         // One table: read it. `hive` is what puts the open on the directory route, where
@@ -9225,10 +9221,10 @@ impl App {
         let Some(holds) = holds else {
             return open(self, dir, options);
         };
-        if let Some(note) = Self::lake_table_note(kind) {
+        if let Some(format) = kind.lake_name() {
             self.enter_home();
+            self.home.lake_here = Some((dir.clone(), format));
             self.home_jump_into(dir);
-            self.home.status = Some(note);
             return None;
         }
         let directory = home::directory_dataset_url(&dir);
@@ -9338,6 +9334,10 @@ impl App {
     /// Key handling for the home screen.
     fn home_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+        // The line beside the prompt answers the last key, and this one replaces it: a
+        // key with something to say sets it again below. Left up, "Forgot laps.parquet"
+        // stayed until the next time the listing changed.
+        self.home.status = None;
 
         // The home screen puts every plain character into the filter — `q` has to
         // type a `q`, or you could never search for "quarterly". Quitting is Ctrl+C,
@@ -9445,17 +9445,17 @@ impl App {
                 // reach one partition or one file. This clears the filter, as browsing
                 // anywhere does.
                 Some(directory) => {
-                    // The same sentence Enter leaves, for the same reason: this is the
-                    // door the control bar advertises on a lake row, and arriving inside
-                    // one with no explanation is the silent wrong answer #237 is about.
-                    let note = self
+                    // The heading Enter leaves, for the same reason: this is the door
+                    // the control bar advertises on a lake row, and arriving inside one
+                    // with no explanation is the silent wrong answer #237 is about.
+                    if let Some(format) = self
                         .home
                         .selected_entry()
-                        .and_then(|entry| Self::lake_table_note(entry.kind));
-                    self.home_browse_into(directory);
-                    if note.is_some() {
-                        self.home.status = note;
+                        .and_then(|entry| entry.kind.lake_name())
+                    {
+                        self.home.lake_here = Some((directory.clone(), format));
                     }
+                    self.home_browse_into(directory);
                 }
                 None => self.home_collapse(false),
             },
@@ -19647,6 +19647,33 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
 #[cfg(all(test, feature = "cloud"))]
 mod cloud_csv_prefix_tests {
     use super::*;
+
+    /// The details pane says why a bucket directory's `(all files)` row reads nothing
+    /// by the rule Enter applies, so it is never shown for one Enter would read.
+    #[test]
+    fn the_door_says_why_only_when_enter_would_read_nothing() {
+        let door = |formats: &[(&str, usize)], not_read| {
+            let mut entry = discover::Entry::directory(Path::new("s3://b/dir/"));
+            entry.opens_whole_directory = true;
+            entry.holds = discover::Holds {
+                formats: formats.iter().map(|(f, n)| (f.to_string(), *n)).collect(),
+                not_read,
+                ..Default::default()
+            };
+            entry
+        };
+        let why = App::why_a_door_reads_nothing(&door(&[("tsv", 2)], 0));
+        assert!(why.is_some_and(|why| why.contains("2 tsv")));
+        assert!(App::why_a_door_reads_nothing(&door(&[], 3)).is_some());
+        assert_eq!(App::why_a_door_reads_nothing(&door(&[("csv", 3)], 0)), None);
+        assert_eq!(
+            App::why_a_door_reads_nothing(&door(&[("parquet", 3)], 0)),
+            None
+        );
+        let mut hive = door(&[], 3);
+        hive.kind = discover::EntryKind::Hive;
+        assert_eq!(App::why_a_door_reads_nothing(&hive), None);
+    }
 
     /// A CSV prefix in a bucket is read with the flags the user gave, not Polars'
     /// defaults. Driven through a local glob, which is the same reader with the object

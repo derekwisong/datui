@@ -103,6 +103,8 @@ fn listing_and_opening_sign_with_the_active_profile() {
     config.cloud.hide = ["gcs-default", "az", "azure-env"]
         .map(String::from)
         .to_vec();
+    // Every profile's listing, the second one's included, without entering each.
+    config.cloud.list_on_start = Some(true);
     let options = datui::OpenOptions::default();
     config.cloud = options.effective_cloud(&config.cloud);
 

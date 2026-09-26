@@ -2200,3 +2200,110 @@ fn cloud_listings_and_hidden_sources_survive_a_restart() {
         ["s3://gbif-open-data-us-east-1/"]
     );
 }
+
+#[test]
+fn cloud_discover_takes_a_switch_a_word_or_a_list_of_kinds() {
+    use datui::config::CloudDiscover;
+    let parse = |value: &str| {
+        toml::from_str::<AppConfig>(&format!("[cloud]\ndiscover = {value}\n"))
+            .map(|c| c.cloud.discover)
+            .map_err(|e| e.to_string())
+    };
+    assert_eq!(parse("true"), Ok(Some(CloudDiscover::All)));
+    assert_eq!(parse("\"all\""), Ok(Some(CloudDiscover::All)));
+    assert_eq!(parse("false"), Ok(Some(CloudDiscover::None)));
+    assert_eq!(parse("\"none\""), Ok(Some(CloudDiscover::None)));
+    assert_eq!(
+        parse("[\"GCS\", \"s3\", \"gcs\"]"),
+        Ok(Some(CloudDiscover::Kinds(vec![
+            "gcs".to_string(),
+            "s3".to_string()
+        ])))
+    );
+    assert_eq!(parse("[]"), Ok(Some(CloudDiscover::Kinds(Vec::new()))));
+    // "all" is a word, not a kind: a list cannot say both everything and one thing.
+    let err = parse("[\"all\", \"s3\"]").unwrap_err();
+    assert!(err.contains("unknown kind \"all\""), "{err}");
+    let err = parse("[\"aws\"]").unwrap_err();
+    assert!(err.contains("unknown kind \"aws\""), "{err}");
+    let err = parse("\"some\"").unwrap_err();
+    assert!(err.contains("\"some\" is not"), "{err}");
+
+    assert_eq!(
+        toml::from_str::<AppConfig>("").unwrap().cloud.discover,
+        None,
+        "unset means every kind"
+    );
+    let round_trip = |discover: CloudDiscover| {
+        let mut config = AppConfig::default();
+        config.cloud.discover = Some(discover);
+        let text = toml::to_string(&config).unwrap();
+        toml::from_str::<AppConfig>(&text).unwrap().cloud.discover
+    };
+    assert_eq!(round_trip(CloudDiscover::None), Some(CloudDiscover::None));
+    assert_eq!(
+        round_trip(CloudDiscover::Kinds(vec!["azure".to_string()])),
+        Some(CloudDiscover::Kinds(vec!["azure".to_string()]))
+    );
+}
+
+#[test]
+fn cloud_discover_and_list_on_start_merge_only_when_set() {
+    use datui::config::CloudDiscover;
+    let mut base = AppConfig::default();
+    base.cloud.discover = Some(CloudDiscover::Kinds(vec!["s3".to_string()]));
+    base.cloud.list_on_start = Some(true);
+    base.merge(AppConfig::default());
+    assert_eq!(
+        base.cloud.discover,
+        Some(CloudDiscover::Kinds(vec!["s3".to_string()]))
+    );
+    assert_eq!(base.cloud.list_on_start, Some(true));
+
+    let mut other = AppConfig::default();
+    other.cloud.discover = Some(CloudDiscover::None);
+    other.cloud.list_on_start = Some(false);
+    base.merge(other);
+    assert_eq!(base.cloud.discover, Some(CloudDiscover::None));
+    assert_eq!(base.cloud.list_on_start, Some(false));
+}
+
+#[test]
+fn cloud_discover_flag_outranks_the_config() {
+    use clap::Parser;
+    use datui::config::CloudDiscover;
+    let mut config = AppConfig::default();
+    config.cloud.discover = Some(CloudDiscover::All);
+
+    let args = datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "GCS,azure"])
+        .expect("parses");
+    let opts = datui::OpenOptions::from_args_and_config(&args, &config);
+    assert_eq!(
+        opts.effective_cloud(&config.cloud).discover,
+        Some(CloudDiscover::Kinds(vec![
+            "gcs".to_string(),
+            "azure".to_string()
+        ]))
+    );
+
+    let args =
+        datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "none"]).expect("parses");
+    let opts = datui::OpenOptions::from_args_and_config(&args, &config);
+    assert_eq!(
+        opts.effective_cloud(&config.cloud).discover,
+        Some(CloudDiscover::None)
+    );
+
+    // No flag: the config's own answer stands.
+    let args = datui_cli::Args::try_parse_from(["datui"]).expect("parses");
+    let opts = datui::OpenOptions::from_args_and_config(&args, &config);
+    assert_eq!(
+        opts.effective_cloud(&config.cloud).discover,
+        Some(CloudDiscover::All)
+    );
+
+    let err = datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "s3,aws"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("\"aws\" is not all, none, or a kind"), "{err}");
+}

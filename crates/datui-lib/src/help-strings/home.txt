@@ -28,7 +28,7 @@ NAVIGATION
                     Where Enter and → do the same thing only one is offered
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
-  Ctrl+R            List again what is on screen: every cloud source, the one
+  Ctrl+R            List what is on screen: every cloud source, the one
                     you are in, or the bucket or directory
   Esc               Back out one layer: the filter, the directory, then the data
   Ctrl+C            Quit

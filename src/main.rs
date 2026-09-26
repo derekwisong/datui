@@ -193,6 +193,7 @@ mod tests {
             s3_access_key_id: None,
             s3_secret_access_key: None,
             s3_region: None,
+            cloud_discover: None,
             polars_streaming: None,
             workaround_pivot_date_index: None,
             infer_schema_length: None,

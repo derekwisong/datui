@@ -50,3 +50,4 @@ Usage: datui [OPTIONS] [PATH]...
 | `--s3-access-key-id <KEY>` | S3 access key (overrides config and AWS_ACCESS_KEY_ID) |
 | `--s3-secret-access-key <SECRET>` | S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY) |
 | `--s3-region <REGION>` | S3 region (overrides config and AWS_REGION). Example: us-east-1 |
+| `--cloud-discover <WHICH>` | Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Sources in [[cloud.sources]] always appear |

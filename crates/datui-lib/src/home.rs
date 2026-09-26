@@ -503,6 +503,9 @@ pub enum CloudStatus {
     /// Asked, and no answer yet.
     #[default]
     Listing,
+    /// Not asked, and not listed on an earlier run. Its rows, if any, are the buckets
+    /// named in the config. Entering the source or Ctrl+R lists it.
+    Unlisted,
     /// Listed, now or on an earlier run.
     Listed,
     /// The listing was refused or never answered. `short` goes on the row; `detail`
@@ -533,6 +536,8 @@ pub struct CloudSource {
     pub listed_at: Option<std::time::SystemTime>,
     /// A listing is out for buckets already on screen from an earlier run.
     pub refreshing: bool,
+    /// Listed, or being listed, this session. Entering a source that is not lists it.
+    pub asked: bool,
     /// `key  value` lines for the details pane: endpoint, region, login.
     pub details: Vec<(String, String)>,
     /// Lines for the details pane of places inside the source: an Azure account's
@@ -574,6 +579,7 @@ impl CloudSource {
         match &self.status {
             CloudStatus::Failed { short, .. } if self.buckets.is_empty() => short.clone(),
             CloudStatus::Listing if self.buckets.is_empty() => String::new(),
+            CloudStatus::Unlisted if self.buckets.is_empty() => "not listed".to_string(),
             _ => {
                 let (one, many) = if self.api == "azure" {
                     ("account", "accounts")
@@ -590,6 +596,17 @@ impl CloudSource {
                     n => format!("{n} {many}"),
                 }
             }
+        }
+    }
+
+    /// Mark a listing as out: a spinner in place of the count when there are no buckets
+    /// to show yet, beside it when there are.
+    pub fn begin_listing(&mut self) {
+        self.asked = true;
+        if self.status == CloudStatus::Unlisted && self.buckets.is_empty() {
+            self.status = CloudStatus::Listing;
+        } else {
+            self.refreshing = true;
         }
     }
 

@@ -5145,6 +5145,25 @@ fn a_load_chosen_at_home_fails_at_home() {
     app.render(area, &mut buf);
     assert!(rendered_text(&buf).contains("Failed to load"));
 
+    // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
+    // The one that did load is, and recording is off-thread, so that is waited for.
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    let recorded = |path: &std::path::Path| {
+        let path = path.canonicalize().unwrap();
+        cache.load_recents().contains(&path)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !recorded(std::path::Path::new("tests/sample-data/people.parquet"))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(recorded(std::path::Path::new(
+        "tests/sample-data/people.parquet"
+    )));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!recorded(&broken), "a file that failed is not a recent");
+
     // Dismissed, the reason stays beside the prompt.
     app.event(&key(KeyCode::Enter));
     assert_eq!(app.input_mode, InputMode::Home);

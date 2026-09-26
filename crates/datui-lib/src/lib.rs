@@ -6351,6 +6351,8 @@ pub struct App {
     /// failure is reported: the dataset left over from before is not what the user
     /// was looking at when they chose.
     load_from_home: bool,
+    /// The path an open was asked for, recorded as a recent when its dataset installs.
+    recent_on_install: Option<PathBuf>,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -7086,6 +7088,13 @@ impl App {
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
         self.load_from_home = false;
+        if let Some(path) = self.recent_on_install.take() {
+            // Off the opening path. Recording a recent is a convenience that nothing
+            // waits on, and it takes a lock several instances may be contending for --
+            // opening a dataset must not queue behind another instance's bookkeeping.
+            let cache = self.cache.clone();
+            std::thread::spawn(move || cache.push_recent(&path));
+        }
         self.collect_inflight = None;
         self.parquet_metadata_cache = None;
         self.export_df = None;
@@ -7633,6 +7642,7 @@ impl App {
             load_active: false,
             awaiting_dataset: false,
             load_from_home: false,
+            recent_on_install: None,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -8319,6 +8329,7 @@ impl App {
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
         self.load_from_home = false;
+        self.recent_on_install = None;
         // And a collect that was waiting behind this load goes with it. Left standing,
         // it runs the moment the load's lease comes back — reading the dataset the user
         // walked away from, at the home screen, with `busy` set and every key held.
@@ -15977,16 +15988,12 @@ impl App {
                 // doubly: `s3://bucket/warehouse/events/year=2024` is far more painful
                 // to retype than any local path, and it is recorded verbatim, since
                 // canonicalising a URL is meaningless.
+                //
+                // Recorded once the dataset is installed, not here: a file that fails
+                // to load is not one anybody wants to get back to. Kept as named, since
+                // what is installed may be a download's temporary copy.
                 let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
-                if !is_local || first.exists() {
-                    // Off the opening path. Recording a recent is a convenience that
-                    // nothing waits on, and it takes a lock several instances may be
-                    // contending for -- opening a dataset must not queue behind
-                    // another instance's bookkeeping.
-                    let cache = self.cache.clone();
-                    let path = first.clone();
-                    std::thread::spawn(move || cache.push_recent(&path));
-                }
+                self.recent_on_install = (!is_local || first.exists()).then(|| first.clone());
                 let file_size = match source::input_source(first) {
                     source::InputSource::Local(_) => {
                         std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
@@ -16012,6 +16019,8 @@ impl App {
                 Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
             }
             AppEvent::OpenLazyFrame(lf, options) => {
+                // A frame handed over has no path to go back to.
+                self.recent_on_install = None;
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
                 // A new counter for a new load. Abandoning a load cancels nothing —
@@ -17198,6 +17207,7 @@ impl App {
                     }
                     // Generation matched but slot was empty or stale — loading failed silently.
                     self.awaiting_dataset = false;
+                    self.recent_on_install = None;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
@@ -17562,6 +17572,7 @@ impl App {
                     // the current one again, and it is what the error modal sits over.
                     let back_home = self.awaiting_dataset && self.load_from_home;
                     self.load_from_home = false;
+                    self.recent_on_install = None;
                     self.awaiting_dataset = false;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;

@@ -6344,6 +6344,10 @@ pub struct App {
     /// Separate from `load_active`, which stays set through the buffer collect that
     /// follows installation: by then the table on screen is the right one.
     awaiting_dataset: bool,
+    /// Whether the load in flight was chosen on the home screen, which is where its
+    /// failure is reported: the dataset left over from before is not what the user
+    /// was looking at when they chose.
+    load_from_home: bool,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -7078,6 +7082,7 @@ impl App {
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
+        self.load_from_home = false;
         self.collect_inflight = None;
         self.parquet_metadata_cache = None;
         self.export_df = None;
@@ -7624,6 +7629,7 @@ impl App {
             task_generation: 0,
             load_active: false,
             awaiting_dataset: false,
+            load_from_home: false,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -8309,6 +8315,7 @@ impl App {
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
+        self.load_from_home = false;
         // And a collect that was waiting behind this load goes with it. Left standing,
         // it runs the moment the load's lease comes back — reading the dataset the user
         // walked away from, at the home screen, with `busy` set and every key held.
@@ -8926,6 +8933,14 @@ impl App {
             // A prefix, not a directory: the scan is what walks it.
             return Some(self.home_open_path(home::directory_dataset_url(&path), false));
         }
+        // Said here, where the file was chosen, rather than after a download and a
+        // load that could only end the same way.
+        if kind == discover::EntryKind::File
+            && let Some(why) = discover::unreadable_by_name(&path)
+        {
+            self.home.status = Some(why);
+            return None;
+        }
         Some(self.home_open_path(path, directory))
     }
 
@@ -9140,6 +9155,7 @@ impl App {
             Some((format, left_out)) => (Some(format), left_out),
             None => (None, Vec::new()),
         };
+        self.load_from_home = true;
         // A directory of partitions is only meaningful read as one hive dataset. Told
         // rather than stat'ed: the caller already knows what this is, and on a share that
         // has gone away a `stat` here would freeze the thread reading the keys — the same
@@ -17516,8 +17532,11 @@ impl App {
                 if *generation == self.task_generation {
                     self.collect_inflight = None;
                     self.analysis_modal.computing = None;
-                    // The load is over and installed nothing, so the previous dataset is
-                    // the current one again — and it is what the error modal sits over.
+                    // A load chosen at home fails at home, with the reason beside the
+                    // prompt once the modal is gone. Otherwise the previous dataset is
+                    // the current one again, and it is what the error modal sits over.
+                    let back_home = self.awaiting_dataset && self.load_from_home;
+                    self.load_from_home = false;
                     self.awaiting_dataset = false;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
@@ -17525,6 +17544,10 @@ impl App {
                     // Kept so the home screen can say why, if that is where dismissing
                     // the error lands the user.
                     self.last_load_error = Some(message.clone());
+                    if back_home {
+                        self.enter_home();
+                        self.home.status = self.last_load_error.clone();
+                    }
                     self.error_modal.show(message.clone());
                 }
                 None

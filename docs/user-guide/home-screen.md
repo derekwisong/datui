@@ -243,6 +243,9 @@ is a partition whatever it begins with, so a dataset partitioned on `_date` is
 not skipped; a marker named after one, `year=2024_$folder$`, still is. The first
 four skipped are named.
 
+A file that fails to load is reported on the home screen, where it was chosen;
+<kbd>Esc</kbd> still returns to the dataset open before.
+
 A label describes; it does not promise what <kbd>Enter</kbd> will do. A
 directory of fifteen unrelated tables reads `15 parquet` and is still a place to
 look inside.

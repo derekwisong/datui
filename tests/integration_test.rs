@@ -5055,6 +5055,76 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     );
 }
 
+/// A load chosen at home that fails is reported at home. It used to put the error over
+/// the dataset open before, which is not where the user was when they chose.
+#[test]
+fn a_load_chosen_at_home_fails_at_home() {
+    common::ensure_sample_data();
+    let first = PathBuf::from("tests/sample-data/people.parquet");
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.parquet");
+    std::fs::write(&broken, "not parquet").unwrap();
+
+    let area = Rect::new(0, 0, 120, 40);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Open(vec![first], OpenOptions::default()))
+        .unwrap();
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        if app.data_table_state.is_some() && !app.is_busy() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(app.data_table_state.is_some());
+
+    app.event(&ctrl_o());
+    let type_at_prompt = |app: &mut App, path: &std::path::Path| {
+        app.event(&key(KeyCode::Char('~')));
+        for c in path.to_str().unwrap().chars() {
+            app.event(&key(KeyCode::Char(c)));
+        }
+        if let Some(next) = app.event(&key(KeyCode::Enter)) {
+            tx.send(next).unwrap();
+        }
+    };
+    type_at_prompt(&mut app, &broken);
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        if !app.is_busy() && app.input_mode == InputMode::Home {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(app.input_mode, InputMode::Home);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    assert!(rendered_text(&buf).contains("Failed to load"));
+
+    // Dismissed, the reason stays beside the prompt.
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("broken.parquet"))
+    );
+
+    // A file no reader takes is refused before anything is read.
+    let model = dir.path().join("model.onnx");
+    std::fs::write(&model, "onnx").unwrap();
+    app.home.status = None;
+    while rx.try_recv().is_ok() {}
+    type_at_prompt(&mut app, &model);
+    assert!(rx.try_recv().is_err(), "nothing was opened");
+    assert_eq!(
+        app.home.status.as_deref(),
+        Some("datui does not read .onnx files")
+    );
+}
+
 /// The one-file schema types partition columns the way a full scan does.
 #[test]
 fn test_hive_partition_types_match_full_scan() {

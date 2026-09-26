@@ -606,6 +606,24 @@ pub fn data_extension(path: &Path) -> Option<String> {
     crate::FileFormat::from_extension(parts[idx]).map(|_| parts[idx].to_string())
 }
 
+/// Why datui will not open a file, when its name already says: an extension no reader
+/// takes, under any compression suffix. A bare `data.gz` is left to the open, which
+/// looks inside.
+pub fn unreadable_by_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    let parts: Vec<&str> = name.rsplit('.').collect();
+    let compressed = |last: &str| COMPRESSION_EXTENSIONS.contains(&last);
+    let ext = match parts[..] {
+        [last, inner, _, ..] if compressed(last) => inner,
+        [last, _] if compressed(last) => return None,
+        [last, _, ..] => last,
+        _ => return None,
+    };
+    crate::FileFormat::from_extension(ext)
+        .is_none()
+        .then(|| format!("datui does not read .{ext} files"))
+}
+
 /// The format a file's name says it holds, compression suffix walked past.
 ///
 /// The question every listing actually asks. Named extensions are not formats: `.ipc`,
@@ -3642,6 +3660,30 @@ mod classification_tests {
                 "{column} in {:?}",
                 entry.columns
             );
+        }
+    }
+
+    #[test]
+    fn a_name_no_reader_takes_is_refused_before_opening() {
+        let refused = |name: &str| unreadable_by_name(std::path::Path::new(name));
+        assert_eq!(
+            refused("gs://b/ml/onnx/pipeline_rf.onnx").as_deref(),
+            Some("datui does not read .onnx files")
+        );
+        assert_eq!(
+            refused("model.onnx.gz").as_deref(),
+            Some("datui does not read .onnx files")
+        );
+        for readable in [
+            "a.csv",
+            "a.CSV",
+            "a.csv.gz",
+            "a.parquet",
+            "a.xlsx",
+            "data.gz",
+            "part-0000",
+        ] {
+            assert_eq!(refused(readable), None, "{readable}");
         }
     }
 }

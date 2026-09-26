@@ -4640,6 +4640,8 @@ pub struct OpenOptions {
     pub s3_access_key_id_override: Option<String>,
     pub s3_secret_access_key_override: Option<String>,
     pub s3_region_override: Option<String>,
+    /// `--cloud-discover`, outranking `[cloud] discover`.
+    pub cloud_discover_override: Option<crate::config::CloudDiscover>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
     /// No effect since Polars 0.55: the eager pivot that crashed on a Date/Datetime index is
@@ -4686,6 +4688,7 @@ impl OpenOptions {
             s3_access_key_id_override: None,
             s3_secret_access_key_override: None,
             s3_region_override: None,
+            cloud_discover_override: None,
             polars_streaming: true,
             workaround_pivot_date_index: true,
             null_values: None,
@@ -4763,6 +4766,7 @@ impl OpenOptions {
             s3_access_key_id: self.s3_access_key_id_override.clone(),
             s3_secret_access_key: self.s3_secret_access_key_override.clone(),
             s3_region: self.s3_region_override.clone(),
+            discover: self.cloud_discover_override.clone(),
             ..Default::default()
         });
         merged
@@ -4870,6 +4874,11 @@ impl OpenOptions {
         opts.s3_access_key_id_override = args.s3_access_key_id.clone();
         opts.s3_secret_access_key_override = args.s3_secret_access_key.clone();
         opts.s3_region_override = args.s3_region.clone();
+        // Already checked by clap, which takes the same words.
+        opts.cloud_discover_override = args
+            .cloud_discover
+            .as_deref()
+            .and_then(|text| text.parse().ok());
 
         opts.polars_streaming = config.performance.polars_streaming;
 
@@ -7812,60 +7821,118 @@ impl App {
     }
 
     /// Find the cloud sources this machine and the config describe, and list their
-    /// buckets. Once per session; Ctrl+R asks again.
+    /// buckets when `[cloud] list_on_start` asks. Once per session; Ctrl+R asks again.
     #[cfg(feature = "cloud")]
     fn spawn_cloud_discovery(&mut self) {
         if self.cloud_discovery_started {
             return;
         }
         self.cloud_discovery_started = true;
-        self.list_cloud_sources(None);
+        let list = self.app_config.cloud.list_on_start == Some(true);
+        self.list_cloud_sources(None, list);
     }
 
-    /// List the buckets of every source, or of the one named.
+    /// List the source being browsed, when it has not been asked this session.
+    /// Entering a source is the request to list it.
+    #[cfg(feature = "cloud")]
+    fn list_browsed_cloud_source(&mut self) {
+        let Some(id) = self
+            .home
+            .browsing
+            .as_deref()
+            .and_then(home::cloud_source_id)
+        else {
+            return;
+        };
+        let Some(source) = self.home.cloud.iter_mut().find(|s| s.id == id) else {
+            return;
+        };
+        if source.asked {
+            return;
+        }
+        source.begin_listing();
+        self.list_cloud_sources(Some(id), true);
+    }
+
+    /// Send the rows of every source, or list the buckets of the one named.
     ///
     /// The rows go out first, filled from the last run's listing when the source still
     /// points at the same place, so the home screen has its counts before any request
-    /// is made. Then the sources are listed side by side, a few at a time, and each
-    /// result is sent the moment it arrives.
+    /// is made. With `list`, the sources are then listed side by side, a few at a
+    /// time, and each result is sent the moment it arrives. Without it nothing leaves
+    /// the machine: no request, and no credential command.
     ///
     /// Runs on the runtime rather than a detached thread. Unlike a probe of a dead
     /// `hard` mount, an HTTP request cannot wedge forever: every call here is bounded
     /// by a global timeout, so the task is guaranteed to end.
     #[cfg(feature = "cloud")]
-    fn list_cloud_sources(&mut self, only: Option<String>) {
+    fn list_cloud_sources(&mut self, only: Option<String>, list: bool) {
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
         let cache = self.cache.clone();
         self.runtime.spawn(async move {
             let mut hidden = cache.load_hidden_cloud_sources();
             hidden.extend(cloud.hide.iter().cloned());
-            let sources: Vec<crate::cloud_sources::Source> = {
+            let listings = cache.load_cloud_listings();
+            let cached_for = |source: &crate::cloud_sources::Source| {
+                listings
+                    .get(&source.id)
+                    .filter(|l| l.fingerprint == source.fingerprint())
+            };
+            let found = {
                 let env = crate::cloud_browse::Environment::current();
                 crate::cloud_sources::discover(&cloud, &env)
-            }
-            .into_iter()
-            .filter(|s| !hidden.contains(&s.id))
-            .map(|mut source| {
-                if source.id == crate::cloud_sources::PUBLIC {
-                    add_public_places(&mut source, &cache.load_public_places());
-                }
-                source
-            })
-            .collect();
-
+            };
+            // Shown or not: a bucket under Recent opens with the login that listed it
+            // whatever `discover` says. Not a hidden source, which may be hidden for a
+            // login that no longer works; the default login opens its buckets instead.
+            // Only with the rows, so an old listing never overrides one made since.
             if only.is_none() {
-                let listings = cache.load_cloud_listings();
-                let rows = sources
-                    .iter()
-                    .map(|source| {
-                        let cached = listings
-                            .get(&source.id)
-                            .filter(|l| l.fingerprint == source.fingerprint());
-                        home_cloud_source(source, cached)
+                for source in found.iter().filter(|s| !hidden.contains(&s.id)) {
+                    if let Some(cached) = cached_for(source) {
+                        crate::cloud_sources::remember_listed(source, &cached.buckets);
+                    }
+                }
+            }
+            let sources: Vec<crate::cloud_sources::Source> =
+                crate::cloud_sources::on_home(found, &cloud)
+                    .into_iter()
+                    .filter(|s| !hidden.contains(&s.id))
+                    .map(|mut source| {
+                        if source.id == crate::cloud_sources::PUBLIC {
+                            add_public_places(&mut source, &cache.load_public_places());
+                        }
+                        source
                     })
                     .collect();
-                let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
+
+            match &only {
+                None => {
+                    let rows = sources
+                        .iter()
+                        .map(|source| home_cloud_source(source, cached_for(source), list))
+                        .collect();
+                    let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
+                }
+                // Gone since its row was drawn: a profile removed, a source hidden
+                // elsewhere. Said, so the row does not wait on an answer never coming.
+                Some(id) if !sources.iter().any(|s| &s.id == id) => {
+                    let _ = tx.send(AppEvent::HomeCloudListed {
+                        id: id.clone(),
+                        buckets: Vec::new(),
+                        details: Vec::new(),
+                        failure: Some((
+                            "not found".to_string(),
+                            format!("{id} is gone or hidden. Ctrl+R at the top looks again."),
+                        )),
+                        listed_at: std::time::SystemTime::now(),
+                    });
+                    return;
+                }
+                Some(_) => {}
+            }
+            if !list {
+                return;
             }
 
             // Enough to keep one slow endpoint from delaying the rest, few enough that a
@@ -7989,15 +8056,15 @@ impl App {
             match browsing.as_deref().and_then(home::cloud_source_id) {
                 Some(id) => {
                     if let Some(source) = self.home.cloud.iter_mut().find(|s| s.id == id) {
-                        source.refreshing = true;
+                        source.begin_listing();
                     }
-                    self.list_cloud_sources(Some(id));
+                    self.list_cloud_sources(Some(id), true);
                 }
                 None if browsing.is_none() && !self.home.cloud.is_empty() => {
                     for source in &mut self.home.cloud {
-                        source.refreshing = true;
+                        source.begin_listing();
                     }
-                    self.list_cloud_sources(None);
+                    self.list_cloud_sources(None, true);
                 }
                 None => {}
             }
@@ -8071,6 +8138,10 @@ impl App {
     fn home_refresh(&mut self) {
         #[cfg(feature = "cloud")]
         self.absorb_public_places();
+        // Every way into a source comes through here: Enter, Backspace up from a
+        // bucket, a jump, and rows arriving while the source is already open.
+        #[cfg(feature = "cloud")]
+        self.list_browsed_cloud_source();
         self.home_generation = self.home_generation.wrapping_add(1);
         let generation = self.home_generation;
 
@@ -18774,6 +18845,7 @@ fn public_place_details(dataset: &crate::cloud_sources::Dataset) -> Vec<(String,
 fn home_cloud_source(
     source: &crate::cloud_sources::Source,
     cached: Option<&crate::cache::CloudListing>,
+    listing: bool,
 ) -> home::CloudSource {
     if source.public {
         return public_home_source(source);
@@ -18840,7 +18912,8 @@ fn home_cloud_source(
             detail: problem.clone(),
         },
         None if cached.is_some() => home::CloudStatus::Listed,
-        None => home::CloudStatus::Listing,
+        None if listing => home::CloudStatus::Listing,
+        None => home::CloudStatus::Unlisted,
     };
     home::CloudSource {
         id: source.id.clone(),
@@ -18856,7 +18929,9 @@ fn home_cloud_source(
             .iter()
             .map(|b| PathBuf::from(source.bucket_url(b)))
             .collect(),
-        refreshing: cached.is_some() && source.problem.is_none(),
+        refreshing: listing && cached.is_some() && source.problem.is_none(),
+        // A source that failed before any request has nothing to ask.
+        asked: listing || source.problem.is_some(),
         listed_at: cached
             .map(|c| std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.listed_at)),
         status,
@@ -18897,6 +18972,7 @@ fn public_home_source(source: &crate::cloud_sources::Source) -> home::CloudSourc
         },
         listed_at: None,
         refreshing: false,
+        asked: true,
         details: vec![
             ("source".to_string(), source.id.clone()),
             ("api".to_string(), "s3, gcs, azure".to_string()),

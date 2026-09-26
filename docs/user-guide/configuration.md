@@ -164,6 +164,8 @@ public_datasets = true                      # compatibility switch for the built
 azure_account_keys = true                   # read Azure with the account key after a sign-in is refused for want of a data role
 env_files = [".env"]                        # read cloud variables from these files; off unless listed
 instance_identity = false                   # use the EC2, GCE or Azure VM's own identity
+discover = true                             # logins found on this machine: true, false, or ["s3", "gcs", "azure"]
+list_on_start = false                       # list every source's buckets at launch, not when entered
 ```
 
 Environment variables override these, and command-line flags override both.
@@ -288,6 +290,11 @@ database password for one, is ignored. A variable already set in the environment
 wins, and nothing is exported, so no program datui starts sees them. It is off
 unless you list files: reading whatever `.env` sits in the current directory,
 unasked, would be reading secrets you did not mean to hand over.
+
+See [The Home Screen](home-screen.md) for
+[`discover`](home-screen.md#which-sources-appear) and
+[`list_on_start`](home-screen.md#loading). `--cloud-discover` overrides `discover`
+for one run.
 
 `instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
 an EC2 instance role, a GCE service account, an Azure VM's managed identity. That

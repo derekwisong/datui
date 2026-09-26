@@ -493,6 +493,106 @@ pub struct CloudConfig {
     /// request to a metadata service, so it is off unless the platform says so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_identity: Option<bool>,
+    /// Which logins found on this machine become home-screen sources. Unset means all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discover: Option<CloudDiscover>,
+    /// List every source's buckets when the home screen opens. Off: a source is listed
+    /// when it is entered or on Ctrl+R, and its credential command runs only then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_on_start: Option<bool>,
+}
+
+/// The kinds of source `[cloud] discover` can name.
+pub const CLOUD_DISCOVER_KINDS: [&str; 3] = ["s3", "gcs", "azure"];
+
+/// `[cloud] discover`: `true` or `"all"`, `false` or `"none"`, or a list of kinds.
+///
+/// `"all"` and `"none"` are words rather than list members, so no list can say both
+/// "everything" and "only s3".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "CloudDiscoverValue", into = "CloudDiscoverValue")]
+pub enum CloudDiscover {
+    All,
+    None,
+    Kinds(Vec<String>),
+}
+
+impl CloudDiscover {
+    /// Whether sources of `kind` (`s3`, `gcs`, `azure`) are found.
+    pub fn allows(&self, kind: &str) -> bool {
+        match self {
+            CloudDiscover::All => true,
+            CloudDiscover::None => false,
+            CloudDiscover::Kinds(kinds) => kinds.iter().any(|k| k == kind),
+        }
+    }
+
+    fn from_kinds<S: AsRef<str>>(kinds: &[S]) -> std::result::Result<Self, String> {
+        let mut out: Vec<String> = Vec::new();
+        for kind in kinds {
+            let kind = kind.as_ref().trim().to_ascii_lowercase();
+            if !CLOUD_DISCOVER_KINDS.contains(&kind.as_str()) {
+                return Err(format!(
+                    "cloud.discover: unknown kind \"{kind}\"; use {}",
+                    CLOUD_DISCOVER_KINDS.join(", ")
+                ));
+            }
+            if !out.contains(&kind) {
+                out.push(kind);
+            }
+        }
+        Ok(CloudDiscover::Kinds(out))
+    }
+}
+
+impl std::str::FromStr for CloudDiscover {
+    type Err = String;
+
+    /// `all`, `none`, or kinds separated by commas: the command-line form.
+    fn from_str(text: &str) -> std::result::Result<Self, String> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "all" => Ok(CloudDiscover::All),
+            "none" => Ok(CloudDiscover::None),
+            _ => CloudDiscover::from_kinds(&text.split(',').collect::<Vec<_>>()).map_err(|_| {
+                format!(
+                    "cloud.discover: \"{text}\" is not \"all\", \"none\", or kinds from {}",
+                    CLOUD_DISCOVER_KINDS.join(", ")
+                )
+            }),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum CloudDiscoverValue {
+    Switch(bool),
+    Word(String),
+    Kinds(Vec<String>),
+}
+
+impl TryFrom<CloudDiscoverValue> for CloudDiscover {
+    type Error = String;
+
+    fn try_from(value: CloudDiscoverValue) -> std::result::Result<Self, String> {
+        match value {
+            CloudDiscoverValue::Switch(true) => Ok(CloudDiscover::All),
+            CloudDiscoverValue::Switch(false) => Ok(CloudDiscover::None),
+            // The command line's form: "all", "none", or "s3,gcs".
+            CloudDiscoverValue::Word(word) => word.parse(),
+            CloudDiscoverValue::Kinds(kinds) => CloudDiscover::from_kinds(&kinds),
+        }
+    }
+}
+
+impl From<CloudDiscover> for CloudDiscoverValue {
+    fn from(discover: CloudDiscover) -> Self {
+        match discover {
+            CloudDiscover::All => CloudDiscoverValue::Switch(true),
+            CloudDiscover::None => CloudDiscoverValue::Switch(false),
+            CloudDiscover::Kinds(kinds) => CloudDiscoverValue::Kinds(kinds),
+        }
+    }
 }
 
 /// One store in `[[cloud.sources]]`. Names and pointers only: a secret comes from the
@@ -1108,6 +1208,12 @@ impl CloudConfig {
         }
         if other.instance_identity.is_some() {
             self.instance_identity = other.instance_identity;
+        }
+        if other.discover.is_some() {
+            self.discover = other.discover;
+        }
+        if other.list_on_start.is_some() {
+            self.list_on_start = other.list_on_start;
         }
     }
 

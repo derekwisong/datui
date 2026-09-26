@@ -443,7 +443,7 @@ objects open like files, and opened objects go into `RECENT` like any other path
 |---|---|
 | Name | The source's `label`, or its name |
 | API | `s3`, `gcs`, `azure`, or `public` |
-| Count | How many buckets (projects for Google Cloud, accounts for Azure, datasets for public data), a spinner while listing, or why there are none |
+| Count | How many buckets (projects for Google Cloud, accounts for Azure, datasets for public data), a spinner while listing, `not listed` before the first listing, or why there are none |
 | Note | The endpoint, project or profile, and where the login was found |
 
 The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
@@ -464,18 +464,28 @@ gives the whole message:
 | `not signed in` | Azure tools are installed but nobody is signed in; the pane names `az login` or `Connect-AzAccount` |
 | `not configured` | A variable named in `[[cloud.sources]]` is not set |
 | `unavailable` | The endpoint did not answer |
+| `not found` | The source was removed or hidden since its row was drawn; <kbd>Ctrl</kbd>+<kbd>R</kbd> at the top looks again |
 
 ### Loading
 
-The rows appear at once. The buckets listed on the last run are shown straight
-away, and every source is listed again in the background, a few at a time, each
-row updating as its answer arrives, so a slow endpoint holds up only its own row.
-<kbd>Ctrl</kbd>+<kbd>R</kbd> lists again whatever is on screen.
+The rows appear at once, with the buckets an earlier run listed. No source is
+listed, and no credential command (`aws`, `gcloud`, `az`, a profile's
+`credential_process`) run for one, until you ask:
+
+| To list | Do |
+|---|---|
+| One source | <kbd>Enter</kbd> or <kbd>→</kbd> on it. Once a session |
+| Every source on screen | <kbd>Ctrl</kbd>+<kbd>R</kbd> |
+| Every source, at launch | `[cloud] list_on_start = true` |
+
+Sources are listed a few at a time, each row updating as its answer arrives, so a
+slow endpoint holds up only its own row.
 
 A recent from a named S3-compatible source shows the name beside it, or
 `source not found: <name>` once that source has left the config.
 
-Typing also matches bucket names already listed, from every source, in `Found`:
+Typing also matches bucket names already listed, this session or an earlier one,
+from every source, in `Found`:
 `Lab MinIO › data` and `onprem › data` stay two rows.
 
 <kbd>Delete</kbd> on a source hides it until `datui --clear-cache`. To hide one
@@ -503,6 +513,17 @@ one that can be read.
 | Each other `gcloud` configuration with a different account | `gcloud-<configuration>` | An `account` in `configurations/config_<name>` under `~/.config/gcloud` (`%APPDATA%\gcloud` on Windows, or `CLOUDSDK_CONFIG`) |
 | Public datasets | `public` | The configured `public` source, or the built-in catalog unless `public_datasets = false` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
+
+To show only some kinds of login found on the machine, or none:
+
+| `[cloud] discover` | `--cloud-discover` | Shows |
+|---|---|---|
+| unset, `true` or `"all"` | `all` | Every login found |
+| `false` or `"none"` | `none` | None |
+| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
+
+`[[cloud.sources]]` entries and public datasets appear whatever it says. The flag
+overrides the config for one run.
 
 A source in the config with the same name as one of these replaces it. The same
 server with the same key found in several places is one row, from the first of:

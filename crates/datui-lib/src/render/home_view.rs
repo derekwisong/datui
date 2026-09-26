@@ -1700,6 +1700,9 @@ fn source_details(
         crate::home::CloudStatus::Listing if source.buckets.is_empty() => {
             facts.push((noun.to_string(), "listing".to_string(), plain));
         }
+        crate::home::CloudStatus::Unlisted if source.buckets.is_empty() => {
+            facts.push((noun.to_string(), "not listed".to_string(), plain));
+        }
         _ => facts.push((
             noun.to_string(),
             format!("{}{listed}", source.buckets.len()),

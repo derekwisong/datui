@@ -376,6 +376,30 @@ pub struct Args {
     /// S3 region (overrides config and AWS_REGION). Example: us-east-1
     #[arg(long = "s3-region", value_name = "REGION")]
     pub s3_region: Option<String>,
+
+    /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Sources in [[cloud.sources]] always appear
+    #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover)]
+    pub cloud_discover: Option<String>,
+}
+
+/// `all`, `none`, or kinds from `s3`, `gcs` and `azure` separated by commas. The same
+/// words `[cloud] discover` takes, checked here so a typo stops at the command line.
+fn parse_cloud_discover(text: &str) -> Result<String, String> {
+    const KINDS: [&str; 3] = ["s3", "gcs", "azure"];
+    let text = text.trim().to_ascii_lowercase();
+    if text == "all" || text == "none" {
+        return Ok(text);
+    }
+    for kind in text.split(',') {
+        if !KINDS.contains(&kind.trim()) {
+            return Err(format!(
+                "\"{}\" is not all, none, or a kind: {}",
+                kind.trim(),
+                KINDS.join(", ")
+            ));
+        }
+    }
+    Ok(text)
 }
 
 /// Escape `|` and newlines for use in markdown table cells.

@@ -1096,6 +1096,38 @@ pub fn remember_bucket(source: &Source, bucket: &str) {
     }
 }
 
+/// Buckets an earlier run listed, remembered as if listed now: a bucket under Recent
+/// opens with the login that found it before its source is listed again. Only S3:
+/// Google's first level is projects, and an Azure URL names its account.
+pub fn remember_listed(source: &Source, buckets: &[String]) {
+    if source.kind != ProviderKind::S3 {
+        return;
+    }
+    for bucket in buckets {
+        remember_bucket(source, bucket);
+    }
+}
+
+/// The sources the home screen shows: every `[[cloud.sources]]` entry and public data,
+/// and of the logins found on the machine, the kinds `[cloud] discover` allows.
+pub fn on_home(sources: Vec<Source>, config: &CloudConfig) -> Vec<Source> {
+    let Some(discover) = &config.discover else {
+        return sources;
+    };
+    sources
+        .into_iter()
+        .filter(|source| {
+            source.public
+                || config.sources.iter().any(|c| c.name == source.id)
+                || discover.allows(match source.kind {
+                    ProviderKind::S3 => "s3",
+                    ProviderKind::Gcs => "gcs",
+                    ProviderKind::Azure => "azure",
+                })
+        })
+        .collect()
+}
+
 fn remembered(kind: ProviderKind, bucket: &str) -> Option<String> {
     let key = format!("{}://{bucket}", kind.scheme());
     bucket_sources().lock().ok()?.get(&key).cloned()
@@ -2438,6 +2470,75 @@ mod tests {
             assert_eq!(resolved.source_id, "second-account");
             assert_eq!(resolved.s3.access_key_id.as_deref(), Some("k2"));
             assert_eq!(source.bucket_url("b"), "s3://b");
+        });
+    }
+
+    #[test]
+    fn a_bucket_an_earlier_run_listed_opens_with_that_login() {
+        let config = CloudConfig {
+            sources: vec![CloudSourceConfig {
+                name: "cached-account".to_string(),
+                kind: Some("s3".to_string()),
+                access_key_id_env: Some("CACHED_KEY".to_string()),
+                secret_access_key_env: Some("CACHED_SECRET".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let machine = Machine::new(&[("CACHED_KEY", "k3"), ("CACHED_SECRET", "s3")], &[]);
+        with_machine(&machine, |env| {
+            let source = configured_source(&config.sources[0], env);
+            remember_listed(&source, &["only-in-cached-account".to_string()]);
+            let resolved =
+                resolve_with("s3://only-in-cached-account/x.parquet", &config, env).unwrap();
+            assert_eq!(resolved.source_id, "cached-account");
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("k3"));
+        });
+    }
+
+    #[test]
+    fn discover_limits_found_logins_and_never_configured_sources() {
+        use crate::config::CloudDiscover;
+        let machine = Machine::new(
+            &[
+                ("AWS_ACCESS_KEY_ID", "env-key"),
+                ("AWS_SECRET_ACCESS_KEY", "env-secret"),
+                ("GOOGLE_APPLICATION_CREDENTIALS", "/home/u/sa.json"),
+                ("LAB_KEY", "k"),
+                ("LAB_SECRET", "s"),
+            ],
+            &[("/home/u/sa.json", "{}")],
+        );
+        with_machine(&machine, |env| {
+            let shown = |which: Option<CloudDiscover>| {
+                let config = CloudConfig {
+                    sources: vec![minio("lab", "http://127.0.0.1:9000")],
+                    discover: which,
+                    ..Default::default()
+                };
+                let mut ids: Vec<String> = on_home(discover(&config, env), &config)
+                    .into_iter()
+                    .map(|s| s.id)
+                    .collect();
+                ids.sort();
+                ids
+            };
+            assert_eq!(
+                shown(None),
+                [DEFAULT_GCS, "lab", PUBLIC, DEFAULT_S3],
+                "unset shows every kind"
+            );
+            assert_eq!(shown(Some(CloudDiscover::All)), shown(None));
+            assert_eq!(
+                shown(Some(CloudDiscover::Kinds(vec!["gcs".to_string()]))),
+                [DEFAULT_GCS, "lab", PUBLIC],
+                "the configured S3 source stays; the found one goes"
+            );
+            assert_eq!(
+                shown(Some(CloudDiscover::Kinds(vec!["s3".to_string()]))),
+                ["lab", PUBLIC, DEFAULT_S3]
+            );
+            assert_eq!(shown(Some(CloudDiscover::None)), ["lab", PUBLIC]);
         });
     }
 

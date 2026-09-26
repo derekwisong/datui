@@ -304,20 +304,15 @@ fn section_named<'a>(app: &'a datui::App, title: &str) -> Option<&'a datui::home
     app.home.sections.iter().find(|s| s.title == title)
 }
 
-/// Wait for a source's buckets, then step into it from the `CLOUD` section the way a
-/// user does: cursor on its row, Enter.
+/// Wait for a source's row, then step into it from the `CLOUD` section the way a user
+/// does: cursor on its row, Enter. Entering is what lists it.
 fn enter_source(
     app: &mut datui::App,
     rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
     id: &str,
 ) -> bool {
-    let listed = pump_until(app, rx, 30, |app| {
-        app.home
-            .cloud
-            .iter()
-            .any(|s| s.id == id && !s.buckets.is_empty())
-    });
-    if !listed {
+    let found = pump_until(app, rx, 30, |app| app.home.cloud.iter().any(|s| s.id == id));
+    if !found {
         return false;
     }
     let Some(label) = app
@@ -340,7 +335,7 @@ fn enter_source(
         return false;
     }
     app.event(&key(crossterm::event::KeyCode::Enter));
-    pump_until(app, rx, 10, |app| {
+    pump_until(app, rx, 30, |app| {
         section_named(app, &label).is_some_and(|s| !s.rows.is_empty())
     })
 }
@@ -842,6 +837,8 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
         ..Default::default()
     };
     config.data.use_desktop_recents = false;
+    // Both rows listed without entering either.
+    config.cloud.list_on_start = Some(true);
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(
         tx,

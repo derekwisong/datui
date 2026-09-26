@@ -154,6 +154,7 @@ fn a_source_that_never_answers_does_not_hold_up_the_others() {
     config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
         .map(String::from)
         .to_vec();
+    config.cloud.list_on_start = Some(true);
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(

@@ -3090,10 +3090,12 @@ fn bucket_entry(url: &Path) -> Entry {
 /// last segment. A trailing slash is a prefix whatever the name says.
 pub fn names_a_file(path: &Path) -> bool {
     let named = path.to_string_lossy();
+    // `file_name` rather than a split on `/`, which on Windows took the whole path as
+    // its last segment and called `C:\Users\RUNNER~1\…\.tmp\orders` a file.
     let dotted = !named.ends_with('/')
-        && named
-            .rsplit('/')
-            .next()
+        && path
+            .file_name()
+            .map(|last| last.to_string_lossy())
             .is_some_and(|last| last.trim_start_matches('.').contains('.'));
     discover::is_data_file(path) || dotted
 }

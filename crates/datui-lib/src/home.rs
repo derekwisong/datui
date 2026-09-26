@@ -1763,7 +1763,7 @@ impl HomeState {
                 let key = if network {
                     path.clone()
                 } else {
-                    path.canonicalize().unwrap_or_else(|_| path.clone())
+                    crate::canonical::canonicalize(&path).unwrap_or_else(|_| path.clone())
                 };
                 if seen.contains(&key) {
                     return;
@@ -3194,7 +3194,9 @@ pub fn display_path(path: &Path) -> String {
         if rest.as_os_str().is_empty() {
             return "~".to_string();
         }
-        return format!("~/{}", rest.display());
+        // The platform's separator, so Windows reads `~\data\a.csv` rather than a
+        // mix of the two.
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display());
     }
     path.display().to_string()
 }
@@ -3274,6 +3276,18 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 #[cfg(test)]
 mod holds_flow_tests {
     use super::*;
+
+    /// A path under the home directory is written the way it is typed back: `~\` on
+    /// Windows, and `~\` typed at the prompt expands.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_home_path_is_shown_and_typed_with_backslashes() {
+        let home = dirs::home_dir().unwrap();
+        let path = home.join("data").join("a.csv");
+        let shown = display_path(&path);
+        assert_eq!(shown, r"~\data\a.csv");
+        assert_eq!(expand_user_path(&shown), path);
+    }
 
     /// The last segment of a Windows path is after its last `\`, so a dot higher up
     /// does not make a directory a file.

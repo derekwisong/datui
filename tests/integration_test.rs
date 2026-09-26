@@ -6372,7 +6372,7 @@ fn app_with_recents_in_two_places(
     common::isolate_cache();
     // As the store keeps them: `/var` is `/private/var` on macOS, and a Windows temp
     // directory is named `RUNNER~1` until canonicalized.
-    let root = tmp.path().canonicalize().unwrap();
+    let root = datui::canonical::canonicalize(tmp.path()).unwrap();
     let here = root.join("here");
     let there = root.join("there");
     std::fs::create_dir_all(&here).unwrap();

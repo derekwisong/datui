@@ -2515,7 +2515,10 @@ fn expand_path(raw: &str) -> PathBuf {
         if let Some(home) = dirs::home_dir() {
             return home;
         }
-    } else if let Some(rest) = expanded.strip_prefix("~/")
+    } else if let Some(rest) = expanded
+        .strip_prefix("~/")
+        // What `display_path` writes there, and what a Windows user types.
+        .or_else(|| expanded.strip_prefix("~\\").filter(|_| cfg!(windows)))
         && let Some(home) = dirs::home_dir()
     {
         return home.join(rest);
@@ -2560,8 +2563,7 @@ impl AppConfig {
             // A user config that fails to parse falls back to defaults rather than
             // blocking startup. Long-standing behaviour, preserved deliberately.
             if let Ok(layer) = Self::read_layer(config_path) {
-                let root = config_path
-                    .canonicalize()
+                let root = crate::canonical::canonicalize(config_path)
                     .unwrap_or_else(|_| config_path.to_path_buf());
                 let mut stack = vec![root];
                 imports = layer.import.clone();
@@ -2650,7 +2652,7 @@ impl AppConfig {
                 continue;
             }
 
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let canonical = crate::canonical::canonicalize(&path).unwrap_or_else(|_| path.clone());
             if stack.contains(&canonical) {
                 return Err(eyre!(
                     "circular config import: {} is already being loaded (imported by {})",

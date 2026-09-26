@@ -363,7 +363,7 @@ impl CacheManager {
         let stored = if looks_like_url {
             path.to_path_buf()
         } else {
-            path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+            crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
         };
         let entry = stored.to_string_lossy().into_owned();
 
@@ -864,7 +864,7 @@ mod recents_pruning_tests {
         std::fs::write(&dataset, b"a,b\n1,2\n").expect("write");
         // Recents store the canonical path, which is not the one tempdir hands out
         // everywhere: /var is /private/var on macOS, and Windows adds a \\?\ prefix.
-        let dataset = dataset.canonicalize().expect("canonicalize");
+        let dataset = crate::canonical::canonicalize(&dataset).expect("canonicalize");
 
         cache.push_recent(&dataset);
         assert!(cache.load_recents().iter().any(|p| p == &dataset));
@@ -905,7 +905,7 @@ mod recents_pruning_tests {
         std::fs::write(&dataset, b"x").expect("write");
         // Canonical, as recents store it; see the test above. Taken now, while the
         // file still exists to be resolved.
-        let dataset = dataset.canonicalize().expect("canonicalize");
+        let dataset = crate::canonical::canonicalize(&dataset).expect("canonicalize");
         cache.push_recent(&dataset);
 
         std::fs::remove_file(&dataset).expect("remove");

@@ -862,15 +862,16 @@ pub fn look_at_listing(
     // markers below still look at every prefix — `_delta_log` is exactly the name this
     // skips, and it is a specification rather than a stray.
     // The prefix's own key, before anything counts it. A console makes a folder by
-    // writing a zero-byte object at its key, and listing that directory hands it straight
-    // back: it stands for the prefix being listed, not for anything in it. Dropped once,
+    // writing an object at its key, and listing that directory hands it straight back:
+    // it stands for the prefix being listed, not for anything in it. Dropped once,
     // here, because the three counts below each missed it in their own way — `.` in the
     // name carried it past `is_empty_marker` into `not_read`, and a `_temporary/` prefix
-    // reported itself under `skipped`.
+    // reported itself under `skipped`. Whatever its size: `cloud-samples-data` writes
+    // eleven bytes into its markers.
     let here = prefix.trim_matches('/');
     let objects: Vec<(String, u64)> = objects
         .iter()
-        .filter(|(key, size)| !(*size == 0 && !here.is_empty() && key.trim_matches('/') == here))
+        .filter(|(key, _)| here.is_empty() || key.trim_matches('/') != here)
         .cloned()
         .collect();
     let objects = objects.as_slice();
@@ -1186,6 +1187,22 @@ pub fn is_empty_marker(name: &str, size: u64) -> bool {
     size == 0 && !name.contains('.')
 }
 
+/// Whether an object in one level of `prefix` is shown as a row.
+///
+/// A key ending in a slash is how consoles fake a folder. It is not data, and offering
+/// it as openable would be offering a zero-byte file. So is an empty object named like a
+/// directory beside it. And so is the directory's own key, whatever its size:
+/// `object_store` hands `census/` back as `census`, which names no object, so opening
+/// the row was a 404.
+fn is_listed_object(location: &str, size: u64, prefix: &str, prefixes: &[String]) -> bool {
+    let name = location.rsplit('/').next().unwrap_or(location);
+    !(name.is_empty()
+        || is_marker(name)
+        || crate::azure::is_folder_marker(location, size, prefixes)
+        || is_empty_marker(name, size)
+        || location.trim_end_matches('/') == prefix)
+}
+
 /// One level of a place, signed or not as `resolved` says.
 async fn list_level(
     url: &str,
@@ -1255,18 +1272,10 @@ async fn list_level(
 
     for object in result.objects {
         let location = object.location.as_ref().to_string();
-        let name = location.rsplit('/').next().unwrap_or(&location).to_string();
-        // A key ending in a slash is how consoles fake a folder. It is not data, and
-        // offering it as openable would be offering a zero-byte file. So is an empty
-        // object named like a directory beside it, or like the directory being listed.
-        if name.is_empty()
-            || is_marker(&name)
-            || crate::azure::is_folder_marker(&location, object.size, &prefixes)
-            || is_empty_marker(&name, object.size)
-            || (object.size == 0 && location.trim_end_matches('/') == prefix)
-        {
+        if !is_listed_object(&location, object.size, &prefix, &prefixes) {
             continue;
         }
+        let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         rows.push(crate::discover::Entry {
             path: PathBuf::from(format!("{base}/{location}")),
             kind: crate::discover::EntryKind::File,
@@ -2000,6 +2009,43 @@ mod tests {
         assert_eq!(holds.not_read, 0, "the prefix is not a file it cannot read");
         assert_eq!(holds.skipped, 0);
         assert_eq!(holds.directories, 0);
+
+        // Nor when the marker has bytes in it, as `cloud-samples-data`'s do.
+        let holds = look_at_listing(
+            "bigquery/census/",
+            &directories(&["bigquery/census/data/"]),
+            &objects(&[("bigquery/census", 11)]),
+        )
+        .1;
+        assert_eq!(holds.not_read, 0);
+        assert_eq!(holds.label(), "dir");
+    }
+
+    #[test]
+    fn the_prefix_being_listed_is_not_a_row_in_it() {
+        // `object_store` strips the slash from `bigquery/census/`, so the row named an
+        // object that does not exist and opening it was a 404.
+        let prefixes = directories(&["bigquery/census/data/"]);
+        assert!(!is_listed_object(
+            "bigquery/census",
+            11,
+            "bigquery/census",
+            &prefixes
+        ));
+        assert!(!is_listed_object(
+            "bigquery/census",
+            0,
+            "bigquery/census",
+            &prefixes
+        ));
+        assert!(is_listed_object(
+            "bigquery/census/test.csv",
+            240,
+            "bigquery/census",
+            &prefixes
+        ));
+        // An object named like the directory, one level up, is a real object.
+        assert!(is_listed_object("bigquery/census", 11, "bigquery", &[]));
     }
 
     #[test]

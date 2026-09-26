@@ -10531,7 +10531,14 @@ impl App {
         options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
         use polars::prelude::{LazyCsvReader, LazyFileListReader};
-        let pl_path = PlRefPath::new(url);
+        // A plain prefix is narrowed to the keys with an extension. A console's folder
+        // marker comes back from the listing as `data` for `data/`, which Polars reads
+        // as a file of a different kind from the rest and refuses the whole prefix.
+        let pl_path = if url.ends_with('/') && !url.contains('*') {
+            PlRefPath::new(format!("{url}**/*.*").as_str())
+        } else {
+            PlRefPath::new(url)
+        };
         let named = |e: polars::error::PolarsError| {
             color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
         };
@@ -19373,5 +19380,27 @@ mod cloud_csv_prefix_tests {
         .unwrap();
         assert_eq!(df.column("name").unwrap().null_count(), 1);
         assert_eq!(df.column("id").unwrap().null_count(), 0);
+    }
+    /// A folder marker listed beside the files is not read as one of them. Polars
+    /// refused the whole prefix over it: "different file extensions".
+    #[test]
+    fn a_folder_marker_in_a_csv_prefix_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.csv"), "id\n1\n").unwrap();
+        std::fs::write(dir.path().join("b.csv"), "id\n2\n").unwrap();
+        std::fs::write(dir.path().join("data"), "placeholder").unwrap();
+        let prefix = format!("{}/", dir.path().display());
+        let df = App::scan_cloud_prefix(
+            &prefix,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &OpenOptions::default(),
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(df.height(), 2);
     }
 }

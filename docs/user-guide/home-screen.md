@@ -464,6 +464,7 @@ gives the whole message:
 | `not signed in` | Azure tools are installed but nobody is signed in; the pane names `az login` or `Connect-AzAccount` |
 | `not configured` | A variable named in `[[cloud.sources]]` is not set |
 | `unavailable` | The endpoint did not answer |
+| `not found` | The source was removed or hidden since its row was drawn; <kbd>Ctrl</kbd>+<kbd>R</kbd> at the top looks again |
 
 ### Loading
 

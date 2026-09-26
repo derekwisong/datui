@@ -7883,11 +7883,15 @@ impl App {
                 let env = crate::cloud_browse::Environment::current();
                 crate::cloud_sources::discover(&cloud, &env)
             };
-            // Every source, shown or not: a bucket under Recent opens with the login that
-            // listed it, whether or not that source is on the home screen.
-            for source in &found {
-                if let Some(cached) = cached_for(source) {
-                    crate::cloud_sources::remember_listed(source, &cached.buckets);
+            // Shown or not: a bucket under Recent opens with the login that listed it
+            // whatever `discover` says. Not a hidden source, which may be hidden for a
+            // login that no longer works; the default login opens its buckets instead.
+            // Only with the rows, so an old listing never overrides one made since.
+            if only.is_none() {
+                for source in found.iter().filter(|s| !hidden.contains(&s.id)) {
+                    if let Some(cached) = cached_for(source) {
+                        crate::cloud_sources::remember_listed(source, &cached.buckets);
+                    }
                 }
             }
             let sources: Vec<crate::cloud_sources::Source> =

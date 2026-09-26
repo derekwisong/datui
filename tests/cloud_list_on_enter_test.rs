@@ -103,6 +103,8 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     unsafe {
         std::env::set_var("DATUI_TEST_KEY", "key");
         std::env::set_var("GONE_KEY", "gone-key");
+        std::env::set_var("OLD_KEY", "old-key");
+        std::env::set_var("OLD_SECRET", "old-secret");
         std::env::set_var("DATUI_TEST_SECRET", "secret");
         std::env::set_var("CACHED_KEY", "cached-key");
         std::env::set_var("CACHED_SECRET", "cached-secret");
@@ -138,30 +140,38 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
             ..Default::default()
         },
     ];
+    // Hidden, as one might hide a source whose login broke.
+    config.cloud.sources.push(datui::config::CloudSourceConfig {
+        name: "hidden-old".to_string(),
+        kind: Some("s3".to_string()),
+        access_key_id_env: Some("OLD_KEY".to_string()),
+        secret_access_key_env: Some("OLD_SECRET".to_string()),
+        ..Default::default()
+    });
     // Only the configured sources, whatever this machine is logged in to.
     config.cloud.discover = Some(datui::config::CloudDiscover::None);
-    config.cloud.hide = vec!["public".to_string()];
+    config.cloud.hide = vec!["public".to_string(), "hidden-old".to_string()];
     assert_eq!(
         config.cloud.list_on_start, None,
         "the default is under test"
     );
 
-    // What an earlier run listed for `cached`.
+    // What an earlier run listed for `cached` and `hidden-old`.
     let env = datui::cloud_browse::Environment::current();
-    let cached = datui::cloud_sources::discover(&config.cloud, &env)
-        .into_iter()
-        .find(|s| s.id == "cached")
-        .expect("the cached source");
-    datui::CacheManager::new("datui")
-        .expect("isolated cache")
-        .save_cloud_listing(
-            "cached",
-            datui::cache::CloudListing {
-                fingerprint: cached.fingerprint(),
-                buckets: vec!["from-last-run".to_string()],
-                listed_at: 1,
-            },
-        );
+    let found = datui::cloud_sources::discover(&config.cloud, &env);
+    for (id, bucket) in [("cached", "from-last-run"), ("hidden-old", "shared-bucket")] {
+        let source = found.iter().find(|s| s.id == id).expect(id);
+        datui::CacheManager::new("datui")
+            .expect("isolated cache")
+            .save_cloud_listing(
+                id,
+                datui::cache::CloudListing {
+                    fingerprint: source.fingerprint(),
+                    buckets: vec![bucket.to_string()],
+                    listed_at: 1,
+                },
+            );
+    }
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(
@@ -201,6 +211,11 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
         datui::cloud_sources::resolve_with("s3://from-last-run/x.parquet", &config.cloud, &env)
             .expect("resolves");
     assert_eq!(resolved.source_id, "cached");
+    // A hidden source does not claim its old buckets from the login that should open them.
+    let resolved =
+        datui::cloud_sources::resolve_with("s3://shared-bucket/x.parquet", &config.cloud, &env)
+            .expect("resolves");
+    assert_ne!(resolved.source_id, "hidden-old");
 
     // Entering the source is the request.
     select(&mut app, "lab");

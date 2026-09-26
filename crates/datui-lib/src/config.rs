@@ -553,7 +553,12 @@ impl std::str::FromStr for CloudDiscover {
         match text.trim().to_ascii_lowercase().as_str() {
             "all" => Ok(CloudDiscover::All),
             "none" => Ok(CloudDiscover::None),
-            _ => CloudDiscover::from_kinds(&text.split(',').collect::<Vec<_>>()),
+            _ => CloudDiscover::from_kinds(&text.split(',').collect::<Vec<_>>()).map_err(|_| {
+                format!(
+                    "cloud.discover: \"{text}\" is not \"all\", \"none\", or kinds from {}",
+                    CLOUD_DISCOVER_KINDS.join(", ")
+                )
+            }),
         }
     }
 }

@@ -2227,7 +2227,7 @@ fn cloud_discover_takes_a_switch_a_word_or_a_list_of_kinds() {
     let err = parse("[\"aws\"]").unwrap_err();
     assert!(err.contains("unknown kind \"aws\""), "{err}");
     let err = parse("\"some\"").unwrap_err();
-    assert!(err.contains("unknown kind \"some\""), "{err}");
+    assert!(err.contains("\"some\" is not \"all\", \"none\""), "{err}");
     // The command line's form works in the config too.
     assert_eq!(
         parse("\"s3, azure\""),
@@ -2237,7 +2237,7 @@ fn cloud_discover_takes_a_switch_a_word_or_a_list_of_kinds() {
         ])))
     );
     let err = parse("\"all,s3\"").unwrap_err();
-    assert!(err.contains("unknown kind \"all\""), "{err}");
+    assert!(err.contains("\"all,s3\" is not"), "{err}");
 
     assert_eq!(
         toml::from_str::<AppConfig>("").unwrap().cloud.discover,

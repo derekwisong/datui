@@ -2252,6 +2252,23 @@ fn test_completion_extends_to_an_unambiguous_prefix() {
     assert_eq!(again, completed, "an ambiguous completion is idempotent");
 }
 
+/// Completion takes `\` as a separator on Windows and keeps writing it.
+#[cfg(windows)]
+#[test]
+fn test_completion_follows_windows_separators() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("data").join("sales")).unwrap();
+
+    let (completed, candidates) = complete_path(&format!(r"{}\da", tmp.path().display()));
+    assert_eq!(candidates, 1);
+    assert!(completed.ends_with(r"\data\"), "{completed}");
+
+    // A trailing `\` lists inside, rather than completing `data` again.
+    let (inside, candidates) = complete_path(&completed);
+    assert_eq!(candidates, 1);
+    assert!(inside.ends_with(r"\data\sales\"), "{inside}");
+}
+
 #[test]
 fn test_a_single_directory_completes_with_its_separator() {
     // So a second Tab descends rather than needing a slash typed by hand.

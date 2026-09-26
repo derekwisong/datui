@@ -3208,7 +3208,10 @@ pub fn display_path(path: &Path) -> String {
 /// worker — never in response to a keystroke on the interface thread.
 pub fn complete_path(typed: &str) -> (String, usize) {
     let expanded = expand_user_path(typed);
-    let typed_ends_in_sep = typed.ends_with('/');
+    // `\` is a separator on Windows too, and what a Windows user types: `C:\data\`
+    // completed the name `data` in `C:\` instead of listing inside it.
+    let is_separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let typed_ends_in_sep = typed.ends_with(is_separator);
 
     let (dir, prefix) = if typed_ends_in_sep {
         (expanded.clone(), String::new())
@@ -3253,9 +3256,15 @@ pub fn complete_path(typed: &str) -> (String, usize) {
     completed.truncate(typed.len() - prefix.len());
     completed.push_str(&shared);
 
-    // A single directory gets its separator, so the next Tab descends into it.
-    if names.len() == 1 && dir.join(&shared).is_dir() && !completed.ends_with('/') {
-        completed.push('/');
+    // A single directory gets its separator, so the next Tab descends into it: the one
+    // already being typed, so `C:\Users\` does not become `C:\Users/`.
+    if names.len() == 1 && dir.join(&shared).is_dir() && !completed.ends_with(is_separator) {
+        let separator = typed
+            .chars()
+            .rev()
+            .find(|c| is_separator(*c))
+            .unwrap_or(std::path::MAIN_SEPARATOR);
+        completed.push(separator);
     }
     (completed, names.len())
 }

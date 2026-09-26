@@ -52,13 +52,15 @@ NAVIGATION
 
   A directory's label says what is directly inside it: hive, delta, iceberg,
   hudi, a count and a format ("12 parquet"), "mixed" for more than one format,
-  or "dir" for no data files — in a bucket, the word for the place instead. The
-  details pane carries the whole tally: every file in the directory is counted,
-  as data, as one datui has no reader for, or as one it passed over. Passed over
-  is a name ending "_$folder$", which some tools write to stand in for a folder,
-  or beginning "_" or "." — where every engine puts its own files and a
-  repository puts .git. Otherwise a "key=value" name is a partition whatever it
-  begins with. The skipped are named, the first four of them.
+  or "dir" for no data files; a bucket or container says so instead. In a bucket
+  a spinner shows while a directory is looked into, and "?" when that failed
+  (Ctrl+R tries again). The details pane carries the whole tally: every file in
+  the directory is counted, as data, as one datui has no reader for, or as one
+  it passed over. Passed over is a name ending "_$folder$", which some tools
+  write to stand in for a folder, or beginning "_" or "." — where every engine
+  puts its own files and a repository puts .git. Otherwise a "key=value" name is
+  a partition whatever it begins with. The skipped are named, the first four of
+  them.
 
 FINDING
   (type)            Filter by name or column; matching is fuzzy, so "sal" finds

@@ -212,3 +212,35 @@ fn a_source_that_never_answers_does_not_hold_up_the_others() {
         [std::path::PathBuf::from("s3://b-answering@fast-bucket")]
     );
 }
+
+/// A peek that failed, or whose task was lost, comes back as failed: out of the set
+/// that spins, and labelled `?` rather than `dir`, which would claim no data inside.
+#[test]
+fn a_failed_peek_stops_spinning_and_is_not_an_answer() {
+    common::isolate_cache();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        datui::config::AppConfig::default(),
+    );
+    let path = std::path::PathBuf::from("gs://pitscope/seasons");
+    app.home.peeking.insert(path.clone());
+    app.event(&datui::AppEvent::HomeCloudKinds {
+        kinds: Vec::new(),
+        failed: vec![path.clone()],
+    });
+    assert!(app.home.peeking.is_empty(), "no spinner left behind");
+    assert!(app.home.peek_failed.contains(&path));
+    assert!(!app.home.cloud_kinds.contains_key(&path), "not an answer");
+
+    let mut row = datui::discover::Entry::directory(&path);
+    row.name = "seasons".to_string();
+    assert_eq!(
+        app.home.cloud_look(&row),
+        Some(datui::home::CloudLook::Failed)
+    );
+}

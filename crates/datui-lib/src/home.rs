@@ -145,6 +145,17 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
     (!rest.contains('/')).then_some("bucket")
 }
 
+/// A directory in an object store that has not said what it holds yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudLook {
+    /// Not asked about: `…`.
+    Waiting,
+    /// Its peek is out, or its answer has not reached the row: a spinner.
+    Looking,
+    /// Its peek failed: `?` until Ctrl+R.
+    Failed,
+}
+
 /// How a cloud source is addressed on the home screen: `cloud://<id>`. Not a URL any
 /// library reads; it names the level above a source's buckets, which no real URL can.
 pub const CLOUD_PLACE: &str = "cloud://";
@@ -851,6 +862,9 @@ pub struct HomeState {
     /// comes back put `dir` on a row that had a count and staked "never again this
     /// session" on a request that might fail.
     pub peeking: std::collections::HashSet<PathBuf>,
+    /// Cloud directories whose peek failed: not asked again until Ctrl+R, and labelled
+    /// `?` rather than `dir`, which would claim there is no data inside.
+    pub peek_failed: std::collections::HashSet<PathBuf>,
     /// Row and column counts already read, keyed by path. Reading a Parquet footer
     /// is cheap; reading several hundred of them is not, so results are kept for the
     /// session and each dataset is measured once.
@@ -929,6 +943,7 @@ impl Default for HomeState {
             unreachable: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
+            peek_failed: std::collections::HashSet::new(),
             pending_enrich: false,
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
@@ -2159,10 +2174,10 @@ impl HomeState {
             .cloned()
     }
 
-    /// Where a directory in an object store is in being looked into: `Some(true)` while
-    /// its peek is out, `Some(false)` before one is asked, `None` once it has answered
-    /// or when the row is not such a directory, or already says what it holds.
-    pub fn cloud_look(&self, entry: &Entry) -> Option<bool> {
+    /// Where a directory in an object store is in being looked into, while its row has
+    /// no label of its own yet. `None` once the row says what it holds, or when it is not
+    /// such a directory.
+    pub fn cloud_look(&self, entry: &Entry) -> Option<CloudLook> {
         if entry.kind != EntryKind::Directory
             || !entry.holds.is_empty()
             || !is_object_store_url(&entry.path)
@@ -2172,9 +2187,20 @@ impl HomeState {
             return None;
         }
         if self.peeking.contains(&entry.path) {
-            return Some(true);
+            return Some(CloudLook::Looking);
         }
-        (!self.cloud_kinds.contains_key(&entry.path)).then_some(false)
+        if self.peek_failed.contains(&entry.path) {
+            return Some(CloudLook::Failed);
+        }
+        match self.cloud_kinds.get(&entry.path) {
+            None => Some(CloudLook::Waiting),
+            // Answered with something this row does not show yet: the listing it was
+            // drawn from is being rebuilt. `dir` in the meantime would claim no data.
+            Some((kind, holds)) if *kind != EntryKind::Directory || !holds.is_empty() => {
+                Some(CloudLook::Looking)
+            }
+            Some(_) => None,
+        }
     }
 
     /// What to call a place a source names itself: a public dataset.
@@ -2785,7 +2811,10 @@ impl HomeState {
                 continue;
             }
             // Asked and answered, or asked and still out.
-            if self.cloud_kinds.contains_key(&entry.path) || self.peeking.contains(&entry.path) {
+            if self.cloud_kinds.contains_key(&entry.path)
+                || self.peeking.contains(&entry.path)
+                || self.peek_failed.contains(&entry.path)
+            {
                 continue;
             }
             if out.contains(&entry.path) {
@@ -3243,12 +3272,49 @@ mod holds_flow_tests {
         row.kind = EntryKind::Directory;
         let mut home = HomeState::default();
 
-        assert_eq!(home.cloud_look(&row), Some(false), "not asked yet");
+        assert_eq!(
+            home.cloud_look(&row),
+            Some(CloudLook::Waiting),
+            "not asked yet"
+        );
         home.peeking.insert(path.clone());
-        assert_eq!(home.cloud_look(&row), Some(true), "being looked into");
+        assert_eq!(
+            home.cloud_look(&row),
+            Some(CloudLook::Looking),
+            "being looked into"
+        );
         home.peeking.remove(&path);
+
+        // Answered with a count the drawn row does not carry yet: still looking, not
+        // `dir`, which would claim there is no data inside.
+        home.cloud_kinds
+            .insert(path.clone(), (EntryKind::Directory, counted(12)));
+        assert_eq!(home.cloud_look(&row), Some(CloudLook::Looking));
+        home.cloud_kinds
+            .insert(path.clone(), (EntryKind::Hive, Default::default()));
+        assert_eq!(home.cloud_look(&row), Some(CloudLook::Looking));
+
+        // Answered with nothing to count: `dir` is the truth.
         home.cloud_kinds.insert(path.clone(), in_flight());
         assert_eq!(home.cloud_look(&row), None, "answered");
+
+        // A failed peek is not an answer, and is not asked again until Ctrl+R. The
+        // picker reads the listing, so the row has to be on it.
+        let mut home = HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
+        let root = std::path::PathBuf::from("gs://pitscope");
+        home.probe_ready(root.clone(), vec![row.clone()]);
+        home.browsing = Some(root);
+        home.rebuild(&[], &[]);
+        assert_eq!(
+            home.cloud_directories_to_peek(4),
+            std::slice::from_ref(&path)
+        );
+        home.peek_failed.insert(path.clone());
+        assert_eq!(home.cloud_look(&row), Some(CloudLook::Failed));
+        assert!(home.cloud_directories_to_peek(4).is_empty());
 
         // A row that already says what it holds, a bucket, and a local directory never
         // wait on a peek.

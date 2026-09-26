@@ -61,7 +61,7 @@ Datasets are grouped by where they came from, in this order:
 
 | Section | Contents | Chip | Starts |
 |---|---|---|---|
-| `RECENT` | Datasets you have opened, grouped under the directory or prefix each lives in | | open |
+| `RECENT` | Datasets you have opened, grouped under the directory each lives in, local or in a bucket | | open |
 | current directory | Where you launched datui | `current directory` | open |
 | `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
 | configured directories | `[data] directories`, in the order listed | `configured` | open |
@@ -77,8 +77,8 @@ list rows or more, a blank line separates the sections.
 
 ### Recent
 
-Every dataset you have opened sits under a **place row**: the directory or
-bucket prefix it lives in, newest place first. The place row names the path,
+Every dataset you have opened sits under a **place row**: the directory it
+lives in, local or in a bucket, newest place first. The place row names the path,
 what datui last found the place to be (`hive`, `12 parquet`) when it has seen
 it, and, on a network share or in an object store, what it is on. A sort orders
 the rows inside each place and never flattens the section.
@@ -230,6 +230,7 @@ A directory's label says what is directly inside it, from one listing:
 | `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. The top of a store says `bucket` or `container` instead |
 | `…` | Nothing has looked into it yet |
 | spinner | A directory in a bucket being looked into |
+| `?` | Looking into a directory in a bucket failed; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again |
 
 A directory larger than the listing cap counts what it read and says so: `5000+
 parquet`. The details pane carries the whole tally on a `holds` line — `12

@@ -1060,13 +1060,9 @@ fn entry_line<'a>(
     // it elsewhere — a `multi` prefix in a public source — is carrying a label.
     let mut shows_curated = false;
     let kind = match entry.kind {
-        // A count beats the generic word for the place a row is in: `12 parquet` says
-        // more about a prefix than `prefix` does. Not the *curated* word, though —
-        // `dataset` and `project` are what a source calls a place it names, and that is
-        // the only thing marking it as one.
-        //
-        // Only when there is data to count, or a prefix holding nothing but
-        // sub-prefixes would flip from `prefix` to `dir` the moment its peek landed.
+        // A count beats the word for a bucket or container. Not the *curated* word,
+        // though — `dataset` and `project` are what a source calls a place it names,
+        // and that is the only thing marking it as one.
         //
         // The same order the details pane takes, or the row and the pane beside it
         // disagree about one directory.
@@ -1509,14 +1505,15 @@ fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
     (ratio >= 1.2).then_some(ratio)
 }
 
-/// What stands in for the label of a directory in a bucket that has not answered yet:
-/// a spinner while it is being looked into, `…` until then.
+/// What stands in for the label of a directory in a bucket that has not said what it
+/// holds: `…` before it is asked about, a spinner while it is, `?` when asking failed.
 fn looking_glyph(app: &crate::App, entry: &Entry) -> Option<&'static str> {
     let g = glyphs::get();
-    match app.home.cloud_look(entry)? {
-        true => Some(g.spinner[app.throbber_frame as usize % g.spinner.len()]),
-        false => Some(g.ellipsis),
-    }
+    Some(match app.home.cloud_look(entry)? {
+        crate::home::CloudLook::Waiting => g.ellipsis,
+        crate::home::CloudLook::Looking => g.spinner[app.throbber_frame as usize % g.spinner.len()],
+        crate::home::CloudLook::Failed => "?",
+    })
 }
 
 /// The name, the path, and everything known about the dataset.
@@ -1525,7 +1522,7 @@ fn looking_glyph(app: &crate::App, entry: &Entry) -> Option<&'static str> {
 fn preview_head(
     entry: &Entry,
     place_kind: Option<&'static str>,
-    looking: bool,
+    looking: Option<crate::home::CloudLook>,
     width: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
@@ -1578,14 +1575,16 @@ fn preview_head(
         // in for one: see `Entry::opens_whole_directory`. Ahead of the arm below, which
         // reaches for the place word before it ever consults the label.
         _ if entry.opens_whole_directory => "",
-        // Only when there is data to count. A prefix holding nothing but sub-prefixes
-        // would otherwise flip from `prefix` to `dir` the moment the peek landed, and
-        // inside an object store the service's own word is the right one.
+        // The same order the row takes: the curated word, a count, then what stands
+        // in while a directory in a bucket is looked into, then the bucket's word.
         EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
             (Some(curated), _) => curated,
             (None, false) => described.as_ref(),
             // Nothing to say yet; the row's spinner says it is being found out.
-            (None, true) if looking => "",
+            (None, true) if looking == Some(crate::home::CloudLook::Failed) => {
+                "? (could not look inside; Ctrl+R tries again)"
+            }
+            (None, true) if looking.is_some() => "",
             (None, true) => {
                 crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
             }
@@ -1770,7 +1769,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     let mut lines = preview_head(
         &entry,
         app.home.place_kind(&entry.path),
-        app.home.cloud_look(&entry).is_some(),
+        app.home.cloud_look(&entry),
         width,
         ctx,
     );
@@ -2017,7 +2016,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect::<Vec<_>>()
             .join("");
-            let pane: String = preview_head(&entry, curated, false, 60, &ctx)
+            let pane: String = preview_head(&entry, curated, None, 60, &ctx)
                 .iter()
                 .flat_map(|l| l.spans.iter())
                 .map(|s| s.content.as_ref())
@@ -2167,8 +2166,8 @@ mod tests {
         let pane = preview_text(&door, 60);
         assert!(pane.contains("warehouse (all files)"), "{pane}");
         assert!(
-            !pane.contains("prefix"),
-            "the place word stood in for the label it does not have: {pane}"
+            !pane.lines().any(|l| l.trim_start().starts_with("kind")),
+            "a kind stood in for the label it does not have: {pane}"
         );
 
         // And all three draw the same row. A hive or multi-file kind wears its label as
@@ -2181,12 +2180,14 @@ mod tests {
         }
     }
 
-    /// And the pane beside it agrees: no kind while it is being looked into, `dir` once
-    /// nothing was counted, the count when there is one.
+    /// And the pane beside it agrees: no kind while it is being looked into, `?` with
+    /// why when looking failed, `dir` once nothing was counted, the count when there is
+    /// one.
     #[test]
     fn the_pane_calls_a_cloud_directory_what_the_row_calls_it() {
+        use crate::home::CloudLook;
         let ctx = RenderContext::for_test();
-        let pane = |entry: &Entry, looking: bool| -> Vec<String> {
+        let pane = |entry: &Entry, looking: Option<CloudLook>| -> Vec<String> {
             preview_head(entry, None, looking, 60, &ctx)
                 .iter()
                 .map(|l| {
@@ -2205,15 +2206,18 @@ mod tests {
         };
 
         let mut directory = row("s3://bucket/warehouse", EntryKind::Directory);
-        assert_eq!(kind_line(&pane(&directory, true)), None);
-        let looked = kind_line(&pane(&directory, false)).expect("a kind");
+        assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Waiting))), None);
+        assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Looking))), None);
+        let failed = kind_line(&pane(&directory, Some(CloudLook::Failed))).expect("a kind");
+        assert!(failed.contains("could not look inside"), "{failed}");
+        let looked = kind_line(&pane(&directory, None)).expect("a kind");
         assert!(looked.trim_end().ends_with("dir"), "{looked}");
 
         directory.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 12)],
             ..Default::default()
         };
-        let counted = kind_line(&pane(&directory, false)).expect("a kind");
+        let counted = kind_line(&pane(&directory, None)).expect("a kind");
         assert!(counted.contains("12 parquet"), "{counted}");
     }
 
@@ -3121,7 +3125,7 @@ mod tests {
 
     fn preview_text(entry: &Entry, width: usize) -> String {
         let ctx = RenderContext::for_test();
-        preview_head(entry, None, false, width, &ctx)
+        preview_head(entry, None, None, width, &ctx)
             .iter()
             .map(|l| {
                 l.spans
@@ -3271,7 +3275,7 @@ mod tests {
         );
         for width in [24usize, 40, 80] {
             let ctx = RenderContext::for_test();
-            for line in preview_head(&e, None, false, width, &ctx) {
+            for line in preview_head(&e, None, None, width, &ctx) {
                 // The pane wraps rather than clips, so a long value is allowed to run
                 // on; what must not happen is a *heading* bar overrunning its width.
                 let text: String = l_text(&line);

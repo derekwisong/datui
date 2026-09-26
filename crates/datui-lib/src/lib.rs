@@ -5026,6 +5026,9 @@ pub enum AppEvent {
             PathBuf,
             (crate::discover::EntryKind, crate::discover::Holds),
         )>,
+        /// Directories whose peek failed or was lost: not answered, so not labelled as
+        /// if they were.
+        failed: Vec<PathBuf>,
     },
     /// A cloud listing was refused, with the service's reason.
     HomeProbeFailed {
@@ -8073,6 +8076,8 @@ impl App {
             self.home.probed.remove(&dir);
             self.home.unreachable.remove(&dir);
         }
+        // A peek that failed is asked again: Ctrl+R is the request to try.
+        self.home.peek_failed.clear();
         self.home.status = None;
         self.home_refresh();
     }
@@ -8517,12 +8522,8 @@ impl App {
     /// the listing on the thread drawing the frame. `Holds::is_empty` is the line
     /// because it is the same question the pane asks before drawing the line at all.
     ///
-    /// One shape it lets through buys nothing today: a `Holds` whose only field is
-    /// `truncated`. `Holds::line` has no part to print for it, and a cloud row with no
-    /// data file keeps the word for its place rather than becoming `dir+`, so the `+`
-    /// has nowhere to land on this route. It is let through because the alternative is
-    /// a second, narrower definition of "says something" that would drift from the
-    /// first.
+    /// A `Holds` whose only field is `truncated` is let through too: it is what turns
+    /// a cloud row's `dir` into `dir+`.
     #[cfg(feature = "cloud")]
     fn peek_tells_a_row_something(answer: &(discover::EntryKind, discover::Holds)) -> bool {
         answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
@@ -8560,14 +8561,20 @@ impl App {
         self.runtime.spawn(async move {
             let permits = Arc::new(tokio::sync::Semaphore::new(PEEKS_AT_ONCE));
             let mut peeks = tokio::task::JoinSet::new();
+            // By task, so a peek that panics is still sent back, as failed, and does
+            // not stay in `peeking` spinning for good.
+            let mut asked = std::collections::HashMap::new();
             for directory in directories {
                 let (permits, cloud) = (permits.clone(), cloud.clone());
-                peeks.spawn(async move {
+                let task_directory = directory.clone();
+                let task = peeks.spawn(async move {
+                    let directory = task_directory;
                     let _permit = permits.acquire_owned().await;
                     let kind =
                         crate::cloud_browse::peek_kind(&directory.to_string_lossy(), &cloud).await;
                     (directory, kind)
                 });
+                asked.insert(task.id(), directory);
             }
             // Sent a few at a time: the labels fill in as they are found, without a
             // rebuild per directory.
@@ -8579,23 +8586,30 @@ impl App {
             // answer once the request has been made, which is what it was not while it
             // was being written before the request.
             let mut found = Vec::new();
-            while let Some(joined) = peeks.join_next().await {
-                let Ok((directory, answer)) = joined else {
-                    continue;
-                };
-                let answer = answer
-                    .ok()
-                    .filter(Self::peek_tells_a_row_something)
-                    .unwrap_or((discover::EntryKind::Directory, Default::default()));
-                found.push((directory, answer));
-                if found.len() >= PEEKS_AT_ONCE {
+            let mut failed = Vec::new();
+            while let Some(joined) = peeks.join_next_with_id().await {
+                match joined {
+                    Ok((_, (directory, Ok(answer)))) => {
+                        let answer = Some(answer)
+                            .filter(Self::peek_tells_a_row_something)
+                            .unwrap_or((discover::EntryKind::Directory, Default::default()));
+                        found.push((directory, answer));
+                    }
+                    Ok((_, (directory, Err(_)))) => failed.push(directory),
+                    Err(error) => failed.extend(asked.remove(&error.id())),
+                }
+                if found.len() + failed.len() >= PEEKS_AT_ONCE {
                     let _ = tx.send(AppEvent::HomeCloudKinds {
                         kinds: std::mem::take(&mut found),
+                        failed: std::mem::take(&mut failed),
                     });
                 }
             }
-            if !found.is_empty() {
-                let _ = tx.send(AppEvent::HomeCloudKinds { kinds: found });
+            if !found.is_empty() || !failed.is_empty() {
+                let _ = tx.send(AppEvent::HomeCloudKinds {
+                    kinds: found,
+                    failed,
+                });
             }
         });
     }
@@ -16227,7 +16241,11 @@ impl App {
                 let _ = landed;
                 None
             }
-            AppEvent::HomeCloudKinds { kinds } => {
+            AppEvent::HomeCloudKinds { kinds, failed } => {
+                for directory in failed {
+                    self.home.peeking.remove(directory);
+                    self.home.peek_failed.insert(directory.clone());
+                }
                 let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
                 for (directory, kind) in kinds {
                     // Answered: out of the in-flight set and into the one the rows are

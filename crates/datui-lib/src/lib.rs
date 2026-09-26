@@ -9108,6 +9108,26 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
+                    // A URL is not stat'ed: `exists` asks the working directory about a
+                    // file called `gs:`. Its name decides, as it does for a recent — a
+                    // file opens, and anything else in a bucket is browsed, where the
+                    // listing says what is there.
+                    if home::is_object_store_url(&path) || home::is_cloud_place(&path) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
+                        let kind = if home::names_a_file(&path) {
+                            discover::EntryKind::File
+                        } else {
+                            discover::EntryKind::Directory
+                        };
+                        return self.open_what_it_is(path, kind, true);
+                    }
+                    // And an HTTP URL is one file.
+                    if !matches!(source::input_source(&path), source::InputSource::Local(_)) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
+                        return self.open_what_it_is(path, discover::EntryKind::File, true);
+                    }
                     // Whether it is there, whether it is a directory and what kind of one
                     // are three filesystem calls, and a typed path is exactly where a
                     // dead mount gets named. All three go to a worker when the mount is

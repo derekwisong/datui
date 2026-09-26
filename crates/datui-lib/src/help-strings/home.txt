@@ -68,7 +68,7 @@ FINDING
                     Typing also searches below the working directory, and the
                     bucket names already listed; matches appear under "Found"
   Backspace         Delete a filter character
-  ~                 Type a path directly, for somewhere datui has not seen yet
+  ~                 Type a path or URL, for somewhere datui has not seen yet
   Tab               (while typing a path) complete it
   Delete            Forget the highlighted entry under Recent, or every recent
                     under the highlighted place row after confirming, or hide a

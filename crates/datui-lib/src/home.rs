@@ -3079,6 +3079,18 @@ fn bucket_entry(url: &Path) -> Entry {
     entry
 }
 
+/// Whether a remote path's name says it is a file: a data extension, or any dot in its
+/// last segment. A trailing slash is a prefix whatever the name says.
+pub fn names_a_file(path: &Path) -> bool {
+    let named = path.to_string_lossy();
+    let dotted = !named.ends_with('/')
+        && named
+            .rsplit('/')
+            .next()
+            .is_some_and(|last| last.trim_start_matches('.').contains('.'));
+    discover::is_data_file(path) || dotted
+}
+
 /// Build an entry for a path that is already known (a recent), classifying it.
 fn entry_for_path(path: &Path, remote: bool) -> Entry {
     let mut holds = discover::Holds::default();
@@ -3097,15 +3109,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         // indirection along — every row on a share is Unknown before anything has
         // looked into it. So the row is named instead. A trailing slash is a prefix
         // whatever is in the name, which is what `exports/` and `2024.01.15/` are.
-        let named = path.to_string_lossy();
-        // `file_name` rather than a split on `/`, which on Windows took the whole path
-        // as its last segment and called `C:\Users\RUNNER~1\…\.tmp\orders` a file.
-        let dotted = !named.ends_with('/')
-            && path
-                .file_name()
-                .map(|last| last.to_string_lossy())
-                .is_some_and(|last| last.trim_start_matches('.').contains('.'));
-        if discover::is_data_file(path) || dotted {
+        if names_a_file(path) {
             EntryKind::File
         } else {
             EntryKind::Unknown

@@ -41,7 +41,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
-| <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
+| <kbd>~</kbd> | Type a path or URL. <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen, ignoring what is cached |

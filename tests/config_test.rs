@@ -271,10 +271,8 @@ fn test_parse_full_config() {
 version = "0.2"
 
 [file_loading]
-delimiter = 44
-has_header = true
-skip_lines = 1
-skip_rows = 0
+parse_dates = false
+infer_schema_length = 5000
 
 [display]
 pages_lookahead = 5
@@ -332,8 +330,8 @@ show_transformations = true
 
     // Verify all sections
     assert_eq!(config.version, "0.2");
-    assert_eq!(config.file_loading.delimiter, Some(44));
-    assert_eq!(config.file_loading.has_header, Some(true));
+    assert_eq!(config.file_loading.parse_dates, Some(false));
+    assert_eq!(config.file_loading.infer_schema_length, Some(5000));
     assert_eq!(config.display.pages_lookahead, 5);
     assert!(config.display.row_numbers);
     assert_eq!(config.performance.sampling_threshold, Some(50000));
@@ -351,19 +349,19 @@ fn test_merge_option_fields() {
     use datui::config::FileLoadingConfig;
 
     let mut base = FileLoadingConfig::default();
-    assert_eq!(base.delimiter, None);
-    assert_eq!(base.has_header, None);
+    assert_eq!(base.infer_schema_length, None);
+    assert_eq!(base.ignore_errors, None);
 
     let override_config = FileLoadingConfig {
-        delimiter: Some(44),
-        has_header: Some(true),
+        infer_schema_length: Some(5000),
+        ignore_errors: Some(true),
         ..Default::default()
     };
 
     base.merge(override_config);
 
-    assert_eq!(base.delimiter, Some(44));
-    assert_eq!(base.has_header, Some(true));
+    assert_eq!(base.infer_schema_length, Some(5000));
+    assert_eq!(base.ignore_errors, Some(true));
 }
 
 #[test]

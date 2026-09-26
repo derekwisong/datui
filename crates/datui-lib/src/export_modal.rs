@@ -119,7 +119,6 @@ impl ExportModal {
         history_limit: usize,
         theme: &crate::config::Theme,
         file_delimiter: Option<u8>,
-        config_delimiter: Option<u8>,
     ) {
         self.active = true;
         self.focus = ExportFocus::PathInput;
@@ -134,8 +133,8 @@ impl ExportModal {
         self.csv_delimiter_input = TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
-        // Priority: 1) Config delimiter (user preference), 2) File delimiter (what was used/autodetected), 3) Comma (default)
-        let delimiter_char = config_delimiter.or(file_delimiter).unwrap_or(b',');
+        // `--delimiter` if the file was read with one, else a comma.
+        let delimiter_char = file_delimiter.unwrap_or(b',');
         self.csv_delimiter_input
             .set_value(format!("{}", delimiter_char as char));
         self.csv_include_header = true;

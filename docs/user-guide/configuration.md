@@ -37,13 +37,13 @@ accent = "#ff9e64"
 Defaults for the CSV options; the [command-line flags](../reference/command-line-options.md)
 of the same name override them per run.
 
+A file's layout is not here: `--delimiter`, `--no-header` and the skips describe
+the one file being opened, so they are flags only. A config that still sets
+`delimiter`, `has_header`, `skip_lines`, `skip_rows` or `skip_tail_rows` gets a
+warning on stderr and is otherwise ignored.
+
 ```toml
 [file_loading]
-delimiter = 44                # ASCII code of the separator. Omit for auto-detect
-has_header = true             # Omit for auto-detect
-skip_lines = 0                # Lines to skip before the header
-skip_rows = 0                 # Rows to skip after it
-skip_tail_rows = 0            # Rows to drop at the end of the file
 null_values = ["NA", "amount="]   # Read as null: everywhere, or in one column with COL=VAL
 parse_dates = true            # Parse date-looking strings as Date / Datetime
 parse_strings = true          # Trim and type-infer string columns
@@ -452,7 +452,7 @@ Any flag beats the file for that run:
 ```bash
 datui data.csv --row-numbers
 datui data.csv --number-format thousands
-datui data.csv --delimiter 9          # tab
+datui data.csv --infer-schema-length 10000
 datui data.csv --sampling-threshold 0 # no sampling, whatever the file says
 ```
 

@@ -4723,6 +4723,12 @@ impl OpenOptions {
         self
     }
 
+    /// The separator a delimited file is read with: `--delimiter` when given, else
+    /// the one its format implies (`FileFormat::separator`).
+    pub fn separator_or(&self, format_default: u8) -> u8 {
+        self.delimiter.unwrap_or(format_default)
+    }
+
     pub fn with_compression(mut self, compression: CompressionFormat) -> Self {
         self.compression = Some(compression);
         self
@@ -4768,18 +4774,13 @@ impl OpenOptions {
     pub fn from_args_and_config(args: &cli::Args, config: &AppConfig) -> Self {
         let mut opts = OpenOptions::new();
 
-        // File loading options: CLI args override config
-        opts.delimiter = args.delimiter.or(config.file_loading.delimiter);
-        opts.skip_lines = args.skip_lines.or(config.file_loading.skip_lines);
-        opts.skip_rows = args.skip_rows.or(config.file_loading.skip_rows);
-        opts.skip_tail_rows = args.skip_tail_rows.or(config.file_loading.skip_tail_rows);
-
-        // Handle has_header: CLI no_header flag overrides config
-        opts.has_header = if let Some(no_header) = args.no_header {
-            Some(!no_header)
-        } else {
-            config.file_loading.has_header
-        };
+        // A file's layout: command line only. Set in config, these applied to every
+        // file opened and silently cut rows from the ones they did not describe (#289).
+        opts.delimiter = args.delimiter;
+        opts.skip_lines = args.skip_lines;
+        opts.skip_rows = args.skip_rows;
+        opts.skip_tail_rows = args.skip_tail_rows;
+        opts.has_header = args.no_header.map(|no_header| !no_header);
 
         // Compression: CLI only (auto-detect from extension when not specified)
         opts.compression = args.compression;
@@ -7067,7 +7068,9 @@ impl App {
         self.path = path.clone();
         if let Some(ref p) = path {
             self.original_file_format = Self::export_format_for(p, options);
-            self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
+            // A comma unless the user named a separator. A `.tsv` exports as CSV, to a
+            // `.csv` by default, and a tab there would reopen as one column.
+            self.original_file_delimiter = Some(options.separator_or(b','));
         } else {
             self.original_file_format = None;
             self.original_file_delimiter = None;
@@ -10429,6 +10432,7 @@ impl App {
         cloud_opts: CloudOptions,
         format: FileFormat,
         glob: bool,
+        options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
         use polars::prelude::{LazyCsvReader, LazyFileListReader};
         let pl_path = PlRefPath::new(url);
@@ -10436,11 +10440,28 @@ impl App {
             color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
         };
         let lf = match format {
-            FileFormat::Csv => LazyCsvReader::new(pl_path)
-                .with_cloud_options(Some(cloud_opts))
-                .with_glob(glob)
-                .finish()
-                .map_err(named),
+            FileFormat::Csv => {
+                // The flags the user gave mean what they mean for a local file.
+                let reader = || {
+                    LazyCsvReader::new(pl_path.clone())
+                        .with_cloud_options(Some(cloud_opts.clone()))
+                        .with_glob(glob)
+                };
+                let nv = match DataTableState::build_null_values_with(options, || {
+                    DataTableState::csv_schema_for_null_values(reader(), options)
+                }) {
+                    Ok(nv) => nv,
+                    Err(e) => return Some(Err(e)),
+                };
+                DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
+                    .finish()
+                    .map_err(named)
+                    .and_then(|lf| {
+                        DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| {
+                            e.wrap_err(format!("Could not read {} as {}", url, format.name()))
+                        })
+                    })
+            }
             FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
                 .with_cloud_options(Some(cloud_opts))
                 .finish()
@@ -10685,6 +10706,7 @@ impl App {
     /// how a folder had been stacked never appeared outside the tests.
     fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
         crate::schema_union::ReadAs {
+            delimiter: options.delimiter,
             has_header: options.has_header,
             skip_rows: options.skip_rows,
             skip_lines: options.skip_lines,
@@ -10730,8 +10752,13 @@ impl App {
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
                     if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
-                        && let Some(lf) =
-                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                        && let Some(lf) = Self::scan_cloud_prefix(
+                            &full,
+                            cloud_opts.clone(),
+                            format,
+                            is_glob,
+                            options,
+                        )
                     {
                         return lf;
                     }
@@ -10774,8 +10801,13 @@ impl App {
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
                     if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
-                        && let Some(lf) =
-                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                        && let Some(lf) = Self::scan_cloud_prefix(
+                            &full,
+                            cloud_opts.clone(),
+                            format,
+                            is_glob,
+                            options,
+                        )
                     {
                         return lf;
                     }
@@ -10814,8 +10846,13 @@ impl App {
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
                     if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
-                        && let Some(lf) =
-                            Self::scan_cloud_prefix(&full, cloud_opts.clone(), format, is_glob)
+                        && let Some(lf) = Self::scan_cloud_prefix(
+                            &full,
+                            cloud_opts.clone(),
+                            format,
+                            is_glob,
+                            options,
+                        )
                     {
                         return lf;
                     }
@@ -15479,16 +15516,11 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
-                    // Load config to get delimiter preference
-                    let config_delimiter = AppConfig::load(APP_NAME)
-                        .ok()
-                        .and_then(|config| config.file_loading.delimiter);
                     self.export_modal.open(
                         self.original_file_format,
                         self.history_limit,
                         &self.theme,
                         self.original_file_delimiter,
-                        config_delimiter,
                     );
                     self.export_modal.offer_source_file = self
                         .data_table_state
@@ -19167,5 +19199,67 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                 app.spawn_async_collect("Loading buffer...");
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "cloud"))]
+mod cloud_csv_prefix_tests {
+    use super::*;
+
+    /// A CSV prefix in a bucket is read with the flags the user gave, not Polars'
+    /// defaults. Driven through a local glob, which is the same reader with the object
+    /// store swapped for the filesystem.
+    #[test]
+    fn a_csv_prefix_is_read_with_the_users_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let preamble = "exported by x\nid;name\n1;NA\n2;bob\n3;FOOTER\n";
+        std::fs::write(dir.path().join("a.csv"), preamble).unwrap();
+        let glob = format!("{}/*.csv", dir.path().display());
+        let options = OpenOptions {
+            delimiter: Some(b';'),
+            skip_lines: Some(1),
+            skip_tail_rows: Some(1),
+            null_values: Some(vec!["NA".into()]),
+            ..OpenOptions::default()
+        };
+        let df = App::scan_cloud_prefix(
+            &glob,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &options,
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .unwrap();
+        let names: Vec<_> = df
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(names, ["id", "name"]);
+        assert_eq!(df.height(), 2);
+        assert_eq!(df.column("name").unwrap().null_count(), 1);
+
+        // Global and per-column null values together read the columns from the
+        // prefix itself.
+        let options = OpenOptions {
+            null_values: Some(vec!["NA".into(), "name=bob".into()]),
+            ..options
+        };
+        let df = App::scan_cloud_prefix(
+            &glob,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &options,
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(df.column("name").unwrap().null_count(), 1);
+        assert_eq!(df.column("id").unwrap().null_count(), 0);
     }
 }

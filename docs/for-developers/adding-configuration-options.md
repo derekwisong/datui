@@ -166,7 +166,7 @@ Update documentation:
 
 - **Strings**: Use `String` for text values
   ```rust
-  pub delimiter: String,  // CSV delimiter character
+  pub accent: String,  // A color, e.g. "#ff9e64"
   ```
 
 ### Sensible Defaults

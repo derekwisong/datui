@@ -264,10 +264,6 @@ impl ConfigManager {
             "cloud.s3_access_key_id",
             "cloud.s3_secret_access_key",
             "cloud.s3_region",
-            "file_loading.delimiter",
-            "file_loading.has_header",
-            "file_loading.skip_lines",
-            "file_loading.skip_rows",
             "file_loading.single_spine_schema",
             "chart.row_limit",
             "ui.controls.custom_controls",
@@ -1133,12 +1129,6 @@ impl CloudConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FileLoadingConfig {
-    pub delimiter: Option<u8>,
-    pub has_header: Option<bool>,
-    pub skip_lines: Option<usize>,
-    pub skip_rows: Option<usize>,
-    /// Skip this many rows at the end of the file (e.g. vendor footer or trailing garbage). CSV only.
-    pub skip_tail_rows: Option<usize>,
     /// When true, CSV reader tries to parse string columns as dates (YYYY-MM-DD, ISO datetime). Default: true.
     pub parse_dates: Option<bool>,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
@@ -1159,26 +1149,35 @@ pub struct FileLoadingConfig {
     pub ignore_errors: Option<bool>,
 }
 
+/// `[file_loading]` keys that described one file's layout rather than a preference,
+/// and so mangled every other file they were applied to, each with the flag that
+/// says the same thing about the one file being opened.
+const REMOVED_FILE_LOADING_KEYS: [(&str, &str); 5] = [
+    ("delimiter", "--delimiter"),
+    ("has_header", "--no-header"),
+    ("skip_lines", "--skip-lines"),
+    ("skip_rows", "--skip-rows"),
+    ("skip_tail_rows", "--skip-tail-rows"),
+];
+
+/// The removed layout keys a config file still sets, so loading can say they are
+/// ignored rather than dropping them without a word.
+fn removed_file_loading_keys(content: &str) -> Vec<(&'static str, &'static str)> {
+    let Ok(value) = content.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(section) = value.get("file_loading").and_then(|v| v.as_table()) else {
+        return Vec::new();
+    };
+    REMOVED_FILE_LOADING_KEYS
+        .into_iter()
+        .filter(|(k, _)| section.contains_key(*k))
+        .collect()
+}
+
 // Field comments for FileLoadingConfig
 // Format: (field_name, comment_text)
 const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
-    (
-        "delimiter",
-        "Default delimiter for CSV files (as ASCII value, e.g., 44 for comma)\nIf not specified, auto-detection is used",
-    ),
-    (
-        "has_header",
-        "Whether files have headers by default\nnull = auto-detect, true = has header, false = no header",
-    ),
-    (
-        "skip_lines",
-        "Number of lines to skip at the start of files",
-    ),
-    ("skip_rows", "Number of rows to skip when reading files"),
-    (
-        "skip_tail_rows",
-        "Number of rows to skip at the end of the file (e.g. vendor footer or trailing garbage). CSV only.",
-    ),
     (
         "parse_dates",
         "When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)",
@@ -2573,6 +2572,14 @@ impl AppConfig {
         let content = std::fs::read_to_string(path)
             .map_err(|e| eyre!("Failed to read config file at {}: {}", path.display(), e))?;
 
+        for (key, flag) in removed_file_loading_keys(&content) {
+            eprintln!(
+                "datui: warning: {}: file_loading.{key} is no longer read; \
+                 pass {flag} when opening the file it describes",
+                path.display(),
+            );
+        }
+
         toml::from_str(&content)
             .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))
     }
@@ -2651,21 +2658,6 @@ impl AppConfig {
 // Merge implementations for each config section
 impl FileLoadingConfig {
     pub fn merge(&mut self, other: Self) {
-        if other.delimiter.is_some() {
-            self.delimiter = other.delimiter;
-        }
-        if other.has_header.is_some() {
-            self.has_header = other.has_header;
-        }
-        if other.skip_lines.is_some() {
-            self.skip_lines = other.skip_lines;
-        }
-        if other.skip_rows.is_some() {
-            self.skip_rows = other.skip_rows;
-        }
-        if other.skip_tail_rows.is_some() {
-            self.skip_tail_rows = other.skip_tail_rows;
-        }
         if other.parse_dates.is_some() {
             self.parse_dates = other.parse_dates;
         }
@@ -3527,4 +3519,22 @@ fn bracket_depth(line: &str) -> i32 {
         ']' => acc - 1,
         _ => acc,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_config_that_still_sets_a_layout_key_is_told_so() {
+        let found = removed_file_loading_keys(
+            "[file_loading]\nskip_rows = 2\nhas_header = false\nparse_dates = true\n",
+        );
+        assert_eq!(
+            found,
+            [("has_header", "--no-header"), ("skip_rows", "--skip-rows")]
+        );
+        assert!(removed_file_loading_keys("[display]\nskip_rows = 2\n").is_empty());
+        assert!(removed_file_loading_keys("not toml [").is_empty());
+    }
 }

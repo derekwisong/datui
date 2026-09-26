@@ -103,6 +103,17 @@ impl FileFormat {
         !matches!(self, Self::Tsv | Self::Psv | Self::Excel)
     }
 
+    /// The column separator a delimited format is read with when `--delimiter` is not
+    /// given. `None` for the formats that are not delimited text.
+    pub fn separator(self) -> Option<u8> {
+        match self {
+            Self::Csv => Some(b','),
+            Self::Tsv => Some(b'\t'),
+            Self::Psv => Some(b'|'),
+            _ => None,
+        }
+    }
+
     /// Parse format from extension string (e.g. "parquet", "csv").
     ///
     /// The one place an extension becomes a format. Everything that asks whether a name
@@ -211,7 +222,7 @@ pub struct Args {
     #[arg(long = "skip-rows")]
     pub skip_rows: Option<usize>,
 
-    /// Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage)
+    /// Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage). Counts every row first; on a directory in a bucket that downloads every file
     #[arg(long = "skip-tail-rows", value_name = "N")]
     pub skip_tail_rows: Option<usize>,
 
@@ -219,7 +230,7 @@ pub struct Args {
     #[arg(long = "no-header")]
     pub no_header: Option<bool>,
 
-    /// Specify the delimiter to use when reading a delimited text file
+    /// Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `|` for .psv
     #[arg(long = "delimiter")]
     pub delimiter: Option<u8>,
 

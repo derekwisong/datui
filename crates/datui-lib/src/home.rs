@@ -3051,6 +3051,21 @@ impl HomeState {
         let next = (cur + delta).rem_euclid(n as isize);
         self.selected = next as usize;
     }
+
+    /// Move the selection `delta` rows, stopping at the first and last rather than
+    /// wrapping. A step of one wraps, which is a quick way round; a jump of ten that
+    /// wrapped landed somewhere near the top with nothing to say it had gone round.
+    pub fn page_selection(&mut self, delta: isize) {
+        let n = self.visible().len();
+        if n == 0 {
+            return;
+        }
+        // Saturating, so Home and End are a page of `isize::MIN` or `isize::MAX`.
+        let next = (self.selected as isize)
+            .saturating_add(delta)
+            .clamp(0, n as isize - 1);
+        self.selected = next as usize;
+    }
 }
 
 /// The row for a cloud source under `CLOUD`.

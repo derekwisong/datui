@@ -75,6 +75,8 @@ FINDING
                     cloud source (--clear-cache shows it again)
   Shift+Delete      Forget every recent entry, after confirming
   Ctrl+U            Clear the filter or path input
+  Ctrl+A            Show or hide files datui cannot read. Hidden by default;
+                    shown, they are dimmed
 
 WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, grouped under the directory

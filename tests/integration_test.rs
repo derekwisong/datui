@@ -5055,6 +5055,49 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     );
 }
 
+/// A file datui cannot read is hidden until Ctrl+A shows it, and says why on Enter.
+#[test]
+fn a_file_datui_cannot_read_is_hidden_until_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("sales.csv"), "a\n1\n").unwrap();
+    std::fs::write(dir.path().join("model.onnx"), "onnx").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.enter_home();
+    app.event(&key(KeyCode::Char('~')));
+    for c in dir.path().to_str().unwrap().chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    app.event(&key(KeyCode::Enter));
+    let ctrl_a = AppEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    app.event(&ctrl_a);
+    assert!(app.home.filter.is_empty(), "Ctrl+A is not typed");
+
+    let row_of = |app: &App, name: &str| {
+        app.home.visible().iter().position(
+            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name),
+        )
+    };
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        if row_of(&app, "model.onnx").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let model = row_of(&app, "model.onnx").expect("listed");
+    app.home.selected = model;
+    assert!(app.event(&key(KeyCode::Enter)).is_none(), "nothing opened");
+    assert_eq!(
+        app.home.status.as_deref(),
+        Some("datui does not read .onnx files")
+    );
+
+    app.event(&ctrl_a);
+    assert!(row_of(&app, "model.onnx").is_none());
+    assert!(row_of(&app, "sales.csv").is_some());
+}
+
 /// A load chosen at home that fails is reported at home. It used to put the error over
 /// the dataset open before, which is not where the user was when they chose.
 #[test]

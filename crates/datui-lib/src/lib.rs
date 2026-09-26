@@ -5330,6 +5330,8 @@ pub enum WhatEnter {
     /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
     /// browse and says so.
     Explains,
+    /// A file datui has no reader for. Enter says so, and the bar offers nothing.
+    Nothing,
 }
 
 impl App {
@@ -5361,6 +5363,7 @@ impl App {
         match entry.kind {
             discover::EntryKind::Unknown => WhatEnter::LooksFirst,
             discover::EntryKind::File => WhatEnter::OpensFile,
+            discover::EntryKind::Other => WhatEnter::Nothing,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensDirectory,
             // A plain directory, and a lake table, whose files are not its rows.
             discover::EntryKind::Directory
@@ -8679,7 +8682,11 @@ impl App {
         if self.selection_opens_the_whole_directory() {
             return None;
         }
-        (entry.kind != discover::EntryKind::File).then_some(entry.path)
+        (!matches!(
+            entry.kind,
+            discover::EntryKind::File | discover::EntryKind::Other
+        ))
+        .then_some(entry.path)
     }
 
     /// Why a prefix in an object store cannot be read as one table, when it cannot.
@@ -8912,6 +8919,13 @@ impl App {
         };
         if kind == discover::EntryKind::Directory {
             go_inside(self, path);
+            return None;
+        }
+        if kind == discover::EntryKind::Other {
+            self.home.status = Some(
+                discover::unreadable_by_name(&path)
+                    .unwrap_or_else(|| "datui has no reader for this file".to_string()),
+            );
             return None;
         }
         // A lake table's files are not its rows: the ones a delete or an update
@@ -9312,6 +9326,17 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Char('r') if ctrl => self.home_reload(),
+            KeyCode::Char('a') if ctrl => {
+                let on = self.home.selected_key();
+                self.home.hide_unreadable = !self.home.hide_unreadable;
+                self.home.status = Some(if self.home.hide_unreadable {
+                    "Hiding files datui cannot read".to_string()
+                } else {
+                    "Showing all files".to_string()
+                });
+                // The same row where it is still there; the cursor stays put otherwise.
+                self.home.reselect(on);
+            }
             KeyCode::Backspace => {
                 if self.home.filter.is_empty() {
                     self.home_ascend();

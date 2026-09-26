@@ -57,6 +57,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List what is on screen, ignoring what is cached |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, directory, then to the open data |

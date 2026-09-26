@@ -252,12 +252,12 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     }
     let directories: Vec<String> = rows
         .iter()
-        .filter(|r| r.kind != EntryKind::File)
+        .filter(|r| !matches!(r.kind, EntryKind::File | EntryKind::Other))
         .map(|r| format!("{}/", r.name))
         .collect();
     let objects: Vec<(String, u64)> = rows
         .iter()
-        .filter(|r| r.kind == EntryKind::File)
+        .filter(|r| matches!(r.kind, EntryKind::File | EntryKind::Other))
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
     // Each route asked in its own vocabulary. Feeding a local listing to the cloud
@@ -804,6 +804,9 @@ pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
     pub filter: String,
+    /// Leave out files datui has no reader for. `Ctrl+A` flips it; they are hidden by
+    /// default.
+    pub hide_unreadable: bool,
     /// Index into the flattened list of currently visible rows.
     pub selected: usize,
     /// First row of the last frame drawn, as an index into [`HomeState::visible`].
@@ -923,6 +926,7 @@ impl Default for HomeState {
             sections: Vec::new(),
             cloud: Vec::new(),
             filter: String::new(),
+            hide_unreadable: true,
             selected: 0,
             scroll: 0,
             view_height: 0,
@@ -2441,6 +2445,7 @@ impl HomeState {
             let mut matched: Vec<(&Entry, i32)> = section
                 .rows
                 .iter()
+                .filter(|row| !(self.hide_unreadable && row.kind == EntryKind::Other))
                 .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
                 .collect();
 
@@ -2872,8 +2877,10 @@ impl HomeState {
             // row on every frame that draws the home screen, and a directory of six
             // thousand partitions is every one of those rows: asking the cheap
             // question first is the difference between a free frame and a scan.
-            if matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown)
-                || entry.kind.is_lake_table()
+            if matches!(
+                entry.kind,
+                EntryKind::Directory | EntryKind::Unknown | EntryKind::Other
+            ) || entry.kind.is_lake_table()
             {
                 continue;
             }

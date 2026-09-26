@@ -1282,10 +1282,17 @@ fn entry_line<'a>(
         None if selected => Style::default().add_modifier(Modifier::REVERSED),
         _ => Style::default(),
     };
-    let name_style = if selected {
-        base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
+    // A file datui cannot read is listed so the directory reads as it is, and dimmed
+    // so the eye passes over it to the data.
+    let name_fg = if entry.kind == EntryKind::Other {
+        ctx.dimmed
     } else {
-        Style::default().fg(ctx.text_primary)
+        ctx.text_primary
+    };
+    let name_style = if selected {
+        base.fg(name_fg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(name_fg)
     };
     let kind_style = if matched_column.is_some() {
         base.fg(ctx.keybind_hints)
@@ -1843,6 +1850,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 EntryKind::Directory if door_in_there => INSIDE_AND_THE_DOOR,
                 EntryKind::Directory => "",
                 EntryKind::Unknown => "Not read yet.",
+                EntryKind::Other => "datui has no reader for this file.",
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",

@@ -279,11 +279,14 @@ Pass an `s3://`, `gs://` or `https://` URL where you would pass a path. In S3
 and GCS, Parquet is read in place with range requests, one row group at a time:
 opening fetches the footer and the first row group, <kbd>End</kbd> fetches the
 last, and a query that has to look at every row transfers about the size of the
-object. The buffer is planned inside the row group on screen, so paging never
-pulls the next group before you reach it, and crossing into it fetches that
-group once. Row groups up to `max_buffered_rows` and the `max_buffered_mb`
-budget are held whole; a larger one is read one window at a time, so small row
-groups keep both the first screen and paging cheap.
+object. Row groups up to `max_buffered_rows` and the `max_buffered_mb` budget
+are held whole; a larger one is read one window at a time, so small row groups
+keep both the first screen and paging cheap. Each group or window is fetched
+once.
+
+Paging reads ahead: as the view nears the end of the rows on hand, the next ones
+are fetched in the background while you keep paging. If you get there first, the
+page you were on stays up until the new rows arrive.
 
 A prefix of Parquet files (`s3://bucket/events/`) opens as one dataset. Its files
 are listed once, and its schema is the newest file's, so a dataset whose files

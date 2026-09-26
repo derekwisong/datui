@@ -3098,10 +3098,12 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         // looked into it. So the row is named instead. A trailing slash is a prefix
         // whatever is in the name, which is what `exports/` and `2024.01.15/` are.
         let named = path.to_string_lossy();
+        // `file_name` rather than a split on `/`, which on Windows took the whole path
+        // as its last segment and called `C:\Users\RUNNER~1\…\.tmp\orders` a file.
         let dotted = !named.ends_with('/')
-            && named
-                .rsplit('/')
-                .next()
+            && path
+                .file_name()
+                .map(|last| last.to_string_lossy())
                 .is_some_and(|last| last.trim_start_matches('.').contains('.'));
         if discover::is_data_file(path) || dotted {
             EntryKind::File
@@ -3229,6 +3231,17 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 #[cfg(test)]
 mod holds_flow_tests {
     use super::*;
+
+    /// The last segment of a Windows path is after its last `\`, so a dot higher up
+    /// does not make a directory a file.
+    #[cfg(windows)]
+    #[test]
+    fn a_dot_above_a_windows_recent_does_not_make_it_a_file() {
+        let path = Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpAzMMTE\orders");
+        assert_eq!(entry_for_path(path, true).kind, EntryKind::Unknown);
+        let file = Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpAzMMTE\a.parquet");
+        assert_eq!(entry_for_path(file, true).kind, EntryKind::File);
+    }
 
     fn counted(n: usize) -> crate::discover::Holds {
         crate::discover::Holds {

@@ -6068,6 +6068,7 @@ struct LenCount {
 ///
 /// Together because they are one thought — where to look — and apart they put this
 /// function's signature past the point where a reader can hold it.
+#[cfg(feature = "cloud")]
 struct CloudTarget<'a> {
     /// The URL as typed, which is where the bucket and scheme come from.
     full: &'a str,
@@ -8815,15 +8816,13 @@ impl App {
             // already calls a dataset is left alone: a hive root is read through its
             // partitions, and one stray `manifest.csv` beside them is not what it
             // holds — but it is the only thing in `formats`.
-            let mut reader = None;
             #[cfg(feature = "cloud")]
-            if home::is_object_store_url(&entry.path)
+            let reader = if home::is_object_store_url(&entry.path)
                 && !matches!(
                     entry.kind,
                     discover::EntryKind::Hive | discover::EntryKind::MultiFile
-                )
-            {
-                reader = Self::cloud_prefix_format(&entry.holds);
+                ) {
+                let reader = Self::cloud_prefix_format(&entry.holds);
                 // Nothing here datui has a reader for. The listing is on screen, so the
                 // refusal names what is there rather than blaming the connection.
                 if reader.is_none()
@@ -8832,7 +8831,12 @@ impl App {
                     self.home.status = Some(what);
                     return None;
                 }
-            }
+                reader
+            } else {
+                None
+            };
+            #[cfg(not(feature = "cloud"))]
+            let reader = None;
             // `hive: true` says read this as one, which is the whole of what the row
             // promises — it is also what carries partition columns through, for a
             // directory the dispatch sends down the hive route. The cloud route returns
@@ -9341,6 +9345,7 @@ impl App {
     }
 
     /// Human-readable byte size for download confirmation modal.
+    #[cfg(any(feature = "http", feature = "cloud"))]
     fn format_bytes(n: u64) -> String {
         const KB: u64 = 1024;
         const MB: u64 = KB * 1024;
@@ -9516,8 +9521,8 @@ impl App {
     /// to want out.
     #[cfg(any(feature = "http", feature = "cloud"))]
     fn spawn_remote_size_probe(&mut self, pending: PendingDownload) -> Option<AppEvent> {
-        let cloud = self.app_config.cloud.clone();
-        let runtime = self.runtime.clone();
+        #[cfg(feature = "cloud")]
+        let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
         self.spawn_bg("Checking size...", move |task_gen, tx| {
             let size = match &pending {
                 #[cfg(feature = "http")]
@@ -10245,6 +10250,7 @@ impl App {
     ///
     /// A remote row has no fingerprint to check, so `mtime` is the newest object's
     /// stamp and `size` the total, for the record's own sake.
+    #[cfg(feature = "cloud")]
     fn facts_from_cloud_footers(
         full: &str,
         files: &[cloud_hive::DatasetFile],
@@ -10305,6 +10311,7 @@ impl App {
     /// Whether a record learned from a cloud open should replace what the index has:
     /// anything replaces nothing, a whole read replaces anything, and a sampled read
     /// replaces only another sample.
+    #[cfg(feature = "cloud")]
     fn facts_worth_recording(
         existing: Option<&crate::cache::DatasetFacts>,
         new: &crate::cache::DatasetFacts,
@@ -10322,6 +10329,7 @@ impl App {
     /// record carries none, and the row shows none. Its `mtime` is the time of the
     /// open: a remote record is never fingerprinted by it, and the index evicts its
     /// oldest `mtime` first, so a zero would make these the first to go.
+    #[cfg(feature = "cloud")]
     fn record_cloud_object_facts(
         cache: Option<&crate::cache::CacheManager>,
         full: &str,
@@ -10358,6 +10366,7 @@ impl App {
         )]);
     }
 
+    #[cfg(feature = "cloud")]
     fn cloud_dataset_from_footers(
         full: &str,
         // The literal part of `full`, which for a glob is everything before its star.
@@ -10874,6 +10883,7 @@ impl App {
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
+                    let _ = url;
                     return Err(color_eyre::eyre::eyre!(
                         "S3 is not supported in this build. Rebuild with default features and set AWS credentials (e.g. AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)."
                     ));
@@ -10920,6 +10930,7 @@ impl App {
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
+                    let _ = url;
                     return Err(color_eyre::eyre::eyre!(
                         "GCS (gs://) is not supported in this build. Rebuild with default features."
                     ));

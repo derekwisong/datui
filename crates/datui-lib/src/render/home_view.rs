@@ -773,7 +773,9 @@ fn section_header<'a>(
     // a case-sensitive store is not even a valid one.
     let is_path = section.title.starts_with('/')
         || section.title.starts_with('~')
-        || section.title.contains("://");
+        || section.title.contains("://")
+        // `C:\data` and `\\server\share`.
+        || std::path::Path::new(&section.title).is_absolute();
     let mut title = if is_path {
         section.title.clone()
     } else {

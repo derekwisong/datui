@@ -75,6 +75,9 @@ features = [
     # dependency of `polars/sql`, so every build without the `sql` feature failed to
     # compile.
     "dtype-decimal",
+    # The same for `DataType::Array`, which schema_union.rs matches on; it arrived
+    # only through `polars/streaming` or `polars/sql`.
+    "dtype-array",
     "dtype-datetime",
     "dtype-time",
     "dtype-duration",

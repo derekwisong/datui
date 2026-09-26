@@ -9,7 +9,8 @@ NAVIGATION
                     → on any directory goes inside it instead, whatever its
                     label, so one partition or one file can always be reached.
                     → on a place row under Recent browses it
-  PgUp / PgDn       Move ten rows
+  PgUp / PgDn       Move ten rows, stopping at the first and last
+  Home / End        The first or last row
 
   Every letter types into the filter, so none is a key here: "json" finds json.
   Tab               Cycle the sort. The control bar names the order in effect

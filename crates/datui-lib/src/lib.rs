@@ -9458,8 +9458,10 @@ impl App {
                 }
                 None => self.home_collapse(false),
             },
-            KeyCode::PageUp => self.home.move_selection(-10),
-            KeyCode::PageDown => self.home.move_selection(10),
+            KeyCode::PageUp => self.home.page_selection(-10),
+            KeyCode::PageDown => self.home.page_selection(10),
+            KeyCode::Home => self.home.page_selection(isize::MIN),
+            KeyCode::End => self.home.page_selection(isize::MAX),
             KeyCode::Char('u') if ctrl => {
                 self.home.filter.clear();
                 self.home.sync_search_section();

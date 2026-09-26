@@ -385,6 +385,20 @@ fn test_selection_wraps_and_stays_in_range() {
         home.selected < total,
         "selection stays in range going backwards"
     );
+
+    // A page stops at the ends instead of going round.
+    home.page_selection(10);
+    assert_eq!(home.selected, total - 1, "PgDn stops at the last row");
+    home.page_selection(10);
+    assert_eq!(home.selected, total - 1, "and stays there");
+    home.page_selection(-10);
+    assert_eq!(home.selected, 0, "PgUp stops at the first");
+
+    // Home and End are a page as far as it goes, and do not overflow getting there.
+    home.page_selection(isize::MAX);
+    assert_eq!(home.selected, total - 1);
+    home.page_selection(isize::MIN);
+    assert_eq!(home.selected, 0);
 }
 
 #[test]

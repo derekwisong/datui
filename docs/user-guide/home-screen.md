@@ -37,7 +37,8 @@ Every letter types into the filter, so `json` finds json. The keys are:
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows, stopping at the first and last |
+| <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |

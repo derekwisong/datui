@@ -79,6 +79,10 @@ pub struct DataTableState {
     pub num_rows: usize,
     /// When true, collect() skips the len() query.
     num_rows_valid: bool,
+    /// The dataset's own row count, remembered from the last moment the frame was
+    /// pristine. Lets the control bar say "417 of 1,000" under a filter or query
+    /// without a second count; `None` until a pristine count has resolved.
+    pristine_rows: Option<usize>,
     /// Bumped whenever `lf` changes (via `invalidate_num_rows`). A background `len()`
     /// count carries the generation it was spawned under; a result whose generation no
     /// longer matches is stale (the data changed) and is dropped. Decoupled from
@@ -594,6 +598,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
+            pristine_rows: None,
             len_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
@@ -706,6 +711,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
+            pristine_rows: None,
             len_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
@@ -774,6 +780,9 @@ impl DataTableState {
     /// filter or sort.
     fn replace_original_lf(&mut self, lf: &LazyFrame) -> Result<()> {
         self.original_lf = lf.clone();
+        // A new root is new data; a count remembered for the old one would show as
+        // the "of" total under the first filter on this one.
+        self.pristine_rows = None;
         self.base_lf = lf.clone();
         self.schema = lf.clone().collect_schema()?;
         self.original_schema = self.schema.clone();
@@ -1149,12 +1158,33 @@ impl DataTableState {
         if sheet_names.is_empty() {
             return Err(color_eyre::eyre::eyre!("Excel file has no worksheets"));
         }
+        // Named so a bad --sheet says what to ask for instead: "0 'Sales', 1 'Summary'".
+        let sheets_on_offer = || {
+            sheet_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| format!("{} '{}'", i, name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let range = if let Some(sheet_sel) = excel_sheet {
             if let Ok(idx) = sheet_sel.parse::<usize>() {
                 workbook
                     .worksheet_range_at(idx)
-                    .ok_or_else(|| color_eyre::eyre::eyre!("Excel: no sheet at index {}", idx))?
+                    .ok_or_else(|| {
+                        color_eyre::eyre::eyre!(
+                            "Excel: no sheet at index {}; this file has: {}",
+                            idx,
+                            sheets_on_offer()
+                        )
+                    })?
                     .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
+            } else if !sheet_names.iter().any(|name| name == sheet_sel) {
+                return Err(color_eyre::eyre::eyre!(
+                    "Excel: no sheet named '{}'; this file has: {}",
+                    sheet_sel,
+                    sheets_on_offer()
+                ));
             } else {
                 workbook
                     .worksheet_range(sheet_sel)
@@ -3458,6 +3488,7 @@ impl DataTableState {
                 }
             };
             self.num_rows_valid = true;
+            self.remember_pristine_count();
         }
 
         if self.num_rows > 0 {
@@ -4065,6 +4096,7 @@ impl DataTableState {
         // else: the background len() already resolved the exact count between this
         // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
+        self.remember_pristine_count();
 
         self.observe_bytes_per_row(&full_df);
         // A fill planned to be stitched on to rows since replaced (a synchronous
@@ -4256,10 +4288,37 @@ impl DataTableState {
     pub fn set_num_rows(&mut self, n: usize) {
         self.num_rows = n;
         self.num_rows_valid = true;
+        self.remember_pristine_count();
         // A view past the end of a frame that turned out smaller comes back to it.
         if self.start_row > 0 && self.start_row >= n {
             self.start_row = n.saturating_sub(self.visible_rows);
             self.needs_recollect = true;
+        }
+    }
+
+    /// Keep the pristine frame's count for the control bar's "417 of 1,000". Only a
+    /// count already resolved for the data as loaded — never a reason to run one.
+    fn remember_pristine_count(&mut self) {
+        if self.num_rows_valid && self.error.is_none() && self.is_pristine() {
+            self.pristine_rows = Some(self.num_rows);
+        }
+    }
+
+    /// The dataset's full row count for the control bar, when the rows on screen are a
+    /// subset of it: a sidebar filter, a query in any bar or a drill-down is active and
+    /// the count from before it was applied is known. A pivot or melt makes rows that
+    /// are not the dataset's, so the comparison would mislead and none is offered.
+    /// Cheap by construction: it only reads what a pristine collect already knew.
+    pub fn total_rows_when_subset(&self) -> Option<usize> {
+        let subsetting = !self.filters.is_empty()
+            || !self.active_query.is_empty()
+            || !self.active_sql_query.is_empty()
+            || !self.active_fuzzy_query.is_empty()
+            || self.drilled_down_group_index.is_some();
+        if subsetting && self.reshaped_lf.is_none() {
+            self.pristine_rows
+        } else {
+            None
         }
     }
 
@@ -4516,6 +4575,9 @@ impl DataTableState {
         self.set_dataset_schema(dataset, file_rows, files);
         self.footers_pending = None;
         self.original_lf = lf.clone();
+        // The joined scan may hold rows the two-footer open never saw, so the count
+        // remembered for the narrow root no longer describes the dataset.
+        self.pristine_rows = None;
         self.base_lf = lf.clone();
         self.lf = lf;
         // The rows on screen were read through the old frame. Dropping the buffer has

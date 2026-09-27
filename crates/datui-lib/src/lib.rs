@@ -5454,7 +5454,7 @@ pub enum InputType {
     GoToLine,
 }
 
-/// Query dialog tab: SQL-Like (current parser), Fuzzy, or SQL (future).
+/// Query dialog tab: Query (current parser), Fuzzy, or SQL (future).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryTab {
     #[default]
@@ -5487,7 +5487,7 @@ impl QueryTab {
     }
 }
 
-/// Focus within the query dialog: tab bar or input (SQL-Like only).
+/// Focus within the query dialog: tab bar or input (Query only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryFocus {
     TabBar,
@@ -6285,7 +6285,7 @@ pub struct App {
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
     events: Sender<AppEvent>,
     debug: DebugState,
-    info_modal: InfoModal,
+    pub info_modal: InfoModal,
     parquet_metadata_cache: Option<ParquetMetadataCache>,
     query_input: TextInput, // Query input widget with history support
     sql_input: TextInput,   // SQL tab input with its own history (id "sql")
@@ -7623,6 +7623,18 @@ impl App {
         None
     }
 
+    /// Hand the export modal's path input a key, and when the value changed, follow
+    /// the typed extension with the format radio — the alternative was Parquet bytes
+    /// in a file named `out.csv`, with nothing on screen saying so. Cursor-only keys
+    /// change nothing and re-pick nothing, so a format chosen after typing stands.
+    fn export_path_key(&mut self, event: &KeyEvent) {
+        let before = self.export_modal.path_input.value().to_string();
+        self.export_modal.path_input.handle_key(event, None);
+        if self.export_modal.path_input.value() != before {
+            self.export_modal.sync_format_to_path();
+        }
+    }
+
     fn ensure_file_extension(
         path: &Path,
         format: ExportFormat,
@@ -8366,6 +8378,9 @@ impl App {
         // Reading recents touches only the cache directory, which is local by
         // definition; everything that might block happens on the worker.
         let recents = self.cache.load_recents();
+        // The same facts the listing is annotated from, kept on the home state so
+        // rows the recursive search finds can be filled in the same way.
+        self.home.known = self.cache.load_dataset_facts();
         let request = home::ListingRequest {
             config_dirs: self.app_config.data.resolved_directories(),
             recents,
@@ -8380,7 +8395,7 @@ impl App {
             probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
-            known: self.cache.load_dataset_facts(),
+            known: self.home.known.clone(),
         };
 
         self.home.listing_in_flight = true;
@@ -12422,7 +12437,7 @@ impl App {
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             // Pass to text input widget (for history navigation)
@@ -12454,7 +12469,7 @@ impl App {
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             // Pass to text input widget (for history navigation)
@@ -12476,7 +12491,7 @@ impl App {
                 KeyCode::Left | KeyCode::Char('h') => {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             self.export_modal
@@ -12498,7 +12513,7 @@ impl App {
                 KeyCode::Right | KeyCode::Char('l') => {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             self.export_modal
@@ -12660,7 +12675,7 @@ impl App {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
                             // Pass spacebar to text input
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             // Pass spacebar to text input
@@ -12686,7 +12701,7 @@ impl App {
                 | KeyCode::End => {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             self.export_modal
@@ -13099,7 +13114,6 @@ impl App {
         }
 
         if self.input_mode == InputMode::Info {
-            let on_tab_bar = self.info_modal.focus == InfoFocus::TabBar;
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
@@ -13126,11 +13140,14 @@ impl App {
                 KeyCode::BackTab if event.is_press() && schema_tab => {
                     self.info_modal.prev_focus();
                 }
-                KeyCode::Left | KeyCode::Char('h') if event.is_press() && on_tab_bar => {
+                // From anywhere in the panel: the arrows have no other job on any tab's
+                // body, and the panel opens with the body focused, so gating them on
+                // tab-bar focus made a fresh `i` then `→` do nothing.
+                KeyCode::Left | KeyCode::Char('h') if event.is_press() => {
                     let (has_partitions, has_notes) = self.info_tabs_on_offer();
                     self.info_modal.switch_tab_prev(has_partitions, has_notes);
                 }
-                KeyCode::Right | KeyCode::Char('l') if event.is_press() && on_tab_bar => {
+                KeyCode::Right | KeyCode::Char('l') if event.is_press() => {
                     let (has_partitions, has_notes) = self.info_tabs_on_offer();
                     self.info_modal.switch_tab(has_partitions, has_notes);
                 }
@@ -15874,58 +15891,11 @@ impl App {
                 None
             }
             KeyCode::Char('s') => {
-                if let Some(state) = &self.data_table_state {
-                    let headers: Vec<String> =
-                        state.schema.iter_names().map(|s| s.to_string()).collect();
-                    let locked_count = state.locked_columns_count();
-
-                    // Populate sort tab
-                    let mut existing_columns: std::collections::HashMap<String, SortColumn> = self
-                        .sort_filter_modal
-                        .sort
-                        .columns
-                        .iter()
-                        .map(|c| (c.name.clone(), c.clone()))
-                        .collect();
-                    self.sort_filter_modal.sort.columns = headers
-                        .iter()
-                        .enumerate()
-                        .map(|(i, h)| {
-                            if let Some(mut col) = existing_columns.remove(h) {
-                                col.display_order = i;
-                                col.is_locked = i < locked_count;
-                                col.is_to_be_locked = false;
-                                col
-                            } else {
-                                SortColumn {
-                                    name: h.clone(),
-                                    sort_order: None,
-                                    display_order: i,
-                                    is_locked: i < locked_count,
-                                    is_to_be_locked: false,
-                                    is_visible: true,
-                                }
-                            }
-                        })
-                        .collect();
-                    self.sort_filter_modal.sort.filter_input.clear();
-                    self.sort_filter_modal.sort.focus = SortFocus::ColumnList;
-
-                    // Populate filter tab
-                    self.sort_filter_modal.filter.available_columns = state.headers();
-                    if !self.sort_filter_modal.filter.available_columns.is_empty() {
-                        self.sort_filter_modal.filter.new_column_idx =
-                            self.sort_filter_modal.filter.new_column_idx.min(
-                                self.sort_filter_modal
-                                    .filter
-                                    .available_columns
-                                    .len()
-                                    .saturating_sub(1),
-                            );
-                    } else {
-                        self.sort_filter_modal.filter.new_column_idx = 0;
-                    }
-
+                if self.data_table_state.is_some() {
+                    // Rebuilt from the table's applied state, never from what the modal
+                    // held last time: an edit staged and then canceled must not arrive
+                    // pre-staged, one Apply away from committing silently.
+                    self.sync_sort_filter_modal();
                     self.sort_filter_modal.open(self.history_limit, &self.theme);
                     self.input_mode = InputMode::SortFilter;
                 }
@@ -18512,9 +18482,12 @@ impl App {
         }
     }
 
-    /// Bring the Sort & Filter sidebar in line with the filters and sort applied to the
-    /// frame on screen. A drill-down swaps those with the group's, and a sidebar still
-    /// showing the grouped view's would re-send a filter against a List column.
+    /// Bring the Sort & Filter sidebar in line with the state actually applied to the
+    /// frame on screen: the real column order and hidden set, the applied sort, the
+    /// active filters. Called on open, so an edit staged in the modal and then
+    /// canceled dies with it rather than arriving pre-staged next time — and after a
+    /// drill-down swap, where a sidebar still showing the grouped view's filters
+    /// would re-send one against a List column.
     fn sync_sort_filter_modal(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -18523,26 +18496,38 @@ impl App {
         let sort_columns = state.view_sort_columns().to_vec();
         let ascending = state.view_sort_ascending();
         let headers: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
-        let available = state.headers();
+        let order = state.headers();
         let locked = state.locked_columns_count();
 
         let modal = &mut self.sort_filter_modal;
         modal.filter.statements = filters;
-        modal.filter.available_columns = available;
+        modal.filter.available_columns = order.clone();
         modal.filter.new_column_idx = 0;
+        // A schema column the applied order leaves out is hidden; it lines up after
+        // the visible ones, unlocked, exactly as toggling it back on would place it.
+        let mut next_hidden_order = order.len();
         modal.sort.columns = headers
             .iter()
-            .enumerate()
-            .map(|(i, name)| SortColumn {
-                name: name.clone(),
-                sort_order: sort_columns.iter().position(|c| c == name),
-                display_order: i,
-                is_locked: i < locked,
-                is_to_be_locked: false,
-                is_visible: true,
+            .map(|name| {
+                let position = order.iter().position(|c| c == name);
+                let display_order = position.unwrap_or_else(|| {
+                    next_hidden_order += 1;
+                    next_hidden_order - 1
+                });
+                SortColumn {
+                    name: name.clone(),
+                    // 1-based: what toggling a column in the modal assigns and what
+                    // the sidebar prints.
+                    sort_order: sort_columns.iter().position(|c| c == name).map(|o| o + 1),
+                    display_order,
+                    is_locked: position.is_some_and(|p| p < locked),
+                    is_to_be_locked: false,
+                    is_visible: position.is_some(),
+                }
             })
             .collect();
         modal.sort.ascending = ascending;
+        modal.sort.has_unapplied_changes = false;
     }
 
     /// Which of the Info panel's optional tabs the current dataset offers.
@@ -19270,7 +19255,14 @@ impl Widget for &mut App {
             });
         controls = controls
             .with_row_count_pending(count_pending)
-            .with_row_count_unknown(count_unknown);
+            .with_row_count_unknown(count_unknown)
+            // "417 of 1,000" under a filter or query. Only a total something already
+            // resolved: never a reason for the chrome to read data.
+            .with_total_row_count(
+                self.data_table_state
+                    .as_ref()
+                    .and_then(|s| s.total_rows_when_subset()),
+            );
         controls.render(app_layout.control_bar, buf);
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);

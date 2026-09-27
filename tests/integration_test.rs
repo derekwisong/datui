@@ -9649,3 +9649,211 @@ fn template_modal_does_not_survive_going_home() {
         "going home closes the template modal"
     );
 }
+
+/// A helper for the modal tests: one key press with no modifiers.
+fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
+    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+}
+
+/// An edit staged in the Sort & Filter modal and then canceled dies with the modal:
+/// reopening `s` rebuilds it from the table's applied state, so nothing arrives
+/// pre-staged and Apply commits nothing stale.
+#[test]
+fn test_sort_filter_esc_discards_staged_edits() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_filter_esc_discards.csv");
+    let headers_before = app.data_table_state.as_ref().unwrap().headers();
+
+    // Open the modal, walk to the column list, and hide the first column — staged only.
+    press(&mut app, KeyCode::Char('s'));
+    assert!(app.sort_filter_modal.active);
+    press(&mut app, KeyCode::Tab); // tab bar -> body (search field)
+    press(&mut app, KeyCode::Tab); // search field -> column list
+    press(&mut app, KeyCode::Down); // select the first column
+    press(&mut app, KeyCode::Char('v'));
+    assert!(
+        app.sort_filter_modal
+            .sort
+            .columns
+            .iter()
+            .any(|c| !c.is_visible),
+        "the toggle staged a hidden column"
+    );
+
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.sort_filter_modal.active);
+
+    // Reopen: the canceled hide is gone and nothing is staged as sorted.
+    press(&mut app, KeyCode::Char('s'));
+    assert!(
+        app.sort_filter_modal
+            .sort
+            .columns
+            .iter()
+            .all(|c| c.is_visible),
+        "a canceled hide must not be staged on reopen"
+    );
+    assert!(
+        app.sort_filter_modal
+            .sort
+            .columns
+            .iter()
+            .all(|c| c.sort_order.is_none())
+    );
+
+    // And Apply straight after commits nothing.
+    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::Apply;
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.headers(),
+        headers_before,
+        "Apply after a canceled edit changes nothing"
+    );
+    assert!(state.view_sort_columns().is_empty());
+}
+
+/// The other half of the same contract: what IS applied comes back staged. A hide
+/// that was applied shows as hidden on reopen, and an applied sort shows its order.
+#[test]
+fn test_sort_filter_reopen_reflects_applied_state() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_filter_reopen.csv");
+
+    // Hide the first column and apply.
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('v'));
+    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::Apply;
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.headers(), vec!["c".to_string(), "name".to_string()]);
+
+    // Sort by "c", applied through the event the modal would send.
+    app.event(&AppEvent::Sort(vec!["c".to_string()], true));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('s'));
+    let staged = &app.sort_filter_modal.sort.columns;
+    let a = staged.iter().find(|c| c.name == "a").unwrap();
+    assert!(!a.is_visible, "the applied hide arrives staged");
+    let c = staged.iter().find(|c| c.name == "c").unwrap();
+    assert!(c.is_visible);
+    assert_eq!(c.sort_order, Some(1), "the applied sort arrives staged");
+}
+
+/// Typing a path whose extension names a format moves the format radio with it, so
+/// the export never writes Parquet bytes into a file named `out.csv`.
+#[test]
+fn test_export_format_follows_typed_extension() {
+    use datui::export_modal::ExportFormat;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("export_ext_follows.csv");
+
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.export_modal.active);
+    app.export_modal.selected_format = ExportFormat::Parquet;
+
+    let out = PathBuf::from("tests/sample-data/export_ext_follows_out.csv");
+    let _ = std::fs::remove_file(&out);
+    for ch in out.to_str().unwrap().chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(
+        app.export_modal.selected_format,
+        ExportFormat::Csv,
+        "typing a .csv path switches the format radio"
+    );
+
+    // And the export the Enter key builds carries that format.
+    match press(&mut app, KeyCode::Enter) {
+        Some(AppEvent::Export(path, format, _)) => {
+            assert_eq!(format, ExportFormat::Csv);
+            assert_eq!(path, out);
+        }
+        _ => panic!("Enter from the path input did not build an export"),
+    }
+}
+
+/// An extension that names no format leaves an explicit choice alone.
+#[test]
+fn test_export_unknown_extension_keeps_the_chosen_format() {
+    use datui::export_modal::ExportFormat;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("export_ext_unknown.csv");
+
+    press(&mut app, KeyCode::Char('e'));
+    app.export_modal.selected_format = ExportFormat::Parquet;
+    for ch in "out.dat".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Parquet);
+}
+
+/// The Info panel opens with the body focused, and the arrows switch tabs from
+/// there too: a fresh `i` then `→` reaches the next tab without a Tab first.
+#[test]
+fn test_info_panel_arrows_switch_tabs_from_the_body() {
+    use datui::widgets::info::InfoTab;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("info_arrows.csv");
+
+    press(&mut app, KeyCode::Char('i'));
+    assert!(app.info_modal.active);
+    assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
+
+    press(&mut app, KeyCode::Right);
+    assert_ne!(
+        app.info_modal.active_tab,
+        InfoTab::Schema,
+        "Right switches tabs with the body focused"
+    );
+
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
+}
+
+/// The control bar's "of" total: none while pristine, the dataset's count under a
+/// filter or query, and gone again when the filter clears. Never a fresh read — only
+/// the count the pristine frame already resolved.
+#[test]
+fn test_total_rows_offered_only_under_a_subset() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("total_under_filter.csv");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.total_rows_when_subset(),
+        None,
+        "a pristine view offers no pair"
+    );
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "1",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.total_rows_when_subset(), Some(100));
+
+    // A sort is not a subset: same rows, other order.
+    app.event(&AppEvent::Filter(vec![]));
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.total_rows_when_subset(), None);
+
+    // A query is.
+    app.event(&AppEvent::Search("select where a < 50".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.total_rows_when_subset(), Some(100));
+
+    app.event(&AppEvent::Reset);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.total_rows_when_subset(), None);
+}

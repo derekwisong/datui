@@ -9,6 +9,9 @@ Export current data to a file.
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close without exporting
 
+  Typing a known extension (.csv, .parquet, .json, .jsonl, .arrow, .avro,
+  also before .gz/.zst/.bz2/.xz) selects the matching format.
+
 Formats:
   CSV:     Comma-separated values (configurable delimiter, header)
   Parquet: Columnar format (efficient, compressed)

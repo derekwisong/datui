@@ -2,7 +2,7 @@ Dataset technical info.
 
   Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
                     On other tabs: focus stays on tab bar.
-  Left / Right:     On tab bar: switch tabs
+  Left / Right:     Switch tabs
   ↑ / ↓:            Schema tab (when focused) or Notes tab: move the cursor
   Enter:            Notes tab: take the offer on the note, where it has one
   ? / F1:           Show this help

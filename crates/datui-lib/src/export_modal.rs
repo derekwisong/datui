@@ -62,6 +62,21 @@ impl ExportFormat {
     pub fn supports_compression(self) -> bool {
         matches!(self, Self::Csv | Self::Json | Self::Ndjson)
     }
+
+    /// The format a path's extension names, looking through a trailing compression
+    /// extension so `out.csv.gz` still names CSV. None for a bare or unknown extension.
+    pub fn from_path(path: &str) -> Option<Self> {
+        let path = std::path::Path::new(path);
+        let ext = path.extension()?.to_str()?;
+        if let Some(format) = Self::from_extension(ext) {
+            return Some(format);
+        }
+        if matches!(ext.to_lowercase().as_str(), "gz" | "zst" | "bz2" | "xz") {
+            let stem = path.file_stem()?.to_str()?;
+            return Self::from_extension(stem.rsplit('.').next()?);
+        }
+        None
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +165,16 @@ impl ExportModal {
         self.active = false;
         self.focus = ExportFocus::FormatSelector;
         self.path_input.clear();
+    }
+
+    /// Follow the typed path's extension with the format radio, so `out.csv` never
+    /// silently receives Parquet bytes. An extension that names no format leaves the
+    /// radio alone, and an explicit format picked after typing stands, because this
+    /// runs only when the path itself changes.
+    pub fn sync_format_to_path(&mut self) {
+        if let Some(format) = ExportFormat::from_path(self.path_input.value().trim()) {
+            self.selected_format = format;
+        }
     }
 
     /// The fields this modal offers, in the order Tab walks them.
@@ -317,5 +342,45 @@ impl Default for ExportModal {
             compression_selection_idx: 0,
             history_limit: 1000,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_path_reads_the_extension_and_looks_through_compression() {
+        assert_eq!(ExportFormat::from_path("out.csv"), Some(ExportFormat::Csv));
+        assert_eq!(
+            ExportFormat::from_path("a/b/out.PARQUET"),
+            Some(ExportFormat::Parquet)
+        );
+        assert_eq!(
+            ExportFormat::from_path("out.csv.gz"),
+            Some(ExportFormat::Csv)
+        );
+        assert_eq!(
+            ExportFormat::from_path("out.jsonl"),
+            Some(ExportFormat::Ndjson)
+        );
+        assert_eq!(ExportFormat::from_path("out"), None);
+        assert_eq!(ExportFormat::from_path("out.dat"), None);
+        // A bare compression extension names no format either way.
+        assert_eq!(ExportFormat::from_path("out.gz"), None);
+    }
+
+    #[test]
+    fn sync_format_follows_a_known_extension_and_only_that() {
+        let mut modal = ExportModal::new();
+        modal.selected_format = ExportFormat::Parquet;
+        modal.path_input.set_value("out.csv");
+        modal.sync_format_to_path();
+        assert_eq!(modal.selected_format, ExportFormat::Csv);
+
+        modal.selected_format = ExportFormat::Parquet;
+        modal.path_input.set_value("out.dat");
+        modal.sync_format_to_path();
+        assert_eq!(modal.selected_format, ExportFormat::Parquet);
     }
 }

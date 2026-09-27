@@ -4,7 +4,8 @@ Tabbed modal: Sort (column order, sorting) and Filter (row filters).
   ← / → (h/l):      On the tab bar: switch Sort / Filter
   Ctrl+Enter:       Apply from anywhere in the modal
   ? / F1:           Show this help (F1 works in text fields)
-  Esc:              Cancel and close
+  Esc:              Cancel and close; staged changes are discarded, and
+                    reopening shows what is applied
 
 Sort tab:
   (type):           Filter the column list, when the filter field is focused

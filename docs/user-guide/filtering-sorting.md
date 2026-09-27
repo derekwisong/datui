@@ -12,7 +12,10 @@ to **Apply**, **Cancel** and **Clear**.
 | **Clear** | Reset the current tab |
 
 Filters and sort from this sidebar apply to the loaded table. To filter the
-result of a query, put the condition in the query's `where` clause.
+result of a query, put the condition in the query's `where` clause. While a
+filter or query narrows the view, the bottom bar reads `Rows: 417 of 1,000`.
+Canceling the sidebar discards whatever was staged; reopening it shows what
+is actually applied.
 
 ## Sort tab
 

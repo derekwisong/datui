@@ -133,10 +133,8 @@ fn test_full_workflow() {
             value: "1".to_string(),
             logical_op: datui::filter_modal::LogicalOperator::And,
         });
-    // Enter applies from anywhere; the tab bar is where the modal opened.
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::TabBar;
-
-    let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    // On the Filters tab Enter means add/edit; Ctrl+Enter is the apply.
+    let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
     if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
         app.event(&next_event);
     }
@@ -9899,6 +9897,22 @@ fn test_filter_editor_keyboard_flow() {
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 100);
+}
+
+/// The first filter is reachable the obvious way: s, →, Enter. The sidebar
+/// opens with focus on the tab bar, and Enter there used to apply-and-close —
+/// the one path a first session actually takes.
+#[test]
+fn test_enter_on_the_filters_tab_bar_starts_a_filter() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("filters_tab_bar_enter.csv");
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.sort_filter_modal.active, "the sidebar stays open");
+    assert!(
+        app.sort_filter_modal.filter.editor.is_some(),
+        "and the editor is up, on the add row"
+    );
 }
 
 /// Esc backs out one layer at a time: an open editor dies alone, the sidebar

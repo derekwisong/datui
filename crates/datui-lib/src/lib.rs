@@ -12138,7 +12138,12 @@ impl App {
                 }
                 // On the Filters list Enter edits the row under the cursor (or starts
                 // a new one on the add row); everywhere else Enter applies.
-                KeyCode::Enter if on_body && filter_tab => {
+                // On the Filters tab Enter means add/edit wherever focus sits — the
+                // sidebar opens on the tab bar, and Enter closing the dialog from
+                // there is how a first filter never gets added. The footer says
+                // ^Enter is the apply here.
+                KeyCode::Enter if filter_tab => {
+                    self.sort_filter_modal.focus = SortFilterFocus::Body;
                     let history_limit = self.history_limit;
                     self.sort_filter_modal
                         .filter

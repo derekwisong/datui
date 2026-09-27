@@ -4,7 +4,7 @@ filters).
   Tab / Shift+Tab:  Move focus between the tab bar and the body
   ← / →:            Switch Columns / Filters (h/l on the tab bar)
   Enter:            Apply everything staged and close
-                    (on the Filters list, Enter edits instead; see below)
+                    (on the Filters tab, Enter adds or edits instead; see below)
   Ctrl+Enter:       Apply from anywhere, including mid-edit
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Cancel and close; staged changes are discarded, and

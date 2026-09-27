@@ -101,7 +101,7 @@ Every text field, from the query prompt to a file path, edits the same way:
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | Switch Columns and Filters |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus between the tab bar and the body |
-| <kbd>Enter</kbd> | Apply and close (on the Filters list, edit the row instead) |
+| <kbd>Enter</kbd> | Apply and close (on the Filters tab, add or edit a filter instead) |
 | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply from anywhere, including mid-edit |
 | <kbd>Esc</kbd> | Close without applying |
 

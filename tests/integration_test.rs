@@ -9869,12 +9869,9 @@ fn test_filter_editor_keyboard_flow() {
     assert!(app.sort_filter_modal.filter.editor.is_none());
     assert_eq!(app.sort_filter_modal.filter.statements.len(), 1);
 
-    // Ctrl+Enter applies from anywhere.
-    let apply = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL,
-    )));
-    if let Some(next) = apply {
+    // `a` applies from the Filters tab without a modifier — Ctrl+Enter is
+    // byte-identical to Enter on terminals without the kitty protocol.
+    if let Some(next) = press(&mut app, KeyCode::Char('a')) {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);

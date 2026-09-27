@@ -12150,6 +12150,10 @@ impl App {
                         .open_editor(&self.theme, history_limit);
                 }
                 KeyCode::Enter => return self.apply_sort_filter(),
+                // Enter means add/edit on this tab, so apply gets a key that needs
+                // no modifier: Ctrl+Enter only exists on terminals speaking the
+                // kitty protocol.
+                KeyCode::Char('a') if filter_tab => return self.apply_sort_filter(),
                 // Columns list: every per-column property, one key each.
                 KeyCode::Char(' ') if on_column_list => {
                     self.sort_filter_modal.sort.cycle_sort();
@@ -19359,14 +19363,25 @@ fn finish_drain(drained: event_pump::Drained, updated: &mut bool) -> Option<Resu
             None
         }
         event_pump::Drained::Exit => {
-            ratatui::restore();
+            restore_terminal();
             Some(Ok(()))
         }
         event_pump::Drained::Crash(msg) => {
-            ratatui::restore();
+            restore_terminal();
             Some(Err(color_eyre::eyre::eyre!(msg)))
         }
     }
+}
+
+/// Undo `run`'s terminal setup: pop the keyboard flags (a no-op where they were
+/// never pushed; a terminal that ignored the push ignores the pop too), then hand
+/// back the screen.
+fn restore_terminal() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PopKeyboardEnhancementFlags
+    );
+    ratatui::restore();
 }
 
 pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
@@ -19471,6 +19486,22 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             e
         )
     })?;
+    // Without the kitty keyboard protocol, Ctrl+Enter is byte-identical to Enter and
+    // the Ctrl never reaches the app. Disambiguation alone fixes that — plain Enter,
+    // Tab and Backspace keep their legacy encodings — and the terminal keeps a
+    // separate flag stack for the alternate screen, so leaving it on exit or panic
+    // restores the shell's keyboard either way.
+    if matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        );
+    }
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let mut app = App::new_with_config(tx.clone(), rt_handle, theme, config.clone());
     app.startup_template = opts.template.clone();

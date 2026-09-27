@@ -31,13 +31,13 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
             .hint_weighted("Esc", "Cancel", 4)
     } else {
         HintBar::from_ctx(ctx)
-            .hint_weighted("^Enter", "Apply", 3)
+            .hint_weighted("a", "Apply", 3)
             .hint_weighted("Tab", "Next", 1)
             .hint_weighted("Esc", "Cancel", 4)
     };
     let footer = if !editing && modal.sort.has_unapplied_changes {
         // Staged edits give the apply chip a quiet accent: something is waiting.
-        footer.accent(if sort_tab { "Enter" } else { "^Enter" })
+        footer.accent(if sort_tab { "Enter" } else { "a" })
     } else {
         footer
     };

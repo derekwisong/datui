@@ -134,13 +134,13 @@ On the Filters tab:
 
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus: tab bar, then each sidebar field |
-| <kbd>←</kbd> <kbd>→</kbd> | Change chart type, plot style, or a numeric option |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move through a column list |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Select a column or toggle an option |
-| <kbd>+</kbd> <kbd>-</kbd> | Adjust bins, bandwidth or the row limit (<kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the row limit) |
+| <kbd>1</kbd>–<kbd>5</kbd> | Switch chart type directly (<kbd>[</kbd> <kbd>]</kbd> cycle) |
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
+| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style |
+| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, or adjust bins, bandwidth or the row limit (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the row limit) |
+| type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Space</kbd>, <kbd>Enter</kbd> | In the picker: narrow, move, toggle a Y series, choose |
 | <kbd>e</kbd> | Export to PNG or EPS |
-| <kbd>Esc</kbd> | Back to the table |
+| <kbd>Esc</kbd> | Back to the table, or out of the open picker |
 
 ## Analysis
 

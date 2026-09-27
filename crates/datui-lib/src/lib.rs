@@ -6760,17 +6760,8 @@ impl App {
                             | ChartExportFocus::HeightInput
                     )
                 } else {
-                    // The column search boxes above each list.
-                    matches!(
-                        self.chart_modal.focus,
-                        ChartFocus::XInput
-                            | ChartFocus::YInput
-                            | ChartFocus::HistInput
-                            | ChartFocus::BoxInput
-                            | ChartFocus::KdeInput
-                            | ChartFocus::HeatmapXInput
-                            | ChartFocus::HeatmapYInput
-                    )
+                    // The open column Picker narrows by typing, so it types.
+                    self.chart_modal.picker.is_some()
                 }
             }
             InputMode::Normal => {
@@ -12702,73 +12693,42 @@ impl App {
                         let next = (idx + 1) % ChartExportFormat::ALL.len();
                         self.chart_export_modal.selected_format = ChartExportFormat::ALL[next];
                     }
-                    KeyCode::Left | KeyCode::Char('h')
-                        if event.is_press()
-                            && self.chart_export_modal.focus
-                                == ChartExportFocus::FormatSelector =>
-                    {
-                        let idx = ChartExportFormat::ALL
-                            .iter()
-                            .position(|&f| f == self.chart_export_modal.selected_format)
-                            .unwrap_or(0);
-                        let prev = if idx == 0 {
-                            ChartExportFormat::ALL.len() - 1
-                        } else {
-                            idx - 1
-                        };
-                        self.chart_export_modal.selected_format = ChartExportFormat::ALL[prev];
-                    }
-                    KeyCode::Right | KeyCode::Char('l')
-                        if event.is_press()
-                            && self.chart_export_modal.focus
-                                == ChartExportFocus::FormatSelector =>
-                    {
-                        let idx = ChartExportFormat::ALL
-                            .iter()
-                            .position(|&f| f == self.chart_export_modal.selected_format)
-                            .unwrap_or(0);
-                        let next = (idx + 1) % ChartExportFormat::ALL.len();
-                        self.chart_export_modal.selected_format = ChartExportFormat::ALL[next];
-                    }
-                    KeyCode::Enter if event.is_press() => match self.chart_export_modal.focus {
-                        ChartExportFocus::PathInput | ChartExportFocus::ExportButton => {
-                            let path_str = self.chart_export_modal.path_input.value().trim();
-                            if !path_str.is_empty() {
-                                let title = self
-                                    .chart_export_modal
-                                    .title_input
-                                    .value()
-                                    .trim()
-                                    .to_string();
-                                let (width, height) = self.chart_export_modal.export_dimensions();
-                                let mut path = PathBuf::from(path_str);
-                                let format = self.chart_export_modal.selected_format;
-                                // Only add default extension when user did not provide one
-                                if path.extension().is_none() {
-                                    path.set_extension(format.extension());
-                                }
-                                let path_display = path.display().to_string();
-                                if path.exists() {
-                                    self.pending_chart_export =
-                                        Some((path, format, title, width, height));
-                                    self.chart_export_modal.close();
-                                    self.confirmation_modal.show(format!(
-                                            "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                            path_display
-                                        ));
-                                } else {
-                                    self.chart_export_modal.close();
-                                    return Some(AppEvent::ChartExport(
-                                        path, format, title, width, height,
-                                    ));
-                                }
+                    // Enter applies from anywhere in the form: build the
+                    // export from the state every row already echoes. A blank
+                    // path exports nothing.
+                    KeyCode::Enter if event.is_press() => {
+                        let path_str = self.chart_export_modal.path_input.value().trim();
+                        if !path_str.is_empty() {
+                            let title = self
+                                .chart_export_modal
+                                .title_input
+                                .value()
+                                .trim()
+                                .to_string();
+                            let (width, height) = self.chart_export_modal.export_dimensions();
+                            let mut path = PathBuf::from(path_str);
+                            let format = self.chart_export_modal.selected_format;
+                            // Only add default extension when user did not provide one
+                            if path.extension().is_none() {
+                                path.set_extension(format.extension());
+                            }
+                            let path_display = path.display().to_string();
+                            if path.exists() {
+                                self.pending_chart_export =
+                                    Some((path, format, title, width, height));
+                                self.chart_export_modal.close();
+                                self.confirmation_modal.show(format!(
+                                    "File already exists:\n{}\n\nDo you wish to overwrite this file?",
+                                    path_display
+                                ));
+                            } else {
+                                self.chart_export_modal.close();
+                                return Some(AppEvent::ChartExport(
+                                    path, format, title, width, height,
+                                ));
                             }
                         }
-                        ChartExportFocus::CancelButton => {
-                            self.chart_export_modal.close();
-                        }
-                        _ => {}
-                    },
+                    }
                     _ => {
                         if event.is_press() {
                             if self.chart_export_modal.focus == ChartExportFocus::TitleInput {
@@ -12816,10 +12776,67 @@ impl App {
                 return None;
             }
 
+            // The open Picker owns the keys: type to narrow, ↑↓ move, Space
+            // toggles on the Y series row, Enter chooses, and Esc backs out
+            // of the Picker and only the Picker.
+            if self.chart_modal.picker.is_some() {
+                match event.code {
+                    KeyCode::Esc if event.is_press() => self.chart_modal.picker = None,
+                    KeyCode::Enter if event.is_press() => self.chart_modal.picker_choose(),
+                    KeyCode::Tab if event.is_press() => {
+                        self.chart_modal.picker_choose();
+                        self.chart_modal.next_focus();
+                    }
+                    KeyCode::BackTab if event.is_press() => {
+                        self.chart_modal.picker_choose();
+                        self.chart_modal.prev_focus();
+                    }
+                    KeyCode::Up if event.is_press() => {
+                        if let Some(picker) = self.chart_modal.picker.as_mut() {
+                            picker.move_up();
+                        }
+                    }
+                    KeyCode::Down if event.is_press() => {
+                        if let Some(picker) = self.chart_modal.picker.as_mut() {
+                            picker.move_down();
+                        }
+                    }
+                    KeyCode::Char(' ')
+                        if event.is_press()
+                            && self.chart_modal.is_multi_row(self.chart_modal.focus) =>
+                    {
+                        self.chart_modal.picker_toggle();
+                    }
+                    KeyCode::Backspace if event.is_press() => {
+                        if let Some(picker) = self.chart_modal.picker.as_mut() {
+                            picker.backspace();
+                        }
+                    }
+                    KeyCode::Char(c) if event.is_press() => {
+                        if let Some(picker) = self.chart_modal.picker.as_mut() {
+                            picker.type_char(c);
+                        }
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+
             match event.code {
-                KeyCode::Char('e')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
+                // The chart kind switches from anywhere: 1-5 name a tab in
+                // order, [ and ] cycle. Safe as plain keys — with the Picker
+                // closed, nothing on this screen types.
+                KeyCode::Char(c @ '1'..='5') if event.is_press() => {
+                    let idx = c as usize - '1' as usize;
+                    self.chart_modal.set_chart_kind(ChartKind::ALL[idx]);
+                }
+                KeyCode::Char('[') if event.is_press() => {
+                    self.chart_modal.prev_chart_kind();
+                }
+                KeyCode::Char(']') if event.is_press() => {
+                    self.chart_modal.next_chart_kind();
+                }
+                KeyCode::Char('e') if event.is_press() => {
                     // Open chart export modal when there is something visible to export
                     if self.data_table_state.is_some() && self.chart_modal.can_export() {
                         self.chart_export_modal
@@ -12827,9 +12844,7 @@ impl App {
                     }
                 }
                 // q/Q do nothing in chart view (no exit)
-                KeyCode::Char('?')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
+                KeyCode::Char('?') if event.is_press() => {
                     self.show_help = true;
                 }
                 KeyCode::Esc if event.is_press() => {
@@ -12843,142 +12858,55 @@ impl App {
                 KeyCode::BackTab if event.is_press() => {
                     self.chart_modal.prev_focus();
                 }
+                // Enter or Space edits the focused row: a column row opens
+                // its Picker, a toggle flips, the style cycles.
                 KeyCode::Enter | KeyCode::Char(' ') if event.is_press() => {
                     match self.chart_modal.focus {
                         ChartFocus::YStartsAtZero => self.chart_modal.toggle_y_starts_at_zero(),
                         ChartFocus::LogScale => self.chart_modal.toggle_log_scale(),
                         ChartFocus::ShowLegend => self.chart_modal.toggle_show_legend(),
-                        ChartFocus::XList => self.chart_modal.x_list_toggle(),
-                        ChartFocus::YList => self.chart_modal.y_list_toggle(),
-                        ChartFocus::ChartType => self.chart_modal.next_chart_type(),
-                        ChartFocus::HistList => self.chart_modal.hist_list_toggle(),
-                        ChartFocus::BoxList => self.chart_modal.box_list_toggle(),
-                        ChartFocus::KdeList => self.chart_modal.kde_list_toggle(),
-                        ChartFocus::HeatmapXList => self.chart_modal.heatmap_x_list_toggle(),
-                        ChartFocus::HeatmapYList => self.chart_modal.heatmap_y_list_toggle(),
+                        ChartFocus::Style => self.chart_modal.next_chart_type(),
+                        focus if self.chart_modal.is_picker_row(focus) => {
+                            self.chart_modal.open_picker();
+                        }
                         _ => {}
                     }
                 }
-                KeyCode::Char('+') | KeyCode::Char('=')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
+                KeyCode::Char('+') | KeyCode::Char('=') if event.is_press() => {
+                    self.chart_modal.adjust_number_row(1);
+                }
+                KeyCode::Char('-') if event.is_press() => {
+                    self.chart_modal.adjust_number_row(-1);
+                }
+                KeyCode::Left | KeyCode::Char('h') if event.is_press() => {
                     match self.chart_modal.focus {
-                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(1),
-                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(1),
-                        ChartFocus::KdeBandwidth => self
-                            .chart_modal
-                            .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
-                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(1),
-                        _ => {}
+                        ChartFocus::Style => self.chart_modal.prev_chart_type(),
+                        _ => self.chart_modal.adjust_number_row(-1),
                     }
                 }
-                KeyCode::Char('-')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
+                KeyCode::Right | KeyCode::Char('l') if event.is_press() => {
                     match self.chart_modal.focus {
-                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(-1),
-                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(-1),
-                        ChartFocus::KdeBandwidth => self
-                            .chart_modal
-                            .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
-                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(-1),
-                        _ => {}
+                        ChartFocus::Style => self.chart_modal.next_chart_type(),
+                        _ => self.chart_modal.adjust_number_row(1),
                     }
                 }
-                KeyCode::Left | KeyCode::Char('h')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
-                    match self.chart_modal.focus {
-                        ChartFocus::TabBar => self.chart_modal.prev_chart_kind(),
-                        ChartFocus::ChartType => self.chart_modal.prev_chart_type(),
-                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(-1),
-                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(-1),
-                        ChartFocus::KdeBandwidth => self
-                            .chart_modal
-                            .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
-                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(-1),
-                        _ => {}
-                    }
-                }
-                KeyCode::Right | KeyCode::Char('l')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
-                    match self.chart_modal.focus {
-                        ChartFocus::TabBar => self.chart_modal.next_chart_kind(),
-                        ChartFocus::ChartType => self.chart_modal.next_chart_type(),
-                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(1),
-                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(1),
-                        ChartFocus::KdeBandwidth => self
-                            .chart_modal
-                            .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
-                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(1),
-                        _ => {}
-                    }
-                }
-                KeyCode::PageUp
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
+                KeyCode::PageUp if event.is_press() => {
                     if self.chart_modal.focus == ChartFocus::LimitRows {
                         self.chart_modal.adjust_row_limit_page(1);
                     }
                 }
-                KeyCode::PageDown
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
+                KeyCode::PageDown if event.is_press() => {
                     if self.chart_modal.focus == ChartFocus::LimitRows {
                         self.chart_modal.adjust_row_limit_page(-1);
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
-                    match self.chart_modal.focus {
-                        ChartFocus::ChartType => self.chart_modal.prev_chart_type(),
-                        ChartFocus::XList => self.chart_modal.x_list_up(),
-                        ChartFocus::YList => self.chart_modal.y_list_up(),
-                        ChartFocus::HistList => self.chart_modal.hist_list_up(),
-                        ChartFocus::BoxList => self.chart_modal.box_list_up(),
-                        ChartFocus::KdeList => self.chart_modal.kde_list_up(),
-                        ChartFocus::HeatmapXList => self.chart_modal.heatmap_x_list_up(),
-                        ChartFocus::HeatmapYList => self.chart_modal.heatmap_y_list_up(),
-                        _ => {}
-                    }
+                KeyCode::Up | KeyCode::Char('k') if event.is_press() => {
+                    self.chart_modal.prev_focus();
                 }
-                KeyCode::Down | KeyCode::Char('j')
-                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
-                {
-                    match self.chart_modal.focus {
-                        ChartFocus::ChartType => self.chart_modal.next_chart_type(),
-                        ChartFocus::XList => self.chart_modal.x_list_down(),
-                        ChartFocus::YList => self.chart_modal.y_list_down(),
-                        ChartFocus::HistList => self.chart_modal.hist_list_down(),
-                        ChartFocus::BoxList => self.chart_modal.box_list_down(),
-                        ChartFocus::KdeList => self.chart_modal.kde_list_down(),
-                        ChartFocus::HeatmapXList => self.chart_modal.heatmap_x_list_down(),
-                        ChartFocus::HeatmapYList => self.chart_modal.heatmap_y_list_down(),
-                        _ => {}
-                    }
+                KeyCode::Down | KeyCode::Char('j') if event.is_press() => {
+                    self.chart_modal.next_focus();
                 }
-                _ => {
-                    // Pass key to text inputs when focused (including h/j/k/l for typing)
-                    if event.is_press() {
-                        if self.chart_modal.focus == ChartFocus::XInput {
-                            let _ = self.chart_modal.x_input.handle_key(event, None);
-                        } else if self.chart_modal.focus == ChartFocus::YInput {
-                            let _ = self.chart_modal.y_input.handle_key(event, None);
-                        } else if self.chart_modal.focus == ChartFocus::HistInput {
-                            let _ = self.chart_modal.hist_input.handle_key(event, None);
-                        } else if self.chart_modal.focus == ChartFocus::BoxInput {
-                            let _ = self.chart_modal.box_input.handle_key(event, None);
-                        } else if self.chart_modal.focus == ChartFocus::KdeInput {
-                            let _ = self.chart_modal.kde_input.handle_key(event, None);
-                        } else if self.chart_modal.focus == ChartFocus::HeatmapXInput {
-                            let _ = self.chart_modal.heatmap_x_input.handle_key(event, None);
-                        } else if self.chart_modal.focus == ChartFocus::HeatmapYInput {
-                            let _ = self.chart_modal.heatmap_y_input.handle_key(event, None);
-                        }
-                    }
-                }
+                _ => {}
             }
             return None;
         }
@@ -15451,22 +15379,6 @@ impl App {
                         &datetime_columns,
                         self.app_config.chart.row_limit,
                     );
-                    self.chart_modal.x_input =
-                        std::mem::take(&mut self.chart_modal.x_input).with_theme(&self.theme);
-                    self.chart_modal.y_input =
-                        std::mem::take(&mut self.chart_modal.y_input).with_theme(&self.theme);
-                    self.chart_modal.hist_input =
-                        std::mem::take(&mut self.chart_modal.hist_input).with_theme(&self.theme);
-                    self.chart_modal.box_input =
-                        std::mem::take(&mut self.chart_modal.box_input).with_theme(&self.theme);
-                    self.chart_modal.kde_input =
-                        std::mem::take(&mut self.chart_modal.kde_input).with_theme(&self.theme);
-                    self.chart_modal.heatmap_x_input =
-                        std::mem::take(&mut self.chart_modal.heatmap_x_input)
-                            .with_theme(&self.theme);
-                    self.chart_modal.heatmap_y_input =
-                        std::mem::take(&mut self.chart_modal.heatmap_y_input)
-                            .with_theme(&self.theme);
                     self.chart_cache.clear();
                     self.input_mode = InputMode::Chart;
                 }

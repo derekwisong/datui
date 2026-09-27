@@ -410,8 +410,16 @@ impl Widget for &Controls {
             chip_style,
             label_style,
             Style::default().fg(self.key_color),
-        )
-        .hints(&controls);
+        );
+        // The bar is cut from the right, but the way out yields last wherever
+        // it sits: a chart bar that ends "Esc Back" must not lose exactly that
+        // chip on a narrow terminal.
+        let n = controls.len() as i32;
+        for (i, (key, label)) in controls.iter().enumerate() {
+            let way_out = matches!(*key, "Esc" | "^C" | "^Q") || *label == "Quit";
+            let weight = if way_out { n + 1 } else { n - i as i32 };
+            bar = bar.hint_weighted(key, label, weight);
+        }
         if self.notes_pending {
             bar = bar.accent("i");
         }

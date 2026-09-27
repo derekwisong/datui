@@ -16,7 +16,7 @@ pub fn render(
     chart_area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     app: &mut crate::App,
-    _ctx: &RenderContext,
+    ctx: &RenderContext,
 ) {
     Clear.render(chart_area, buf);
 
@@ -83,15 +83,15 @@ pub fn render(
         buf,
         &mut app.chart_modal,
         &app.theme,
+        ctx,
         render_data,
     );
 
     if app.chart_export_modal.active {
-        const CHART_EXPORT_MODAL_HEIGHT: u16 = 20;
-        let modal_width = (chart_area.width * 3 / 4).clamp(80, 108);
-        let modal_height = CHART_EXPORT_MODAL_HEIGHT
-            .min(chart_area.height)
-            .max(CHART_EXPORT_MODAL_HEIGHT);
+        // A commitment, so a compact centered dialog: the format list plus a
+        // row per option, never scaling with the terminal.
+        let modal_width = (chart_area.width * 3 / 4).min(66);
+        let modal_height = 8.min(chart_area.height);
         let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
         let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
         let modal_area = Rect {
@@ -104,8 +104,7 @@ pub fn render(
             modal_area,
             buf,
             &mut app.chart_export_modal,
-            _ctx.modal_border,
-            _ctx.modal_border_active,
+            ctx,
         );
     }
 }

@@ -1,8 +1,9 @@
 # Charting
 
-Press <kbd>c</kbd> to chart the current view. Tabs across the top pick the
-chart type; a sidebar picks columns and options. <kbd>Esc</kbd> returns to the
-table.
+Press <kbd>c</kbd> to chart the current view. Tabs across the top show the
+chart type — switch it from anywhere with <kbd>1</kbd>–<kbd>5</kbd> or
+<kbd>[</kbd> <kbd>]</kbd> — and the sidebar holds the active type's columns
+and options. <kbd>Esc</kbd> returns to the table.
 
 ![Charting Demo](../demos/10-charting.gif)
 
@@ -24,16 +25,17 @@ rows are used to build the chart. The default comes from `row_limit` in the
 
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus: tab bar, then each sidebar field |
-| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, change chart type. On plot style, cycle line, scatter, bar. On bins, bandwidth or limit, adjust |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move through a column list |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Select a column, or toggle a Y series or an option |
-| <kbd>+</kbd> <kbd>-</kbd> | Adjust bins, bandwidth or the row limit |
+| <kbd>1</kbd>–<kbd>5</kbd> | Switch chart type directly, from anywhere (<kbd>[</kbd> <kbd>]</kbd> cycle) |
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
+| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style |
+| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, or adjust bins, bandwidth or the row limit (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the limit) |
 | <kbd>e</kbd> | Export the chart |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table |
 
-Column lists have a search box: type part of a name to narrow them.
+In the picker: type part of a name to narrow, <kbd>↑</kbd> <kbd>↓</kbd> move,
+<kbd>Enter</kbd> chooses, <kbd>Space</kbd> toggles a Y series in or out, and
+<kbd>Esc</kbd> backs out of the picker alone.
 
 ## Export
 

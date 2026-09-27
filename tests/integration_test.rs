@@ -248,6 +248,87 @@ fn test_chart_q_does_not_exit() {
     assert_eq!(app.input_mode, InputMode::Chart);
 }
 
+/// The chart type switches from anywhere: 1-5 name a tab in order, [ and ]
+/// cycle, with no focus dance through a tab bar.
+#[test]
+fn test_chart_type_switches_from_anywhere() {
+    use datui::chart_modal::{ChartFocus, ChartKind};
+    let (mut app, _rx, _tx) = open_chart_view("chart_direct_type_test.csv");
+    let press = |app: &mut App, c: char| {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    };
+
+    press(&mut app, '4');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::Kde);
+    assert_eq!(
+        app.chart_modal.focus,
+        ChartFocus::Column,
+        "focus lands on the new form's first row"
+    );
+
+    // Deep in the KDE form, a number key still switches.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    press(&mut app, '2');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::Histogram);
+
+    press(&mut app, ']');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::BoxPlot);
+    press(&mut app, '[');
+    press(&mut app, '[');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
+
+    // While the column Picker is open, digits narrow instead of switching.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    ))); // Style -> X axis
+    press(&mut app, ' '); // open the Picker
+    assert!(app.chart_modal.picker.is_some());
+    press(&mut app, '3');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
+    assert_eq!(app.chart_modal.picker.as_ref().unwrap().filter, "3");
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        app.chart_modal.picker.is_none(),
+        "Esc closes only the Picker"
+    );
+    assert_eq!(app.input_mode, InputMode::Chart);
+}
+
+/// Columns are picked through the shared Picker: Space opens it on a column
+/// row, Enter chooses, and the choice is remembered on the row.
+#[test]
+fn test_chart_columns_picked_through_the_picker() {
+    use datui::chart_modal::ChartFocus;
+    let (mut app, _rx, _tx) = open_chart_view("chart_picker_test.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+
+    press(&mut app, KeyCode::Tab); // Style -> X axis
+    assert_eq!(app.chart_modal.focus, ChartFocus::XColumn);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter); // choose "x", the cursor's item
+    assert_eq!(app.chart_modal.x_column.as_deref(), Some("x"));
+
+    press(&mut app, KeyCode::Tab); // -> Y series
+    press(&mut app, KeyCode::Char(' ')); // open the Picker
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' ')); // toggle "y"
+    press(&mut app, KeyCode::Enter); // done
+    assert_eq!(app.chart_modal.y_columns, vec!["y".to_string()]);
+    assert!(app.chart_modal.can_export());
+}
+
 /// Opens a small x/y dataset in the chart view. Nothing is selected yet.
 fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let test_data_dir = PathBuf::from("tests/sample-data");

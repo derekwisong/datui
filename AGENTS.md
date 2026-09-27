@@ -89,7 +89,10 @@ blank values count as unset.
 
 ## Visual language
 
-Keep new UI inside it:
+The full canon — component patterns, shapes, text rules, the keybind
+compatibility contract, and the acceptance checklist for UI changes — is the
+`ui-style` skill (`.claude/skills/ui-style/SKILL.md`). Load it before any UI
+work. The short version:
 
 - One accent (`accent`, `accent_bright`) for keys, focused titles and the
   selection rail. `gradient_start`/`gradient_end` color the wordmark only.

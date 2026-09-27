@@ -309,6 +309,32 @@ fn split_tokens(tokens: &[Token], delimiter: &Token) -> Vec<Vec<Token>> {
     result
 }
 
+/// The token as the user typed it, for error messages.
+fn token_text(token: &Token) -> String {
+    match token {
+        Token::Identifier(s) => s.clone(),
+        Token::Number(n) => n.to_string(),
+        Token::String(s) => format!("\"{}\"", s),
+        Token::DateLiteral(iso) => iso.clone(),
+        Token::TimestampLiteral { iso, .. } => iso.clone(),
+        Token::Op(op) => op.clone(),
+        Token::LParen => "(".to_string(),
+        Token::RParen => ")".to_string(),
+        Token::LBracket => "[".to_string(),
+        Token::RBracket => "]".to_string(),
+        Token::Comma => ",".to_string(),
+        Token::Colon => ":".to_string(),
+        Token::Pipe => "|".to_string(),
+        Token::Dot => ".".to_string(),
+        Token::Select => "select".to_string(),
+        Token::Where => "where".to_string(),
+        Token::By => "by".to_string(),
+    }
+}
+
+/// Remedy shown when a clause keyword turns up out of place.
+const CLAUSE_ORDER: &str = "clause order is select [by group] [where conditions]";
+
 fn apply_op(left: Expr, op: &str, right: Expr) -> Result<Expr, String> {
     match op {
         "+" => Ok(left.add(right)),
@@ -660,7 +686,10 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
         }
         // Square brackets are only for function calls, not grouping
         // Parentheses are used for grouping
-        _ => Err(format!("Unexpected token in term: {:?}", tokens[0])),
+        _ => Err(format!(
+            "Unexpected '{}' where an expression was expected",
+            token_text(&tokens[0])
+        )),
     }
 }
 
@@ -816,8 +845,17 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
             Err("Expected operator".to_string())
         }
     } else {
-        // No operator found, parse as term
-        parse_term(tokens).map(|(expr, _)| expr)
+        // No operator found, parse as term. Every caller hands this a complete
+        // expression, so leftover tokens are a mistake in the query; dropping them
+        // here used to make `where x > 1 by dept` silently ignore `by dept`.
+        let (expr, remaining) = parse_term(tokens)?;
+        if let Some(extra) = remaining.first() {
+            return Err(format!(
+                "Unexpected '{}' after the expression",
+                token_text(extra)
+            ));
+        }
+        Ok(expr)
     }
 }
 
@@ -866,6 +904,33 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
     } else {
         None
     };
+    if !parts.is_empty() {
+        return Err(
+            "Unexpected second 'where': combine conditions with ',' (and) or '|' (or)".to_string(),
+        );
+    }
+
+    // `by` after `where` reads naturally but grouping comes first; catch it here,
+    // outside parentheses and brackets, so the error can name the clause order.
+    if let Some(ref wt) = where_tokens {
+        let mut depth = 0;
+        let mut bracket_depth = 0;
+        for token in wt {
+            match token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth -= 1,
+                Token::LBracket => bracket_depth += 1,
+                Token::RBracket => bracket_depth -= 1,
+                Token::By if depth == 0 && bracket_depth == 0 => {
+                    return Err(format!(
+                        "Unexpected 'by' after the where clause: {}",
+                        CLAUSE_ORDER
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
 
     // Split select/by part
     let mut select_by_parts = split_tokens(&select_by_tokens, &Token::By);
@@ -875,6 +940,9 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
     } else {
         None
     };
+    if !select_by_parts.is_empty() {
+        return Err(format!("Unexpected second 'by': {}", CLAUSE_ORDER));
+    }
 
     let mut cols = Vec::new();
     if !cols_tokens.is_empty() {
@@ -1745,6 +1813,72 @@ mod tests {
         // Same shape as the existing % test: c>c/n is c > (c/n).
         let (_, filter, _, _) = parse_query("select t, v where c>c/n").unwrap();
         assert_eq!(filter, Some(col("c").gt(col("c").div(col("n")))));
+    }
+
+    #[test]
+    fn test_by_after_where_errors_with_clause_order() {
+        // The parser used to drop `by dept` on the floor and filter as if it
+        // were never typed.
+        let err = parse_query("select name, salary where x > 1 by dept").unwrap_err();
+        assert!(
+            err.contains("Unexpected 'by' after the where clause"),
+            "{err}"
+        );
+        assert!(
+            err.contains("select [by group] [where conditions]"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_by_after_where_without_condition_operator() {
+        let err = parse_query("select where flag by dept").unwrap_err();
+        assert!(
+            err.contains("Unexpected 'by' after the where clause"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_by_inside_parens_in_where_errors_as_stray_token() {
+        // Nested in parentheses it is not a clause boundary, so the expression
+        // parser reports it instead.
+        let err = parse_query("select a where (x by g)").unwrap_err();
+        assert!(
+            err.contains("Unexpected 'by' after the expression"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_trailing_garbage_after_where_errors() {
+        let err = parse_query("select a where a > 1 2").unwrap_err();
+        assert!(err.contains("Unexpected '2' after the expression"), "{err}");
+
+        let err = parse_query("select a where null col1 foo").unwrap_err();
+        assert!(
+            err.contains("Unexpected 'foo' after the expression"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_trailing_garbage_in_select_errors() {
+        let err = parse_query("select a b").unwrap_err();
+        assert!(err.contains("Unexpected 'b' after the expression"), "{err}");
+
+        let err = parse_query("select (a, b)").unwrap_err();
+        assert!(err.contains("Unexpected ',' after the expression"), "{err}");
+    }
+
+    #[test]
+    fn test_duplicate_clauses_error() {
+        let err = parse_query("select a where x > 1 where y > 2").unwrap_err();
+        assert!(err.contains("Unexpected second 'where'"), "{err}");
+        assert!(err.contains("','"), "{err}");
+
+        let err = parse_query("select a by g by h").unwrap_err();
+        assert!(err.contains("Unexpected second 'by'"), "{err}");
     }
 
     #[test]

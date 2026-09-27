@@ -46,7 +46,7 @@ The bottom bar always shows the keys that matter on the current screen.
 Press <kbd>/</kbd> and type a query:
 
 ```
-select name, city, salary where salary > 100000 by department
+select name, city, salary by department where salary > 100000
 ```
 
 <kbd>Enter</kbd> runs it. A `by` clause groups; press <kbd>Enter</kbd> on a

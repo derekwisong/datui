@@ -29,6 +29,15 @@ pub struct Note {
     /// The name rather than the prose, because the panel has to act on it: matching a
     /// column out of a sentence is the kind of thing this module exists to avoid.
     pub read_as_text: Option<PlSmallStr>,
+    /// How many files this note already counts as passed over by the read, when it is
+    /// the one that says a mixed directory was read as its commonest format. `None`
+    /// for every other note.
+    ///
+    /// The number rather than the prose, for the same reason as `read_as_text`:
+    /// [`merged`] has to take these files back out of the footer pass's tally, and
+    /// reading a count out of a sentence is the kind of thing this module exists to
+    /// avoid.
+    pub passed_over: Option<usize>,
 }
 
 /// Whether a dataset's schema came from a sample of its files.
@@ -160,6 +169,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
             ),
             scope: scope.clone(),
             read_as_text: None,
+            passed_over: None,
         });
     }
 
@@ -208,6 +218,7 @@ pub fn left_out_note(
         ),
         scope: format!("in {}", dataset.origin),
         read_as_text: None,
+        passed_over: None,
     }
 }
 
@@ -242,6 +253,7 @@ fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
         summary: format!("{count} {verb} no rows"),
         scope: scope.to_string(),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -287,6 +299,7 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
         ),
         scope: scope.to_string(),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -344,6 +357,7 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
         ),
         scope: scope.to_string(),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -404,6 +418,7 @@ fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
             group_chrome(dataset.listed_files)
         ),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -428,6 +443,7 @@ fn text_note(column: &PlSmallStr, scope: &str) -> Note {
         summary: format!("{column} is read as text, so a filter or sort on it compares text"),
         scope: scope.to_string(),
         read_as_text: None,
+        passed_over: None,
     }
 }
 
@@ -442,11 +458,19 @@ fn text_note(column: &PlSmallStr, scope: &str) -> Note {
 /// selection from it — as far as the listing saw, which is not the same as all of it:
 /// a subtree it could not read, or one below the depth it stops at, is in neither.
 fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
+    note_about_skipped(dataset.skipped)
+}
+
+/// The note [`skipped_files_note`] writes, from the tally alone.
+///
+/// Split out so [`merged`] can rebuild it with the files the open already reported
+/// taken back out, without reading a count out of the note's own sentence.
+fn note_about_skipped(skipped: SkippedFiles) -> Option<Note> {
     let SkippedFiles {
         bookkeeping,
         not_parquet,
         empty,
-    } = dataset.skipped;
+    } = skipped;
     if not_parquet == 0 && empty == 0 {
         return None;
     }
@@ -482,6 +506,7 @@ fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
         summary: format!("in the directory, {}", said.join(", ")),
         scope: "in this directory's listing".to_string(),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -517,6 +542,7 @@ pub fn from_the_open(
             .to_string(),
             scope: scope(),
             read_as_text: None,
+            passed_over: None,
         });
     }
     if files_differ.headerless {
@@ -529,6 +555,7 @@ pub fn from_the_open(
             .to_string(),
             scope: scope(),
             read_as_text: None,
+            passed_over: None,
         });
     }
     // The same shape in one file: every column name a number, which a header almost
@@ -542,6 +569,7 @@ pub fn from_the_open(
             .to_string(),
             scope: "from the column names".to_string(),
             read_as_text: None,
+            passed_over: None,
         });
     }
     if files_differ.types {
@@ -554,6 +582,7 @@ pub fn from_the_open(
             .to_string(),
             scope: scope(),
             read_as_text: None,
+            passed_over: None,
         });
     }
     if let Some(format) = lake {
@@ -567,6 +596,7 @@ pub fn from_the_open(
             ),
             scope: format!("in this {format} table's directory"),
             read_as_text: None,
+            passed_over: None,
         });
     }
     if !left_out.is_empty() {
@@ -581,9 +611,61 @@ pub fn from_the_open(
             ),
             scope: "in this directory's listing".to_string(),
             read_as_text: None,
+            // Carried so [`merged`] can take these files back out of the footer
+            // pass's tally, which walks the same directory and counts them again.
+            passed_over: Some(left_out.iter().map(|(_, n)| n).sum()),
         });
     }
     notes
+}
+
+/// Every note the panel shows — what the open did, what the footers said, then what
+/// the view leaves out — with the one fact the first two both report said once.
+///
+/// A directory of mixed formats read as its commonest is reported by the open ("read
+/// as the commonest; 1 csv not read"), and then the footer pass walks the same
+/// directory and counts the same files among what it passed ("in the directory, 1
+/// file is not Parquet"). The open's sentence names the formats and says why they are
+/// not in the table, so it is the one kept; the footer note is rebuilt with those
+/// files taken back out, which keeps every skip only the walk can see — a stray in a
+/// partition below the top level, a name no reader claims, an empty object, a
+/// writer's bookkeeping. The two tallies never meet anywhere else: the open's is
+/// settled before a footer is read, and the walk's arrives with the dataset, so the
+/// caller that holds both halves hands them here.
+pub fn merged(
+    open: &[Note],
+    dataset: &[Note],
+    view: &[Note],
+    schema: Option<&DatasetSchema>,
+) -> Vec<Note> {
+    // What the walk said as it stands, and with the open's files taken out. Matched
+    // as a whole note rather than by its prose, and if the dataset does not hold
+    // exactly that note — a shape this module did not write — nothing is touched.
+    let rebuilt: Option<(Note, Option<Note>)> = match (
+        open.iter().find_map(|n| n.passed_over),
+        schema.map(|s| s.skipped),
+    ) {
+        (Some(covered), Some(skipped)) => note_about_skipped(skipped).map(|full| {
+            let remaining = SkippedFiles {
+                // Saturating: the open counts one level of recognized names, the
+                // walk everything it saw, so the walk's tally is never smaller —
+                // but a false "0 files are not Parquet" must stay unwritable.
+                not_parquet: skipped.not_parquet.saturating_sub(covered),
+                ..skipped
+            };
+            (full, note_about_skipped(remaining))
+        }),
+        _ => None,
+    };
+    let mut out: Vec<Note> = open.to_vec();
+    for note in dataset {
+        match &rebuilt {
+            Some((full, reduced)) if note == full => out.extend(reduced.clone()),
+            _ => out.push(note.clone()),
+        }
+    }
+    out.extend(view.iter().cloned());
+    out
 }
 
 /// A column that some files were written without. The one note that states a ratio,
@@ -615,6 +697,7 @@ fn absence_note(
         ),
         scope: scope.to_string(),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -646,6 +729,7 @@ fn conflict_note(
         // than none. `lenient_scan` asks the same question again, so the two cannot
         // disagree about which columns are on offer.
         read_as_text: column.can_read_as_text().then(|| column.name.clone()),
+        passed_over: None,
     })
 }
 
@@ -667,6 +751,7 @@ fn widening_note(column: &ColumnDrift, chosen: &str, scope: &str) -> Option<Note
         ),
         scope: scope.to_string(),
         read_as_text: None,
+        passed_over: None,
     })
 }
 
@@ -696,6 +781,102 @@ mod tests {
         for note in &notes {
             assert!(!note.summary.contains("  "), "{:?}", note.summary);
         }
+    }
+
+    /// A dataset with nothing but a skip tally, as the footer walk hands one over.
+    fn walked(skipped: SkippedFiles) -> DatasetSchema {
+        union_file_schemas(&[], SchemaOrigin::AllFooters(0)).with_skipped(skipped)
+    }
+
+    fn agree() -> crate::schema_union::Disagreement {
+        crate::schema_union::Disagreement {
+            columns: false,
+            types: false,
+            headerless: false,
+        }
+    }
+
+    /// The open and the footer walk both count what a mixed directory's read passed
+    /// over, and on screen that was the same fact twice, one wording above the other.
+    /// The open's sentence names the formats and says why, so it is the one kept.
+    #[test]
+    fn a_mixed_directory_is_not_reported_twice() {
+        let open = from_the_open(&[(crate::FileFormat::Csv, 1)], None, agree(), false);
+        let dataset = walked(SkippedFiles {
+            bookkeeping: 0,
+            not_parquet: 1,
+            empty: 0,
+        });
+        let said: Vec<String> = merged(&open, &from_dataset(&dataset), &[], Some(&dataset))
+            .into_iter()
+            .map(|n| n.summary)
+            .collect();
+        assert_eq!(
+            said,
+            [concat!(
+                "the directory holds more than one format and was read as the ",
+                "commonest; 1 csv not read"
+            )],
+            "one fact, said once, in the open's words"
+        );
+    }
+
+    /// What only the walk saw stays counted: a name no reader claims, an empty
+    /// object and a writer's bookkeeping are not among the formats the open named,
+    /// so taking the open's files out must not take these with them. The view's
+    /// notes still follow, untouched.
+    #[test]
+    fn what_only_the_walk_saw_stays_counted() {
+        let open = from_the_open(&[(crate::FileFormat::Csv, 1)], None, agree(), false);
+        let dataset = walked(SkippedFiles {
+            bookkeeping: 2,
+            not_parquet: 2,
+            empty: 1,
+        });
+        let view = [text_note(&PlSmallStr::from("n"), "in 3 files")];
+        let said: Vec<String> = merged(&open, &from_dataset(&dataset), &view, Some(&dataset))
+            .into_iter()
+            .map(|n| n.summary)
+            .collect();
+        assert_eq!(
+            said,
+            [
+                concat!(
+                    "the directory holds more than one format and was read as the ",
+                    "commonest; 1 csv not read"
+                )
+                .to_string(),
+                concat!(
+                    "in the directory, 1 file is empty and was not read, 1 file is ",
+                    "not Parquet, 2 files a writer left behind"
+                )
+                .to_string(),
+                "n is read as text, so a filter or sort on it compares text".to_string(),
+            ],
+            "the walk's own findings and the view's notes survive the merge"
+        );
+    }
+
+    /// A tally the open never spoke to is left exactly as the walk wrote it: a hive
+    /// dataset's strays live below the top level, where the open's one-level look
+    /// never reaches, and its note is the only thing that reports them.
+    #[test]
+    fn a_walk_only_tally_is_left_alone() {
+        let open = from_the_open(&[], Some("Delta"), agree(), false);
+        let dataset = walked(SkippedFiles {
+            bookkeeping: 0,
+            not_parquet: 1,
+            empty: 0,
+        });
+        let said: Vec<String> = merged(&open, &from_dataset(&dataset), &[], Some(&dataset))
+            .into_iter()
+            .map(|n| n.summary)
+            .collect();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(
+            said[1] == "in the directory, 1 file is not Parquet",
+            "different facts do not merge: {said:?}"
+        );
     }
 
     fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {

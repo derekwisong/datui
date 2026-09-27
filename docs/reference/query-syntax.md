@@ -16,7 +16,9 @@ select [columns] [by group_columns] [where conditions]
 | `where` | Optional. Filtering |
 
 Clause order is fixed and each clause appears at most once. The parser splits
-on the keywords `where` and `by`, respecting parentheses and brackets.
+on the keywords `where` and `by`, respecting parentheses and brackets. A
+misplaced or repeated clause keyword, or a stray token after an expression, is
+an error rather than being silently ignored.
 
 ## The `:` assignment (aliasing)
 

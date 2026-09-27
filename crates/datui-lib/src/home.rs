@@ -1214,33 +1214,15 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             entry_for_path(p, network_check(p))
         })
         .collect();
-    if !recent_rows.is_empty() {
-        let place_labels = place_labels(&recent_rows, known, network_check);
-        sections.push(Section {
-            title: HomeState::RECENT_SECTION.to_string(),
-            subtitle: None,
-            origin: None,
-            rows: recent_rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            // Every trace of recent use lives here. The directories recents live in
-            // used to be sections of their own, titled by path and drawn exactly like
-            // a configured directory, with `recent` at the far end of the rule the
-            // only thing saying why they were there. Now they are rows of this one.
-            grouped_by_place: true,
-            door: None,
-            place_labels,
-        });
-    }
 
     // Desktop-derived places are collected rather than expanded — see below.
     let mut elsewhere: Vec<Entry> = Vec::new();
 
     let roots = HomeState::roots_with(config_dirs, desktop_dirs, network_check);
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
+    // What the current-directory section is about to show, for the RECENT dedupe
+    // below: where it is, and the names it lists.
+    let mut cwd_listing: Option<(PathBuf, std::collections::HashSet<std::ffi::OsString>)> = None;
     for root in roots {
         // A place the desktop mentioned is listed as a directory to step into,
         // never expanded. Its contents are whatever you last opened anywhere on
@@ -1274,6 +1256,21 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         } else {
             Vec::new()
         };
+        if root.origin == RootOrigin::Cwd {
+            // Compared canonically, because the recents store canonicalizes what it
+            // keeps. A network cwd is taken as spelled: canonicalizing it is the
+            // stat on a mount that may never answer, which nothing here may make.
+            let key = if root.network {
+                root.path.clone()
+            } else {
+                crate::canonical::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone())
+            };
+            let names = rows
+                .iter()
+                .filter_map(|row| row.path.file_name().map(|n| n.to_os_string()))
+                .collect();
+            cwd_listing = Some((key, names));
+        }
         // A root that cannot be *read* stays: a network share that has stopped
         // answering is the case the section heading exists to report, and silently
         // dropping it is the worst answer.
@@ -1320,6 +1317,58 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 place_labels: Default::default(),
             },
         ));
+    }
+
+    // The current directory's datasets are listed in a section of their own
+    // directly below RECENT, with facts scanned this pass — so a RECENT place for
+    // the same directory repeated those rows, and the first screen after opening a
+    // few local files said everything twice. A recent is dropped only when the
+    // current-directory section really lists it: decided by what the sections
+    // contain rather than by the place's path alone, so a recent the scan did not
+    // surface — a hidden file, a directory cut off at the scan cap — is on screen
+    // nowhere else and stays under RECENT, keeping its place row alive when it was
+    // all the place held. A deleted recent never gets this far: the `exists`
+    // filter above already dropped it. Recents in any other directory are
+    // untouched, and a browsed directory needs no twin of this because browsing
+    // returned above with only that directory's section and no RECENT at all.
+    let recent_rows: Vec<Entry> = match &cwd_listing {
+        None => recent_rows,
+        Some((cwd, names)) => recent_rows
+            .into_iter()
+            .filter(|row| {
+                let place = place_of(&row.path);
+                // A local place is resolved before comparing, as the store resolves
+                // what it keeps; a remote one is compared as written, because
+                // canonicalizing it would stat a mount that may never answer.
+                let place = if network_check(&place) {
+                    place
+                } else {
+                    crate::canonical::canonicalize(&place).unwrap_or(place)
+                };
+                place != *cwd || !row.path.file_name().is_some_and(|n| names.contains(n))
+            })
+            .collect(),
+    };
+    if !recent_rows.is_empty() {
+        let place_labels = place_labels(&recent_rows, known, network_check);
+        sections.push(Section {
+            title: HomeState::RECENT_SECTION.to_string(),
+            subtitle: None,
+            origin: None,
+            rows: recent_rows,
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+            // Every trace of recent use lives here. The directories recents live in
+            // used to be sections of their own, titled by path and drawn exactly like
+            // a configured directory, with `recent` at the far end of the rule the
+            // only thing saying why they were there. Now they are rows of this one.
+            grouped_by_place: true,
+            door: None,
+            place_labels,
+        });
     }
 
     // The order is by why you came, not by where the rows come from: what you

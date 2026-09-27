@@ -1,5 +1,6 @@
 Keys:
-  Enter:            Run the query
+  Enter:            Run the query (reopening / restores the last query,
+                    selected: typing replaces it, arrows edit it)
   Tab:              Move focus between the input and the tab bar
   ← / → (h/l):      On the tab bar: switch Query / Fuzzy / SQL
   ↑ / ↓:            Earlier and later queries from the history

@@ -74,6 +74,12 @@ pub struct Glyphs {
     /// After a column's name in the header: this column is not in every file, or the
     /// files disagree on its type. A footnote mark, and the Info panel is the note.
     pub drift_mark: &'static str,
+    /// After a column's name in the header: the view is sorted by this column, and
+    /// which way. The header width arithmetic counts these like `drift_mark`, so both
+    /// must be one column wide in both sets. Triangles, not `arrow_left`/`arrow_right`,
+    /// which already mean "columns off-screen" in the same header row.
+    pub sort_asc: &'static str,
+    pub sort_desc: &'static str,
     /// The rail down the left edge of the row the cursor is on.
     pub rail: &'static str,
     /// Rule drawn beside a section title: resting, and under the cursor.
@@ -139,6 +145,8 @@ const UNICODE: Glyphs = Glyphs {
     absent: "·",
     conflict: "≠",
     drift_mark: "*",
+    sort_asc: "▲",
+    sort_desc: "▼",
     rail: "▎",
     rule_h: "─",
     rule_h_focused: "━",
@@ -186,6 +194,8 @@ const ASCII: Glyphs = Glyphs {
     absent: ".",
     conflict: "!",
     drift_mark: "*",
+    sort_asc: "^",
+    sort_desc: "v",
     rail: ">",
     rule_h: "-",
     rule_h_focused: "=",
@@ -306,6 +316,21 @@ mod tests {
         }
     }
 
+    /// The sort marks sit inside the header's column-width arithmetic, so each must be
+    /// exactly one column in both sets or a sorted column drifts out of line.
+    #[test]
+    fn sort_marks_are_one_column() {
+        for set in [unicode(), ascii()] {
+            for mark in [set.sort_asc, set.sort_desc] {
+                assert_eq!(
+                    UnicodeWidthStr::width(mark),
+                    1,
+                    "{mark:?} is not one column wide"
+                );
+            }
+        }
+    }
+
     /// The two sets must agree column for column, since the layout arithmetic around
     /// them is written once and used for both.
     #[test]
@@ -321,6 +346,8 @@ mod tests {
             (u.selector_blank, a.selector_blank),
             (u.collapsed, a.collapsed),
             (u.expanded, a.expanded),
+            (u.sort_asc, a.sort_asc),
+            (u.sort_desc, a.sort_desc),
         ] {
             assert_eq!(
                 UnicodeWidthStr::width(left),

@@ -39,7 +39,7 @@ filters, <kbd>c</kbd> charts, <kbd>a</kbd> analyzes, <kbd>q</kbd> quits.
   buckets your credentials reach, with rows, columns and size before you open
   anything.
 - **Answers questions.** SQL, a short query language
-  (`select a, b where c > 10 by region`), and fuzzy text search across every
+  (`select a, b by region where c > 10`), and fuzzy text search across every
   column. Sort, filter, freeze and hide columns from a sidebar.
 - **Summarizes.** Describe, distribution fitting with Q-Q plots, and a
   correlation matrix, computed on the data as filtered.

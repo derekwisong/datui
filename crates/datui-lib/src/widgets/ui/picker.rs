@@ -107,11 +107,13 @@ impl PickerState {
 }
 
 /// Draws a pick-one list: the selection carries the rail, and the tint when
-/// the list is focused. Selected-but-unfocused stays visible.
+/// the list is focused. Selected-but-unfocused stays visible. With marks it
+/// is a toggle list: each item carries a checkbox, and choosing means Space.
 pub struct Picker<'a> {
     items: Vec<&'a str>,
     selected: Option<usize>,
     focused: bool,
+    marks: Option<Vec<bool>>,
 }
 
 impl<'a> Picker<'a> {
@@ -120,6 +122,7 @@ impl<'a> Picker<'a> {
             items,
             selected,
             focused,
+            marks: None,
         }
     }
 
@@ -129,7 +132,14 @@ impl<'a> Picker<'a> {
             items,
             selected: Some(state.visible_selection()),
             focused,
+            marks: None,
         }
+    }
+
+    /// Checkbox states, one per visible item in order.
+    pub fn marks(mut self, marks: Vec<bool>) -> Self {
+        self.marks = Some(marks);
+        self
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
@@ -172,7 +182,14 @@ impl<'a> Picker<'a> {
             if is_selected && self.focused {
                 style = style.patch(ctx.highlight_style());
             }
-            Paragraph::new(format!("{}{}", marker, self.items[i]))
+            let mark = match &self.marks {
+                Some(marks) => {
+                    let on = marks.get(i).copied().unwrap_or(false);
+                    format!("{} ", if on { g.checkbox_on } else { g.checkbox_off })
+                }
+                None => String::new(),
+            };
+            Paragraph::new(format!("{}{}{}", marker, mark, self.items[i]))
                 .style(style)
                 .render(row_area, buf);
         }
@@ -309,6 +326,23 @@ mod tests {
         let picker = Picker::new(vec!["a", "b", "c", "d", "e"], Some(0), true);
         let rows = render_rows(&picker, 20, 3);
         assert!(rows[2].contains("3 more"), "got {rows:?}");
+    }
+
+    /// Marks turn the list into a toggle list: every item carries a checkbox,
+    /// on or off, so what is already chosen never has to be remembered.
+    #[test]
+    fn marks_draw_a_checkbox_on_every_item() {
+        let g = crate::glyphs::get();
+        let picker = Picker::new(vec!["dept", "region"], Some(0), true).marks(vec![true, false]);
+        let rows = render_rows(&picker, 20, 2);
+        assert!(
+            rows[0].contains(&format!("{} dept", g.checkbox_on)),
+            "got {rows:?}"
+        );
+        assert!(
+            rows[1].contains(&format!("{} region", g.checkbox_off)),
+            "got {rows:?}"
+        );
     }
 
     #[test]

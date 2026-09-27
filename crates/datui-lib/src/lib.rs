@@ -6743,14 +6743,13 @@ impl App {
                         }
                     }
             }
-            InputMode::PivotMelt => matches!(
-                self.pivot_melt_modal.focus,
-                PivotMeltFocus::PivotFilter
-                    | PivotMeltFocus::MeltFilter
-                    | PivotMeltFocus::MeltPattern
-                    | PivotMeltFocus::MeltVarName
-                    | PivotMeltFocus::MeltValName
-            ),
+            InputMode::PivotMelt => {
+                // The Picker narrows by typing, so it types too.
+                self.pivot_melt_modal.picker.is_some()
+                    || self
+                        .pivot_melt_modal
+                        .is_text_row(self.pivot_melt_modal.focus)
+            }
             InputMode::Chart => {
                 if self.chart_export_modal.active {
                     matches!(
@@ -12475,392 +12474,128 @@ impl App {
         }
 
         if self.input_mode == InputMode::PivotMelt {
-            let pivot_melt_text_focus = matches!(
-                self.pivot_melt_modal.focus,
-                PivotMeltFocus::PivotFilter
-                    | PivotMeltFocus::MeltFilter
-                    | PivotMeltFocus::MeltPattern
-                    | PivotMeltFocus::MeltVarName
-                    | PivotMeltFocus::MeltValName
-            );
+            let picker_open = self.pivot_melt_modal.picker.is_some();
+            let text_focus = !picker_open
+                && self
+                    .pivot_melt_modal
+                    .is_text_row(self.pivot_melt_modal.focus);
             let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
-            if event.code == KeyCode::Char('?') && (ctrl_help || !pivot_melt_text_focus) {
+            if event.code == KeyCode::Char('?') && (ctrl_help || (!text_focus && !picker_open)) {
                 self.show_help = true;
                 return None;
             }
+
+            // The open Picker owns the keys: type to narrow, ↑↓ move, Space
+            // toggles on a several-choice row, Enter chooses, and Esc backs
+            // out of the Picker and only the Picker.
+            if picker_open {
+                match event.code {
+                    KeyCode::Esc => self.pivot_melt_modal.picker = None,
+                    KeyCode::Enter => self.pivot_melt_modal.picker_choose(),
+                    KeyCode::Tab => {
+                        self.pivot_melt_modal.picker_choose();
+                        self.pivot_melt_modal.next_focus();
+                    }
+                    KeyCode::BackTab => {
+                        self.pivot_melt_modal.picker_choose();
+                        self.pivot_melt_modal.prev_focus();
+                    }
+                    KeyCode::Up => {
+                        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                            picker.move_up();
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                            picker.move_down();
+                        }
+                    }
+                    KeyCode::Char(' ')
+                        if self
+                            .pivot_melt_modal
+                            .is_multi_row(self.pivot_melt_modal.focus) =>
+                    {
+                        self.pivot_melt_modal.picker_toggle();
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                            picker.backspace();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                            picker.type_char(c);
+                        }
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+
             match event.code {
                 KeyCode::Esc => {
                     self.pivot_melt_modal.close();
                     self.input_mode = InputMode::Normal;
                 }
-                KeyCode::Tab => self.pivot_melt_modal.next_focus(),
-                KeyCode::BackTab => self.pivot_melt_modal.prev_focus(),
-                KeyCode::Left => {
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotAggregation {
-                        self.pivot_melt_modal.pivot_move_aggregation_step(4, 0, -1);
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
-                        self.pivot_melt_modal
-                            .pivot_filter_input
-                            .handle_key(event, None);
-                        self.pivot_melt_modal.pivot_index_table.select(None);
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter {
-                        self.pivot_melt_modal
-                            .melt_filter_input
-                            .handle_key(event, None);
-                        self.pivot_melt_modal.melt_index_table.select(None);
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern
-                        && self.pivot_melt_modal.melt_pattern_cursor > 0
-                    {
-                        self.pivot_melt_modal.melt_pattern_cursor -= 1;
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName
-                        && self.pivot_melt_modal.melt_variable_cursor > 0
-                    {
-                        self.pivot_melt_modal.melt_variable_cursor -= 1;
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName
-                        && self.pivot_melt_modal.melt_value_cursor > 0
-                    {
-                        self.pivot_melt_modal.melt_value_cursor -= 1;
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::TabBar {
-                        self.pivot_melt_modal.switch_tab();
-                    } else {
-                        self.pivot_melt_modal.prev_focus();
-                    }
-                }
-                KeyCode::Right => {
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotAggregation {
-                        self.pivot_melt_modal.pivot_move_aggregation_step(4, 0, 1);
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
-                        self.pivot_melt_modal
-                            .pivot_filter_input
-                            .handle_key(event, None);
-                        self.pivot_melt_modal.pivot_index_table.select(None);
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter {
-                        self.pivot_melt_modal
-                            .melt_filter_input
-                            .handle_key(event, None);
-                        self.pivot_melt_modal.melt_index_table.select(None);
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern {
-                        let n = self.pivot_melt_modal.melt_pattern.chars().count();
-                        if self.pivot_melt_modal.melt_pattern_cursor < n {
-                            self.pivot_melt_modal.melt_pattern_cursor += 1;
-                        }
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName {
-                        let n = self.pivot_melt_modal.melt_variable_name.chars().count();
-                        if self.pivot_melt_modal.melt_variable_cursor < n {
-                            self.pivot_melt_modal.melt_variable_cursor += 1;
-                        }
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName {
-                        let n = self.pivot_melt_modal.melt_value_name.chars().count();
-                        if self.pivot_melt_modal.melt_value_cursor < n {
-                            self.pivot_melt_modal.melt_value_cursor += 1;
-                        }
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::TabBar {
-                        self.pivot_melt_modal.switch_tab();
-                    } else {
-                        self.pivot_melt_modal.next_focus();
-                    }
-                }
-                KeyCode::Enter => match self.pivot_melt_modal.focus {
-                    PivotMeltFocus::Apply => {
-                        return match self.pivot_melt_modal.active_tab {
-                            PivotMeltTab::Pivot => {
-                                if let Some(err) = self.pivot_melt_modal.pivot_validation_error() {
-                                    self.error_modal.show(err);
-                                    None
-                                } else {
-                                    self.pivot_melt_modal
-                                        .build_pivot_spec()
-                                        .map(AppEvent::Pivot)
-                                }
+                // Enter applies from anywhere in the form; what it will do has
+                // been echoed on the spec line all along.
+                KeyCode::Enter => {
+                    return match self.pivot_melt_modal.active_tab {
+                        PivotMeltTab::Pivot => {
+                            if let Some(err) = self.pivot_melt_modal.pivot_validation_error() {
+                                self.error_modal.show(err);
+                                None
+                            } else {
+                                self.pivot_melt_modal
+                                    .build_pivot_spec()
+                                    .map(AppEvent::Pivot)
                             }
-                            PivotMeltTab::Melt => {
-                                if let Some(err) = self.pivot_melt_modal.melt_validation_error() {
-                                    self.error_modal.show(err);
-                                    None
-                                } else {
-                                    self.pivot_melt_modal.build_melt_spec().map(AppEvent::Melt)
-                                }
+                        }
+                        PivotMeltTab::Melt => {
+                            if let Some(err) = self.pivot_melt_modal.melt_validation_error() {
+                                self.error_modal.show(err);
+                                None
+                            } else {
+                                self.pivot_melt_modal.build_melt_spec().map(AppEvent::Melt)
                             }
-                        };
-                    }
-                    PivotMeltFocus::Cancel => {
-                        self.pivot_melt_modal.close();
-                        self.input_mode = InputMode::Normal;
-                    }
-                    PivotMeltFocus::Clear => {
-                        self.pivot_melt_modal.reset_form();
-                    }
-                    _ => {}
-                },
-                KeyCode::Up | KeyCode::Char('k') if !pivot_melt_text_focus => {
-                    match self.pivot_melt_modal.focus {
-                        PivotMeltFocus::PivotIndexList => {
-                            self.pivot_melt_modal.pivot_move_index_selection(false);
                         }
-                        PivotMeltFocus::PivotPivotCol => {
-                            self.pivot_melt_modal.pivot_move_pivot_selection(false);
-                        }
-                        PivotMeltFocus::PivotValueCol => {
-                            self.pivot_melt_modal.pivot_move_value_selection(false);
-                        }
-                        PivotMeltFocus::PivotAggregation => {
-                            self.pivot_melt_modal.pivot_move_aggregation_step(4, -1, 0);
-                        }
-                        PivotMeltFocus::MeltIndexList => {
-                            self.pivot_melt_modal.melt_move_index_selection(false);
-                        }
-                        PivotMeltFocus::MeltStrategy => {
-                            self.pivot_melt_modal.melt_move_strategy(false);
-                        }
-                        PivotMeltFocus::MeltType => {
-                            self.pivot_melt_modal.melt_move_type_filter(false);
-                        }
-                        PivotMeltFocus::MeltExplicitList => {
-                            self.pivot_melt_modal.melt_move_explicit_selection(false);
-                        }
-                        _ => {}
-                    }
+                    };
                 }
-                KeyCode::Down | KeyCode::Char('j') if !pivot_melt_text_focus => {
-                    match self.pivot_melt_modal.focus {
-                        PivotMeltFocus::PivotIndexList => {
-                            self.pivot_melt_modal.pivot_move_index_selection(true);
-                        }
-                        PivotMeltFocus::PivotPivotCol => {
-                            self.pivot_melt_modal.pivot_move_pivot_selection(true);
-                        }
-                        PivotMeltFocus::PivotValueCol => {
-                            self.pivot_melt_modal.pivot_move_value_selection(true);
-                        }
-                        PivotMeltFocus::PivotAggregation => {
-                            self.pivot_melt_modal.pivot_move_aggregation_step(4, 1, 0);
-                        }
-                        PivotMeltFocus::MeltIndexList => {
-                            self.pivot_melt_modal.melt_move_index_selection(true);
-                        }
-                        PivotMeltFocus::MeltStrategy => {
-                            self.pivot_melt_modal.melt_move_strategy(true);
-                        }
-                        PivotMeltFocus::MeltType => {
-                            self.pivot_melt_modal.melt_move_type_filter(true);
-                        }
-                        PivotMeltFocus::MeltExplicitList => {
-                            self.pivot_melt_modal.melt_move_explicit_selection(true);
-                        }
-                        _ => {}
-                    }
+                KeyCode::Tab | KeyCode::Down => self.pivot_melt_modal.next_focus(),
+                KeyCode::BackTab | KeyCode::Up => self.pivot_melt_modal.prev_focus(),
+                // Arrows switch tabs from the tab bar and the picked rows; a
+                // text row keeps them for its cursor.
+                KeyCode::Left | KeyCode::Right if !text_focus => {
+                    self.pivot_melt_modal.switch_tab();
                 }
-                KeyCode::Char(' ') if !pivot_melt_text_focus => match self.pivot_melt_modal.focus {
-                    PivotMeltFocus::PivotIndexList => {
-                        self.pivot_melt_modal.pivot_toggle_index_at_selection();
-                    }
-                    PivotMeltFocus::MeltIndexList => {
-                        self.pivot_melt_modal.melt_toggle_index_at_selection();
-                    }
-                    PivotMeltFocus::MeltExplicitList => {
-                        self.pivot_melt_modal.melt_toggle_explicit_at_selection();
-                    }
-                    _ => {}
-                },
-                KeyCode::Home
-                | KeyCode::End
-                | KeyCode::Char(_)
-                | KeyCode::Backspace
-                | KeyCode::Delete
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter =>
+                KeyCode::Char('h') | KeyCode::Char('l')
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::TabBar =>
                 {
-                    self.pivot_melt_modal
-                        .pivot_filter_input
-                        .handle_key(event, None);
-                    self.pivot_melt_modal.pivot_index_table.select(None);
+                    self.pivot_melt_modal.switch_tab();
                 }
-                KeyCode::Home
-                | KeyCode::End
-                | KeyCode::Char(_)
-                | KeyCode::Backspace
-                | KeyCode::Delete
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter =>
+                // A picked row edits through the Picker scoped to that row
+                // alone: Space opens it, typing opens it already narrowed.
+                KeyCode::Char(' ')
+                    if self
+                        .pivot_melt_modal
+                        .is_picker_row(self.pivot_melt_modal.focus) =>
                 {
-                    self.pivot_melt_modal
-                        .melt_filter_input
-                        .handle_key(event, None);
-                    self.pivot_melt_modal.melt_index_table.select(None);
+                    self.pivot_melt_modal.open_picker();
                 }
-                KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
-                    self.pivot_melt_modal.melt_pattern_cursor = 0;
-                }
-                KeyCode::End if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
-                    self.pivot_melt_modal.melt_pattern_cursor =
-                        self.pivot_melt_modal.melt_pattern.chars().count();
-                }
-                KeyCode::Char(c) if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
-                    let byte_pos: usize = self
+                KeyCode::Char(c)
+                    if self
                         .pivot_melt_modal
-                        .melt_pattern
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_pattern_cursor)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    self.pivot_melt_modal.melt_pattern.insert(byte_pos, c);
-                    self.pivot_melt_modal.melt_pattern_cursor += 1;
-                }
-                KeyCode::Backspace
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern
-                        && self.pivot_melt_modal.melt_pattern_cursor > 0 =>
+                        .is_picker_row(self.pivot_melt_modal.focus) =>
                 {
-                    let prev_byte: usize = self
-                        .pivot_melt_modal
-                        .melt_pattern
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_pattern_cursor - 1)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    if let Some(ch) = self.pivot_melt_modal.melt_pattern[prev_byte..]
-                        .chars()
-                        .next()
-                    {
-                        self.pivot_melt_modal
-                            .melt_pattern
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_pattern_cursor -= 1;
+                    self.pivot_melt_modal.open_picker();
+                    if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                        picker.type_char(c);
                     }
                 }
-                KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
-                    let n = self.pivot_melt_modal.melt_pattern.chars().count();
-                    if self.pivot_melt_modal.melt_pattern_cursor < n {
-                        let byte_pos: usize = self
-                            .pivot_melt_modal
-                            .melt_pattern
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_pattern_cursor)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        if let Some(ch) = self.pivot_melt_modal.melt_pattern[byte_pos..]
-                            .chars()
-                            .next()
-                        {
-                            self.pivot_melt_modal
-                                .melt_pattern
-                                .drain(byte_pos..byte_pos + ch.len_utf8());
-                        }
-                    }
-                }
-                KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
-                    self.pivot_melt_modal.melt_variable_cursor = 0;
-                }
-                KeyCode::End if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
-                    self.pivot_melt_modal.melt_variable_cursor =
-                        self.pivot_melt_modal.melt_variable_name.chars().count();
-                }
-                KeyCode::Char(c) if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
-                    let byte_pos: usize = self
-                        .pivot_melt_modal
-                        .melt_variable_name
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_variable_cursor)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    self.pivot_melt_modal.melt_variable_name.insert(byte_pos, c);
-                    self.pivot_melt_modal.melt_variable_cursor += 1;
-                }
-                KeyCode::Backspace
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName
-                        && self.pivot_melt_modal.melt_variable_cursor > 0 =>
-                {
-                    let prev_byte: usize = self
-                        .pivot_melt_modal
-                        .melt_variable_name
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_variable_cursor - 1)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    if let Some(ch) = self.pivot_melt_modal.melt_variable_name[prev_byte..]
-                        .chars()
-                        .next()
-                    {
-                        self.pivot_melt_modal
-                            .melt_variable_name
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_variable_cursor -= 1;
-                    }
-                }
-                KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
-                    let n = self.pivot_melt_modal.melt_variable_name.chars().count();
-                    if self.pivot_melt_modal.melt_variable_cursor < n {
-                        let byte_pos: usize = self
-                            .pivot_melt_modal
-                            .melt_variable_name
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_variable_cursor)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        if let Some(ch) = self.pivot_melt_modal.melt_variable_name[byte_pos..]
-                            .chars()
-                            .next()
-                        {
-                            self.pivot_melt_modal
-                                .melt_variable_name
-                                .drain(byte_pos..byte_pos + ch.len_utf8());
-                        }
-                    }
-                }
-                KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
-                    self.pivot_melt_modal.melt_value_cursor = 0;
-                }
-                KeyCode::End if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
-                    self.pivot_melt_modal.melt_value_cursor =
-                        self.pivot_melt_modal.melt_value_name.chars().count();
-                }
-                KeyCode::Char(c) if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
-                    let byte_pos: usize = self
-                        .pivot_melt_modal
-                        .melt_value_name
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_value_cursor)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    self.pivot_melt_modal.melt_value_name.insert(byte_pos, c);
-                    self.pivot_melt_modal.melt_value_cursor += 1;
-                }
-                KeyCode::Backspace
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName
-                        && self.pivot_melt_modal.melt_value_cursor > 0 =>
-                {
-                    let prev_byte: usize = self
-                        .pivot_melt_modal
-                        .melt_value_name
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_value_cursor - 1)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    if let Some(ch) = self.pivot_melt_modal.melt_value_name[prev_byte..]
-                        .chars()
-                        .next()
-                    {
-                        self.pivot_melt_modal
-                            .melt_value_name
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_value_cursor -= 1;
-                    }
-                }
-                KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
-                    let n = self.pivot_melt_modal.melt_value_name.chars().count();
-                    if self.pivot_melt_modal.melt_value_cursor < n {
-                        let byte_pos: usize = self
-                            .pivot_melt_modal
-                            .melt_value_name
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_value_cursor)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        if let Some(ch) = self.pivot_melt_modal.melt_value_name[byte_pos..]
-                            .chars()
-                            .next()
-                        {
-                            self.pivot_melt_modal
-                                .melt_value_name
-                                .drain(byte_pos..byte_pos + ch.len_utf8());
-                        }
+                // A text row is an ordinary text field, readline included.
+                _ if text_focus => {
+                    if let Some(input) = self.pivot_melt_modal.focused_text_input_mut() {
+                        let _ = input.handle_key(event, None);
                     }
                 }
                 _ => {}

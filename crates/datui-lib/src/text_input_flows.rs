@@ -392,16 +392,18 @@ fn the_export_modal_takes_a_path() {
 }
 
 #[test]
-fn the_pivot_and_melt_modal_filters_columns_as_you_type() {
+fn the_pivot_and_melt_modal_opens_a_picker_narrowed_as_you_type() {
     let mut h = Harness::with_data();
 
     h.press(KeyCode::Char('p'));
     assert_eq!(h.app.input_mode, InputMode::PivotMelt);
-    h.app.pivot_melt_modal.focus = crate::pivot_melt_modal::PivotMeltFocus::PivotFilter;
+    h.app.pivot_melt_modal.focus = crate::pivot_melt_modal::PivotMeltFocus::PivotIndex;
 
+    // Typing on a picked row opens its Picker already narrowed.
     h.type_str("na");
-    assert_eq!(h.app.pivot_melt_modal.pivot_filter_input.value(), "na");
-    assert_eq!(drawn(&h.app.pivot_melt_modal.pivot_filter_input, 20), "na");
+    let picker = h.app.pivot_melt_modal.picker.as_ref().expect("picker open");
+    assert_eq!(picker.filter, "na");
+    assert!(picker.filtered().iter().all(|(_, c)| c.contains("na")));
 }
 
 #[test]

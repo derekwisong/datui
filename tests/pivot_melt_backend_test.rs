@@ -396,9 +396,9 @@ fn test_pivot_via_modal_apply() {
     app.pivot_melt_modal.index_columns = vec!["id".to_string(), "date".to_string()];
     app.pivot_melt_modal.pivot_column = Some("key".to_string());
     app.pivot_melt_modal.value_column = Some("value".to_string());
-    app.pivot_melt_modal.aggregation_idx = 0;
-    app.pivot_melt_modal.focus = PivotMeltFocus::Apply;
+    app.pivot_melt_modal.aggregation = PivotAggregation::Last;
 
+    // Enter applies from anywhere in the form.
     let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let mut next = app.event(&ev);
     while let Some(n) = next.take() {
@@ -432,10 +432,12 @@ fn test_melt_via_modal_apply() {
     app.pivot_melt_modal.melt_index_columns = vec!["id".to_string(), "date".to_string()];
     app.pivot_melt_modal.melt_value_strategy =
         datui::pivot_melt_modal::MeltValueStrategy::AllExceptIndex;
-    app.pivot_melt_modal.melt_variable_name = "variable".to_string();
-    app.pivot_melt_modal.melt_value_name = "value".to_string();
-    app.pivot_melt_modal.focus = PivotMeltFocus::Apply;
+    app.pivot_melt_modal
+        .melt_variable_input
+        .set_value("variable");
+    app.pivot_melt_modal.melt_value_input.set_value("value");
 
+    // Enter applies from anywhere in the form.
     let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let mut next = app.event(&ev);
     while let Some(n) = next.take() {
@@ -452,6 +454,82 @@ fn test_melt_via_modal_apply() {
     assert!(names.contains(&"id"));
     assert!(names.contains(&"date"));
     assert!(df.height() > 0);
+}
+
+/// The whole pivot driven by keys alone: Tab to a row, Space or typing opens
+/// its Picker, Enter chooses, Enter applies from anywhere.
+#[test]
+fn test_pivot_via_keys_only() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
+    load_file(&mut app, &rx, path);
+
+    send_key(&mut app, KeyCode::Char('p'));
+    assert!(app.pivot_melt_modal.active);
+
+    // Index: toggle id and date in the row's Picker.
+    send_key(&mut app, KeyCode::Tab);
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::PivotIndex);
+    send_key(&mut app, KeyCode::Char(' ')); // opens the picker
+    assert!(app.pivot_melt_modal.picker.is_some());
+    send_key(&mut app, KeyCode::Char(' ')); // toggles id
+    send_key(&mut app, KeyCode::Down);
+    send_key(&mut app, KeyCode::Char(' ')); // toggles date
+    send_key(&mut app, KeyCode::Enter); // done
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert_eq!(app.pivot_melt_modal.index_columns, ["id", "date"]);
+
+    // Columns: typing opens the Picker already narrowed; Enter chooses.
+    send_key(&mut app, KeyCode::Tab);
+    send_key(&mut app, KeyCode::Char('k'));
+    send_key(&mut app, KeyCode::Enter);
+    assert_eq!(app.pivot_melt_modal.pivot_column, Some("key".to_string()));
+
+    // Values.
+    send_key(&mut app, KeyCode::Tab);
+    send_key(&mut app, KeyCode::Char('v'));
+    send_key(&mut app, KeyCode::Char('a'));
+    send_key(&mut app, KeyCode::Enter);
+    assert_eq!(app.pivot_melt_modal.value_column, Some("value".to_string()));
+
+    // Apply from the row the cursor is on.
+    let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut next = app.event(&ev);
+    while let Some(n) = next.take() {
+        next = app.event(&n);
+    }
+
+    assert!(!app.pivot_melt_modal.active);
+    let state = app.data_table_state.as_ref().unwrap();
+    let df = state.lf.clone().collect().unwrap();
+    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+    assert!(names.contains(&"A") && names.contains(&"B") && names.contains(&"C"));
+}
+
+/// Esc backs out one layer at a time: the Picker first, then the modal.
+#[test]
+fn test_esc_closes_the_picker_before_the_modal() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
+    load_file(&mut app, &rx, path);
+
+    send_key(&mut app, KeyCode::Char('p'));
+    send_key(&mut app, KeyCode::Tab);
+    send_key(&mut app, KeyCode::Char(' '));
+    assert!(app.pivot_melt_modal.picker.is_some());
+
+    send_key(&mut app, KeyCode::Esc);
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert!(app.pivot_melt_modal.active, "the modal outlives its picker");
+    assert_eq!(app.input_mode, InputMode::PivotMelt);
+
+    send_key(&mut app, KeyCode::Esc);
+    assert!(!app.pivot_melt_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
 }
 
 /// Save a template after pivot, reload file, apply via T, and verify pivoted result.

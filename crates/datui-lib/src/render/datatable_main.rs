@@ -194,16 +194,7 @@ pub fn render(
     }
 
     if app.pivot_melt_modal.active {
-        pivot_melt::render_shell(
-            sort_area,
-            buf,
-            &mut app.pivot_melt_modal,
-            ctx.modal_border,
-            ctx.modal_border_active,
-            ctx.text_primary,
-            ctx.text_inverse,
-            ctx.highlight_style(),
-        );
+        pivot_melt::render(sort_area, buf, &mut app.pivot_melt_modal, ctx);
     }
 
     if app.export_modal.active {

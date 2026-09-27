@@ -108,7 +108,7 @@ exclude_columns = ["year", "*_id", "zip"]   # never group these (globs)
 Every value in a grouped column is grouped, with no size threshold. Use
 `exclude_columns` for numbers that are labels: years, IDs, postcodes.
 
-Formatting is display-only. Exports, queries, filters and templates use the raw
+Formatting is display-only. Exports, queries, filters and views use the raw
 values. Datui does not read your locale unless you ask with `"system"`: a data
 file has no locale, and `LC_NUMERIC` is unset on most servers.
 
@@ -310,7 +310,7 @@ and so is any key datui does not recognize, with the key named. A variable that 
 named but not set is reported when the source is used; the source never falls back
 to other keys in the environment.
 
-### Query, templates, debug
+### Query, views, debug
 
 ```toml
 [query]
@@ -318,7 +318,7 @@ history_limit = 1000     # Queries remembered
 enable_history = true
 
 [templates]
-auto_apply = false       # Apply the best-matching template when a file opens
+auto_apply = false       # Apply the best-matching view when a file opens
 
 [debug]
 enabled = false          # Debug overlay (--debug)

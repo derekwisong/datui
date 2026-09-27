@@ -274,10 +274,10 @@ fn the_sort_and_filter_modal_filters_columns_as_you_type() {
 }
 
 #[test]
-fn the_template_description_holds_several_lines() {
+fn the_view_description_holds_several_lines() {
     let mut h = Harness::with_data();
 
-    h.press(KeyCode::Char('t'));
+    h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     // Move focus from the name field to the description.
     h.press(KeyCode::Tab);
@@ -286,17 +286,17 @@ fn the_template_description_holds_several_lines() {
     h.press(KeyCode::Enter);
     h.type_str("second");
 
-    let description = &h.app.template_modal.create_description_input;
+    let description = &h.app.template_modal.description_input;
     assert_eq!(description.value(), "first\nsecond");
     assert_eq!(description.line_count(), 2);
     assert_eq!(description.cursor_line(), 1);
 }
 
 #[test]
-fn the_template_description_pages_through_its_lines() {
+fn the_view_description_pages_through_its_lines() {
     let mut h = Harness::with_data();
 
-    h.press(KeyCode::Char('t'));
+    h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     h.press(KeyCode::Tab);
 
@@ -306,44 +306,32 @@ fn the_template_description_pages_through_its_lines() {
             h.press(KeyCode::Enter);
         }
     }
-    assert_eq!(
-        h.app.template_modal.create_description_input.cursor_line(),
-        7
-    );
+    assert_eq!(h.app.template_modal.description_input.cursor_line(), 7);
 
     h.press(KeyCode::PageUp);
-    assert_eq!(
-        h.app.template_modal.create_description_input.cursor_line(),
-        2
-    );
+    assert_eq!(h.app.template_modal.description_input.cursor_line(), 2);
     h.press(KeyCode::PageUp);
-    assert_eq!(
-        h.app.template_modal.create_description_input.cursor_line(),
-        0
-    );
+    assert_eq!(h.app.template_modal.description_input.cursor_line(), 0);
     h.press(KeyCode::PageDown);
-    assert_eq!(
-        h.app.template_modal.create_description_input.cursor_line(),
-        5
-    );
+    assert_eq!(h.app.template_modal.description_input.cursor_line(), 5);
 }
 
 #[test]
-fn the_template_name_field_takes_text() {
+fn the_view_name_field_takes_text() {
     let mut h = Harness::with_data();
 
-    h.press(KeyCode::Char('t'));
+    h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     // Creating from a loaded file pre-fills a suggested name; clear it first.
-    let suggested = h.app.template_modal.create_name_input.value().to_string();
+    let suggested = h.app.template_modal.name_input.value().to_string();
     assert!(!suggested.is_empty(), "a name should be suggested");
     for _ in 0..suggested.chars().count() {
         h.press(KeyCode::Backspace);
     }
     h.type_str("by age");
 
-    assert_eq!(h.app.template_modal.create_name_input.value(), "by age");
-    assert_eq!(drawn(&h.app.template_modal.create_name_input, 20), "by age");
+    assert_eq!(h.app.template_modal.name_input.value(), "by age");
+    assert_eq!(drawn(&h.app.template_modal.name_input, 20), "by age");
 }
 
 #[test]

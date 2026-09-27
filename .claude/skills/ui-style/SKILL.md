@@ -123,7 +123,7 @@ divide space inside a Surface without borders.
 Four shapes, chosen by what the user needs to keep seeing:
 
 - **Sidebar** (right, data stays visible): iterative controls whose effect
-  you watch — Sort & Filter, chart options, templates.
+  you watch — Sort & Filter, chart options, views.
 - **Centered dialog** (small): a commitment — confirm, export, errors.
 - **Takeover** (full screen): a different way of looking — analysis, chart
   canvas.
@@ -196,7 +196,8 @@ leaving:
   home. (An approved evolution of `q` to "pop to home when home is in the
   stack" is tracked in the navigation issue; until it lands, `q` quits.)
 - `?` and F1 for help, including home's empty-filter `?`.
-- The feature keys: `/ s c a p e i t T r R N F D H`, Enter-to-drill.
+- The feature keys: `/ s c a p e i v V r R N F D H`, Enter-to-drill.
+  (#317 moved the views list from `t`/`T` to `v`/`V` with the rename.)
 - Text fields keep their readline bindings.
 - Home's type-to-filter: every printable except `?` (empty filter only) and
   `~` goes to the filter. Never assign a letter key on the home screen.

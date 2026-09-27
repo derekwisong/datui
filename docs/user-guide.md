@@ -13,7 +13,7 @@ One page per feature. Every key is also listed in
 | [Analysis](user-guide/analysis-features.md) | <kbd>a</kbd> | Describe, distribution fitting, correlation matrix |
 | [Pivot and Melt](user-guide/reshaping.md) | <kbd>p</kbd> | Reshape between long and wide |
 | [Exporting Data](user-guide/exporting-data.md) | <kbd>e</kbd> | Write the current view to CSV, Parquet, JSON, NDJSON, Arrow or Avro |
-| [Templates](user-guide/templates.md) | <kbd>t</kbd> | Save a query, filters and sort and replay them on similar files |
+| [Views](user-guide/views.md) | <kbd>v</kbd> | Save a query, filters and sort and replay them on similar files |
 | [Dataset Info](user-guide/dataset-info.md) | <kbd>i</kbd> | Schema, resources and partitions |
 | [Python Module](user-guide/python-module.md) | | `datui.view(df)` from Python |
 | [Configuration](user-guide/configuration.md) | | The config file: loading defaults, display, colors, data directories |

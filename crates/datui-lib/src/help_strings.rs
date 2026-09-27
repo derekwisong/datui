@@ -48,8 +48,8 @@ pub fn home() -> &'static str {
     include_help!("home")
 }
 
-pub fn template() -> &'static str {
-    include_help!("template")
+pub fn views() -> &'static str {
+    include_help!("views")
 }
 
 pub fn analysis_distribution_detail() -> &'static str {

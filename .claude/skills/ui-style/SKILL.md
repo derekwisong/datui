@@ -135,6 +135,46 @@ switch tabs whenever a tab bar exists, from anywhere in the Surface. Focus
 never silently jumps (the analysis screen's jump-to-results is a defect, not
 a pattern). Selection that is not focused stays visible, dimmed.
 
+## Every terminal, every size
+
+datui runs on a truecolor desktop terminal, over SSH with a C locale and a
+bitmap font, maximized on an ultrawide, and in a 60-column strip parked in
+the corner of someone's screen. A screen is not done until it works in all
+four, and neither extreme is the one that suffers.
+
+**Capability tiers.** Four, degrading independently: UTF-8 → ASCII (the
+glyphs.rs twin sets), and truecolor → 256 → 16-color ANSI (ColorConfig does
+the mapping). Every screen must be legible at the floor of both — check
+with `LANG=C` and with `TERM` forced to a 16-color terminal. Meaning may
+never live only in a glyph or only in a color: the ASCII twin carries the
+same distinction, and a 16-color palette still separates accent, dimmed and
+error. Never assume the font: no Nerd Font glyphs, and new Unicode comes
+from blocks any UTF-8 font covers, chosen Neutral width (not Ambiguous, or
+East Asian locales render it double-wide and columns shear).
+
+**Small windows.** The baseline is full usability at 80×24, and graceful
+loss down to roughly 60×20. When width runs out, elements yield in reverse
+order of importance: conveniences first, primary actions next, the way out
+(Esc/quit chip) last, the data never — which is why the control bar is
+built most-important-leftmost and cut from the right. Sidebars cap their
+share of the width and collapse before the table does; overlays scroll
+inside a capped frame rather than growing past the screen; nothing ever
+wraps a table row. When height runs out, footers and headers stay, content
+scrolls, and partial items are counted ("… 3 more") rather than half-drawn.
+
+**Ultrawides.** The failure mode is distance, not space. Facts a decision
+needs must sit next to the thing decided about — the locality marker lives
+beside the row's name, not only in a details pane a foot to the right, for
+exactly this reason. Reading surfaces (help, notes, detail panes) cap their
+line length at a comfortable measure instead of stretching; tables may use
+the width, prose may not. Centered dialogs stay compact rather than scaling
+with the terminal.
+
+**No jitter.** Labels arriving asynchronously, spinner frames, and count
+updates must not move anything around them: equal-width frames, reserved
+columns, and same-width glyph pairs are the rule everywhere something
+updates in place.
+
 ## Keybind compatibility contract
 
 Frozen — users may be retrained on form internals, never on moving and
@@ -161,6 +201,8 @@ release-notes line updated in the same PR.
 - [ ] All local keys in a HintBar footer, chip grammar, primary first.
 - [ ] No `Color::` literals; no `REVERSED` outside the theme helper; every
       glyph from `glyphs.rs`; `LANG=C` screenshot is clean.
+- [ ] Usable at 80×24 and degrades sanely to ~60×20; reading surfaces cap
+      their measure on wide terminals; nothing jitters as labels arrive.
 - [ ] Esc discards; Enter applies; reopening shows applied state.
 - [ ] View-changing state visible on the main screen after the surface
       closes.

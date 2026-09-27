@@ -422,7 +422,7 @@ fn estimate_bytes_per_row(
         .iter()
         .map(|name| match schema.get(name.as_str()) {
             Some(DataType::String) => 16 + footer_width(name).unwrap_or(STRING_BYTES_GUESS - 16),
-            Some(DataType::Binary) => 16 + BINARY_STUB.len(),
+            Some(DataType::Binary) => 16 + binary_stub().len(),
             Some(DataType::Boolean) => 1,
             Some(DataType::Null) => 0,
             Some(dtype) if dtype.is_primitive_numeric() || dtype.is_temporal() => {
@@ -3641,7 +3641,7 @@ impl DataTableState {
     /// Caller must ensure `num_rows_valid` (via `set_num_rows`) before calling.
     /// `num_rows_override`, when supplied, applies that value first.
     /// Column expressions for every column in `column_order`, with binary columns replaced by a
-    /// stub literal ([`BINARY_STUB`]) so their blobs are never read. Used both for the display
+    /// stub literal ([`binary_stub`]) so their blobs are never read. Used both for the display
     /// buffer (keeps scroll/jump collects fast) and for analysis (describe/distribution/
     /// correlation), where reading multi-GB blobs across partitions would otherwise exhaust
     /// memory and freeze the process. The full bytes stay available through `lf` for export.
@@ -3650,7 +3650,7 @@ impl DataTableState {
             .iter()
             .map(|name| {
                 if matches!(self.schema.get(name.as_str()), Some(DataType::Binary)) {
-                    lit(BINARY_STUB).alias(name.as_str())
+                    lit(binary_stub()).alias(name.as_str())
                 } else {
                     col(name.as_str())
                 }
@@ -6563,7 +6563,7 @@ pub struct DataTable {
     /// independent of `column_colors`, so stubs always read as "placeholder, not data".
     pub binary_col: Option<Color>,
     /// Names of columns that are binary in the source schema. Their cells hold the `‹binary›`
-    /// stub (see [`BINARY_STUB`]) and are styled with `binary_col` + italic.
+    /// stub (see [`binary_stub`]) and are styled with `binary_col` + italic.
     pub binary_cols: std::collections::HashSet<String>,
     /// Display-time number formatting (digit grouping, separators, alignment).
     pub number_format: NumberFormatSettings,
@@ -6665,7 +6665,12 @@ struct RowNumbersParams {
 /// Placeholder shown in the table for binary columns. Their values (often large blobs, e.g.
 /// raw document bytes) are never read into the display buffer — only this stub is — which keeps
 /// scrolling and jump-to-end fast. The real bytes remain in `lf` for export/analysis.
-pub(crate) const BINARY_STUB: &str = "‹binary›";
+///
+/// The text comes from the active glyph set (`binary_stub`), so ASCII terminals get a
+/// readable `<binary>` instead of mojibake.
+pub(crate) fn binary_stub() -> &'static str {
+    crate::glyphs::get().binary_stub
+}
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
 /// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
@@ -9725,12 +9730,12 @@ mod tests {
             binary_cols: std::collections::HashSet::from(["blob".to_string()]),
             ..table_with_format("thousands", true)
         };
-        let df = df!("blob" => &[BINARY_STUB]).unwrap();
+        let df = df!("blob" => &[binary_stub()]).unwrap();
         let area = Rect::new(0, 0, 10, 3);
         let mut buf = Buffer::empty(area);
         let mut ts = TableState::default();
         table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
-        assert!(row_string(&buf, area, 1).starts_with(BINARY_STUB));
+        assert!(row_string(&buf, area, 1).starts_with(binary_stub()));
     }
 
     #[test]
@@ -9773,7 +9778,7 @@ mod tests {
         };
         let df = df!(
             "a" => &[1i32, 2],
-            "blob" => &[BINARY_STUB, BINARY_STUB],
+            "blob" => &[binary_stub(), binary_stub()],
         )
         .unwrap();
         let area = Rect::new(0, 0, 20, 4);
@@ -11119,7 +11124,7 @@ mod tests {
             &DataType::String,
             "binary column should be stubbed (not read as binary)"
         );
-        assert_eq!(col.str().unwrap().get(0).unwrap(), BINARY_STUB);
+        assert_eq!(col.str().unwrap().get(0).unwrap(), binary_stub());
         // A non-binary column is untouched.
         assert_eq!(df.column("a").unwrap().dtype(), &DataType::Int32);
     }
@@ -11155,8 +11160,8 @@ mod tests {
             .categorical_stats
             .as_ref()
             .expect("stubbed binary column has categorical stats");
-        assert_eq!(cat.min.as_deref(), Some(BINARY_STUB));
-        assert_eq!(cat.max.as_deref(), Some(BINARY_STUB));
+        assert_eq!(cat.min.as_deref(), Some(binary_stub()));
+        assert_eq!(cat.max.as_deref(), Some(binary_stub()));
         // The numeric column is still described normally.
         let a_stat = results
             .column_statistics

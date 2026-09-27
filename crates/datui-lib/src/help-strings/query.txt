@@ -1,3 +1,11 @@
+Keys:
+  Enter:            Run the query
+  Tab:              Move focus between the input and the tab bar
+  ← / → (h/l):      On the tab bar: switch Query / SQL / Fuzzy
+  ↑ / ↓:            Earlier and later queries from the history
+  F1:               Show this help (works from the input)
+  Esc:              Close
+
 Query Syntax:
   select [columns] [by group_cols] [where conditions]
 
@@ -78,5 +86,3 @@ Function Syntax:
   - Use parentheses for grouping: (a+b)*2
   - Example: b:avg[(1%c)+a] or b:avg (1%c)+a
 
-Press Enter to apply query.
-? / F1:  Show this help (F1 works from query input).

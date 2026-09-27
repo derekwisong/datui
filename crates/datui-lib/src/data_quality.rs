@@ -284,7 +284,7 @@ pub fn prepare_source_quality_scan(
                 return None;
             }
             Some(if matches!(dtype, DataType::Binary) {
-                lit(crate::widgets::datatable::BINARY_STUB).alias(column)
+                lit(crate::widgets::datatable::binary_stub()).alias(column)
             } else {
                 col(column)
             })
@@ -3410,7 +3410,7 @@ mod tests {
         );
         assert_eq!(
             collected.column("blob").unwrap().str().unwrap().get(0),
-            Some(crate::widgets::datatable::BINARY_STUB)
+            Some(crate::widgets::datatable::binary_stub())
         );
     }
 

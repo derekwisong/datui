@@ -1932,7 +1932,7 @@ pub mod tests {
     /// count started here would read all of them a second time. Worse, the join takes a
     /// fresh `len_generation` on its way past, so the answer would come back to a
     /// question nothing could match it to and the jump would never happen — the user
-    /// would be left with "Counting rows to find the end…" and no end.
+    /// would be left with "Counting rows to find the end..." and no end.
     #[test]
     fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
@@ -2019,7 +2019,7 @@ pub mod tests {
         );
         assert_ne!(
             app.status_message.as_deref(),
-            Some("Counting rows to find the end…"),
+            Some("Counting rows to find the end..."),
             "with nothing left saying it is counting rows that have been counted"
         );
         assert!(
@@ -3063,7 +3063,7 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"));
-        app.home.status = Some("Looking at orders…".to_string());
+        app.home.status = Some("Looking at orders...".to_string());
 
         app.enter_home();
 
@@ -3202,7 +3202,7 @@ pub mod tests {
     /// `abandon_load` does not run here — the user has not left the dataset — so this is
     /// the gate on its own: the message is still set, and the view it belongs to is not
     /// the one on screen. Once the chart is ready `chart_preparing()` goes false, and
-    /// before the gate the bar read "Counting rows to find the end…" where the chart keys
+    /// before the gate the bar read "Counting rows to find the end..." where the chart keys
     /// belong.
     #[test]
     fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
@@ -6278,7 +6278,6 @@ pub struct App {
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
     events: Sender<AppEvent>,
-    focus: u32,
     debug: DebugState,
     info_modal: InfoModal,
     parquet_metadata_cache: Option<ParquetMetadataCache>,
@@ -6984,7 +6983,7 @@ impl App {
         self.take_down_the_counting_status();
     }
 
-    /// Take down "Counting rows to find the end…", and only that.
+    /// Take down "Counting rows to find the end...", and only that.
     ///
     /// Clearing the status outright would wipe whatever else is using the line — a
     /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
@@ -6997,7 +6996,7 @@ impl App {
     /// What the status line says while an End is waiting on a row count. Named so the
     /// paths that retire such an End can take the message back down without reaching
     /// for a literal, and without clearing a message that belongs to something else.
-    const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
+    const COUNTING_FOR_END: &'static str = "Counting rows to find the end...";
 
     /// What the control bar says while a path is being looked at. Named so the answer can
     /// take down its own line without clearing one that belongs to something else.
@@ -7718,7 +7717,6 @@ impl App {
             original_file_format: None,
             original_file_delimiter: None,
             events,
-            focus: 0,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
             parquet_metadata_cache: None,
@@ -9430,7 +9428,7 @@ impl App {
                 // Completion reads a directory, which can block, so it is worked out
                 // on a worker and applied when it comes back.
                 KeyCode::Tab => self.request_path_completion(),
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if !ctrl => {
                     self.home.path_input.push(c);
                     self.home.status = None;
                 }
@@ -9529,6 +9527,12 @@ impl App {
             KeyCode::Char('~') if self.home.filter.is_empty() => {
                 self.home.path_input_active = true;
                 self.home.status = None;
+            }
+            // The one printable that is a key, and only before typing starts: a
+            // filter beginning with a literal `?` matches nothing anyway, and this
+            // is where a new user asks for the keys. F1 opens help mid-filter.
+            KeyCode::Char('?') if self.home.filter.is_empty() && !ctrl => {
+                self.open_help_overlay();
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);
@@ -11590,6 +11594,11 @@ impl App {
         Ok(lf.lf)
     }
 
+    /// Whether the plain help overlay is on screen.
+    pub fn help_visible(&self) -> bool {
+        self.show_help
+    }
+
     /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
     fn open_help_overlay(&mut self) {
         let already = self.show_help
@@ -11657,12 +11666,14 @@ impl App {
         }
 
         // Home owns the whole screen and every key while it is up — except under a
-        // modal. Modals render over home unconditionally, so if home also ate their
-        // keys they would be undismissable, and Esc would try to leave home instead.
+        // modal or the help overlay. Both render over home unconditionally, so if
+        // home also ate their keys they would be undismissable, and Esc would try
+        // to leave home instead.
         if self.input_mode == InputMode::Home
             && !self.confirmation_modal.active
             && !self.error_modal.active
             && !self.success_modal.active
+            && !self.show_help
         {
             return self.home_key(event);
         }
@@ -13245,7 +13256,9 @@ impl App {
                     }
                 }
                 // q/Q do nothing in chart view (no exit)
-                KeyCode::Char('?') if event.is_press() => {
+                KeyCode::Char('?')
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
                     self.show_help = true;
                 }
                 KeyCode::Esc if event.is_press() => {
@@ -15722,14 +15735,6 @@ impl App {
                 }
                 None
             }
-            KeyCode::Tab if event.is_press() => {
-                self.focus = (self.focus + 1) % 2;
-                None
-            }
-            KeyCode::BackTab if event.is_press() => {
-                self.focus = (self.focus + 1) % 2;
-                None
-            }
             KeyCode::Char('i') if event.is_press() => {
                 if let Some(state) = self.data_table_state.as_mut() {
                     state.mark_notes_seen();
@@ -17720,7 +17725,7 @@ impl App {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the control bar's is the table's.
-                self.home.status = Some(format!("Looking at {name}…"));
+                self.home.status = Some(format!("Looking at {name}..."));
                 self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
                     // Every one of these can sit forever on a share that has gone away,
                     // which is the whole reason they are here and not where keys are read.
@@ -18949,13 +18954,13 @@ impl App {
 
     fn get_help_info(&self) -> (String, String) {
         let (title, content) = match self.input_mode {
-            InputMode::Normal => ("Main View Help", help_strings::main_view()),
+            InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
                 Some(InputType::Search) => ("Query Help", help_strings::query()),
                 _ => ("Editing Help", help_strings::editing()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
-            InputMode::PivotMelt => ("Pivot / Melt Help", help_strings::pivot_melt()),
+            InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
             InputMode::Export => ("Export Help", help_strings::export()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
@@ -19042,9 +19047,9 @@ impl Widget for &mut App {
         }
 
         let row_count = self.data_table_state.as_ref().map(|s| s.num_rows);
-        let use_unicode_throbber = std::env::var("LANG")
-            .map(|l| l.to_uppercase().contains("UTF-8"))
-            .unwrap_or(false);
+        // The spinner follows the glyph set, so it cannot disagree with the rest of
+        // the chrome about whether the terminal is doing UTF-8.
+        let use_unicode_throbber = crate::glyphs::active_is_unicode();
         let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
             .with_unicode_throbber(use_unicode_throbber);
 
@@ -19187,12 +19192,13 @@ impl Widget for &mut App {
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
             let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
+            let dot = crate::glyphs::get().middot;
             let caption = if waiting && datasets == 0 {
-                "Looking…".to_string()
+                "Looking...".to_string()
             } else if datasets == 1 {
-                format!("by {order}  ·  1 dataset")
+                format!("by {order}  {dot}  1 dataset")
             } else {
-                format!("by {order}  ·  {datasets} datasets")
+                format!("by {order}  {dot}  {datasets} datasets")
             };
             controls = controls.with_caption(Some(caption));
         }
@@ -19336,7 +19342,7 @@ fn home_cloud_source(
         .flatten()
         .filter(|n| !n.is_empty())
         .collect::<Vec<_>>()
-        .join(" · ");
+        .join(&format!(" {} ", crate::glyphs::get().middot));
     let mut names: Vec<String> = cached.map(|c| c.buckets.clone()).unwrap_or_default();
     for bucket in &source.buckets {
         if !names.contains(bucket) {

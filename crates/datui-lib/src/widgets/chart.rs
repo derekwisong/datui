@@ -250,7 +250,7 @@ pub fn render_chart_view(
                     Constraint::Length(1), // Y axis label
                     Constraint::Min(4),    // Y axis box (input + list)
                     Constraint::Length(1), // Start y axis at 0
-                    Constraint::Length(1), // Log Scale
+                    Constraint::Length(1), // Log scale
                     Constraint::Length(1), // Legend
                     Constraint::Length(1), // Limit Rows
                 ])
@@ -307,11 +307,12 @@ pub fn render_chart_view(
                 " Filter Columns ",
             );
 
+            // Wide enough for the ASCII checkbox `[x]`.
             let y0_row = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
                     Constraint::Length(LABEL_WIDTH),
-                    Constraint::Length(2),
+                    Constraint::Length(4),
                     Constraint::Min(1),
                 ])
                 .split(sidebar_content[7]);
@@ -324,7 +325,12 @@ pub fn render_chart_view(
             Paragraph::new("Start y axis at 0:")
                 .style(y0_label_style)
                 .render(y0_row[0], buf);
-            let y0_marker = if modal.y_starts_at_zero { "☑" } else { "☐" };
+            let g = crate::glyphs::get();
+            let y0_marker = if modal.y_starts_at_zero {
+                g.checkbox_on
+            } else {
+                g.checkbox_off
+            };
             let y0_check_style = if is_y0_focused {
                 Style::default().fg(active_color)
             } else {
@@ -337,7 +343,7 @@ pub fn render_chart_view(
                 .direction(Direction::Horizontal)
                 .constraints([
                     Constraint::Length(LABEL_WIDTH),
-                    Constraint::Length(2),
+                    Constraint::Length(4),
                     Constraint::Min(1),
                 ])
                 .split(sidebar_content[8]);
@@ -347,10 +353,14 @@ pub fn render_chart_view(
             } else {
                 Style::default().fg(border_color)
             };
-            Paragraph::new("Log Scale:")
+            Paragraph::new("Log scale:")
                 .style(log_label_style)
                 .render(log_row[0], buf);
-            let log_marker = if modal.log_scale { "☑" } else { "☐" };
+            let log_marker = if modal.log_scale {
+                g.checkbox_on
+            } else {
+                g.checkbox_off
+            };
             let log_check_style = if is_log_focused {
                 Style::default().fg(active_color)
             } else {
@@ -363,7 +373,7 @@ pub fn render_chart_view(
                 .direction(Direction::Horizontal)
                 .constraints([
                     Constraint::Length(LABEL_WIDTH),
-                    Constraint::Length(2),
+                    Constraint::Length(4),
                     Constraint::Min(1),
                 ])
                 .split(sidebar_content[9]);
@@ -376,7 +386,11 @@ pub fn render_chart_view(
             Paragraph::new("Legend:")
                 .style(legend_label_style)
                 .render(legend_row[0], buf);
-            let legend_marker = if modal.show_legend { "☑" } else { "☐" };
+            let legend_marker = if modal.show_legend {
+                g.checkbox_on
+            } else {
+                g.checkbox_off
+            };
             let legend_check_style = if is_legend_focused {
                 Style::default().fg(active_color)
             } else {
@@ -388,7 +402,7 @@ pub fn render_chart_view(
             render_number_option(
                 sidebar_content[10],
                 buf,
-                "Limit Rows:",
+                "Limit rows:",
                 &modal.row_limit_display(),
                 focus == ChartFocus::LimitRows,
                 theme,
@@ -432,7 +446,7 @@ pub fn render_chart_view(
             render_number_option(
                 sidebar_content[3],
                 buf,
-                "Limit Rows:",
+                "Limit rows:",
                 &modal.row_limit_display(),
                 focus == ChartFocus::LimitRows,
                 theme,
@@ -467,7 +481,7 @@ pub fn render_chart_view(
             render_number_option(
                 sidebar_content[2],
                 buf,
-                "Limit Rows:",
+                "Limit rows:",
                 &modal.row_limit_display(),
                 focus == ChartFocus::LimitRows,
                 theme,
@@ -511,7 +525,7 @@ pub fn render_chart_view(
             render_number_option(
                 sidebar_content[3],
                 buf,
-                "Limit Rows:",
+                "Limit rows:",
                 &modal.row_limit_display(),
                 focus == ChartFocus::LimitRows,
                 theme,
@@ -575,7 +589,7 @@ pub fn render_chart_view(
             render_number_option(
                 sidebar_content[6],
                 buf,
-                "Limit Rows:",
+                "Limit rows:",
                 &modal.row_limit_display(),
                 focus == ChartFocus::LimitRows,
                 theme,
@@ -843,7 +857,7 @@ fn render_xy_chart(
             chart.render(area, buf);
         }
     } else {
-        Paragraph::new("Select X and Y columns in sidebar — Tab to change focus")
+        Paragraph::new("Select X and Y columns in the sidebar. Tab changes focus.")
             .style(Style::default().fg(text_secondary))
             .centered()
             .render(area, buf);

@@ -235,17 +235,16 @@ impl Widget for &Controls {
                 .render(area, buf);
         }
 
-        // Throbber character for status mode (reused below).
-        const THROBBER_ASCII: [char; 4] = ['|', '/', '-', '\\'];
-        const THROBBER_BRAILLE_EIGHT: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
+        // Throbber frames come from the glyph sets, so they match the rest of the UI.
+        let throbber_frames = if self.use_unicode_throbber {
+            crate::glyphs::unicode().spinner
+        } else {
+            crate::glyphs::ascii().spinner
+        };
 
         let throbber_ch = || -> String {
             if self.busy {
-                if self.use_unicode_throbber {
-                    THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8].to_string()
-                } else {
-                    THROBBER_ASCII[self.throbber_frame as usize % 4].to_string()
-                }
+                throbber_frames[self.throbber_frame as usize % throbber_frames.len()].to_string()
             } else {
                 " ".to_string()
             }
@@ -253,13 +252,8 @@ impl Widget for &Controls {
 
         // Spinner frame independent of `busy` — used for the row-count placeholder while the
         // exact total is still being determined (that background count does not set `busy`).
-        let spinner_ch = || -> char {
-            if self.use_unicode_throbber {
-                THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8]
-            } else {
-                THROBBER_ASCII[self.throbber_frame as usize % 4]
-            }
-        };
+        let spinner_ch =
+            || -> &str { throbber_frames[self.throbber_frame as usize % throbber_frames.len()] };
 
         // Row-count text: while the count is pending a spinner stands in for the number, and if
         // the count couldn't be determined a "?" is shown — so the user never mistakes an
@@ -372,7 +366,7 @@ impl Widget for &Controls {
         }
 
         // Normal keybinding mode (unchanged from original)
-        const DEFAULT_CONTROLS: [(&str, &str); 9] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 10] = [
             ("/", "Query"),
             ("i", "Info"),
             ("a", "Analysis"),
@@ -380,6 +374,7 @@ impl Widget for &Controls {
             ("s", "Sort & Filter"),
             ("p", "Pivot & Melt"),
             ("e", "Export"),
+            ("^O", "Home"),
             ("?", "Help"),
             ("q", "Quit"),
         ];

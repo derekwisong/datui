@@ -33,6 +33,7 @@ pub fn render(
 
     match app.template_modal.mode {
         TemplateModalMode::List => {
+            let g = crate::glyphs::get();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -65,33 +66,33 @@ pub fn render(
                     } else {
                         0.0
                     };
-                    let (circle_char, circle_color) = if score_ratio >= 0.8 {
+                    let marks = g.score_marks;
+                    let (score_mark, score_color) = if score_ratio >= 0.8 {
                         if score_ratio >= 0.95 {
-                            ('●', ctx.success)
+                            (marks[4], ctx.success)
                         } else if score_ratio >= 0.9 {
-                            ('◉', ctx.success)
+                            (marks[3], ctx.success)
                         } else {
-                            ('◐', ctx.success)
+                            (marks[2], ctx.success)
                         }
                     } else if score_ratio >= 0.4 {
                         if score_ratio >= 0.7 {
-                            ('◐', ctx.warning)
+                            (marks[2], ctx.warning)
                         } else if score_ratio >= 0.55 {
-                            ('◑', ctx.warning)
+                            (marks[1], ctx.warning)
                         } else {
-                            ('○', ctx.warning)
+                            (marks[0], ctx.warning)
                         }
                     } else if score_ratio >= 0.2 {
-                        ('○', ctx.text_primary)
+                        (marks[0], ctx.text_primary)
                     } else {
-                        ('○', ctx.dimmed)
+                        (marks[0], ctx.dimmed)
                     };
 
-                    let score_cell = Cell::from(circle_char.to_string())
-                        .style(Style::default().fg(circle_color));
+                    let score_cell = Cell::from(score_mark).style(Style::default().fg(score_color));
 
                     let active_cell = if is_active {
-                        Cell::from("✓")
+                        Cell::from(g.check)
                     } else {
                         Cell::from(" ")
                     };
@@ -109,7 +110,7 @@ pub fn render(
 
             // Append broken template rows with warning indicator
             for broken in &app.template_modal.broken_templates {
-                let warning_cell = Cell::from("⚠").style(Style::default().fg(ctx.warning));
+                let warning_cell = Cell::from(g.warning).style(Style::default().fg(ctx.warning));
                 let active_cell = Cell::from(" ");
                 let name_cell =
                     Cell::from(broken.filename.clone()).style(Style::default().fg(ctx.warning));
@@ -124,7 +125,7 @@ pub fn render(
             }
 
             let header = Row::new(vec![
-                Cell::from("●").style(Style::default()),
+                Cell::from(g.score_marks[4]).style(Style::default()),
                 Cell::from(" ").style(Style::default()),
                 Cell::from("Name").style(Style::default()),
                 Cell::from("Description").style(Style::default()),

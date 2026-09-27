@@ -1,43 +1,34 @@
-Templates allow you to save and automatically apply customizations for specific files.
+Templates save a query, filters, sort and column layout, and apply them to
+datasets that match by path or schema.
 
-Template List:
-  - Templates are displayed in a table sorted by relevance (descending)
-  - Score column shows colored circles indicating match quality:
-    * Green circles: high scores (80%+ of max)
-    * Yellow circles: medium scores (40-80% of max)
-    * Gray/white circles: low scores (<40% of max)
-  - Active template is indicated by a checkmark (✓) in the active column
+Template list:
+  ↑ / ↓ (j/k):      Move in the list
+  Enter:            Apply the selected template
+  s:                Create a template from the current state
+  e:                Edit the selected template
+  d:                Delete the selected template, after confirming
+  ? / F1:           Show this help (F1 works in text fields)
+  Esc:              Close
 
-Actions:
-  Enter:        Apply the selected template
-  s:            Create a new template from current state
-  e:            Edit the selected template
-  d:            Delete the selected template (with confirmation)
-  ? / F1:       Show this help (F1 works in text fields)
-  Esc:          Close template menu
+  The Score column marks how well each template fits the open dataset, and
+  the active template carries a check mark. T at the table applies the most
+  relevant template without opening this menu.
 
-Template Creation/Editing:
-  - Name:       Required identifier for the template
-  - Description: Optional description
-  - Exact Path: Match files by absolute path
-  - Relative Path: Match files by path relative to current directory
-  - Path Pattern: Match files by glob-like path pattern
-  - Filename Pattern: Match files by glob-like filename pattern
-  - Schema Match: Match files with matching column names
+Create and edit form:
+  Tab / Shift+Tab:  Move between fields
+  Enter:            Save
+  Esc:              Back to the list
 
-Template Matching:
-  Templates are scored based on:
-  1. Exact path match (highest priority)
-  2. Relative path match
-  3. Path/filename pattern matches
-  4. Schema column matches
-  5. Generic templates (lowest priority)
+  Name is required. The match fields are optional: exact path, relative
+  path, path pattern and filename pattern (glob-like), and schema match
+  (column names).
 
-  The most relevant template can be applied with 'T' from the main view.
+Matching:
+  Templates are scored in this order: exact path, relative path, path and
+  filename patterns, schema columns, then generic templates.
 
-Delete Confirmation:
-  - Cancel is selected by default
-  - Enter:      Cancel (if Cancel selected) or Delete (if Delete selected)
-  - Tab:        Switch between Cancel and Delete buttons
-  - D:          Delete immediately
-  - Esc:        Cancel and close dialog
+Delete confirmation:
+  Tab or ← / →:     Switch Cancel / Delete (Cancel is selected first)
+  Enter:            The selected button
+  D:                Delete immediately
+  Esc:              Cancel

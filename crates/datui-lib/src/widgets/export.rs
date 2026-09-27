@@ -101,10 +101,11 @@ fn render_format_list(
     let items: Vec<ListItem> = ExportFormat::ALL
         .iter()
         .map(|format| {
+            let g = crate::glyphs::get();
             let marker = if modal.selected_format == *format {
-                "●"
+                g.radio_on
             } else {
-                "○"
+                g.radio_off
             };
             let style = if modal.selected_format == *format {
                 Style::default().fg(active_color)
@@ -253,7 +254,12 @@ fn render_source_file_option(
     Paragraph::new("Source file:")
         .style(style)
         .render(columns[0], buf);
-    let marker = if modal.source_file { "☑" } else { "☐" };
+    let g = crate::glyphs::get();
+    let marker = if modal.source_file {
+        g.checkbox_on
+    } else {
+        g.checkbox_off
+    };
     // Column 2, so the box lines up with the one on the Include Header row above.
     Paragraph::new(Line::from(vec![Span::styled(marker, style)])).render(columns[2], buf);
 }
@@ -332,10 +338,11 @@ fn render_csv_options(
         .render(header_row[0], buf);
 
     // Checkbox
+    let g = crate::glyphs::get();
     let marker = if modal.csv_include_header {
-        "☑"
+        g.checkbox_on
     } else {
-        "☐"
+        g.checkbox_off
     };
     let checkbox_style = if is_header_focused {
         Style::default().fg(active_color)
@@ -560,7 +567,8 @@ fn render_compression_grid(
             let is_selected = *opt == compression;
             let is_option_focused = is_focused && option_idx == modal.compression_selection_idx;
 
-            let marker = if is_selected { "●" } else { "○" };
+            let g = crate::glyphs::get();
+            let marker = if is_selected { g.radio_on } else { g.radio_off };
             let style = if is_selected || is_option_focused {
                 Style::default().fg(active_color)
             } else {

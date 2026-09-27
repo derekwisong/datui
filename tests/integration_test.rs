@@ -904,7 +904,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-            .contains("OBSERVATION")
+            .contains("Observation")
     );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -1180,7 +1180,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-            .contains("Esc back to result")
+            .contains("Esc goes back")
     );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
@@ -9515,4 +9515,89 @@ fn h_rereads_a_download_from_the_copy_on_hand() {
         downloads,
         "read again from the copy on hand"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Help on the home screen
+// ---------------------------------------------------------------------------
+
+/// `?` before typing opens help, and the overlay owns the keys while it is up.
+/// It used to be unreachable there (`?` typed into the filter) and, opened with
+/// F1, unclosable: Esc went to the home screen underneath and backed out of
+/// directories behind the overlay.
+#[test]
+fn home_help_opens_with_question_mark_and_esc_closes_it() {
+    common::isolate_cache();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    assert_eq!(app.input_mode, InputMode::Home);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('?'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.help_visible(), "? on an empty filter opens help");
+    assert!(app.home.filter.is_empty(), "? must not land in the filter");
+
+    // Keys reach the overlay, not the list underneath.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.help_visible());
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.help_visible(), "Esc closes the overlay");
+    assert_eq!(
+        app.input_mode,
+        InputMode::Home,
+        "home is still up behind it"
+    );
+}
+
+/// Once a filter is being typed, `?` is an ordinary character again — a help
+/// key that ate letters would break "searching for anything with a ? in it",
+/// and, more importantly, the promise that typing always filters.
+#[test]
+fn home_question_mark_types_into_a_started_filter() {
+    common::isolate_cache();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.filter = "sal".to_string();
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('?'),
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.help_visible());
+    assert_eq!(app.home.filter, "sal?");
+}
+
+/// F1 opens home help even while the filter has text, and closing it leaves
+/// the filter as typed.
+#[test]
+fn home_f1_opens_help_mid_filter() {
+    common::isolate_cache();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.filter = "sal".to_string();
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::F(1),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.help_visible(), "F1 opens help mid-filter");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.help_visible());
+    assert_eq!(app.home.filter, "sal", "the filter survives the overlay");
 }

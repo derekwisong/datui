@@ -16,6 +16,10 @@ use std::sync::OnceLock;
 /// Symbols used by the UI, in whichever alphabet the terminal can render.
 #[derive(Debug, Clone, Copy)]
 pub struct Glyphs {
+    /// Whether this is the Unicode set. `UNICODE` and `ASCII` are consts, so
+    /// every use instantiates fresh promoted statics — neither the set's address
+    /// nor its fields' can identify it. The set says itself.
+    pub unicode: bool,
     /// Marks the selected row — the one thing that must be findable instantly.
     pub selector: &'static str,
     /// Non-selected row indent; must be the same display width as `selector`.
@@ -38,6 +42,10 @@ pub struct Glyphs {
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.
     pub updown_lr: &'static str,
+    /// Ctrl plus the up/down pair, for the section-jump chip.
+    pub ctrl_updown: &'static str,
+    /// Separator between facts in a status line: `listing · nfs`.
+    pub middot: &'static str,
     /// Spinner frames, cycled while something is loading. Every frame must be the
     /// same display width, or the text beside it jitters.
     pub spinner: &'static [&'static str],
@@ -76,6 +84,26 @@ pub struct Glyphs {
     pub arrow_right: &'static str,
     /// Between the steps of a location trail: `cloud › Azure › datui-test`.
     pub trail: &'static str,
+    /// Checkbox states, for toggle lists.
+    pub checkbox_on: &'static str,
+    pub checkbox_off: &'static str,
+    /// Radio button states, for pick-one lists.
+    pub radio_on: &'static str,
+    pub radio_off: &'static str,
+    /// Single-cell state dots: all, some, none. One column wide in both sets.
+    pub dot_full: &'static str,
+    pub dot_half: &'static str,
+    pub dot_empty: &'static str,
+    /// Five ascending levels for a score shown as one character.
+    pub score_marks: &'static [&'static str; 5],
+    /// A confirmation mark.
+    pub check: &'static str,
+    /// A caution mark.
+    pub warning: &'static str,
+    /// Scrollbar thumb, drawn down the right edge of an overlay.
+    pub scroll_thumb: &'static str,
+    /// Stands in for a value that is bytes, not text.
+    pub binary_stub: &'static str,
     /// Eight compact levels for inline charts (lowest to highest).
     pub mini_bars: &'static [&'static str; 8],
     /// The home-screen wordmark, three rows of box drawing. `None` when the terminal
@@ -84,6 +112,7 @@ pub struct Glyphs {
 }
 
 const UNICODE: Glyphs = Glyphs {
+    unicode: true,
     selector: "▎ ",
     selector_blank: "  ",
     cursor: "▏",
@@ -95,6 +124,8 @@ const UNICODE: Glyphs = Glyphs {
     expanded: "▾ ",
     updown: "↑↓",
     updown_lr: "←→",
+    ctrl_updown: "^↑↓",
+    middot: "·",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
     // Plain Unicode from blocks any UTF-8 font covers, and each one Neutral width
     // rather than Ambiguous, so an East Asian locale does not render them double-wide
@@ -114,11 +145,24 @@ const UNICODE: Glyphs = Glyphs {
     arrow_left: "←",
     arrow_right: "→",
     trail: "›",
+    checkbox_on: "☑",
+    checkbox_off: "☐",
+    radio_on: "●",
+    radio_off: "○",
+    dot_full: "●",
+    dot_half: "◐",
+    dot_empty: "○",
+    score_marks: &["○", "◑", "◐", "◉", "●"],
+    check: "✓",
+    warning: "⚠",
+    scroll_thumb: "█",
+    binary_stub: "‹binary›",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
     wordmark: Some(&["╺┳┓┏━┓╺┳╸╻ ╻╻", " ┃┃┣━┫ ┃ ┃ ┃┃", "╺┻┛╹ ╹ ╹ ┗━┛╹"]),
 };
 
 const ASCII: Glyphs = Glyphs {
+    unicode: false,
     selector: "> ",
     selector_blank: "  ",
     cursor: "_",
@@ -130,6 +174,8 @@ const ASCII: Glyphs = Glyphs {
     expanded: "- ",
     updown: "Up/Dn",
     updown_lr: "Lt/Rt",
+    ctrl_updown: "^Up/Dn",
+    middot: "-",
     spinner: &["|", "/", "-", "\\"],
     here: ".",
     in_memory: "*",
@@ -146,6 +192,18 @@ const ASCII: Glyphs = Glyphs {
     arrow_left: "<",
     arrow_right: ">",
     trail: ">",
+    checkbox_on: "[x]",
+    checkbox_off: "[ ]",
+    radio_on: "(*)",
+    radio_off: "( )",
+    dot_full: "#",
+    dot_half: "+",
+    dot_empty: ".",
+    score_marks: &[".", "-", "+", "*", "#"],
+    check: "+",
+    warning: "!",
+    scroll_thumb: "#",
+    binary_stub: "<binary>",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
     wordmark: None,
 };
@@ -202,6 +260,13 @@ pub fn init(mode: UnicodeMode) {
 /// called, so library users and tests get sensible symbols without ceremony.
 pub fn get() -> &'static Glyphs {
     GLYPHS.get_or_init(|| if locale_is_utf8() { UNICODE } else { ASCII })
+}
+
+/// Whether the active set is the Unicode one. `get` hands out a copy of a
+/// const, so no address — the set's nor a field's — can identify it; the flag
+/// on the set can.
+pub fn active_is_unicode() -> bool {
+    get().unicode
 }
 
 /// The Unicode set, for tests and for callers that know their output is UTF-8.
@@ -263,6 +328,16 @@ mod tests {
                 "{left:?} and {right:?} are different widths"
             );
         }
+    }
+
+    /// `get()` stores a copy of a const, so no address can identify the active
+    /// set — the `unicode` flag on the set is what `active_is_unicode` reads.
+    #[test]
+    fn active_is_unicode_matches_the_chosen_set() {
+        let expected = get().spinner.len() == unicode().spinner.len();
+        assert_eq!(active_is_unicode(), expected);
+        assert!(unicode().unicode);
+        assert!(!ascii().unicode);
     }
 
     /// A marker that is also a letter or a space would read as part of the name.

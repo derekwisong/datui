@@ -420,7 +420,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
 
     if app.home.listing_in_flight && visible.is_empty() {
         Paragraph::new(Line::from(Span::styled(
-            "Looking…",
+            "Looking...",
             Style::default().fg(ctx.dimmed),
         )))
         .render(area, buf);
@@ -757,7 +757,7 @@ fn section_header<'a>(
             .unwrap_or_else(|| "unavailable".to_string())
     } else if section.waiting {
         match &section.subtitle {
-            Some(subtitle) => format!("listing · {subtitle}"),
+            Some(subtitle) => format!("listing {} {subtitle}", g.middot),
             None => "listing".to_string(),
         }
     } else {
@@ -1126,7 +1126,7 @@ fn entry_line<'a>(
         && !kind.is_empty()
         && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
     let kind_cell = match matched_column {
-        Some(column) => format!(" ·{column}"),
+        Some(column) => format!(" {}{column}", g.middot),
         // `shown_column` below may cut this; both are written from the same string.
         None if kind.is_empty() => String::new(),
         None if kind_is_chip => format!("  {kind} "),
@@ -1210,7 +1210,7 @@ fn entry_line<'a>(
         }
     });
     let kind_cell = match &shown_column {
-        Some((column, _)) => format!(" ·{column}"),
+        Some((column, _)) => format!(" {}{column}", g.middot),
         None => kind_cell,
     };
     let (kind_cell, kind_is_chip) = if fits(&kind_cell) {
@@ -1340,7 +1340,7 @@ fn entry_line<'a>(
     // The column note is a substring match, so its highlight has to be one too.
     match matched_column {
         Some(column) => {
-            spans.push(Span::styled(" ·".to_string(), kind_style));
+            spans.push(Span::styled(format!(" {}", g.middot), kind_style));
             // The note as it was cut to fit, and the marks the cut left standing: a
             // character no longer on screen cannot be highlighted. `kept` counts the
             // note's own characters, so an uncut note keeps the mark on its final
@@ -1712,9 +1712,10 @@ fn source_details(
         .iter()
         .map(|(k, v)| (k.clone(), v.clone(), plain))
         .collect();
+    let middot = glyphs::get().middot;
     let listed = match source.listed_at.map(discover::format_age) {
-        Some(age) if age == "now" => " · listed now".to_string(),
-        Some(age) if !age.is_empty() => format!(" · listed {age} ago"),
+        Some(age) if age == "now" => format!(" {middot} listed now"),
+        Some(age) if !age.is_empty() => format!(" {middot} listed {age} ago"),
         _ => String::new(),
     };
     let noun = match source.api.as_str() {
@@ -1866,7 +1867,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
                 _ if crate::home::is_object_store_url(&entry.path) => "Read when opened.",
-                _ if reading => "Reading…",
+                _ if reading => "Reading...",
                 _ => "Schema needs a full read.",
             };
             if !note.is_empty() {
@@ -3032,10 +3033,11 @@ mod tests {
             // there is no room for a letter beside it the whole note stays and the name
             // gives way instead, the same reasoning that keeps `dataset` from becoming
             // `d…t`.
+            let sep = format!(" {}", g.middot);
             let note: String = line
                 .spans
                 .iter()
-                .skip_while(|s| s.content != " ·")
+                .skip_while(|s| s.content != sep)
                 .skip(1)
                 .map(|s| s.content.to_string())
                 .collect();
@@ -3366,8 +3368,9 @@ mod tests {
         let spans = row_spans("orders.parquet", "cust", Some("customer_id"));
         assert_eq!(highlighted_text(&spans), "cust");
         let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        let note = format!("{}customer_id", glyphs::get().middot);
         assert!(
-            text.contains("·customer_id"),
+            text.contains(&note),
             "the column note should still read whole, got {text:?}"
         );
     }

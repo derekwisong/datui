@@ -29,6 +29,8 @@ pub fn render_shell(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .title("Pivot & Melt")
+        .title_style(ratatui::style::Style::reset())
         .border_style(Style::default().fg(border_color));
     let inner = block.inner(area);
     block.render(area, buf);

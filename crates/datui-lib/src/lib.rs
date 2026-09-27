@@ -14271,7 +14271,25 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('s') if !form => self.open_save_view_form(),
+                KeyCode::Char('s') if !form => {
+                    // A view saved from an untouched table would carry
+                    // nothing, and — matching by schema — it would shadow
+                    // real views in the V/auto-apply gate as a well-used
+                    // no-op. Refuse at the door, not after the form.
+                    if self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.is_at_defaults())
+                    {
+                        self.error_modal.show(
+                            "Nothing to save: the table is at its defaults. \
+                             Set a query, filter, sort or column layout first."
+                                .to_string(),
+                        );
+                    } else {
+                        self.open_save_view_form();
+                    }
+                }
                 KeyCode::Char('e') if !form => {
                     if let Some(template) = self.template_modal.selected_template().cloned() {
                         self.template_modal.enter_edit_mode(

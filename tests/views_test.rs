@@ -70,6 +70,21 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert_eq!(app.template_modal.mode, TemplateModalMode::List);
     assert!(app.template_modal.rows.is_empty());
 
+    // An untouched table has nothing to save: s refuses instead of opening
+    // the form and minting a view that carries nothing.
+    press(&mut app, KeyCode::Char('s'));
+    assert!(app.modal_showing(), "the empty save is refused");
+    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.modal_showing());
+    assert!(app.template_modal.active, "the list survives the refusal");
+
+    // Give the state something to carry.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["vs_id".to_string()], vec![true]);
+
     // The form opens name-first, prefilled from the state, criteria folded.
     press(&mut app, KeyCode::Char('s'));
     assert_eq!(app.template_modal.mode, TemplateModalMode::Create);

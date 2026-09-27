@@ -4,7 +4,8 @@ datasets that match by path or schema.
 Views list:
   ↑ / ↓ (j/k):      Move in the list
   Enter:            Apply the selected view
-  s:                Save the current state as a view
+  s:                Save the current state as a view (an untouched table
+                    has nothing to save, and s says so)
   e:                Edit the selected view
   d:                Delete the selected view, after confirming
   i:                Show how the selected view's score was computed

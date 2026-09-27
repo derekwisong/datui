@@ -30,9 +30,11 @@ file, the same columns, or a pattern.
 
 ## Saving
 
-Press <kbd>s</kbd> in the list. The name starts as the file's name; add an
-optional description, and expand the Matching section (<kbd>Space</kbd>) to
-change how the view offers itself to future files:
+Press <kbd>s</kbd> in the list. There must be something to save: on an
+untouched table <kbd>s</kbd> refuses, rather than minting a view that carries
+nothing. The name starts as the file's name; add an optional description, and
+expand the Matching section (<kbd>Space</kbd>) to change how the view offers
+itself to future files:
 
 | Match | Fits a file when |
 |---|---|

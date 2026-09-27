@@ -277,6 +277,12 @@ fn the_sort_and_filter_modal_filters_columns_as_you_type() {
 fn the_view_description_holds_several_lines() {
     let mut h = Harness::with_data();
 
+    // The save gate wants something to save; sort first.
+    h.app
+        .data_table_state
+        .as_mut()
+        .expect("data loaded")
+        .sort_by(vec!["age".to_string()], vec![false]);
     h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     // Move focus from the name field to the description.
@@ -296,6 +302,12 @@ fn the_view_description_holds_several_lines() {
 fn the_view_description_pages_through_its_lines() {
     let mut h = Harness::with_data();
 
+    // The save gate wants something to save; sort first.
+    h.app
+        .data_table_state
+        .as_mut()
+        .expect("data loaded")
+        .sort_by(vec!["age".to_string()], vec![false]);
     h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     h.press(KeyCode::Tab);
@@ -320,6 +332,12 @@ fn the_view_description_pages_through_its_lines() {
 fn the_view_name_field_takes_text() {
     let mut h = Harness::with_data();
 
+    // The save gate wants something to save; sort first.
+    h.app
+        .data_table_state
+        .as_mut()
+        .expect("data loaded")
+        .sort_by(vec!["age".to_string()], vec![false]);
     h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     // Creating from a loaded file pre-fills a suggested name; clear it first.

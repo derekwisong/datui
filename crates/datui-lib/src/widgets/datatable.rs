@@ -79,6 +79,10 @@ pub struct DataTableState {
     pub num_rows: usize,
     /// When true, collect() skips the len() query.
     num_rows_valid: bool,
+    /// The dataset's own row count, remembered from the last moment the frame was
+    /// pristine. Lets the control bar say "417 of 1,000" under a filter or query
+    /// without a second count; `None` until a pristine count has resolved.
+    pristine_rows: Option<usize>,
     /// Bumped whenever `lf` changes (via `invalidate_num_rows`). A background `len()`
     /// count carries the generation it was spawned under; a result whose generation no
     /// longer matches is stale (the data changed) and is dropped. Decoupled from
@@ -422,7 +426,7 @@ fn estimate_bytes_per_row(
         .iter()
         .map(|name| match schema.get(name.as_str()) {
             Some(DataType::String) => 16 + footer_width(name).unwrap_or(STRING_BYTES_GUESS - 16),
-            Some(DataType::Binary) => 16 + BINARY_STUB.len(),
+            Some(DataType::Binary) => 16 + binary_stub().len(),
             Some(DataType::Boolean) => 1,
             Some(DataType::Null) => 0,
             Some(dtype) if dtype.is_primitive_numeric() || dtype.is_temporal() => {
@@ -594,6 +598,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
+            pristine_rows: None,
             len_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
@@ -706,6 +711,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
+            pristine_rows: None,
             len_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
@@ -774,6 +780,9 @@ impl DataTableState {
     /// filter or sort.
     fn replace_original_lf(&mut self, lf: &LazyFrame) -> Result<()> {
         self.original_lf = lf.clone();
+        // A new root is new data; a count remembered for the old one would show as
+        // the "of" total under the first filter on this one.
+        self.pristine_rows = None;
         self.base_lf = lf.clone();
         self.schema = lf.clone().collect_schema()?;
         self.original_schema = self.schema.clone();
@@ -1149,12 +1158,33 @@ impl DataTableState {
         if sheet_names.is_empty() {
             return Err(color_eyre::eyre::eyre!("Excel file has no worksheets"));
         }
+        // Named so a bad --sheet says what to ask for instead: "0 'Sales', 1 'Summary'".
+        let sheets_on_offer = || {
+            sheet_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| format!("{} '{}'", i, name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let range = if let Some(sheet_sel) = excel_sheet {
             if let Ok(idx) = sheet_sel.parse::<usize>() {
                 workbook
                     .worksheet_range_at(idx)
-                    .ok_or_else(|| color_eyre::eyre::eyre!("Excel: no sheet at index {}", idx))?
+                    .ok_or_else(|| {
+                        color_eyre::eyre::eyre!(
+                            "Excel: no sheet at index {}; this file has: {}",
+                            idx,
+                            sheets_on_offer()
+                        )
+                    })?
                     .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
+            } else if !sheet_names.iter().any(|name| name == sheet_sel) {
+                return Err(color_eyre::eyre::eyre!(
+                    "Excel: no sheet named '{}'; this file has: {}",
+                    sheet_sel,
+                    sheets_on_offer()
+                ));
             } else {
                 workbook
                     .worksheet_range(sheet_sel)
@@ -3458,6 +3488,7 @@ impl DataTableState {
                 }
             };
             self.num_rows_valid = true;
+            self.remember_pristine_count();
         }
 
         if self.num_rows > 0 {
@@ -3641,7 +3672,7 @@ impl DataTableState {
     /// Caller must ensure `num_rows_valid` (via `set_num_rows`) before calling.
     /// `num_rows_override`, when supplied, applies that value first.
     /// Column expressions for every column in `column_order`, with binary columns replaced by a
-    /// stub literal ([`BINARY_STUB`]) so their blobs are never read. Used both for the display
+    /// stub literal ([`binary_stub`]) so their blobs are never read. Used both for the display
     /// buffer (keeps scroll/jump collects fast) and for analysis (describe/distribution/
     /// correlation), where reading multi-GB blobs across partitions would otherwise exhaust
     /// memory and freeze the process. The full bytes stay available through `lf` for export.
@@ -3650,7 +3681,7 @@ impl DataTableState {
             .iter()
             .map(|name| {
                 if matches!(self.schema.get(name.as_str()), Some(DataType::Binary)) {
-                    lit(BINARY_STUB).alias(name.as_str())
+                    lit(binary_stub()).alias(name.as_str())
                 } else {
                     col(name.as_str())
                 }
@@ -4065,6 +4096,7 @@ impl DataTableState {
         // else: the background len() already resolved the exact count between this
         // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
+        self.remember_pristine_count();
 
         self.observe_bytes_per_row(&full_df);
         // A fill planned to be stitched on to rows since replaced (a synchronous
@@ -4256,10 +4288,37 @@ impl DataTableState {
     pub fn set_num_rows(&mut self, n: usize) {
         self.num_rows = n;
         self.num_rows_valid = true;
+        self.remember_pristine_count();
         // A view past the end of a frame that turned out smaller comes back to it.
         if self.start_row > 0 && self.start_row >= n {
             self.start_row = n.saturating_sub(self.visible_rows);
             self.needs_recollect = true;
+        }
+    }
+
+    /// Keep the pristine frame's count for the control bar's "417 of 1,000". Only a
+    /// count already resolved for the data as loaded — never a reason to run one.
+    fn remember_pristine_count(&mut self) {
+        if self.num_rows_valid && self.error.is_none() && self.is_pristine() {
+            self.pristine_rows = Some(self.num_rows);
+        }
+    }
+
+    /// The dataset's full row count for the control bar, when the rows on screen are a
+    /// subset of it: a sidebar filter, a query in any bar or a drill-down is active and
+    /// the count from before it was applied is known. A pivot or melt makes rows that
+    /// are not the dataset's, so the comparison would mislead and none is offered.
+    /// Cheap by construction: it only reads what a pristine collect already knew.
+    pub fn total_rows_when_subset(&self) -> Option<usize> {
+        let subsetting = !self.filters.is_empty()
+            || !self.active_query.is_empty()
+            || !self.active_sql_query.is_empty()
+            || !self.active_fuzzy_query.is_empty()
+            || self.drilled_down_group_index.is_some();
+        if subsetting && self.reshaped_lf.is_none() {
+            self.pristine_rows
+        } else {
+            None
         }
     }
 
@@ -4516,6 +4575,9 @@ impl DataTableState {
         self.set_dataset_schema(dataset, file_rows, files);
         self.footers_pending = None;
         self.original_lf = lf.clone();
+        // The joined scan may hold rows the two-footer open never saw, so the count
+        // remembered for the narrow root no longer describes the dataset.
+        self.pristine_rows = None;
         self.base_lf = lf.clone();
         self.lf = lf;
         // The rows on screen were read through the old frame. Dropping the buffer has
@@ -6563,7 +6625,7 @@ pub struct DataTable {
     /// independent of `column_colors`, so stubs always read as "placeholder, not data".
     pub binary_col: Option<Color>,
     /// Names of columns that are binary in the source schema. Their cells hold the `‹binary›`
-    /// stub (see [`BINARY_STUB`]) and are styled with `binary_col` + italic.
+    /// stub (see [`binary_stub`]) and are styled with `binary_col` + italic.
     pub binary_cols: std::collections::HashSet<String>,
     /// Display-time number formatting (digit grouping, separators, alignment).
     pub number_format: NumberFormatSettings,
@@ -6665,7 +6727,12 @@ struct RowNumbersParams {
 /// Placeholder shown in the table for binary columns. Their values (often large blobs, e.g.
 /// raw document bytes) are never read into the display buffer — only this stub is — which keeps
 /// scrolling and jump-to-end fast. The real bytes remain in `lf` for export/analysis.
-pub(crate) const BINARY_STUB: &str = "‹binary›";
+///
+/// The text comes from the active glyph set (`binary_stub`), so ASCII terminals get a
+/// readable `<binary>` instead of mojibake.
+pub(crate) fn binary_stub() -> &'static str {
+    crate::glyphs::get().binary_stub
+}
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
 /// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
@@ -9725,12 +9792,12 @@ mod tests {
             binary_cols: std::collections::HashSet::from(["blob".to_string()]),
             ..table_with_format("thousands", true)
         };
-        let df = df!("blob" => &[BINARY_STUB]).unwrap();
+        let df = df!("blob" => &[binary_stub()]).unwrap();
         let area = Rect::new(0, 0, 10, 3);
         let mut buf = Buffer::empty(area);
         let mut ts = TableState::default();
         table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
-        assert!(row_string(&buf, area, 1).starts_with(BINARY_STUB));
+        assert!(row_string(&buf, area, 1).starts_with(binary_stub()));
     }
 
     #[test]
@@ -9773,7 +9840,7 @@ mod tests {
         };
         let df = df!(
             "a" => &[1i32, 2],
-            "blob" => &[BINARY_STUB, BINARY_STUB],
+            "blob" => &[binary_stub(), binary_stub()],
         )
         .unwrap();
         let area = Rect::new(0, 0, 20, 4);
@@ -11119,7 +11186,7 @@ mod tests {
             &DataType::String,
             "binary column should be stubbed (not read as binary)"
         );
-        assert_eq!(col.str().unwrap().get(0).unwrap(), BINARY_STUB);
+        assert_eq!(col.str().unwrap().get(0).unwrap(), binary_stub());
         // A non-binary column is untouched.
         assert_eq!(df.column("a").unwrap().dtype(), &DataType::Int32);
     }
@@ -11155,8 +11222,8 @@ mod tests {
             .categorical_stats
             .as_ref()
             .expect("stubbed binary column has categorical stats");
-        assert_eq!(cat.min.as_deref(), Some(BINARY_STUB));
-        assert_eq!(cat.max.as_deref(), Some(BINARY_STUB));
+        assert_eq!(cat.min.as_deref(), Some(binary_stub()));
+        assert_eq!(cat.max.as_deref(), Some(binary_stub()));
         // The numeric column is still described normally.
         let a_stat = results
             .column_statistics

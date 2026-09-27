@@ -29,6 +29,10 @@ Excel and ORC can be read but not written.
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Close without exporting |
 
+Typing a path with a known extension selects the matching format, including
+before a compression suffix (`out.csv.gz` selects CSV); picking a format
+afterward overrides it.
+
 Numbers are written as raw values, whatever the
 [display formatting](configuration.md#number-formatting) shows on screen.
 

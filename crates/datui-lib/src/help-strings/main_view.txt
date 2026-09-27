@@ -15,7 +15,7 @@ Data Operations:
   e:                Export data to file
   r:                Reverse sort order
   R:                Reset table (clear queries, filters, sorts, locks)
-  T:                Apply most relevant template
+  T:                Apply the best-matching template (or open the list)
   t:                Open Template menu
 
 Display:
@@ -44,12 +44,13 @@ Analysis View:
 Exit:
   Ctrl+O:           Home screen (works during a load; abandons it)
   Ctrl+Q:           Quit from anywhere (Ctrl+C too, outside a text field)
-  q:                Quit
+  q / Q:            Quit
 
 While busy:
   Keys typed at a spinner are queued and replayed once the work is done, so
   typing ahead is never lost. Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load
-  at once.
+  at once; at the plain table, q, column scroll (←/→, h/l), ? and F1 also
+  act at once when nothing is queued.
 
 Empty cells:
   A directory of Parquet files may hold files that disagree, so an empty cell

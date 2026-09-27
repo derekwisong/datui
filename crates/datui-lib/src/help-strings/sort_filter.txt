@@ -1,16 +1,26 @@
 Tabbed modal: Sort (column order, sorting) and Filter (row filters).
 
-  Tab / BackTab:    Move focus (tab bar → form → Apply → Cancel → Clear → tab bar)
-  Left / Right:     On tab bar: switch Sort/Filter. In form: move cursor or change selection.
+  Tab / Shift+Tab:  Move focus (tab bar → form → Apply → Cancel → Clear)
+  ← / → (h/l):      On the tab bar: switch Sort / Filter
+  Ctrl+Enter:       Apply from anywhere in the modal
   ? / F1:           Show this help (F1 works in text fields)
-  Esc:              Cancel and close modal
+  Esc:              Cancel and close; staged changes are discarded, and
+                    reopening shows what is applied
 
 Sort tab:
-  Filter, column list, order (asc/desc). Space: toggle sort. Enter (on Apply): apply and close.
-  [: ]: 1-9: sort order. + -: display order. L: lock. v: visibility.
+  (type):           Filter the column list, when the filter field is focused
+  Space:            Toggle sort on the highlighted column
+  Enter:            Toggle sort on the column and apply at once
+  1-9:              Put the column at that place in the sort order
+  [ / ]:            Move the column earlier or later in the sort order
+  + / - (= / _):    Move the column's display position
+  L:                Lock the column to the left edge
+  v:                Show or hide the column
+  Order:            Ascending or descending
 
 Filter tab:
-  Column, Operator, Value, Logic. Enter: add filter or Apply. Clear: remove all filters.
+  Column, Operator, Value and Logic fields; Enter on Add adds the filter.
+  Enter on a filter in the list removes it. Clear removes every filter.
 
 Files that disagree:
   Sorting or filtering by a column some files store in another type leaves those

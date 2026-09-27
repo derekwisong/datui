@@ -91,9 +91,12 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             {
                 pairs.push(("r", "Resample"));
             }
+            pairs.push(("?", "Help"));
             ControlBarSpec::Custom(pairs)
         }
-        MainViewContent::Chart => ControlBarSpec::Custom(vec![("Esc", "Back"), ("e", "Export")]),
+        MainViewContent::Chart => {
+            ControlBarSpec::Custom(vec![("Esc", "Back"), ("e", "Export"), ("?", "Help")])
+        }
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
         MainViewContent::Loading => {
@@ -211,11 +214,16 @@ pub fn home_control_keys(
             // the keys do not keep.
             keys.push((g.updown_lr, "Fold"));
         }
-        keys.push(("^↑↓", "Section"));
+        keys.push((g.ctrl_updown, "Section"));
         // The key is an action; which order is currently in effect is state, and it
         // belongs with the other state at the far end of the bar rather than dressed
         // up as something to press.
         keys.push(("Tab", "Sort"));
+        // `?` is the one printable that does not type into the filter — but only
+        // while the filter is empty, so it is only promised then.
+        if !has_filter {
+            keys.push(("?", "Help"));
+        }
     }
 
     // Esc already reads "Quit" when there is nothing left to back out of; saying it

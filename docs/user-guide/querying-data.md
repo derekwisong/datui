@@ -5,9 +5,9 @@ and <kbd>Shift</kbd>+<kbd>Tab</kbd> move between them and into the input.
 
 | Tab | What you type | Example |
 |---|---|---|
-| **Query** | Datui's own short language, described below | `select name, salary where salary > 100000 by dept` |
-| **SQL** | Standard SQL. The table is called `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
+| **Query** | Datui's own short language, described below | `select name, salary by dept where salary > 100000` |
 | **Fuzzy** | Words to look for in any text column | `smith london` |
+| **SQL** | Standard SQL. The table is called `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
 
 <kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
 walk the history of the current tab. Submit an empty query to return to the
@@ -43,11 +43,12 @@ select where city.contains["York"]       # string accessors
 
 ## Arithmetic
 
-`+`, `-`, `*` and `%` for divide. Expressions bind **right to left**: `a * b + c`
-is `a * (b + c)`. Use parentheses when in doubt.
+`+`, `-`, `*` and `/` for divide; `%` also divides. The language is a q/kdb+
+dialect, which is where `%` and the **right to left** binding come from:
+`a * b + c` is `a * (b + c)`. Use parentheses when in doubt.
 
 ```
-select margin: (price - cost) % price where qty > 0
+select margin: (price - cost) / price where qty > 0
 ```
 
 ## Dates and times
@@ -77,7 +78,9 @@ select total: sum[price * qty] by region, year            # computed aggregates
 A `by` clause without aggregates gives one row per group. Press <kbd>Enter</kbd>
 on a group to see its rows, <kbd>Esc</kbd> to come back. With aggregates
 (`avg`, `sum`, `min`, `max`, `count`, `std`, `med`, `first`, `last`) you get one
-summary row per group. Brackets around the argument are optional.
+summary row per group. Brackets around the argument are optional. An unaliased
+aggregate of a column is named `fn_column` (`avg salary` → `avg_salary`); name
+it yourself with `:`.
 
 ## Fuzzy search
 

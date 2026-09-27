@@ -303,6 +303,7 @@ fn render_plan(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(config.theme.get("modal_border"))),
         )
         .row_highlight_style(config.theme.highlight_style())
@@ -465,8 +466,9 @@ fn render_overview(
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(" Dataset notes ")
+                    .title("Dataset Notes")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(config.theme.get("modal_border"))),
             )
             .render(sections[1], buf);
@@ -682,11 +684,7 @@ fn render_observation_detail(
     Paragraph::new(lines)
         .block(
             Block::default()
-                .title(if can_open_rows {
-                    " OBSERVATION — Enter Rows / Esc Back "
-                } else {
-                    " OBSERVATION — Enter/Esc Close "
-                })
+                .title("Observation")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
@@ -1514,6 +1512,7 @@ fn render_sidebar(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(config.theme.get("modal_border"))),
         )
         .render(parts[1], buf);
@@ -1547,7 +1546,7 @@ fn render_narrow_tool_picker(
     Widget::render(
         List::new(items).block(
             Block::default()
-                .title(" Analysis tools ")
+                .title("Analysis Tools")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(config.theme.get("accent"))),
@@ -1722,7 +1721,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     ];
     let table = Table::new(table_rows, [Constraint::Length(20), Constraint::Fill(1)]).block(
         Block::default()
-            .title(" ACCESS PLAN — Esc Close ")
+            .title("Access Plan")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(config.theme.get("accent"))),
@@ -1759,7 +1758,7 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     .wrap(Wrap { trim: true })
     .block(
         Block::default()
-            .title(" CONFIRM ACCESS ")
+            .title("Confirm Access")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(config.theme.get("warning"))),
@@ -1783,7 +1782,7 @@ fn render_running(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Bu
     ])
     .block(
         Block::default()
-            .title(" RUNNING ")
+            .title("Running")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(config.theme.get("accent"))),

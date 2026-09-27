@@ -10,4 +10,3 @@ local or in S3, GCS and HTTP, from a few rows to a few billion.
     - Light and dark palettes, every color and default in one config file
 
 Run with no PATH for the home screen. Press ? inside for the keys.
-Docs: https://derekwisong.github.io/datui/

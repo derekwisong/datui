@@ -11,41 +11,40 @@ Usage: datui [OPTIONS] [PATH]...
 | Option | Description |
 |--------|-------------|
 | `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. With no PATH, datui opens its home screen so you can pick a dataset |
-| `--skip-lines <SKIP_LINES>` | Skip this many lines when reading a file |
-| `--skip-rows <SKIP_ROWS>` | Skip this many rows when reading a file |
-| `--skip-tail-rows <N>` | Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage). Counts every row first; on a directory in a bucket that downloads every file |
-| `--no-header <NO_HEADER>` | Specify that the file has no header |
-| `--delimiter <DELIMITER>` | Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `\|` for .psv |
-| `--infer-schema-length <N>` | Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce risk of wrong type (e.g. int then N/A) |
-| `--ignore-errors <BOOL>` | When reading CSV, ignore parse errors and continue with the next batch (default: false) |
+| `--skip-lines <N>` | Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows |
+| `--skip-rows <N>` | Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines |
+| `--skip-tail-rows <N>` | Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file |
+| `--no-header[=<BOOL>]` | Read the first row as data, not column names; columns are named column_1, column_2, … |
+| `--delimiter <CODE>` | Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `\|` for .psv |
+| `--infer-schema-length <N>` | Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce the risk of a wrong type (e.g. int then N/A) |
+| `--ignore-errors[=<BOOL>]` | When reading CSV, ignore parse errors and continue with the next batch (default: false) |
 | `--null-value <VAL>` | Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount= |
-| `--compression <COMPRESSION>` | Specify the compression format explicitly (gzip, zstd, bzip2, xz) If not specified, compression is auto-detected from file extension |
-| `--format <FORMAT>` | Force file format (parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel). By default format is auto-detected from the file extension. Use this for URLs or paths without an extension |
+| `--compression <COMPRESSION>` | Compression format, when the extension does not say (default: auto-detected from the extension) |
+| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension) |
 | `--debug` | Enable debug mode to show operational information |
 | `--hive` | Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file |
-| `--single-spine-schema <BOOL>` | Infer Hive/partitioned Parquet schema from one file for faster load (default: true). Set to false to use full schema scan |
-| `--parse-dates <BOOL>` | Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true |
-| `--parse-strings <COL>` | Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float. Default: applied to all string columns. Use --parse-strings=COL (repeatable) to limit to specific columns, or --no-parse-strings to disable |
-| `--no-parse-strings` | Disable parse-strings for CSV (trim and type inference). Overrides config and default |
-| `--decompress-in-memory <DECOMPRESS_IN_MEMORY>` | Decompress into memory. Default: decompress to temp file and use lazy scan |
+| `--single-spine-schema[=<BOOL>]` | Infer a partitioned Parquet dataset's schema from one file for a faster open (default: true). Set to false to scan every file's schema |
+| `--parse-dates[=<BOOL>]` | Parse CSV string columns that look like dates (e.g. YYYY-MM-DD, ISO datetime) as dates (default: true) |
+| `--parse-strings[=<COL>]` | Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float (default: all string columns). --parse-strings=COL (repeatable) limits it to named columns; --no-parse-strings disables it |
+| `--no-parse-strings` | Do not trim or type-infer CSV string columns. Overrides config and --parse-strings |
+| `--decompress-in-memory[=<BOOL>]` | Decompress into memory (default: decompress to a temp file and scan lazily) |
 | `--temp-dir <DIR>` | Directory for decompression temp files (default: system temp, e.g. TMPDIR) |
 | `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
 | `--clear-recents` | Forget every recently opened dataset and exit; other caches are kept |
 | `--clear-cache` | Clear all cache data and exit |
-| `--template <TEMPLATE>` | Apply a template by name when starting the application |
+| `--template <NAME>` | Apply a template by name when starting the application |
 | `--remove-templates` | Remove all templates and exit |
-| `--sampling-threshold <N>` | When set, datasets with this many or more rows are sampled for analysis (faster, less memory). Overrides config [performance] sampling_threshold. Use 0 to disable sampling (full dataset) for this run. When omitted, config or full-dataset mode is used |
-| `--polars-streaming <BOOL>` | Use Polars streaming engine for LazyFrame collect when available (default: true). Set to false to disable |
-| `--workaround-pivot-date-index <BOOL>` | No effect since Polars 0.55: the pivot crash with a Date/Datetime index it worked around is gone. Kept so existing invocations still parse |
-| `--pages-lookahead <PAGES_LOOKAHEAD>` | Number of pages to buffer ahead of the visible area (default: 3) Larger values provide smoother scrolling but use more memory |
-| `--pages-lookback <PAGES_LOOKBACK>` | Number of pages to buffer behind the visible area (default: 3) Larger values provide smoother scrolling but use more memory |
-| `--row-numbers` | Display row numbers on the left side of the table |
-| `--row-start-index <ROW_START_INDEX>` | Starting index for row numbers (default: 1) |
-| `--column-colors <BOOL>` | Colorize main table cells by column type (default: true). Set to false to disable |
-| `--number-format <FORMAT>` | Digit grouping for numbers in the data table (default: none). Press F to toggle while running. "system" reads LC_ALL/LC_NUMERIC/LANG and picks a matching style |
-| `--align-numeric-right <BOOL>` | Right-align numeric columns and their headers (default: true). Set to false to left-align |
-| `--generate-config` | Generate default configuration file at ~/.config/datui/config.toml |
-| `--force` | Force overwrite existing config file when using --generate-config |
+| `--sampling-threshold <N>` | Sample datasets with this many or more rows for analysis — faster, less memory (default: [performance] sampling_threshold in config, else the full dataset). 0 disables sampling for this run |
+| `--polars-streaming[=<BOOL>]` | Use the Polars streaming engine where available (default: true) |
+| `--pages-lookahead <N>` | Pages to buffer ahead of the visible area (default: 3). More is smoother scrolling, more memory |
+| `--pages-lookback <N>` | Pages to buffer behind the visible area (default: 3). More is smoother scrolling, more memory |
+| `--row-numbers` | Show row numbers on the left side of the table. Press N to toggle while running |
+| `--row-start-index <N>` | Starting index for row numbers (default: 1) |
+| `--column-colors[=<BOOL>]` | Color table cells by column type (default: true) |
+| `--number-format <FORMAT>` | Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press F to toggle while running |
+| `--align-numeric-right[=<BOOL>]` | Right-align numeric columns and their headers (default: true) |
+| `--generate-config` | Write the default configuration to ~/.config/datui/config.toml and exit |
+| `--force` | Overwrite an existing config file (with --generate-config) |
 | `--s3-endpoint-url <URL>` | S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000 |
 | `--s3-access-key-id <KEY>` | S3 access key (overrides config and AWS_ACCESS_KEY_ID) |
 | `--s3-secret-access-key <SECRET>` | S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY) |

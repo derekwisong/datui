@@ -1,20 +1,12 @@
-Correlation Pair Detail View shows detailed information about a selected pair.
+Correlation Pair Detail shows what the matrix knows about the selected pair:
 
-Sections:
-  1. Relationship Summary:
-     - Correlation coefficient with interpretation
-     - Statistical significance (p-value)
-     - Sample size
-     - Plain-language interpretation
+  - Pearson correlation coefficient, with a plain reading of its
+    strength and direction
+  - R-squared
+  - P-value
+  - How many row pairs the coefficient was computed from, out of the
+    total rows
 
-  2. Scatter Plot Approximation:
-     - Text-based scatter plot showing relationship
-     - Trend indicators
-
-  3. Key Statistics:
-     - Summary statistics for both variables
-     - Covariance and R-squared
-
-Navigation:
-  ↑↓:            Scroll if content is long
-  Esc:           Return to correlation matrix
+Keys:
+  ?:             Toggle this help
+  Esc:           Return to the correlation matrix

@@ -8,6 +8,10 @@ use ratatui::{
 
 pub struct Controls {
     pub row_count: Option<usize>,
+    /// The dataset's full row count, when `row_count` is a filtered or queried subset
+    /// of it. The bar then reads "Rows: 417 of 1,000" instead of a bare number that
+    /// hides the filter. Only ever a count something already resolved.
+    pub total_row_count: Option<usize>,
     pub dimmed: bool,
     pub query_active: bool,
     pub custom_controls: Option<Vec<(&'static str, &'static str)>>,
@@ -44,6 +48,7 @@ impl Default for Controls {
         Self {
             caption: None,
             row_count: None,
+            total_row_count: None,
             dimmed: false,
             query_active: false,
             custom_controls: None,
@@ -73,6 +78,7 @@ impl Controls {
         Self {
             caption: None,
             row_count: Some(row_count),
+            total_row_count: None,
             dimmed: false,
             query_active: false,
             custom_controls: None,
@@ -164,6 +170,12 @@ impl Controls {
         self
     }
 
+    /// Set the full dataset count beside a filtered view's. See [`Self::total_row_count`].
+    pub fn with_total_row_count(mut self, total: Option<usize>) -> Self {
+        self.total_row_count = total;
+        self
+    }
+
     /// Say, beside the row count, that these are a lake table's files and not the
     /// table. See [`Self::not_the_table`].
     pub fn with_not_the_table(mut self, format: Option<&'static str>) -> Self {
@@ -177,6 +189,7 @@ impl Controls {
         Self {
             caption: None,
             row_count: Some(row_count),
+            total_row_count: None,
             dimmed: false,
             query_active: false,
             custom_controls: None,
@@ -206,6 +219,7 @@ impl Controls {
         Self {
             caption: None,
             row_count: Some(row_count),
+            total_row_count: None,
             dimmed: false,
             query_active: false,
             custom_controls: None,
@@ -235,17 +249,16 @@ impl Widget for &Controls {
                 .render(area, buf);
         }
 
-        // Throbber character for status mode (reused below).
-        const THROBBER_ASCII: [char; 4] = ['|', '/', '-', '\\'];
-        const THROBBER_BRAILLE_EIGHT: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
+        // Throbber frames come from the glyph sets, so they match the rest of the UI.
+        let throbber_frames = if self.use_unicode_throbber {
+            crate::glyphs::unicode().spinner
+        } else {
+            crate::glyphs::ascii().spinner
+        };
 
         let throbber_ch = || -> String {
             if self.busy {
-                if self.use_unicode_throbber {
-                    THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8].to_string()
-                } else {
-                    THROBBER_ASCII[self.throbber_frame as usize % 4].to_string()
-                }
+                throbber_frames[self.throbber_frame as usize % throbber_frames.len()].to_string()
             } else {
                 " ".to_string()
             }
@@ -253,17 +266,13 @@ impl Widget for &Controls {
 
         // Spinner frame independent of `busy` — used for the row-count placeholder while the
         // exact total is still being determined (that background count does not set `busy`).
-        let spinner_ch = || -> char {
-            if self.use_unicode_throbber {
-                THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8]
-            } else {
-                THROBBER_ASCII[self.throbber_frame as usize % 4]
-            }
-        };
+        let spinner_ch =
+            || -> &str { throbber_frames[self.throbber_frame as usize % throbber_frames.len()] };
 
         // Row-count text: while the count is pending a spinner stands in for the number, and if
         // the count couldn't be determined a "?" is shown — so the user never mistakes an
-        // incomplete partial total for the final figure.
+        // incomplete partial total for the final figure. A settled count that is a subset of a
+        // known total says so ("417 of 1,000"), so a filtered view never reads as the dataset.
         let row_count_text = |count: usize| -> String {
             if let Some(caption) = &self.caption {
                 return caption.clone();
@@ -272,6 +281,12 @@ impl Widget for &Controls {
                 format!("Rows: {}", spinner_ch())
             } else if self.row_count_unknown {
                 "Rows: ?".to_string()
+            } else if let Some(total) = self.total_row_count.filter(|&total| total != count) {
+                format!(
+                    "Rows: {} of {}",
+                    crate::numfmt::group_chrome(count),
+                    crate::numfmt::group_chrome(total)
+                )
             } else {
                 format!("Rows: {}", crate::numfmt::group_chrome(count))
             }
@@ -291,19 +306,16 @@ impl Widget for &Controls {
         };
 
         // The trailing chunk, in columns, or `None` when there is no row count to show.
-        // A row count fits in twenty; a view's own caption may not, and truncating it
-        // mid-word ("by recent · 78 dat") is worse than giving it the room it asked for.
+        // A bare row count fits in twenty; a caption or a "417 of 1,000" may not, and
+        // truncating either mid-word is worse than giving it the room it asked for —
+        // so the reservation asks the same text the layout will later draw.
         //
         // Worked out once, above both modes, because the chip-fitting loop below has to
         // subtract exactly what its layout will later ask for — and because the status
         // layout used to hardcode twenty-one here and truncate the caption itself.
-        let trailing = self.row_count.map(|_| {
-            self.caption
-                .as_ref()
-                .map(|c| c.chars().count() as u16 + 1)
-                .unwrap_or(20)
-                .max(20)
-        });
+        let trailing = self
+            .row_count
+            .map(|count| (row_count_text(count).chars().count() as u16 + 1).max(20));
 
         // The chip that says the row count is not the table's. Immediately left of the
         // count, because the count is what it is about.
@@ -372,7 +384,7 @@ impl Widget for &Controls {
         }
 
         // Normal keybinding mode (unchanged from original)
-        const DEFAULT_CONTROLS: [(&str, &str); 9] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 10] = [
             ("/", "Query"),
             ("i", "Info"),
             ("a", "Analysis"),
@@ -380,6 +392,7 @@ impl Widget for &Controls {
             ("s", "Sort & Filter"),
             ("p", "Pivot & Melt"),
             ("e", "Export"),
+            ("^O", "Home"),
             ("?", "Help"),
             ("q", "Quit"),
         ];
@@ -641,6 +654,57 @@ mod tests {
                 "column {x} changed, which is outside the Info chip"
             );
         }
+    }
+
+    /// A filtered view says what it is a view of: "Rows: 417 of 1,000".
+    #[test]
+    fn a_filtered_count_names_the_total_beside_it() {
+        let out = render_to_string(
+            &Controls::with_row_count(417).with_total_row_count(Some(1_000)),
+            80,
+        );
+        assert!(out.contains("Rows: 417 of 1,000"), "got: {out:?}");
+
+        // The same total says nothing: nothing was filtered away.
+        let out = render_to_string(
+            &Controls::with_row_count(1_000).with_total_row_count(Some(1_000)),
+            80,
+        );
+        assert!(out.contains("Rows: 1,000"), "got: {out:?}");
+        assert!(!out.contains(" of "), "got: {out:?}");
+    }
+
+    /// Pending and unknown keep their say: no "of" beside a spinner or a "?".
+    #[test]
+    fn the_total_defers_to_pending_and_unknown() {
+        let out = render_to_string(
+            &Controls::with_row_count(417)
+                .with_total_row_count(Some(1_000))
+                .with_row_count_pending(true)
+                .with_busy(false, 1),
+            80,
+        );
+        assert!(out.contains("Rows: /"), "got: {out:?}");
+        assert!(!out.contains(" of "), "got: {out:?}");
+
+        let out = render_to_string(
+            &Controls::with_row_count(417)
+                .with_total_row_count(Some(1_000))
+                .with_row_count_unknown(true),
+            80,
+        );
+        assert!(out.contains("Rows: ?"), "got: {out:?}");
+        assert!(!out.contains(" of "), "got: {out:?}");
+    }
+
+    /// A pair too long for the flat twenty columns is given room, not clipped.
+    #[test]
+    fn a_long_count_pair_is_not_clipped() {
+        let out = render_to_string(
+            &Controls::with_row_count(999_417).with_total_row_count(Some(1_000_000)),
+            80,
+        );
+        assert!(out.contains("Rows: 999,417 of 1,000,000"), "got: {out:?}");
     }
 
     #[test]

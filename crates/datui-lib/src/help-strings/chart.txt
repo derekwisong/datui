@@ -1,13 +1,15 @@
 Chart view: tabs for XY, Histogram, Box Plot, KDE, Heatmap.
 
   Tab / BackTab:    Move focus (tab bar → sidebar fields)
-  ← / →:            On tab bar: switch chart type
+  ← / → (h/l):      On the tab bar: switch chart type
                     On plot style: switch Line / Scatter / Bar
                     On bins/bandwidth: adjust values
-  ↑ / ↓:            Move selection in focused column list
-  Enter / Space:    Select column or toggle options
-  + / -:            Adjust bins, bandwidth, or Limit Rows when focused
-  Limit Rows:       Caps how many rows from the dataset are used to build the chart (sidebar, bottom).
+  ↑ / ↓ (j/k):      Move selection in the focused column list
+  Enter / Space:    Select a column or toggle an option
+  + / -:            Adjust bins, bandwidth, or Limit rows when focused
+  PgUp / PgDn:      Adjust Limit rows in bigger steps when focused
+  Limit rows:       Caps how many rows are used to build the chart
+                    (sidebar, bottom)
   e:                Export the chart to PNG or EPS
   ? / F1:           Show this help
-  Esc:              Back to main view
+  Esc:              Back to the table

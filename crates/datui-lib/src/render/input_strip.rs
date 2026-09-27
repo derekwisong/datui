@@ -53,7 +53,7 @@ pub fn render(
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(0), Constraint::Max(40)])
             .split(tab_line_chunks[0]);
-        let tab_titles = vec!["SQL-Like", "Fuzzy", "SQL"];
+        let tab_titles = vec!["Query", "Fuzzy", "SQL"];
         let tabs = Tabs::new(tab_titles)
             .style(Style::default().fg(border_c))
             .highlight_style(

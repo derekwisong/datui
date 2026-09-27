@@ -193,7 +193,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 tokens.push(Token::Op("^".to_string()));
                 chars.next();
             }
-            '+' | '-' | '*' | '%' | '=' | '<' | '>' | '!' => {
+            '+' | '-' | '*' | '%' | '/' | '=' | '<' | '>' | '!' => {
                 let mut op = c.to_string();
                 chars.next();
                 if let Some(&next_c) = chars.peek()
@@ -314,7 +314,8 @@ fn apply_op(left: Expr, op: &str, right: Expr) -> Result<Expr, String> {
         "+" => Ok(left.add(right)),
         "-" => Ok(left.sub(right)),
         "*" => Ok(left.mul(right)),
-        "%" => Ok(left.div(right)),
+        // `%` divides (q heritage); `/` is the alias everyone expects.
+        "%" | "/" => Ok(left.div(right)),
         "^" => Ok(coalesce(&[left, right])),
         "=" => Ok(left.eq(right)),
         "<" => Ok(left.lt(right)),
@@ -326,6 +327,21 @@ fn apply_op(left: Expr, op: &str, right: Expr) -> Result<Expr, String> {
     }
 }
 
+/// The column name when the tokens are a bare column reference: `salary`, or
+/// `col["first name"]` / `col[name]`. Anything more (literals, operators) is None.
+fn simple_column_name(tokens: &[Token]) -> Option<String> {
+    match tokens {
+        [Token::Identifier(name)] => Some(name.clone()),
+        [
+            Token::Identifier(c),
+            Token::LBracket,
+            Token::String(name) | Token::Identifier(name),
+            Token::RBracket,
+        ] if c == "col" => Some(name.clone()),
+        _ => None,
+    }
+}
+
 // Parse aggregation function like avg[a], min[b], etc.
 fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     if args.is_empty() {
@@ -334,18 +350,26 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
             name
         ));
     }
+    let fn_name = name.to_lowercase();
     let expr = parse_expr(args)?;
-    match name.to_lowercase().as_str() {
-        "avg" | "mean" => Ok(expr.mean()),
-        "min" => Ok(expr.min()),
-        "max" => Ok(expr.max()),
-        "count" => Ok(expr.count()),
-        "std" | "stddev" => Ok(expr.std(1)),
-        "med" | "median" => Ok(expr.median()),
-        "sum" => Ok(expr.sum()),
-        "first" => Ok(expr.first()),
-        "last" => Ok(expr.last()),
-        _ => Err(format!("Unknown aggregation function: {}", name)),
+    let expr = match fn_name.as_str() {
+        "avg" | "mean" => expr.mean(),
+        "min" => expr.min(),
+        "max" => expr.max(),
+        "count" => expr.count(),
+        "std" | "stddev" => expr.std(1),
+        "med" | "median" => expr.median(),
+        "sum" => expr.sum(),
+        "first" => expr.first(),
+        "last" => expr.last(),
+        _ => return Err(format!("Unknown aggregation function: {}", name)),
+    };
+    // Left unnamed, two aggregates of one column collide ("avg salary, max salary"),
+    // so a bare-column aggregate is named {fn}_{column}, the convention the dot
+    // accessors already use. An explicit alias is applied later and overrides this.
+    match simple_column_name(args) {
+        Some(column) => Ok(expr.alias(format!("{}_{}", fn_name, column))),
+        None => Ok(expr),
     }
 }
 
@@ -709,34 +733,17 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
         && tokens.len() > 1
         && tokens[1] != Token::LBracket
     {
-        // Function call without brackets - parse the rest as the argument
+        // Function call without brackets - parse the rest as the argument, going
+        // through the same builders as the bracketed form so both spellings get
+        // the same expression and the same auto-alias.
         let remaining = &tokens[1..];
         if remaining.is_empty() {
             return Err(format!("Function {} requires an argument", name));
         }
-        // Parse the entire remaining expression as the function argument
-        let expr = parse_expr(remaining)?;
-        // Apply the function
-        match name.to_lowercase().as_str() {
-            "avg" | "mean" => return Ok(expr.mean()),
-            "min" => return Ok(expr.min()),
-            "max" => return Ok(expr.max()),
-            "count" => return Ok(expr.count()),
-            "std" | "stddev" => return Ok(expr.std(1)),
-            "med" | "median" => return Ok(expr.median()),
-            "sum" => return Ok(expr.sum()),
-            "first" => return Ok(expr.first()),
-            "last" => return Ok(expr.last()),
-            "len" | "length" => return Ok(expr.str().len_chars()),
-            "not" => return Ok(expr.not()),
-            "null" => return Ok(expr.is_null()),
-            "upper" => return Ok(expr.str().to_uppercase()),
-            "lower" => return Ok(expr.str().to_lowercase()),
-            "abs" => return Ok(expr.abs()),
-            "floor" => return Ok(expr.floor()),
-            "ceil" | "ceiling" => return Ok(expr.ceil()),
-            _ => {}
+        if let Ok(expr) = parse_agg_function(name, remaining) {
+            return Ok(expr);
         }
+        return parse_function(name, remaining);
     }
 
     // Find the leftmost operator for right-to-left evaluation
@@ -1641,6 +1648,103 @@ mod tests {
             group_by_cols[0],
             col("order_date").dt().year().alias("order_date_year")
         );
+    }
+
+    #[test]
+    fn test_unaliased_aggregates_of_same_column_coexist() {
+        let query = "select avg salary, max salary by department";
+        let (cols, _, group_by_cols, _) = parse_query(query).unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0], col("salary").mean().alias("avg_salary"));
+        assert_eq!(cols[1], col("salary").max().alias("max_salary"));
+        assert_eq!(group_by_cols, vec![col("department")]);
+    }
+
+    #[test]
+    fn test_unaliased_aggregate_bracketed_and_bare_name_alike() {
+        let (bracketed, _, _, _) = parse_query("select avg[salary] by department").unwrap();
+        let (bare, _, _, _) = parse_query("select avg salary by department").unwrap();
+        assert_eq!(bracketed, bare);
+        assert_eq!(bracketed[0], col("salary").mean().alias("avg_salary"));
+    }
+
+    #[test]
+    fn test_unaliased_aggregate_col_syntax_auto_alias() {
+        let (cols, _, _, _) = parse_query("select sum[col[\"unit price\"]] by region").unwrap();
+        assert_eq!(cols[0], col("unit price").sum().alias("sum_unit price"));
+    }
+
+    #[test]
+    fn test_bare_count_names_itself() {
+        let (cols, _, _, _) = parse_query("select count[x] by g").unwrap();
+        assert_eq!(cols[0], col("x").count().alias("count_x"));
+    }
+
+    #[test]
+    fn test_explicit_alias_overrides_aggregate_auto_alias() {
+        let (cols, _, _, _) = parse_query("select total:sum[price] by region").unwrap();
+        // The outer alias is applied last, so the result column is named "total".
+        assert_eq!(
+            cols[0],
+            col("price").sum().alias("sum_price").alias("total")
+        );
+    }
+
+    #[test]
+    fn test_aggregate_of_expression_keeps_default_name() {
+        // No single source column, so there is nothing to build a {fn}_{column} name from.
+        let (cols, _, _, _) = parse_query("select sum[price*qty] by region").unwrap();
+        assert_eq!(cols[0], (col("price").mul(col("qty"))).sum());
+    }
+
+    #[test]
+    fn test_docs_grouping_example_collects_with_auto_aliases() {
+        // The example from docs/user-guide/querying-data.md must run as written.
+        let query = "select avg salary, max salary, count name by department";
+        let (cols, _, group_by_cols, _) = parse_query(query).unwrap();
+        let df = df!(
+            "department" => &["eng", "eng", "ops"],
+            "salary" => &[100.0f64, 200.0, 300.0],
+            "name" => &["a", "b", "c"],
+        )
+        .unwrap();
+        let out = df
+            .lazy()
+            .group_by(group_by_cols)
+            .agg(cols)
+            .collect()
+            .unwrap();
+        let names: Vec<String> = out
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["department", "avg_salary", "max_salary", "count_name"]
+        );
+    }
+
+    #[test]
+    fn test_slash_divides_like_percent() {
+        let slash = parse_expr(&tokenize("a/b").unwrap()).unwrap();
+        let percent = parse_expr(&tokenize("a%b").unwrap()).unwrap();
+        assert_eq!(slash, percent);
+        assert_eq!(slash, col("a").div(col("b")));
+    }
+
+    #[test]
+    fn test_slash_right_to_left() {
+        // Right-to-left like every other operator: 1/c+a is 1/(c+a).
+        let expr = parse_expr(&tokenize("1/c+a").unwrap()).unwrap();
+        assert_eq!(expr, lit(1.0).div(col("c").add(col("a"))));
+    }
+
+    #[test]
+    fn test_slash_in_where_clause() {
+        // Same shape as the existing % test: c>c/n is c > (c/n).
+        let (_, filter, _, _) = parse_query("select t, v where c>c/n").unwrap();
+        assert_eq!(filter, Some(col("c").gt(col("c").div(col("n")))));
     }
 
     #[test]

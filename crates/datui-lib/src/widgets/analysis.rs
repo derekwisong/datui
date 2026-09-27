@@ -455,10 +455,150 @@ impl<'a> AnalysisWidget<'a> {
         }
     }
 
-    fn render_correlation_detail(self, _area: Rect, _buf: &mut Buffer) {
-        // TODO: Implement correlation pair detail view
-        // This will show relationship summary, scatter plot, and key statistics
+    fn render_correlation_detail(self, area: Rect, buf: &mut Buffer) {
+        let matrix = self
+            .results
+            .and_then(|results| results.correlation_matrix.as_ref());
+        let pair = self.selected_correlation.and_then(|(row, col)| {
+            matrix.and_then(|m| {
+                (row < m.columns.len() && col < m.columns.len()).then_some((row, col))
+            })
+        });
+
+        let (Some(matrix), Some((row, col))) = (matrix, pair) else {
+            Paragraph::new("No correlation pair selected")
+                .centered()
+                .render(area, buf);
+            return;
+        };
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Fill(1)])
+            .split(area);
+
+        // Breadcrumb with the pair and an Escape hint, matching the distribution detail.
+        let breadcrumb_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Fill(1), Constraint::Length(8)])
+            .split(layout[0]);
+
+        let title_text = format!(
+            "Correlation: {} vs {}",
+            matrix.columns[row], matrix.columns[col]
+        );
+        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+        Paragraph::new(title_text)
+            .style(header_row_style)
+            .render(breadcrumb_layout[0], buf);
+        Paragraph::new("Esc Back")
+            .style(header_row_style)
+            .right_aligned()
+            .render(breadcrumb_layout[1], buf);
+
+        let total_rows = self.results.map(|r| r.total_rows).unwrap_or(0);
+        render_correlation_pair_summary(
+            matrix,
+            (row, col),
+            total_rows,
+            layout[1],
+            buf,
+            self.theme,
+            self.number_format,
+        );
     }
+}
+
+/// A short reading of a coefficient, using the same 0.05/0.3 boundaries as the
+/// matrix's colors so the word never disagrees with the color.
+fn describe_correlation(r: f64) -> &'static str {
+    let strength = r.abs();
+    if strength < 0.05 {
+        "none"
+    } else if strength < 0.3 {
+        if r > 0.0 {
+            "weak positive"
+        } else {
+            "weak negative"
+        }
+    } else if strength < 0.7 {
+        if r > 0.0 {
+            "moderate positive"
+        } else {
+            "moderate negative"
+        }
+    } else if r > 0.0 {
+        "strong positive"
+    } else {
+        "strong negative"
+    }
+}
+
+/// The body of the correlation pair detail: everything the matrix already knows
+/// about the pair. Nothing is collected here — a scatter or per-column moments
+/// would need the pair's values, which the correlation results do not carry.
+fn render_correlation_pair_summary(
+    matrix: &crate::statistics::CorrelationMatrix,
+    (row, col): (usize, usize),
+    total_rows: usize,
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    number_format: &NumberFormatSettings,
+) {
+    let r = matrix.correlations[row][col];
+    let pairs = matrix.sample_sizes[row][col];
+    let p_value = matrix.p_values.as_ref().map(|p| p[row][col]);
+
+    let label_style = Style::default().fg(theme.get("text_secondary"));
+    let value_style = Style::default().fg(theme.get("text_primary"));
+
+    let mut lines: Vec<Line> = Vec::new();
+    if r.is_nan() {
+        lines.push(Line::from(vec![Span::styled(
+            "Not enough overlapping values to correlate (needs 3 pairs).",
+            value_style,
+        )]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Pearson r: ", label_style),
+            Span::styled(
+                format!("{:.3}", r),
+                Style::default().fg(get_correlation_color(r, theme)),
+            ),
+            Span::styled(format!("  ({})", describe_correlation(r)), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("R²: ", label_style),
+            Span::styled(format!("{:.3}", r * r), value_style),
+        ]));
+        if let Some(p) = p_value {
+            lines.push(Line::from(vec![
+                Span::styled("P-value: ", label_style),
+                Span::styled(format_pvalue(p), value_style),
+            ]));
+        }
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Pairs used: ", label_style),
+        Span::styled(
+            format!(
+                "{} of {} rows",
+                format_count(pairs, number_format),
+                format_count(total_rows, number_format)
+            ),
+            value_style,
+        ),
+    ]));
+
+    // One character of margin, like the distribution detail's charts.
+    let inner = Rect::new(
+        area.left() + 1,
+        area.top() + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(1),
+    );
+    Paragraph::new(lines).render(inner, buf);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2783,5 +2923,78 @@ mod tests {
         assert_eq!(format_count(42, &settings("thousands", true)), "42");
         assert_eq!(format_count(1000, &settings("thousands", true)), "1,000");
         assert_eq!(format_count(10_000, &settings("thousands", true)), "10,000");
+    }
+
+    fn correlation_matrix(r: f64, pairs: usize) -> crate::statistics::CorrelationMatrix {
+        crate::statistics::CorrelationMatrix {
+            columns: vec!["price".to_string(), "volume".to_string()],
+            correlations: vec![vec![1.0, r], vec![r, 1.0]],
+            p_values: Some(vec![vec![0.0, 0.004], vec![0.004, 0.0]]),
+            sample_sizes: vec![vec![0, pairs], vec![pairs, 0]],
+        }
+    }
+
+    fn rendered_text(buf: &Buffer) -> String {
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn correlation_detail_shows_the_pair_facts_the_matrix_holds() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 60, 8);
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            &correlation_matrix(0.874, 42),
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        let text = rendered_text(&buf);
+        assert!(text.contains("Pearson r: 0.874"), "{text}");
+        assert!(text.contains("strong positive"), "{text}");
+        assert!(text.contains("R²: 0.764"), "{text}");
+        assert!(text.contains("P-value: 0.004"), "{text}");
+        assert!(text.contains("Pairs used: 42 of 50 rows"), "{text}");
+    }
+
+    #[test]
+    fn correlation_detail_says_when_too_few_pairs_overlap() {
+        // A pair with fewer than 3 overlapping values holds NaN in the matrix.
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 70, 8);
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            &correlation_matrix(f64::NAN, 2),
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        let text = rendered_text(&buf);
+        assert!(text.contains("Not enough overlapping values"), "{text}");
+        assert!(!text.contains("Pearson r:"), "{text}");
+    }
+
+    #[test]
+    fn correlation_words_match_the_color_boundaries() {
+        assert_eq!(describe_correlation(0.01), "none");
+        assert_eq!(describe_correlation(0.2), "weak positive");
+        assert_eq!(describe_correlation(-0.5), "moderate negative");
+        assert_eq!(describe_correlation(0.9), "strong positive");
+        assert_eq!(describe_correlation(-0.9), "strong negative");
     }
 }

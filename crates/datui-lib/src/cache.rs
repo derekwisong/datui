@@ -3,9 +3,6 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-/// Registry of known cache files
-const CACHE_FILES: &[&str] = &["query_history.txt", "dataset_shapes.json"];
-
 /// Manages cache directory and cache file operations
 #[derive(Clone, Debug)]
 pub struct CacheManager {
@@ -83,11 +80,22 @@ impl CacheManager {
     /// Note: History files (e.g., `{id}_history.txt`) are dynamic and excluded from `clear_all()`.
     /// They can be cleared individually via `clear_file()` if needed.
     pub fn clear_all(&self) -> Result<()> {
-        for filename in CACHE_FILES {
-            let file_path = self.cache_file(filename);
-            if file_path.exists()
-                && let Err(_e) = fs::remove_file(&file_path)
-            {
+        // Everything datui writes here, not a fixed list: the list rotted — it held
+        // two names while the directory grew histories, measurements, cloud sources
+        // and the hidden-source file, so `--clear-cache` kept most of the cache and
+        // broke the documented way to unhide a source. Files only, by the extensions
+        // datui writes, so a stray directory or foreign file is left alone.
+        let Ok(entries) = fs::read_dir(&self.cache_dir) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ours = path.is_file()
+                && matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("json" | "txt" | "lock")
+                );
+            if ours && let Err(_e) = fs::remove_file(&path) {
                 // Silently ignore cache file removal failures — this runs in a TUI
                 // context where stderr output would corrupt the terminal display.
             }
@@ -97,7 +105,6 @@ impl CacheManager {
     }
 
     /// Load history from a history file
-    /// History files are dynamic (`{id}_history.txt`) and are NOT included in `CACHE_FILES`
     pub fn load_history_file(&self, history_id: &str) -> Result<Vec<String>> {
         let history_file = self.cache_file(&format!("{}_history.txt", history_id));
 
@@ -180,7 +187,6 @@ impl CacheManager {
     }
 
     /// Save history to a history file
-    /// History files are dynamic (`{id}_history.txt`) and are NOT included in `CACHE_FILES`
     pub fn save_history_file(&self, history_id: &str, history: &[String]) -> Result<()> {
         self.ensure_cache_dir()?;
         let history_file = self.cache_file(&format!("{}_history.txt", history_id));
@@ -525,7 +531,7 @@ impl DatasetShape {
 /// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`, or
 /// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
 /// `target/<profile>/datui`, and an installed one is nowhere near.
-fn running_as_a_cargo_test() -> bool {
+pub(crate) fn running_as_a_cargo_test() -> bool {
     std::env::current_exe()
         .is_ok_and(|exe| cargo_test_layout(&exe, std::env::var_os("CARGO_TARGET_DIR").as_deref()))
 }
@@ -984,7 +990,7 @@ mod dataset_shape_tests {
     #[test]
     fn a_shape_comes_back_only_for_the_dataset_it_was_taken_from() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
         cache.save_dataset_shape("s3://b/events/", shape("2-30-abc", 100));
 
         assert_eq!(
@@ -1072,7 +1078,7 @@ mod dataset_shape_tests {
     #[test]
     fn the_oldest_shapes_are_the_ones_that_go() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
         for i in 0..(MAX_DATASET_SHAPES + 10) {
             cache.save_dataset_shape(&format!("s3://b/{i}/"), shape("f", i as u64));
         }
@@ -1092,7 +1098,7 @@ mod dataset_shape_tests {
     #[test]
     fn clearing_the_cache_forgets_the_shapes() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
         cache.save_dataset_shape("s3://b/events/", shape("f", 1));
         assert!(cache.dataset_shape("s3://b/events/", "f").is_some());
 
@@ -1135,5 +1141,45 @@ mod facts_compat_tests {
         let map: std::collections::HashMap<std::path::PathBuf, DatasetFacts> =
             serde_json::from_str(index).expect("the index still parses");
         assert_eq!(map.len(), 2, "both rows, not none of them");
+    }
+
+    /// `--clear-cache` clears the cache — all of it. The old fixed list held two
+    /// names while the directory grew histories, measurements and the hidden-source
+    /// file, so the documented promises ("clears everything", "hidden until
+    /// --clear-cache") were both broken.
+    #[test]
+    fn clear_all_removes_every_file_datui_writes() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
+        for name in [
+            "query_history.txt",
+            "fuzzy_history.txt",
+            "recents_history.txt",
+            "cloud_hidden_history.txt",
+            "datasets.json",
+            "dataset_shapes.json",
+            "cloud_sources.json",
+            "datasets.lock",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").expect("write");
+        }
+        // A foreign file and a directory are not datui's to delete.
+        std::fs::write(dir.path().join("keep.parquet"), b"x").expect("write");
+        std::fs::create_dir(dir.path().join("subdir")).expect("mkdir");
+
+        cache.clear_all().expect("clear");
+
+        let left: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left.len(),
+            2,
+            "only the foreign file and the directory: {left:?}"
+        );
+        assert!(left.contains(&"keep.parquet".to_string()));
+        assert!(left.contains(&"subdir".to_string()));
     }
 }

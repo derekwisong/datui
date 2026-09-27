@@ -1,116 +1,55 @@
-The home screen is where datui starts when you launch it without a path, and
-where Ctrl+O returns you from anywhere.
+The home screen: pick a dataset. datui starts here without a path, and Ctrl+O
+returns here from anywhere. Every letter types into the filter, so "json"
+finds json; only the keys below are keys.
 
-NAVIGATION
-  ↑ / ↓             Move the selection (Ctrl+P / Ctrl+N as well)
-  Ctrl+↑ / Ctrl+↓   Previous or next section
-  ← / →             Collapse or expand a section of the root listing; the
-                    choice is remembered.
-                    → on any directory goes inside it instead, whatever its
-                    label, so one partition or one file can always be reached.
-                    → on a place row under Recent browses it
-  PgUp / PgDn       Move ten rows, stopping at the first and last
-  Home / End        The first or last row
+Navigation:
+  ↑ / ↓:            Move the selection (Ctrl+P / Ctrl+N too)
+  Ctrl+↑ / Ctrl+↓:  Previous or next section
+  PgUp / PgDn:      Move ten rows
+  Home / End:       The first or last row
+  ← / →:            Fold or unfold a section; → on a directory goes inside it
+  Enter:            What the control bar says on this row: "Open all" reads a
+                    whole directory as one table, "Inside" steps into it,
+                    "Open" loads a file, "Look" finds out first
+  Backspace:        Up a level; from a bucket, back to its cloud source
+  Tab:              Cycle the sort; the control bar names the order in effect
+  Esc:              Back out one layer: the filter, the directory, then to
+                    the open data
 
-  Every letter types into the filter, so none is a key here: "json" finds json.
-  Tab               Cycle the sort. The control bar names the order in effect
-                    where the cursor is: "recent" under Recent, "name" under a
-                    directory, or size / modified / rows once chosen.
-  Enter             Open the dataset, enter the directory, source or bucket, or
-                    fold the section. A hive directory, or one whose files all
-                    have the widest file's columns, opens as one dataset; one
-                    labelled delta, iceberg or hudi is a lake table datui does
-                    not read yet, and Enter goes inside it. On a place row under
-                    Recent, Enter browses the place; on the "… N more" row it
-                    shows the rest of Recent.
-                    The control bar names which of these it will be on the row
-                    you are on: "Open all" reads the whole directory, "Inside"
-                    steps into it, "Open" loads a file, "Look" finds out first.
-                    Where Enter and → do the same thing only one is offered
-  Backspace         Leave a directory you descended into; from a bucket, back
-                    to its cloud source
-  Ctrl+R            List what is on screen: every cloud source, the one
-                    you are in, or the bucket or directory
-  Esc               Back out one layer: the filter, the directory, then the data
-  Ctrl+C            Quit
+Finding:
+  (type):           Filter by name or column; fuzzy, so "sal" finds "sales".
+                    Typing also searches below the working directory and the
+                    listed bucket names; matches appear under "Found"
+  ~:                Type a path or URL by hand (Tab completes)
+  Ctrl+U:           Clear the filter or path input
+  Ctrl+R:           List again what is on screen
+  Ctrl+A:           Show or hide files datui cannot read
+  Delete:           Forget the highlighted recent entry, or a whole place
+                    after confirming, or hide a cloud source
+  Shift+Delete:     Forget every recent entry, after confirming
 
-  Inside any directory with something in it, the first row is "<directory> (all
-  files)", or "(all partitions)" for a hive directory. Enter on it reads the
-  whole directory whatever the directory is labelled, so a label that is wrong
-  costs a keystroke rather than access. It carries no label itself, and it steps
-  out of the way while a filter is typed.
+Sections, in order:
+  Recent:           Datasets opened before, grouped under the directory each
+                    lives in, newest place first
+  Current directory: Where datui was launched
+  Cloud:            One row per cloud source; Enter lists its buckets
+  Configured:       Directories from [data] directories in the config
+  Elsewhere:        Directories your desktop recorded; starts folded
+  Found:            Search results, shown while typing
 
-  It does not refuse. A directory of more than one format is read as the
-  commonest of them, a lake table as the plain files under it, files written
-  with no extension by what their first bytes say, and Parquet, CSV or NDJSON
-  files that do not agree as the union of them, where a row from a file without
-  a column reads null and a column held in two types is read as the wider. Each
-  of those says what it did in the Notes tab, and a lake table's files also
-  carry a chip beside the row count, because that count includes rows a delete
-  tombstoned and versions an update replaced. The one directory still refused is
-  one in a bucket holding nothing datui has a reader for, and it names what is
-  there.
+Reading a row:
+  A directory's label says what is directly inside: a count and format
+  ("12 parquet"), hive, delta, iceberg, hudi, "mixed", or "dir". A label of
+  … has not been looked at yet; labels fill in as you scroll. The first row
+  inside any directory is "(all files)" — Enter there reads the whole
+  directory as one table whatever the label says. The details pane carries
+  the full tally, and the Notes tab says what a read had to decide.
 
-  A directory's label says what is directly inside it: hive, delta, iceberg,
-  hudi, a count and a format ("12 parquet"), "mixed" for more than one format,
-  or "dir" for no data files; a bucket or container says so instead. In a bucket
-  a spinner shows while a directory is looked into, and "?" when that failed
-  (Ctrl+R tries again). The details pane carries the whole tally: every file in
-  the directory is counted, as data, as one datui has no reader for, or as one
-  it passed over. Passed over is a name ending "_$folder$", which some tools
-  write to stand in for a folder, or beginning "_" or "." — where every engine
-  puts its own files and a repository puts .git. Otherwise a "key=value" name is
-  a partition whatever it begins with. The skipped are named, the first four of
-  them.
+Help and leaving:
+  ? / F1:           This help (? before typing starts; F1 always)
+  Ctrl+Q / Ctrl+C:  Quit
 
-FINDING
-  (type)            Filter by name or column; matching is fuzzy, so "sal" finds
-                    "sales", and "customer_id" finds every dataset with that column
-                    Typing also searches below the working directory, and the
-                    bucket names already listed; matches appear under "Found"
-  Backspace         Delete a filter character
-  ~                 Type a path or URL, for somewhere datui has not seen yet
-  Tab               (while typing a path) complete it
-  Delete            Forget the highlighted entry under Recent, or every recent
-                    under the highlighted place row after confirming, or hide a
-                    cloud source (--clear-cache shows it again)
-  Shift+Delete      Forget every recent entry, after confirming
-  Ctrl+U            Clear the filter or path input
-  Ctrl+A            Show or hide files datui cannot read. Hidden unless
-                    [data] show_unreadable_files is set; shown, they are dimmed
-
-WHERE THESE COME FROM, IN ORDER
-  Recent            Datasets you have opened before, grouped under the directory
-                    each lives in, local or in a bucket, newest place first. The
-                    place row names the directory, what datui last found it to
-                    be, and, on a share or in a store, what it is on. Whole
-                    places are shown up to a third of the list, then "… N more
-                    in M places" stands for the rest. A recent nothing has
-                    measured shows … for its shape until an open of it fills it
-                    in
-  Current directory Where you launched datui
-  Cloud             One row per cloud source. Enter lists its buckets
-  Configured        Directories from [data] directories, in the order listed
-  Elsewhere         Directories your desktop recorded, listed unexpanded.
-                    Starts folded.
-  Found             Datasets under the working directory, from the search that
-                    typing starts. Shown only while you are typing.
-
-  A section titled by a path says why it is there in a chip beside its count:
-  "current directory" or "configured". How it is doing is the note at the far
-  end of the rule: the filesystem it is on, "first 5000" for a listing cut
-  short, "listing" or "unavailable". With thirty list rows or more, a blank
-  line separates the sections.
-
-  Filtering keeps this grouping, so a match shows which root it came from, and
-  a match anywhere under Recent is shown whatever the cap hides.
-
-  Opening a dataset puts the directory holding it under Recent as a place, so a
-  dataset on a mount only has to be found by hand once.
-
-  A directory labelled … has not been looked into yet. Finding out what a
-  directory is costs a directory read, so no listing pays for it: the rows are
-  drawn at once and labelled a screenful at a time as you scroll, highlighted
-  row first. Nothing moves when a label arrives.
-
-  datui stores nothing about your data except this list of recent paths.
+What datui remembers, all under its cache directory and never the data
+itself: recent paths, the shapes and column names it measured (so this
+screen can say 1,000 × 11 without reading anything), and query history.
+datui --clear-cache removes all of it.

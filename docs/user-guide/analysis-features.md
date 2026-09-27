@@ -16,10 +16,11 @@ percentile and max. Scroll with the arrow keys.
 
 ## Distribution
 
-Fits each numeric column against Normal, LogNormal, Uniform, PowerLaw and
-Exponential and reports the best fit, along with the Shapiro-Wilk statistic
-and p-value, coefficient of variation, outlier count (IQR method), skewness and
-kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
+Fits each numeric column against fourteen distributions — Normal, Log-Normal,
+Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
+Poisson, Bernoulli, Binomial, Geometric and Weibull — and reports the best
+fit, along with the Shapiro-Wilk statistic and p-value, coefficient of
+variation, outlier count (IQR method), skewness and kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
 column with many outliers or extreme shape.
 
 Press <kbd>Enter</kbd> on a column for the detail view: a Q-Q plot against the
@@ -34,16 +35,16 @@ the table.
 
 Pairwise correlations between every numeric column, colored by strength.
 Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
-pair: coefficient, p-value, sample size, a text scatter plot and the summary
-statistics of both columns.
+pair: the Pearson coefficient with a plain reading of it, R², the p-value,
+and how many row pairs it was computed from.
 
 ## Data quality
 
 Choose **Data Quality** to profile selected rows at several scales. The first
-screen is an inert plan: no values are read until you press <kbd>Enter</kbd>. It shows the
-scope, profile grain, compute mode, comparison, estimated rows and transfer
-direction. Press <kbd>p</kbd> for the estimate basis. A full value scan asks for
-confirmation.
+screen is an inert plan: no values are read until you press <kbd>Enter</kbd>.
+It shows the scope, profile grain, compute mode, comparison, estimated rows
+and transfer direction; <kbd>p</kbd> shows the estimate basis. A full value
+scan asks for confirmation.
 
 | Setting | Choices |
 |---|---|
@@ -53,9 +54,8 @@ confirmation.
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 
-Press <kbd>e</kbd> to edit a copy of the plan. <kbd>Esc</kbd> discards edits.
-Use Left/Right on Scope for presets, or <kbd>Enter</kbd> on Scope for a precise
-selection:
+<kbd>e</kbd> edits a copy of the plan. In the editor, Left/Right on Scope
+picks a preset and <kbd>Enter</kbd> on Scope opens a precise entry:
 
 | Scope entry | Meaning |
 |---|---|
@@ -65,62 +65,68 @@ selection:
 | `partition region=west` | Rows with that source-column value; `∅` selects null |
 | `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
 
-Source-scoped plans report unknown row counts and read sizes before a run.
-Metadata-only runs do not count rows. A dataset-grain bounded sample reports an
-eligible row count only when its probe reaches the end of the scope or a valid
-count was already cached; otherwise that count stays unknown. Other grains
-sample each segment after reading the full selected scope, so they require
-confirmation and report exact eligible and per-segment row counts afterward.
-The selected scope is applied before sampling, so sampling never reaches beyond
-its bounds. The Time roles row opens an explicit mapping table; every role starts
-unassigned. Datui recognizes physical date and datetime types but never guesses
-their business meaning from column names. With a source scope, the picker
-includes source time columns hidden by the current view.
+Before a run, source-scoped plans report unknown row counts and read sizes,
+and metadata-only runs do not count rows. A dataset-grain bounded sample
+reports an eligible row count only when its probe reaches the end of the scope
+or a valid count was already cached; other grains sample each segment after
+reading the full selected scope, so they require confirmation and report exact
+eligible and per-segment counts afterward. The scope is applied before
+sampling, so sampling never reaches beyond its bounds.
 
-After a run, use <kbd>1</kbd>–<kbd>4</kbd> for Overview, Columns, Segments,
-and Trends. Results state eligible and evaluated rows and whether values are
-exact, sampled, or metadata-only. Overview includes dataset notes and neutral
-observations. Press <kbd>Enter</kbd> on one for its definition, denominator,
-provenance, and its available examples: category variants, the files behind an
-absent column or a type conflict, and the values a conflict hides. For an exact
-null, empty, whitespace, non-finite, constant, key-like or category-variant
-observation, <kbd>Enter</kbd> again opens matching
-rows in a temporary table; <kbd>Esc</kbd> returns to the same observation. An
-absent or type-conflict observation opens the rows its files contributed, at any
-compute budget, because the files it names come from footers rather than values.
-The row view uses the same scope and may read the source again. A sampled observation says when an
-exact row view requires a full profile. Columns reports null,
-empty, whitespace, non-finite, distinct,
-parse, and range measurements. Segments keeps both row denominators visible and
-shows the chosen column measurement, its percentage-point change against
-the selected comparison, and the largest change any column made against that
-same comparison; the first segment with a material one is where a shift
-starts. Press <kbd>[</kbd>/<kbd>]</kbd> to choose a column
-and <kbd>m</kbd> to cycle null, empty, whitespace, non-finite, distinct,
-integer-parse, and decimal-parse rates. Trends charts that measurement across
-ordered row chunks or time windows and reports lifecycle
-latency for accepted role pairs, including missing endpoints, negative
-durations, p50/p90/p95/p99, and maximum duration.
-On Segments, highlight a row and press <kbd>b</kbd> to make it the baseline;
-comparison deltas update from the measured profiles without another data read.
+The Time roles row opens an explicit mapping table; every role starts
+unassigned. Datui recognizes physical date and datetime types but never
+guesses their business meaning from column names. With a source scope, the
+picker includes source time columns hidden by the current view.
 
-Sampling is a compute choice, not a grain. Dataset-grain sampling selects rows
-without replacement from at most the first 50,000 eligible rows; it is not a
-random sample of the entire dataset. For file, partition, chunk, and window
-grain, a streaming full-scope read retains up to 50,000 seeded rows per segment
-without replacement. The access plan says the value-read size is unknown and
-asks for confirmation. A per-segment budget multiplies by the number of
-segments, so the run is refused rather than silently kept if it would retain
-more than 500,000 rows, 512 MiB, or 10,000 segments; narrow the scope or lower
-the budget. File mapping
-is available on source scopes and
-on current views that preserve source-row provenance; otherwise the Segments
-screen says that it is unavailable. Row chunks use the selected scope's physical
-order, and sampled rows keep their original chunk labels. Time windows are
-offered at `1h`, `1d`, `1w` and `1mo` on each assigned time role and start on
-the calendar boundary for their width, so weeks start on Monday. A window is
-cut at the same place whether the run sampled or scanned it. Remote sources are
-read-only and the access plan always reports zero remote writes.
+### Keys and result tabs
+
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> | Run the plan, inspect an observation, or open its exact matching rows |
+| <kbd>e</kbd> | Edit a copy of the plan; <kbd>Esc</kbd> discards edits |
+| <kbd>p</kbd> | Show the detailed access plan |
+| <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends |
+| <kbd>[</kbd> <kbd>]</kbd> | Choose a column in Segments or Trends |
+| <kbd>m</kbd> | Cycle the measurement: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
+| <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
+| <kbd>r</kbd> | Rerun with a new sample seed |
+| <kbd>Esc</kbd> | Back one level |
+
+Every result states eligible and evaluated rows and whether values are exact,
+sampled, or metadata-only.
+
+- **Overview** — dataset notes and neutral observations. <kbd>Enter</kbd> on
+  one shows its definition, denominator, provenance and available examples:
+  category variants, the files behind an absent column or a type conflict, and
+  the values a conflict hides. For an exact null, empty, whitespace,
+  non-finite, constant, key-like or category-variant observation,
+  <kbd>Enter</kbd> again opens matching rows in a temporary table;
+  <kbd>Esc</kbd> returns to the same observation. The row view uses the same
+  scope and may read the source again; a sampled observation says when an
+  exact row view requires a full profile.
+- **Columns** — null, empty, whitespace, non-finite, distinct, parse, and
+  range measurements.
+- **Segments** — keeps both row denominators visible and shows the chosen
+  column measurement, its percentage-point change against the selected
+  comparison, and the largest change any column made against that comparison;
+  the first segment with a material one is where a shift starts.
+- **Trends** — charts the measurement across ordered row chunks or time
+  windows, and reports lifecycle latency for accepted role pairs: missing
+  endpoints, negative durations, p50/p90/p95/p99, and maximum duration.
+
+### Sampling and budgets
+
+Sampling is a compute choice, not a grain.
+
+| | |
+|---|---|
+| Dataset grain | Selects without replacement from at most the first 50,000 eligible rows; not a random sample of the entire dataset |
+| File, partition, chunk, window grain | A streaming full-scope read retains up to 50,000 seeded rows per segment, without replacement; the access plan says the value-read size is unknown and asks for confirmation |
+| Budgets | The per-segment budget multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower the budget |
+| Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
+| Time windows | `1h`, `1d`, `1w`, `1mo` on each assigned time role, starting on the calendar boundary for their width (weeks start on Monday); a window is cut at the same place whether sampled or scanned |
+| File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
+| Remote sources | Read-only; the access plan always reports zero remote writes |
 
 Complete profiles are reused during the session when the dataset, current
 view, and full plan (including sample seed and time roles) match. Reopening
@@ -157,33 +163,17 @@ that repeats ten times in a billion rows is unique in every sample of it.
 
 ### Columns a file never had, and columns it holds in another type
 
-Two checks are about which files hold which columns rather than about values. A
-cell a file never had arrives as a null and a cell a file holds in an unreadable
-type is not read at all, so no measurement over values can find either one.
-Both come from the footers datui already read when the dataset opened, which
-means they are reported at every compute budget, including metadata-only.
-
-Because footers describe the source rather than the run, these two checks count
-every file and every row of the loaded source whatever the plan's scope is. The
-observation detail says so, and gives each file by the number the Scope page
-uses, with the rows it holds and the type it stores the column in. Press
-<kbd>Enter</kbd> to open the rows those files contributed; the drill-in is a
-`files` scope, because there is no value to filter on. The largest twenty files
-are named, and those are the ones <kbd>Enter</kbd> opens; the count beside them
-covers every file, so the view holds fewer rows than the count states and the
-detail pane says so.
-
-On a dataset too large to read every footer, a file nobody looked at is
-indistinguishable from a file missing nothing, so both counts are a floor rather
-than a total and the measured fact says how many footers were read.
-
-A full scan also reads the values a type conflict hides: for each conflicting
-column, the first five values of each named file, read at the type that file
-wrote. That is one extra one-column read per file, and the access plan's
-**Conflict values** row states how many before anything runs. Other compute
-budgets report the counts and say a full profile is needed for the values. The
-Info panel's notes offer the same column as text for the whole view, which
-changes what every screen reads; this reads a few values and changes nothing.
+Absent columns and type conflicts come from the footers datui read when the
+dataset opened, not from values, so they are reported at every compute budget
+and counted over the whole loaded source whatever the plan's scope is. The
+observation detail names the largest twenty files by their Scope-page numbers,
+and <kbd>Enter</kbd> opens the rows those files contributed as a `files`
+scope. Where footers were sampled, both counts are a floor, and the measured
+fact says how many footers were read. A full scan also reads the first five
+values each conflicting file holds at the type it wrote; the access plan's
+Conflict values row states how many extra reads that costs. The
+[Dataset Info](dataset-info.md#notes) notes report the same facts at open time
+and offer to read a conflicting column as text.
 
 ## Sampling
 

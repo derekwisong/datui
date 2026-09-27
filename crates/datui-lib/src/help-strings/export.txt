@@ -1,13 +1,16 @@
 Export current data to a file.
 
   Tab / Shift+Tab:  Move focus between fields
-  ↑ / ↓:            In format selector: Change format
-                    In other fields: Move focus
-  Left / Right:     Move cursor in text fields
-  Enter:            Export (on Export button) or Cancel (on Cancel button)
-                    Toggle checkbox (on Include Header or Source file)
+  ↑ / ↓ (j/k):      In the format selector: change format
+                    In other fields: move focus
+  ← / → (h/l):      Move the cursor in text fields
+  Enter / Space:    Toggle a checkbox (Include Header, Source file)
+  Enter:            Export (on the Export button) or Cancel (on Cancel)
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close without exporting
+
+  Typing a known extension (.csv, .parquet, .json, .jsonl, .arrow, .avro,
+  also before .gz/.zst/.bz2/.xz) selects the matching format.
 
 Formats:
   CSV:     Comma-separated values (configurable delimiter, header)

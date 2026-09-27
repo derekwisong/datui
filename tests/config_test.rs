@@ -118,14 +118,10 @@ fn test_write_config_with_force_overwrites() {
 
 #[test]
 fn test_load_config_with_no_file() {
-    let _temp_dir = TempDir::new().expect("Failed to create temp dir");
-
-    // Create a temporary app name for this test
-    let test_app_name = format!("datui_test_{}", std::process::id());
-
-    // Override config dir temporarily by using a custom load function
-    // Since AppConfig::load uses the app_name, we need to ensure no config file exists
-    let config = AppConfig::load(&test_app_name).expect("Should load default config");
+    // A directory with no config.toml in it: defaults are all there is.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let config = AppConfig::load_from_file(&temp_dir.path().join("config.toml"))
+        .expect("Should load default config");
 
     // Should return default config
     assert_eq!(config.version, "0.2");
@@ -1706,7 +1702,12 @@ fn test_the_generated_default_config_is_valid_toml() {
     // worst possible first impression, and the only thing standing between the two is
     // that every rendered line gets commented -- including the ones a multi-line array
     // spills onto.
-    let manager = ConfigManager::new("datui").unwrap();
+    let manager = ConfigManager::with_dir(
+        TempDir::new()
+            .expect("Failed to create temp dir")
+            .path()
+            .to_path_buf(),
+    );
     let generated = manager.generate_default_config();
 
     let parsed: AppConfig =
@@ -1729,7 +1730,12 @@ fn test_the_generated_default_config_is_valid_toml() {
 fn test_a_multi_line_array_default_is_fully_commented() {
     // `skip` renders across ten lines. Commenting only the first left the elements
     // behind as bare text, which does not parse.
-    let manager = ConfigManager::new("datui").unwrap();
+    let manager = ConfigManager::with_dir(
+        TempDir::new()
+            .expect("Failed to create temp dir")
+            .path()
+            .to_path_buf(),
+    );
     let generated = manager.generate_default_config();
 
     assert!(

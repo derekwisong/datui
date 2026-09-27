@@ -1,1 +1,7 @@
-Editing...
+Go to a row number.
+
+  (digits):         The row to go to (:0 Enter is the top)
+  Enter:            Go
+  Backspace:        Delete a digit
+  Esc:              Cancel
+  F1:               Show this help

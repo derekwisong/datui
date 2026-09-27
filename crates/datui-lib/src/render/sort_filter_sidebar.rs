@@ -325,14 +325,15 @@ fn render_sort_tab(
     modal.sort.filter_input.set_focused(is_focused);
     (&modal.sort.filter_input).render(filter_inner_area, buf);
 
+    let g = crate::glyphs::get();
     let filtered = modal.sort.filtered_columns();
     let rows: Vec<Row> = filtered
         .iter()
         .map(|(_, col)| {
             let lock_cell = if col.is_locked {
-                "●"
+                g.dot_full
             } else if col.is_to_be_locked {
-                "◐"
+                g.dot_half
             } else {
                 " "
             };
@@ -371,7 +372,7 @@ fn render_sort_tab(
         .collect();
 
     let header = Row::new(vec![
-        Cell::from("🔒").style(Style::default()),
+        Cell::from("Lock").style(Style::default()),
         Cell::from("Order").style(Style::default()),
         Cell::from("Sort").style(Style::default()),
         Cell::from("Name").style(Style::default()),
@@ -386,7 +387,7 @@ fn render_sort_tab(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(2),
+            Constraint::Length(5),
             Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Min(0),
@@ -469,7 +470,11 @@ fn render_sort_tab(
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(order_inner);
 
-    let ascending_indicator = if modal.sort.ascending { "●" } else { "○" };
+    let ascending_indicator = if modal.sort.ascending {
+        g.radio_on
+    } else {
+        g.radio_off
+    };
     let ascending_text = format!("{} Ascending", ascending_indicator);
     let ascending_style = if modal.sort.ascending {
         Style::default().add_modifier(Modifier::BOLD)
@@ -481,7 +486,11 @@ fn render_sort_tab(
         .centered()
         .render(order_layout[0], buf);
 
-    let descending_indicator = if !modal.sort.ascending { "●" } else { "○" };
+    let descending_indicator = if !modal.sort.ascending {
+        g.radio_on
+    } else {
+        g.radio_off
+    };
     let descending_text = format!("{} Descending", descending_indicator);
     let descending_style = if !modal.sort.ascending {
         Style::default().add_modifier(Modifier::BOLD)

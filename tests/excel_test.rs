@@ -178,3 +178,37 @@ fn selects_a_sheet_by_index_and_by_name() {
     assert_eq!(indexed.width(), named.width());
     assert_eq!(indexed.height(), 1000);
 }
+
+/// A `--sheet` that misses says what it missed among: the sheets the file has, by
+/// index and name, so the remedy is in the message rather than in a second guess.
+#[test]
+fn a_bad_sheet_error_names_the_sheets_that_exist() {
+    common::ensure_sample_data();
+    let path = PathBuf::from("tests/sample-data/people.xlsx");
+    let from_excel = |sheet: &str| {
+        datui::widgets::datatable::DataTableState::from_excel(
+            &path,
+            None,
+            None,
+            None,
+            None,
+            false,
+            1,
+            Some(sheet),
+        )
+    };
+
+    let msg = match from_excel("99") {
+        Err(e) => format!("{e}"),
+        Ok(_) => panic!("sheet 99 should not exist"),
+    };
+    assert!(msg.contains("99"), "names the index asked for: {msg}");
+    assert!(msg.contains("0 'Sheet'"), "lists what exists: {msg}");
+
+    let msg = match from_excel("Nope") {
+        Err(e) => format!("{e}"),
+        Ok(_) => panic!("sheet 'Nope' should not exist"),
+    };
+    assert!(msg.contains("'Nope'"), "names the sheet asked for: {msg}");
+    assert!(msg.contains("0 'Sheet'"), "lists what exists: {msg}");
+}

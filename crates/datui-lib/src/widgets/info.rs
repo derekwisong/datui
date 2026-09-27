@@ -522,20 +522,37 @@ impl<'a> DataTableInfo<'a> {
     fn render_schema_table(&mut self, area: Rect, buf: &mut Buffer) {
         // A dataset of many files says which footers its columns came from; one file
         // says only whether its format declared them.
-        let src = match self.state.dataset_schema() {
+        let dataset = self.state.dataset_schema();
+        let src = match dataset {
             Some(dataset) => dataset.origin.to_string(),
             None => self.ctx.schema_source().to_string(),
         };
+        // Per column, how many of the footers read carry it. Only a dataset of files
+        // can vary this per column; for a single file the dataset-level fact already
+        // sits in the block title, so no column repeats it.
+        let presence = dataset.map(|dataset| {
+            let readable = dataset.files.saturating_sub(dataset.unreadable.len());
+            let present_by_name: HashMap<&str, usize> = dataset
+                .columns
+                .iter()
+                .map(|c| (c.name.as_str(), c.present_in))
+                .collect();
+            (readable, present_by_name)
+        });
+        let has_files = presence.is_some();
         let compression = self
             .ctx
             .parquet_metadata
             .map(|m| parquet_column_compression(m.as_ref(), self.state.schema.as_ref()));
         let has_comp = compression.as_ref().is_some_and(|c| !c.is_empty());
-        let header = if has_comp {
-            Row::new(vec!["Column", "Type", "Source", "Compression"]).bold()
-        } else {
-            Row::new(vec!["Column", "Type", "Source"]).bold()
-        };
+        let mut header_cells = vec!["Column", "Type"];
+        if has_files {
+            header_cells.push("Files");
+        }
+        if has_comp {
+            header_cells.push("Compression");
+        }
+        let header = Row::new(header_cells).bold();
 
         let total_rows = self.state.schema.len();
         let body_focused = self.modal.focus == InfoFocus::Body;
@@ -570,37 +587,50 @@ impl<'a> DataTableInfo<'a> {
                 break;
             }
             let name_str: &str = name.as_ref();
-            let comp_str = compression
-                .as_ref()
-                .and_then(|c| c.get(name_str))
-                .map(|(codec, ratio)| format!("{} {:.1}×", codec, ratio))
-                .unwrap_or_else(|| "—".to_string());
-            let row = if has_comp {
-                Row::new(vec![
-                    name.to_string(),
-                    dtype.to_string(),
-                    src.to_string(),
-                    comp_str,
-                ])
-            } else {
-                Row::new(vec![name.to_string(), dtype.to_string(), src.to_string()])
-            };
-            rows.push(row);
+            let mut cells = vec![name.to_string(), dtype.to_string()];
+            if let Some((readable, present_by_name)) = &presence {
+                // A column the footers never named — one built by a query or added
+                // from the file names — has no per-file fact to state.
+                let files_str = match present_by_name.get(name_str) {
+                    Some(present) if present >= readable => {
+                        format!("all {}", format_int(*readable))
+                    }
+                    Some(present) => {
+                        format!("{} of {}", format_int(*present), format_int(*readable))
+                    }
+                    None => "—".to_string(),
+                };
+                cells.push(files_str);
+            }
+            if has_comp {
+                let comp_str = compression
+                    .as_ref()
+                    .and_then(|c| c.get(name_str))
+                    .map(|(codec, ratio)| format!("{} {:.1}×", codec, ratio))
+                    .unwrap_or_else(|| "—".to_string());
+                cells.push(comp_str);
+            }
+            rows.push(Row::new(cells));
         }
 
-        let widths: Vec<Constraint> = if has_comp {
-            vec![
+        let widths: Vec<Constraint> = match (has_files, has_comp) {
+            (true, true) => vec![
                 Constraint::Percentage(25),
-                Constraint::Percentage(35),
-                Constraint::Percentage(15),
-                Constraint::Percentage(25),
-            ]
-        } else {
-            vec![
-                Constraint::Percentage(40),
-                Constraint::Percentage(40),
+                Constraint::Percentage(30),
                 Constraint::Percentage(20),
-            ]
+                Constraint::Percentage(25),
+            ],
+            (true, false) => vec![
+                Constraint::Percentage(35),
+                Constraint::Percentage(40),
+                Constraint::Percentage(25),
+            ],
+            (false, true) => vec![
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
+            ],
+            (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
         };
         let table = Table::new(rows, widths)
             .header(header)

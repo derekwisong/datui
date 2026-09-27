@@ -78,7 +78,7 @@ pub fn render(
                         .map(|(col, val)| format!("{}={}", col, val))
                         .collect();
                     format!(
-                        "{} Group: {} (Press Esc to go back)",
+                        "{} Group: {} (Esc goes back)",
                         crate::glyphs::get().arrow_left,
                         breadcrumb_parts.join(" | ")
                     )
@@ -86,7 +86,7 @@ pub fn render(
             } else {
                 evidence_label.map(|label| {
                     format!(
-                        "{} Data Quality / {label} (Esc back to result)",
+                        "{} Data Quality / {label} (Esc goes back)",
                         crate::glyphs::get().arrow_left
                     )
                 })
@@ -101,8 +101,6 @@ pub fn render(
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(ctx.keybind_hints))
-                    .title("Breadcrumb")
-                    .title_style(ratatui::style::Style::reset())
                     .render(breadcrumb_layout[0], buf);
 
                 let inner = Block::default().inner(breadcrumb_layout[0]);

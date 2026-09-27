@@ -94,11 +94,18 @@ pub fn render_success_modal(
 ) {
     let popup_area = centered_rect(area, 70, 40);
     Clear.render(popup_area, buf);
+
+    Block::default()
+        .style(Style::default().bg(ctx.background))
+        .render(popup_area, buf);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Success")
-        .title_style(ratatui::style::Style::reset());
+        .title_style(ratatui::style::Style::reset())
+        .border_style(Style::default().fg(ctx.modal_border_active))
+        .style(Style::default().bg(ctx.background));
     let inner_area = block.inner(popup_area);
     block.render(popup_area, buf);
 
@@ -108,7 +115,7 @@ pub fn render_success_modal(
         .split(inner_area);
 
     Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.text_primary))
+        .style(Style::default().fg(ctx.text_primary).bg(ctx.background))
         .wrap(ratatui::widgets::Wrap { trim: true })
         .render(chunks[0], buf);
 
@@ -133,12 +140,18 @@ pub fn render_error_modal(
 ) {
     let popup_area = centered_rect(area, 70, 40);
     Clear.render(popup_area, buf);
+
+    Block::default()
+        .style(Style::default().bg(ctx.background))
+        .render(popup_area, buf);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Error")
         .title_style(ratatui::style::Style::reset())
-        .border_style(Style::default().fg(ctx.modal_border_error));
+        .border_style(Style::default().fg(ctx.modal_border_error))
+        .style(Style::default().bg(ctx.background));
     let inner_area = block.inner(popup_area);
     block.render(popup_area, buf);
 
@@ -148,7 +161,7 @@ pub fn render_error_modal(
         .split(inner_area);
 
     Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.error))
+        .style(Style::default().fg(ctx.error).bg(ctx.background))
         .wrap(ratatui::widgets::Wrap { trim: true })
         .render(chunks[0], buf);
 
@@ -257,7 +270,12 @@ pub fn render_help_overlay(
             } else {
                 Style::default().bg(ctx.surface)
             };
-            buf.set_string(scrollbar_area.x, scrollbar_area.y + y, "█", style);
+            buf.set_string(
+                scrollbar_area.x,
+                scrollbar_area.y + y,
+                crate::glyphs::get().scroll_thumb,
+                style,
+            );
         }
     }
 }

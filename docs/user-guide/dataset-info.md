@@ -7,7 +7,7 @@ or <kbd>Esc</kbd> closes it.
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type and, for Parquet, its codec and compression ratio |
+| **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type, for a dataset of many files how many of them carry it, and, for Parquet, its codec and compression ratio |
 | **Resources** | File size, the memory used by the buffered rows, the format, for Parquet the overall compression ratio, row groups, version and writer, and what opening the dataset cost |
 | **Partitions** | For a hive-partitioned dataset, its partition columns |
 | **Notes** | What datui noticed about the data while reading it. Only there when something is worth saying |
@@ -64,26 +64,6 @@ honest way to say where a column starts, so nothing is said. A dataset whose foo
 sampled gets no such phrase: a file whose footer was not read looks like a file
 missing nothing, and a range drawn over those would be a guess.
 
-A directory of Parquet files often holds other things, and what matters is where
-they are rather than what they are called. A file in a directory that holds data
-is one somebody may have meant to be in the table — a `.csv` beside the parts —
-and that is counted and said. A file in a directory with no data anywhere
-beneath it is somebody's plumbing: a table format's log, a manifest directory, a
-directory of images. Delta and Hudi name theirs with a leading `_` or `.`,
-Iceberg does not, and the next format will do something else again; none of them
-is a mistake and datui says nothing about any of them on its own.
-
-An object with nothing in it and a name that says Parquet is the exception worth
-leading with: a write that stopped. In a bucket nothing else can see it — the
-object is dropped before any footer is read — while on disk the same file turns
-up as a footer that could not be read, which is a different note saying the same
-thing. One with nothing in it and no such
-name is a folder marker — a console leaves one per partition — and is plumbing
-like the rest.
-
-What it counts is what the listing saw. A directory it could not read, or one
-deeper than datui walks, is not in the total.
-
 Every note says what it is based on — `in all 6,541 footers`, or `in 20,000 of
 200,000 footers (sample)` — so a count never stands for files datui has not
 looked at. A cloud directory that is still reading its footers behind the data
@@ -92,13 +72,8 @@ rewritten from all of them when they do. None of them costs a read of its own:
 they come from the footers the schema and the row count already needed.
 
 A note is one sentence and the line beneath it saying what it is based on;
-<kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller than the
-panel, the corner says how many notes are out of view — unless the note the
-cursor is on fills the panel, where it keeps that row. Whole notes only: half a
-note is worse than none, since a claim with no basis under it, or a basis with no
-claim above it, is the misreading the basis is there to prevent. Where the note
-the cursor is on will not fit at all, the panel says so rather than showing part
-of it; a shorter note may still fit.
+<kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller than
+the panel, the corner says how many notes are out of view.
 
 A note about a column the files store in more than one type offers to **read it
 as text**: press <kbd>Enter</kbd> on it and the column is read from the files
@@ -119,28 +94,26 @@ aside; resetting or drilling back up brings them back.
 When there is something to note, the <kbd>i</kbd> key in the control bar takes
 a quiet accent until you open the panel. `notes_accent = false` in the
 `[display]` section of the [config](configuration.md) turns that off; the Notes
-tab is still there either way. A note is an observation about the
-data, not a fault in it, so there is no pop-up and no error styling.
+tab is still there either way.
 
 ## Measurements
 
 At the foot of the **Resources** tab, what this dataset has cost: finding it,
 reading its footers, and fetching the page on screen.
 
-**Listing** and **Footers** are there for the datasets datui finds and reads
-itself — a directory of Parquet opened with `--hive`, a remote prefix, a remote
-glob, and a single remote object. Anything else is handed straight to Polars,
-which does not report what it did: a single local file, a CSV, a local directory
-opened without `--hive`, and a directory or a prefix opened with
-`single_spine_schema = false` all show neither row, and no Total.
+Listing and Footers appear for the datasets datui finds and reads itself: a
+directory of Parquet opened with `--hive`, a remote prefix, a remote glob, and
+a single remote object. Anything else — a single local file, a CSV, a local
+directory opened without `--hive`, a directory or prefix opened with
+`single_spine_schema = false` — is handed straight to Polars, which does not
+report what it did, so neither row appears and there is no Total. A glob is
+listed and matched by datui rather than by the object store, so its Listing
+row reports the files the pattern matched, out of everything under the literal
+part of the key.
 
-**Last page** is there whichever route opened the dataset, because datui asks for
-the rows on screen and times the answer either way. A dataset already known to be
-empty is the exception: there is no page to fetch, so there is nothing to report.
-
-A glob is listed and matched by datui rather than by the object store, so it counts
-as one of the datasets datui finds itself: the Listing row reports the files the
-pattern matched, out of everything under the literal part of the key.
+Last page appears whichever route opened the dataset, because datui asks for
+the rows on screen and times the answer either way; a dataset already known to
+be empty has no page to fetch, so nothing is reported.
 
 | Metric | Formula |
 |---|---|
@@ -149,50 +122,9 @@ pattern matched, out of everything under the literal part of the key.
 | Last page | time from asking for the rows on screen to having them, and how many files were read for them |
 | Total | the listing and the footers added up |
 
-**Last page** is the one figure that changes as you move. It is replaced every time
-a page of rows is fetched, so it says what the page you are looking at cost — not
-what every page since the open came to. It reports how many files were read only
-where datui chose them: a windowed remote scan reads just the files holding those
-rows, while everything else hands the whole scan to Polars, which reads what it
-decides to and does not say. It carries no byte figure at all, for the same reason
-— Polars does that read, and the row-group sizes in the footers would describe
-whole row groups of every column rather than what crossed the wire for the columns
-on screen.
-
-**Total** covers the open: the listing and the footer passes. The page is not part
-of opening the dataset.
-
-A row appears only where there was something to measure. A single remote object
-is named, not searched for, so it has no Listing row — and with one stretch
-there is nothing to total, so it has no Total row either.
-
-For a remote dataset the Footers row also carries the requests datui made and
-the bytes they returned, and the Total carries them too. Those reads datui
-issues itself, sixty-four at a time, so it can count them exactly.
-
-**No Listing row reports requests, and a local dataset reports none anywhere.**
-A local directory is walked rather than requested, so there are none to report;
-and every remote listing hands its paging to the object store, which does not
-say how many round trips it took. Every figure here is one datui produced
-itself, and where it cannot count something it shows nothing rather than a zero,
-because a zero reads as "none" rather than "not measured".
-
-**"Footers read" is not the number of files.** A footer is read more than once
-on most datasets — one large enough to open before its footers are read has them
+"Footers read" is not the number of files. A footer is read more than once on
+most datasets — one large enough to open before its footers are read has them
 read again behind the open, and one whose open could not settle its row count
 reads them again to count — so a three-file directory commonly reports six. The
-figure is what the reads cost, which is the point of it; the size of the dataset
-is on the Listing row.
-
-A count pass has to find the files before it can read them, so its walk of the
-directory is in the Footers time too. Only the open's own search is on the
-Listing row.
-
-Counting is measured once. It runs again whenever the row count is invalidated
-— clearing a filter does it — and those later passes are re-work on a dataset
-that is already open, not part of what opening it cost.
-
-The figures keep moving after you can first see them. A large remote dataset
-opens once two footers have been read and reads the rest behind the open, so
-the Footers row and the Total climb while you are already looking at rows — see
-[datasets whose files differ](loading-data.md#files-that-disagree).
+figure is what the reads cost, which is the point of it; the size of the
+dataset is on the Listing row.

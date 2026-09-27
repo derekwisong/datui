@@ -1932,7 +1932,7 @@ pub mod tests {
     /// count started here would read all of them a second time. Worse, the join takes a
     /// fresh `len_generation` on its way past, so the answer would come back to a
     /// question nothing could match it to and the jump would never happen — the user
-    /// would be left with "Counting rows to find the end…" and no end.
+    /// would be left with "Counting rows to find the end..." and no end.
     #[test]
     fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
@@ -2019,7 +2019,7 @@ pub mod tests {
         );
         assert_ne!(
             app.status_message.as_deref(),
-            Some("Counting rows to find the end…"),
+            Some("Counting rows to find the end..."),
             "with nothing left saying it is counting rows that have been counted"
         );
         assert!(
@@ -3063,7 +3063,7 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"));
-        app.home.status = Some("Looking at orders…".to_string());
+        app.home.status = Some("Looking at orders...".to_string());
 
         app.enter_home();
 
@@ -3202,7 +3202,7 @@ pub mod tests {
     /// `abandon_load` does not run here — the user has not left the dataset — so this is
     /// the gate on its own: the message is still set, and the view it belongs to is not
     /// the one on screen. Once the chart is ready `chart_preparing()` goes false, and
-    /// before the gate the bar read "Counting rows to find the end…" where the chart keys
+    /// before the gate the bar read "Counting rows to find the end..." where the chart keys
     /// belong.
     #[test]
     fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
@@ -4627,6 +4627,10 @@ pub struct OpenOptions {
     pub files_disagree: crate::schema_union::Disagreement,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
+    /// `--template NAME`: the template to apply to the dataset named on the command
+    /// line, once it is on screen. Applied to that open only; what later opens get
+    /// is `[templates] auto_apply`'s business.
+    pub template: Option<String>,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
     pub parse_dates: bool,
     /// When set, trim and parse CSV string columns: None = off, Some(true) = all columns, Some(cols) = those columns only.
@@ -4683,6 +4687,7 @@ impl OpenOptions {
             row_start_index: 1,
             hive: false,
             single_spine_schema: true,
+            template: None,
             parse_dates: true,
             parse_strings: None,
             parse_strings_sample_rows: 1000,
@@ -4790,6 +4795,7 @@ impl OpenOptions {
         opts.skip_rows = args.skip_rows;
         opts.skip_tail_rows = args.skip_tail_rows;
         opts.has_header = args.no_header.map(|no_header| !no_header);
+        opts.template = args.template.clone();
 
         // Compression: CLI only (auto-detect from extension when not specified)
         opts.compression = args.compression;
@@ -5448,7 +5454,7 @@ pub enum InputType {
     GoToLine,
 }
 
-/// Query dialog tab: SQL-Like (current parser), Fuzzy, or SQL (future).
+/// Query dialog tab: Query (current parser), Fuzzy, or SQL (future).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryTab {
     #[default]
@@ -5481,7 +5487,7 @@ impl QueryTab {
     }
 }
 
-/// Focus within the query dialog: tab bar or input (SQL-Like only).
+/// Focus within the query dialog: tab bar or input (Query only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryFocus {
     TabBar,
@@ -6278,9 +6284,8 @@ pub struct App {
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
     events: Sender<AppEvent>,
-    focus: u32,
     debug: DebugState,
-    info_modal: InfoModal,
+    pub info_modal: InfoModal,
     parquet_metadata_cache: Option<ParquetMetadataCache>,
     query_input: TextInput, // Query input widget with history support
     sql_input: TextInput,   // SQL tab input with its own history (id "sql")
@@ -6292,6 +6297,9 @@ pub struct App {
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
+    /// `--template NAME`, waiting for the dataset from the command line to land.
+    /// Taken on the first install, so datasets opened later are not re-dressed.
+    startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
     quality_cache: Vec<QualityCacheEntry>,
     quality_evidence_return: Option<Box<DataTableState>>,
@@ -6984,7 +6992,7 @@ impl App {
         self.take_down_the_counting_status();
     }
 
-    /// Take down "Counting rows to find the end…", and only that.
+    /// Take down "Counting rows to find the end...", and only that.
     ///
     /// Clearing the status outright would wipe whatever else is using the line — a
     /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
@@ -6997,7 +7005,7 @@ impl App {
     /// What the status line says while an End is waiting on a row count. Named so the
     /// paths that retire such an End can take the message back down without reaching
     /// for a literal, and without clearing a message that belongs to something else.
-    const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
+    const COUNTING_FOR_END: &'static str = "Counting rows to find the end...";
 
     /// What the control bar says while a path is being looked at. Named so the answer can
     /// take down its own line without clearing one that belongs to something else.
@@ -7254,6 +7262,35 @@ impl App {
             };
         }
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
+
+        // The dataset is installed and its schema known, so this is where a template
+        // meets it. `--template` names one and applies to this first open alone;
+        // `[templates] auto_apply` dresses every open that has a matching template.
+        if let Some(name) = self.startup_template.take() {
+            match self.template_manager.get_template_by_name(&name).cloned() {
+                Some(template) => {
+                    if let Err(e) = self.apply_template(&template) {
+                        self.error_modal
+                            .show(format!("Error applying template \"{name}\": {e}"));
+                    }
+                }
+                None => self
+                    .error_modal
+                    .show(format!("No template named \"{name}\"")),
+            }
+        } else if self.app_config.templates.auto_apply
+            && let Some(path) = self.path.clone()
+            && let Some(template) = self.data_table_state.as_ref().and_then(|state| {
+                self.template_manager
+                    .get_most_relevant(&path, &state.schema)
+            })
+            && let Err(e) = self.apply_template(&template)
+        {
+            self.error_modal.show(format!(
+                "Error applying template \"{}\": {e}",
+                template.name
+            ));
+        }
     }
 
     /// Ensures file path has an extension when user did not provide one; only adds
@@ -7586,6 +7623,18 @@ impl App {
         None
     }
 
+    /// Hand the export modal's path input a key, and when the value changed, follow
+    /// the typed extension with the format radio — the alternative was Parquet bytes
+    /// in a file named `out.csv`, with nothing on screen saying so. Cursor-only keys
+    /// change nothing and re-pick nothing, so a format chosen after typing stands.
+    fn export_path_key(&mut self, event: &KeyEvent) {
+        let before = self.export_modal.path_input.value().to_string();
+        self.export_modal.path_input.handle_key(event, None);
+        if self.export_modal.path_input.value() != before {
+            self.export_modal.sync_format_to_path();
+        }
+    }
+
     fn ensure_file_extension(
         path: &Path,
         format: ExportFormat,
@@ -7718,7 +7767,6 @@ impl App {
             original_file_format: None,
             original_file_delimiter: None,
             events,
-            focus: 0,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
             parquet_metadata_cache: None,
@@ -7741,6 +7789,7 @@ impl App {
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
+            startup_template: None,
             analysis_modal: AnalysisModal::new(),
             quality_cache: Vec::new(),
             quality_evidence_return: None,
@@ -8329,6 +8378,9 @@ impl App {
         // Reading recents touches only the cache directory, which is local by
         // definition; everything that might block happens on the worker.
         let recents = self.cache.load_recents();
+        // The same facts the listing is annotated from, kept on the home state so
+        // rows the recursive search finds can be filled in the same way.
+        self.home.known = self.cache.load_dataset_facts();
         let request = home::ListingRequest {
             config_dirs: self.app_config.data.resolved_directories(),
             recents,
@@ -8343,7 +8395,7 @@ impl App {
             probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
-            known: self.cache.load_dataset_facts(),
+            known: self.home.known.clone(),
         };
 
         self.home.listing_in_flight = true;
@@ -8510,6 +8562,10 @@ impl App {
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
+        // The template modal keys and renders off its own `active`, not the input
+        // mode, so left open here it would come back as a zombie over the next
+        // dataset opened.
+        self.template_modal.close();
         self.abandon_load();
         self.home.status = None;
         self.home.folds = self.cache.load_folds();
@@ -9430,7 +9486,7 @@ impl App {
                 // Completion reads a directory, which can block, so it is worked out
                 // on a worker and applied when it comes back.
                 KeyCode::Tab => self.request_path_completion(),
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if !ctrl => {
                     self.home.path_input.push(c);
                     self.home.status = None;
                 }
@@ -9529,6 +9585,12 @@ impl App {
             KeyCode::Char('~') if self.home.filter.is_empty() => {
                 self.home.path_input_active = true;
                 self.home.status = None;
+            }
+            // The one printable that is a key, and only before typing starts: a
+            // filter beginning with a literal `?` matches nothing anyway, and this
+            // is where a new user asks for the keys. F1 opens help mid-filter.
+            KeyCode::Char('?') if self.home.filter.is_empty() && !ctrl => {
+                self.open_help_overlay();
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);
@@ -11590,6 +11652,32 @@ impl App {
         Ok(lf.lf)
     }
 
+    /// Whether the plain help overlay is on screen.
+    pub fn help_visible(&self) -> bool {
+        self.show_help
+    }
+
+    /// Open the template list for the dataset on screen, scored against it.
+    fn open_template_list(&mut self) {
+        let (Some(state), Some(path)) = (&self.data_table_state, &self.path) else {
+            return;
+        };
+        self.template_modal.templates = self
+            .template_manager
+            .find_relevant_templates(path, &state.schema);
+        self.template_modal.broken_templates = self.template_manager.broken_templates.clone();
+        self.template_modal
+            .table_state
+            .select(if self.template_modal.templates.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        self.template_modal.active = true;
+        self.template_modal.mode = TemplateModalMode::List;
+        self.template_modal.focus = TemplateFocus::TemplateList;
+    }
+
     /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
     fn open_help_overlay(&mut self) {
         let already = self.show_help
@@ -11657,12 +11745,14 @@ impl App {
         }
 
         // Home owns the whole screen and every key while it is up — except under a
-        // modal. Modals render over home unconditionally, so if home also ate their
-        // keys they would be undismissable, and Esc would try to leave home instead.
+        // modal or the help overlay. Both render over home unconditionally, so if
+        // home also ate their keys they would be undismissable, and Esc would try
+        // to leave home instead.
         if self.input_mode == InputMode::Home
             && !self.confirmation_modal.active
             && !self.error_modal.active
             && !self.success_modal.active
+            && !self.show_help
         {
             return self.home_key(event);
         }
@@ -12347,7 +12437,7 @@ impl App {
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             // Pass to text input widget (for history navigation)
@@ -12379,7 +12469,7 @@ impl App {
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             // Pass to text input widget (for history navigation)
@@ -12401,7 +12491,7 @@ impl App {
                 KeyCode::Left | KeyCode::Char('h') => {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             self.export_modal
@@ -12423,7 +12513,7 @@ impl App {
                 KeyCode::Right | KeyCode::Char('l') => {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             self.export_modal
@@ -12585,7 +12675,7 @@ impl App {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
                             // Pass spacebar to text input
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             // Pass spacebar to text input
@@ -12611,7 +12701,7 @@ impl App {
                 | KeyCode::End => {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
-                            self.export_modal.path_input.handle_key(event, None);
+                            self.export_path_key(event);
                         }
                         ExportFocus::CsvDelimiter => {
                             self.export_modal
@@ -13024,7 +13114,6 @@ impl App {
         }
 
         if self.input_mode == InputMode::Info {
-            let on_tab_bar = self.info_modal.focus == InfoFocus::TabBar;
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
@@ -13051,11 +13140,14 @@ impl App {
                 KeyCode::BackTab if event.is_press() && schema_tab => {
                     self.info_modal.prev_focus();
                 }
-                KeyCode::Left | KeyCode::Char('h') if event.is_press() && on_tab_bar => {
+                // From anywhere in the panel: the arrows have no other job on any tab's
+                // body, and the panel opens with the body focused, so gating them on
+                // tab-bar focus made a fresh `i` then `→` do nothing.
+                KeyCode::Left | KeyCode::Char('h') if event.is_press() => {
                     let (has_partitions, has_notes) = self.info_tabs_on_offer();
                     self.info_modal.switch_tab_prev(has_partitions, has_notes);
                 }
-                KeyCode::Right | KeyCode::Char('l') if event.is_press() && on_tab_bar => {
+                KeyCode::Right | KeyCode::Char('l') if event.is_press() => {
                     let (has_partitions, has_notes) = self.info_tabs_on_offer();
                     self.info_modal.switch_tab(has_partitions, has_notes);
                 }
@@ -13245,7 +13337,9 @@ impl App {
                     }
                 }
                 // q/Q do nothing in chart view (no exit)
-                KeyCode::Char('?') if event.is_press() => {
+                KeyCode::Char('?')
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
                     self.show_help = true;
                 }
                 KeyCode::Esc if event.is_press() => {
@@ -14511,19 +14605,18 @@ impl App {
                             self.template_modal.create_relative_path_input.clear();
                         }
 
-                        // Suggest path pattern
-                        if let Some(parent) = path.parent()
+                        // Suggest a path pattern from the absolute path: the parent of a
+                        // bare relative name is "", and ""/*.parquet is a pattern that
+                        // matches every parquet file anywhere, forever.
+                        if let Some(parent) = absolute_path.parent()
                             && let Some(parent_str) = parent.to_str()
-                                && path.file_name().is_some()
-                                    && let Some(ext) = path.extension() {
-                                        self.template_modal
-                                            .create_path_pattern_input
-                                            .set_value(format!(
-                                                "{}/*.{}",
-                                                parent_str,
-                                                ext.to_string_lossy()
-                                            ));
-                                    }
+                            && !parent_str.is_empty()
+                            && let Some(ext) = absolute_path.extension()
+                        {
+                            self.template_modal.create_path_pattern_input.set_value(
+                                format!("{}/*.{}", parent_str, ext.to_string_lossy()),
+                            );
+                        }
 
                         // Suggest filename pattern
                         if let Some(filename) = path.file_name()
@@ -14541,12 +14634,15 @@ impl App {
                             }
                     }
 
-                    // Suggest schema match
+                    // Schema match starts on: "apply this to a similar table" is the
+                    // reason templates exist, and the columns are the only criterion
+                    // that says similar. The paths above pin this file; this one is
+                    // what carries the template to the next file shaped like it.
                     if let Some(ref state) = self.data_table_state
-                        && !state.schema.is_empty() {
-                            self.template_modal.create_schema_match_enabled = false;
-                            // Not auto-enabled, just suggested
-                        }
+                        && !state.schema.is_empty()
+                    {
+                        self.template_modal.create_schema_match_enabled = true;
+                    }
                 }
                 KeyCode::Char('e') if self.template_modal.mode == TemplateModalMode::List => {
                     // Edit selected template
@@ -14570,11 +14666,13 @@ impl App {
                         self.template_modal.delete_confirm_focus = false; // Cancel is default
                     }
                 }
-                KeyCode::Char('?')
+                // `i`, not `?`: the global help gate takes `?` before this branch is
+                // reached, so bound there the popup could never open. `i` is the
+                // details key the info panel already taught.
+                KeyCode::Char('i')
                     if self.template_modal.mode == TemplateModalMode::List
                         && !self.template_modal.delete_confirm =>
                 {
-                    // Show score details popup
                     self.template_modal.show_score_details = true;
                 }
                 KeyCode::Char('D') if self.template_modal.delete_confirm => {
@@ -15722,14 +15820,6 @@ impl App {
                 }
                 None
             }
-            KeyCode::Tab if event.is_press() => {
-                self.focus = (self.focus + 1) % 2;
-                None
-            }
-            KeyCode::BackTab if event.is_press() => {
-                self.focus = (self.focus + 1) % 2;
-                None
-            }
             KeyCode::Char('i') if event.is_press() => {
                 if let Some(state) = self.data_table_state.as_mut() {
                     state.mark_notes_seen();
@@ -15776,98 +15866,36 @@ impl App {
                 None
             }
             KeyCode::Char('T') => {
-                // Apply most relevant template immediately (no modal)
+                // Apply the best template whose criteria match this dataset. When none
+                // does, the answer is not silence and not the best-scored stranger: the
+                // list opens, so the user sees what exists and picks — or creates one.
                 if let Some(ref state) = self.data_table_state
                     && let Some(ref path) = self.path
-                    && let Some(template) =
-                        self.template_manager.get_most_relevant(path, &state.schema)
                 {
-                    // Apply template settings
-                    if let Err(e) = self.apply_template(&template) {
-                        // Show error modal instead of just printing
-                        self.error_modal
-                            .show(format!("Error applying template: {}", e));
+                    match self.template_manager.get_most_relevant(path, &state.schema) {
+                        Some(template) => {
+                            if let Err(e) = self.apply_template(&template) {
+                                self.error_modal
+                                    .show(format!("Error applying template: {}", e));
+                            }
+                        }
+                        None => self.open_template_list(),
                     }
                 }
                 None
             }
             KeyCode::Char('t') => {
-                // Open template modal
-                if let Some(ref state) = self.data_table_state
-                    && let Some(ref path) = self.path
-                {
-                    // Load relevant templates
-                    self.template_modal.templates = self
-                        .template_manager
-                        .find_relevant_templates(path, &state.schema);
-                    self.template_modal.broken_templates =
-                        self.template_manager.broken_templates.clone();
-                    self.template_modal.table_state.select(
-                        if self.template_modal.templates.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        },
-                    );
-                    self.template_modal.active = true;
-                    self.template_modal.mode = TemplateModalMode::List;
-                    self.template_modal.focus = TemplateFocus::TemplateList;
+                if self.data_table_state.is_some() && self.path.is_some() {
+                    self.open_template_list();
                 }
                 None
             }
             KeyCode::Char('s') => {
-                if let Some(state) = &self.data_table_state {
-                    let headers: Vec<String> =
-                        state.schema.iter_names().map(|s| s.to_string()).collect();
-                    let locked_count = state.locked_columns_count();
-
-                    // Populate sort tab
-                    let mut existing_columns: std::collections::HashMap<String, SortColumn> = self
-                        .sort_filter_modal
-                        .sort
-                        .columns
-                        .iter()
-                        .map(|c| (c.name.clone(), c.clone()))
-                        .collect();
-                    self.sort_filter_modal.sort.columns = headers
-                        .iter()
-                        .enumerate()
-                        .map(|(i, h)| {
-                            if let Some(mut col) = existing_columns.remove(h) {
-                                col.display_order = i;
-                                col.is_locked = i < locked_count;
-                                col.is_to_be_locked = false;
-                                col
-                            } else {
-                                SortColumn {
-                                    name: h.clone(),
-                                    sort_order: None,
-                                    display_order: i,
-                                    is_locked: i < locked_count,
-                                    is_to_be_locked: false,
-                                    is_visible: true,
-                                }
-                            }
-                        })
-                        .collect();
-                    self.sort_filter_modal.sort.filter_input.clear();
-                    self.sort_filter_modal.sort.focus = SortFocus::ColumnList;
-
-                    // Populate filter tab
-                    self.sort_filter_modal.filter.available_columns = state.headers();
-                    if !self.sort_filter_modal.filter.available_columns.is_empty() {
-                        self.sort_filter_modal.filter.new_column_idx =
-                            self.sort_filter_modal.filter.new_column_idx.min(
-                                self.sort_filter_modal
-                                    .filter
-                                    .available_columns
-                                    .len()
-                                    .saturating_sub(1),
-                            );
-                    } else {
-                        self.sort_filter_modal.filter.new_column_idx = 0;
-                    }
-
+                if self.data_table_state.is_some() {
+                    // Rebuilt from the table's applied state, never from what the modal
+                    // held last time: an edit staged and then canceled must not arrive
+                    // pre-staged, one Apply away from committing silently.
+                    self.sync_sort_filter_modal();
                     self.sort_filter_modal.open(self.history_limit, &self.theme);
                     self.input_mode = InputMode::SortFilter;
                 }
@@ -17720,7 +17748,7 @@ impl App {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the control bar's is the table's.
-                self.home.status = Some(format!("Looking at {name}…"));
+                self.home.status = Some(format!("Looking at {name}..."));
                 self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
                     // Every one of these can sit forever on a share that has gone away,
                     // which is the whole reason they are here and not where keys are read.
@@ -18454,9 +18482,12 @@ impl App {
         }
     }
 
-    /// Bring the Sort & Filter sidebar in line with the filters and sort applied to the
-    /// frame on screen. A drill-down swaps those with the group's, and a sidebar still
-    /// showing the grouped view's would re-send a filter against a List column.
+    /// Bring the Sort & Filter sidebar in line with the state actually applied to the
+    /// frame on screen: the real column order and hidden set, the applied sort, the
+    /// active filters. Called on open, so an edit staged in the modal and then
+    /// canceled dies with it rather than arriving pre-staged next time — and after a
+    /// drill-down swap, where a sidebar still showing the grouped view's filters
+    /// would re-send one against a List column.
     fn sync_sort_filter_modal(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -18465,26 +18496,38 @@ impl App {
         let sort_columns = state.view_sort_columns().to_vec();
         let ascending = state.view_sort_ascending();
         let headers: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
-        let available = state.headers();
+        let order = state.headers();
         let locked = state.locked_columns_count();
 
         let modal = &mut self.sort_filter_modal;
         modal.filter.statements = filters;
-        modal.filter.available_columns = available;
+        modal.filter.available_columns = order.clone();
         modal.filter.new_column_idx = 0;
+        // A schema column the applied order leaves out is hidden; it lines up after
+        // the visible ones, unlocked, exactly as toggling it back on would place it.
+        let mut next_hidden_order = order.len();
         modal.sort.columns = headers
             .iter()
-            .enumerate()
-            .map(|(i, name)| SortColumn {
-                name: name.clone(),
-                sort_order: sort_columns.iter().position(|c| c == name),
-                display_order: i,
-                is_locked: i < locked,
-                is_to_be_locked: false,
-                is_visible: true,
+            .map(|name| {
+                let position = order.iter().position(|c| c == name);
+                let display_order = position.unwrap_or_else(|| {
+                    next_hidden_order += 1;
+                    next_hidden_order - 1
+                });
+                SortColumn {
+                    name: name.clone(),
+                    // 1-based: what toggling a column in the modal assigns and what
+                    // the sidebar prints.
+                    sort_order: sort_columns.iter().position(|c| c == name).map(|o| o + 1),
+                    display_order,
+                    is_locked: position.is_some_and(|p| p < locked),
+                    is_to_be_locked: false,
+                    is_visible: position.is_some(),
+                }
             })
             .collect();
         modal.sort.ascending = ascending;
+        modal.sort.has_unapplied_changes = false;
     }
 
     /// Which of the Info panel's optional tabs the current dataset offers.
@@ -18949,13 +18992,13 @@ impl App {
 
     fn get_help_info(&self) -> (String, String) {
         let (title, content) = match self.input_mode {
-            InputMode::Normal => ("Main View Help", help_strings::main_view()),
+            InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
                 Some(InputType::Search) => ("Query Help", help_strings::query()),
                 _ => ("Editing Help", help_strings::editing()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
-            InputMode::PivotMelt => ("Pivot / Melt Help", help_strings::pivot_melt()),
+            InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
             InputMode::Export => ("Export Help", help_strings::export()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
@@ -19042,9 +19085,9 @@ impl Widget for &mut App {
         }
 
         let row_count = self.data_table_state.as_ref().map(|s| s.num_rows);
-        let use_unicode_throbber = std::env::var("LANG")
-            .map(|l| l.to_uppercase().contains("UTF-8"))
-            .unwrap_or(false);
+        // The spinner follows the glyph set, so it cannot disagree with the rest of
+        // the chrome about whether the terminal is doing UTF-8.
+        let use_unicode_throbber = crate::glyphs::active_is_unicode();
         let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
             .with_unicode_throbber(use_unicode_throbber);
 
@@ -19187,12 +19230,13 @@ impl Widget for &mut App {
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
             let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
+            let dot = crate::glyphs::get().middot;
             let caption = if waiting && datasets == 0 {
-                "Looking…".to_string()
+                "Looking...".to_string()
             } else if datasets == 1 {
-                format!("by {order}  ·  1 dataset")
+                format!("by {order}  {dot}  1 dataset")
             } else {
-                format!("by {order}  ·  {datasets} datasets")
+                format!("by {order}  {dot}  {datasets} datasets")
             };
             controls = controls.with_caption(Some(caption));
         }
@@ -19211,7 +19255,14 @@ impl Widget for &mut App {
             });
         controls = controls
             .with_row_count_pending(count_pending)
-            .with_row_count_unknown(count_unknown);
+            .with_row_count_unknown(count_unknown)
+            // "417 of 1,000" under a filter or query. Only a total something already
+            // resolved: never a reason for the chrome to read data.
+            .with_total_row_count(
+                self.data_table_state
+                    .as_ref()
+                    .and_then(|s| s.total_rows_when_subset()),
+            );
         controls.render(app_layout.control_bar, buf);
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);
@@ -19336,7 +19387,7 @@ fn home_cloud_source(
         .flatten()
         .filter(|n| !n.is_empty())
         .collect::<Vec<_>>()
-        .join(" · ");
+        .join(&format!(" {} ", crate::glyphs::get().middot));
     let mut names: Vec<String> = cached.map(|c| c.buckets.clone()).unwrap_or_default();
     for bucket in &source.buckets {
         if !names.contains(bucket) {
@@ -19616,6 +19667,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let mut app = App::new_with_config(tx.clone(), rt_handle, theme, config.clone());
+    app.startup_template = opts.template.clone();
     if opts.debug {
         app.enable_debug();
     }

@@ -1,5 +1,6 @@
-//! Reusable radio-button block: a bordered block with a grid of options (● selected, ○ unselected).
-//! Used for chart type, chart export format, and pivot aggregation.
+//! Reusable radio-button block: a bordered block with a grid of options marked
+//! with the theme's radio glyphs. Used for chart type, chart export format, and
+//! pivot aggregation.
 
 use ratatui::{
     buffer::Buffer,
@@ -10,7 +11,7 @@ use ratatui::{
 };
 
 /// Renders a block of radio options. Options are laid out in a grid with `columns` per row.
-/// Selected item is drawn with ● and highlighted when focused; others with ○.
+/// The selected item is drawn with `radio_on` and highlighted when focused; others with `radio_off`.
 pub struct RadioBlock<'a> {
     pub title: &'a str,
     pub options: &'a [&'a str],
@@ -60,6 +61,7 @@ impl<'a> RadioBlock<'a> {
         let col_constraints: Vec<Constraint> =
             (0..cols).map(|_| Constraint::Length(col_width)).collect();
 
+        let g = crate::glyphs::get();
         for (idx, label) in self.options.iter().enumerate() {
             let row = idx / cols;
             let col = idx % cols;
@@ -74,7 +76,7 @@ impl<'a> RadioBlock<'a> {
             let cell = col_chunks[col];
 
             let is_selected = idx == self.selected;
-            let marker = if is_selected { "●" } else { "○" };
+            let marker = if is_selected { g.radio_on } else { g.radio_off };
             let text = format!("{} {}", marker, *label);
             let style = if is_selected {
                 Style::default().fg(self.active_color)

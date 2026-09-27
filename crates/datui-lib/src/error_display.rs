@@ -306,7 +306,7 @@ fn short_csv_parse_error_message(raw: &str) -> String {
         "{}\n\
          Try: --infer-schema-length 1000\n\
               --null-value <value>  (treat as null)\n\
-              --ignore-errors true  (skip bad rows)",
+              --ignore-errors  (skip bad rows)",
         first
     )
 }

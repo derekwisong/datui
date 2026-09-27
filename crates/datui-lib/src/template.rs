@@ -272,10 +272,14 @@ impl TemplateManager {
         results
     }
 
+    /// The best template whose own criteria match this file — not merely the
+    /// best-scored one. Scores mix in usage and recency, so with no gate the
+    /// most-used template "matches" every dataset ever opened; `T` applying it
+    /// silently is how templates lose the user's trust.
     pub fn get_most_relevant(&self, file_path: &Path, schema: &Schema) -> Option<Template> {
         self.find_relevant_templates(file_path, schema)
             .into_iter()
-            .next()
+            .find(|(template, _)| criteria_match(template, file_path, schema))
             .map(|(template, _)| template)
     }
 
@@ -388,6 +392,46 @@ impl TemplateManager {
     }
 }
 
+/// Whether the template's own criteria match this file: a path or pattern hit,
+/// or every schema column the template asks for present. Distinct from the
+/// relevance score, which also carries usage and recency and so is never zero
+/// for a template that has been used — a ranking, not a claim of fit.
+pub fn criteria_match(template: &Template, file_path: &Path, schema: &Schema) -> bool {
+    let criteria = &template.match_criteria;
+    if let Some(exact) = &criteria.exact_path
+        && exact == file_path
+    {
+        return true;
+    }
+    if let Some(relative) = &criteria.relative_path
+        && let Ok(cwd) = std::env::current_dir()
+        && let Ok(rel) = file_path.strip_prefix(&cwd)
+        && rel.to_string_lossy() == *relative
+    {
+        return true;
+    }
+    if let Some(pattern) = &criteria.path_pattern
+        && matches_pattern(file_path.to_str().unwrap_or(""), pattern)
+    {
+        return true;
+    }
+    if let Some(pattern) = &criteria.filename_pattern
+        && let Some(name) = file_path.file_name().and_then(|n| n.to_str())
+        && matches_pattern(name, pattern)
+    {
+        return true;
+    }
+    if let Some(required) = &criteria.schema_columns
+        && !required.is_empty()
+    {
+        let file_cols: HashSet<&str> = schema.iter_names().map(|s| s.as_str()).collect();
+        if required.iter().all(|col| file_cols.contains(col.as_str())) {
+            return true;
+        }
+    }
+    false
+}
+
 fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -> f64 {
     let mut score = 0.0;
 
@@ -495,12 +539,9 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
             score += 2.0;
         }
     }
-
-    // Age penalty
-    if let Ok(duration) = SystemTime::now().duration_since(template.created) {
-        let months_old = (duration.as_secs() / (30 * 86400)) as f64;
-        score -= months_old * 1.0;
-    }
+    // No penalty for age since creation: a template is not worse for being old,
+    // and last-used recency above already separates the live from the stale.
+    // Charged anyway, a year-old template that fit showed a negative "score".
 
     score
 }
@@ -517,27 +558,10 @@ fn pattern_specificity_bonus(pattern: &str) -> f64 {
     }
 }
 
+/// Glob-like matching: `*` matches any sequence; anything else matches itself.
+/// (`?` gets no special treatment: it is rare in names, and a single-character
+/// wildcard is not worth a second wildcard rule in a five-field matcher.)
 fn matches_pattern(text: &str, pattern: &str) -> bool {
-    // Simple glob-like pattern matching
-    // Convert pattern to regex-like matching
-    // Support: * (matches any sequence), ? (matches single char)
-
-    // Simple implementation: convert * to .* and ? to . for regex
-    let mut regex_pattern = String::new();
-    for ch in pattern.chars() {
-        match ch {
-            '*' => regex_pattern.push_str(".*"),
-            '?' => regex_pattern.push('.'),
-            '.' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '^' | '$' | '+' => {
-                regex_pattern.push('\\');
-                regex_pattern.push(ch);
-            }
-            _ => regex_pattern.push(ch),
-        }
-    }
-
-    // Use simple string matching for now (full regex would require regex crate)
-    // For simple cases: * matches anything, exact match otherwise
     if pattern == "*" {
         return true;
     }
@@ -598,6 +622,96 @@ mod tests {
         assert_eq!(settings.query, Some("select a".to_string()));
         assert_eq!(settings.sql_query, None);
         assert_eq!(settings.fuzzy_query, None);
+    }
+
+    fn a_template(name: &str, criteria: MatchCriteria) -> Template {
+        Template {
+            id: name.to_string(),
+            name: name.to_string(),
+            description: None,
+            created: SystemTime::now(),
+            last_used: Some(SystemTime::now()),
+            usage_count: 10,
+            last_matched_file: None,
+            match_criteria: criteria,
+            settings: TemplateSettings {
+                query: None,
+                sql_query: None,
+                fuzzy_query: None,
+                filters: Vec::new(),
+                sort_columns: Vec::new(),
+                sort_ascending: true,
+                column_order: Vec::new(),
+                locked_columns_count: 0,
+                pivot: None,
+                melt: None,
+            },
+        }
+    }
+
+    fn no_criteria() -> MatchCriteria {
+        MatchCriteria {
+            exact_path: None,
+            relative_path: None,
+            path_pattern: None,
+            filename_pattern: None,
+            schema_columns: None,
+            schema_types: None,
+        }
+    }
+
+    /// Usage and recency raise the score but are not a match: a well-used
+    /// template whose criteria fit nothing must never be what `T` applies.
+    #[test]
+    fn usage_alone_is_not_a_match() {
+        use polars::prelude::DataType;
+        let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
+        let path = Path::new("/data/other.parquet");
+
+        let unrelated = a_template(
+            "well used, fits nothing",
+            MatchCriteria {
+                filename_pattern: Some("sales_*.csv".to_string()),
+                ..no_criteria()
+            },
+        );
+        assert!(!criteria_match(&unrelated, path, &schema));
+        assert!(calculate_relevance(&unrelated, path, &schema) > 0.0);
+
+        let fits = a_template(
+            "fits by schema",
+            MatchCriteria {
+                schema_columns: Some(vec!["a".to_string()]),
+                ..no_criteria()
+            },
+        );
+        assert!(criteria_match(&fits, path, &schema));
+    }
+
+    /// A template's schema criterion asks for its columns to be present; a file
+    /// with extra columns still fits ("similar table"), a file missing one does not.
+    #[test]
+    fn schema_criterion_is_a_subset_test() {
+        use polars::prelude::DataType;
+        let schema = Schema::from_iter([
+            ("a".into(), DataType::Int64),
+            ("b".into(), DataType::String),
+        ]);
+        let template = a_template(
+            "wants a and b",
+            MatchCriteria {
+                schema_columns: Some(vec!["a".into(), "b".into()]),
+                ..no_criteria()
+            },
+        );
+        assert!(criteria_match(&template, Path::new("/x.parquet"), &schema));
+
+        let narrower = Schema::from_iter([("a".into(), DataType::Int64)]);
+        assert!(!criteria_match(
+            &template,
+            Path::new("/x.parquet"),
+            &narrower
+        ));
     }
 
     #[test]

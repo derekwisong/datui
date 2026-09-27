@@ -19,8 +19,27 @@ impl ConfigManager {
         Self { config_dir }
     }
 
-    /// Create a new ConfigManager for the given app name
+    /// Create a new ConfigManager for the given app name.
+    ///
+    /// `DATUI_CONFIG_DIR` overrides the location. The test suite sets it: templates
+    /// live under the config directory, so without the override every App-level test
+    /// that saved one wrote it into the developer's own template list — dozens of
+    /// "pivot then break" entries were found there. As with the cache, a test that
+    /// reaches the real directory refuses rather than writes.
     pub fn new(app_name: &str) -> Result<Self> {
+        if let Some(dir) = std::env::var_os("DATUI_CONFIG_DIR") {
+            return Ok(Self {
+                config_dir: PathBuf::from(dir),
+            });
+        }
+        if crate::cache::running_as_a_cargo_test() {
+            panic!(
+                "DATUI_CONFIG_DIR is not set: a test would read and write the real \
+                 config (templates included). Call common::isolate_cache() before \
+                 building an App or a ConfigManager."
+            );
+        }
+
         let config_dir = dirs::config_dir()
             .ok_or_else(|| eyre!("Could not determine config directory"))?
             .join(app_name);

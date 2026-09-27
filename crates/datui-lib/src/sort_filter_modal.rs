@@ -1,10 +1,11 @@
-//! Combined Sort & Filter modal with tabs.
+//! Combined Sort & Filter sidebar with a Columns tab and a Filters tab.
 
-use crate::filter_modal::{FilterFocus, FilterModal};
+use crate::filter_modal::FilterModal;
 use crate::sort_modal::{SortFocus, SortModal};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SortFilterTab {
+    /// Every per-column property: sort, order, lock, visibility. Shown as "Columns".
     #[default]
     Sort,
     Filter,
@@ -15,9 +16,6 @@ pub enum SortFilterFocus {
     #[default]
     TabBar,
     Body,
-    Apply,
-    Cancel,
-    Clear,
 }
 
 #[derive(Default)]
@@ -43,11 +41,13 @@ impl SortFilterModal {
         self.sort.filter_input = crate::widgets::text_input::TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
-        self.filter.focus = FilterFocus::Column;
+        // The cursor is where `sync_sort_filter_modal` put it: on the add row.
+        self.filter.editor = None;
     }
 
     pub fn close(&mut self) {
         self.active = false;
+        self.filter.editor = None;
     }
 
     pub fn switch_tab(&mut self) {
@@ -55,30 +55,27 @@ impl SortFilterModal {
             SortFilterTab::Sort => SortFilterTab::Filter,
             SortFilterTab::Filter => SortFilterTab::Sort,
         };
+        // An edit in flight belongs to the tab it was typed on.
+        self.filter.editor = None;
     }
 
     pub fn next_focus(&mut self) {
         match self.focus {
             SortFilterFocus::TabBar => {
                 self.focus = SortFilterFocus::Body;
-                match self.active_tab {
-                    SortFilterTab::Sort => self.sort.focus = SortFocus::Filter,
-                    SortFilterTab::Filter => self.filter.focus = FilterFocus::Column,
+                if self.active_tab == SortFilterTab::Sort {
+                    self.sort.focus = SortFocus::Filter;
                 }
             }
             SortFilterFocus::Body => {
                 let at_end = match self.active_tab {
                     SortFilterTab::Sort => self.sort.next_body_focus(),
-                    SortFilterTab::Filter => self.filter.next_body_focus(),
+                    // The Filters tab's body is one list.
+                    SortFilterTab::Filter => true,
                 };
                 if at_end {
-                    self.focus = SortFilterFocus::Apply;
+                    self.focus = SortFilterFocus::TabBar;
                 }
-            }
-            SortFilterFocus::Apply => self.focus = SortFilterFocus::Cancel,
-            SortFilterFocus::Cancel => self.focus = SortFilterFocus::Clear,
-            SortFilterFocus::Clear => {
-                self.focus = SortFilterFocus::TabBar;
             }
         }
     }
@@ -86,26 +83,20 @@ impl SortFilterModal {
     pub fn prev_focus(&mut self) {
         match self.focus {
             SortFilterFocus::TabBar => {
-                self.focus = SortFilterFocus::Clear;
+                self.focus = SortFilterFocus::Body;
+                if self.active_tab == SortFilterTab::Sort {
+                    self.sort.focus = SortFocus::ColumnList;
+                }
             }
             SortFilterFocus::Body => {
                 let at_start = match self.active_tab {
                     SortFilterTab::Sort => self.sort.prev_body_focus(),
-                    SortFilterTab::Filter => self.filter.prev_body_focus(),
+                    SortFilterTab::Filter => true,
                 };
                 if at_start {
                     self.focus = SortFilterFocus::TabBar;
                 }
             }
-            SortFilterFocus::Apply => {
-                self.focus = SortFilterFocus::Body;
-                match self.active_tab {
-                    SortFilterTab::Sort => self.sort.focus = SortFocus::Order,
-                    SortFilterTab::Filter => self.filter.focus = FilterFocus::Statements,
-                }
-            }
-            SortFilterFocus::Cancel => self.focus = SortFilterFocus::Apply,
-            SortFilterFocus::Clear => self.focus = SortFilterFocus::Cancel,
         }
     }
 }

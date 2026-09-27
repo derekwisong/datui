@@ -106,6 +106,9 @@ pub struct DataTableState {
     measurements: Arc<crate::measurements::Meter>,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
+    /// Per entry of `sort_columns`, whether that column runs descending. Always the
+    /// same length as `sort_columns`.
+    sort_descending: Vec<bool>,
     sort_ascending: bool,
     /// Last executed DSL query. At most one of the three `active_*` queries is set: running
     /// one clears the other two.
@@ -246,6 +249,7 @@ struct GroupedView {
     base_lf: LazyFrame,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
+    sort_descending: Vec<bool>,
     sort_ascending: bool,
     /// Whether `lf` carries the hidden drift column, and what its groups mean. Saved
     /// with the frame so drilling back up restores the cells it explains, along with
@@ -396,11 +400,12 @@ fn conflicting_row_runs(starts: &[usize], total: usize, conflicts: &[bool]) -> V
     runs
 }
 
-/// Options for sorting by `n` columns. Nulls go last in both directions, as in pandas,
-/// DuckDB and spreadsheets; Polars would otherwise put them first either way.
-fn sort_options(n: usize, descending: bool) -> SortMultipleOptions {
+/// Options for a sort, one direction per column. Nulls go last in both directions, as
+/// in pandas, DuckDB and spreadsheets; Polars would otherwise put them first either way.
+fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
+    let n = descending.len();
     SortMultipleOptions::default()
-        .with_order_descending_multi(vec![descending; n])
+        .with_order_descending_multi(descending)
         .with_nulls_last_multi(vec![true; n])
 }
 
@@ -604,6 +609,7 @@ impl DataTableState {
             measurements: Arc::new(crate::measurements::Meter::default()),
             filters: Vec::new(),
             sort_columns: Vec::new(),
+            sort_descending: Vec::new(),
             sort_ascending: true,
             active_query: String::new(),
             active_sql_query: String::new(),
@@ -717,6 +723,7 @@ impl DataTableState {
             measurements: Arc::new(crate::measurements::Meter::default()),
             filters: Vec::new(),
             sort_columns: Vec::new(),
+            sort_descending: Vec::new(),
             sort_ascending: true,
             active_query: String::new(),
             active_sql_query: String::new(),
@@ -821,6 +828,7 @@ impl DataTableState {
         self.locked_columns_count = locked_columns_count;
         self.filters.clear();
         self.sort_columns.clear();
+        self.sort_descending.clear();
         self.sort_ascending = true;
         self.start_row = 0;
         self.termcol_index = 0;
@@ -5812,6 +5820,13 @@ impl DataTableState {
         }
     }
 
+    pub fn get_sort_descending(&self) -> &[bool] {
+        match &self.grouped {
+            Some(view) => &view.sort_descending,
+            None => &self.sort_descending,
+        }
+    }
+
     /// Filters applied to the frame on screen (inside the group while drilled). This is
     /// what the Sort & Filter sidebar shows and edits.
     pub fn view_filters(&self) -> &[FilterStatement] {
@@ -5824,6 +5839,10 @@ impl DataTableState {
 
     pub fn view_sort_ascending(&self) -> bool {
         self.sort_ascending
+    }
+
+    pub fn view_sort_descending(&self) -> &[bool] {
+        &self.sort_descending
     }
 
     /// The pivot/melt result in effect, for a snapshot that may need to put it back.
@@ -6107,6 +6126,7 @@ impl DataTableState {
             base_lf: self.base_lf.clone(),
             filters: std::mem::take(&mut self.filters),
             sort_columns: std::mem::take(&mut self.sort_columns),
+            sort_descending: std::mem::take(&mut self.sort_descending),
             sort_ascending: self.sort_ascending,
             drift: self.drift_column_present,
             drift_groups: self.drift_groups.clone(),
@@ -6134,6 +6154,7 @@ impl DataTableState {
                 self.base_lf = view.base_lf;
                 self.filters = view.filters;
                 self.sort_columns = view.sort_columns;
+                self.sort_descending = view.sort_descending;
                 self.sort_ascending = view.sort_ascending;
                 self.drift_column_present = view.drift;
                 self.drift_groups = view.drift_groups;
@@ -6328,7 +6349,7 @@ impl DataTableState {
         if !self.sort_columns.is_empty() {
             lf = lf.sort_by_exprs(
                 self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                sort_options(self.sort_columns.len(), !self.sort_ascending),
+                sort_options(self.sort_descending.clone()),
             );
         } else if !self.sort_ascending {
             lf = lf.reverse();
@@ -6340,9 +6361,25 @@ impl DataTableState {
         self.collect();
     }
 
+    /// Sort with one direction for every column. `ascending` also sets the natural
+    /// order when `columns` is empty.
     pub fn sort(&mut self, columns: Vec<String>, ascending: bool) {
-        self.sort_columns = columns;
+        let descending = vec![!ascending; columns.len()];
         self.sort_ascending = ascending;
+        self.sort_by(columns, descending);
+    }
+
+    /// Sort with a direction per column.
+    pub fn sort_by(&mut self, columns: Vec<String>, descending: Vec<bool>) {
+        debug_assert_eq!(columns.len(), descending.len());
+        // The one-direction flag lives on as the primary column's, for the places
+        // that still speak it: templates written for older readers, and `r`'s
+        // natural-order fallback (which an empty sort leaves alone).
+        if let Some(first) = descending.first() {
+            self.sort_ascending = !first;
+        }
+        self.sort_columns = columns;
+        self.sort_descending = descending;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
@@ -6351,6 +6388,11 @@ impl DataTableState {
 
     pub fn reverse(&mut self) {
         self.sort_ascending = !self.sort_ascending;
+        // Reversing a sorted view flips every column's direction, so `r` twice is
+        // always the identity whatever mix of directions was applied.
+        for direction in &mut self.sort_descending {
+            *direction = !*direction;
+        }
 
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
@@ -6360,7 +6402,7 @@ impl DataTableState {
             self.invalidate_num_rows();
             self.lf = self.lf.clone().sort_by_exprs(
                 self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                sort_options(self.sort_columns.len(), !self.sort_ascending),
+                sort_options(self.sort_descending.clone()),
             );
             self.collect();
         } else {
@@ -6442,7 +6484,7 @@ impl DataTableState {
                         .take(group_by_cols.len())
                         .map(|n| col(n.as_str()))
                         .collect();
-                    let options = sort_options(sort_exprs.len(), false);
+                    let options = sort_options(vec![false; sort_exprs.len()]);
                     lf = lf.sort_by_exprs(sort_exprs, options);
                 } else if !cols.is_empty() {
                     lf = lf.select(cols);
@@ -6648,8 +6690,8 @@ pub struct DataTable {
     /// Columns the view is sorted by; each carries a direction mark in the header.
     /// Filled from the state at render, so the marks always describe the frame drawn.
     pub sort_columns: Vec<String>,
-    /// Which way that sort runs. One direction for the whole sort, as it is applied.
-    pub sort_ascending: bool,
+    /// Which way each of them runs, per column, as it is applied.
+    pub sort_descending: Vec<bool>,
 }
 
 impl Default for DataTable {
@@ -6677,7 +6719,7 @@ impl Default for DataTable {
             drift_rows: Vec::new(),
             drift_groups: Arc::new(Vec::new()),
             sort_columns: Vec::new(),
-            sort_ascending: true,
+            sort_descending: Vec::new(),
         }
     }
 }
@@ -6838,25 +6880,26 @@ impl DataTable {
         self
     }
 
-    /// The columns the view is sorted by, and which way, for the header marks. The
-    /// stateful render fills this from the state itself; the builder is for direct
-    /// callers of `render_dataframe`, such as tests.
-    pub fn with_sort(mut self, columns: Vec<String>, ascending: bool) -> Self {
+    /// The columns the view is sorted by, and which way each runs, for the header
+    /// marks. The stateful render fills this from the state itself; the builder is
+    /// for direct callers of `render_dataframe`, such as tests.
+    pub fn with_sort(mut self, columns: Vec<String>, descending: Vec<bool>) -> Self {
+        debug_assert_eq!(columns.len(), descending.len());
         self.sort_columns = columns;
-        self.sort_ascending = ascending;
+        self.sort_descending = descending;
         self
     }
 
     /// The direction mark after a column's name when the view is sorted by it. Every
-    /// column of a multi-sort carries one — the mark alone, no position number, since
-    /// they all run the same way. Empty for unsorted columns.
+    /// column of a multi-sort carries one — the mark alone, no position number — and
+    /// each shows its own column's direction. Empty for unsorted columns.
     fn sort_mark_for(&self, column: &str) -> &'static str {
-        if self.sort_columns.iter().any(|c| c == column) {
+        if let Some(i) = self.sort_columns.iter().position(|c| c == column) {
             let g = crate::glyphs::get();
-            if self.sort_ascending {
-                g.sort_asc
-            } else {
+            if self.sort_descending.get(i).copied().unwrap_or(false) {
                 g.sort_desc
+            } else {
+                g.sort_asc
             }
         } else {
             ""
@@ -7303,7 +7346,7 @@ impl StatefulWidget for DataTable {
         // The view's own sort, not the grouped original's: it is what ordered the
         // rows being drawn, so the header marks can never disagree with them.
         self.sort_columns = state.view_sort_columns().to_vec();
-        self.sort_ascending = state.view_sort_ascending();
+        self.sort_descending = state.view_sort_descending().to_vec();
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character
@@ -11365,7 +11408,7 @@ mod tests {
         // A sorted view must not look identical to an unsorted one: the sorted
         // column's header says so, and only that column's.
         let g = crate::glyphs::get();
-        let table = DataTable::default().with_sort(vec!["age".to_string()], true);
+        let table = DataTable::default().with_sort(vec!["age".to_string()], vec![false]);
         let df = df!("name" => &["ann"], "age" => &[41i32]).unwrap();
         let area = Rect::new(0, 0, 20, 3);
         let mut buf = Buffer::empty(area);
@@ -11389,7 +11432,7 @@ mod tests {
     #[test]
     fn the_direction_mark_flips_with_the_sort() {
         let g = crate::glyphs::get();
-        let table = DataTable::default().with_sort(vec!["age".to_string()], false);
+        let table = DataTable::default().with_sort(vec!["age".to_string()], vec![true]);
         let df = df!("name" => &["ann"], "age" => &[41i32]).unwrap();
         let area = Rect::new(0, 0, 20, 3);
         let mut buf = Buffer::empty(area);
@@ -11407,8 +11450,10 @@ mod tests {
     fn every_column_of_a_multi_sort_is_marked() {
         // Marks only, no position numbers: the columns all run the same way.
         let g = crate::glyphs::get();
-        let table =
-            DataTable::default().with_sort(vec!["name".to_string(), "age".to_string()], true);
+        let table = DataTable::default().with_sort(
+            vec!["name".to_string(), "age".to_string()],
+            vec![false, false],
+        );
         let df = df!("name" => &["ann"], "age" => &[41i32]).unwrap();
         let area = Rect::new(0, 0, 20, 3);
         let mut buf = Buffer::empty(area);
@@ -11429,7 +11474,7 @@ mod tests {
         // marks and the width arithmetic counts both, so nothing is clipped.
         let g = crate::glyphs::get();
         let table = DataTable::default()
-            .with_sort(vec!["age".to_string()], true)
+            .with_sort(vec!["age".to_string()], vec![false])
             .with_drift(
                 Vec::new(),
                 Arc::new(vec![crate::schema_union::DriftGroup {

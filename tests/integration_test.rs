@@ -123,13 +123,18 @@ fn test_full_workflow() {
     app.sort_filter_modal.switch_tab(); // Filter tab
     app.sort_filter_modal.filter.available_columns =
         app.data_table_state.as_ref().unwrap().headers();
-    app.sort_filter_modal.filter.new_column_idx = 2;
-    app.sort_filter_modal.filter.new_operator_idx = 0;
-    app.sort_filter_modal.filter.new_value = "1".to_string();
-    app.sort_filter_modal.filter.add_statement();
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::Apply;
-
-    let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let column = app.sort_filter_modal.filter.available_columns[2].clone();
+    app.sort_filter_modal
+        .filter
+        .statements
+        .push(datui::filter_modal::FilterStatement {
+            column,
+            operator: datui::filter_modal::FilterOperator::Eq,
+            value: "1".to_string(),
+            logical_op: datui::filter_modal::LogicalOperator::And,
+        });
+    // On the Filters tab Enter means add/edit; Ctrl+Enter is the apply.
+    let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
     if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
         app.event(&next_event);
     }
@@ -154,6 +159,7 @@ fn test_full_workflow() {
         .map(|(i, h)| datui::sort_modal::SortColumn {
             name: h.clone(),
             sort_order: None,
+            sort_descending: false,
             display_order: i,
             is_locked: false,
             is_to_be_locked: false,
@@ -161,9 +167,10 @@ fn test_full_workflow() {
         })
         .collect();
     app.sort_filter_modal.sort.table_state.select(Some(0));
-    app.sort_filter_modal.sort.toggle_selection();
-    app.sort_filter_modal.sort.ascending = false;
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::Apply;
+    // Space cycles none -> ascending -> descending.
+    app.sort_filter_modal.sort.cycle_sort();
+    app.sort_filter_modal.sort.cycle_sort();
+    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::TabBar;
 
     let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
@@ -5478,7 +5485,7 @@ fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 10);
 
-    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let df = app
         .data_table_state
@@ -5598,7 +5605,7 @@ fn test_skip_tail_rows_survives_a_sidebar_sort() {
     let (mut app, rx, tx) = open_csv_with("skip_tail_then_sort.csv", &csv, options);
     assert_eq!(current_rows(&app), 100);
 
-    app.event(&AppEvent::Sort(vec!["b".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["b".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let df = app
         .data_table_state
@@ -5718,7 +5725,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     );
     assert_eq!(current_rows(&app), 10);
 
-    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
@@ -5764,7 +5771,7 @@ fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
     assert!(state.schema.contains("name") && state.schema.contains("c"));
     assert_eq!(state.headers(), vec!["a", "c", "name"]);
 
-    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error.is_none(), "{:?}", state.error);
@@ -5827,7 +5834,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     let statement = filter_stmt("c", FilterOperator::Gt, "0");
     app.event(&AppEvent::Filter(vec![statement.clone()]));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Sort(vec!["c".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 2, "groups c = 1 and c = 2");
     // What Apply would have left in the sidebar.
@@ -5835,6 +5842,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     app.sort_filter_modal.sort.columns = vec![datui::sort_modal::SortColumn {
         name: "c".to_string(),
         sort_order: Some(0),
+        sort_descending: false,
         display_order: 0,
         is_locked: false,
         is_to_be_locked: false,
@@ -5883,7 +5891,14 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(sorted, vec!["c"]);
-    assert!(!app.sort_filter_modal.sort.ascending);
+    let c = app
+        .sort_filter_modal
+        .sort
+        .columns
+        .iter()
+        .find(|c| c.name == "c")
+        .unwrap();
+    assert!(c.sort_descending, "the applied direction arrives staged");
 }
 
 /// A template saved while drilled into a group describes the grouped view, which is what
@@ -5902,7 +5917,7 @@ fn test_template_getters_describe_the_grouped_view_while_drilled() {
         "0",
     )]));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Sort(vec!["c".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
 
     let state = app.data_table_state.as_mut().unwrap();
@@ -9724,8 +9739,7 @@ fn test_sort_filter_esc_discards_staged_edits() {
             .all(|c| c.sort_order.is_none())
     );
 
-    // And Apply straight after commits nothing.
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::Apply;
+    // And Enter straight after applies and commits nothing.
     if let Some(next) = press(&mut app, KeyCode::Enter) {
         let _ = tx.send(next);
     }
@@ -9751,7 +9765,6 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char('v'));
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::Apply;
     if let Some(next) = press(&mut app, KeyCode::Enter) {
         let _ = tx.send(next);
     }
@@ -9760,7 +9773,7 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     assert_eq!(state.headers(), vec!["c".to_string(), "name".to_string()]);
 
     // Sort by "c", applied through the event the modal would send.
-    app.event(&AppEvent::Sort(vec!["c".to_string()], true));
+    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![false]));
     pump_until_idle(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('s'));
@@ -9770,6 +9783,226 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     let c = staged.iter().find(|c| c.name == "c").unwrap();
     assert!(c.is_visible);
     assert_eq!(c.sort_order, Some(1), "the applied sort arrives staged");
+}
+
+/// Each column of a multi-sort runs its own way: Space cycles one column
+/// none → ascending → descending, Enter applies from the list, and the header
+/// carries each column's own mark. `r` still reverses the whole view.
+#[test]
+fn test_sort_filter_per_column_directions_reach_the_table() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_per_column.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab); // tab bar -> find
+    press(&mut app, KeyCode::Tab); // find -> column list
+    press(&mut app, KeyCode::Down); // first column: a
+    press(&mut app, KeyCode::Char(' ')); // ascending
+    press(&mut app, KeyCode::Char(' ')); // descending
+    press(&mut app, KeyCode::Down); // c
+    press(&mut app, KeyCode::Char(' ')); // ascending
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.sort_filter_modal.active, "Enter applies and closes");
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.view_sort_columns(),
+        ["a".to_string(), "c".to_string()]
+    );
+    assert_eq!(state.view_sort_descending(), [true, false]);
+    let df = state.lf.clone().collect().unwrap();
+    let first = df.column("a").unwrap().get(0).unwrap();
+    assert_eq!(first, AnyValue::Int64(99), "a runs descending");
+
+    // The header says which way each column runs.
+    let g = datui::glyphs::get();
+    let area = Rect::new(0, 0, 100, 20);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let header: String = (0..area.width)
+        .map(|x| buf[(x, 0)].symbol().to_string())
+        .collect();
+    assert!(
+        header.contains(&format!("a{}", g.sort_desc)),
+        "got {header:?}"
+    );
+    assert!(
+        header.contains(&format!("c{}", g.sort_asc)),
+        "got {header:?}"
+    );
+
+    // `r` flips every direction at once.
+    press(&mut app, KeyCode::Char('r'));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.view_sort_descending(), [false, true]);
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(0));
+}
+
+/// The Filters tab is driven entirely from the keyboard: Enter on the add row
+/// opens the editor, typing narrows the column Picker, Enter walks the steps,
+/// Ctrl+Enter applies, and `d` deletes the statement under the cursor.
+#[test]
+fn test_filter_editor_keyboard_flow() {
+    let (mut app, rx, tx) = open_query_filter_fixture("filter_editor_flow.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right); // Columns -> Filters
+    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
+    press(&mut app, KeyCode::Enter); // open the editor
+    assert!(app.sort_filter_modal.filter.editor.is_some());
+    for ch in "na".chars() {
+        press(&mut app, KeyCode::Char(ch)); // narrows to "name"
+    }
+    press(&mut app, KeyCode::Enter); // choose the column
+    for ch in "co".chars() {
+        press(&mut app, KeyCode::Char(ch)); // narrows operators to "contains"
+    }
+    press(&mut app, KeyCode::Enter); // choose the operator
+    for ch in "alpha".chars() {
+        press(&mut app, KeyCode::Char(ch)); // the value
+    }
+    press(&mut app, KeyCode::Enter); // commit the statement
+    assert!(app.sort_filter_modal.filter.editor.is_none());
+    assert_eq!(app.sort_filter_modal.filter.statements.len(), 1);
+
+    // `a` applies from the Filters tab without a modifier — Ctrl+Enter is
+    // byte-identical to Enter on terminals without the kitty protocol.
+    if let Some(next) = press(&mut app, KeyCode::Char('a')) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.sort_filter_modal.active);
+    assert_eq!(current_rows(&app), 50, "only the alpha_ rows remain");
+
+    // Reopen: the statement is staged; d deletes it; Ctrl+Enter clears the filter.
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Up); // add row -> the statement
+    press(&mut app, KeyCode::Delete); // Del deletes like d
+    assert!(app.sort_filter_modal.filter.statements.is_empty());
+    let apply = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL,
+    )));
+    if let Some(next) = apply {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 100);
+}
+
+/// Del on the Columns list is the sort's delete: the column leaves the sort
+/// outright, wherever in the Space cycle it stands, and the rest renumber.
+#[test]
+fn test_del_removes_a_column_from_the_sort() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("del_unsorts.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Down); // a
+    press(&mut app, KeyCode::Char(' ')); // 1, ascending
+    press(&mut app, KeyCode::Down); // c
+    press(&mut app, KeyCode::Char(' ')); // 2
+    press(&mut app, KeyCode::Char(' ')); // descending
+    press(&mut app, KeyCode::Up); // back to a
+    press(&mut app, KeyCode::Delete);
+
+    let (names, directions) = app.sort_filter_modal.sort.sorted_columns_and_directions();
+    assert_eq!(names, ["c"], "a left the sort and c renumbered to 1");
+    assert_eq!(directions, [true], "keeping its own direction");
+}
+
+/// The first filter is reachable the obvious way: s, →, Enter. The sidebar
+/// opens with focus on the tab bar, and Enter there used to apply-and-close —
+/// the one path a first session actually takes.
+#[test]
+fn test_enter_on_the_filters_tab_bar_starts_a_filter() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("filters_tab_bar_enter.csv");
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.sort_filter_modal.active, "the sidebar stays open");
+    assert!(
+        app.sort_filter_modal.filter.editor.is_some(),
+        "and the editor is up, on the add row"
+    );
+}
+
+/// Esc backs out one layer at a time: an open editor dies alone, the sidebar
+/// survives it, and the next Esc discards the staged edit with the sidebar.
+#[test]
+fn test_filter_editor_esc_ends_the_edit_not_the_sidebar() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("filter_editor_esc.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('n'));
+    assert!(app.sort_filter_modal.filter.editor.is_some());
+
+    press(&mut app, KeyCode::Esc);
+    assert!(
+        app.sort_filter_modal.filter.editor.is_none(),
+        "the edit dies"
+    );
+    assert!(app.sort_filter_modal.active, "the sidebar does not");
+    assert!(app.sort_filter_modal.filter.statements.is_empty());
+
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.sort_filter_modal.active);
+}
+
+/// The sidebar is one Surface: one border, no bordered buttons, the actions in
+/// the footer, and no radio glyphs anywhere.
+#[test]
+fn test_sort_filter_sidebar_is_one_surface() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("sort_filter_surface.csv");
+    press(&mut app, KeyCode::Char('s'));
+
+    let area = Rect::new(0, 0, 100, 28);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect();
+
+    assert!(rows.iter().any(|r| r.contains("Sort & Filter")));
+    assert_eq!(
+        rows.iter().map(|r| r.matches('╭').count()).sum::<usize>(),
+        1,
+        "one border on the sidebar and none inside it"
+    );
+    let bottom = rows
+        .iter()
+        .position(|r| r.contains('╰'))
+        .expect("the frame closes");
+    for (key, label) in [("Enter", "Apply"), ("Esc", "Cancel")] {
+        assert!(
+            rows[bottom - 1].contains(key) && rows[bottom - 1].contains(label),
+            "{key} {label} is a chip on the footer row: {:?}",
+            rows[bottom - 1]
+        );
+    }
+    for radio in [
+        datui::glyphs::unicode().radio_on,
+        datui::glyphs::unicode().radio_off,
+    ] {
+        assert!(
+            rows.iter().all(|r| !r.contains(radio)),
+            "a radio glyph survived: {radio:?}"
+        );
+    }
 }
 
 /// Typing a path whose extension names a format moves the format radio with it, so
@@ -9956,7 +10189,7 @@ fn test_total_rows_offered_only_under_a_subset() {
 
     // A sort is not a subset: same rows, other order.
     app.event(&AppEvent::Filter(vec![]));
-    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.total_rows_when_subset(), None);

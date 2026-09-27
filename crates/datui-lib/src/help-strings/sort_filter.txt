@@ -15,6 +15,7 @@ Columns tab:
   Space:            Cycle the column's sort: none → ascending → descending
                     (each column carries its own direction)
   1-9:              Put the column at that place in the sort order; 0 removes it
+  Del:              Remove the column from the sort
   [ / ]:            Move the column earlier or later in the sort order
   + / - (= / _):    Move the column's display position
   L:                Lock the column to the left edge
@@ -30,7 +31,7 @@ Filters tab:
                     operator the same way, then type the value and Enter saves.
                     Esc backs out of the edit and only the edit.
   Space:            Toggle and/or on the row
-  d:                Delete the row
+  d / Del:          Delete the row
   C:                Clear every staged filter
 
 Files that disagree:

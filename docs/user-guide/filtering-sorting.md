@@ -29,6 +29,7 @@ list, then:
 | Key | Action |
 |---|---|
 | <kbd>Space</kbd> | Cycle this column's sort: none, ascending, descending |
+| <kbd>Del</kbd> | Remove this column from the sort |
 | <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it |
 | <kbd>[</kbd> <kbd>]</kbd> | Move this column earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move this column left or right in the table |
@@ -55,7 +56,7 @@ above (**and**/**or**). The cursor walks the rows plus a trailing
 |---|---|
 | <kbd>Enter</kbd> | Edit this row, or start a new filter on the add row |
 | <kbd>Space</kbd> | Toggle and/or on this row |
-| <kbd>d</kbd> | Delete this row |
+| <kbd>d</kbd> <kbd>Del</kbd> | Delete this row |
 
 Editing walks three steps on the row: pick the column (type to narrow,
 <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses), pick the operator

@@ -123,19 +123,39 @@ impl SortModal {
                     (Some(_), false) => {
                         self.columns[real_idx].sort_descending = true;
                     }
-                    (Some(old_order), true) => {
-                        self.columns[real_idx].sort_order = None;
-                        self.columns[real_idx].sort_descending = false;
-                        for col in &mut self.columns {
-                            if let Some(order) = col.sort_order
-                                && order > old_order
-                            {
-                                col.sort_order = Some(order - 1);
-                            }
-                        }
-                    }
+                    (Some(_), true) => self.unsort_index(real_idx),
                 }
                 self.has_unapplied_changes = true;
+            }
+        }
+    }
+
+    /// Del on a column: drop it from the sort outright, wherever in the cycle
+    /// it stands, and renumber the columns after it.
+    pub fn remove_sort(&mut self) {
+        if let Some(idx) = self.table_state.selected() {
+            let filtered = self.filtered_columns();
+            if let Some((real_idx, _)) = filtered.get(idx) {
+                let real_idx = *real_idx;
+                if self.columns[real_idx].sort_order.is_some() {
+                    self.unsort_index(real_idx);
+                    self.has_unapplied_changes = true;
+                }
+            }
+        }
+    }
+
+    fn unsort_index(&mut self, real_idx: usize) {
+        let Some(old_order) = self.columns[real_idx].sort_order else {
+            return;
+        };
+        self.columns[real_idx].sort_order = None;
+        self.columns[real_idx].sort_descending = false;
+        for col in &mut self.columns {
+            if let Some(order) = col.sort_order
+                && order > old_order
+            {
+                col.sort_order = Some(order - 1);
             }
         }
     }

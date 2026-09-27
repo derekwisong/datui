@@ -111,6 +111,7 @@ On the Columns tab, with a column highlighted:
 |---|---|
 | <kbd>Space</kbd> | Cycle its sort: none, ascending, descending |
 | <kbd>1</kbd> to <kbd>9</kbd> | Put it at that position in the sort order; <kbd>0</kbd> removes it |
+| <kbd>Del</kbd> | Remove it from the sort |
 | <kbd>[</kbd> <kbd>]</kbd> | Move it earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move it left or right in the table |
 | <kbd>L</kbd> | Freeze it and the columns above it |
@@ -124,7 +125,7 @@ On the Filters tab:
 | <kbd>Enter</kbd> | Edit the row under the cursor, or add one on the last row |
 | type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Enter</kbd> | In the editor: narrow the column or operator, move, choose; then type the value and <kbd>Enter</kbd> saves |
 | <kbd>Space</kbd> | Toggle and/or on the row |
-| <kbd>d</kbd> | Delete the row |
+| <kbd>d</kbd> <kbd>Del</kbd> | Delete the row |
 | <kbd>C</kbd> | Clear every staged filter |
 | <kbd>Esc</kbd> | Back out of the edit, then close |
 

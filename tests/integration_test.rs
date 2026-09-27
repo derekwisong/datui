@@ -9886,7 +9886,7 @@ fn test_filter_editor_keyboard_flow() {
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Up); // add row -> the statement
-    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Delete); // Del deletes like d
     assert!(app.sort_filter_modal.filter.statements.is_empty());
     let apply = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -9897,6 +9897,28 @@ fn test_filter_editor_keyboard_flow() {
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 100);
+}
+
+/// Del on the Columns list is the sort's delete: the column leaves the sort
+/// outright, wherever in the Space cycle it stands, and the rest renumber.
+#[test]
+fn test_del_removes_a_column_from_the_sort() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("del_unsorts.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Down); // a
+    press(&mut app, KeyCode::Char(' ')); // 1, ascending
+    press(&mut app, KeyCode::Down); // c
+    press(&mut app, KeyCode::Char(' ')); // 2
+    press(&mut app, KeyCode::Char(' ')); // descending
+    press(&mut app, KeyCode::Up); // back to a
+    press(&mut app, KeyCode::Delete);
+
+    let (names, directions) = app.sort_filter_modal.sort.sorted_columns_and_directions();
+    assert_eq!(names, ["c"], "a left the sort and c renumbered to 1");
+    assert_eq!(directions, [true], "keeping its own direction");
 }
 
 /// The first filter is reachable the obvious way: s, →, Enter. The sidebar

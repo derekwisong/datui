@@ -13,8 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-/// Rows the inline pickers may take below the row under edit.
-const PICKER_ROWS: u16 = 6;
+// (the inline pickers size themselves to the room below the edit row)
 
 /// Render the Sort & Filter sidebar into the given area.
 pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &RenderContext) {
@@ -273,6 +272,7 @@ fn render_filters_tab(area: Rect, buf: &mut Buffer, filter: &mut FilterModal, ct
                 && row == filter.statements.len());
 
         if under_edit {
+            let rows_owed = (filter.row_count() - row - 1) as u16;
             let editor = filter.editor.as_mut().expect("checked above");
             // The row under edit: the three steps on one line, the active one
             // accented; the picker for the active step drops in below.
@@ -330,7 +330,9 @@ fn render_filters_tab(area: Rect, buf: &mut Buffer, filter: &mut FilterModal, ct
                 FilterEditStep::Value => None,
             };
             if let Some(state) = picker_state {
-                let rows = PICKER_ROWS.min(bottom.saturating_sub(y));
+                // All the room down to the rows still owed below the edit row —
+                // an "N more" overflow mark over blank space is just lost lines.
+                let rows = bottom.saturating_sub(y).saturating_sub(rows_owed);
                 if rows > 0 {
                     let picker_area = Rect {
                         x: area.x + 2,

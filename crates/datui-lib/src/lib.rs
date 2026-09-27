@@ -12227,8 +12227,11 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') if on_body && filter_tab => {
                     self.sort_filter_modal.filter.move_cursor_down();
                 }
-                KeyCode::Char('d') if on_body && filter_tab => {
+                KeyCode::Char('d') | KeyCode::Delete if on_body && filter_tab => {
                     self.sort_filter_modal.filter.delete_at_cursor();
+                }
+                KeyCode::Delete if on_column_list => {
+                    self.sort_filter_modal.sort.remove_sort();
                 }
                 KeyCode::Char(' ') if on_body && filter_tab => {
                     self.sort_filter_modal.filter.toggle_logical_at_cursor();

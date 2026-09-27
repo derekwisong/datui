@@ -81,6 +81,10 @@ By uses the same comma-separated list and `name : expression` rules as
 select. Aggregation functions (`avg`, `min`, `max`, `count`, `sum`, `std`,
 `med`) can be written `fn[expr]` or `fn expr`; brackets are optional.
 
+An unaliased aggregate of a single column is named `{fn}_{column}`, so
+`select avg salary, max salary by department` yields `avg_salary` and
+`max_salary`; an explicit alias (`total: sum[price]`) overrides it.
+
 ## Where clause: `,` and `|`
 
 The where clause combines conditions with two separators:
@@ -106,7 +110,7 @@ inside one AND term — and separate the groups with `,`.
 
 | Kind | Syntax |
 |---|---|
-| Arithmetic | `+` `-` `*` `%` (`%` is division, not modulo) |
+| Arithmetic | `+` `-` `*` `/` `%` (`/` and `%` both divide; `%` is not modulo) |
 | Equal, not equal | `=`, `!=`, `<>` (same as `!=`) |
 | Ordering | `<` `>` `<=` `>=` |
 | Coalesce | `^` — first non-null, left to right; `a^b^c` = coalesce(a, b, c), binding right-to-left as `a^(b^c)` |

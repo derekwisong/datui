@@ -1,7 +1,7 @@
 Keys:
   Enter:            Run the query
   Tab:              Move focus between the input and the tab bar
-  ← / → (h/l):      On the tab bar: switch Query / SQL / Fuzzy
+  ← / → (h/l):      On the tab bar: switch Query / Fuzzy / SQL
   ↑ / ↓:            Earlier and later queries from the history
   F1:               Show this help (works from the input)
   Esc:              Close
@@ -40,6 +40,9 @@ Aggregation Functions (square brackets optional):
   med[expr] or med expr    - Median value (also: median)
   sum[expr] or sum expr    - Sum of values
 
+  Unaliased aggregates of a column are named fn_column (avg[salary] -> avg_salary);
+  an alias overrides this (total:sum[price] -> total).
+
 Aggregation Examples:
   select avg[price], min[quantity], max[date] by category
   select avg price, min quantity, max date by category
@@ -67,14 +70,14 @@ Where Conditions:
   - Note: Where clause does NOT support column assignment
 
 Operators:
-  Math:        +, -, *, % (% is division)
+  Math:        +, -, *, / or % (both divide)
   Comparison:  =, !=, <>, <, >, <=, >=
   Logic:       , (AND), | (OR)
   Coalesce:    ^ (a^b is the first non-null of a, b)
 
 Expression Evaluation:
   - Operators evaluated right-to-left
-  - Example: 1%c+a evaluates as 1%(c+a)
+  - Example: 1/c+a evaluates as 1/(c+a)
   - Use parentheses () for grouping: (a+b)*2
   - Square brackets [] are for function calls only
 

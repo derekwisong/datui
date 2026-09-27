@@ -153,9 +153,12 @@ the mapping). Every screen must be legible at the floor of both — check
 with `LANG=C` and with `TERM` forced to a 16-color terminal. Meaning may
 never live only in a glyph or only in a color: the ASCII twin carries the
 same distinction, and a 16-color palette still separates accent, dimmed and
-error. Never assume the font: no Nerd Font glyphs, and new Unicode comes
-from blocks any UTF-8 font covers, chosen Neutral width (not Ambiguous, or
-East Asian locales render it double-wide and columns shear).
+error. Never assume the font: no Nerd Font glyphs, and a new Unicode
+character must pass the coverage audit — present in JetBrainsMono Nerd
+Font, Liberation Mono and Noto Sans Mono (`fc-list "<font>:charset=<hex>"`
+per codepoint), and never an `Emoji=Yes, Emoji_Presentation=No` codepoint
+those fonts don't all carry, because a missing one falls back to the color
+emoji font and renders a blank cell (#325 has the full rule and history).
 
 **Small windows.** The baseline is full usability at 80×24, and graceful
 loss down to roughly 60×20. When width or height runs out, elements

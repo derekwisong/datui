@@ -589,6 +589,7 @@ fn the_cloud_section_renders_legibly() {
         eprintln!("skipped: set DATUI_LIVE_S3 to an endpoint to run");
         return;
     };
+    let cloud = datui::glyphs::get().in_object_store;
     let (mut app, rx) = minio_app(&endpoint);
     pump_until(&mut app, &rx, 30, |app| {
         ["s3-default", "gcs-default"].iter().all(|id| {
@@ -607,11 +608,12 @@ fn the_cloud_section_renders_legibly() {
     println!("{screen}");
     assert!(screen.contains("CLOUD"), "one heading for every source");
     assert!(
-        screen.contains("☁ S3-compatible") && screen.contains("☁ Google Cloud"),
+        screen.contains(&format!("{cloud} S3-compatible"))
+            && screen.contains(&format!("{cloud} Google Cloud")),
         "each source is a row marked as living in an object store"
     );
     assert!(
-        !screen.contains("☁ crates/"),
+        !screen.contains(&format!("{cloud} crates/")),
         "a local directory must not be marked as cloud"
     );
     assert!(
@@ -628,7 +630,7 @@ fn the_cloud_section_renders_legibly() {
     println!("{buckets}");
     for bucket in ["datui-sales", "datui-logs", "datui-events", "datui-empty"] {
         assert!(
-            buckets.contains(&format!("☁ {bucket}/")),
+            buckets.contains(&format!("{cloud} {bucket}/")),
             "{bucket} should be on screen"
         );
     }
@@ -670,7 +672,7 @@ fn the_cloud_section_renders_legibly() {
         .name
         .clone();
     assert!(
-        gcs.contains(&format!("☁ {first}/")),
+        gcs.contains(&format!("{cloud} {first}/")),
         "a GCS bucket reads as a place too"
     );
 }

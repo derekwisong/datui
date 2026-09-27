@@ -90,6 +90,9 @@ pub struct Glyphs {
     pub arrow_right: &'static str,
     /// Between the steps of a location trail: `cloud › Azure › datui-test`.
     pub trail: &'static str,
+    /// After a column's name in a column list: hidden from the table. One column
+    /// wide in both sets, like the header marks.
+    pub hidden_mark: &'static str,
     /// Checkbox states, for toggle lists.
     pub checkbox_on: &'static str,
     pub checkbox_off: &'static str,
@@ -153,6 +156,7 @@ const UNICODE: Glyphs = Glyphs {
     arrow_left: "←",
     arrow_right: "→",
     trail: "›",
+    hidden_mark: "⊘",
     checkbox_on: "☑",
     checkbox_off: "☐",
     radio_on: "●",
@@ -202,6 +206,7 @@ const ASCII: Glyphs = Glyphs {
     arrow_left: "<",
     arrow_right: ">",
     trail: ">",
+    hidden_mark: "x",
     checkbox_on: "[x]",
     checkbox_off: "[ ]",
     radio_on: "(*)",

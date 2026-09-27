@@ -108,7 +108,7 @@ use chart_export_modal::{ChartExportFocus, ChartExportModal};
 use chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 pub use error_display::{ErrorKindForPython, error_for_python};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
-use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
+use filter_modal::{FilterEditStep, FilterStatement};
 use numfmt::NumberFormatSettings;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
@@ -5069,7 +5069,7 @@ pub enum AppEvent {
     SqlSearch(String),
     FuzzySearch(String),
     Filter(Vec<FilterStatement>),
-    Sort(Vec<String>, bool),         // Columns, Ascending
+    Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
     Pivot(PivotSpec),
     Melt(MeltSpec),
@@ -5701,6 +5701,7 @@ struct TemplateApplicationState {
     active_fuzzy_query: String,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
+    sort_descending: Vec<bool>,
     sort_ascending: bool,
     column_order: Vec<String>,
     locked_columns_count: usize,
@@ -6735,9 +6736,8 @@ impl App {
             InputMode::SortFilter => {
                 self.sort_filter_modal.focus == SortFilterFocus::Body
                     && match self.sort_filter_modal.active_tab {
-                        SortFilterTab::Filter => {
-                            self.sort_filter_modal.filter.focus == FilterFocus::Value
-                        }
+                        // The whole inline editor types: pickers narrow, the value edits.
+                        SortFilterTab::Filter => self.sort_filter_modal.filter.editor.is_some(),
                         SortFilterTab::Sort => {
                             self.sort_filter_modal.sort.focus == SortFocus::Filter
                         }
@@ -12020,11 +12020,82 @@ impl App {
         if self.input_mode == InputMode::SortFilter {
             let on_tab_bar = self.sort_filter_modal.focus == SortFilterFocus::TabBar;
             let on_body = self.sort_filter_modal.focus == SortFilterFocus::Body;
-            let on_apply = self.sort_filter_modal.focus == SortFilterFocus::Apply;
-            let on_cancel = self.sort_filter_modal.focus == SortFilterFocus::Cancel;
-            let on_clear = self.sort_filter_modal.focus == SortFilterFocus::Clear;
             let sort_tab = self.sort_filter_modal.active_tab == SortFilterTab::Sort;
             let filter_tab = self.sort_filter_modal.active_tab == SortFilterTab::Filter;
+            let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+            let on_find =
+                on_body && sort_tab && self.sort_filter_modal.sort.focus == SortFocus::Filter;
+            let on_column_list =
+                on_body && sort_tab && self.sort_filter_modal.sort.focus == SortFocus::ColumnList;
+
+            // The inline filter editor owns the keys while it is up: a small form
+            // within the form. Esc ends the edit and only the edit.
+            if filter_tab && self.sort_filter_modal.filter.editor.is_some() {
+                if event.code == KeyCode::Enter && ctrl {
+                    return self.apply_sort_filter();
+                }
+                let m = &mut self.sort_filter_modal.filter;
+                let editor = m.editor.as_mut().expect("checked above");
+                match event.code {
+                    KeyCode::Esc => m.cancel_editor(),
+                    // Enter chooses the step's pick; from the value it commits the row.
+                    KeyCode::Enter | KeyCode::Tab | KeyCode::Right
+                        if editor.step != FilterEditStep::Value =>
+                    {
+                        match editor.step {
+                            FilterEditStep::Column => {
+                                if editor.column.selected_original().is_some() {
+                                    editor.step = FilterEditStep::Operator;
+                                }
+                            }
+                            FilterEditStep::Operator => {
+                                editor.step = FilterEditStep::Value;
+                                // Pre-filled from the statement under edit; typing
+                                // replaces it, arrows keep it editable.
+                                editor.value.select_all();
+                            }
+                            FilterEditStep::Value => {}
+                        }
+                    }
+                    KeyCode::Enter => m.commit_editor(),
+                    KeyCode::BackTab => {
+                        editor.step = match editor.step {
+                            FilterEditStep::Column | FilterEditStep::Operator => {
+                                FilterEditStep::Column
+                            }
+                            FilterEditStep::Value => FilterEditStep::Operator,
+                        };
+                    }
+                    KeyCode::Up => match editor.step {
+                        FilterEditStep::Column => editor.column.move_up(),
+                        FilterEditStep::Operator => editor.operator.move_up(),
+                        FilterEditStep::Value => {}
+                    },
+                    KeyCode::Down => match editor.step {
+                        FilterEditStep::Column => editor.column.move_down(),
+                        FilterEditStep::Operator => editor.operator.move_down(),
+                        FilterEditStep::Value => {}
+                    },
+                    KeyCode::Backspace if editor.step == FilterEditStep::Column => {
+                        editor.column.backspace();
+                    }
+                    KeyCode::Backspace if editor.step == FilterEditStep::Operator => {
+                        editor.operator.backspace();
+                    }
+                    KeyCode::Char(c) if editor.step == FilterEditStep::Column => {
+                        editor.column.type_char(c);
+                    }
+                    KeyCode::Char(c) if editor.step == FilterEditStep::Operator => {
+                        editor.operator.type_char(c);
+                    }
+                    // The value is an ordinary text field, readline included.
+                    _ if editor.step == FilterEditStep::Value => {
+                        let _ = editor.value.handle_key(event, None);
+                    }
+                    _ => {}
+                }
+                return None;
+            }
 
             match event.code {
                 KeyCode::Esc => {
@@ -12035,201 +12106,64 @@ impl App {
                     self.sort_filter_modal.close();
                     self.input_mode = InputMode::Normal;
                 }
+                KeyCode::Enter if ctrl => return self.apply_sort_filter(),
                 KeyCode::Tab => self.sort_filter_modal.next_focus(),
                 KeyCode::BackTab => self.sort_filter_modal.prev_focus(),
-                KeyCode::Left | KeyCode::Char('h') if on_tab_bar => {
+                // The find field keeps its readline keys; Up/Down and the rest fall
+                // through to the arms below.
+                _ if on_find
+                    && !matches!(
+                        event.code,
+                        KeyCode::Tab
+                            | KeyCode::BackTab
+                            | KeyCode::Esc
+                            | KeyCode::Enter
+                            | KeyCode::Up
+                            | KeyCode::Down
+                    ) =>
+                {
+                    let _ = self
+                        .sort_filter_modal
+                        .sort
+                        .filter_input
+                        .handle_key(event, Some(&self.cache));
+                }
+                // Arrows switch tabs from the tab bar and from the lists; only a text
+                // field keeps them to itself.
+                KeyCode::Left | KeyCode::Right if on_tab_bar || on_body => {
                     self.sort_filter_modal.switch_tab();
                 }
-                KeyCode::Right | KeyCode::Char('l') if on_tab_bar => {
+                KeyCode::Char('h') | KeyCode::Char('l') if on_tab_bar => {
                     self.sort_filter_modal.switch_tab();
                 }
-                KeyCode::Enter if event.modifiers.contains(KeyModifiers::CONTROL) && sort_tab => {
-                    let columns = self.sort_filter_modal.sort.get_sorted_columns();
-                    let column_order = self.sort_filter_modal.sort.get_column_order();
-                    let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
-                    let ascending = self.sort_filter_modal.sort.ascending;
-                    self.sort_filter_modal.sort.has_unapplied_changes = false;
-                    self.sort_filter_modal.close();
-                    self.input_mode = InputMode::Normal;
-                    let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                    return Some(AppEvent::Sort(columns, ascending));
-                }
-                KeyCode::Enter if on_apply => {
-                    if sort_tab {
-                        let columns = self.sort_filter_modal.sort.get_sorted_columns();
-                        let column_order = self.sort_filter_modal.sort.get_column_order();
-                        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
-                        let ascending = self.sort_filter_modal.sort.ascending;
-                        self.sort_filter_modal.sort.has_unapplied_changes = false;
-                        self.sort_filter_modal.close();
-                        self.input_mode = InputMode::Normal;
-                        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                        return Some(AppEvent::Sort(columns, ascending));
-                    } else {
-                        let statements = self.sort_filter_modal.filter.statements.clone();
-                        self.sort_filter_modal.close();
-                        self.input_mode = InputMode::Normal;
-                        return Some(AppEvent::Filter(statements));
-                    }
-                }
-                KeyCode::Enter if on_cancel => {
-                    for col in &mut self.sort_filter_modal.sort.columns {
-                        col.is_to_be_locked = false;
-                    }
-                    self.sort_filter_modal.sort.has_unapplied_changes = false;
-                    self.sort_filter_modal.close();
-                    self.input_mode = InputMode::Normal;
-                }
-                KeyCode::Enter if on_clear => {
-                    if sort_tab {
-                        self.sort_filter_modal.sort.clear_selection();
-                        let columns = self.sort_filter_modal.sort.get_sorted_columns();
-                        let column_order = self.sort_filter_modal.sort.get_column_order();
-                        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
-                        let ascending = self.sort_filter_modal.sort.ascending;
-                        self.sort_filter_modal.sort.has_unapplied_changes = false;
-                        self.sort_filter_modal.close();
-                        self.input_mode = InputMode::Normal;
-                        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                        return Some(AppEvent::Sort(columns, ascending));
-                    } else {
-                        self.sort_filter_modal.filter.statements.clear();
-                        self.sort_filter_modal.filter.list_state.select(None);
-                        self.sort_filter_modal.close();
-                        self.input_mode = InputMode::Normal;
-                        return Some(AppEvent::Filter(vec![]));
-                    }
-                }
-                KeyCode::Char(' ')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
-                    self.sort_filter_modal.sort.toggle_selection();
-                }
-                KeyCode::Char(' ')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Order =>
-                {
-                    self.sort_filter_modal.sort.ascending = !self.sort_filter_modal.sort.ascending;
-                    self.sort_filter_modal.sort.has_unapplied_changes = true;
-                }
-                KeyCode::Char(' ') if on_apply && sort_tab => {
-                    let columns = self.sort_filter_modal.sort.get_sorted_columns();
-                    let column_order = self.sort_filter_modal.sort.get_column_order();
-                    let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
-                    let ascending = self.sort_filter_modal.sort.ascending;
-                    self.sort_filter_modal.sort.has_unapplied_changes = false;
-                    let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                    return Some(AppEvent::Sort(columns, ascending));
-                }
+                // On the Filters list Enter edits the row under the cursor (or starts
+                // a new one on the add row); everywhere else Enter applies.
                 KeyCode::Enter if on_body && filter_tab => {
-                    match self.sort_filter_modal.filter.focus {
-                        FilterFocus::Add => {
-                            self.sort_filter_modal.filter.add_statement();
-                        }
-                        FilterFocus::Statements => {
-                            let m = &mut self.sort_filter_modal.filter;
-                            if let Some(idx) = m.list_state.selected()
-                                && idx < m.statements.len()
-                            {
-                                m.statements.remove(idx);
-                                if m.statements.is_empty() {
-                                    m.list_state.select(None);
-                                    m.focus = FilterFocus::Column;
+                    let history_limit = self.history_limit;
+                    self.sort_filter_modal
+                        .filter
+                        .open_editor(&self.theme, history_limit);
+                }
+                KeyCode::Enter => return self.apply_sort_filter(),
+                // Columns list: every per-column property, one key each.
+                KeyCode::Char(' ') if on_column_list => {
+                    self.sort_filter_modal.sort.cycle_sort();
+                }
+                KeyCode::Up | KeyCode::Char('k') if on_body && sort_tab => {
+                    let s = &mut self.sort_filter_modal.sort;
+                    if s.focus == SortFocus::ColumnList {
+                        let i = match s.table_state.selected() {
+                            Some(i) => {
+                                if i == 0 {
+                                    s.filtered_columns().len().saturating_sub(1)
                                 } else {
-                                    m.list_state
-                                        .select(Some(m.statements.len().saturating_sub(1)));
+                                    i - 1
                                 }
                             }
-                        }
-                        _ => {}
+                            None => 0,
+                        };
+                        s.table_state.select(Some(i));
                     }
-                }
-                KeyCode::Enter if on_body && sort_tab => match self.sort_filter_modal.sort.focus {
-                    SortFocus::Filter => {
-                        self.sort_filter_modal.sort.focus = SortFocus::ColumnList;
-                    }
-                    SortFocus::ColumnList => {
-                        self.sort_filter_modal.sort.toggle_selection();
-                        let columns = self.sort_filter_modal.sort.get_sorted_columns();
-                        let column_order = self.sort_filter_modal.sort.get_column_order();
-                        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
-                        let ascending = self.sort_filter_modal.sort.ascending;
-                        self.sort_filter_modal.sort.has_unapplied_changes = false;
-                        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                        return Some(AppEvent::Sort(columns, ascending));
-                    }
-                    SortFocus::Order => {
-                        self.sort_filter_modal.sort.ascending =
-                            !self.sort_filter_modal.sort.ascending;
-                        self.sort_filter_modal.sort.has_unapplied_changes = true;
-                    }
-                    _ => {}
-                },
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Char('h')
-                | KeyCode::Char('l')
-                | KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Char('j')
-                | KeyCode::Char('k')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Order =>
-                {
-                    let s = &mut self.sort_filter_modal.sort;
-                    match event.code {
-                        KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k') => {
-                            s.ascending = true;
-                        }
-                        KeyCode::Right
-                        | KeyCode::Char('l')
-                        | KeyCode::Down
-                        | KeyCode::Char('j') => {
-                            s.ascending = false;
-                        }
-                        _ => {}
-                    }
-                    s.has_unapplied_changes = true;
-                }
-                KeyCode::Down
-                    if on_body
-                        && filter_tab
-                        && self.sort_filter_modal.filter.focus == FilterFocus::Statements =>
-                {
-                    let m = &mut self.sort_filter_modal.filter;
-                    let i = match m.list_state.selected() {
-                        Some(i) => {
-                            if i >= m.statements.len().saturating_sub(1) {
-                                0
-                            } else {
-                                i + 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    m.list_state.select(Some(i));
-                }
-                KeyCode::Up
-                    if on_body
-                        && filter_tab
-                        && self.sort_filter_modal.filter.focus == FilterFocus::Statements =>
-                {
-                    let m = &mut self.sort_filter_modal.filter;
-                    let i = match m.list_state.selected() {
-                        Some(i) => {
-                            if i == 0 {
-                                m.statements.len().saturating_sub(1)
-                            } else {
-                                i - 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    m.list_state.select(Some(i));
                 }
                 KeyCode::Down | KeyCode::Char('j') if on_body && sort_tab => {
                     let s = &mut self.sort_filter_modal.sort;
@@ -12246,166 +12180,57 @@ impl App {
                         };
                         s.table_state.select(Some(i));
                     } else {
-                        let _ = s.next_body_focus();
+                        s.focus = SortFocus::ColumnList;
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') if on_body && sort_tab => {
-                    let s = &mut self.sort_filter_modal.sort;
-                    if s.focus == SortFocus::ColumnList {
-                        let i = match s.table_state.selected() {
-                            Some(i) => {
-                                if i == 0 {
-                                    s.filtered_columns().len().saturating_sub(1)
-                                } else {
-                                    i - 1
-                                }
-                            }
-                            None => 0,
-                        };
-                        s.table_state.select(Some(i));
-                    } else {
-                        let _ = s.prev_body_focus();
-                    }
-                }
-                KeyCode::Char(']')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
+                KeyCode::Char(']') if on_column_list => {
                     self.sort_filter_modal.sort.move_selection_down();
                 }
-                KeyCode::Char('[')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
+                KeyCode::Char('[') if on_column_list => {
                     self.sort_filter_modal.sort.move_selection_up();
                 }
-                KeyCode::Char('+') | KeyCode::Char('=')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
+                KeyCode::Char('+') | KeyCode::Char('=') if on_column_list => {
                     self.sort_filter_modal.sort.move_column_display_up();
                     self.sort_filter_modal.sort.has_unapplied_changes = true;
                 }
-                KeyCode::Char('-') | KeyCode::Char('_')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
+                KeyCode::Char('-') | KeyCode::Char('_') if on_column_list => {
                     self.sort_filter_modal.sort.move_column_display_down();
                     self.sort_filter_modal.sort.has_unapplied_changes = true;
                 }
-                KeyCode::Char('L')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
+                KeyCode::Char('L') if on_column_list => {
                     self.sort_filter_modal.sort.toggle_lock_at_column();
                     self.sort_filter_modal.sort.has_unapplied_changes = true;
                 }
-                KeyCode::Char('v')
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
-                {
+                KeyCode::Char('v') if on_column_list => {
                     self.sort_filter_modal.sort.toggle_visibility();
                     self.sort_filter_modal.sort.has_unapplied_changes = true;
                 }
-                KeyCode::Char(c)
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList
-                        && c.is_ascii_digit() =>
-                {
+                KeyCode::Char('C') if on_body && sort_tab => {
+                    self.sort_filter_modal.sort.clear_selection();
+                }
+                KeyCode::Char(c) if on_column_list && c.is_ascii_digit() => {
                     if let Some(digit) = c.to_digit(10) {
                         self.sort_filter_modal
                             .sort
                             .jump_selection_to_order(digit as usize);
                     }
                 }
-                // Handle filter input field in sort tab
-                // Only handle keys that the text input should process
-                // Special keys like Tab, Esc, Enter are handled by other patterns above
-                _ if on_body
-                    && sort_tab
-                    && self.sort_filter_modal.sort.focus == SortFocus::Filter
-                    && !matches!(
-                        event.code,
-                        KeyCode::Tab
-                            | KeyCode::BackTab
-                            | KeyCode::Esc
-                            | KeyCode::Enter
-                            | KeyCode::Up
-                            | KeyCode::Down
-                    ) =>
-                {
-                    // Pass key events to the filter input
-                    let _ = self
-                        .sort_filter_modal
-                        .sort
-                        .filter_input
-                        .handle_key(event, Some(&self.cache));
+                // Filters list: the cursor walks the statements plus the add row.
+                KeyCode::Up | KeyCode::Char('k') if on_body && filter_tab => {
+                    self.sort_filter_modal.filter.move_cursor_up();
                 }
-                KeyCode::Char(c)
-                    if on_body
-                        && filter_tab
-                        && self.sort_filter_modal.filter.focus == FilterFocus::Value =>
-                {
-                    self.sort_filter_modal.filter.new_value.push(c);
+                KeyCode::Down | KeyCode::Char('j') if on_body && filter_tab => {
+                    self.sort_filter_modal.filter.move_cursor_down();
                 }
-                KeyCode::Backspace
-                    if on_body
-                        && filter_tab
-                        && self.sort_filter_modal.filter.focus == FilterFocus::Value =>
-                {
-                    self.sort_filter_modal.filter.new_value.pop();
+                KeyCode::Char('d') if on_body && filter_tab => {
+                    self.sort_filter_modal.filter.delete_at_cursor();
                 }
-                KeyCode::Right | KeyCode::Char('l') if on_body && filter_tab => {
-                    let m = &mut self.sort_filter_modal.filter;
-                    match m.focus {
-                        FilterFocus::Column => {
-                            m.new_column_idx =
-                                (m.new_column_idx + 1) % m.available_columns.len().max(1);
-                        }
-                        FilterFocus::Operator => {
-                            m.new_operator_idx =
-                                (m.new_operator_idx + 1) % FilterOperator::iterator().count();
-                        }
-                        FilterFocus::Logical => {
-                            m.new_logical_idx =
-                                (m.new_logical_idx + 1) % LogicalOperator::iterator().count();
-                        }
-                        _ => {}
-                    }
+                KeyCode::Char(' ') if on_body && filter_tab => {
+                    self.sort_filter_modal.filter.toggle_logical_at_cursor();
                 }
-                KeyCode::Left | KeyCode::Char('h') if on_body && filter_tab => {
-                    let m = &mut self.sort_filter_modal.filter;
-                    match m.focus {
-                        FilterFocus::Column => {
-                            m.new_column_idx = if m.new_column_idx == 0 {
-                                m.available_columns.len().saturating_sub(1)
-                            } else {
-                                m.new_column_idx - 1
-                            };
-                        }
-                        FilterFocus::Operator => {
-                            m.new_operator_idx = if m.new_operator_idx == 0 {
-                                FilterOperator::iterator().count() - 1
-                            } else {
-                                m.new_operator_idx - 1
-                            };
-                        }
-                        FilterFocus::Logical => {
-                            m.new_logical_idx = if m.new_logical_idx == 0 {
-                                LogicalOperator::iterator().count() - 1
-                            } else {
-                                m.new_logical_idx - 1
-                            };
-                        }
-                        _ => {}
-                    }
+                KeyCode::Char('C') if on_body && filter_tab => {
+                    self.sort_filter_modal.filter.statements.clear();
+                    self.sort_filter_modal.filter.cursor = 0;
                 }
                 _ => {}
             }
@@ -14871,6 +14696,9 @@ impl App {
                                                     fuzzy_query,
                                                     filters: state.get_filters().to_vec(),
                                                     sort_columns: state.get_sort_columns().to_vec(),
+                                                    sort_descending: state
+                                                        .get_sort_descending()
+                                                        .to_vec(),
                                                     sort_ascending: state.get_sort_ascending(),
                                                     column_order: state.get_column_order().to_vec(),
                                                     locked_columns_count: state
@@ -17855,10 +17683,10 @@ impl App {
                 self.spawn_async_collect("Filtering...");
                 None
             }
-            AppEvent::Sort(columns, ascending) => {
+            AppEvent::Sort(columns, descending) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.defer_collect = true;
-                    state.sort(columns.clone(), *ascending);
+                    state.sort_by(columns.clone(), descending.clone());
                     state.defer_collect = false;
                 }
                 self.spawn_async_collect("Sorting...");
@@ -18427,7 +18255,7 @@ impl App {
         };
         let filters = state.view_filters().to_vec();
         let sort_columns = state.view_sort_columns().to_vec();
-        let ascending = state.view_sort_ascending();
+        let sort_descending = state.view_sort_descending().to_vec();
         let headers: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
         let order = state.headers();
         let locked = state.locked_columns_count();
@@ -18435,7 +18263,9 @@ impl App {
         let modal = &mut self.sort_filter_modal;
         modal.filter.statements = filters;
         modal.filter.available_columns = order.clone();
-        modal.filter.new_column_idx = 0;
+        // The cursor starts on the add row; the editor never survives a resync.
+        modal.filter.cursor = modal.filter.statements.len();
+        modal.filter.editor = None;
         // A schema column the applied order leaves out is hidden; it lines up after
         // the visible ones, unlocked, exactly as toggling it back on would place it.
         let mut next_hidden_order = order.len();
@@ -18452,6 +18282,11 @@ impl App {
                     // 1-based: what toggling a column in the modal assigns and what
                     // the sidebar prints.
                     sort_order: sort_columns.iter().position(|c| c == name).map(|o| o + 1),
+                    sort_descending: sort_columns
+                        .iter()
+                        .position(|c| c == name)
+                        .and_then(|i| sort_descending.get(i).copied())
+                        .unwrap_or(false),
                     display_order,
                     is_locked: position.is_some_and(|p| p < locked),
                     is_to_be_locked: false,
@@ -18459,8 +18294,30 @@ impl App {
                 }
             })
             .collect();
-        modal.sort.ascending = ascending;
         modal.sort.has_unapplied_changes = false;
+    }
+
+    /// Apply everything the sidebar stages — column order and locks, the sort with
+    /// its per-column directions, the filters — and close it. Enter and Ctrl+Enter,
+    /// from anywhere in the sidebar.
+    fn apply_sort_filter(&mut self) -> Option<AppEvent> {
+        // A row still under edit is committed, never silently dropped.
+        if self.sort_filter_modal.filter.editor.is_some() {
+            self.sort_filter_modal.filter.commit_editor();
+        }
+        let (columns, descending) = self.sort_filter_modal.sort.sorted_columns_and_directions();
+        let column_order = self.sort_filter_modal.sort.get_column_order();
+        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+        let statements = self.sort_filter_modal.filter.statements.clone();
+        for col in &mut self.sort_filter_modal.sort.columns {
+            col.is_to_be_locked = false;
+        }
+        self.sort_filter_modal.sort.has_unapplied_changes = false;
+        self.sort_filter_modal.close();
+        self.input_mode = InputMode::Normal;
+        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
+        let _ = self.send_event(AppEvent::Filter(statements));
+        Some(AppEvent::Sort(columns, descending))
     }
 
     /// Which of the Info panel's optional tabs the current dataset offers.
@@ -18492,6 +18349,7 @@ impl App {
                 // not the grouped view's when drilled.
                 filters: state.view_filters().to_vec(),
                 sort_columns: state.view_sort_columns().to_vec(),
+                sort_descending: state.view_sort_descending().to_vec(),
                 sort_ascending: state.view_sort_ascending(),
                 column_order: state.get_column_order().to_vec(),
                 locked_columns_count: state.locked_columns_count(),
@@ -18567,9 +18425,9 @@ impl App {
 
             // Apply sort
             if !template.settings.sort_columns.is_empty() {
-                state.sort(
+                state.sort_by(
                     template.settings.sort_columns.clone(),
-                    template.settings.sort_ascending,
+                    template.settings.sort_directions(),
                 );
                 // Check for errors after sort
                 let error_opt = state.error.clone();
@@ -18861,7 +18719,12 @@ impl App {
             // frame is thrown away two lines below; what they are here for is the view
             // state they set on the way, and every one of them has to be the user's.
             state.filter(saved.filters.clone());
-            state.sort(saved.sort_columns.clone(), saved.sort_ascending);
+            if saved.sort_columns.is_empty() {
+                // Nothing sorted: `sort_ascending` alone carries a reversed natural order.
+                state.sort(Vec::new(), saved.sort_ascending);
+            } else {
+                state.sort_by(saved.sort_columns.clone(), saved.sort_descending.clone());
+            }
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
@@ -18898,6 +18761,7 @@ impl App {
                 fuzzy_query,
                 filters: state.get_filters().to_vec(),
                 sort_columns: state.get_sort_columns().to_vec(),
+                sort_descending: state.get_sort_descending().to_vec(),
                 sort_ascending: state.get_sort_ascending(),
                 column_order: state.get_column_order().to_vec(),
                 locked_columns_count: state.locked_columns_count(),
@@ -18911,6 +18775,7 @@ impl App {
                 fuzzy_query: None,
                 filters: Vec::new(),
                 sort_columns: Vec::new(),
+                sort_descending: Vec::new(),
                 sort_ascending: true,
                 column_order: Vec::new(),
                 locked_columns_count: 0,

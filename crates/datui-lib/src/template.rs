@@ -107,6 +107,11 @@ pub struct TemplateSettings {
     pub fuzzy_query: Option<String>,
     pub filters: Vec<FilterStatement>,
     pub sort_columns: Vec<String>,
+    /// Per entry of `sort_columns`, whether it runs descending. Empty in templates
+    /// saved before per-column directions existed; `sort_ascending` then covers all.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sort_descending: Vec<bool>,
     pub sort_ascending: bool,
     pub column_order: Vec<String>,
     pub locked_columns_count: usize,
@@ -116,6 +121,18 @@ pub struct TemplateSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub melt: Option<MeltSpec>,
+}
+
+impl TemplateSettings {
+    /// The per-column directions this template's sort runs. A template saved before
+    /// per-column directions existed has none; `sort_ascending` then covers all.
+    pub fn sort_directions(&self) -> Vec<bool> {
+        if self.sort_descending.len() == self.sort_columns.len() {
+            self.sort_descending.clone()
+        } else {
+            vec![!self.sort_ascending; self.sort_columns.len()]
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -640,6 +657,7 @@ mod tests {
                 fuzzy_query: None,
                 filters: Vec::new(),
                 sort_columns: Vec::new(),
+                sort_descending: Vec::new(),
                 sort_ascending: true,
                 column_order: Vec::new(),
                 locked_columns_count: 0,

@@ -1,4 +1,8 @@
-use ratatui::widgets::ListState;
+//! The Filters tab: one row per statement, and a three-step inline editor —
+//! column via Picker, operator via a short Picker, value as text.
+
+use crate::widgets::text_input::TextInput;
+use crate::widgets::ui::PickerState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
 pub enum FilterOperator {
@@ -56,6 +60,13 @@ impl LogicalOperator {
         }
     }
 
+    pub fn toggled(&self) -> Self {
+        match self {
+            LogicalOperator::And => LogicalOperator::Or,
+            LogicalOperator::Or => LogicalOperator::And,
+        }
+    }
+
     pub fn iterator() -> impl Iterator<Item = LogicalOperator> {
         [LogicalOperator::And, LogicalOperator::Or].iter().copied()
     }
@@ -66,35 +77,39 @@ pub struct FilterStatement {
     pub column: String,
     pub operator: FilterOperator,
     pub value: String,
+    /// How this statement joins the one before it; meaningless on the first.
     pub logical_op: LogicalOperator,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub enum FilterFocus {
+/// Where the inline editor stands: the three steps walk left to right on one row.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FilterEditStep {
     #[default]
     Column,
     Operator,
     Value,
-    Logical,
-    Add,
-    Statements,
-    Confirm,
-    Clear,
+}
+
+/// One statement under edit. Enter advances a step and commits from the value;
+/// Esc abandons the edit and only the edit.
+pub struct FilterEditor {
+    /// `Some(i)` rewrites statement `i`; `None` appends a new one.
+    pub editing: Option<usize>,
+    pub step: FilterEditStep,
+    pub column: PickerState,
+    pub operator: PickerState,
+    pub value: TextInput,
+    pub logical: LogicalOperator,
 }
 
 #[derive(Default)]
 pub struct FilterModal {
-    pub active: bool,
     pub statements: Vec<FilterStatement>,
     pub available_columns: Vec<String>,
-
-    pub new_column_idx: usize,
-    pub new_operator_idx: usize,
-    pub new_value: String,
-    pub new_logical_idx: usize,
-
-    pub focus: FilterFocus,
-    pub list_state: ListState,
+    /// The row the cursor is on: an index into `statements`, or one past the
+    /// end for the trailing "add filter" row.
+    pub cursor: usize,
+    pub editor: Option<FilterEditor>,
 }
 
 impl FilterModal {
@@ -102,56 +117,121 @@ impl FilterModal {
         Self::default()
     }
 
-    pub fn add_statement(&mut self) {
+    fn operator_names() -> Vec<String> {
+        FilterOperator::iterator()
+            .map(|op| op.as_str().to_string())
+            .collect()
+    }
+
+    /// Rows the cursor can rest on: every statement plus the add row.
+    pub fn row_count(&self) -> usize {
+        self.statements.len() + 1
+    }
+
+    pub fn on_add_row(&self) -> bool {
+        self.cursor >= self.statements.len()
+    }
+
+    pub fn move_cursor_up(&mut self) {
+        self.cursor = if self.cursor == 0 {
+            self.row_count() - 1
+        } else {
+            self.cursor - 1
+        };
+    }
+
+    pub fn move_cursor_down(&mut self) {
+        self.cursor = (self.cursor + 1) % self.row_count();
+    }
+
+    /// Start the editor on the cursor's row: pre-filled over a statement, empty
+    /// on the add row.
+    pub fn open_editor(&mut self, theme: &crate::config::Theme, history_limit: usize) {
         if self.available_columns.is_empty() {
             return;
         }
-        let op = FilterOperator::iterator()
-            .nth(self.new_operator_idx)
-            .unwrap();
-        let log = LogicalOperator::iterator()
-            .nth(self.new_logical_idx)
-            .unwrap();
-        let col = self.available_columns[self.new_column_idx].clone();
-
-        self.statements.push(FilterStatement {
-            column: col,
-            operator: op,
-            value: self.new_value.clone(),
-            logical_op: log,
+        let mut column = PickerState::new(self.available_columns.clone());
+        let mut operator = PickerState::new(Self::operator_names());
+        let mut value = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        value.set_focused(false);
+        let (editing, logical) = if self.on_add_row() {
+            (None, LogicalOperator::And)
+        } else {
+            let statement = &self.statements[self.cursor];
+            if let Some(i) = self
+                .available_columns
+                .iter()
+                .position(|c| *c == statement.column)
+            {
+                column.select_original(i);
+            }
+            if let Some(i) = FilterOperator::iterator().position(|op| op == statement.operator) {
+                operator.select_original(i);
+            }
+            value.set_value(&statement.value);
+            (Some(self.cursor), statement.logical_op)
+        };
+        self.editor = Some(FilterEditor {
+            editing,
+            step: FilterEditStep::Column,
+            column,
+            operator,
+            value,
+            logical,
         });
-
-        self.new_value.clear();
-        self.focus = FilterFocus::Column;
     }
 
-    /// Advance focus within body only (Column → ... → Statements). Returns true if we were on
-    /// Statements and caller should move to footer (Apply).
-    pub fn next_body_focus(&mut self) -> bool {
-        match self.focus {
-            FilterFocus::Statements => return true,
-            FilterFocus::Column => self.focus = FilterFocus::Operator,
-            FilterFocus::Operator => self.focus = FilterFocus::Value,
-            FilterFocus::Value => self.focus = FilterFocus::Logical,
-            FilterFocus::Logical => self.focus = FilterFocus::Add,
-            FilterFocus::Add => self.focus = FilterFocus::Statements,
-            FilterFocus::Confirm | FilterFocus::Clear => {}
-        }
-        false
+    pub fn cancel_editor(&mut self) {
+        self.editor = None;
     }
 
-    /// Retreat focus within body only. Returns true if we were on Column and caller should move to TabBar.
-    pub fn prev_body_focus(&mut self) -> bool {
-        match self.focus {
-            FilterFocus::Column => return true,
-            FilterFocus::Operator => self.focus = FilterFocus::Column,
-            FilterFocus::Value => self.focus = FilterFocus::Operator,
-            FilterFocus::Logical => self.focus = FilterFocus::Value,
-            FilterFocus::Add => self.focus = FilterFocus::Logical,
-            FilterFocus::Statements => self.focus = FilterFocus::Add,
-            FilterFocus::Confirm | FilterFocus::Clear => {}
+    /// Commit the editor's statement; the edit dies if its column picker chose
+    /// nothing (a filter narrowed to no match).
+    pub fn commit_editor(&mut self) {
+        let Some(editor) = self.editor.take() else {
+            return;
+        };
+        let Some(column_idx) = editor.column.selected_original() else {
+            return;
+        };
+        let operator = editor
+            .operator
+            .selected_original()
+            .and_then(|i| FilterOperator::iterator().nth(i))
+            .unwrap_or(FilterOperator::Eq);
+        let statement = FilterStatement {
+            column: self.available_columns[column_idx].clone(),
+            operator,
+            value: editor.value.value().to_string(),
+            logical_op: editor.logical,
+        };
+        match editor.editing {
+            Some(i) if i < self.statements.len() => self.statements[i] = statement,
+            _ => {
+                self.statements.push(statement);
+                self.cursor = self.statements.len();
+            }
         }
-        false
+    }
+
+    /// Delete the statement under the cursor; the add row deletes nothing.
+    pub fn delete_at_cursor(&mut self) {
+        if self.cursor < self.statements.len() {
+            self.statements.remove(self.cursor);
+            self.cursor = self.cursor.min(self.statements.len());
+        }
+    }
+
+    /// Flip and/or on the cursor's row. The first statement joins nothing, and
+    /// the add row is not a statement, so both are left alone.
+    pub fn toggle_logical_at_cursor(&mut self) {
+        if self.cursor > 0
+            && let Some(statement) = self.statements.get_mut(self.cursor)
+        {
+            statement.logical_op = statement.logical_op.toggled();
+        }
     }
 }
 
@@ -159,45 +239,126 @@ impl FilterModal {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_filter_modal_new() {
-        let modal = FilterModal::new();
-        assert!(!modal.active);
-        assert!(modal.statements.is_empty());
-        assert!(modal.available_columns.is_empty());
-        assert_eq!(modal.new_column_idx, 0);
-        assert_eq!(modal.new_operator_idx, 0);
-        assert_eq!(modal.new_value, "");
-        assert_eq!(modal.new_logical_idx, 0);
-        assert_eq!(modal.focus, FilterFocus::Column);
+    fn modal() -> FilterModal {
+        let mut m = FilterModal::new();
+        m.available_columns = vec!["salary".into(), "department".into(), "name".into()];
+        m
+    }
+
+    fn theme() -> crate::config::Theme {
+        crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap()
     }
 
     #[test]
-    fn test_filter_modal_add_statement() {
-        let mut modal = FilterModal::new();
-        modal.available_columns = vec!["a".to_string(), "b".to_string()];
-        modal.new_column_idx = 1;
-        modal.new_operator_idx = 2; // Gt
-        modal.new_value = "10".to_string();
-        modal.new_logical_idx = 1; // Or
-        modal.add_statement();
-
-        assert_eq!(modal.statements.len(), 1);
-        let statement = &modal.statements[0];
-        assert_eq!(statement.column, "b");
-        assert_eq!(statement.operator, FilterOperator::Gt);
-        assert_eq!(statement.value, "10");
-        assert_eq!(statement.logical_op, LogicalOperator::Or);
-
-        assert_eq!(modal.new_value, "");
-        assert_eq!(modal.focus, FilterFocus::Column);
+    fn adding_walks_column_operator_value_and_appends() {
+        let mut m = modal();
+        assert!(m.on_add_row());
+        m.open_editor(&theme(), 10);
+        {
+            let editor = m.editor.as_mut().unwrap();
+            // Type-to-narrow reaches the column without arrow-cycling the list.
+            editor.column.type_char('d');
+            editor.column.type_char('e');
+            editor.step = FilterEditStep::Operator;
+            editor.operator.select_original(2); // >
+            editor.value.set_value("100");
+        }
+        m.commit_editor();
+        assert_eq!(m.statements.len(), 1);
+        let s = &m.statements[0];
+        assert_eq!(s.column, "department");
+        assert_eq!(s.operator, FilterOperator::Gt);
+        assert_eq!(s.value, "100");
+        assert!(m.on_add_row(), "the cursor lands back on the add row");
     }
 
     #[test]
-    fn test_add_statement_no_columns() {
-        let mut modal = FilterModal::new();
-        modal.new_value = "test".to_string();
-        modal.add_statement();
-        assert!(modal.statements.is_empty());
+    fn editing_rewrites_in_place_and_keeps_the_conjunction() {
+        let mut m = modal();
+        m.statements = vec![
+            FilterStatement {
+                column: "salary".into(),
+                operator: FilterOperator::Gt,
+                value: "1".into(),
+                logical_op: LogicalOperator::And,
+            },
+            FilterStatement {
+                column: "name".into(),
+                operator: FilterOperator::Eq,
+                value: "ann".into(),
+                logical_op: LogicalOperator::Or,
+            },
+        ];
+        m.cursor = 1;
+        m.open_editor(&theme(), 10);
+        {
+            let editor = m.editor.as_mut().unwrap();
+            assert_eq!(editor.editing, Some(1));
+            assert_eq!(editor.value.value(), "ann", "the row arrives pre-filled");
+            editor.value.set_value("bob");
+        }
+        m.commit_editor();
+        assert_eq!(m.statements.len(), 2, "edited, not appended");
+        assert_eq!(m.statements[1].value, "bob");
+        assert_eq!(m.statements[1].logical_op, LogicalOperator::Or);
+    }
+
+    #[test]
+    fn delete_and_conjunction_act_on_the_cursor_row_only() {
+        let mut m = modal();
+        m.statements = vec![
+            FilterStatement {
+                column: "salary".into(),
+                operator: FilterOperator::Gt,
+                value: "1".into(),
+                logical_op: LogicalOperator::And,
+            },
+            FilterStatement {
+                column: "name".into(),
+                operator: FilterOperator::Eq,
+                value: "ann".into(),
+                logical_op: LogicalOperator::And,
+            },
+        ];
+        m.cursor = 0;
+        m.toggle_logical_at_cursor();
+        assert_eq!(
+            m.statements[0].logical_op,
+            LogicalOperator::And,
+            "the first statement joins nothing"
+        );
+        m.cursor = 1;
+        m.toggle_logical_at_cursor();
+        assert_eq!(m.statements[1].logical_op, LogicalOperator::Or);
+
+        m.cursor = 2;
+        m.delete_at_cursor();
+        assert_eq!(m.statements.len(), 2, "the add row deletes nothing");
+        m.cursor = 0;
+        m.delete_at_cursor();
+        assert_eq!(m.statements.len(), 1);
+        assert_eq!(m.statements[0].column, "name");
+    }
+
+    #[test]
+    fn an_editor_with_no_columns_never_opens() {
+        let mut m = FilterModal::new();
+        m.open_editor(&theme(), 10);
+        assert!(m.editor.is_none());
+    }
+
+    #[test]
+    fn a_narrowed_to_nothing_column_commits_nothing() {
+        let mut m = modal();
+        m.open_editor(&theme(), 10);
+        {
+            let editor = m.editor.as_mut().unwrap();
+            for c in "zzz".chars() {
+                editor.column.type_char(c);
+            }
+        }
+        m.commit_editor();
+        assert!(m.statements.is_empty());
+        assert!(m.editor.is_none(), "the edit still ends");
     }
 }

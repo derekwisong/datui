@@ -1,504 +1,398 @@
-//! Sort & Filter sidebar rendering.
+//! Sort & Filter sidebar: a Columns tab (every per-column property in one
+//! flat list) and a Filters tab (one row per statement, edited inline through
+//! Pickers). Built on the `widgets::ui` kit; the rail marks focus.
 
-use crate::filter_modal::{FilterFocus, FilterOperator, LogicalOperator};
+use crate::filter_modal::{FilterEditStep, FilterModal};
 use crate::render::context::RenderContext;
 use crate::sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use crate::sort_modal::SortFocus;
+use crate::widgets::ui::{HintBar, Picker, Surface};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::{StatefulWidget, Widget};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Tabs,
-};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Widget};
+
+/// Rows the inline pickers may take below the row under edit.
+const PICKER_ROWS: u16 = 6;
 
 /// Render the Sort & Filter sidebar into the given area.
 pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &RenderContext) {
-    let border_c = ctx.modal_border;
-    let active_c = ctx.modal_border_active;
+    let sort_tab = modal.active_tab == SortFilterTab::Sort;
+    let editing = modal.filter.editor.is_some();
 
-    Clear.render(area, buf);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Sort & Filter")
-        .title_style(ratatui::style::Style::reset());
-    let inner_area = block.inner(area);
-    block.render(area, buf);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
-        .split(inner_area);
-
-    let tab_line_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(chunks[0]);
-    let tab_selected = match modal.active_tab {
-        SortFilterTab::Sort => 0,
-        SortFilterTab::Filter => 1,
-    };
-    let tabs = Tabs::new(vec!["Sort", "Filter"])
-        .style(Style::default().fg(border_c))
-        .highlight_style(
-            Style::default()
-                .fg(active_c)
-                .add_modifier(Modifier::REVERSED),
-        )
-        .select(tab_selected);
-    tabs.render(tab_line_chunks[0], buf);
-    let line_style = if modal.focus == SortFilterFocus::TabBar {
-        Style::default().fg(active_c)
+    // The footer names what Enter does right now: apply, or — while the
+    // Filters list or its editor owns Enter — the apply key that still works.
+    let footer = if editing {
+        HintBar::from_ctx(ctx).hint_weighted("^Enter", "Apply", 2)
+    } else if sort_tab {
+        HintBar::from_ctx(ctx)
+            .hint_weighted("Enter", "Apply", 3)
+            .hint_weighted("Tab", "Next", 1)
+            .hint_weighted("Esc", "Cancel", 4)
     } else {
-        Style::default().fg(border_c)
+        HintBar::from_ctx(ctx)
+            .hint_weighted("^Enter", "Apply", 3)
+            .hint_weighted("Tab", "Next", 1)
+            .hint_weighted("Esc", "Cancel", 4)
     };
-    Block::default()
-        .borders(Borders::BOTTOM)
-        .border_type(BorderType::Rounded)
-        .border_style(line_style)
-        .render(tab_line_chunks[1], buf);
-
-    if modal.active_tab == SortFilterTab::Filter {
-        render_filter_tab(&mut modal.filter, chunks[1], buf, border_c, active_c, ctx);
+    let footer = if !editing && modal.sort.has_unapplied_changes {
+        // Staged edits give the apply chip a quiet accent: something is waiting.
+        footer.accent(if sort_tab { "Enter" } else { "^Enter" })
     } else {
-        render_sort_tab(modal, chunks[1], buf, border_c, active_c, ctx);
+        footer
+    };
+    let content = Surface::new("Sort & Filter")
+        .footer(&footer)
+        .render(area, buf, ctx);
+    if content.height < 3 || content.width < 10 {
+        return;
     }
 
-    let footer_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-        ])
-        .split(chunks[2]);
-
-    let mut apply_text_style = Style::default();
-    let mut apply_border_style = Style::default();
-    if modal.focus == SortFilterFocus::Apply {
-        apply_text_style = apply_text_style.fg(active_c);
-        apply_border_style = apply_border_style.fg(active_c);
-    } else {
-        apply_text_style = apply_text_style.fg(border_c);
-        apply_border_style = apply_border_style.fg(border_c);
-    }
-    if modal.active_tab == SortFilterTab::Sort && modal.sort.has_unapplied_changes {
-        apply_text_style = apply_text_style.add_modifier(Modifier::BOLD);
-    }
-
-    Paragraph::new("Apply")
-        .style(apply_text_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(apply_border_style),
-        )
-        .centered()
-        .render(footer_chunks[0], buf);
-
-    let cancel_style = if modal.focus == SortFilterFocus::Cancel {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
+    // Tab line: the active tab carries the accent; the rail says the tab bar
+    // itself holds focus.
+    let g = crate::glyphs::get();
+    let on_tab_bar = modal.focus == SortFilterFocus::TabBar;
+    let rail = if on_tab_bar { g.rail } else { " " };
+    let tab_style = |active: bool| {
+        if active {
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_secondary)
+        }
     };
-    Paragraph::new("Cancel")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(cancel_style),
-        )
-        .centered()
-        .render(footer_chunks[1], buf);
+    let tab_line = Line::from(vec![
+        Span::styled(rail, Style::default().fg(ctx.accent)),
+        Span::styled("Columns", tab_style(sort_tab)),
+        Span::styled(format!(" {} ", g.rule), Style::default().fg(ctx.dimmed)),
+        Span::styled("Filters", tab_style(!sort_tab)),
+    ]);
+    Paragraph::new(tab_line).render(
+        Rect {
+            height: 1,
+            ..content
+        },
+        buf,
+    );
 
-    let clear_style = if modal.focus == SortFilterFocus::Clear {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
+    // One context line of keys sits directly above the Surface footer.
+    let hints_area = Rect {
+        y: content.y + content.height - 1,
+        height: 1,
+        ..content
     };
-    Paragraph::new("Clear")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(clear_style),
-        )
-        .centered()
-        .render(footer_chunks[2], buf);
+    let body = Rect {
+        y: content.y + 1,
+        height: content.height.saturating_sub(2),
+        ..content
+    };
+    let hints = if sort_tab {
+        render_columns_tab(body, buf, modal, ctx);
+        HintBar::from_ctx(ctx)
+            .hint_weighted("Space", "Sort", 5)
+            .hint_weighted("1-9", "Jump", 4)
+            .hint_weighted("L", "Lock", 3)
+            .hint_weighted("v", "Hide", 2)
+            .hint_weighted("C", "Clear", 1)
+    } else {
+        render_filters_tab(body, buf, &mut modal.filter, ctx);
+        match modal.filter.editor.as_ref().map(|editor| editor.step) {
+            None => HintBar::from_ctx(ctx)
+                .hint_weighted("Enter", "Add/Edit", 5)
+                .hint_weighted("Space", "And/Or", 3)
+                .hint_weighted("d", "Delete", 4)
+                .hint_weighted("C", "Clear", 2),
+            Some(FilterEditStep::Value) => HintBar::from_ctx(ctx)
+                .hint_weighted("Enter", "Save", 2)
+                .hint_weighted("Esc", "Back", 1),
+            Some(_) => HintBar::from_ctx(ctx)
+                .hint_weighted("type", "Narrow", 1)
+                .hint_weighted("Enter", "Next", 3)
+                .hint_weighted("Esc", "Back", 2),
+        }
+    };
+    hints.render(hints_area, buf);
 }
 
-fn render_filter_tab(
-    filter: &mut crate::filter_modal::FilterModal,
+/// The Columns tab: find row, header, one row per column.
+fn render_columns_tab(
     area: Rect,
     buf: &mut Buffer,
-    border_c: ratatui::style::Color,
-    active_c: ratatui::style::Color,
+    modal: &mut SortFilterModal,
     ctx: &RenderContext,
 ) {
-    let fchunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(area);
+    let g = crate::glyphs::get();
+    let on_body = modal.focus == SortFilterFocus::Body;
+    let on_find = on_body && modal.sort.focus == SortFocus::Filter;
+    let on_list = on_body && modal.sort.focus == SortFocus::ColumnList;
 
-    let row_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-            Constraint::Percentage(20),
-        ])
-        .split(fchunks[0]);
-
-    let col_name = if filter.available_columns.is_empty() {
-        ""
+    // find row
+    let find_rail = if on_find { g.rail } else { " " };
+    let label_style = if on_find {
+        Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
     } else {
-        &filter.available_columns[filter.new_column_idx]
+        Style::default().fg(ctx.label)
     };
-    let col_style = if filter.focus == FilterFocus::Column {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
+    Paragraph::new(Line::from(vec![
+        Span::styled(find_rail, Style::default().fg(ctx.accent)),
+        Span::styled("find: ", label_style),
+    ]))
+    .render(Rect { height: 1, ..area }, buf);
+    let input_area = Rect {
+        x: area.x + 7,
+        width: area.width.saturating_sub(7),
+        height: 1,
+        ..area
     };
-    Paragraph::new(col_name)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Col")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(col_style),
-        )
-        .render(row_layout[0], buf);
+    modal.sort.filter_input.set_focused(on_find);
+    (&modal.sort.filter_input).render(input_area, buf);
 
-    let op_name = FilterOperator::iterator()
-        .nth(filter.new_operator_idx)
-        .unwrap_or(FilterOperator::Eq)
-        .as_str();
-    let op_style = if filter.focus == FilterFocus::Operator {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
-    };
-    Paragraph::new(op_name)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Op")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(op_style),
-        )
-        .render(row_layout[1], buf);
+    if area.height < 3 {
+        return;
+    }
+    // header
+    // One leading gutter column, as the rows below reserve for the rail.
+    let header = format!("  {:<5}{:<6}{}", "Lock", "Sort", "Column");
+    Paragraph::new(header)
+        .style(Style::default().fg(ctx.text_secondary))
+        .render(
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+            buf,
+        );
 
-    let val_style = if filter.focus == FilterFocus::Value {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
+    // rows, scrolled to keep the cursor in view
+    let list_area = Rect {
+        y: area.y + 2,
+        height: area.height - 2,
+        ..area
     };
-    Paragraph::new(filter.new_value.as_str())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Val")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(val_style),
-        )
-        .render(row_layout[2], buf);
+    let filtered = modal.sort.filtered_columns();
+    let selected = modal.sort.table_state.selected().unwrap_or(0);
+    let height = list_area.height as usize;
+    let offset = selected.saturating_sub(height.saturating_sub(1));
+    let below = filtered.len().saturating_sub(offset + height);
+    for row in 0..height.min(filtered.len().saturating_sub(offset)) {
+        let i = offset + row;
+        let row_area = Rect {
+            y: list_area.y + row as u16,
+            height: 1,
+            ..list_area
+        };
+        let is_cursor = i == selected;
+        if row + 1 == height && below > 0 && !is_cursor {
+            Paragraph::new(format!("  {} {} more", g.ellipsis, below + 1))
+                .style(Style::default().fg(ctx.dimmed))
+                .render(row_area, buf);
+            break;
+        }
+        let (_, column) = &filtered[i];
+        let lock = if column.is_locked {
+            g.dot_full
+        } else if column.is_to_be_locked {
+            g.dot_half
+        } else {
+            " "
+        };
+        let sort = match column.sort_order {
+            Some(order) => format!(
+                "{:>2}{}",
+                order,
+                if column.sort_descending {
+                    g.sort_desc
+                } else {
+                    g.sort_asc
+                }
+            ),
+            None => "   ".to_string(),
+        };
+        let hidden = if column.is_visible {
+            String::new()
+        } else {
+            format!(" {}", g.hidden_mark)
+        };
+        let rail = if is_cursor && on_list { g.rail } else { " " };
+        let mut style = if !column.is_visible || column.is_to_be_locked {
+            Style::default().fg(ctx.dimmed)
+        } else if is_cursor {
+            Style::default().fg(ctx.accent)
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        if is_cursor && on_list {
+            style = style.patch(ctx.highlight_style());
+        }
+        let text = format!(" {:<5}{:<6}{}{}", lock, sort, column.name, hidden);
+        Paragraph::new(Line::from(vec![
+            Span::styled(rail, Style::default().fg(ctx.accent)),
+            Span::styled(text, style),
+        ]))
+        .style(if is_cursor && on_list {
+            ctx.highlight_style()
+        } else {
+            Style::default()
+        })
+        .render(row_area, buf);
+    }
+}
 
-    let log_name = LogicalOperator::iterator()
-        .nth(filter.new_logical_idx)
-        .unwrap_or(LogicalOperator::And)
-        .as_str();
-    let log_style = if filter.focus == FilterFocus::Logical {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
-    };
-    Paragraph::new(log_name)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Logic")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(log_style),
-        )
-        .render(row_layout[3], buf);
-
-    let add_style = if filter.focus == FilterFocus::Add {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
-    };
-    Paragraph::new("Add Filter")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(add_style),
-        )
-        .centered()
-        .render(fchunks[1], buf);
-
-    let items: Vec<ListItem> = filter
+/// The Filters tab: one row per statement, the add row, and the inline editor.
+fn render_filters_tab(area: Rect, buf: &mut Buffer, filter: &mut FilterModal, ctx: &RenderContext) {
+    let g = crate::glyphs::get();
+    // Column widths shared by every row, so the three parts line up.
+    let col_w = filter
         .statements
         .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let prefix = if i > 0 {
-                format!("{} ", s.logical_op.as_str())
-            } else {
-                "".to_string()
+        .map(|s| s.column.chars().count())
+        .max()
+        .unwrap_or(6)
+        .clamp(6, 14);
+    let op_w = 9; // "!contains"
+
+    let mut y = area.y;
+    let bottom = area.y + area.height;
+    for row in 0..filter.row_count() {
+        if y >= bottom {
+            break;
+        }
+        let row_area = Rect {
+            y,
+            height: 1,
+            ..area
+        };
+        y += 1;
+        let is_cursor = row == filter.cursor;
+        let under_edit = filter
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.editing == Some(row))
+            || (filter.editor.as_ref().is_some_and(|e| e.editing.is_none())
+                && row == filter.statements.len());
+
+        if under_edit {
+            let editor = filter.editor.as_mut().expect("checked above");
+            // The row under edit: the three steps on one line, the active one
+            // accented; the picker for the active step drops in below.
+            let step = editor.step;
+            let seg_style = |active: bool| {
+                if active {
+                    Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(ctx.text_primary)
+                }
             };
-            ListItem::new(format!(
-                "{}{}{}{}",
-                prefix,
-                s.column,
-                s.operator.as_str(),
-                s.value
-            ))
-        })
-        .collect();
-    let list_style = if filter.focus == FilterFocus::Statements {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
-    };
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Current Filters")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(list_style),
-        )
-        .highlight_style(ctx.highlight_style());
-    StatefulWidget::render(list, fchunks[2], buf, &mut filter.list_state);
-}
+            let column_text = match editor.column.selected_original() {
+                Some(i) if step != FilterEditStep::Column => filter.available_columns[i].clone(),
+                _ => format!("{}{}", editor.column.filter, g.cursor),
+            };
+            let operator_text = if step == FilterEditStep::Operator {
+                format!("{}{}", editor.operator.filter, g.cursor)
+            } else {
+                editor
+                    .operator
+                    .selected_original()
+                    .and_then(|i| crate::filter_modal::FilterOperator::iterator().nth(i))
+                    .map(|op| op.as_str().to_string())
+                    .unwrap_or_default()
+            };
+            let mut spans = vec![
+                Span::styled(g.rail, Style::default().fg(ctx.accent)),
+                Span::styled(
+                    format!("{:<w$} ", column_text, w = col_w),
+                    seg_style(step == FilterEditStep::Column),
+                ),
+                Span::styled(
+                    format!("{:<w$} ", operator_text, w = op_w),
+                    seg_style(step == FilterEditStep::Operator),
+                ),
+            ];
+            if step == FilterEditStep::Value {
+                spans.push(Span::styled(
+                    editor.value.value().to_string(),
+                    seg_style(true),
+                ));
+                spans.push(Span::styled(g.cursor, Style::default().fg(ctx.accent)));
+            } else {
+                spans.push(Span::styled(
+                    editor.value.value().to_string(),
+                    Style::default().fg(ctx.dimmed),
+                ));
+            }
+            Paragraph::new(Line::from(spans)).render(row_area, buf);
 
-fn render_sort_tab(
-    modal: &mut SortFilterModal,
-    area: Rect,
-    buf: &mut Buffer,
-    border_c: ratatui::style::Color,
-    active_c: ratatui::style::Color,
-    ctx: &RenderContext,
-) {
-    let schunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(3),
-        ])
-        .split(area);
+            // The active step's picker, narrowed as typed.
+            let picker_state = match step {
+                FilterEditStep::Column => Some(&editor.column),
+                FilterEditStep::Operator => Some(&editor.operator),
+                FilterEditStep::Value => None,
+            };
+            if let Some(state) = picker_state {
+                let rows = PICKER_ROWS.min(bottom.saturating_sub(y));
+                if rows > 0 {
+                    let picker_area = Rect {
+                        x: area.x + 2,
+                        y,
+                        width: area.width.saturating_sub(2),
+                        height: rows,
+                    };
+                    Picker::from_state(state, true).render(picker_area, buf, ctx);
+                    y += rows;
+                }
+            }
+            continue;
+        }
 
-    let filter_block_title = "Filter Columns";
-    let mut filter_block_border_style = Style::default().fg(border_c);
-    if modal.sort.focus == SortFocus::Filter {
-        filter_block_border_style = filter_block_border_style.fg(active_c);
+        let rail = if is_cursor && filter.editor.is_none() {
+            g.rail
+        } else {
+            " "
+        };
+        if row == filter.statements.len() {
+            // The add row: the standing offer, dimmed until it is taken.
+            let style = if is_cursor {
+                Style::default().fg(ctx.accent)
+            } else {
+                Style::default().fg(ctx.dimmed)
+            };
+            Paragraph::new(Line::from(vec![
+                Span::styled(rail, Style::default().fg(ctx.accent)),
+                Span::styled(format!("add filter{}", g.ellipsis), style),
+            ]))
+            .render(row_area, buf);
+            continue;
+        }
+
+        let statement = &filter.statements[row];
+        // The conjunction binds this row to the one above, so the first shows none.
+        let conjunction = if row == 0 {
+            String::new()
+        } else {
+            format!("  {}", statement.logical_op.as_str().to_lowercase())
+        };
+        let mut style = if is_cursor {
+            Style::default().fg(ctx.accent)
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        if is_cursor && filter.editor.is_none() {
+            style = style.patch(ctx.highlight_style());
+        }
+        let text = format!(
+            "{:<col$} {:<op$} {}{}",
+            statement.column,
+            statement.operator.as_str(),
+            statement.value,
+            conjunction,
+            col = col_w,
+            op = op_w,
+        );
+        Paragraph::new(Line::from(vec![
+            Span::styled(rail, Style::default().fg(ctx.accent)),
+            Span::styled(text, style),
+        ]))
+        .render(row_area, buf);
     }
-    let filter_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(filter_block_title)
-        .title_style(ratatui::style::Style::reset())
-        .border_style(filter_block_border_style);
-    let filter_inner_area = filter_block.inner(schunks[0]);
-    filter_block.render(schunks[0], buf);
-
-    let is_focused = modal.sort.focus == SortFocus::Filter;
-    modal.sort.filter_input.set_focused(is_focused);
-    (&modal.sort.filter_input).render(filter_inner_area, buf);
-
-    let g = crate::glyphs::get();
-    let filtered = modal.sort.filtered_columns();
-    let rows: Vec<Row> = filtered
-        .iter()
-        .map(|(_, col)| {
-            let lock_cell = if col.is_locked {
-                g.dot_full
-            } else if col.is_to_be_locked {
-                g.dot_half
-            } else {
-                " "
-            };
-            let lock_style = if col.is_locked {
-                Style::default()
-            } else if col.is_to_be_locked {
-                Style::default().fg(ctx.dimmed)
-            } else {
-                Style::default()
-            };
-            let order_cell = if col.is_visible && col.display_order < 9999 {
-                format!("{:2}", col.display_order + 1)
-            } else {
-                "  ".to_string()
-            };
-            let sort_cell = if let Some(order) = col.sort_order {
-                format!("{:2}", order)
-            } else {
-                "  ".to_string()
-            };
-            let name_cell = Cell::from(col.name.clone());
-
-            let row_style = if col.is_visible {
-                Style::default()
-            } else {
-                Style::default().fg(ctx.dimmed)
-            };
-
-            Row::new(vec![
-                Cell::from(lock_cell).style(lock_style),
-                Cell::from(order_cell).style(row_style),
-                Cell::from(sort_cell).style(row_style),
-                name_cell.style(row_style),
-            ])
-        })
-        .collect();
-
-    let header = Row::new(vec![
-        Cell::from("Lock").style(Style::default()),
-        Cell::from("Order").style(Style::default()),
-        Cell::from("Sort").style(Style::default()),
-        Cell::from("Name").style(Style::default()),
-    ])
-    .style(Style::default().add_modifier(Modifier::UNDERLINED));
-
-    let table_border_style = if modal.sort.focus == SortFocus::ColumnList {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
-    };
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Min(0),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Columns")
-            .title_style(ratatui::style::Style::reset())
-            .border_style(table_border_style),
-    )
-    .row_highlight_style(ctx.highlight_style());
-
-    StatefulWidget::render(table, schunks[1], buf, &mut modal.sort.table_state);
-
-    use ratatui::text::{Line, Span};
-    let mut hint_line1 = Line::default();
-    hint_line1.spans.push(Span::raw("Sort:    "));
-    hint_line1.spans.push(Span::styled(
-        "Space",
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
-    ));
-    hint_line1.spans.push(Span::raw(" Toggle "));
-    hint_line1.spans.push(Span::styled(
-        "[]",
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
-    ));
-    hint_line1.spans.push(Span::raw(" Reorder "));
-    hint_line1.spans.push(Span::styled(
-        "1-9",
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
-    ));
-    hint_line1.spans.push(Span::raw(" Jump"));
-
-    let mut hint_line2 = Line::default();
-    hint_line2.spans.push(Span::raw("Display: "));
-    hint_line2.spans.push(Span::styled(
-        "L",
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
-    ));
-    hint_line2.spans.push(Span::raw(" Lock "));
-    hint_line2.spans.push(Span::styled(
-        "+-",
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
-    ));
-    hint_line2.spans.push(Span::raw(" Reorder"));
-
-    Paragraph::new(vec![hint_line1, hint_line2]).render(schunks[2], buf);
-
-    let order_border_style = if modal.sort.focus == SortFocus::Order {
-        Style::default().fg(active_c)
-    } else {
-        Style::default().fg(border_c)
-    };
-
-    let order_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Order")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(order_border_style);
-    let order_inner = order_block.inner(schunks[3]);
-    order_block.render(schunks[3], buf);
-
-    let order_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(order_inner);
-
-    let ascending_indicator = if modal.sort.ascending {
-        g.radio_on
-    } else {
-        g.radio_off
-    };
-    let ascending_text = format!("{} Ascending", ascending_indicator);
-    let ascending_style = if modal.sort.ascending {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Paragraph::new(ascending_text)
-        .style(ascending_style)
-        .centered()
-        .render(order_layout[0], buf);
-
-    let descending_indicator = if !modal.sort.ascending {
-        g.radio_on
-    } else {
-        g.radio_off
-    };
-    let descending_text = format!("{} Descending", descending_indicator);
-    let descending_style = if !modal.sort.ascending {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Paragraph::new(descending_text)
-        .style(descending_style)
-        .centered()
-        .render(order_layout[1], buf);
 }

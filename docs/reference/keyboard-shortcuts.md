@@ -99,23 +99,34 @@ Every text field, from the query prompt to a file path, edits the same way:
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Sort and Filter |
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus through the form to Apply, Cancel, Clear |
-| <kbd>Enter</kbd> | Press the focused button; on the Filter tab, add the filter, or remove the highlighted one from the list |
+| <kbd>←</kbd> <kbd>→</kbd> | Switch Columns and Filters |
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus between the tab bar and the body |
+| <kbd>Enter</kbd> | Apply and close (on the Filters list, edit the row instead) |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply from anywhere, including mid-edit |
 | <kbd>Esc</kbd> | Close without applying |
 
-On the Sort tab, with a column highlighted:
+On the Columns tab, with a column highlighted:
 
 | Key | Action |
 |---|---|
-| <kbd>Space</kbd> | Sort by it, or stop |
-| <kbd>Enter</kbd> | Sort by it and apply at once |
-| <kbd>1</kbd> to <kbd>9</kbd> | Put it at that position in the sort order |
+| <kbd>Space</kbd> | Cycle its sort: none, ascending, descending |
+| <kbd>1</kbd> to <kbd>9</kbd> | Put it at that position in the sort order; <kbd>0</kbd> removes it |
 | <kbd>[</kbd> <kbd>]</kbd> | Move it earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move it left or right in the table |
 | <kbd>L</kbd> | Freeze it and the columns above it |
 | <kbd>v</kbd> | Hide or show it |
-| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply |
+| <kbd>C</kbd> | Clear the staged sort, order, locks and hidden columns |
+
+On the Filters tab:
+
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> | Edit the row under the cursor, or add one on the last row |
+| type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Enter</kbd> | In the editor: narrow the column or operator, move, choose; then type the value and <kbd>Enter</kbd> saves |
+| <kbd>Space</kbd> | Toggle and/or on the row |
+| <kbd>d</kbd> | Delete the row |
+| <kbd>C</kbd> | Clear every staged filter |
+| <kbd>Esc</kbd> | Back out of the edit, then close |
 
 ## Chart
 

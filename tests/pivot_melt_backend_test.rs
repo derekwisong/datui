@@ -532,6 +532,29 @@ fn test_esc_closes_the_picker_before_the_modal() {
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
+/// Space on a pick-one row's open Picker chooses the highlighted item, like
+/// Enter; only a several-choice row toggles. It must never type into the
+/// narrow filter, where a space matches nothing and blanks the list.
+#[test]
+fn test_space_chooses_in_a_pick_one_picker() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
+    load_file(&mut app, &rx, path);
+
+    send_key(&mut app, KeyCode::Char('p'));
+    send_key(&mut app, KeyCode::Tab); // Index
+    send_key(&mut app, KeyCode::Tab); // Columns, a pick-one row
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::PivotColumn);
+    send_key(&mut app, KeyCode::Char(' ')); // opens the picker
+    assert!(app.pivot_melt_modal.picker.is_some());
+    send_key(&mut app, KeyCode::Down);
+    send_key(&mut app, KeyCode::Char(' ')); // chooses, like Enter
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert_eq!(app.pivot_melt_modal.pivot_column, Some("date".to_string()));
+}
+
 /// Save a template after pivot, reload file, apply via T, and verify pivoted result.
 #[test]
 fn test_template_save_and_apply_pivot() {

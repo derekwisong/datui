@@ -12029,7 +12029,10 @@ impl App {
                 match event.code {
                     KeyCode::Esc => m.cancel_editor(),
                     // Enter chooses the step's pick; from the value it commits the row.
-                    KeyCode::Enter | KeyCode::Tab | KeyCode::Right
+                    // Space chooses too: a space typed into the narrowing filter
+                    // matches nothing and blanks the list. (The value field below
+                    // keeps Space for typing.)
+                    KeyCode::Enter | KeyCode::Tab | KeyCode::Right | KeyCode::Char(' ')
                         if editor.step != FilterEditStep::Value =>
                     {
                         match editor.step {
@@ -12364,7 +12367,10 @@ impl App {
                     // the state every row already echoes. A blank path exports nothing.
                     let path_str = self.export_modal.path_input.value().trim().to_string();
                     if !path_str.is_empty() {
-                        let mut path = PathBuf::from(&path_str);
+                        // `~` and `$VAR` expand as everywhere else a path is
+                        // typed; unexpanded they become a literal `~` directory
+                        // or a NotFound from the writer.
+                        let mut path = home::expand_user_path(&path_str);
                         let format = self.export_modal.selected_format;
                         let compression = match format {
                             ExportFormat::Csv => self.export_modal.csv_compression,
@@ -12508,6 +12514,11 @@ impl App {
                     {
                         self.pivot_melt_modal.picker_toggle();
                     }
+                    // On a pick-one row Space chooses like Enter. It must
+                    // never reach the narrowing filter: a typed space matches
+                    // nothing, and the list blanking under the key that just
+                    // opened it reads as breakage.
+                    KeyCode::Char(' ') => self.pivot_melt_modal.picker_choose(),
                     KeyCode::Backspace => {
                         if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
                             picker.backspace();
@@ -12706,7 +12717,10 @@ impl App {
                                 .trim()
                                 .to_string();
                             let (width, height) = self.chart_export_modal.export_dimensions();
-                            let mut path = PathBuf::from(path_str);
+                            // `~` and `$VAR` expand as everywhere else a path
+                            // is typed; unexpanded, the PNG/EPS writer fails
+                            // with NotFound on the literal `~` directory.
+                            let mut path = home::expand_user_path(path_str);
                             let format = self.chart_export_modal.selected_format;
                             // Only add default extension when user did not provide one
                             if path.extension().is_none() {
@@ -12806,6 +12820,14 @@ impl App {
                             && self.chart_modal.is_multi_row(self.chart_modal.focus) =>
                     {
                         self.chart_modal.picker_toggle();
+                    }
+                    // On a pick-one row Space chooses like Enter — what Space
+                    // always did on these lists. It must never reach the
+                    // narrowing filter: a typed space matches nothing, and
+                    // the list blanking under the key that just opened it
+                    // reads as breakage.
+                    KeyCode::Char(' ') if event.is_press() => {
+                        self.chart_modal.picker_choose();
                     }
                     KeyCode::Backspace if event.is_press() => {
                         if let Some(picker) = self.chart_modal.picker.as_mut() {

@@ -12,5 +12,6 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap.
   ? / F1:           Show this help
   Esc:              Back to the table
 
-In the picker: ↑/↓ move, typing narrows, Space toggles a Y series in
-or out, Enter chooses, Esc backs out of the picker alone.
+In the picker: ↑/↓ move, typing narrows, Enter or Space chooses (on
+the Y series row Space toggles a series in or out), Esc backs out of
+the picker alone.

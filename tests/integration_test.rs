@@ -329,6 +329,57 @@ fn test_chart_columns_picked_through_the_picker() {
     assert!(app.chart_modal.can_export());
 }
 
+/// Space on a pick-one row's open Picker chooses the highlighted column — it
+/// must never type into the narrow filter, where a space matches nothing and
+/// the list blanks under the key that just opened it.
+#[test]
+fn test_space_chooses_in_a_pick_one_chart_picker() {
+    use datui::chart_modal::ChartFocus;
+    let (mut app, _rx, _tx) = open_chart_view("chart_space_chooses_test.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+
+    press(&mut app, KeyCode::Tab); // Style -> X axis
+    press(&mut app, KeyCode::Char(' ')); // open the Picker
+    press(&mut app, KeyCode::Down); // highlight "y"
+    press(&mut app, KeyCode::Char(' ')); // chooses, like Enter
+    assert!(app.chart_modal.picker.is_none());
+    assert_eq!(app.chart_modal.x_column.as_deref(), Some("y"));
+    // The form has the keys back at once: the arrows walk the rows again.
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.chart_modal.focus, ChartFocus::YColumns);
+}
+
+/// A typed export path expands `~` like every other typed path; unexpanded it
+/// reaches the PNG/EPS writer as a literal `~` directory and fails NotFound.
+#[test]
+fn test_chart_export_path_expands_tilde() {
+    let (mut app, _rx, _tx) = open_chart_view("chart_tilde_test.csv");
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["y".to_string()];
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.chart_export_modal.active);
+    app.chart_export_modal
+        .path_input
+        .set_value("~/datui_tilde_test_dir/chart.png");
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    let Some(AppEvent::ChartExport(path, ..)) = out else {
+        panic!("Enter starts the export");
+    };
+    assert!(
+        path.is_absolute() && !path.to_string_lossy().contains('~'),
+        "the tilde expands: {path:?}"
+    );
+}
+
 /// Opens a small x/y dataset in the chart view. Nothing is selected yet.
 fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let test_data_dir = PathBuf::from("tests/sample-data");
@@ -9975,6 +10026,35 @@ fn test_filter_editor_keyboard_flow() {
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 100);
+}
+
+/// In the filter editor's column and operator steps, Space chooses like
+/// Enter instead of typing into the narrow filter, where a space matches
+/// nothing and blanks the list. The value field below keeps Space for typing.
+#[test]
+fn test_space_chooses_in_the_filter_editor_steps() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("filter_editor_space.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right); // Columns -> Filters
+    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
+    press(&mut app, KeyCode::Enter); // open the editor
+    for ch in "na".chars() {
+        press(&mut app, KeyCode::Char(ch)); // narrows to "name"
+    }
+    press(&mut app, KeyCode::Char(' ')); // chooses the column, like Enter
+    for ch in "co".chars() {
+        press(&mut app, KeyCode::Char(ch)); // narrows operators to "contains"
+    }
+    press(&mut app, KeyCode::Char(' ')); // chooses the operator
+    for ch in "al pha".chars() {
+        press(&mut app, KeyCode::Char(ch)); // the value types spaces as text
+    }
+    press(&mut app, KeyCode::Enter); // commit the statement
+    assert!(app.sort_filter_modal.filter.editor.is_none());
+    let statement = &app.sort_filter_modal.filter.statements[0];
+    assert_eq!(statement.column, "name");
+    assert_eq!(statement.value, "al pha");
 }
 
 /// Del on the Columns list is the sort's delete: the column leaves the sort

@@ -145,7 +145,10 @@ fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         keys.push(("Esc", "Back"));
         return keys;
     }
-    let mut keys = vec![("1-5", "Type"), ("Tab", "Options")];
+    // "Chart", not "Type": this bar also spells the key name "type" (the
+    // picker's narrow chip), and the label names what 1-5 switch — the same
+    // word as the `c Chart` chip that opened this screen.
+    let mut keys = vec![("1-5", "Chart"), ("Tab", "Options")];
     if modal.is_picker_row(modal.focus) {
         keys.push(("Space", "Edit"));
     } else if modal.is_toggle_row(modal.focus) {

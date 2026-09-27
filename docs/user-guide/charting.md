@@ -34,8 +34,9 @@ rows are used to build the chart. The default comes from `row_limit` in the
 | <kbd>Esc</kbd> | Back to the table |
 
 In the picker: type part of a name to narrow, <kbd>↑</kbd> <kbd>↓</kbd> move,
-<kbd>Enter</kbd> chooses, <kbd>Space</kbd> toggles a Y series in or out, and
-<kbd>Esc</kbd> backs out of the picker alone.
+<kbd>Enter</kbd> or <kbd>Space</kbd> chooses (on the Y series row
+<kbd>Space</kbd> toggles a series in or out), and <kbd>Esc</kbd> backs out of
+the picker alone.
 
 ## Export
 

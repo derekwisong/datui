@@ -138,7 +138,7 @@ On the Filters tab:
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
 | <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style |
 | <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, or adjust bins, bandwidth or the row limit (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the row limit) |
-| type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Space</kbd>, <kbd>Enter</kbd> | In the picker: narrow, move, toggle a Y series, choose |
+| type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Enter</kbd> or <kbd>Space</kbd> | In the picker: narrow, move, choose (on the Y series row <kbd>Space</kbd> toggles a series in or out) |
 | <kbd>e</kbd> | Export to PNG or EPS |
 | <kbd>Esc</kbd> | Back to the table, or out of the open picker |
 
@@ -175,7 +175,7 @@ In Data Quality:
 | <kbd>←</kbd> <kbd>→</kbd> | Switch Pivot and Melt; in a text field, move the cursor |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the rows |
 | <kbd>Space</kbd> or typing | Open the focused row's picker, narrowed by what you type |
-| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> toggles where several can be chosen |
+| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere in the form |
 | <kbd>Esc</kbd> | Close the picker; pressed again, close without applying |
 

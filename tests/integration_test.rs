@@ -4232,16 +4232,14 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
         let format = app.export_modal.selected_format;
         seen.push(format);
         // The last row each format draws of its own. The checkbox goes directly under
-        // it, so asking for this row by name pins the row count in
-        // `render_format_options`: count too low and the format's last row is
-        // truncated away, too high and a blank row opens up. Either way this row is
-        // no longer the one above the checkbox.
+        // it, so asking for this row by name pins the form's row list: a row missing
+        // and the format's last option is gone, a row extra and a gap opens up.
+        // Either way this row is no longer the one above the checkbox.
         let last_of_its_own = match format {
-            // Both end on the second compression row.
-            ExportFormat::Csv | ExportFormat::Json | ExportFormat::Ndjson => "XZ",
-            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-                "No options specific to"
-            }
+            // All three end on their compression row.
+            ExportFormat::Csv | ExportFormat::Json | ExportFormat::Ndjson => "Compression:",
+            // No options of their own, so the checkbox sits right under the path.
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => "Path:",
         };
 
         let mut buf = Buffer::empty(area);
@@ -9818,6 +9816,97 @@ fn test_export_unknown_extension_keeps_the_chosen_format() {
         press(&mut app, KeyCode::Char(ch));
     }
     assert_eq!(app.export_modal.selected_format, ExportFormat::Parquet);
+}
+
+/// Enter applies from anywhere in the export form — there is no button to
+/// walk to — and Space still toggles the checkbox under the cursor.
+#[test]
+fn test_export_enter_applies_from_any_row() {
+    use datui::export_modal::{ExportFocus, ExportFormat};
+    let (mut app, _rx, _tx) = open_query_filter_fixture("export_enter_anywhere.csv");
+
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.export_modal.active);
+    let out = PathBuf::from("tests/sample-data/export_enter_anywhere_out.csv");
+    let _ = std::fs::remove_file(&out);
+    for ch in out.to_str().unwrap().chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    // Walk to the Include header checkbox: Path → Delimiter → Include header.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.export_modal.focus, ExportFocus::CsvIncludeHeader);
+    press(&mut app, KeyCode::Char(' '));
+    assert!(!app.export_modal.csv_include_header, "Space toggles");
+
+    match press(&mut app, KeyCode::Enter) {
+        Some(AppEvent::Export(path, format, options)) => {
+            assert_eq!(format, ExportFormat::Csv);
+            assert_eq!(path, out);
+            assert!(
+                !options.csv_include_header,
+                "the toggled state reached the export"
+            );
+        }
+        _ => panic!("Enter on a checkbox builds the export"),
+    }
+    assert!(!app.export_modal.active, "and the dialog is gone");
+}
+
+/// The export dialog is one Surface: one border, no bordered buttons, the
+/// actions as chips in the footer, and no radio glyphs anywhere.
+#[test]
+fn test_export_modal_is_one_surface() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("export_one_surface.csv");
+    press(&mut app, KeyCode::Char('e'));
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect();
+
+    assert!(
+        rows.iter().any(|r| r.contains("Export Data")),
+        "the dialog is up"
+    );
+    // Ratatui draws rounded corners whatever the glyph set, so one top-left
+    // corner on screen means one border on the surface and none inside it.
+    assert_eq!(
+        rows.iter().map(|r| r.matches('╭').count()).sum::<usize>(),
+        1,
+        "exactly one border: {rows:#?}"
+    );
+    let bottom = rows
+        .iter()
+        .position(|r| r.contains('╰'))
+        .expect("the frame closes");
+    for (key, label) in [("Enter", "Export"), ("Esc", "Cancel")] {
+        assert!(
+            rows[bottom - 1].contains(key) && rows[bottom - 1].contains(label),
+            "{key} {label} is a chip on the footer row: {:?}",
+            rows[bottom - 1]
+        );
+    }
+    // The hand-rolled radio list is gone; the picker marks the selection with
+    // the rail instead.
+    let radios = [
+        datui::glyphs::unicode().radio_on,
+        datui::glyphs::unicode().radio_off,
+        datui::glyphs::ascii().radio_on,
+        datui::glyphs::ascii().radio_off,
+    ];
+    for radio in radios {
+        assert!(
+            rows.iter().all(|r| !r.contains(radio)),
+            "a radio glyph survived: {radio:?}"
+        );
+    }
 }
 
 /// The Info panel opens with the body focused, and the arrows switch tabs from

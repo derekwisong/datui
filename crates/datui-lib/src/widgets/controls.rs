@@ -383,7 +383,8 @@ impl Widget for &Controls {
             return;
         }
 
-        // Normal keybinding mode (unchanged from original)
+        // Normal keybinding mode: the chips are a HintBar, the same renderer every
+        // Surface footer uses.
         const DEFAULT_CONTROLS: [(&str, &str); 10] = [
             ("/", "Query"),
             ("i", "Info"),
@@ -403,11 +404,17 @@ impl Widget for &Controls {
             DEFAULT_CONTROLS.to_vec()
         };
 
-        // A key chip is the key with one cell of padding on either side, then a space,
-        // then the label, then two cells before the next chip.
-        let pair_width = |(key, action): &(&str, &str)| -> u16 {
-            (key.chars().count() as u16 + 2) + (action.chars().count() as u16 + 3)
-        };
+        // The accented label carries no background of its own: the bar's Block above
+        // painted it already, and `notes_pending` only recolors the Info label.
+        let mut bar = crate::widgets::ui::HintBar::with_styles(
+            chip_style,
+            label_style,
+            Style::default().fg(self.key_color),
+        )
+        .hints(&controls);
+        if self.notes_pending {
+            bar = bar.accent("i");
+        }
 
         // Budgeting a flat twenty-one against a caption like "by recent  ·  128 datasets"
         // — twenty-seven — admits chips worth seven columns the solver then has to take
@@ -419,31 +426,9 @@ impl Widget for &Controls {
         // requirement — it costs one chip at one width and keeps the common case as it
         // was.
         let right_reserved = trailing.map(|width| width + 1).unwrap_or(1) + chip_width;
-        let mut available = area.width.saturating_sub(right_reserved);
+        let chips_width = bar.width_in(area.width.saturating_sub(right_reserved));
 
-        let mut n_show = 0;
-        for pair in controls.iter() {
-            let need = pair_width(pair);
-            if available >= need {
-                available -= need;
-                n_show += 1;
-            } else {
-                break;
-            }
-        }
-
-        let mut constraints: Vec<Constraint> = controls
-            .iter()
-            .take(n_show)
-            .flat_map(|(key, action)| {
-                [
-                    Constraint::Length(key.chars().count() as u16 + 2),
-                    Constraint::Length(action.chars().count() as u16 + 3),
-                ]
-            })
-            .collect();
-
-        constraints.push(Constraint::Fill(1));
+        let mut constraints = vec![Constraint::Length(chips_width), Constraint::Fill(1)];
         if chip_width > 0 {
             constraints.push(Constraint::Length(chip_width));
         }
@@ -453,23 +438,9 @@ impl Widget for &Controls {
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
 
-        for (i, (key, action)) in controls.iter().take(n_show).enumerate() {
-            let j = i * 2;
-            Paragraph::new(format!(" {key} "))
-                .style(chip_style)
-                .render(layout[j], buf);
-            let style = if self.notes_pending && *key == "i" {
-                Style::default().fg(self.key_color)
-            } else {
-                label_style
-            };
-            Paragraph::new(format!(" {action}"))
-                .style(style)
-                .render(layout[j + 1], buf);
-        }
+        bar.render(layout[0], buf);
 
-        let fill_idx = n_show * 2;
-        let mut next = fill_idx + 1;
+        let mut next = 2;
         if let Some(text) = &not_the_table {
             Paragraph::new(text.as_str())
                 .style(chip_style)
@@ -483,9 +454,7 @@ impl Widget for &Controls {
                 .render(layout[next], buf);
         }
 
-        Paragraph::new("")
-            .style(fill_style)
-            .render(layout[fill_idx], buf);
+        Paragraph::new("").style(fill_style).render(layout[1], buf);
     }
 }
 

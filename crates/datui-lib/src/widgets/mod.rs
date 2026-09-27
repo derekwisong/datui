@@ -13,3 +13,4 @@ pub mod schema;
 pub mod template_modal;
 pub mod text_input;
 pub mod textarea;
+pub mod ui;

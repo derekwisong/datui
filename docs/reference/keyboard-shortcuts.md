@@ -170,9 +170,10 @@ In Data Quality:
 
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path, options and buttons |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Change the format |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Toggle a checkbox, or (<kbd>Enter</kbd>) press Export or Cancel |
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path and options |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Change the format, or the compression |
+| <kbd>Space</kbd> | Toggle a checkbox |
+| <kbd>Enter</kbd> | Export, from anywhere in the form |
 | <kbd>Esc</kbd> | Close |
 
 ## Dataset info

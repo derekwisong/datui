@@ -1,11 +1,13 @@
 Export current data to a file.
 
   Tab / Shift+Tab:  Move focus between fields
-  ↑ / ↓ (j/k):      In the format selector: change format
+  ↑ / ↓ (j/k):      In the format list: change format
+                    On Compression: change compression
                     In other fields: move focus
   ← / → (h/l):      Move the cursor in text fields
-  Enter / Space:    Toggle a checkbox (Include Header, Source file)
-  Enter:            Export (on the Export button) or Cancel (on Cancel)
+                    On Compression: change compression
+  Space:            Toggle a checkbox (Include header, Source file)
+  Enter:            Export, from anywhere in the form
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close without exporting
 
@@ -31,4 +33,4 @@ Source file:
 
 CSV Options:
   Delimiter:        Character to separate columns (default: comma)
-  Include Header:   Whether to write column names as first row
+  Include header:   Whether to write column names as first row

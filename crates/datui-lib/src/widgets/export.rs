@@ -1,645 +1,171 @@
-//! Export modal rendering.
+//! Export modal rendering: the reference migration to the `widgets::ui` kit.
+//! One Surface, a Picker for the format, FormRows for the options, actions in
+//! the footer.
 
 use crate::CompressionFormat;
 use crate::export_modal::{ExportFocus, ExportFormat, ExportModal};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Widget};
+use crate::render::context::RenderContext;
+use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, SectionRule, Surface};
+use ratatui::layout::Rect;
 
-/// Render the export modal with format selector on left, options on right.
+/// The value column's offset inside the options half: past the longest label,
+/// "Include header:", plus two cells of air.
+const LABEL_WIDTH: u16 = 17;
+
+/// Columns the format list needs: rail plus the longest name plus air.
+const FORMAT_WIDTH: u16 = 12;
+
+fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
+    match compression {
+        None => "None",
+        Some(CompressionFormat::Gzip) => "Gzip",
+        Some(CompressionFormat::Zstd) => "Zstd",
+        Some(CompressionFormat::Bzip2) => "Bzip2",
+        Some(CompressionFormat::Xz) => "XZ",
+    }
+}
+
 pub fn render_export_modal(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-    text_primary: Color,
-    text_inverse: Color,
+    ctx: &RenderContext,
 ) {
-    Clear.render(area, buf);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title("Export Data")
-        .title_style(ratatui::style::Style::reset());
-    let inner = block.inner(area);
-    block.render(area, buf);
+    // Primary first, Esc last, and one chip for what the focused row itself
+    // takes; when the dialog runs out of room, Tab yields first and the way
+    // out goes last.
+    let g = crate::glyphs::get();
+    let mut footer = HintBar::from_ctx(ctx).hint_weighted("Enter", "Export", 3);
+    match modal.focus {
+        ExportFocus::FormatSelector => {
+            footer = footer.hint_weighted(g.updown, "Format", 2);
+        }
+        ExportFocus::CsvIncludeHeader | ExportFocus::SourceFile => {
+            footer = footer.hint_weighted("Space", "Toggle", 2);
+        }
+        ExportFocus::CsvCompression
+        | ExportFocus::JsonCompression
+        | ExportFocus::NdjsonCompression => {
+            footer = footer.hint_weighted(g.updown, "Change", 2);
+        }
+        ExportFocus::PathInput | ExportFocus::CsvDelimiter => {}
+    }
+    let footer = footer
+        .hint_weighted("Tab", "Next", 1)
+        .hint_weighted("Esc", "Cancel", 4);
+    let content = Surface::new("Export Data")
+        .footer(&footer)
+        .render(area, buf, ctx);
+    if content.height < 2 || content.width < 4 {
+        return;
+    }
 
-    // Split into left (format list) and right (options)
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(20), // Format list width
-            Constraint::Min(40),    // Options area
-        ])
-        .split(inner);
-
-    // Left: Format selector (list)
-    render_format_list(chunks[0], buf, modal, border_color, active_color);
-
-    // Right: Path input and format-specific options
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Path input
-            Constraint::Min(10),   // Format-specific options
-            Constraint::Length(3), // Buttons
-        ])
-        .split(chunks[1]);
-
-    // Path input
-    render_path_input(
-        right_chunks[0],
+    // Left: the format picker under its section rule. Right: the path and the
+    // chosen format's options, one FormRow each, values on one column.
+    let format_focused = modal.focus == ExportFocus::FormatSelector;
+    SectionRule {
+        title: "Format",
+        chip: None,
+        focused: format_focused,
+    }
+    .render(
+        Rect {
+            width: FORMAT_WIDTH.min(content.width),
+            height: 1,
+            ..content
+        },
         buf,
-        modal,
-        border_color,
-        active_color,
-        text_primary,
-        text_inverse,
+        ctx,
     );
-
-    // Format-specific options
-    render_format_options(
-        right_chunks[1],
-        buf,
-        modal,
-        border_color,
-        active_color,
-        text_primary,
-        text_inverse,
-    );
-
-    // Footer buttons
-    render_footer(right_chunks[2], buf, modal, border_color, active_color);
-}
-
-fn render_format_list(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-) {
-    let is_focused = modal.focus == ExportFocus::FormatSelector;
-    let border_style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
+    let list_area = Rect {
+        y: content.y + 1,
+        width: FORMAT_WIDTH.min(content.width),
+        height: content.height - 1,
+        ..content
     };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .title("Format")
-        .title_style(ratatui::style::Style::reset());
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    let items: Vec<ListItem> = ExportFormat::ALL
+    let names: Vec<&str> = ExportFormat::ALL.iter().map(|f| f.as_str()).collect();
+    let selected = ExportFormat::ALL
         .iter()
-        .map(|format| {
-            let g = crate::glyphs::get();
-            let marker = if modal.selected_format == *format {
-                g.radio_on
-            } else {
-                g.radio_off
-            };
-            let style = if modal.selected_format == *format {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            ListItem::new(Line::from(vec![Span::styled(
-                format!("{} {}", marker, format.as_str()),
-                style,
-            )]))
-        })
-        .collect();
+        .position(|f| *f == modal.selected_format);
+    Picker::new(names, selected, format_focused).render(list_area, buf, ctx);
 
-    let list = List::new(items).style(if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default()
-    });
-    list.render(inner, buf);
-}
+    modal
+        .path_input
+        .set_focused(modal.focus == ExportFocus::PathInput);
+    modal
+        .csv_delimiter_input
+        .set_focused(modal.focus == ExportFocus::CsvDelimiter);
 
-fn render_path_input(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-    _text_primary: Color,
-    _text_inverse: Color,
-) {
-    let is_focused = modal.focus == ExportFocus::PathInput;
-    let border_style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .title("File Path")
-        .title_style(ratatui::style::Style::reset());
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    // Render input using TextInput widget
-    modal.path_input.set_focused(is_focused);
-    (&modal.path_input).render(inner, buf);
-}
-
-fn render_format_options(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-    text_primary: Color,
-    text_inverse: Color,
-) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title("Options")
-        .title_style(ratatui::style::Style::reset());
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    // The source-file option belongs to no format, so it sits under the ones that do.
-    let (inner, source_file_row) = if modal.offer_source_file {
-        // Directly under the format's own options, not at the foot of the box: a
-        // checkbox alone on the bottom line reads as belonging to nothing.
-        let used = match modal.selected_format {
-            // Rows each format's own options draw. Pinned by
-            // `test_the_export_options_panel_reads_as_one_for_every_format`, which
-            // renders every format and requires that format's own last row — the
-            // second compression row, or the "No options specific to" line — to be
-            // the row directly above the checkbox. Too low a count truncates that
-            // row away; too high a count opens a blank one.
-            ExportFormat::Csv => 5,
-            ExportFormat::Json | ExportFormat::Ndjson => 3,
-            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => 1,
-        };
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(used),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .split(inner);
-        (rows[0], Some(rows[1]))
-    } else {
-        (inner, None)
-    };
-
+    // The rows mirror `focus_order`, so Tab walks what is on screen.
+    let mut rows: Vec<(&str, FormValue, ExportFocus)> = vec![(
+        "Path:",
+        FormValue::Input(&modal.path_input),
+        ExportFocus::PathInput,
+    )];
     match modal.selected_format {
-        ExportFormat::Csv => render_csv_options(
-            inner,
-            buf,
-            modal,
-            border_color,
-            active_color,
-            text_primary,
-            text_inverse,
-        ),
-        ExportFormat::Json => render_json_options(inner, buf, modal, border_color, active_color),
-        ExportFormat::Ndjson => {
-            render_ndjson_options(inner, buf, modal, border_color, active_color)
-        }
-        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-            render_no_format_options(inner, buf, modal, border_color, active_color)
-        }
-    }
-
-    if let Some(row) = source_file_row {
-        render_source_file_option(row, buf, modal, border_color, active_color);
-    }
-}
-
-/// A checkbox for naming each row's file. Only drawn for a dataset whose files
-/// disagree, which is where a null and an absent cell differ and the file is what
-/// tells them apart once the data has left datui.
-fn render_source_file_option(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &ExportModal,
-    border_color: ratatui::style::Color,
-    active_color: ratatui::style::Color,
-) {
-    let focused = modal.focus == ExportFocus::SourceFile;
-    let style = if focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15),
-            Constraint::Length(2),
-            Constraint::Min(1),
-        ])
-        .split(area);
-    Paragraph::new("Source file:")
-        .style(style)
-        .render(columns[0], buf);
-    let g = crate::glyphs::get();
-    let marker = if modal.source_file {
-        g.checkbox_on
-    } else {
-        g.checkbox_off
-    };
-    // Column 2, so the box lines up with the one on the Include Header row above.
-    Paragraph::new(Line::from(vec![Span::styled(marker, style)])).render(columns[2], buf);
-}
-
-fn render_csv_options(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-    _text_primary: Color,
-    _text_inverse: Color,
-) {
-    // Vertical layout: 3 rows + compression grid
-    // Row 1: Delimiter label + input
-    // Row 2: Include Header label + checkbox
-    // Row 3: Compression label (on its own line)
-    // Row 4+: Compression grid (3 items wide)
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Delimiter row
-            Constraint::Length(1), // Include Header row
-            Constraint::Length(1), // Compression label row
-            Constraint::Min(1),    // Compression grid (flexible)
-        ])
-        .split(area);
-
-    // Row 1: Delimiter label + input
-    // Use fixed width for label to align with other labels
-    let delimiter_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15), // Fixed width for label alignment ("Delimiter:     ")
-            Constraint::Length(2),  // Padding between label and widget
-            Constraint::Min(1),     // Input widget (fills remaining space)
-        ])
-        .split(rows[0]);
-
-    let is_delimiter_focused = modal.focus == ExportFocus::CsvDelimiter;
-    let delimiter_label_style = if is_delimiter_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Delimiter:")
-        .style(delimiter_label_style)
-        .render(delimiter_row[0], buf);
-
-    // Render delimiter input using TextInput widget (no border to fit on one row)
-    modal.csv_delimiter_input.set_focused(is_delimiter_focused);
-    (&modal.csv_delimiter_input).render(delimiter_row[2], buf);
-
-    // Row 2: Include Header label + checkbox
-    // Use same label width as delimiter for alignment
-    let header_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15), // Fixed width for label alignment ("Include Header:")
-            Constraint::Length(2),  // Padding between label and widget
-            Constraint::Min(1),     // Checkbox
-        ])
-        .split(rows[1]);
-
-    let is_header_focused = modal.focus == ExportFocus::CsvIncludeHeader;
-    let header_label_style = if is_header_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Include Header:")
-        .style(header_label_style)
-        .render(header_row[0], buf);
-
-    // Checkbox
-    let g = crate::glyphs::get();
-    let marker = if modal.csv_include_header {
-        g.checkbox_on
-    } else {
-        g.checkbox_off
-    };
-    let checkbox_style = if is_header_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new(Line::from(vec![Span::styled(marker, checkbox_style)]))
-        .render(header_row[2], buf);
-
-    // Row 3: Compression label (on its own line)
-    // Use same label width for alignment
-    let compression_label_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15), // Fixed width for label alignment ("Compression:    ")
-            Constraint::Min(1),     // Rest of row
-        ])
-        .split(rows[2]);
-
-    let is_compression_focused = modal.focus == ExportFocus::CsvCompression;
-    let compression_label_style = if is_compression_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Compression:")
-        .style(compression_label_style)
-        .render(compression_label_row[0], buf);
-
-    // Row 4+: Compression grid (3 items wide)
-    if rows.len() > 3 && rows[3].height > 0 {
-        render_compression_grid(
-            rows[3],
-            buf,
-            modal,
-            ExportFocus::CsvCompression,
-            modal.csv_compression,
-            border_color,
-            active_color,
-        );
-    }
-}
-
-fn render_json_options(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-) {
-    // Vertical layout: Compression label on its own line, then grid
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Compression label row
-            Constraint::Min(1),    // Compression grid (flexible)
-        ])
-        .split(area);
-
-    // Compression label (on its own line) - use fixed width for alignment
-    let compression_label_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15), // Fixed width for label alignment
-            Constraint::Min(1),     // Rest of row
-        ])
-        .split(rows[0]);
-
-    let is_compression_focused = modal.focus == ExportFocus::JsonCompression;
-    let compression_label_style = if is_compression_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Compression:")
-        .style(compression_label_style)
-        .render(compression_label_row[0], buf);
-
-    // Compression grid (3 items wide)
-    if rows.len() > 1 && rows[1].height > 0 {
-        render_compression_grid(
-            rows[1],
-            buf,
-            modal,
+        ExportFormat::Csv => rows.extend([
+            (
+                "Delimiter:",
+                FormValue::Input(&modal.csv_delimiter_input),
+                ExportFocus::CsvDelimiter,
+            ),
+            (
+                "Include header:",
+                FormValue::Toggle(modal.csv_include_header),
+                ExportFocus::CsvIncludeHeader,
+            ),
+            (
+                "Compression:",
+                FormValue::Choice(compression_name(modal.csv_compression)),
+                ExportFocus::CsvCompression,
+            ),
+        ]),
+        ExportFormat::Json => rows.push((
+            "Compression:",
+            FormValue::Choice(compression_name(modal.json_compression)),
             ExportFocus::JsonCompression,
-            modal.json_compression,
-            border_color,
-            active_color,
-        );
-    }
-}
-
-fn render_ndjson_options(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-) {
-    // Vertical layout: Compression label on its own line, then grid
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Compression label row
-            Constraint::Min(1),    // Compression grid (flexible)
-        ])
-        .split(area);
-
-    // Compression label (on its own line) - use fixed width for alignment
-    let compression_label_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15), // Fixed width for label alignment
-            Constraint::Min(1),     // Rest of row
-        ])
-        .split(rows[0]);
-
-    let is_compression_focused = modal.focus == ExportFocus::NdjsonCompression;
-    let compression_label_style = if is_compression_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Compression:")
-        .style(compression_label_style)
-        .render(compression_label_row[0], buf);
-
-    // Compression grid (3 items wide)
-    if rows.len() > 1 && rows[1].height > 0 {
-        render_compression_grid(
-            rows[1],
-            buf,
-            modal,
+        )),
+        ExportFormat::Ndjson => rows.push((
+            "Compression:",
+            FormValue::Choice(compression_name(modal.ndjson_compression)),
             ExportFocus::NdjsonCompression,
-            modal.ndjson_compression,
-            border_color,
-            active_color,
-        );
+        )),
+        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {}
     }
-}
+    if modal.offer_source_file {
+        rows.push((
+            "Source file:",
+            FormValue::Toggle(modal.source_file),
+            ExportFocus::SourceFile,
+        ));
+    }
 
-fn render_no_format_options(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    _active_color: Color,
-) {
-    // "No options" would be false with the source-file checkbox drawn below, and
-    // leaving the panel blank instead reads as a rendering fault. Neither: the format
-    // has none of its own, which is what this says.
-    let msg = if modal.offer_source_file {
-        format!(
-            "No options specific to {} format",
-            modal.selected_format.as_str()
-        )
-    } else {
-        format!(
-            "No additional options for {} format",
-            modal.selected_format.as_str()
-        )
-    };
-    Paragraph::new(msg)
-        .style(Style::default().fg(border_color))
-        .centered()
-        .render(area, buf);
-}
-
-/// Render compression options in a grid layout (3 items wide)
-fn render_compression_grid(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    focus: ExportFocus,
-    compression: Option<CompressionFormat>,
-    border_color: Color,
-    active_color: Color,
-) {
-    let is_focused = modal.focus == focus;
-
-    let compression_options = [
-        (None, "None"),
-        (Some(CompressionFormat::Gzip), "Gzip"),
-        (Some(CompressionFormat::Zstd), "Zstd"),
-        (Some(CompressionFormat::Bzip2), "Bzip2"),
-        (Some(CompressionFormat::Xz), "XZ"),
-    ];
-
-    // Grid: 3 items per row
-    const ITEMS_PER_ROW: usize = 3;
-    let num_rows = (compression_options.len() as u16).div_ceil(ITEMS_PER_ROW as u16);
-
-    // Calculate item width (divide area width by 3)
-    let item_width = area.width / ITEMS_PER_ROW as u16;
-    let item_height = 1;
-
-    let mut option_idx = 0;
-    for row in 0..num_rows.min(area.height) {
-        let y = area.y + row;
-        if y >= area.bottom() {
+    let options_x = content.x + FORMAT_WIDTH + 2;
+    let options_width = (content.x + content.width).saturating_sub(options_x);
+    if options_width == 0 {
+        return;
+    }
+    for (i, (label, value, focus)) in rows.into_iter().enumerate() {
+        // Aligned with the format items, one row below the section rule.
+        let y = content.y + 1 + i as u16;
+        if y >= content.y + content.height {
             break;
         }
-
-        for col in 0..ITEMS_PER_ROW {
-            if option_idx >= compression_options.len() {
-                break;
-            }
-
-            let x = area.x + (col as u16 * item_width);
-            let item_area = Rect {
-                x,
-                y,
-                width: item_width,
-                height: item_height,
-            };
-
-            let (opt, label) = &compression_options[option_idx];
-            let is_selected = *opt == compression;
-            let is_option_focused = is_focused && option_idx == modal.compression_selection_idx;
-
-            let g = crate::glyphs::get();
-            let marker = if is_selected { g.radio_on } else { g.radio_off };
-            let style = if is_selected || is_option_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-
-            let text = format!("{} {}", marker, label);
-            Paragraph::new(Line::from(vec![Span::styled(text, style)])).render(item_area, buf);
-
-            option_idx += 1;
+        FormRow {
+            label,
+            value,
+            focused: modal.focus == focus,
+            label_width: LABEL_WIDTH,
         }
+        .render(
+            Rect {
+                x: options_x,
+                y,
+                width: options_width,
+                height: 1,
+            },
+            buf,
+            ctx,
+        );
     }
-}
-
-fn render_footer(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut ExportModal,
-    border_color: Color,
-    active_color: Color,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    // Export button
-    let is_focused = modal.focus == ExportFocus::ExportButton;
-    let text_style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let border_style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Export")
-        .style(text_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(border_style),
-        )
-        .centered()
-        .render(chunks[0], buf);
-
-    // Cancel button
-    let is_focused = modal.focus == ExportFocus::CancelButton;
-    let text_style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let border_style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Cancel")
-        .style(text_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(border_style),
-        )
-        .centered()
-        .render(chunks[1], buf);
 }

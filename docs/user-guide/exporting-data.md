@@ -23,9 +23,10 @@ Excel and ORC can be read but not written.
 
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path, options and buttons |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Change the format |
-| <kbd>Enter</kbd> | Toggle a checkbox, or press **Export** or **Cancel** |
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path and options |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Change the format, or the compression |
+| <kbd>Space</kbd> | Toggle a checkbox |
+| <kbd>Enter</kbd> | Export, from anywhere in the form |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Close without exporting |
 

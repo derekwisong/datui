@@ -12533,141 +12533,59 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    match self.export_modal.focus {
-                        ExportFocus::PathInput => {
-                            // Enter from path input triggers export (same as Export button)
-                            let path_str = self.export_modal.path_input.value().trim();
-                            if !path_str.is_empty() {
-                                let mut path = PathBuf::from(path_str);
-                                let format = self.export_modal.selected_format;
-                                // Get compression format for this export format
-                                let compression = match format {
-                                    ExportFormat::Csv => self.export_modal.csv_compression,
-                                    ExportFormat::Json => self.export_modal.json_compression,
-                                    ExportFormat::Ndjson => self.export_modal.ndjson_compression,
-                                    ExportFormat::Parquet
-                                    | ExportFormat::Ipc
-                                    | ExportFormat::Avro => None,
-                                };
-                                // Ensure file extension is present (including compression extension if needed)
-                                let path_with_ext =
-                                    Self::ensure_file_extension(&path, format, compression);
-                                // Update the path input to show the extension
-                                if path_with_ext != path {
-                                    self.export_modal
-                                        .path_input
-                                        .set_value(path_with_ext.display().to_string());
-                                }
-                                path = path_with_ext;
-                                let delimiter =
-                                    self.export_modal
-                                        .csv_delimiter_input
-                                        .value()
-                                        .chars()
-                                        .next()
-                                        .unwrap_or(',') as u8;
-                                let options = ExportOptions {
-                                    csv_delimiter: delimiter,
-                                    csv_include_header: self.export_modal.csv_include_header,
-                                    csv_compression: self.export_modal.csv_compression,
-                                    json_compression: self.export_modal.json_compression,
-                                    ndjson_compression: self.export_modal.ndjson_compression,
-                                    parquet_compression: None,
-                                    source_file: self.export_modal.source_file,
-                                };
-                                // Check if file exists and show confirmation
-                                if path.exists() {
-                                    let path_display = path.display().to_string();
-                                    self.pending_export = Some((path, format, options));
-                                    self.confirmation_modal.show(format!(
-                                        "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                        path_display
-                                    ));
-                                    self.export_modal.close();
-                                    self.input_mode = InputMode::Normal;
-                                } else {
-                                    // Start export with progress
-                                    self.export_modal.close();
-                                    self.input_mode = InputMode::Normal;
-                                    return Some(AppEvent::Export(path, format, options));
-                                }
-                            }
+                    // Enter applies from anywhere in the form: build the export from
+                    // the state every row already echoes. A blank path exports nothing.
+                    let path_str = self.export_modal.path_input.value().trim().to_string();
+                    if !path_str.is_empty() {
+                        let mut path = PathBuf::from(&path_str);
+                        let format = self.export_modal.selected_format;
+                        let compression = match format {
+                            ExportFormat::Csv => self.export_modal.csv_compression,
+                            ExportFormat::Json => self.export_modal.json_compression,
+                            ExportFormat::Ndjson => self.export_modal.ndjson_compression,
+                            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => None,
+                        };
+                        // Ensure file extension is present (including compression extension if needed)
+                        let path_with_ext = Self::ensure_file_extension(&path, format, compression);
+                        // Update the path input to show the extension
+                        if path_with_ext != path {
+                            self.export_modal
+                                .path_input
+                                .set_value(path_with_ext.display().to_string());
                         }
-                        ExportFocus::ExportButton
-                            if !self.export_modal.path_input.value().is_empty() =>
-                        {
-                            let mut path = PathBuf::from(self.export_modal.path_input.value());
-                            let format = self.export_modal.selected_format;
-                            // Get compression format for this export format
-                            let compression = match format {
-                                ExportFormat::Csv => self.export_modal.csv_compression,
-                                ExportFormat::Json => self.export_modal.json_compression,
-                                ExportFormat::Ndjson => self.export_modal.ndjson_compression,
-                                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-                                    None
-                                }
-                            };
-                            // Ensure file extension is present (including compression extension if needed)
-                            let path_with_ext =
-                                Self::ensure_file_extension(&path, format, compression);
-                            // Update the path input to show the extension
-                            if path_with_ext != path {
-                                self.export_modal
-                                    .path_input
-                                    .set_value(path_with_ext.display().to_string());
-                            }
-                            path = path_with_ext;
-                            let delimiter = self
-                                .export_modal
-                                .csv_delimiter_input
-                                .value()
-                                .chars()
-                                .next()
-                                .unwrap_or(',') as u8;
-                            let options = ExportOptions {
-                                csv_delimiter: delimiter,
-                                csv_include_header: self.export_modal.csv_include_header,
-                                csv_compression: self.export_modal.csv_compression,
-                                json_compression: self.export_modal.json_compression,
-                                ndjson_compression: self.export_modal.ndjson_compression,
-                                parquet_compression: None,
-                                source_file: self.export_modal.source_file,
-                            };
-                            // Check if file exists and show confirmation
-                            if path.exists() {
-                                let path_display = path.display().to_string();
-                                self.pending_export = Some((path, format, options));
-                                self.confirmation_modal.show(format!(
-                                    "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                    path_display
-                                ));
-                                self.export_modal.close();
-                                self.input_mode = InputMode::Normal;
-                            } else {
-                                // Start export with progress
-                                self.export_modal.close();
-                                self.input_mode = InputMode::Normal;
-                                return Some(AppEvent::Export(path, format, options));
-                            }
-                        }
-                        ExportFocus::CancelButton => {
+                        path = path_with_ext;
+                        let delimiter = self
+                            .export_modal
+                            .csv_delimiter_input
+                            .value()
+                            .chars()
+                            .next()
+                            .unwrap_or(',') as u8;
+                        let options = ExportOptions {
+                            csv_delimiter: delimiter,
+                            csv_include_header: self.export_modal.csv_include_header,
+                            csv_compression: self.export_modal.csv_compression,
+                            json_compression: self.export_modal.json_compression,
+                            ndjson_compression: self.export_modal.ndjson_compression,
+                            parquet_compression: None,
+                            source_file: self.export_modal.source_file,
+                        };
+                        // Check if file exists and show confirmation
+                        if path.exists() {
+                            let path_display = path.display().to_string();
+                            self.pending_export = Some((path, format, options));
+                            self.confirmation_modal.show(format!(
+                                "File already exists:\n{}\n\nDo you wish to overwrite this file?",
+                                path_display
+                            ));
                             self.export_modal.close();
                             self.input_mode = InputMode::Normal;
+                        } else {
+                            // Start export with progress
+                            self.export_modal.close();
+                            self.input_mode = InputMode::Normal;
+                            return Some(AppEvent::Export(path, format, options));
                         }
-                        ExportFocus::CsvIncludeHeader => {
-                            self.export_modal.csv_include_header =
-                                !self.export_modal.csv_include_header;
-                        }
-                        ExportFocus::SourceFile => {
-                            self.export_modal.source_file = !self.export_modal.source_file;
-                        }
-                        ExportFocus::CsvCompression
-                        | ExportFocus::JsonCompression
-                        | ExportFocus::NdjsonCompression => {
-                            // Enter to select current compression option
-                            // (Already selected via Left/Right navigation)
-                        }
-                        _ => {}
                     }
                 }
                 KeyCode::Char(' ') => {

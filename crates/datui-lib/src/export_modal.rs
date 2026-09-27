@@ -96,9 +96,6 @@ pub enum ExportFocus {
     /// whose files disagree, since that is where a null and an absent cell differ and
     /// the source file is what tells them apart downstream.
     SourceFile,
-    // Footer buttons
-    ExportButton,
-    CancelButton,
 }
 
 pub struct ExportModal {
@@ -197,7 +194,6 @@ impl ExportModal {
         if self.offer_source_file {
             order.push(ExportFocus::SourceFile);
         }
-        order.extend([ExportFocus::ExportButton, ExportFocus::CancelButton]);
         order
     }
 

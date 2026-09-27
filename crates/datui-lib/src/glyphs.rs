@@ -136,13 +136,17 @@ const UNICODE: Glyphs = Glyphs {
     ctrl_updown: "^↑↓",
     middot: "·",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
-    // Plain Unicode from blocks any UTF-8 font covers, and each one Neutral width
-    // rather than Ambiguous, so an East Asian locale does not render them double-wide
-    // and knock every name out of line.
+    // Plain Unicode from blocks the common coding fonts actually cover — checked
+    // against JetBrainsMono Nerd Font, Liberation Mono and Noto Sans Mono per
+    // codepoint (`fc-list "<font>:charset=<hex>"`). A slot the terminal font lacks
+    // is worse than absent: an `Emoji=Yes, Emoji_Presentation=No` codepoint (☁, ☑)
+    // falls back to the *color emoji* font and renders a blank cell or a clipped
+    // blob, and no font the user picks fixes that. That audit retired ☁ U+2601,
+    // ⇅ U+21C5, ☑/☐ U+2611/U+2610 and ◐/◑ U+25D0/U+25D1 from this set (#325).
     here: "◦",
     in_memory: "▪",
-    over_network: "⇅",
-    in_object_store: "☁",
+    over_network: "↕",
+    in_object_store: "≈",
     place_unknown: "◌",
     null: "∅",
     absent: "·",
@@ -157,14 +161,14 @@ const UNICODE: Glyphs = Glyphs {
     arrow_right: "→",
     trail: "›",
     hidden_mark: "⊘",
-    checkbox_on: "☑",
-    checkbox_off: "☐",
+    checkbox_on: "■",
+    checkbox_off: "□",
     radio_on: "●",
     radio_off: "○",
     dot_full: "●",
-    dot_half: "◐",
+    dot_half: "◔",
     dot_empty: "○",
-    score_marks: &["○", "◑", "◐", "◉", "●"],
+    score_marks: &["○", "◔", "◕", "◉", "●"],
     check: "✓",
     warning: "⚠",
     scroll_thumb: "█",

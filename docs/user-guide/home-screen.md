@@ -13,16 +13,16 @@ open it.
  › ▏  filter and search
  ▾ RECENT  3  ────────────────────────────────────────────────────────────
    /mnt/data/warehouse/  2 parquet                                   nfs4
- ▎   ⇅ sales  hive                          2.4M × 18    340 MB    2d
-     ⇅ customers.parquet                     89k × 12      4 MB    1w
+ ▎   ↕ sales  hive                          2.4M × 18    340 MB    2d
+     ↕ customers.parquet                     89k × 12      4 MB    1w
    ~/exports/
      ◦ q3.csv                                          1.2 GB    3h
  ▾ ~/work/analysis  2  current directory  ───────────────────────────────
    ◦ raw_export.csv                                     1.2 GB    3h
    ◦ notes/ dir
  ▾ /mnt/data  2  configured  ──────────────────────────────────── nfs4
-   ⇅ events  hive                            1.1M × 9    120 MB    3h
-   ⇅ lookup.parquet                           980 × 4      8 KB   2mo
+   ↕ events  hive                            1.1M × 9    120 MB    3h
+   ↕ lookup.parquet                           980 × 4      8 KB   2mo
  Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 ```
 
@@ -289,8 +289,8 @@ A marker before each name says what opening it will cost:
 |---|---|---|
 | `◦` | `.` | local disk |
 | `▪` | `*` | memory, such as `/tmp` on tmpfs |
-| `⇅` | `~` | network filesystem: NFS, SMB, sshfs |
-| `☁` | `@` | object store or URL |
+| `↕` | `~` | network filesystem: NFS, SMB, sshfs |
+| `≈` | `@` | object store or URL |
 | `◌` | `?` | unknown |
 
 Local disk is dimmed; the rest are colored.
@@ -310,11 +310,11 @@ objects open like files, and opened objects go into `RECENT` like any other path
 
 ```
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
-  ☁ Amazon S3         s3      3 buckets     datui config
-  ☁ Google Cloud      gcs     4 projects    project: example-project · gcloud
-  ☁ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
-  ☁ onprem            s3      403           minio.corp.example:9000 · datui config
-  ☁ Public datasets   public  6 datasets    built in
+  ≈ Amazon S3         s3      3 buckets     datui config
+  ≈ Google Cloud      gcs     4 projects    project: example-project · gcloud
+  ≈ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
+  ≈ onprem            s3      403           minio.corp.example:9000 · datui config
+  ≈ Public datasets   public  6 datasets    built in
 ```
 
 | Column | Shows |

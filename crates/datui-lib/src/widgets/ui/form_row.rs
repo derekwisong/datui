@@ -1,6 +1,6 @@
-//! `label  value` on one line inside a Surface. The focused row shows its
-//! label in the accent; the chosen value is always echoed, so nothing is
-//! ambiguous when focus is elsewhere.
+//! `label  value` on one line inside a Surface. The focused row carries the
+//! rail and its label in the accent; the chosen value is always echoed, so
+//! nothing is ambiguous when focus is elsewhere.
 
 use crate::render::context::RenderContext;
 use crate::widgets::text_input::TextInput;
@@ -25,7 +25,8 @@ pub struct FormRow<'a> {
     pub label: &'a str,
     pub value: FormValue<'a>,
     pub focused: bool,
-    /// Where the value column starts, shared by every row so values align.
+    /// Where the value column starts, past the rail gutter, shared by every
+    /// row so values align.
     pub label_width: u16,
 }
 
@@ -34,6 +35,24 @@ impl FormRow<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        // The rail gutter is always there, so focus arriving moves nothing —
+        // Tab walks the rail down the rows, which is what says the rows are
+        // walkable. Same mark as the table's current row and the Picker's
+        // selection: one focus signal everywhere.
+        let g = crate::glyphs::get();
+        let rail = if self.focused { g.rail } else { " " };
+        Paragraph::new(rail)
+            .style(Style::default().fg(ctx.accent))
+            .render(Rect { width: 1, ..area }, buf);
+        let area = Rect {
+            x: area.x + 1,
+            width: area.width - 1,
+            ..area
+        };
+        if area.width == 0 {
+            return;
+        }
+
         let label_style = if self.focused {
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else {
@@ -59,7 +78,6 @@ impl FormRow<'_> {
         match &self.value {
             FormValue::Input(input) => (*input).render(value_area, buf),
             FormValue::Toggle(on) => {
-                let g = crate::glyphs::get();
                 let marker = if *on { g.checkbox_on } else { g.checkbox_off };
                 Paragraph::new(marker)
                     .style(Style::default().fg(ctx.text_primary))
@@ -98,7 +116,8 @@ mod tests {
             label_width: 17,
         };
         let (text, _) = render_row(&row, 40);
-        assert_eq!(text.find("Gzip"), Some(17), "got {text:?}");
+        // One rail-gutter column, then the label, then the value column.
+        assert_eq!(text.find("Gzip"), Some(18), "got {text:?}");
     }
 
     #[test]
@@ -116,9 +135,11 @@ mod tests {
         }
     }
 
-    /// Focus is a color, never a layout change.
+    /// Focus is the rail and the accent, never a layout change: the gutter is
+    /// reserved, so the label and value sit still while the rail arrives.
     #[test]
-    fn focus_accents_the_label_and_moves_nothing() {
+    fn focus_brings_the_rail_and_moves_nothing() {
+        let g = crate::glyphs::get();
         let make = |focused| FormRow {
             label: "Path:",
             value: FormValue::Choice("out.csv"),
@@ -127,14 +148,22 @@ mod tests {
         };
         let (plain_text, plain) = render_row(&make(false), 40);
         let (focused_text, focused) = render_row(&make(true), 40);
-        assert_eq!(plain_text, focused_text);
+        assert!(plain_text.starts_with(' '), "the gutter is reserved");
+        assert!(
+            focused_text.starts_with(g.rail),
+            "the focused row is marked"
+        );
+        assert!(
+            plain_text.chars().skip(1).eq(focused_text.chars().skip(1)),
+            "past the rail, focus changes no text: {plain_text:?} vs {focused_text:?}"
+        );
         let changed: Vec<u16> = (0..40)
             .filter(|&x| plain[(x, 0)].fg != focused[(x, 0)].fg)
             .collect();
         assert!(!changed.is_empty(), "focus is invisible");
         assert!(
-            changed.iter().all(|&x| x < 17),
-            "focus colored the value, not just the label column: {changed:?}"
+            changed.iter().all(|&x| x < 18),
+            "focus colored the value, not just the rail and label: {changed:?}"
         );
     }
 

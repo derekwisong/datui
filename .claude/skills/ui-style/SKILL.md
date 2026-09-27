@@ -80,31 +80,36 @@ hand-rolls one of these is a migration target.
 optional one-line footer of chips. Confirm/Success/Error, every modal, every
 sidebar, the help overlay: all Surfaces.
 
-**FormRow** — `label  value` on one line inside a Surface. The focused row
-shows its label in the accent plus the cursor; unfocused rows stay plain,
-and the chosen value is always echoed so nothing is ambiguous when focus is
-elsewhere. Variants: text, number (`←/→` or `+/-` adjust), toggle (checkbox
-glyph), and picker (opens a Picker; the row shows the current choice).
+**FormRow** — `label  value` on one line inside a Surface, behind a reserved
+one-column rail gutter. The focused row carries the `▎` rail and its label in
+the accent plus the cursor; unfocused rows stay plain, and the chosen value
+is always echoed so nothing is ambiguous when focus is elsewhere. The gutter
+is always there, so focus arriving moves nothing — Tab walks the rail down
+the rows, which is what tells a first session the rows are walkable.
+Variants: text, number (`←/→` or `+/-` adjust), toggle (checkbox glyph), and
+picker (opens a Picker; the row shows the current choice).
 
 ```
-╭Pivot & Melt────────────────────────────╮
-│ Pivot │ Melt                           │
-│                                        │
-│ Index        department                │
-│ Columns      job_title                 │
-│ Values       salary                    │   ← focused row: accent label,
-│ Aggregate    avg                       │      value under edit
-│                                        │
-│ department × job_title → avg(salary)   │   ← the spec, echoed in full
-│ Enter Apply   Tab Next   Esc Cancel    │   ← HintBar, chips
-╰────────────────────────────────────────╯
+╭Pivot & Melt─────────────────────────────╮
+│ Pivot │ Melt                            │
+│                                         │
+│  Index        department                │
+│  Columns      job_title                 │
+│ ▎Values       salary                    │   ← focused row: rail, accent
+│  Aggregate    avg                       │      label, value under edit
+│                                         │
+│ department × job_title → avg(salary)    │   ← the spec, echoed in full
+│ Enter Apply   Tab Next   Esc Cancel     │   ← HintBar, chips
+╰─────────────────────────────────────────╯
 ```
 
 **Picker** — the type-to-narrow list (the Sort tab already has the right
 one; extract it). Type filters, `↑↓` move, Enter chooses and returns to the
 row. Used for columns, operators, formats, aggregations, sheets. A radio
 group is a short Picker, not a grid: arrow-navigation across a 4×2 grid is
-how the wrong aggregation gets exported.
+how the wrong aggregation gets exported. The selection carries the rail and
+the tint while the list is focused, and only the accent when it is not:
+inside one Surface the rail means focus, and Tab visibly moves it.
 
 **HintBar** — the chip row. One renderer shared by the global control bar
 and every Surface footer. Primary action first, Esc last; only keys that

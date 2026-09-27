@@ -158,8 +158,14 @@ impl<'a> Picker<'a> {
                     .render(row_area, buf);
                 break;
             }
+            // The rail marks focus, not selection: inside one Surface it is
+            // the one "you are here", and Tab visibly moves it. The choice
+            // stays visible without focus through the accent alone.
             let (marker, mut style) = if is_selected {
-                (g.rail, Style::default().fg(ctx.accent))
+                (
+                    if self.focused { g.rail } else { " " },
+                    Style::default().fg(ctx.accent),
+                )
             } else {
                 (" ", Style::default().fg(ctx.text_primary))
             };
@@ -275,15 +281,25 @@ mod tests {
         assert!(rows[2].starts_with(" JSON"), "got {rows:?}");
     }
 
-    /// Focus is the tint; losing it never hides which item is chosen.
+    /// The rail leaves with focus — it is the form's one "you are here" —
+    /// but the chosen item never stops being visible: it keeps the accent.
     #[test]
-    fn an_unfocused_selection_stays_visible() {
-        let g = crate::glyphs::get();
+    fn an_unfocused_selection_stays_visible_without_the_rail() {
         let picker = Picker::new(vec!["CSV", "Parquet"], Some(0), false);
         let rows = render_rows(&picker, 20, 2);
         assert!(
-            rows[0].starts_with(&format!("{}CSV", g.rail)),
-            "got {rows:?}"
+            rows[0].starts_with(" CSV"),
+            "no rail without focus: {rows:?}"
+        );
+
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 20, 2);
+        let mut buf = Buffer::empty(area);
+        picker.render(area, &mut buf, &ctx);
+        assert_ne!(
+            buf[(1, 0)].fg,
+            buf[(1, 1)].fg,
+            "the chosen item still reads apart from the rest"
         );
     }
 

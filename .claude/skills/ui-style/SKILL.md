@@ -153,9 +153,11 @@ from blocks any UTF-8 font covers, chosen Neutral width (not Ambiguous, or
 East Asian locales render it double-wide and columns shear).
 
 **Small windows.** The baseline is full usability at 80×24, and graceful
-loss down to roughly 60×20. When width runs out, elements yield in reverse
-order of importance: conveniences first, primary actions next, the way out
-(Esc/quit chip) last, the data never — which is why the control bar is
+loss down to roughly 60×20. When width or height runs out, elements
+yield in reverse order of importance: branding first (the home wordmark
+already steps down to the one-line title on short or narrow terminals),
+then conveniences, then primary actions; the way out (Esc/quit chip) goes
+last, the data never — which is why the control bar is
 built most-important-leftmost and cut from the right. Sidebars cap their
 share of the width and collapse before the table does; overlays scroll
 inside a capped frame rather than growing past the screen; nothing ever

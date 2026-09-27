@@ -4731,13 +4731,16 @@ impl DataTableState {
     pub fn notes(&self) -> Vec<crate::notes::Note> {
         // What the read did first, because it is the frame everything below is about:
         // a directory read as CSV with a JSON file left out, or a lake table read as its
-        // plain files, changes what every other note is a note about.
-        self.open_notes
-            .iter()
-            .chain(self.notes.iter())
-            .chain(self.view_notes.iter())
-            .cloned()
-            .collect()
+        // plain files, changes what every other note is a note about. `merged` rather
+        // than a plain chain, because the open and the footer walk each count the
+        // files a mixed directory's read passed over, and this is the one place both
+        // tallies are in hand.
+        crate::notes::merged(
+            &self.open_notes,
+            &self.notes,
+            &self.view_notes,
+            self.dataset_schema.as_ref(),
+        )
     }
 
     /// What the open itself has to say, settled before any footer was read.
@@ -6642,6 +6645,11 @@ pub struct DataTable {
     pub drift_rows: Vec<u32>,
     /// What each drift group is missing. Indexed by the values in `drift_rows`.
     pub drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// Columns the view is sorted by; each carries a direction mark in the header.
+    /// Filled from the state at render, so the marks always describe the frame drawn.
+    pub sort_columns: Vec<String>,
+    /// Which way that sort runs. One direction for the whole sort, as it is applied.
+    pub sort_ascending: bool,
 }
 
 impl Default for DataTable {
@@ -6668,6 +6676,8 @@ impl Default for DataTable {
             dimmed: Color::DarkGray,
             drift_rows: Vec::new(),
             drift_groups: Arc::new(Vec::new()),
+            sort_columns: Vec::new(),
+            sort_ascending: true,
         }
     }
 }
@@ -6828,6 +6838,31 @@ impl DataTable {
         self
     }
 
+    /// The columns the view is sorted by, and which way, for the header marks. The
+    /// stateful render fills this from the state itself; the builder is for direct
+    /// callers of `render_dataframe`, such as tests.
+    pub fn with_sort(mut self, columns: Vec<String>, ascending: bool) -> Self {
+        self.sort_columns = columns;
+        self.sort_ascending = ascending;
+        self
+    }
+
+    /// The direction mark after a column's name when the view is sorted by it. Every
+    /// column of a multi-sort carries one — the mark alone, no position number, since
+    /// they all run the same way. Empty for unsorted columns.
+    fn sort_mark_for(&self, column: &str) -> &'static str {
+        if self.sort_columns.iter().any(|c| c == column) {
+            let g = crate::glyphs::get();
+            if self.sort_ascending {
+                g.sort_asc
+            } else {
+                g.sort_desc
+            }
+        } else {
+            ""
+        }
+    }
+
     /// The footnote mark after a column's name, when it is not in every file or the
     /// files disagree on its type. Empty otherwise.
     fn drift_mark_for(&self, column: &str, drifting: &HashSet<&str>) -> &'static str {
@@ -6957,10 +6992,14 @@ impl DataTable {
             .iter()
             .enumerate()
             .map(|(i, name)| {
-                let mark_w = self
+                // Both header marks widen the column, or a sorted or drifting
+                // column's last character would be pushed out of its cell.
+                let mark_w = (self
                     .drift_mark_for(name.as_str(), &drifting)
                     .chars()
-                    .count() as u16;
+                    .count()
+                    + self.sort_mark_for(name.as_str()).chars().count())
+                    as u16;
                 let name_w = name.chars().count() as u16 + mark_w;
                 let type_w = dtype_labels
                     .get(i)
@@ -7135,6 +7174,12 @@ impl DataTable {
                 if !mark.is_empty() {
                     heading.push(Span::styled(mark, Style::default().fg(self.dimmed)));
                 }
+                // In the name's own style: the mark says how this column's values
+                // run, so it reads as part of the heading, not a footnote.
+                let sort_mark = self.sort_mark_for(name.as_str());
+                if !sort_mark.is_empty() {
+                    heading.push(Span::styled(sort_mark, name_style));
+                }
                 let mut lines = vec![Line::from(heading)];
                 if self.dtype_row {
                     let type_style = match colour {
@@ -7254,7 +7299,11 @@ impl DataTable {
 impl StatefulWidget for DataTable {
     type State = DataTableState;
 
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(mut self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        // The view's own sort, not the grouped original's: it is what ordered the
+        // rows being drawn, so the header marks can never disagree with them.
+        self.sort_columns = state.view_sort_columns().to_vec();
+        self.sort_ascending = state.view_sort_ascending();
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character
@@ -7332,7 +7381,10 @@ impl StatefulWidget for DataTable {
             let mut scratch = String::new();
             for col_index in 0..cols {
                 let col_name = locked_df.get_column_names()[col_index];
-                let mut max_len = col_name.chars().count() as u16;
+                // A locked column can be sorted too; its area must fit the mark.
+                let mut max_len = (col_name.chars().count()
+                    + self.sort_mark_for(col_name.as_str()).chars().count())
+                    as u16;
                 let col_data = &locked_df[col_index];
                 let col_fmt = if self.binary_cols.contains(col_name.as_str()) {
                     CellFormatter::Passthrough
@@ -11305,6 +11357,133 @@ mod tests {
         assert!(
             header2.contains(g.arrow_left),
             "expected left indicator after scroll: {header2:?}"
+        );
+    }
+
+    #[test]
+    fn sorted_column_header_carries_the_direction_mark() {
+        // A sorted view must not look identical to an unsorted one: the sorted
+        // column's header says so, and only that column's.
+        let g = crate::glyphs::get();
+        let table = DataTable::default().with_sort(vec!["age".to_string()], true);
+        let df = df!("name" => &["ann"], "age" => &[41i32]).unwrap();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let header = header_row_string(&buf, area);
+        assert!(
+            header.contains(&format!("age{}", g.sort_asc)),
+            "the sorted column is marked: {header:?}"
+        );
+        assert!(
+            !header.contains(&format!("name{}", g.sort_asc)),
+            "the unsorted column is not: {header:?}"
+        );
+        assert!(
+            !header.contains(g.sort_desc),
+            "an ascending sort never shows the descending mark: {header:?}"
+        );
+    }
+
+    #[test]
+    fn the_direction_mark_flips_with_the_sort() {
+        let g = crate::glyphs::get();
+        let table = DataTable::default().with_sort(vec!["age".to_string()], false);
+        let df = df!("name" => &["ann"], "age" => &[41i32]).unwrap();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let header = header_row_string(&buf, area);
+        assert!(
+            header.contains(&format!("age{}", g.sort_desc)),
+            "a descending sort points down: {header:?}"
+        );
+        assert!(!header.contains(g.sort_asc), "and never up: {header:?}");
+    }
+
+    #[test]
+    fn every_column_of_a_multi_sort_is_marked() {
+        // Marks only, no position numbers: the columns all run the same way.
+        let g = crate::glyphs::get();
+        let table =
+            DataTable::default().with_sort(vec!["name".to_string(), "age".to_string()], true);
+        let df = df!("name" => &["ann"], "age" => &[41i32]).unwrap();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let header = header_row_string(&buf, area);
+        for name in ["name", "age"] {
+            assert!(
+                header.contains(&format!("{name}{}", g.sort_asc)),
+                "{name} carries the mark: {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sort_mark_composes_with_the_drift_mark() {
+        // A column can be sorted and drifting at once; the header carries both
+        // marks and the width arithmetic counts both, so nothing is clipped.
+        let g = crate::glyphs::get();
+        let table = DataTable::default()
+            .with_sort(vec!["age".to_string()], true)
+            .with_drift(
+                Vec::new(),
+                Arc::new(vec![crate::schema_union::DriftGroup {
+                    absent: vec!["age".into()],
+                    unread: Vec::new(),
+                }]),
+            );
+        let df = df!("age" => &[41i32]).unwrap();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let header = header_row_string(&buf, area);
+        assert!(
+            header.contains(&format!("age{}{}", g.drift_mark, g.sort_asc)),
+            "footnote first, direction after: {header:?}"
+        );
+        assert!(
+            row_string(&buf, area, 1).contains("41"),
+            "the widened header does not clip the value"
+        );
+    }
+
+    #[test]
+    fn the_header_mark_follows_the_state_sort_and_its_reverse() {
+        // Through the stateful render: the marks come from the state being drawn,
+        // so applying a sort shows them and `reverse` flips them, with no caller
+        // wiring in between.
+        let g = crate::glyphs::get();
+        let mut state =
+            DataTableState::new(create_test_lf(), None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.sort(vec!["a".to_string()], true);
+
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf, &mut state);
+        let header = header_row_string(&buf, area);
+        assert!(
+            header.contains(&format!("a{}", g.sort_asc)),
+            "sorted ascending: {header:?}"
+        );
+
+        state.reverse();
+        let mut buf2 = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf2, &mut state);
+        let header2 = header_row_string(&buf2, area);
+        assert!(
+            header2.contains(&format!("a{}", g.sort_desc)),
+            "reversed: {header2:?}"
+        );
+        assert!(
+            !header2.contains(g.sort_asc),
+            "the old direction is gone: {header2:?}"
         );
     }
 }

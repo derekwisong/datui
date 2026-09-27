@@ -196,6 +196,12 @@ impl TextInput {
         self.sync();
     }
 
+    /// Select the whole value, so the next printable replaces it while any
+    /// cursor movement drops the selection and edits in place.
+    pub fn select_all(&mut self) {
+        self.textarea.select_all();
+    }
+
     /// Empty the field and stop any history walk in progress.
     pub fn clear(&mut self) {
         self.textarea.clear();

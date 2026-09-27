@@ -17,6 +17,7 @@ or <kbd>Esc</kbd> closes it.
 | Key | Action |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | Switch tab |
+| <kbd>i</kbd> | Open the panel — on the Notes tab while notes are unread |
 | <kbd>Tab</kbd> | On the Schema tab, move focus between the tab bar and the column table |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table, or move through the notes |
 | <kbd>?</kbd> | Help |

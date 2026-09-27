@@ -230,8 +230,14 @@ impl InfoModal {
     }
 
     pub fn open(&mut self) {
+        self.open_on(InfoTab::Schema);
+    }
+
+    /// Open with `tab` in front. The accented `i` chip promises unread notes;
+    /// arriving on the Schema tab instead made the reader hunt for them.
+    pub fn open_on(&mut self, tab: InfoTab) {
         self.active = true;
-        self.active_tab = InfoTab::Schema;
+        self.active_tab = tab;
         self.focus = InfoFocus::Body;
         self.schema_selected_index = 0;
         self.schema_scroll_offset = 0;

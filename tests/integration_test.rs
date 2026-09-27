@@ -2311,6 +2311,42 @@ fn test_files_that_are_not_parquet_are_counted_rather_than_dropped_in_silence() 
     assert_eq!(skipped.scope, "in this directory's listing");
 }
 
+/// A flat mixed directory's read is reported once, not by the open and again by the
+/// footer walk.
+///
+/// Both count the same stray: the open says "read as the commonest; 1 csv not read"
+/// and the walk behind the footers said "in the directory, 1 file is not Parquet"
+/// right under it — the same fact twice, in two wordings. The open's sentence names
+/// the format and says why, so it is the one kept.
+#[test]
+fn test_a_mixed_parquet_directory_says_what_it_left_out_once() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a.parquet", "b.parquet"] {
+        let f = File::create(dir.path().join(name)).unwrap();
+        ParquetWriter::new(f)
+            .finish(&mut df!("id" => &[1i64]).unwrap())
+            .unwrap();
+    }
+    std::fs::write(dir.path().join("extra.csv"), "id\n1\n").unwrap();
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let about: Vec<String> = state
+        .notes()
+        .iter()
+        .filter(|n| n.summary.contains("not read") || n.summary.contains("not Parquet"))
+        .map(|n| n.summary.clone())
+        .collect();
+    assert_eq!(
+        about,
+        [concat!(
+            "the directory holds more than one format and was read as the commonest; ",
+            "1 csv not read"
+        )],
+        "one fact, said once"
+    );
+}
+
 /// And a directory holding only what a writer leaves behind says nothing.
 ///
 /// `_SUCCESS` beside the data is a job reporting that it finished. A note about it on
@@ -3848,17 +3884,11 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     let mut app = open_local_dataset(dir.path());
     assert_eq!(app.data_table_state.as_ref().unwrap().notes().len(), 6);
 
-    // Open the panel, move focus to the tab bar, and walk to the Notes tab. The
-    // dataset is partitioned, so Notes is the fourth.
-    for key in [
+    // Unread notes put their tab in front, so opening the panel is the whole walk.
+    app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
-        KeyCode::Tab,
-        KeyCode::Right,
-        KeyCode::Right,
-        KeyCode::Right,
-    ] {
-        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
-    }
+        KeyModifiers::NONE,
+    )));
     // A short panel cannot show six notes at two lines each plus a gap.
     let area = Rect::new(0, 0, 100, 14);
     let mut buf = Buffer::empty(area);
@@ -3981,15 +4011,11 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
     );
 
     let mut app = open_local_dataset(dir.path());
-    for key in [
+    // Unread notes put their tab in front, so opening the panel is the whole walk.
+    app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
-        KeyCode::Tab,
-        KeyCode::Right,
-        KeyCode::Right,
-        KeyCode::Right,
-    ] {
-        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
-    }
+        KeyModifiers::NONE,
+    )));
     // The shortest panel that draws a note, found rather than written down: how tall
     // that is depends on how long a note is, and a note says more than it used to.
     let mut drawn_at = |height: u16| -> String {
@@ -9856,4 +9882,98 @@ fn test_total_rows_offered_only_under_a_subset() {
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.total_rows_when_subset(), None);
+}
+
+/// The accented `i` chip promises unread notes; pressing it lands on the Notes
+/// tab. A second open, nothing unread, lands on Schema as before.
+#[test]
+fn i_opens_on_notes_while_they_are_unread() {
+    use datui::widgets::info::InfoTab;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    assert!(app.data_table_state.as_ref().unwrap().notes_unseen());
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.info_modal.active_tab,
+        InfoTab::Notes,
+        "unread notes put their tab in front"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.info_modal.active_tab,
+        InfoTab::Schema,
+        "read notes stay where they were; the panel opens on Schema"
+    );
+}
+
+/// Reopening `/` restores the last query selected, so typing states a new
+/// question instead of appending to the tail of the old one.
+#[test]
+fn reopening_the_query_prompt_selects_the_old_query() {
+    let (mut app, rx, tx) = open_query_filter_fixture("reopen_query.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('/'),
+        KeyModifiers::NONE,
+    )));
+    for c in "select a where a > 10".chars() {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 89);
+
+    // Reopen and type a fresh query: the first character replaces the old text.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('/'),
+        KeyModifiers::NONE,
+    )));
+    for c in "select a where a > 50".chars() {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        current_rows(&app),
+        49,
+        "typing replaced the restored query rather than appending to it"
+    );
 }

@@ -428,8 +428,15 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     }
 
     if visible.is_empty() && !app.home.filter.is_empty() {
+        // Browsed into a directory, the blank answer must say where it looked: a
+        // filter that misses a sibling of the current directory reads as a bug
+        // until the reader notices the header path.
+        let text = match &app.home.browsing {
+            Some(dir) => format!("No match under {}.", crate::home::display_path(dir)),
+            None => "No match.".to_string(),
+        };
         Paragraph::new(Line::from(Span::styled(
-            "No match.",
+            text,
             Style::default().fg(ctx.dimmed),
         )))
         .render(area, buf);

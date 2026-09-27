@@ -49,4 +49,7 @@ Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)
   Ctrl+Q / Ctrl+C:  Quit
 
-datui stores nothing about your data except this list of recent paths.
+What datui remembers, all under its cache directory and never the data
+itself: recent paths, the shapes and column names it measured (so this
+screen can say 1,000 × 11 without reading anything), and query history.
+datui --clear-cache removes all of it.

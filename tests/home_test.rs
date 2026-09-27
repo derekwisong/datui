@@ -5044,3 +5044,73 @@ fn test_the_door_is_not_counted_among_what_a_directory_holds() {
     home.filter = "part".to_string();
     assert_eq!(header_count(&home), 3);
 }
+
+// ---------------------------------------------------------------------------
+// Column search reaches the recursive walk
+// ---------------------------------------------------------------------------
+
+/// A dataset found by the walk carries what earlier runs measured, so filtering
+/// by a column name surfaces it — the promise "customer_id finds every dataset
+/// with that column" used to stop at the rows already listed, because search
+/// results never consulted the facts index.
+#[test]
+fn a_found_dataset_matches_by_its_remembered_columns() {
+    use datui::cache::DatasetFacts;
+    use datui::discover;
+
+    let tmp = TempDir::new().unwrap();
+    let buried = touch(&tmp.path().join("deep"), "sales.parquet");
+    let meta = fs::metadata(&buried).unwrap();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let mut home = HomeState {
+        filter: "revenue".into(),
+        ..Default::default()
+    };
+    home.known.insert(
+        buried.clone(),
+        DatasetFacts {
+            mtime,
+            size: meta.len(),
+            rows: Some(9),
+            cols: Some(2),
+            cols_sampled: false,
+            columns: vec!["revenue".into(), "region".into()],
+            kind: Some(EntryKind::File),
+            classified_by: discover::CLASSIFIER_VERSION,
+            holds: Default::default(),
+            cost: Default::default(),
+        },
+    );
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.running = true;
+
+    let mut walked = Vec::new();
+    datui::search::walk(
+        tmp.path(),
+        &datui::config::SearchConfig::default(),
+        |batch, _| {
+            walked.extend(batch);
+            true
+        },
+    );
+    assert_eq!(walked.len(), 1, "the walk found the buried file");
+    home.search_batch(tmp.path(), walked, 1);
+
+    assert_eq!(
+        home.search.results[0].columns,
+        vec!["revenue".to_string(), "region".to_string()],
+        "the walk's entry took the remembered columns"
+    );
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title == HomeState::SEARCH_SECTION)
+        .expect("the found section is on screen");
+    assert_eq!(section.rows.len(), 1, "and the row matched by column name");
+}

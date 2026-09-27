@@ -884,6 +884,10 @@ pub struct HomeState {
     pub folds: std::collections::HashMap<String, bool>,
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
+    /// What datui measured on previous runs, keyed by path — the same index the
+    /// listing was annotated from, kept here so rows the recursive search finds
+    /// can be filled in the same way (columns are what the filter matches on).
+    pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
     /// Cloud sources discovered on this machine or named in the config, with their
     /// buckets. Empty on a machine with no cloud credentials, which is the common case
     /// and not a failure.
@@ -957,6 +961,7 @@ impl Default for HomeState {
             enriched: std::collections::HashMap::new(),
             folds: std::collections::HashMap::new(),
             search: SearchState::default(),
+            known: Default::default(),
             recent_expanded: false,
         }
     }
@@ -2424,6 +2429,14 @@ impl HomeState {
         // walk is abandoned rather than cancelled, so late results are normal.
         if self.search.root.as_deref() != Some(root) {
             return;
+        }
+        // What earlier runs measured, so a found row carries its shape and column
+        // names like a listed one — the filter matches on column names, and without
+        // this the promise that "customer_id finds every dataset with that column"
+        // stopped at the rows already on screen. The strict (non-remote) fingerprint
+        // gates it: same size and mtime, or nothing is said.
+        for row in &mut found {
+            apply_known_facts(row, &self.known, false);
         }
         self.search.scanned = scanned;
         self.search.results.append(&mut found);

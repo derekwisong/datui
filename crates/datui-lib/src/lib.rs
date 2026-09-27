@@ -15822,8 +15822,17 @@ impl App {
             }
             KeyCode::Char('i') if event.is_press() => {
                 if let Some(state) = self.data_table_state.as_mut() {
+                    // Unread notes put the panel's Notes tab in front — that is
+                    // what the accented `i` chip was promising. Read before the
+                    // mark, which is what retires the accent.
+                    let unseen = state.notes_unseen();
                     state.mark_notes_seen();
-                    self.info_modal.open();
+                    if unseen {
+                        self.info_modal
+                            .open_on(crate::widgets::info::InfoTab::Notes);
+                    } else {
+                        self.info_modal.open();
+                    }
                     self.input_mode = InputMode::Info;
                     // Defer Parquet metadata load so UI can show throbber; avoid blocking in render
                     if self.path.is_some()
@@ -15845,6 +15854,12 @@ impl App {
                     self.query_input.set_value(state.active_query.clone());
                     self.sql_input.set_value(state.get_active_sql_query());
                     self.fuzzy_input.set_value(state.get_active_fuzzy_query());
+                    // The restored query arrives selected: typing states a new
+                    // question, arrows edit the old one. Unselected, typing
+                    // appended to the tail of the last query.
+                    self.query_input.select_all();
+                    self.sql_input.select_all();
+                    self.fuzzy_input.select_all();
                     state.suppress_error_display = true;
                 } else {
                     self.query_input.clear();

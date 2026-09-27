@@ -2648,6 +2648,141 @@ fn test_recent_shows_whole_places_up_to_a_third_of_the_screen() {
     ));
 }
 
+/// Serializes the tests that change the process working directory, which is process
+/// state: two of them interleaving would each build the other's listing.
+static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Puts the working directory back when the test ends, panicking or not.
+struct CwdGuard(std::path::PathBuf);
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
+fn in_cwd(dir: &std::path::Path) -> (std::sync::MutexGuard<'static, ()>, CwdGuard) {
+    let lock = CWD.lock().unwrap_or_else(|e| e.into_inner());
+    let restore = CwdGuard(std::env::current_dir().unwrap());
+    std::env::set_current_dir(dir).unwrap();
+    (lock, restore)
+}
+
+#[test]
+fn test_a_recent_in_the_current_directory_is_not_listed_twice() {
+    // Opening a few files from where datui was started used to make the first
+    // screen say everything twice: a RECENT place for the cwd, then the
+    // current-directory section with the same rows.
+    let tmp = TempDir::new().unwrap();
+    let here = touch(tmp.path(), "opened_from_cwd.parquet");
+    let away_dir = TempDir::new().unwrap();
+    let away = touch(away_dir.path(), "opened_from_away.parquet");
+    let _cwd = in_cwd(tmp.path());
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &[here, away]);
+
+    let names = visible_names(&home);
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| *n == "opened_from_cwd.parquet")
+            .count(),
+        1,
+        "the current-directory section already lists it: {names:?}"
+    );
+    // A recent in any other directory keeps its place row and its row.
+    assert!(names.iter().any(|n| n == "opened_from_away.parquet"));
+    let places: Vec<std::path::PathBuf> = home
+        .visible()
+        .into_iter()
+        .filter_map(|r| match r {
+            Row::Place { path, .. } => Some(path),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        places,
+        vec![away_dir.path().to_path_buf()],
+        "no place row repeats the current directory"
+    );
+}
+
+#[test]
+fn test_a_cwd_recent_the_directory_listing_does_not_show_stays_under_recent() {
+    // The dedupe goes by what the sections actually contain, not by the path
+    // alone: a dotfile is skipped by the directory scan, so dropping its recent
+    // for living in the cwd would make it vanish from both sections.
+    let tmp = TempDir::new().unwrap();
+    let hidden = touch(tmp.path(), ".seen_once.parquet");
+    touch(tmp.path(), "listed.parquet");
+    let _cwd = in_cwd(tmp.path());
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &[hidden]);
+
+    let names = visible_names(&home);
+    assert!(
+        names.iter().any(|n| n == ".seen_once.parquet"),
+        "nothing else on screen shows it: {names:?}"
+    );
+    assert!(
+        home.visible()
+            .iter()
+            .any(|r| matches!(r, Row::Place { held: 1, .. })),
+        "and the place row survives with it"
+    );
+}
+
+#[test]
+fn test_the_recent_cap_counts_only_the_places_it_shows() {
+    // Three recents in the cwd are suppressed as duplicates; they must not use up
+    // the cap's budget or be counted by the `… N more in M places` row.
+    let tmp = TempDir::new().unwrap();
+    let mut recents: Vec<std::path::PathBuf> = (0..3)
+        .map(|i| touch(tmp.path(), &format!("dup{i}.parquet")))
+        .collect();
+    let elsewhere = TempDir::new().unwrap();
+    recents.extend(ten_places_of_three(&elsewhere));
+    let _cwd = in_cwd(tmp.path());
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+    home.view_height = 30;
+
+    let rows: Vec<Row<'_>> = home
+        .visible()
+        .into_iter()
+        .filter(|r| r.section() == 0)
+        .collect();
+    // The same arithmetic as a listing with no cwd recents at all: two whole
+    // places shown, eight hidden, and a header that counts thirty, not
+    // thirty-three.
+    assert!(
+        matches!(rows.first(), Some(Row::Header { matches: 30, .. })),
+        "{:?}",
+        rows.first()
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| matches!(r, Row::Place { .. }))
+            .count(),
+        2,
+        "{rows:?}"
+    );
+    assert!(
+        matches!(
+            rows.last(),
+            Some(Row::More {
+                hidden: 24,
+                places: 8,
+                ..
+            })
+        ),
+        "the suppressed place is not among the hidden: {:?}",
+        rows.last()
+    );
+}
+
 #[test]
 fn test_expanding_recent_shows_every_place_for_the_session() {
     let tmp = TempDir::new().unwrap();

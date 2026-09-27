@@ -21,7 +21,9 @@ is actually applied.
 
 ![Sorting Demo](../demos/06-sorting.gif)
 
-One row per column. Type to narrow the list, then:
+One row per column — each sorted column's header carries a direction mark
+(▲/▼), so the sort and <kbd>r</kbd> reversing it are visible at a glance.
+Type to narrow the list, then:
 
 | Key | Action |
 |---|---|

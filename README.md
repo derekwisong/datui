@@ -51,7 +51,7 @@ See the [install guide][install-guide] for details and building from source.
   data directories, and the buckets your credentials can reach. Each row shows
   rows, columns and size before you open it; the schema is one keystroke away.
 - **Answers questions.** SQL, a short [query language][query-syntax]
-  (`select a, b where c > 10 by region`), and fuzzy text search across every
+  (`select a, b by region where c > 10`), and fuzzy text search across every
   column. Sort, filter, freeze and hide columns from a sidebar.
 - **Summarizes.** Describe, distribution fitting with Q-Q plots, and a
   correlation matrix, computed on the data as filtered.

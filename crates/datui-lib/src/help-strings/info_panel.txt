@@ -1,4 +1,5 @@
-Dataset technical info.
+Dataset technical info. While a dataset has unread notes, i opens this
+panel on the Notes tab; after that, on Schema.
 
   Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
                     On other tabs: focus stays on tab bar.

@@ -15,7 +15,7 @@ Data Operations:
   e:                Export data to file
   r:                Reverse sort order
   R:                Reset table (clear queries, filters, sorts, locks)
-  T:                Apply most relevant template
+  T:                Apply the best-matching template (or open the list)
   t:                Open Template menu
 
 Display:

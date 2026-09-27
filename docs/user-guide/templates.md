@@ -8,7 +8,7 @@ the top of the list.
 | Key | Action |
 |---|---|
 | <kbd>t</kbd> | Open the template list |
-| <kbd>T</kbd> | Apply the best-matching template without opening the list |
+| <kbd>T</kbd> | Apply the best-matching template without opening the list; when none matches, the list opens instead |
 
 Or from the command line: `datui --template quarterly data.csv`.
 
@@ -23,6 +23,7 @@ one currently applied.
 | <kbd>s</kbd> | Save the current state as a new template |
 | <kbd>e</kbd> | Edit the selected template |
 | <kbd>d</kbd> | Delete it, after confirming |
+| <kbd>i</kbd> | Show how the selected template's score was computed |
 | <kbd>Esc</kbd> | Close |
 
 ## Saving
@@ -36,11 +37,13 @@ description, and choose how it should match future files:
 | Relative path | its path relative to the current directory is the same |
 | Path pattern | its path matches a glob |
 | Filename pattern | its name matches a glob |
-| Schema | it has the same column names |
+| Schema | it has all the template's columns; extra columns are fine |
 
-A template with no match rules is generic and fits everything, at the lowest
-score. Exact path scores highest, then relative path, then an exact schema
-match, then patterns. Matching both a path and the schema scores higher still.
+Schema match starts enabled: it is what carries the template to the next
+table shaped like this one. <kbd>T</kbd> and `auto_apply` only ever apply a
+template one of whose rules fits the open file; the list shows every template
+regardless, ranked. Exact path ranks highest, then relative path, then the
+schema, then patterns; <kbd>i</kbd> in the list shows the arithmetic.
 
 Only the active query tab is saved: **Query**, **SQL** or **Fuzzy**. Filters,
 sort, column order and reshape are saved regardless.

@@ -4627,6 +4627,10 @@ pub struct OpenOptions {
     pub files_disagree: crate::schema_union::Disagreement,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
+    /// `--template NAME`: the template to apply to the dataset named on the command
+    /// line, once it is on screen. Applied to that open only; what later opens get
+    /// is `[templates] auto_apply`'s business.
+    pub template: Option<String>,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
     pub parse_dates: bool,
     /// When set, trim and parse CSV string columns: None = off, Some(true) = all columns, Some(cols) = those columns only.
@@ -4683,6 +4687,7 @@ impl OpenOptions {
             row_start_index: 1,
             hive: false,
             single_spine_schema: true,
+            template: None,
             parse_dates: true,
             parse_strings: None,
             parse_strings_sample_rows: 1000,
@@ -4790,6 +4795,7 @@ impl OpenOptions {
         opts.skip_rows = args.skip_rows;
         opts.skip_tail_rows = args.skip_tail_rows;
         opts.has_header = args.no_header.map(|no_header| !no_header);
+        opts.template = args.template.clone();
 
         // Compression: CLI only (auto-detect from extension when not specified)
         opts.compression = args.compression;
@@ -6291,6 +6297,9 @@ pub struct App {
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
+    /// `--template NAME`, waiting for the dataset from the command line to land.
+    /// Taken on the first install, so datasets opened later are not re-dressed.
+    startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
     quality_cache: Vec<QualityCacheEntry>,
     quality_evidence_return: Option<Box<DataTableState>>,
@@ -7253,6 +7262,35 @@ impl App {
             };
         }
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
+
+        // The dataset is installed and its schema known, so this is where a template
+        // meets it. `--template` names one and applies to this first open alone;
+        // `[templates] auto_apply` dresses every open that has a matching template.
+        if let Some(name) = self.startup_template.take() {
+            match self.template_manager.get_template_by_name(&name).cloned() {
+                Some(template) => {
+                    if let Err(e) = self.apply_template(&template) {
+                        self.error_modal
+                            .show(format!("Error applying template \"{name}\": {e}"));
+                    }
+                }
+                None => self
+                    .error_modal
+                    .show(format!("No template named \"{name}\"")),
+            }
+        } else if self.app_config.templates.auto_apply
+            && let Some(path) = self.path.clone()
+            && let Some(template) = self.data_table_state.as_ref().and_then(|state| {
+                self.template_manager
+                    .get_most_relevant(&path, &state.schema)
+            })
+            && let Err(e) = self.apply_template(&template)
+        {
+            self.error_modal.show(format!(
+                "Error applying template \"{}\": {e}",
+                template.name
+            ));
+        }
     }
 
     /// Ensures file path has an extension when user did not provide one; only adds
@@ -7739,6 +7777,7 @@ impl App {
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
+            startup_template: None,
             analysis_modal: AnalysisModal::new(),
             quality_cache: Vec::new(),
             quality_evidence_return: None,
@@ -8508,6 +8547,10 @@ impl App {
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
+        // The template modal keys and renders off its own `active`, not the input
+        // mode, so left open here it would come back as a zombie over the next
+        // dataset opened.
+        self.template_modal.close();
         self.abandon_load();
         self.home.status = None;
         self.home.folds = self.cache.load_folds();
@@ -11599,6 +11642,27 @@ impl App {
         self.show_help
     }
 
+    /// Open the template list for the dataset on screen, scored against it.
+    fn open_template_list(&mut self) {
+        let (Some(state), Some(path)) = (&self.data_table_state, &self.path) else {
+            return;
+        };
+        self.template_modal.templates = self
+            .template_manager
+            .find_relevant_templates(path, &state.schema);
+        self.template_modal.broken_templates = self.template_manager.broken_templates.clone();
+        self.template_modal
+            .table_state
+            .select(if self.template_modal.templates.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        self.template_modal.active = true;
+        self.template_modal.mode = TemplateModalMode::List;
+        self.template_modal.focus = TemplateFocus::TemplateList;
+    }
+
     /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
     fn open_help_overlay(&mut self) {
         let already = self.show_help
@@ -14524,19 +14588,18 @@ impl App {
                             self.template_modal.create_relative_path_input.clear();
                         }
 
-                        // Suggest path pattern
-                        if let Some(parent) = path.parent()
+                        // Suggest a path pattern from the absolute path: the parent of a
+                        // bare relative name is "", and ""/*.parquet is a pattern that
+                        // matches every parquet file anywhere, forever.
+                        if let Some(parent) = absolute_path.parent()
                             && let Some(parent_str) = parent.to_str()
-                                && path.file_name().is_some()
-                                    && let Some(ext) = path.extension() {
-                                        self.template_modal
-                                            .create_path_pattern_input
-                                            .set_value(format!(
-                                                "{}/*.{}",
-                                                parent_str,
-                                                ext.to_string_lossy()
-                                            ));
-                                    }
+                            && !parent_str.is_empty()
+                            && let Some(ext) = absolute_path.extension()
+                        {
+                            self.template_modal.create_path_pattern_input.set_value(
+                                format!("{}/*.{}", parent_str, ext.to_string_lossy()),
+                            );
+                        }
 
                         // Suggest filename pattern
                         if let Some(filename) = path.file_name()
@@ -14554,12 +14617,15 @@ impl App {
                             }
                     }
 
-                    // Suggest schema match
+                    // Schema match starts on: "apply this to a similar table" is the
+                    // reason templates exist, and the columns are the only criterion
+                    // that says similar. The paths above pin this file; this one is
+                    // what carries the template to the next file shaped like it.
                     if let Some(ref state) = self.data_table_state
-                        && !state.schema.is_empty() {
-                            self.template_modal.create_schema_match_enabled = false;
-                            // Not auto-enabled, just suggested
-                        }
+                        && !state.schema.is_empty()
+                    {
+                        self.template_modal.create_schema_match_enabled = true;
+                    }
                 }
                 KeyCode::Char('e') if self.template_modal.mode == TemplateModalMode::List => {
                     // Edit selected template
@@ -14583,11 +14649,13 @@ impl App {
                         self.template_modal.delete_confirm_focus = false; // Cancel is default
                     }
                 }
-                KeyCode::Char('?')
+                // `i`, not `?`: the global help gate takes `?` before this branch is
+                // reached, so bound there the popup could never open. `i` is the
+                // details key the info panel already taught.
+                KeyCode::Char('i')
                     if self.template_modal.mode == TemplateModalMode::List
                         && !self.template_modal.delete_confirm =>
                 {
-                    // Show score details popup
                     self.template_modal.show_score_details = true;
                 }
                 KeyCode::Char('D') if self.template_modal.delete_confirm => {
@@ -15781,42 +15849,27 @@ impl App {
                 None
             }
             KeyCode::Char('T') => {
-                // Apply most relevant template immediately (no modal)
+                // Apply the best template whose criteria match this dataset. When none
+                // does, the answer is not silence and not the best-scored stranger: the
+                // list opens, so the user sees what exists and picks — or creates one.
                 if let Some(ref state) = self.data_table_state
                     && let Some(ref path) = self.path
-                    && let Some(template) =
-                        self.template_manager.get_most_relevant(path, &state.schema)
                 {
-                    // Apply template settings
-                    if let Err(e) = self.apply_template(&template) {
-                        // Show error modal instead of just printing
-                        self.error_modal
-                            .show(format!("Error applying template: {}", e));
+                    match self.template_manager.get_most_relevant(path, &state.schema) {
+                        Some(template) => {
+                            if let Err(e) = self.apply_template(&template) {
+                                self.error_modal
+                                    .show(format!("Error applying template: {}", e));
+                            }
+                        }
+                        None => self.open_template_list(),
                     }
                 }
                 None
             }
             KeyCode::Char('t') => {
-                // Open template modal
-                if let Some(ref state) = self.data_table_state
-                    && let Some(ref path) = self.path
-                {
-                    // Load relevant templates
-                    self.template_modal.templates = self
-                        .template_manager
-                        .find_relevant_templates(path, &state.schema);
-                    self.template_modal.broken_templates =
-                        self.template_manager.broken_templates.clone();
-                    self.template_modal.table_state.select(
-                        if self.template_modal.templates.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        },
-                    );
-                    self.template_modal.active = true;
-                    self.template_modal.mode = TemplateModalMode::List;
-                    self.template_modal.focus = TemplateFocus::TemplateList;
+                if self.data_table_state.is_some() && self.path.is_some() {
+                    self.open_template_list();
                 }
                 None
             }
@@ -19622,6 +19675,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let mut app = App::new_with_config(tx.clone(), rt_handle, theme, config.clone());
+    app.startup_template = opts.template.clone();
     if opts.debug {
         app.enable_debug();
     }

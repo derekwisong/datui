@@ -561,13 +561,6 @@ pub fn render(
                 details.push_str("Recent Usage: 2.0\n");
             }
         }
-        if let Ok(duration) = std::time::SystemTime::now().duration_since(template.created) {
-            let months_old = (duration.as_secs() / (30 * 86400)) as f64;
-            if months_old > 0.0 {
-                details.push_str(&format!("Age Penalty: -{:.1}\n", months_old * 1.0));
-            }
-        }
-
         Paragraph::new(details)
             .wrap(ratatui::widgets::Wrap { trim: false })
             .render(inner_area, buf);

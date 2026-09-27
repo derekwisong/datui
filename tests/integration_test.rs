@@ -9601,3 +9601,51 @@ fn home_f1_opens_help_mid_filter() {
     assert!(!app.help_visible());
     assert_eq!(app.home.filter, "sal", "the filter survives the overlay");
 }
+
+// ---------------------------------------------------------------------------
+// Templates: T falls back to the list, and the modal never outlives the dataset
+// ---------------------------------------------------------------------------
+
+/// With no template whose criteria match the open dataset, T opens the template
+/// list instead of silently applying the best-scored stranger (scores carry
+/// usage and recency, so some template always scores highest) or doing nothing.
+#[test]
+fn t_with_no_matching_template_opens_the_list() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("t_fallback.csv");
+    assert!(!app.template_modal.active);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('T'),
+        KeyModifiers::SHIFT,
+    )));
+    assert!(
+        app.template_modal.active,
+        "T without a match shows what exists rather than staying silent"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.template_modal.active);
+}
+
+/// The template modal keys and renders off its own `active`, not the input mode,
+/// so Ctrl+O must take it down: left up, it came back over the next dataset as a
+/// zombie that swallowed keys.
+#[test]
+fn template_modal_does_not_survive_going_home() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("t_zombie.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('t'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.template_modal.active);
+
+    app.enter_home();
+    assert!(
+        !app.template_modal.active,
+        "going home closes the template modal"
+    );
+}

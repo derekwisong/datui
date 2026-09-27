@@ -30,7 +30,7 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>e</kbd> | [Export](../user-guide/exporting-data.md) |
 | <kbd>i</kbd> | [Dataset info](../user-guide/dataset-info.md) |
 | <kbd>t</kbd> | [Templates](../user-guide/templates.md) |
-| <kbd>T</kbd> | Apply the best-matching template |
+| <kbd>T</kbd> | Apply the best-matching template; with no match, open the list |
 | <kbd>N</kbd> | Toggle row numbers |
 | <kbd>F</kbd> | Toggle [digit grouping](../user-guide/configuration.md#number-formatting) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
@@ -194,6 +194,7 @@ In Data Quality:
 | <kbd>s</kbd> | Save the current state as a new template |
 | <kbd>e</kbd> | Edit the selected template |
 | <kbd>d</kbd> | Delete it, after confirming (<kbd>D</kbd> confirms) |
+| <kbd>i</kbd> | Show how the selected template's score was computed |
 | <kbd>Tab</kbd> | In the create and edit form, move between fields; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> returns to the list |
 | <kbd>Esc</kbd> | Close |
 

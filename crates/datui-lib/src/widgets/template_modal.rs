@@ -219,4 +219,13 @@ impl TemplateModal {
         self.focus = TemplateFocus::TemplateList;
         self.editing_template_id = None;
     }
+
+    /// Take the modal down wholesale, whatever mode it is in.
+    pub fn close(&mut self) {
+        self.exit_create_mode();
+        self.active = false;
+        self.delete_confirm = false;
+        self.show_score_details = false;
+        self.show_help = false;
+    }
 }

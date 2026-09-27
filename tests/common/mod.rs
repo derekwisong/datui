@@ -37,9 +37,15 @@ pub fn isolate_cache() {
     ISOLATE.call_once(|| {
         let dir = std::env::temp_dir().join(format!("datui-test-cache-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
+        // The config directory holds templates, so a test App saving one without this
+        // override writes it into the developer's own template list.
+        let config_dir =
+            std::env::temp_dir().join(format!("datui-test-config-{}", std::process::id()));
+        let _ = fs::create_dir_all(&config_dir);
         // SAFETY: test-only. Tests run on parallel threads, so this can race another test
         // reading the environment; accepted in tests and never done outside them.
         unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
+        unsafe { std::env::set_var("DATUI_CONFIG_DIR", &config_dir) };
     });
 }
 

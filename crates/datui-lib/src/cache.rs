@@ -525,7 +525,7 @@ impl DatasetShape {
 /// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`, or
 /// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
 /// `target/<profile>/datui`, and an installed one is nowhere near.
-fn running_as_a_cargo_test() -> bool {
+pub(crate) fn running_as_a_cargo_test() -> bool {
     std::env::current_exe()
         .is_ok_and(|exe| cargo_test_layout(&exe, std::env::var_os("CARGO_TARGET_DIR").as_deref()))
 }

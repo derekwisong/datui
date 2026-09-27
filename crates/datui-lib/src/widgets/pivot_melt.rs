@@ -1,611 +1,350 @@
-//! Pivot / Melt modal rendering.
-//!
-//! Phase 4: Pivot tab UI. Phase 5: Melt tab UI.
+//! Pivot / Melt sidebar rendering: one Surface, a FormRow per field, the one
+//! Picker below the rows for whichever row is being edited, and the staged
+//! spec echoed live above the footer.
 
 use crate::pivot_melt_modal::{PivotMeltFocus, PivotMeltModal, PivotMeltTab};
-use crate::widgets::radio_block::RadioBlock;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use crate::render::context::RenderContext;
+use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, Surface};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
-};
+use ratatui::widgets::{Paragraph, Widget};
 
-/// Render the Pivot and Melt modal: tab bar, tab-specific body, footer.
-/// Uses `border_color` for default borders and `active_color` for focused elements.
-/// `text_primary` and `text_inverse` are used for text-input cursor (same as query prompt).
-#[allow(clippy::too_many_arguments)]
-pub fn render_shell(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut PivotMeltModal,
-    border_color: Color,
-    active_color: Color,
-    text_primary: Color,
-    text_inverse: Color,
-    highlight: Style,
-) {
-    Clear.render(area, buf);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Pivot & Melt")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(Style::default().fg(border_color));
-    let inner = block.inner(area);
-    block.render(area, buf);
+/// Where the value column starts, past the rail gutter: the longest label,
+/// "Variable name:", plus two cells of air.
+const LABEL_WIDTH: u16 = 16;
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(10),
-            Constraint::Length(3),
-        ])
-        .split(inner);
-
-    // Tab bar (Ratatui Tabs widget): no frame/title, no divider, line below
-    let tab_line_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(chunks[0]);
-    let selected = match modal.active_tab {
-        PivotMeltTab::Pivot => 0,
-        PivotMeltTab::Melt => 1,
-    };
-    let tabs = Tabs::new(vec!["Pivot", "Melt"])
-        .style(Style::default().fg(border_color))
-        .highlight_style(
-            Style::default()
-                .fg(active_color)
-                .add_modifier(Modifier::REVERSED),
-        )
-        .select(selected);
-    tabs.render(tab_line_chunks[0], buf);
-    let line_style = if modal.focus == PivotMeltFocus::TabBar {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    Block::default()
-        .borders(Borders::BOTTOM)
-        .border_type(BorderType::Rounded)
-        .border_style(line_style)
-        .render(tab_line_chunks[1], buf);
-
-    // Body
-    match modal.active_tab {
-        PivotMeltTab::Pivot => render_pivot_body(
-            chunks[1],
-            buf,
-            modal,
-            border_color,
-            active_color,
-            text_primary,
-            text_inverse,
-            highlight,
-        ),
-        PivotMeltTab::Melt => render_melt_body(
-            chunks[1],
-            buf,
-            modal,
-            border_color,
-            active_color,
-            text_primary,
-            text_inverse,
-            highlight,
-        ),
+fn row_label(focus: PivotMeltFocus) -> &'static str {
+    match focus {
+        PivotMeltFocus::PivotIndex | PivotMeltFocus::MeltIndex => "Index:",
+        PivotMeltFocus::PivotColumn | PivotMeltFocus::MeltColumns => "Columns:",
+        PivotMeltFocus::PivotValue => "Values:",
+        PivotMeltFocus::PivotAggregation => "Aggregate:",
+        PivotMeltFocus::MeltStrategy => "Strategy:",
+        PivotMeltFocus::MeltPattern => "Pattern:",
+        PivotMeltFocus::MeltType => "Type:",
+        PivotMeltFocus::MeltVariable => "Variable name:",
+        PivotMeltFocus::MeltValue => "Value name:",
+        PivotMeltFocus::TabBar => "",
     }
-
-    // Footer (expand to fill horizontal space, like filter/sort dialogs)
-    let footer_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-        ])
-        .split(chunks[2]);
-
-    let apply_style = if modal.focus == PivotMeltFocus::Apply {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let cancel_style = if modal.focus == PivotMeltFocus::Cancel {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let clear_style = if modal.focus == PivotMeltFocus::Clear {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-
-    Paragraph::new("Apply")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(apply_style),
-        )
-        .centered()
-        .render(footer_chunks[0], buf);
-    Paragraph::new("Cancel")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(cancel_style),
-        )
-        .centered()
-        .render(footer_chunks[1], buf);
-    Paragraph::new("Clear")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(clear_style),
-        )
-        .centered()
-        .render(footer_chunks[2], buf);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_pivot_body(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut PivotMeltModal,
-    border_color: Color,
-    active_color: Color,
-    _text_primary: Color,
-    _text_inverse: Color,
-    highlight: Style,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Percentage(50), // Index columns list (shares with pivot+value)
-            Constraint::Percentage(50), // Pivot + Value column tables
-            Constraint::Length(4),      // Aggregation radio block (borders + 2 rows of options)
-        ])
-        .split(area);
-
-    // Filter (1 line, no placeholder)
-    let filter_style = if modal.focus == PivotMeltFocus::PivotFilter {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
+/// Render the Pivot & Melt sidebar into the given area.
+pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &RenderContext) {
+    // The footer names what the keys do right now: editing a row through the
+    // Picker, or walking and applying the form.
+    let footer = match &modal.picker {
+        Some(_) if modal.is_multi_row(modal.focus) => HintBar::from_ctx(ctx)
+            .hint_weighted("Space", "Toggle", 3)
+            .hint_weighted("Enter", "Done", 2)
+            .hint_weighted("type", "Narrow", 1)
+            .hint_weighted("Esc", "Back", 4),
+        Some(_) => HintBar::from_ctx(ctx)
+            .hint_weighted("Enter", "Choose", 3)
+            .hint_weighted("type", "Narrow", 1)
+            .hint_weighted("Esc", "Back", 4),
+        None if modal.is_picker_row(modal.focus) => HintBar::from_ctx(ctx)
+            .hint_weighted("Enter", "Apply", 3)
+            .hint_weighted("Space", "Edit", 2)
+            .hint_weighted("Tab", "Next", 1)
+            .hint_weighted("Esc", "Cancel", 4),
+        None => HintBar::from_ctx(ctx)
+            .hint_weighted("Enter", "Apply", 3)
+            .hint_weighted("Tab", "Next", 1)
+            .hint_weighted("Esc", "Cancel", 4),
     };
-    let filter_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Filter Index Columns")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(filter_style);
-    let filter_inner = filter_block.inner(chunks[0]);
-    filter_block.render(chunks[0], buf);
-
-    // Render filter input using TextInput widget
-    let is_focused = modal.focus == PivotMeltFocus::PivotFilter;
-    modal.pivot_filter_input.set_focused(is_focused);
-    (&modal.pivot_filter_input).render(filter_inner, buf);
-
-    // Index list
-    let list_style = if modal.focus == PivotMeltFocus::PivotIndexList {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let list_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Index Columns")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(list_style);
-    let list_inner = list_block.inner(chunks[1]);
-    list_block.render(chunks[1], buf);
-
-    let filtered = modal.pivot_filtered_columns();
-    if !filtered.is_empty() && modal.pivot_index_table.selected().is_none() {
-        modal.pivot_index_table.select(Some(0));
+    let content = Surface::new("Pivot & Melt")
+        .footer(&footer)
+        .render(area, buf, ctx);
+    if content.height < 4 || content.width < 10 {
+        return;
     }
-    let rows: Vec<Row> = filtered
-        .iter()
-        .map(|c| {
-            let check = if modal.index_columns.contains(c) {
-                "[x]"
-            } else {
-                "[ ]"
+
+    // Tab line: the active tab carries the accent; the rail says the tab bar
+    // itself holds focus.
+    let g = crate::glyphs::get();
+    let pivot_tab = modal.active_tab == PivotMeltTab::Pivot;
+    let rail = if modal.focus == PivotMeltFocus::TabBar {
+        g.rail
+    } else {
+        " "
+    };
+    let tab_style = |active: bool| {
+        if active {
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_secondary)
+        }
+    };
+    let tab_line = Line::from(vec![
+        Span::styled(rail, Style::default().fg(ctx.accent)),
+        Span::styled("Pivot", tab_style(pivot_tab)),
+        Span::styled(format!(" {} ", g.rule), Style::default().fg(ctx.dimmed)),
+        Span::styled("Melt", tab_style(!pivot_tab)),
+    ]);
+    Paragraph::new(tab_line).render(
+        Rect {
+            height: 1,
+            ..content
+        },
+        buf,
+    );
+
+    // The spec line sits on the last content row, directly above the footer.
+    let spec_y = content.y + content.height - 1;
+
+    modal
+        .melt_pattern_input
+        .set_focused(modal.focus == PivotMeltFocus::MeltPattern);
+    modal
+        .melt_variable_input
+        .set_focused(modal.focus == PivotMeltFocus::MeltVariable);
+    modal
+        .melt_value_input
+        .set_focused(modal.focus == PivotMeltFocus::MeltValue);
+
+    // One FormRow per field; the chosen value is always echoed on the row, so
+    // nothing is ambiguous when focus is elsewhere.
+    let rows = modal.row_order();
+    let mut y = content.y + 2;
+    for &row in rows {
+        if y >= spec_y {
+            break;
+        }
+        let index_echo;
+        let value = match row {
+            PivotMeltFocus::PivotIndex => {
+                index_echo = modal.index_columns.join(", ");
+                echo_or_placeholder(&index_echo, "none")
+            }
+            PivotMeltFocus::PivotColumn => {
+                echo_or_placeholder(modal.pivot_column.as_deref().unwrap_or(""), "none")
+            }
+            PivotMeltFocus::PivotValue => {
+                echo_or_placeholder(modal.value_column.as_deref().unwrap_or(""), "none")
+            }
+            PivotMeltFocus::PivotAggregation => FormValue::Choice(modal.aggregation.as_str()),
+            PivotMeltFocus::MeltIndex => {
+                index_echo = modal.melt_index_columns.join(", ");
+                echo_or_placeholder(&index_echo, "none")
+            }
+            PivotMeltFocus::MeltStrategy => FormValue::Choice(modal.melt_value_strategy.as_str()),
+            PivotMeltFocus::MeltPattern => FormValue::Input(&modal.melt_pattern_input),
+            PivotMeltFocus::MeltType => FormValue::Choice(modal.melt_type_filter.as_str()),
+            PivotMeltFocus::MeltColumns => {
+                index_echo = modal.melt_explicit_list.join(", ");
+                echo_or_placeholder(&index_echo, "none")
+            }
+            PivotMeltFocus::MeltVariable => FormValue::Input(&modal.melt_variable_input),
+            PivotMeltFocus::MeltValue => FormValue::Input(&modal.melt_value_input),
+            PivotMeltFocus::TabBar => continue,
+        };
+        FormRow {
+            label: row_label(row),
+            value,
+            focused: modal.focus == row,
+            label_width: LABEL_WIDTH,
+        }
+        .render(
+            Rect {
+                y,
+                height: 1,
+                ..content
+            },
+            buf,
+            ctx,
+        );
+        y += 1;
+    }
+
+    // The focused row's Picker drops in below the rows and reaches down to
+    // the spec line; the selection carries the rail while the list is up.
+    if let Some(state) = &modal.picker {
+        let picker_y = y + 1;
+        if picker_y < spec_y {
+            let picker_area = Rect {
+                x: content.x + 2,
+                y: picker_y,
+                width: content.width.saturating_sub(2),
+                height: spec_y - picker_y,
             };
-            Row::new(vec![Cell::from(check), Cell::from(c.as_str())])
-        })
-        .collect();
-    let widths = [Constraint::Length(4), Constraint::Min(10)];
-    let table = Table::new(rows, widths)
-        .column_spacing(1)
-        .header(
-            Row::new(vec!["", "Column"])
-                .style(Style::default().add_modifier(Modifier::BOLD))
-                .bottom_margin(0),
-        )
-        .row_highlight_style(highlight);
-    StatefulWidget::render(table, list_inner, buf, &mut modal.pivot_index_table);
-
-    // Pivot / Value: small tables (single-select lists)
-    let pivot_style = if modal.focus == PivotMeltFocus::PivotPivotCol {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let value_style = if modal.focus == PivotMeltFocus::PivotValueCol {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let row_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[2]);
-
-    let pivot_pool = modal.pivot_pool();
-    if !pivot_pool.is_empty() {
-        let n = pivot_pool.len();
-        let idx = modal.pivot_pool_idx.min(n.saturating_sub(1));
-        if modal.pivot_pool_idx != idx {
-            modal.pivot_pool_idx = idx;
-            modal.pivot_column = pivot_pool.get(idx).cloned();
+            let mut picker = Picker::from_state(state, true);
+            if modal.is_multi_row(modal.focus) {
+                let marks = state
+                    .filtered()
+                    .into_iter()
+                    .map(|(_, item)| modal.is_marked(item))
+                    .collect();
+                picker = picker.marks(marks);
+            }
+            picker.render(picker_area, buf, ctx);
         }
-        modal.pivot_pool_table.select(Some(idx));
-    }
-    let pivot_rows: Vec<Row> = pivot_pool
-        .iter()
-        .map(|c| Row::new(vec![Cell::from(c.as_str())]))
-        .collect();
-    let pivot_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Pivot Column")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(pivot_style);
-    let pivot_inner = pivot_block.inner(row_chunks[0]);
-    pivot_block.render(row_chunks[0], buf);
-    if pivot_rows.is_empty() {
-        Paragraph::new("(none)").render(pivot_inner, buf);
-    } else {
-        let pt = Table::new(pivot_rows, [Constraint::Min(5)]).row_highlight_style(highlight);
-        StatefulWidget::render(pt, pivot_inner, buf, &mut modal.pivot_pool_table);
     }
 
-    let value_pool = modal.pivot_value_pool();
-    if !value_pool.is_empty() {
-        let n = value_pool.len();
-        let idx = modal.value_pool_idx.min(n.saturating_sub(1));
-        if modal.value_pool_idx != idx {
-            modal.value_pool_idx = idx;
-            modal.value_column = value_pool.get(idx).cloned();
-        }
-        modal.value_pool_table.select(Some(idx));
-    }
-    let value_rows: Vec<Row> = value_pool
-        .iter()
-        .map(|c| Row::new(vec![Cell::from(c.as_str())]))
-        .collect();
-    let value_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Value Column")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(value_style);
-    let value_inner = value_block.inner(row_chunks[1]);
-    value_block.render(row_chunks[1], buf);
-    if value_rows.is_empty() {
-        Paragraph::new("(none)").render(value_inner, buf);
-    } else {
-        let vt = Table::new(value_rows, [Constraint::Min(5)]).row_highlight_style(highlight);
-        StatefulWidget::render(vt, value_inner, buf, &mut modal.value_pool_table);
-    }
-
-    // Aggregation: radio block (arrows to move, tab to leave)
-    let opts = modal.pivot_aggregation_options();
-    let labels: Vec<&str> = opts.iter().map(|a| a.as_str()).collect();
-    let agg_focused = modal.focus == PivotMeltFocus::PivotAggregation;
-    let selected = modal.aggregation_idx.min(labels.len().saturating_sub(1));
-    RadioBlock::new(
-        " Aggregation ",
-        &labels,
-        selected,
-        agg_focused,
-        4,
-        border_color,
-        active_color,
-    )
-    .render(chunks[3], buf);
+    // The full spec, echoed live: a mis-aimed aggregation is catchable here,
+    // before it runs. While the spec is incomplete, the line says what is
+    // missing instead.
+    let spec = match modal.active_tab {
+        PivotMeltTab::Pivot => modal.pivot_spec_line(g),
+        PivotMeltTab::Melt => modal.melt_spec_line(),
+    };
+    let (text, style) = match spec {
+        Ok(line) => (line, Style::default().fg(ctx.text_primary)),
+        Err(gap) => (gap, Style::default().fg(ctx.dimmed)),
+    };
+    Paragraph::new(text).style(style).render(
+        Rect {
+            y: spec_y,
+            height: 1,
+            ..content
+        },
+        buf,
+    );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_melt_body(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    modal: &mut PivotMeltModal,
-    border_color: Color,
-    active_color: Color,
-    text_primary: Color,
-    text_inverse: Color,
-    highlight: Style,
-) {
-    use crate::pivot_melt_modal::{MeltValueStrategy, PivotMeltFocus};
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(6),
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(4),
-        ])
-        .split(area);
-
-    // Filter (1 line, no placeholder)
-    let filter_style = if modal.focus == PivotMeltFocus::MeltFilter {
-        Style::default().fg(active_color)
+fn echo_or_placeholder<'a>(value: &'a str, placeholder: &'a str) -> FormValue<'a> {
+    if value.is_empty() {
+        FormValue::Placeholder(placeholder)
     } else {
-        Style::default().fg(border_color)
-    };
-    let filter_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Filter Index Columns")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(filter_style);
-    let filter_inner = filter_block.inner(chunks[0]);
-    filter_block.render(chunks[0], buf);
-
-    // Render filter input using TextInput widget
-    let is_focused = modal.focus == PivotMeltFocus::MeltFilter;
-    modal.melt_filter_input.set_focused(is_focused);
-    (&modal.melt_filter_input).render(filter_inner, buf);
-
-    // Index list
-    let list_style = if modal.focus == PivotMeltFocus::MeltIndexList {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let list_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Index Columns")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(list_style);
-    let list_inner = list_block.inner(chunks[1]);
-    list_block.render(chunks[1], buf);
-
-    let filtered = modal.melt_filtered_columns();
-    if !filtered.is_empty() && modal.melt_index_table.selected().is_none() {
-        modal.melt_index_table.select(Some(0));
+        FormValue::Choice(value)
     }
-    let rows: Vec<Row> = filtered
-        .iter()
-        .map(|c| {
-            let check = if modal.melt_index_columns.contains(c) {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            Row::new(vec![Cell::from(check), Cell::from(c.as_str())])
-        })
-        .collect();
-    let widths = [Constraint::Length(4), Constraint::Min(10)];
-    let table = Table::new(rows, widths)
-        .column_spacing(1)
-        .header(
-            Row::new(vec!["", "Column"])
-                .style(Style::default().add_modifier(Modifier::BOLD))
-                .bottom_margin(0),
-        )
-        .row_highlight_style(highlight);
-    StatefulWidget::render(table, list_inner, buf, &mut modal.melt_index_table);
+}
 
-    // Strategy row
-    let strat_style = if modal.focus == PivotMeltFocus::MeltStrategy {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let strat_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Strategy")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(strat_style);
-    let strat_inner = strat_block.inner(chunks[2]);
-    strat_block.render(chunks[2], buf);
-    Paragraph::new(modal.melt_value_strategy.as_str()).render(strat_inner, buf);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pivot_melt_modal::PivotAggregation;
 
-    // Pattern / Type / Explicit
-    let opt_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[3]);
+    fn modal_with_columns(columns: &[&str]) -> PivotMeltModal {
+        let mut m = PivotMeltModal::new();
+        m.available_columns = columns.iter().map(|s| s.to_string()).collect();
+        let config = crate::config::AppConfig::default();
+        let theme = crate::config::Theme::from_config(&config.theme).unwrap();
+        m.open(1000, &theme);
+        m
+    }
 
-    match modal.melt_value_strategy {
-        MeltValueStrategy::ByPattern => {
-            let pat_style = if modal.focus == PivotMeltFocus::MeltPattern {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            let pat_block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Pattern (Regex)")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(pat_style);
-            let pat_inner = pat_block.inner(opt_chunks[0]);
-            pat_block.render(opt_chunks[0], buf);
-            let pt = modal.melt_pattern.as_str();
-            let pc = modal.melt_pattern_cursor.min(pt.chars().count());
-            let mut ch = pt.chars();
-            let b: String = ch.by_ref().take(pc).collect();
-            let a = ch
-                .next()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let af: String = ch.collect();
-            let mut pl = Line::default();
-            pl.spans.push(Span::raw(b));
-            if modal.focus == PivotMeltFocus::MeltPattern {
-                pl.spans.push(Span::styled(
-                    a,
-                    Style::default().bg(text_inverse).fg(text_primary),
-                ));
-            } else {
-                pl.spans.push(Span::raw(a));
-            }
-            if !af.is_empty() {
-                pl.spans.push(Span::raw(af));
-            }
-            Paragraph::new(pl).render(pat_inner, buf);
+    fn render_rows(modal: &mut PivotMeltModal, width: u16, height: u16) -> Vec<String> {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, modal, &ctx);
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// One border, the tab line, a row per field with the value echoed at the
+    /// shared column, and the spec line above the footer.
+    #[test]
+    fn the_pivot_form_echoes_every_choice_and_the_spec() {
+        let g = crate::glyphs::get();
+        let mut m = modal_with_columns(&["dept", "job", "salary"]);
+        m.index_columns = vec!["dept".to_string()];
+        m.pivot_column = Some("job".to_string());
+        m.value_column = Some("salary".to_string());
+        m.aggregation = PivotAggregation::Avg;
+        let rows = render_rows(&mut m, 50, 20);
+
+        assert!(rows[0].contains("Pivot & Melt"), "title on the frame");
+        for row in &rows[1..19] {
+            assert!(
+                !row.contains('╭') && !row.contains('╰'),
+                "a second border inside the surface: {row:?}"
+            );
         }
-        MeltValueStrategy::ByType => {
-            let ty_style = if modal.focus == PivotMeltFocus::MeltType {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            let ty_block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Type")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(ty_style);
-            let ty_inner = ty_block.inner(opt_chunks[0]);
-            ty_block.render(opt_chunks[0], buf);
-            Paragraph::new(modal.melt_type_filter.as_str()).render(ty_inner, buf);
+        assert!(rows[1].contains("Pivot") && rows[1].contains("Melt"));
+        assert!(rows[3].contains("Index:") && rows[3].contains("dept"));
+        assert!(rows[4].contains("Columns:") && rows[4].contains("job"));
+        assert!(rows[5].contains("Values:") && rows[5].contains("salary"));
+        assert!(rows[6].contains("Aggregate:") && rows[6].contains("avg"));
+        // Values align on one column: past the rail gutter and the label.
+        let char_col = |s: &str, needle: &str| s.find(needle).map(|b| s[..b].chars().count());
+        for (row, value) in [(3, "dept"), (4, "job"), (5, "salary"), (6, "avg")] {
+            assert_eq!(
+                char_col(&rows[row], value),
+                Some(2 + 1 + LABEL_WIDTH as usize),
+                "row {row} value out of column: {:?}",
+                rows[row]
+            );
         }
-        MeltValueStrategy::ExplicitList => {
-            let ex_style = if modal.focus == PivotMeltFocus::MeltExplicitList {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            let ex_block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Value Columns")
-                .title_style(ratatui::style::Style::reset())
-                .border_style(ex_style);
-            let ex_inner = ex_block.inner(chunks[3]);
-            ex_block.render(chunks[3], buf);
-            let pool = modal.melt_explicit_pool();
-            if !pool.is_empty() && modal.melt_explicit_table.selected().is_none() {
-                modal.melt_explicit_table.select(Some(0));
-            }
-            let ex_rows: Vec<Row> = pool
-                .iter()
-                .map(|c| {
-                    let check = if modal.melt_explicit_list.contains(c) {
-                        "[x]"
-                    } else {
-                        "[ ]"
-                    };
-                    Row::new(vec![Cell::from(check), Cell::from(c.as_str())])
-                })
-                .collect();
-            let ew = [Constraint::Length(4), Constraint::Min(10)];
-            let ex_table = Table::new(ex_rows, ew)
-                .column_spacing(1)
-                .header(
-                    Row::new(vec!["", "Column"])
-                        .style(Style::default().add_modifier(Modifier::BOLD))
-                        .bottom_margin(0),
-                )
-                .row_highlight_style(highlight);
-            StatefulWidget::render(ex_table, ex_inner, buf, &mut modal.melt_explicit_table);
-        }
-        MeltValueStrategy::AllExceptIndex => {}
+        let spec = format!("dept {} job {} avg(salary)", g.times, g.arrow_right);
+        assert!(
+            rows[17].contains(&spec),
+            "the spec line above the footer: {:?}",
+            rows[17]
+        );
+        assert!(
+            rows[18].contains("Enter") && rows[18].contains("Apply"),
+            "the footer chips: {:?}",
+            rows[18]
+        );
     }
 
-    // Variable name / Value name with cursor
-    let var_style = if modal.focus == PivotMeltFocus::MeltVarName {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let val_style = if modal.focus == PivotMeltFocus::MeltValName {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let vchunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[4]);
-    let var_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Variable Name")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(var_style);
-    let var_inner = var_block.inner(vchunks[0]);
-    var_block.render(vchunks[0], buf);
-    let vn = modal.melt_variable_name.as_str();
-    let vc = modal.melt_variable_cursor.min(vn.chars().count());
-    let mut ch = vn.chars();
-    let vb: String = ch.by_ref().take(vc).collect();
-    let va = ch
-        .next()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    let vaf: String = ch.collect();
-    let mut vl = Line::default();
-    vl.spans.push(Span::raw(vb));
-    if modal.focus == PivotMeltFocus::MeltVarName {
-        vl.spans.push(Span::styled(
-            va,
-            Style::default().bg(text_inverse).fg(text_primary),
-        ));
-    } else {
-        vl.spans.push(Span::raw(va));
+    /// Before anything is chosen the rows say "none" and the spec line names
+    /// the first gap instead of echoing a spec.
+    #[test]
+    fn an_empty_form_shows_placeholders_and_the_gap() {
+        let mut m = modal_with_columns(&["a", "b"]);
+        let rows = render_rows(&mut m, 50, 20);
+        assert!(rows[3].contains("none"), "empty index: {:?}", rows[3]);
+        assert!(
+            rows[17].contains("Select at least one index column."),
+            "the gap is named: {:?}",
+            rows[17]
+        );
     }
-    if !vaf.is_empty() {
-        vl.spans.push(Span::raw(vaf));
-    }
-    Paragraph::new(vl).render(var_inner, buf);
 
-    let val_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Value Name")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(val_style);
-    let val_inner = val_block.inner(vchunks[1]);
-    val_block.render(vchunks[1], buf);
-    let wn = modal.melt_value_name.as_str();
-    let wc = modal.melt_value_cursor.min(wn.chars().count());
-    let mut ch = wn.chars();
-    let wb: String = ch.by_ref().take(wc).collect();
-    let wa = ch
-        .next()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    let waf: String = ch.collect();
-    let mut wl = Line::default();
-    wl.spans.push(Span::raw(wb));
-    if modal.focus == PivotMeltFocus::MeltValName {
-        wl.spans.push(Span::styled(
-            wa,
-            Style::default().bg(text_inverse).fg(text_primary),
-        ));
-    } else {
-        wl.spans.push(Span::raw(wa));
+    /// The open Picker drops in below the rows, scoped to the focused row,
+    /// with a checkbox per item on a toggle row.
+    #[test]
+    fn the_index_picker_shows_toggles() {
+        let g = crate::glyphs::get();
+        let mut m = modal_with_columns(&["dept", "region", "salary"]);
+        m.focus = PivotMeltFocus::PivotIndex;
+        m.open_picker();
+        m.picker_toggle(); // dept in
+        let rows = render_rows(&mut m, 50, 20);
+        let body = rows.join("\n");
+        assert!(
+            body.contains(&format!("{} dept", g.checkbox_on)),
+            "chosen item checked: {body}"
+        );
+        assert!(
+            body.contains(&format!("{} region", g.checkbox_off)),
+            "other items unchecked: {body}"
+        );
+        assert!(
+            rows[18].contains("Space") && rows[18].contains("Toggle"),
+            "the footer says Space toggles: {:?}",
+            rows[18]
+        );
     }
-    if !waf.is_empty() {
-        wl.spans.push(Span::raw(waf));
+
+    /// The melt form swaps its strategy row's dependents in place.
+    #[test]
+    fn the_melt_form_follows_the_strategy() {
+        let mut m = modal_with_columns(&["id", "q1", "q2"]);
+        m.switch_tab();
+        m.melt_value_strategy = crate::pivot_melt_modal::MeltValueStrategy::ByPattern;
+        let rows = render_rows(&mut m, 50, 20);
+        assert!(rows[5].contains("Pattern:"), "got {:?}", rows[5]);
+        assert!(rows[6].contains("Variable name:"), "got {:?}", rows[6]);
+        assert!(rows[7].contains("Value name:") && rows[7].contains("value"));
     }
-    Paragraph::new(wl).render(val_inner, buf);
+
+    #[test]
+    fn a_tiny_area_never_panics() {
+        for (w, h) in [(0, 0), (3, 2), (10, 4), (20, 6), (50, 8), (60, 20)] {
+            let mut m = modal_with_columns(&["a", "b"]);
+            m.focus = PivotMeltFocus::PivotIndex;
+            m.open_picker();
+            let _ = render_rows(&mut m, w, h);
+        }
+    }
 }

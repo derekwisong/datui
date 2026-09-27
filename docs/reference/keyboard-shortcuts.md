@@ -172,12 +172,12 @@ In Data Quality:
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Pivot and Melt; in a text field, move the cursor |
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus through the form to Apply, Cancel, Clear |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move through a list |
-| <kbd>Space</kbd> | Select or deselect in a multi-select list |
-| <kbd>Enter</kbd> | Press the focused button |
-| <kbd>Esc</kbd> | Close without applying |
+| <kbd>←</kbd> <kbd>→</kbd> | Switch Pivot and Melt; in a text field, move the cursor |
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the rows |
+| <kbd>Space</kbd> or typing | Open the focused row's picker, narrowed by what you type |
+| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> toggles where several can be chosen |
+| <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere in the form |
+| <kbd>Esc</kbd> | Close the picker; pressed again, close without applying |
 
 ## Export
 

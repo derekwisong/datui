@@ -19,6 +19,8 @@ pub enum FormValue<'a> {
     /// A pick-one value, cycled or chosen through a Picker; the row echoes the
     /// current choice.
     Choice(&'a str),
+    /// A choice not yet made: the row says so quietly instead of sitting blank.
+    Placeholder(&'a str),
 }
 
 pub struct FormRow<'a> {
@@ -86,6 +88,11 @@ impl FormRow<'_> {
             FormValue::Choice(value) => {
                 Paragraph::new(*value)
                     .style(Style::default().fg(ctx.text_primary))
+                    .render(value_area, buf);
+            }
+            FormValue::Placeholder(value) => {
+                Paragraph::new(*value)
+                    .style(Style::default().fg(ctx.dimmed))
                     .render(value_area, buf);
             }
         }

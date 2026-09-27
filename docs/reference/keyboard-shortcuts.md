@@ -1,7 +1,9 @@
 # Keyboard Shortcuts
 
 <kbd>?</kbd> or <kbd>F1</kbd> shows the keys for whatever is on screen;
-<kbd>F1</kbd> works inside text fields too. The bar at the bottom of the
+<kbd>F1</kbd> works inside text fields too, and on the home screen, where
+letters type into the filter, <kbd>?</kbd> opens help until you start
+typing. The bar at the bottom of the
 screen shows the ones that matter most. A spinner in that bar means datui is
 busy; keys you type at it are queued and replayed once the work is done, so
 typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
@@ -35,7 +37,7 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
-| <kbd>q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |
+| <kbd>q</kbd> <kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |
 
 The three toggles last for the session; the config file sets the state at
 launch.
@@ -63,6 +65,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, directory, then to the open data |
+| <kbd>?</kbd> or <kbd>F1</kbd> | Help (<kbd>?</kbd> until you start typing; <kbd>F1</kbd> always) |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
@@ -70,7 +73,8 @@ Letters type into the filter here, so none of them is a key.
 
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Switch tab (Query, SQL, Fuzzy) and move into the input |
+| <kbd>Tab</kbd> | Move between the input and the tab bar |
+| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Query, SQL, Fuzzy |
 | <kbd>↑</kbd> <kbd>↓</kbd> | History for the current tab |
 | <kbd>Enter</kbd> | Run. An empty query restores the full table |
 | <kbd>Esc</kbd> | Cancel |
@@ -97,7 +101,7 @@ Every text field, from the query prompt to a file path, edits the same way:
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Sort and Filter |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus through the form to Apply, Cancel, Clear |
-| <kbd>Enter</kbd> | Press the focused button; on the Filter tab, add the filter |
+| <kbd>Enter</kbd> | Press the focused button; on the Filter tab, add the filter, or remove the highlighted one from the list |
 | <kbd>Esc</kbd> | Close without applying |
 
 On the Sort tab, with a column highlighted:
@@ -105,6 +109,7 @@ On the Sort tab, with a column highlighted:
 | Key | Action |
 |---|---|
 | <kbd>Space</kbd> | Sort by it, or stop |
+| <kbd>Enter</kbd> | Sort by it and apply at once |
 | <kbd>1</kbd> to <kbd>9</kbd> | Put it at that position in the sort order |
 | <kbd>[</kbd> <kbd>]</kbd> | Move it earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move it left or right in the table |
@@ -120,7 +125,7 @@ On the Sort tab, with a column highlighted:
 | <kbd>←</kbd> <kbd>→</kbd> | Change chart type, plot style, or a numeric option |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move through a column list |
 | <kbd>Enter</kbd> <kbd>Space</kbd> | Select a column or toggle an option |
-| <kbd>+</kbd> <kbd>-</kbd> | Adjust bins, bandwidth or the row limit |
+| <kbd>+</kbd> <kbd>-</kbd> | Adjust bins, bandwidth or the row limit (<kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the row limit) |
 | <kbd>e</kbd> | Export to PNG or EPS |
 | <kbd>Esc</kbd> | Back to the table |
 
@@ -132,17 +137,23 @@ On the Sort tab, with a column highlighted:
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
 | <kbd>Enter</kbd> | Run the highlighted tool, or open the detail of a column or a correlation pair |
-| <kbd>1</kbd>–<kbd>4</kbd> | In Data Quality, open Overview, Columns, Segments, or Trends |
-| <kbd>e</kbd> | In Data Quality, edit scope, grain, compute, comparison, and time roles in a copy of the plan |
-| <kbd>Enter</kbd> on Scope | In the Data Quality plan editor, open the precise scope entry |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> on Scope | Scroll the numbered source-file inventory |
-| <kbd>p</kbd> | In Data Quality, show the detailed access plan |
-| <kbd>[</kbd> <kbd>]</kbd> | In Data Quality Segments/Trends, choose a column |
-| <kbd>m</kbd> | In Data Quality Segments/Trends, choose a measurement |
-| <kbd>b</kbd> | In Data Quality Segments, use the selected segment as baseline |
 | <kbd>s</kbd> | In the distribution detail, toggle the histogram between linear and log |
-| <kbd>r</kbd> | In Data Quality, rerun with a new seed; elsewhere redraw a sample when sampling is on |
+| <kbd>r</kbd> | Redraw a sample when sampling is on |
 | <kbd>Esc</kbd> | Back one level |
+
+In Data Quality:
+
+| Key | Action |
+|---|---|
+| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview, Columns, Segments, or Trends |
+| <kbd>e</kbd> | Edit scope, grain, compute, comparison, and time roles in a copy of the plan |
+| <kbd>Enter</kbd> on Scope | In the plan editor, open the precise scope entry |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> on Scope | Scroll the numbered source-file inventory |
+| <kbd>p</kbd> | Show the detailed access plan |
+| <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column |
+| <kbd>m</kbd> | In Segments/Trends, choose a measurement |
+| <kbd>b</kbd> | In Segments, use the selected segment as baseline |
+| <kbd>r</kbd> | Rerun with a new seed |
 
 ## Pivot and melt
 
@@ -150,7 +161,7 @@ On the Sort tab, with a column highlighted:
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Pivot and Melt; in a text field, move the cursor |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus through the form to Apply, Cancel, Clear |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move through a list |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move through a list |
 | <kbd>Space</kbd> | Select or deselect in a multi-select list |
 | <kbd>Enter</kbd> | Press the focused button |
 | <kbd>Esc</kbd> | Close without applying |
@@ -161,27 +172,29 @@ On the Sort tab, with a column highlighted:
 |---|---|
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path, options and buttons |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Change the format |
-| <kbd>Enter</kbd> | Toggle a checkbox, or press Export or Cancel |
+| <kbd>Enter</kbd> <kbd>Space</kbd> | Toggle a checkbox, or (<kbd>Enter</kbd>) press Export or Cancel |
 | <kbd>Esc</kbd> | Close |
 
 ## Dataset info
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> | Switch Schema, Resources, Partitions |
+| <kbd>←</kbd> <kbd>→</kbd> | Switch Schema, Resources, Partitions, Notes |
 | <kbd>Tab</kbd> | On Schema, move between the tab bar and the column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table, or move through the notes |
+| <kbd>Enter</kbd> | On a note, take its offer, where it has one |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
 ## Templates
 
 | Key | Action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move through the list |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move through the list |
 | <kbd>Enter</kbd> | Apply the selected template |
 | <kbd>s</kbd> | Save the current state as a new template |
 | <kbd>e</kbd> | Edit the selected template |
 | <kbd>d</kbd> | Delete it, after confirming (<kbd>D</kbd> confirms) |
+| <kbd>Tab</kbd> | In the create and edit form, move between fields; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> returns to the list |
 | <kbd>Esc</kbd> | Close |
 
 ## Terminal notes

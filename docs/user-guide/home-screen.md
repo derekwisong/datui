@@ -55,12 +55,8 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>?</kbd> | Help |
 
 <kbd>Esc</kbd> never quits and <kbd>q</kbd> types a `q`. The control bar says
-what <kbd>Esc</kbd> will do next.
-
-When a key cannot do what it asks, the line beside the filter says why, until
-the next key. What stays true about a row is in its details pane, such as why a
-bucket directory's `(all files)` row reads nothing, and what stays true about
-the directory you are in is on its heading.
+what <kbd>Esc</kbd> will do next, and when a key cannot do what it asks, the
+line beside the filter says why.
 
 ## Sections
 
@@ -89,10 +85,6 @@ lives in, local or in a bucket, newest place first. The place row names the path
 what datui last found the place to be (`hive`, `12 parquet`) when it has seen
 it, and, on a network share or in an object store, what it is on. A sort orders
 the rows inside each place and never flattens the section.
-
-A Parquet dataset opened from a bucket, as one object or as a directory, shows the
-rows, columns and label the open learned. One nothing has measured yet shows
-`…` for its shape.
 
 | On a place row | Does |
 |---|---|
@@ -175,23 +167,11 @@ data is too big to commit, which is exactly the data you want to open.
 
 ### Tuning
 
-```toml
-[data.search]
-enabled           = true
-max_depth         = 8
-max_results       = 20000
-time_budget_ms    = 1500
-cross_filesystems = false   # turn on if your data is on a fast mount below the working directory
-follow_gitignore  = false
-skip       = ["node_modules", "target", "build", "dist", "vendor",
-              "site-packages", "__pycache__", "venv", "env"]
-skip_extra = []             # add to the default list instead of replacing it
-extensions = []             # empty = every format datui opens; e.g. ["parquet", "csv"]
-```
-
-`cross_filesystems` is the important one: leaving it off is what stops a search
-from descending onto a network share, or on autofs from mounting one by looking
-at it.
+`[data.search]` sets the depth, time budget, result cap, skip list and
+extensions; see [Configuration](configuration.md#data). The key that matters is
+`cross_filesystems = false`: leaving it off is what stops a search from
+descending onto a network share, or on autofs from mounting one by looking at
+it.
 
 ## The details pane
 
@@ -244,11 +224,10 @@ parquet`. The details pane carries the whole tally on a `holds` line — `12
 parquet · 2 csv · 3 directories · 5 not read · 7 skipped (.crc, _SUCCESS,
 _committed_1727, _started_1727, …)` — every file in the directory is in one of
 those counts. `skipped` is a name beginning with `_` or `.`, or ending
-`_$folder$` — where every engine puts its own files, where a repository puts
-`.git`, and what s3n and EMR write to stand in for a folder. A `key=value` name
-is a partition whatever it begins with, so a dataset partitioned on `_date` is
-not skipped; a marker named after one, `year=2024_$folder$`, still is. The first
-four skipped are named.
+`_$folder$` — the names engines and repositories use for their own files. A
+`key=value` name is a partition whatever it begins with, so a dataset
+partitioned on `_date` is not skipped; a marker named after one,
+`year=2024_$folder$`, still is. The first four skipped are named.
 
 A listing shows the files datui can read. <kbd>Ctrl</kbd>+<kbd>A</kbd> shows the
 rest too, such as `README.md` or `model.onnx`, dimmed and after the directories,
@@ -266,15 +245,12 @@ look inside.
 
 ### Two doors into every directory
 
-Every directory has two doors, and neither depends on the label being right.
-
-<kbd>→</kbd> goes inside any directory, to reach a single partition or a single
-file. <kbd>Esc</kbd> comes back out. The first row in there is `<directory> (all
-files)`, or `(all partitions)` for a hive directory, and it opens the whole
-directory whatever the directory is labelled — so a label that is wrong about
-what the directory holds costs one keystroke rather than access to it.
-
-The control bar says which key is which, for the row under the cursor:
+<kbd>→</kbd> goes inside any directory, to reach a single partition or a
+single file; <kbd>Esc</kbd> comes back out. The first row in there,
+`<directory> (all files)` — `(all partitions)` for a hive directory — opens
+the whole directory whatever it is labelled, so a wrong label costs one
+keystroke rather than access. The control bar says which key is which, for the
+row under the cursor:
 
 | It says | <kbd>Enter</kbd> will |
 |---|---|
@@ -282,15 +258,6 @@ The control bar says which key is which, for the row under the cursor:
 | `Enter Inside` | step into the directory — the same as <kbd>→</kbd>, so only one is offered |
 | `Enter Open` | load the file on the row |
 | `Enter Look` | find out what the row is, then do whichever of those it calls for |
-
-On a directory <kbd>Enter</kbd> steps into, the details pane on the right says
-where the whole of it can be read: the first row inside.
-
-That row carries no label of its own: every other label counts what is directly
-inside a directory, and this row reads the whole of it. Nor is it a search
-result — while a filter is typed it steps out of the way, and it comes back when
-the filter is cleared. Only a directory with nothing in it at all — empty, or
-holding nothing but a writer's own markers — has no such row.
 
 ### The door does not refuse
 
@@ -308,120 +275,11 @@ is in the Notes tab, which the <kbd>i</kbd> key opens.
 | A directory of CSV or NDJSON in a bucket | One table, with that reader | — |
 | A directory in a bucket holding nothing datui reads | Refused, naming what is there | — |
 
-A lake table's files are the one read worth being careful with. A log beside the
-data says which files are live, and datui does not read that log yet — so the
-files include rows a delete tombstoned, versions an update replaced, and both
-sides of a compaction. The row count on screen is a true count of the files and
-a wrong count of the table, which is why it carries `not the Delta table` beside
-it as well as the note.
-
-A directory whose data is in `key=value` subdirectories reads as one table when
-that data is Parquet. Hive partitioning is a Parquet-only capability in the
-reader datui uses; for anything else, open one partition.
-
-A directory of `key=value` partitions is `hive`, and a directory of Parquet
-files that hold the same table is one dataset. Both open with <kbd>Enter</kbd>
-as a single dataset.
-
-Sharing a file extension is not enough to make a directory one table. A database
-exported one file per table — `circuits.csv`, `drivers.csv`, `laps.csv` — looks
-identical from its names, and reading it as one table would union things that
-share no columns. So the columns decide: datui compares a spread of the
-directory's files, and one whose files each bring something the others lack is
-left as a directory to look inside.
-
-Where those columns are read from depends on the format, and nothing else does.
-A Parquet file keeps them in its footer, a CSV on its header line, an NDJSON
-file in the keys of its first object — all at one end of the file, and all read
-by the same reader that would open it, from a spread of three files whatever the
-directory's size.
-
-Only those three formats are judged, and only those three are unioned. Arrow,
-Avro, ORC and a `.json` document keep their columns nowhere cheap to reach, so
-nothing looks at them before the open — and a union with no rule in front of it
-and nothing to say behind it is the thing this rule exists to remove, not
-something to spread further. Those directories still refuse when their files
-differ, and the message names the file the read stopped at.
-
-A directory of headerless files is a case of its own. datui reads a CSV as
-having a header, so each file gives its first row of *data* as the column names
-— and reading such a directory as one table would stack those rows as headings
-and fill the rest with nulls. datui does not offer it as one table, and says so
-when you open it through the door: pass `--no-header` to read those rows as
-data.
-
-The reading is a sample, three files — the ends and the middle, stepping past
-files with nothing in them — so it costs the same on a directory of four files
-as on one of forty thousand. As with Parquet's footers, a directory whose
-disagreement lies only in the files the sample did not open is read as one
-table.
-
-A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
-says which of them are live. datui does not read that log yet, so it does not
-offer the table as one dataset — the files a delete or an update tombstoned are
-still on disk, every rewritten version is there together, and compaction leaves
-both sides in place, so reading them as one table gives rows the table does not
-have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
-files can be opened one at a time, and the heading says `delta · not read as a
-table` for as long as you are in there. The `(all files)`
-row in there will read them all together, labelled; see above.
-
-A row on a network share that nothing has looked at yet — a recent one, say, where
-reading it just to list it is how a dead mount freezes a file browser — is looked
-at when you open it, on a background thread, and <kbd>Enter</kbd> then does
-whatever the answer calls for. The line under the list says `Looking at …`
-meanwhile, and the keys keep being read. If the share never answers,
-<kbd>Ctrl</kbd>+<kbd>O</kbd> puts the wait down and gives you the home screen back.
-
-| Format | What marks the root |
-|---|---|
-| Delta Lake | `_delta_log/` |
-| Hudi | `.hoodie/` |
-| Iceberg | `metadata/` holding a `*.metadata.json`, beside `data/` |
-
-In a bucket the Iceberg test is `metadata/` beside `data/` with no Parquet at
-the root: looking inside `metadata/` would be a second listing, and the layout
-is enough. So a directory that happens to hold both names is labelled `iceberg`
-there. It is still somewhere to go, which a table read as one table is not.
-
-The test is whether every file's columns are in the widest file's. That is the
-shape schema evolution makes — a file written before a column existed has all of
-the widest file's columns except the ones added since — so a blockchain that
-added `txinwitness` in 2017 is still one dataset, and so is one that grew from
-five columns to fifty.
-
-A file that brings a column no other file has, such as a renamed one, fails it.
-Nothing in a footer separates a rename from two tables that happen to share most
-of their columns, so the directory is left as a place to look inside — and the
-first row in there opens the union anyway. That is the trade: a strict test
-costs a keystroke, where a lenient one costs a directory read as a table it is
-not.
-
-The columns come from footers that are read anyway to count the rows, so locally
-this costs nothing. In a bucket, three of the directory's files are read while
-you browse — one small ranged request each, never a whole object — and a
-directory that cannot be read keeps the label its names suggested.
-
-### Directories not looked into yet
-
-| Label | Means |
-|---|---|
-| `dir` | An ordinary directory, looked into and found to hold no single table |
-| `…` | Not looked into yet |
-
-Telling the two apart costs a directory read each — a round trip apiece on a
-network share, so a directory of thousands of partitions would be minutes before
-the listing appeared. No listing pays for it, however small. Every directory is
-drawn as `…` straight away, and the rows on screen are looked into a screenful
-at a time as you scroll, the highlighted row first. A directory datui has
-measured before keeps what it found, so one whose files turned out to be
-separate tables is not offered as one dataset again while you wait for its
-footers to be read a second time.
-
-Labels never re-order the list when they arrive, so a row cannot move out from
-under the cursor. <kbd>Enter</kbd> on a `…` row looks into it first, so it opens
-as whatever it turns out to be. Sorting by rows puts them last: there is no
-count to sort them by yet.
+A lake table's files include rows a delete tombstoned and versions an update
+replaced — datui does not read the table's log yet — so their row count carries
+`not the Delta table` beside it. A directory of headerless CSVs is not offered
+as one table, because each file's first row of data would become column names;
+pass `--no-header` to read those rows as data.
 
 ### Where a row's data lives
 
@@ -546,27 +404,18 @@ To show only some kinds of login found on the machine, or none:
 overrides the config for one run.
 
 A source in the config with the same name as one of these replaces it. The same
-server with the same key found in several places is one row, from the first of:
-the config, the environment, other tools' files; its note lists every place.
-`mc`'s placeholder aliases and its public `play` server are left out. See
-[Loading Data](loading-data.md#several-stores-at-once) for `[[cloud.sources]]`.
+server with the same key found in several places is one row; its note lists
+every place. `mc`'s placeholder aliases and its public `play` server are left
+out. See [Loading Data](loading-data.md#several-stores-at-once) for
+`[[cloud.sources]]`.
 
-Google Cloud lists every project the login can find. The project in
-`DATUI_GCP_PROJECT`, `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT`
-or `GCP_PROJECT`, the `quota_project_id` in the gcloud credentials file, or the
-active configuration's project comes first, and is listed alone when searching for
-projects is refused.
-
-A profile that needs the AWS CLI shows `needs the AWS CLI` when it is not
-installed, and an expired SSO login shows the CLI's message; see
-[Loading Data](loading-data.md#aws-profiles). A cloud VM's identity (an EC2
-instance role, a GCE service account, an Azure managed identity) is **not**
-discovered unless `[cloud] instance_identity = true`, because finding it means a
-metadata request that hangs on some networks. Cloud Run and Cloud Functions
-(`K_SERVICE`) and Azure App Service, Functions and Container Apps
-(`IDENTITY_ENDPOINT`, `MSI_ENDPOINT`) say so themselves, and are used without it.
-Otherwise, with no other login, a URL is read unsigned, which reaches public data
-only.
+Google Cloud lists every project the login can find, the one named in the
+environment or the active `gcloud` configuration first — and alone when
+searching for projects is refused. A profile that needs the AWS CLI shows
+`needs the AWS CLI` when it is not installed, and an expired SSO login shows
+the CLI's message; see [Loading Data](loading-data.md#aws-profiles). A cloud
+VM's identity is not discovered unless `[cloud] instance_identity = true`; see
+[Configuration](configuration.md#cloud).
 
 ### Public datasets
 
@@ -589,11 +438,9 @@ opened unsigned is added to the list. For a list of your own, see
 [Loading Data](loading-data.md#public-data).
 
 `datui --generate-config` writes this catalog as active
-`[[cloud.sources.datasets]]` tables. Remove a table to remove that dataset, add a
-table to add one, or change its metadata. A configured source named `public`
-replaces the built-in list; another source name creates a separate collection. The
-generated list is a snapshot and does not receive later catalog updates
-automatically. See [Configuration](configuration.md#cloud) for the fields.
+`[[cloud.sources.datasets]]` tables to edit; see
+[Configuration](configuration.md#cloud) for the fields and how the snapshot
+behaves.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
 objects some tools leave to stand for folders.
@@ -602,24 +449,10 @@ objects some tools leave to stand for folders.
 
 Inside a bucket: name, size and modification time, which is what a listing
 returns. Row counts and columns would need a read per object, which someone is
-billed for, so they are not fetched until you open one.
-
-Directories on screen are looked inside, a few at a time, the highlighted row
-first: one small listing request each, with a spinner in the label until it
-answers. A directory of `key=value` partitions is then labelled `hive`, and
-every other directory by what it holds — `12 parquet`, `3 csv`, or `dir` — like
-a local one. A directory of Parquet files whose
-schemas agree is offered as one dataset; see [Two doors into every
-directory](#two-doors-into-every-directory). Deciding that last one reads the
-footers of up to three of the directory's files, a few kilobytes each; nothing
-else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd> opens
-it as one dataset, with the partitions as columns;
-<kbd>→</kbd> goes inside instead, where the first row opens the whole directory
-again.
-
-A partitioned dataset whose files gained columns over time, such as a blockchain's
-first day, which has no previous block, opens with every column: its schema comes
-from the first and the last file, and older files read the newer columns as empty.
+billed for, so they are not fetched until you open one. A directory of
+`key=value` partitions is labelled `hive`, and every other directory by what
+it holds — `12 parquet`, `3 csv`, or `dir` — like a local one. How a remote
+dataset then opens is in [Loading Data](loading-data.md#remote-data).
 
 ## Network locations
 

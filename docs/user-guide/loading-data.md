@@ -20,22 +20,18 @@ the [home screen](home-screen.md), and needs no flag:
 | Separate tables, more than one format, or no data directly inside | The home screen, browsed into it — one keystroke from either a file or the union |
 | A Delta, Iceberg or Hudi root | The home screen, browsed into it, saying datui does not read the table itself yet |
 
-Before 0.4.0 a directory was `Unsupported file type` unless `--hive` was passed.
-`--hive` still means what it always did: read this as partitioned, which is the
-answer for a glob and for a layout that does not say so itself.
+`--hive` means: read this as partitioned, which is the answer for a glob and
+for a layout that does not say so itself.
 
-Finding out which of those a directory is means reading footers, or the front of
-a spread of its files, so a directory of large Parquet takes a moment. datui
-draws the screen first and names the directory it is looking at, and
-<kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> work throughout.
-
-Working out which of those a directory is means reading the front of a few of
-its files, and datui reads them the way it is about to read the whole directory
-— `--no-header`, `--skip-rows`, `--skip-lines`, `--infer-schema-length` and the
-rest all apply. So `datui --no-header exports/` judges the directory as
-headerless, finds its files stack, and opens it; without the flag the same
-directory is judged with a header, its files do not agree, and the home screen
-opens on it instead.
+Working out which of those a directory is means reading footers, or the front
+of a spread of its files, and datui reads them the way it is about to read the
+whole directory — `--no-header`, `--skip-rows`, `--skip-lines`,
+`--infer-schema-length` and the rest all apply. So `datui --no-header exports/`
+judges the directory as headerless, finds its files stack, and opens it;
+without the flag the same directory is judged with a header, its files do not
+agree, and the home screen opens on it instead. datui draws the screen first,
+and <kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> work
+throughout.
 
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
@@ -70,14 +66,14 @@ all of them except `--parse-strings`.
 | Option | Config key | What it does |
 |---|---|---|
 | `--delimiter 9` | | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
-| `--no-header true` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
+| `--no-header` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
 | `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
 | `--skip-tail-rows N` | | Ignore a footer. Counts every row first: on a directory in a bucket, that downloads every file before the table opens |
 | `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`). Repeatable |
 | `--infer-schema-length 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
-| `--ignore-errors true` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |
-| `--parse-dates false` | `parse_dates` | Stop parsing date-looking strings as Date and Datetime |
-| `--parse-strings COL`, `--no-parse-strings` | | Trim and type-infer string columns; limit it to named columns, or turn it off |
+| `--ignore-errors` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |
+| `--parse-dates=false` | `parse_dates` | Stop parsing date-looking strings as Date and Datetime |
+| `--parse-strings=COL`, `--no-parse-strings` | | Trim and type-infer string columns; limit it to named columns, or turn it off |
 
 ## Compression
 
@@ -85,7 +81,7 @@ Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.
 Use `--compression gzip|zstd|bzip2|xz` when the extension is missing or wrong.
 
 Compressed CSV is decompressed to a temporary file so it can still be scanned
-lazily. `--temp-dir` chooses where; `--decompress-in-memory true` skips the
+lazily. `--temp-dir` chooses where; `--decompress-in-memory` skips the
 file and reads the whole thing into memory instead.
 
 ## Hive-partitioned data
@@ -140,10 +136,9 @@ plain nulls again, and an export writes every empty cell as null.
 A `≠` cell's value can still be seen. The **Notes** tab's note about the column
 offers **read this column as text**, and taking it reads the column from the files
 that disagree too, at the type each of them wrote, spelled as text. Nothing is
-read past any more, so the `≠` marks and the note go with the conflict. It costs
-no re-listing and no footer read — datui already knows what each file holds. A
-column any file stores as a list, a duration or binary has no text form datui can
-show, and is not offered.
+read past any more, so the `≠` marks and the note go, and it costs no re-listing
+and no footer read. A column any file stores as a list, a duration or binary has
+no text form datui can show, and is not offered.
 
 A filter or sort on a column read as text compares text: `n > 5` keeps `"sixty"`
 and drops `"10"`. A note says so for as long as the column is read that way.
@@ -172,99 +167,37 @@ sort keeps its rows. A filter is a different matter: no comparison holds against
 an empty cell, so a `·` or `∅` row fails one as it would in any query, and datui
 says nothing about that because nothing unusual happened.
 
-A Parquet file is written in **row groups**, and rows are read a row group at a
-time: a page of rows anywhere inside one reaches into the whole of it. Where the
-middle row group of a dataset is past 64 MiB, the Notes tab says so — over a
-network that is the difference between a page arriving and a page arriving after
-tens of megabytes do, and there is nothing to be done about it from datui except
-know why. The figure the note shows is rounded, so a dataset just past the line
-reads as `64.0 MiB`.
+### How large remote datasets open
 
-While those footers are being read they are counted, `Reading footers: 1,203 of
-6,541`, and nothing is said once they have landed. Past 20,000 files the number
-it counts towards is the sample it reads, not the files there are.
+A directory in the cloud of more than 64 files does not wait for every footer.
+It opens from the first file and the last, by name, and reads the rest behind
+the data, with the count in the control bar. Columns those files turn out to
+have join the table at the end of the column order when they arrive; until
+then the row count is not shown, every empty cell reads as `∅`, the Notes are
+scoped to `in 2 of 6,541 footers (sample)`, and a query, pivot or drill-down
+holds the new columns off until you come back to the data. Local directories
+read every footer up front. While footers are read they are counted, `Reading
+footers: 1,203 of 6,541`; past 20,000 files the count is the sample it reads.
 
-A directory in the cloud of more than 64 files does not wait for that count. It
-opens from the first file and the last, by name, and reads the rest behind the
-data, with the count in the control bar rather than on a loading screen. Datui
-fetches sixty-four footers at once, so up to that many arrive in the time one of
-them does; past that there is a second wait, and a third, and the dataset would
-be sitting behind them for no reason.
+The Notes tab flags layouts that cost time to read:
 
-Columns those files turn out to have join the table when they arrive, at the end
-of the column order, without moving anything already on screen. A column that
-only one file had, whose footer would not read the second time, goes instead:
-nothing can be shown for it. Until they land, the dataset is one built from two
-footers: its rows are not numbered, so every empty cell reads as `∅`, the row
-count is not shown at all rather than shown wrong, and the Notes are scoped to
-`in 2 of 6,541 footers (sample)`. A query, a pivot or a drill-down holds the
-columns off until you come back to the data, because widening the scan underneath
-one would take away the columns it was built from.
+| Note | Means |
+|---|---|
+| the middle row group is past 64 MiB | rows are read a row group at a time, so over a network a page waits on the whole group |
+| more than 10,000 files, the middle one under a mebibyte | many footers were opened before a row was; the remedy — fewer, larger files — is upstream in whatever writes them |
+| `3 files by date, 1 file by dt` | the directories do not all partition by the same keys. The same keys in a different order are fine |
 
-Local directories do not do this. Reading every footer of 2,048 local files
-takes under 7 ms once the directory is in the page cache, nine tenths of which
-is the directory walk rather than the footers, so there is nothing worth showing
-a half-built dataset for. A directory on a network share is a different matter,
-and one on a cold disk is slower than this figure suggests; neither is slow
-enough to be worth opening a dataset twice for.
-
-Where a dataset has more than ten thousand files and the middle one is under a
-mebibyte, the Notes tab says so, and says how many of them were opened for their
-footers before a row was. Fewer, larger files would do less of that work; the
-remedy is upstream in whatever writes them, but knowing where the wait went is
-worth something on its own.
-
-datui reads a partitioned directory's columns off one branch of the tree, which
-is right for nearly every dataset. Where a pipeline changed its partition key
-partway through — `date=` becoming `dt=` — the Notes tab says so, counted from
-every file's name:
-
-    the directories do not all partition by the same keys: 3 files by date, 1 file by dt
-
-What that costs varies, which is why the note does not say. Usually every file
-under the other key fails the scan and the dataset does not open at all. But the
-partition columns are read from the **first file name in the dataset**, so one
-unpartitioned file that sorts above the partition directories — `data.parquet`
-sorts above `date=`, `loose.parquet` does not — means no file's key is checked
-and the same directories read perfectly well with the partition column null.
-Renaming that file changes which of the two you get. Either way the note tells
-you which keys to look at.
-
-Two directories that use the same keys in a different order — `y=/m=` and
-`m=/y=` — are not a disagreement: hive columns are matched by name, and such a
-dataset reads fine. Nothing is said about a `key=value` directory *above* the
-one you opened either, since that is not in dispute. The note is silent when
-`--single-spine-schema false` is set, because that route does not look at the
-file names this way.
-
-`--single-spine-schema false` skips the footer pass and lets Polars decide the
-schema from one file.
+`--single-spine-schema=false` skips the footer pass and lets Polars decide the
+schema from one file; the partition-keys note is not checked on that route.
 
 ### Opening it again
 
-What a remote dataset's footers said — each file's row groups and its columns —
-is kept in the cache directory, under the URL you opened. Opening the same
-dataset again shows its columns and its row count straight away, without reading
-a footer at all. A dataset read behind its own first page is remembered by that
-pass, so this covers the large datasets it is meant for and not only the small
-ones.
-
-The listing still happens, because it is how datui knows what the dataset is
-now, and it is what decides whether what was kept still describes it. A file
-added, removed, renamed, resized or rewritten all change what the listing
-reports — its name, its size, when it was written, and the store's own tag for
-it — and any of those means the footers are read again. Nothing is trusted that
-the listing cannot confirm.
-
-Two things are never kept. A pass that read only some of the footers, because
-the dataset was large enough to open early or large enough to be sampled: what
-is kept has to be the whole dataset or it is worse than nothing. And a pass in
-which any footer would not read — a file mid-write, a request the store refused
-— because there is no way to tell a file that is broken from one that was busy,
-and a moment's trouble should not become a file missing from the dataset on
-every open thereafter.
-
-`--clear-cache` forgets it. Deleting it costs speed and nothing else.
+What a remote dataset's footers said is kept in the cache directory, under the
+URL you opened, so the same dataset opens again with its columns and row count
+at once. The listing still happens, and decides whether what was kept still
+holds: a file added, removed, renamed, resized or rewritten — its name, size,
+modification time or etag — means the footers are read again. `--clear-cache`
+forgets it; deleting it costs speed and nothing else.
 
 ## Binary columns
 
@@ -288,23 +221,14 @@ Paging reads ahead: as the view nears the end of the rows on hand, the next ones
 are fetched in the background while you keep paging. If you get there first, the
 page you were on stays up until the new rows arrive.
 
-A prefix of Parquet files (`s3://bucket/events/`) opens as one dataset. Its files
-are listed once, and its schema is the newest file's, so a dataset whose files
-gained columns or nested fields over the years opens with all of them; older files
-read those as empty. The row count comes from the files' footers, read many at
-once, not from the data. Once it is in, reading any part of the dataset opens only
-the few files holding those rows, so <kbd>End</kbd> or a jump to the middle of a
-billion rows costs a few files. <kbd>End</kbd> pressed before the count is in waits
-for it. A glob (`s3://bucket/events/*/*.parquet`) is expanded by datui: it lists the
-literal part of the key and matches the rest itself, so a glob opens as the same
-kind of dataset a prefix does, with the same schema union, row count and notes.
-A directory named without `--format` is listed first, and opens the way its
-`(all files)` row on the home screen does: CSV or JSON Lines files are read as one
-table in place, and a directory holding only directories opens the home screen
-browsed into it. Every other format, and anything
-over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
-you are asked first when it is large) and then opened like a local file. One
-remote path per run.
+| Path | Opens as |
+|---|---|
+| A prefix of Parquet files (`s3://bucket/events/`) | One dataset. The files are listed once; the schema is the newest file's, so older files read later columns as empty; the row count comes from the footers. Reading any part of it opens only the files holding those rows, and <kbd>End</kbd> pressed before the count is in waits for it |
+| A glob (`s3://bucket/events/*/*.parquet`) | The same kind of dataset: datui lists the literal part of the key and matches the rest itself |
+| A directory named without `--format` | The way its `(all files)` row opens on the home screen: CSV or JSON Lines read as one table in place; one holding only directories opens the home screen browsed into it |
+| Every other format, and anything over HTTP | Downloaded to a temporary file (`--temp-dir` chooses where; you are asked first when it is large), then opened like a local file |
+
+One remote path per run.
 
 Once credentials are in place, the buckets they reach are also listed on the
 [home screen](home-screen.md#cloud-storage), so you can browse instead of

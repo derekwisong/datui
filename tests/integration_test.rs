@@ -6132,7 +6132,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
 /// A dataset Polars opened shows no measurements, even though its rows are counted
 /// afterwards.
 ///
-/// `--single-spine-schema false` turns off the footer pass and hands the directory
+/// `--single-spine-schema=false` turns off the footer pass and hands the directory
 /// straight to Polars, so there is nothing for datui to report. But the row count is
 /// still taken from the footers afterwards, against the same dataset — and that pass
 /// writing into the meter would raise a section out of nothing, headed by what opening
@@ -9292,7 +9292,7 @@ fn test_delimiter_flag_splits_the_columns() {
         (
             "gzip, in memory",
             vec![gz.clone()],
-            with_flag(&["--decompress-in-memory", "true"]),
+            with_flag(&["--decompress-in-memory"]),
         ),
     ] {
         let rows = 2 * paths.len();

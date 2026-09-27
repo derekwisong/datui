@@ -1,0 +1,9 @@
+Examples:
+  datui data.parquet                        open a file
+  datui part-1.csv part-2.csv               several files, as one table
+  datui /data/events/                       a directory, as one table
+  datui --hive s3://bucket/warehouse/       a partitioned dataset in S3
+  datui --format csv --no-header raw.txt    headerless text, whatever the extension
+  datui --generate-config                   write ~/.config/datui/config.toml
+
+Docs: https://derekwisong.github.io/datui/

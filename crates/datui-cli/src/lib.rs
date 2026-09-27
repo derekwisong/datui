@@ -204,8 +204,9 @@ pub const NUMBER_FORMAT_VALUES: &[&str] = &[
 #[command(
     name = "datui",
     version,
-    about = "Data Exploration in the Terminal",
-    long_about = include_str!("../long_about.txt")
+    about = "Terminal UI for tabular data",
+    long_about = include_str!("../long_about.txt"),
+    after_help = include_str!("../examples.txt")
 )]
 pub struct Args {
     /// Path(s) to the data file(s) to open.
@@ -214,46 +215,56 @@ pub struct Args {
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
-    /// Skip this many lines when reading a file
-    #[arg(long = "skip-lines")]
+    /// Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows
+    #[arg(long = "skip-lines", value_name = "N", help_heading = "Reading")]
     pub skip_lines: Option<usize>,
 
-    /// Skip this many rows when reading a file
-    #[arg(long = "skip-rows")]
+    /// Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines
+    #[arg(long = "skip-rows", value_name = "N", help_heading = "Reading")]
     pub skip_rows: Option<usize>,
 
-    /// Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage). Counts every row first; on a directory in a bucket that downloads every file
-    #[arg(long = "skip-tail-rows", value_name = "N")]
+    /// Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file
+    #[arg(long = "skip-tail-rows", value_name = "N", help_heading = "Reading")]
     pub skip_tail_rows: Option<usize>,
 
-    /// Specify that the file has no header
-    #[arg(long = "no-header")]
+    /// Read the first row as data, not column names; columns are named column_1, column_2, …
+    #[arg(long = "no-header", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
     pub no_header: Option<bool>,
 
     /// Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `|` for .psv
-    #[arg(long = "delimiter")]
+    #[arg(
+        long = "delimiter",
+        value_name = "CODE",
+        help_heading = "CSV and delimited text"
+    )]
     pub delimiter: Option<u8>,
 
-    /// Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce risk of wrong type (e.g. int then N/A).
-    #[arg(long = "infer-schema-length", value_name = "N")]
+    /// Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce the risk of a wrong type (e.g. int then N/A)
+    #[arg(
+        long = "infer-schema-length",
+        value_name = "N",
+        help_heading = "CSV and delimited text"
+    )]
     pub infer_schema_length: Option<usize>,
 
     /// When reading CSV, ignore parse errors and continue with the next batch (default: false)
-    #[arg(long = "ignore-errors", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    #[arg(long = "ignore-errors", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
     pub ignore_errors: Option<bool>,
 
     /// Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount=
-    #[arg(long = "null-value", value_name = "VAL")]
+    #[arg(
+        long = "null-value",
+        value_name = "VAL",
+        help_heading = "CSV and delimited text"
+    )]
     pub null_value: Vec<String>,
 
-    /// Specify the compression format explicitly (gzip, zstd, bzip2, xz)
-    /// If not specified, compression is auto-detected from file extension.
-    #[arg(long = "compression", value_enum)]
+    /// Compression format, when the extension does not say (default: auto-detected from the extension)
+    #[arg(long = "compression", value_enum, help_heading = "Reading")]
     pub compression: Option<CompressionFormat>,
 
-    /// Force file format (parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel).
-    /// By default format is auto-detected from the file extension. Use this for URLs or paths without an extension.
-    #[arg(long = "format", value_enum)]
+    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension)
+    #[arg(long = "format", value_enum, help_heading = "Reading")]
     pub format: Option<FileFormat>,
 
     /// Enable debug mode to show operational information
@@ -261,124 +272,144 @@ pub struct Args {
     pub debug: bool,
 
     /// Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file
-    #[arg(long = "hive", action)]
+    #[arg(long = "hive", action, help_heading = "Reading")]
     pub hive: bool,
 
-    /// Infer Hive/partitioned Parquet schema from one file for faster load (default: true). Set to false to use full schema scan.
-    #[arg(long = "single-spine-schema", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    /// Infer a partitioned Parquet dataset's schema from one file for a faster open (default: true). Set to false to scan every file's schema
+    #[arg(long = "single-spine-schema", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Reading")]
     pub single_spine_schema: Option<bool>,
 
-    /// Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true
-    #[arg(long = "parse-dates", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    /// Parse CSV string columns that look like dates (e.g. YYYY-MM-DD, ISO datetime) as dates (default: true)
+    #[arg(long = "parse-dates", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
     pub parse_dates: Option<bool>,
 
-    /// Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float. Default: applied to all string columns. Use --parse-strings=COL (repeatable) to limit to specific columns, or --no-parse-strings to disable.
-    #[arg(long = "parse-strings", value_name = "COL", num_args = 0.., default_missing_value = "")]
+    /// Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float (default: all string columns). --parse-strings=COL (repeatable) limits it to named columns; --no-parse-strings disables it
+    #[arg(long = "parse-strings", value_name = "COL", num_args = 0.., require_equals = true, default_missing_value = "", help_heading = "CSV and delimited text")]
     pub parse_strings: Vec<String>,
 
-    /// Disable parse-strings for CSV (trim and type inference). Overrides config and default.
-    #[arg(long = "no-parse-strings", action)]
+    /// Do not trim or type-infer CSV string columns. Overrides config and --parse-strings
+    #[arg(
+        long = "no-parse-strings",
+        action,
+        help_heading = "CSV and delimited text"
+    )]
     pub no_parse_strings: bool,
 
-    /// Decompress into memory. Default: decompress to temp file and use lazy scan
-    #[arg(long = "decompress-in-memory", default_missing_value = "true", num_args = 0..=1, value_parser = clap::value_parser!(bool))]
+    /// Decompress into memory (default: decompress to a temp file and scan lazily)
+    #[arg(long = "decompress-in-memory", value_name = "BOOL", require_equals = true, default_missing_value = "true", num_args = 0..=1, value_parser = clap::value_parser!(bool), help_heading = "Reading")]
     pub decompress_in_memory: Option<bool>,
 
     /// Directory for decompression temp files (default: system temp, e.g. TMPDIR)
-    #[arg(long = "temp-dir", value_name = "DIR")]
+    #[arg(long = "temp-dir", value_name = "DIR", help_heading = "Reading")]
     pub temp_dir: Option<std::path::PathBuf>,
 
     /// Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales")
-    #[arg(long = "sheet", value_name = "SHEET")]
+    #[arg(long = "sheet", value_name = "SHEET", help_heading = "Reading")]
     pub excel_sheet: Option<String>,
 
     /// Forget every recently opened dataset and exit; other caches are kept
-    #[arg(long = "clear-recents", action)]
+    #[arg(long = "clear-recents", action, help_heading = "Maintenance")]
     pub clear_recents: bool,
 
     /// Clear all cache data and exit
-    #[arg(long = "clear-cache", action)]
+    #[arg(long = "clear-cache", action, help_heading = "Maintenance")]
     pub clear_cache: bool,
 
     /// Apply a template by name when starting the application
-    #[arg(long = "template")]
+    #[arg(long = "template", value_name = "NAME")]
     pub template: Option<String>,
 
     /// Remove all templates and exit
-    #[arg(long = "remove-templates", action)]
+    #[arg(long = "remove-templates", action, help_heading = "Maintenance")]
     pub remove_templates: bool,
 
-    /// When set, datasets with this many or more rows are sampled for analysis (faster, less memory).
-    /// Overrides config [performance] sampling_threshold. Use 0 to disable sampling (full dataset) for this run.
-    /// When omitted, config or full-dataset mode is used.
-    #[arg(long = "sampling-threshold", value_name = "N")]
+    /// Sample datasets with this many or more rows for analysis — faster, less memory (default: [performance] sampling_threshold in config, else the full dataset). 0 disables sampling for this run
+    #[arg(
+        long = "sampling-threshold",
+        value_name = "N",
+        help_heading = "Performance"
+    )]
     pub sampling_threshold: Option<usize>,
 
-    /// Use Polars streaming engine for LazyFrame collect when available (default: true). Set to false to disable.
-    #[arg(long = "polars-streaming", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    /// Use the Polars streaming engine where available (default: true)
+    #[arg(long = "polars-streaming", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Performance")]
     pub polars_streaming: Option<bool>,
 
-    /// No effect since Polars 0.55: the pivot crash with a Date/Datetime index it worked around is gone. Kept so existing invocations still parse.
-    #[arg(long = "workaround-pivot-date-index", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    /// No effect since Polars 0.55: the pivot crash with a Date/Datetime index it worked around is gone. Kept so existing invocations still parse
+    #[arg(long = "workaround-pivot-date-index", value_name = "BOOL", value_parser = clap::value_parser!(bool), hide = true)]
     pub workaround_pivot_date_index: Option<bool>,
 
-    /// Number of pages to buffer ahead of the visible area (default: 3)
-    /// Larger values provide smoother scrolling but use more memory
-    #[arg(long = "pages-lookahead")]
+    /// Pages to buffer ahead of the visible area (default: 3). More is smoother scrolling, more memory
+    #[arg(
+        long = "pages-lookahead",
+        value_name = "N",
+        help_heading = "Performance"
+    )]
     pub pages_lookahead: Option<usize>,
 
-    /// Number of pages to buffer behind the visible area (default: 3)
-    /// Larger values provide smoother scrolling but use more memory
-    #[arg(long = "pages-lookback")]
+    /// Pages to buffer behind the visible area (default: 3). More is smoother scrolling, more memory
+    #[arg(
+        long = "pages-lookback",
+        value_name = "N",
+        help_heading = "Performance"
+    )]
     pub pages_lookback: Option<usize>,
 
-    /// Display row numbers on the left side of the table
-    #[arg(long = "row-numbers", action)]
+    /// Show row numbers on the left side of the table. Press N to toggle while running
+    #[arg(long = "row-numbers", action, help_heading = "Display")]
     pub row_numbers: bool,
 
     /// Starting index for row numbers (default: 1)
-    #[arg(long = "row-start-index")]
+    #[arg(long = "row-start-index", value_name = "N", help_heading = "Display")]
     pub row_start_index: Option<usize>,
 
-    /// Colorize main table cells by column type (default: true). Set to false to disable.
-    #[arg(long = "column-colors", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    /// Color table cells by column type (default: true)
+    #[arg(long = "column-colors", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
     pub column_colors: Option<bool>,
 
-    /// Digit grouping for numbers in the data table (default: none). Press F to toggle while running.
-    /// "system" reads LC_ALL/LC_NUMERIC/LANG and picks a matching style.
-    #[arg(long = "number-format", value_name = "FORMAT", value_parser = clap::builder::PossibleValuesParser::new(NUMBER_FORMAT_VALUES))]
+    /// Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press F to toggle while running
+    #[arg(long = "number-format", value_name = "FORMAT", value_parser = clap::builder::PossibleValuesParser::new(NUMBER_FORMAT_VALUES), help_heading = "Display")]
     pub number_format: Option<String>,
 
-    /// Right-align numeric columns and their headers (default: true). Set to false to left-align.
-    #[arg(long = "align-numeric-right", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    /// Right-align numeric columns and their headers (default: true)
+    #[arg(long = "align-numeric-right", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
     pub align_numeric_right: Option<bool>,
 
-    /// Generate default configuration file at ~/.config/datui/config.toml
-    #[arg(long = "generate-config", action)]
+    /// Write the default configuration to ~/.config/datui/config.toml and exit
+    #[arg(long = "generate-config", action, help_heading = "Maintenance")]
     pub generate_config: bool,
 
-    /// Force overwrite existing config file when using --generate-config
-    #[arg(long = "force", requires = "generate_config", action)]
+    /// Overwrite an existing config file (with --generate-config)
+    #[arg(
+        long = "force",
+        requires = "generate_config",
+        action,
+        help_heading = "Maintenance"
+    )]
     pub force: bool,
 
     /// S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000
-    #[arg(long = "s3-endpoint-url", value_name = "URL")]
+    #[arg(long = "s3-endpoint-url", value_name = "URL", help_heading = "Cloud")]
     pub s3_endpoint_url: Option<String>,
 
     /// S3 access key (overrides config and AWS_ACCESS_KEY_ID)
-    #[arg(long = "s3-access-key-id", value_name = "KEY")]
+    #[arg(long = "s3-access-key-id", value_name = "KEY", help_heading = "Cloud")]
     pub s3_access_key_id: Option<String>,
 
     /// S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY)
-    #[arg(long = "s3-secret-access-key", value_name = "SECRET")]
+    #[arg(
+        long = "s3-secret-access-key",
+        value_name = "SECRET",
+        help_heading = "Cloud"
+    )]
     pub s3_secret_access_key: Option<String>,
 
     /// S3 region (overrides config and AWS_REGION). Example: us-east-1
-    #[arg(long = "s3-region", value_name = "REGION")]
+    #[arg(long = "s3-region", value_name = "REGION", help_heading = "Cloud")]
     pub s3_region: Option<String>,
 
     /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Sources in [[cloud.sources]] always appear
-    #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover)]
+    #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover, help_heading = "Cloud")]
     pub cloud_discover: Option<String>,
 }
 
@@ -428,7 +459,7 @@ pub fn render_options_markdown() -> String {
 
     for arg in cmd.get_arguments() {
         let id = arg.get_id().as_ref().to_string();
-        if id == "help" || id == "version" {
+        if id == "help" || id == "version" || arg.is_hide_set() {
             continue;
         }
 
@@ -473,6 +504,9 @@ pub fn render_options_markdown() -> String {
             };
             if placeholder.is_empty() {
                 op
+            } else if arg.get_num_args().is_some_and(|n| n.min_values() == 0) {
+                // The value is optional and, where one is given, spelled with `=`.
+                format!("{op}[={placeholder}]")
             } else {
                 format!("{op} {placeholder}")
             }

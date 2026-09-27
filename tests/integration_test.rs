@@ -9977,3 +9977,40 @@ fn reopening_the_query_prompt_selects_the_old_query() {
         "typing replaced the restored query rather than appending to it"
     );
 }
+
+/// The wordmark yields on small terminals — short ones (it costs two dataset
+/// rows) and narrow ones (its fourteen columns leave the path beside it all
+/// ellipsis) — and the one-line title bar comes back.
+#[test]
+fn the_wordmark_yields_to_small_terminals() {
+    let Some(wordmark) = datui::glyphs::get().wordmark else {
+        return; // ASCII locale: there is no wordmark to yield.
+    };
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+
+    let drawn = |w: u16, h: u16, app: &mut App| -> String {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        buf.content().iter().map(|c| c.symbol()).collect()
+    };
+
+    assert!(
+        drawn(100, 50, &mut app).contains(wordmark[0]),
+        "a big terminal gets the wordmark"
+    );
+    assert!(
+        !drawn(100, 20, &mut app).contains(wordmark[0]),
+        "a short terminal gets the rows back"
+    );
+    assert!(
+        !drawn(36, 50, &mut app).contains(wordmark[0]),
+        "a narrow terminal gives the path the columns"
+    );
+    assert!(
+        drawn(36, 50, &mut app).contains("datui"),
+        "the one-line title stands in"
+    );
+}

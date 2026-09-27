@@ -1,14 +1,13 @@
-//! Chart view widget: sidebar (type, x/y columns, options) and chart area.
+//! Chart view widget: the tab line, the Options sidebar (one Surface of
+//! FormRows, column rows edited through the shared Picker), and the chart
+//! canvas.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{
-        Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph,
-        StatefulWidget, Tabs, Widget,
-    },
+    widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Widget},
 };
 
 use crate::chart_data::{
@@ -17,12 +16,13 @@ use crate::chart_data::{
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
-use crate::widgets::radio_block::RadioBlock;
-use std::collections::HashSet;
+use crate::render::context::RenderContext;
+use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
 
 const SIDEBAR_WIDTH: u16 = 42;
-const LABEL_WIDTH: u16 = 20;
-const TAB_HEIGHT: u16 = 3;
+/// Where the value column starts, past the rail gutter: the longest label,
+/// "Y from zero:", plus two cells of air.
+const LABEL_WIDTH: u16 = 14;
 const HEATMAP_TITLE_HEIGHT: u16 = 1;
 const HEATMAP_X_LABEL_HEIGHT: u16 = 2;
 
@@ -46,556 +46,192 @@ pub enum ChartRenderData<'a> {
     },
 }
 
-/// Renders a single axis column list (shared by X and Y). Display order: selected (remembered) items first.
-/// Remembered items use modal_border_active; others use text_primary. The selected row takes the theme's highlight, like the main table.
-fn render_axis_list(
+fn row_label(focus: ChartFocus) -> &'static str {
+    match focus {
+        ChartFocus::Style => "Style:",
+        ChartFocus::XColumn | ChartFocus::HeatmapX => "X axis:",
+        ChartFocus::YColumns => "Y series:",
+        ChartFocus::HeatmapY => "Y axis:",
+        ChartFocus::YStartsAtZero => "Y from zero:",
+        ChartFocus::LogScale => "Log scale:",
+        ChartFocus::ShowLegend => "Legend:",
+        ChartFocus::Column => "Column:",
+        ChartFocus::Bins => "Bins:",
+        ChartFocus::Bandwidth => "Bandwidth:",
+        ChartFocus::LimitRows => "Limit rows:",
+    }
+}
+
+fn echo_or_placeholder<'a>(value: &'a str, placeholder: &'a str) -> FormValue<'a> {
+    if value.is_empty() {
+        FormValue::Placeholder(placeholder)
+    } else {
+        FormValue::Choice(value)
+    }
+}
+
+/// The tab line: every chart kind, the active one on the accent. It is state,
+/// not a focus stop — 1-5 and [ ] switch from anywhere.
+fn render_tab_line(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
-    list_state: &mut ratatui::widgets::ListState,
-    display_items: &[String],
-    selected_set: &HashSet<String>,
-    is_focused: bool,
-    theme: &Theme,
+    modal: &ChartModal,
+    ctx: &RenderContext,
 ) {
-    let active_color = theme.get("modal_border_active");
-    let text_primary = theme.get("text_primary");
+    let g = crate::glyphs::get();
+    let mut spans = vec![Span::raw(" ")];
+    for (i, kind) in ChartKind::ALL.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                format!(" {} ", g.rule),
+                Style::default().fg(ctx.dimmed),
+            ));
+        }
+        let style = if *kind == modal.chart_kind {
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_secondary)
+        };
+        spans.push(Span::styled(kind.as_str(), style));
+    }
+    Paragraph::new(Line::from(spans)).render(area, buf);
+}
 
-    let list_items: Vec<ListItem> = display_items
-        .iter()
-        .map(|name| {
-            let style = if selected_set.contains(name) {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(text_primary)
+/// The Options sidebar: one Surface, a FormRow per option of the active chart
+/// kind, and the shared Picker below the rows while a column row is edited.
+fn render_sidebar(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    modal: &mut ChartModal,
+    ctx: &RenderContext,
+) {
+    let content = Surface::new("Options").render(area, buf, ctx);
+    if content.height < 2 || content.width < 4 {
+        return;
+    }
+
+    let rows = modal.row_order();
+    let mut y = content.y;
+    let bottom = content.y + content.height;
+    for &row in rows {
+        if y >= bottom {
+            break;
+        }
+        let joined;
+        let number;
+        let value = match row {
+            ChartFocus::Style => FormValue::Choice(modal.chart_type.as_str()),
+            ChartFocus::XColumn => {
+                echo_or_placeholder(modal.x_column.as_deref().unwrap_or(""), "none")
+            }
+            ChartFocus::YColumns => {
+                joined = modal.y_columns.join(", ");
+                echo_or_placeholder(&joined, "none")
+            }
+            ChartFocus::YStartsAtZero => FormValue::Toggle(modal.y_starts_at_zero),
+            ChartFocus::LogScale => FormValue::Toggle(modal.log_scale),
+            ChartFocus::ShowLegend => FormValue::Toggle(modal.show_legend),
+            ChartFocus::Column => {
+                let column = match modal.chart_kind {
+                    ChartKind::Histogram => modal.hist_column.as_deref(),
+                    ChartKind::BoxPlot => modal.box_column.as_deref(),
+                    ChartKind::Kde => modal.kde_column.as_deref(),
+                    _ => None,
+                };
+                echo_or_placeholder(column.unwrap_or(""), "none")
+            }
+            ChartFocus::HeatmapX => {
+                echo_or_placeholder(modal.heatmap_x_column.as_deref().unwrap_or(""), "none")
+            }
+            ChartFocus::HeatmapY => {
+                echo_or_placeholder(modal.heatmap_y_column.as_deref().unwrap_or(""), "none")
+            }
+            ChartFocus::Bins => {
+                number = match modal.chart_kind {
+                    ChartKind::Heatmap => modal.heatmap_bins.to_string(),
+                    _ => modal.hist_bins.to_string(),
+                };
+                FormValue::Choice(&number)
+            }
+            ChartFocus::Bandwidth => {
+                number = format!("x{:.1}", modal.kde_bandwidth_factor);
+                FormValue::Choice(&number)
+            }
+            ChartFocus::LimitRows => {
+                number = modal.row_limit_display();
+                FormValue::Choice(&number)
+            }
+        };
+        FormRow {
+            label: row_label(row),
+            value,
+            focused: modal.focus == row,
+            label_width: LABEL_WIDTH,
+        }
+        .render(
+            Rect {
+                y,
+                height: 1,
+                ..content
+            },
+            buf,
+            ctx,
+        );
+        y += 1;
+    }
+
+    // The focused row's Picker drops in below the rows; the selection carries
+    // the rail while the list is up, and its cursor previews on the canvas.
+    if let Some(state) = &modal.picker {
+        let picker_y = y + 1;
+        if picker_y < bottom {
+            let picker_area = Rect {
+                x: content.x + 2,
+                y: picker_y,
+                width: content.width.saturating_sub(2),
+                height: bottom - picker_y,
             };
-            ListItem::new(Line::from(Span::styled(name.as_str(), style)))
-        })
-        .collect();
-
-    let list = List::new(list_items).highlight_style(if is_focused {
-        theme.highlight_style()
-    } else {
-        Style::default()
-    });
-    StatefulWidget::render(list, area, buf, list_state);
+            let mut picker = Picker::from_state(state, true);
+            if modal.is_multi_row(modal.focus) {
+                let marks = state
+                    .filtered()
+                    .into_iter()
+                    .map(|(_, item)| modal.is_marked(item))
+                    .collect();
+                picker = picker.marks(marks);
+            }
+            picker.render(picker_area, buf, ctx);
+        }
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_filter_group(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    input: &mut crate::widgets::text_input::TextInput,
-    list_state: &mut ratatui::widgets::ListState,
-    display_items: &[String],
-    selected_set: &HashSet<String>,
-    is_input_focused: bool,
-    is_list_focused: bool,
-    theme: &Theme,
-    title: &str,
-) {
-    let border_color = theme.get("modal_border");
-    let active_color = theme.get("modal_border_active");
-    let group_border = if is_input_focused || is_list_focused {
-        active_color
-    } else {
-        border_color
-    };
-    let group_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(group_border))
-        .title(title)
-        .title_style(ratatui::style::Style::reset());
-    let group_inner = group_block.inner(area);
-    group_block.render(area, buf);
-
-    let inner = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Input row
-            Constraint::Length(1), // Divider row
-            Constraint::Min(3),    // List
-        ])
-        .split(group_inner);
-
-    input.set_focused(is_input_focused);
-    input.render(inner[0], buf);
-
-    let divider = Block::default()
-        .borders(Borders::TOP)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(group_border));
-    divider.render(inner[1], buf);
-
-    render_axis_list(
-        inner[2],
-        buf,
-        list_state,
-        display_items,
-        selected_set,
-        is_list_focused,
-        theme,
-    );
-}
-
-fn render_number_option(
-    area: Rect,
-    buf: &mut ratatui::buffer::Buffer,
-    label: &str,
-    value: &str,
-    is_focused: bool,
-    theme: &Theme,
-) {
-    let border_color = theme.get("modal_border");
-    let active_color = theme.get("modal_border_active");
-    let style = if is_focused {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(LABEL_WIDTH), Constraint::Min(1)])
-        .split(area);
-    Paragraph::new(label).style(style).render(row[0], buf);
-    Paragraph::new(value).style(style).render(row[1], buf);
-}
-
-/// Renders the chart view: title, left sidebar (chart type, x/y inputs+lists, checkboxes), and chart area (no border).
-/// When only x is selected (no chart data), `x_bounds` may be `Some((min, max))` from the x column so the x axis shows the proper range.
+/// Renders the chart view: the tab line, the Options sidebar, and the chart
+/// area (no border). When only x is selected (no chart data), `x_bounds` may
+/// be `Some((min, max))` from the x column so the x axis shows the proper range.
 pub fn render_chart_view(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     modal: &mut ChartModal,
     theme: &Theme,
+    ctx: &RenderContext,
     render_data: ChartRenderData<'_>,
 ) {
-    modal.clamp_list_selections_to_filtered();
-
-    let border_color = theme.get("modal_border");
-    let active_color = theme.get("modal_border_active");
-    let text_primary = theme.get("text_primary");
     let text_secondary = theme.get("text_secondary");
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(TAB_HEIGHT), Constraint::Fill(1)])
+        .constraints([Constraint::Length(1), Constraint::Fill(1)])
         .split(area);
+    render_tab_line(layout[0], buf, modal, ctx);
 
-    let tab_titles: Vec<Line> = ChartKind::ALL
-        .iter()
-        .map(|k| Line::from(Span::raw(k.as_str())))
-        .collect();
-    let selected_tab = ChartKind::ALL
-        .iter()
-        .position(|&k| k == modal.chart_kind)
-        .unwrap_or(0);
-    let tab_bar_focused = modal.focus == ChartFocus::TabBar;
-    let tab_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if tab_bar_focused {
-            active_color
-        } else {
-            border_color
-        }))
-        .title(" Chart ")
-        .title_style(ratatui::style::Style::reset());
-    let tab_highlight = if tab_bar_focused {
-        Style::default()
-            .fg(active_color)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(active_color)
-    };
-    let tabs = Tabs::new(tab_titles)
-        .block(tab_block)
-        .select(selected_tab)
-        .style(Style::default().fg(border_color))
-        .highlight_style(tab_highlight);
-    tabs.render(layout[0], buf);
-
+    // The sidebar caps its share of the width, so a narrow terminal still
+    // keeps a canvas.
+    let sidebar_width = SIDEBAR_WIDTH.min(layout[1].width / 2);
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Fill(1)])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Fill(1)])
         .split(layout[1]);
-
-    // Sidebar (border, title "Options")
-    let sidebar_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title(" Options ")
-        .title_style(ratatui::style::Style::reset());
-    let sidebar_inner = sidebar_block.inner(main_layout[0]);
-    sidebar_block.render(main_layout[0], buf);
-
-    let focus = modal.focus;
-
-    match modal.chart_kind {
-        ChartKind::XY => {
-            let x_display = modal.x_display_list();
-            let y_display = modal.y_display_list();
-            let x_selected_set: HashSet<String> = modal.x_column.iter().cloned().collect();
-            let y_selected_set: HashSet<String> = modal.y_columns.iter().cloned().collect();
-
-            let sidebar_content = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3), // Plot style radio block
-                    Constraint::Length(1), // Padding between style and X axis
-                    Constraint::Length(1), // X axis label
-                    Constraint::Min(4),    // X axis box (input + list)
-                    Constraint::Length(1), // Space between X and Y groups
-                    Constraint::Length(1), // Y axis label
-                    Constraint::Min(4),    // Y axis box (input + list)
-                    Constraint::Length(1), // Start y axis at 0
-                    Constraint::Length(1), // Log scale
-                    Constraint::Length(1), // Legend
-                    Constraint::Length(1), // Limit Rows
-                ])
-                .split(sidebar_inner);
-
-            let is_type_focused = focus == ChartFocus::ChartType;
-            let type_labels: [&str; 3] = ["Line", "Scatter", "Bar"];
-            let type_selected = ChartType::ALL
-                .iter()
-                .position(|&t| t == modal.chart_type)
-                .unwrap_or(0);
-            RadioBlock::new(
-                " Plot style ",
-                &type_labels,
-                type_selected,
-                is_type_focused,
-                3,
-                border_color,
-                active_color,
-            )
-            .render(sidebar_content[0], buf);
-
-            Paragraph::new("X axis:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[2], buf);
-
-            render_filter_group(
-                sidebar_content[3],
-                buf,
-                &mut modal.x_input,
-                &mut modal.x_list_state,
-                &x_display,
-                &x_selected_set,
-                focus == ChartFocus::XInput,
-                focus == ChartFocus::XList,
-                theme,
-                " Filter Columns ",
-            );
-
-            Paragraph::new("Y axis:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[5], buf);
-
-            render_filter_group(
-                sidebar_content[6],
-                buf,
-                &mut modal.y_input,
-                &mut modal.y_list_state,
-                &y_display,
-                &y_selected_set,
-                focus == ChartFocus::YInput,
-                focus == ChartFocus::YList,
-                theme,
-                " Filter Columns ",
-            );
-
-            // Wide enough for the ASCII checkbox `[x]`.
-            let y0_row = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(LABEL_WIDTH),
-                    Constraint::Length(4),
-                    Constraint::Min(1),
-                ])
-                .split(sidebar_content[7]);
-            let is_y0_focused = focus == ChartFocus::YStartsAtZero;
-            let y0_label_style = if is_y0_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new("Start y axis at 0:")
-                .style(y0_label_style)
-                .render(y0_row[0], buf);
-            let g = crate::glyphs::get();
-            let y0_marker = if modal.y_starts_at_zero {
-                g.checkbox_on
-            } else {
-                g.checkbox_off
-            };
-            let y0_check_style = if is_y0_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new(Line::from(Span::styled(y0_marker, y0_check_style)))
-                .render(y0_row[1], buf);
-
-            let log_row = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(LABEL_WIDTH),
-                    Constraint::Length(4),
-                    Constraint::Min(1),
-                ])
-                .split(sidebar_content[8]);
-            let is_log_focused = focus == ChartFocus::LogScale;
-            let log_label_style = if is_log_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new("Log scale:")
-                .style(log_label_style)
-                .render(log_row[0], buf);
-            let log_marker = if modal.log_scale {
-                g.checkbox_on
-            } else {
-                g.checkbox_off
-            };
-            let log_check_style = if is_log_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new(Line::from(Span::styled(log_marker, log_check_style)))
-                .render(log_row[1], buf);
-
-            let legend_row = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(LABEL_WIDTH),
-                    Constraint::Length(4),
-                    Constraint::Min(1),
-                ])
-                .split(sidebar_content[9]);
-            let is_legend_focused = focus == ChartFocus::ShowLegend;
-            let legend_label_style = if is_legend_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new("Legend:")
-                .style(legend_label_style)
-                .render(legend_row[0], buf);
-            let legend_marker = if modal.show_legend {
-                g.checkbox_on
-            } else {
-                g.checkbox_off
-            };
-            let legend_check_style = if is_legend_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new(Line::from(Span::styled(legend_marker, legend_check_style)))
-                .render(legend_row[1], buf);
-
-            render_number_option(
-                sidebar_content[10],
-                buf,
-                "Limit rows:",
-                &modal.row_limit_display(),
-                focus == ChartFocus::LimitRows,
-                theme,
-            );
-        }
-        ChartKind::Histogram => {
-            let hist_display = modal.hist_display_list();
-            let hist_selected_set: HashSet<String> = modal.hist_column.iter().cloned().collect();
-            let sidebar_content = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Column label
-                    Constraint::Min(4),    // Column selector
-                    Constraint::Length(1), // Bins
-                    Constraint::Length(1), // Limit Rows
-                ])
-                .split(sidebar_inner);
-            Paragraph::new("Value column:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[0], buf);
-            render_filter_group(
-                sidebar_content[1],
-                buf,
-                &mut modal.hist_input,
-                &mut modal.hist_list_state,
-                &hist_display,
-                &hist_selected_set,
-                focus == ChartFocus::HistInput,
-                focus == ChartFocus::HistList,
-                theme,
-                " Filter Columns ",
-            );
-            render_number_option(
-                sidebar_content[2],
-                buf,
-                "Bins:",
-                &format!("{}", modal.hist_bins),
-                focus == ChartFocus::HistBins,
-                theme,
-            );
-            render_number_option(
-                sidebar_content[3],
-                buf,
-                "Limit rows:",
-                &modal.row_limit_display(),
-                focus == ChartFocus::LimitRows,
-                theme,
-            );
-        }
-        ChartKind::BoxPlot => {
-            let box_display = modal.box_display_list();
-            let box_selected_set: HashSet<String> = modal.box_column.iter().cloned().collect();
-            let sidebar_content = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Column label
-                    Constraint::Min(4),    // Column selector
-                    Constraint::Length(1), // Limit Rows
-                ])
-                .split(sidebar_inner);
-            Paragraph::new("Value column:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[0], buf);
-            render_filter_group(
-                sidebar_content[1],
-                buf,
-                &mut modal.box_input,
-                &mut modal.box_list_state,
-                &box_display,
-                &box_selected_set,
-                focus == ChartFocus::BoxInput,
-                focus == ChartFocus::BoxList,
-                theme,
-                " Filter Columns ",
-            );
-            render_number_option(
-                sidebar_content[2],
-                buf,
-                "Limit rows:",
-                &modal.row_limit_display(),
-                focus == ChartFocus::LimitRows,
-                theme,
-            );
-        }
-        ChartKind::Kde => {
-            let kde_display = modal.kde_display_list();
-            let kde_selected_set: HashSet<String> = modal.kde_column.iter().cloned().collect();
-            let sidebar_content = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Column label
-                    Constraint::Min(4),    // Column selector
-                    Constraint::Length(1), // Bandwidth
-                    Constraint::Length(1), // Limit Rows
-                ])
-                .split(sidebar_inner);
-            Paragraph::new("Value column:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[0], buf);
-            render_filter_group(
-                sidebar_content[1],
-                buf,
-                &mut modal.kde_input,
-                &mut modal.kde_list_state,
-                &kde_display,
-                &kde_selected_set,
-                focus == ChartFocus::KdeInput,
-                focus == ChartFocus::KdeList,
-                theme,
-                " Filter Columns ",
-            );
-            render_number_option(
-                sidebar_content[2],
-                buf,
-                "Bandwidth:",
-                &format!("x{:.1}", modal.kde_bandwidth_factor),
-                focus == ChartFocus::KdeBandwidth,
-                theme,
-            );
-            render_number_option(
-                sidebar_content[3],
-                buf,
-                "Limit rows:",
-                &modal.row_limit_display(),
-                focus == ChartFocus::LimitRows,
-                theme,
-            );
-        }
-        ChartKind::Heatmap => {
-            let x_display = modal.heatmap_x_display_list();
-            let y_display = modal.heatmap_y_display_list();
-            let x_selected_set: HashSet<String> = modal.heatmap_x_column.iter().cloned().collect();
-            let y_selected_set: HashSet<String> = modal.heatmap_y_column.iter().cloned().collect();
-            let sidebar_content = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // X label
-                    Constraint::Min(4),    // X selector
-                    Constraint::Length(1), // Spacer
-                    Constraint::Length(1), // Y label
-                    Constraint::Min(4),    // Y selector
-                    Constraint::Length(1), // Bins
-                    Constraint::Length(1), // Limit Rows
-                ])
-                .split(sidebar_inner);
-            Paragraph::new("X axis:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[0], buf);
-            render_filter_group(
-                sidebar_content[1],
-                buf,
-                &mut modal.heatmap_x_input,
-                &mut modal.heatmap_x_list_state,
-                &x_display,
-                &x_selected_set,
-                focus == ChartFocus::HeatmapXInput,
-                focus == ChartFocus::HeatmapXList,
-                theme,
-                " Filter Columns ",
-            );
-            Paragraph::new("Y axis:")
-                .style(Style::default().fg(text_primary))
-                .render(sidebar_content[3], buf);
-            render_filter_group(
-                sidebar_content[4],
-                buf,
-                &mut modal.heatmap_y_input,
-                &mut modal.heatmap_y_list_state,
-                &y_display,
-                &y_selected_set,
-                focus == ChartFocus::HeatmapYInput,
-                focus == ChartFocus::HeatmapYList,
-                theme,
-                " Filter Columns ",
-            );
-            render_number_option(
-                sidebar_content[5],
-                buf,
-                "Bins:",
-                &format!("{}", modal.heatmap_bins),
-                focus == ChartFocus::HeatmapBins,
-                theme,
-            );
-            render_number_option(
-                sidebar_content[6],
-                buf,
-                "Limit rows:",
-                &modal.row_limit_display(),
-                focus == ChartFocus::LimitRows,
-                theme,
-            );
-        }
-    }
+    render_sidebar(main_layout[0], buf, modal, ctx);
 
     let chart_inner = main_layout[1];
     match render_data {
@@ -857,7 +493,7 @@ fn render_xy_chart(
             chart.render(area, buf);
         }
     } else {
-        Paragraph::new("Select X and Y columns in the sidebar. Tab changes focus.")
+        Paragraph::new("Select X and Y columns in the sidebar.")
             .style(Style::default().fg(text_secondary))
             .centered()
             .render(area, buf);
@@ -1271,5 +907,128 @@ fn render_heatmap_chart(
             &y_title,
             label_style,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn open_modal() -> ChartModal {
+        let mut modal = ChartModal::new();
+        modal.open(
+            &["price".to_string(), "volume".to_string()],
+            &["date".to_string()],
+            Some(10_000),
+        );
+        modal
+    }
+
+    fn render_rows(modal: &mut ChartModal, width: u16, height: u16) -> Vec<String> {
+        let ctx = RenderContext::for_test();
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
+            .expect("default theme colors must resolve");
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        render_chart_view(
+            area,
+            &mut buf,
+            modal,
+            &theme,
+            &ctx,
+            ChartRenderData::XY {
+                series: None,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+            },
+        );
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The tab line names every chart kind, the sidebar is one Surface of
+    /// FormRows with every choice echoed, and nothing inside grows a border.
+    #[test]
+    fn the_xy_form_echoes_every_option_inside_one_surface() {
+        let mut modal = open_modal();
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["price".to_string()];
+        let rows = render_rows(&mut modal, 100, 24);
+
+        for kind in ChartKind::ALL {
+            assert!(rows[0].contains(kind.as_str()), "tab line: {:?}", rows[0]);
+        }
+        assert!(
+            rows[1].contains("Options"),
+            "the surface title: {:?}",
+            rows[1]
+        );
+        for row in &rows[2..23] {
+            assert!(
+                !row.contains('╭') && !row.contains('╰'),
+                "a second border inside the surface: {row:?}"
+            );
+        }
+        assert!(rows[2].contains("Style:") && rows[2].contains("Line"));
+        assert!(rows[3].contains("X axis:") && rows[3].contains("date"));
+        assert!(rows[4].contains("Y series:") && rows[4].contains("price"));
+        assert!(rows[5].contains("Y from zero:"));
+        assert!(rows[6].contains("Log scale:"));
+        assert!(rows[7].contains("Legend:"));
+        assert!(rows[8].contains("Limit rows:") && rows[8].contains("10,000"));
+    }
+
+    /// Only the active chart kind's options render.
+    #[test]
+    fn each_kind_shows_only_its_own_options() {
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::Kde);
+        let rows = render_rows(&mut modal, 100, 24);
+        let body = rows.join("\n");
+        assert!(body.contains("Column:") && body.contains("Bandwidth:"));
+        assert!(!body.contains("Bins:") && !body.contains("Log scale:"));
+
+        modal.set_chart_kind(ChartKind::Heatmap);
+        let rows = render_rows(&mut modal, 100, 24);
+        let body = rows.join("\n");
+        assert!(body.contains("X axis:") && body.contains("Y axis:") && body.contains("Bins:"));
+        assert!(!body.contains("Bandwidth:"));
+    }
+
+    /// The open Picker drops in below the rows, with a checkbox per item on
+    /// the Y series row.
+    #[test]
+    fn the_y_picker_shows_toggles_below_the_rows() {
+        let g = crate::glyphs::get();
+        let mut modal = open_modal();
+        modal.focus = ChartFocus::YColumns;
+        modal.open_picker();
+        modal.picker_toggle(); // price in
+        let rows = render_rows(&mut modal, 100, 24);
+        let body = rows.join("\n");
+        assert!(
+            body.contains(&format!("{} price", g.checkbox_on)),
+            "chosen series checked: {body}"
+        );
+        assert!(
+            body.contains(&format!("{} volume", g.checkbox_off)),
+            "other items unchecked: {body}"
+        );
+    }
+
+    #[test]
+    fn a_tiny_area_never_panics() {
+        for (w, h) in [(0, 0), (3, 2), (10, 4), (20, 6), (60, 20), (80, 24)] {
+            let mut modal = open_modal();
+            modal.focus = ChartFocus::XColumn;
+            modal.open_picker();
+            let _ = render_rows(&mut modal, w, h);
+        }
     }
 }

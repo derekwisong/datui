@@ -50,7 +50,7 @@ pattern "q_.*"` — so a pattern that matches nothing is visible before it runs.
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Switch tab, or move the cursor in a text field |
 | <kbd>Space</kbd> or typing | Open the focused row's picker, narrowed by what you type |
-| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> toggles where several can be chosen |
+| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
 | <kbd>Esc</kbd> | Close the picker; pressed again, close without applying |
 | <kbd>?</kbd> | Help |

@@ -890,7 +890,7 @@ mod tests {
     }
 
     /// Ctrl-C copies in every search box, not only the query bar: the Sort tab's column
-    /// search and the chart view's column searches are text fields too. At the plain
+    /// search and the chart view's open column Picker are text fields too. At the plain
     /// table it still quits.
     #[test]
     fn ctrl_c_copies_in_the_sort_and_chart_search_boxes() {
@@ -916,28 +916,23 @@ mod tests {
         let (mut p2, _d) = loaded_pump();
         p2.app.input_mode = InputMode::Chart;
         p2.app.chart_modal.active = true;
-        for focus in [
-            ChartFocus::XInput,
-            ChartFocus::YInput,
-            ChartFocus::HistInput,
-            ChartFocus::BoxInput,
-            ChartFocus::KdeInput,
-            ChartFocus::HeatmapXInput,
-            ChartFocus::HeatmapYInput,
-        ] {
-            p2.app.chart_modal.focus = focus;
-            assert!(
-                p2.app.text_field_focused(),
-                "{focus:?} is a column search box"
-            );
-        }
-        p2.app.chart_modal.focus = ChartFocus::XInput;
+        p2.app
+            .chart_modal
+            .open(&["a".to_string(), "b".to_string()], &[], None);
+        p2.app.chart_modal.focus = ChartFocus::XColumn;
+        assert!(
+            !p2.app.text_field_focused(),
+            "the closed form is not a text field"
+        );
+        p2.app.chart_modal.open_picker();
+        assert!(
+            p2.app.text_field_focused(),
+            "the open Picker narrows by typing"
+        );
         assert!(!matches!(
             p2.app.handle(&AppEvent::Key(ctrl('c'))),
             Ok(Some(AppEvent::Exit))
         ));
-        p2.app.chart_modal.focus = ChartFocus::XList;
-        assert!(!p2.app.text_field_focused(), "a list is not a text field");
 
         let (mut p3, _d3) = loaded_pump();
         assert!(matches!(

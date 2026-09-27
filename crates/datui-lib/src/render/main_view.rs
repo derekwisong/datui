@@ -94,9 +94,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             pairs.push(("?", "Help"));
             ControlBarSpec::Custom(pairs)
         }
-        MainViewContent::Chart => {
-            ControlBarSpec::Custom(vec![("Esc", "Back"), ("e", "Export"), ("?", "Help")])
-        }
+        MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
         MainViewContent::Loading => {
@@ -117,6 +115,53 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             app.what_enter_does(),
         )),
     }
+}
+
+/// Control bar keys for the chart view: what works right now, most-needed
+/// first, since the bar is cut from the right.
+///
+/// While the column Picker is open it owns the keys, so the bar says so; the
+/// rest of the time the bar leads with the direct chart-type switch and names
+/// what the focused row itself takes.
+fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+    let g = crate::glyphs::get();
+    if app.chart_export_modal.active {
+        return vec![
+            ("Enter", "Export"),
+            ("Tab", "Next"),
+            ("Esc", "Cancel"),
+            ("?", "Help"),
+        ];
+    }
+    let modal = &app.chart_modal;
+    if modal.picker.is_some() {
+        let mut keys = vec![("type", "Narrow"), (g.updown, "Move")];
+        if modal.is_multi_row(modal.focus) {
+            keys.push(("Space", "Toggle"));
+            keys.push(("Enter", "Done"));
+        } else {
+            keys.push(("Enter", "Choose"));
+        }
+        keys.push(("Esc", "Back"));
+        return keys;
+    }
+    // "Chart", not "Type": this bar also spells the key name "type" (the
+    // picker's narrow chip), and the label names what 1-5 switch — the same
+    // word as the `c Chart` chip that opened this screen.
+    let mut keys = vec![("1-5", "Chart"), ("Tab", "Options")];
+    if modal.is_picker_row(modal.focus) {
+        keys.push(("Space", "Edit"));
+    } else if modal.is_toggle_row(modal.focus) {
+        keys.push(("Space", "Toggle"));
+    } else if modal.is_number_row(modal.focus) {
+        keys.push((g.updown_lr, "Adjust"));
+    } else if modal.focus == crate::chart_modal::ChartFocus::Style {
+        keys.push((g.updown_lr, "Style"));
+    }
+    keys.push(("e", "Export"));
+    keys.push(("?", "Help"));
+    keys.push(("Esc", "Back"));
+    keys
 }
 
 /// Where the home screen is, as far as Esc is concerned.

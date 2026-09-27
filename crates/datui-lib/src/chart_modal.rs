@@ -1,10 +1,12 @@
 //! Chart view state: chart type, axis columns, and options.
+//!
+//! The options form is a flat list of rows per chart kind; column rows are
+//! edited through the one shared Picker, so the state here is the choices
+//! themselves plus which row holds focus.
 
-use ratatui::widgets::ListState;
+use crate::widgets::ui::PickerState;
 
-use crate::widgets::text_input::TextInput;
-
-/// Chart kind: full chart category shown as tabs.
+/// Chart kind: full chart category shown as tabs, switched with 1-5 or [ ].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChartKind {
     #[default]
@@ -56,33 +58,30 @@ impl ChartType {
     }
 }
 
-/// Focus area in the chart sidebar.
+/// Focus: one row of the active chart kind's options form. The tab bar is not
+/// focusable — the chart kind switches from anywhere with 1-5 and [ ].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChartFocus {
+    /// XY plot style: Line / Scatter / Bar, cycled in place.
     #[default]
-    TabBar,
-    ChartType,
-    XInput,
-    XList,
-    YInput,
-    YList,
+    Style,
+    /// XY x-axis column (single pick).
+    XColumn,
+    /// XY y-axis series (toggle up to `Y_SERIES_MAX`).
+    YColumns,
     YStartsAtZero,
     LogScale,
     ShowLegend,
-    HistInput,
-    HistList,
-    HistBins,
-    BoxInput,
-    BoxList,
-    KdeInput,
-    KdeList,
-    KdeBandwidth,
-    HeatmapXInput,
-    HeatmapXList,
-    HeatmapYInput,
-    HeatmapYList,
-    HeatmapBins,
-    /// Limit Rows (shared across all chart types; at bottom of options).
+    /// The value column of the Histogram, Box Plot, or KDE on screen.
+    Column,
+    /// Heatmap axis columns (single pick each).
+    HeatmapX,
+    HeatmapY,
+    /// Bin count of the Histogram or Heatmap on screen.
+    Bins,
+    /// KDE bandwidth multiplier.
+    Bandwidth,
+    /// Row cap shared by every chart kind; the last row of each form.
     LimitRows,
 }
 
@@ -133,59 +132,39 @@ fn format_usize_with_commas(n: usize) -> String {
     out
 }
 
-/// Chart modal state: chart kind, axes/columns, and options.
+/// Chart view state: chart kind, axes/columns, and options.
 #[derive(Default)]
 pub struct ChartModal {
     pub active: bool,
     pub chart_kind: ChartKind,
     pub chart_type: ChartType,
-    /// Remembered x-axis column (single; set with spacebar).
+    /// Remembered x-axis column (single).
     pub x_column: Option<String>,
-    /// Remembered y-axis column names (order = series order; set with spacebar, max Y_SERIES_MAX).
+    /// Remembered y-axis column names (order = series order; max Y_SERIES_MAX).
     pub y_columns: Vec<String>,
     pub y_starts_at_zero: bool,
     pub log_scale: bool,
     pub show_legend: bool,
     pub focus: ChartFocus,
-    /// Text input for x-axis column search.
-    pub x_input: TextInput,
-    /// Text input for y-axis column search.
-    pub y_input: TextInput,
-    /// List state for x-axis list (index into x_display_list).
-    pub x_list_state: ListState,
-    /// List state for y-axis list (index into y_display_list).
-    pub y_list_state: ListState,
-    /// Available columns for x-axis (datetime + numeric, order preserved for list).
+    /// The one Picker, open for the focused column row; None while the form
+    /// has the keys.
+    pub picker: Option<PickerState>,
+    /// X-axis candidates: datetime first, then numeric.
     pub x_candidates: Vec<String>,
-    /// Available numeric columns for y-axis.
-    pub y_candidates: Vec<String>,
+    /// Numeric columns: the pool for every other column row.
+    pub numeric_candidates: Vec<String>,
     /// Histogram: remembered column (single selection).
     pub hist_column: Option<String>,
     pub hist_bins: usize,
-    pub hist_input: TextInput,
-    pub hist_list_state: ListState,
-    pub hist_candidates: Vec<String>,
     /// Box plot: remembered column (single selection).
     pub box_column: Option<String>,
-    pub box_input: TextInput,
-    pub box_list_state: ListState,
-    pub box_candidates: Vec<String>,
     /// KDE: remembered column (single selection).
     pub kde_column: Option<String>,
     pub kde_bandwidth_factor: f64,
-    pub kde_input: TextInput,
-    pub kde_list_state: ListState,
-    pub kde_candidates: Vec<String>,
     /// Heatmap: remembered x/y columns (single selection each).
     pub heatmap_x_column: Option<String>,
     pub heatmap_y_column: Option<String>,
     pub heatmap_bins: usize,
-    pub heatmap_x_input: TextInput,
-    pub heatmap_y_input: TextInput,
-    pub heatmap_x_list_state: ListState,
-    pub heatmap_y_list_state: ListState,
-    pub heatmap_x_candidates: Vec<String>,
-    pub heatmap_y_candidates: Vec<String>,
     /// Maximum rows for chart data. None = unlimited (display "Unlimited"); Some(n) = cap at n.
     pub row_limit: Option<usize>,
 }
@@ -195,8 +174,8 @@ impl ChartModal {
         Self::default()
     }
 
-    /// Open the chart modal. No default x or y columns; user selects with spacebar.
-    /// `default_row_limit` is the initial value for Limit Rows (e.g. from config); None = unlimited.
+    /// Open the chart view. No default x or y columns; the user picks them.
+    /// `default_row_limit` is the initial value for Limit rows (e.g. from config); None = unlimited.
     pub fn open(
         &mut self,
         numeric_columns: &[String],
@@ -209,7 +188,7 @@ impl ChartModal {
         self.y_starts_at_zero = false;
         self.log_scale = false;
         self.show_legend = true;
-        self.focus = ChartFocus::TabBar;
+        self.picker = None;
         self.row_limit = default_row_limit.and_then(|n| {
             if n == 0 {
                 None
@@ -225,14 +204,8 @@ impl ChartModal {
                 self.x_candidates.push(c.clone());
             }
         }
-        self.y_candidates = numeric_columns.to_vec();
-        self.hist_candidates = numeric_columns.to_vec();
-        self.box_candidates = numeric_columns.to_vec();
-        self.kde_candidates = numeric_columns.to_vec();
-        self.heatmap_x_candidates = numeric_columns.to_vec();
-        self.heatmap_y_candidates = numeric_columns.to_vec();
+        self.numeric_candidates = numeric_columns.to_vec();
 
-        // No default x or y; user selects with spacebar.
         self.x_column = None;
         self.y_columns.clear();
         self.hist_column = None;
@@ -243,388 +216,300 @@ impl ChartModal {
         self.heatmap_x_column = None;
         self.heatmap_y_column = None;
         self.heatmap_bins = HEATMAP_DEFAULT_BINS;
-
-        self.x_input.set_value(String::new());
-        self.y_input.set_value(String::new());
-        self.hist_input.set_value(String::new());
-        self.box_input.set_value(String::new());
-        self.kde_input.set_value(String::new());
-        self.heatmap_x_input.set_value(String::new());
-        self.heatmap_y_input.set_value(String::new());
-
-        let x_display = self.x_display_list();
-        let y_display = self.y_display_list();
-        self.x_list_state
-            .select(if x_display.is_empty() { None } else { Some(0) });
-        self.y_list_state
-            .select(if y_display.is_empty() { None } else { Some(0) });
-        let hist_display = self.hist_display_list();
-        let box_display = self.box_display_list();
-        let kde_display = self.kde_display_list();
-        let heatmap_x_display = self.heatmap_x_display_list();
-        let heatmap_y_display = self.heatmap_y_display_list();
-        self.hist_list_state.select(if hist_display.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
-        self.box_list_state.select(if box_display.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
-        self.kde_list_state.select(if kde_display.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
-        self.heatmap_x_list_state
-            .select(if heatmap_x_display.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
-        self.heatmap_y_list_state
-            .select(if heatmap_y_display.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
+        self.focus = self.row_order()[0];
     }
 
-    /// X-axis candidates filtered by current x search string (case-insensitive substring).
-    pub fn x_filtered(&self) -> Vec<String> {
-        let q = self.x_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.x_candidates.clone();
+    pub fn close(&mut self) {
+        self.active = false;
+        self.chart_kind = ChartKind::XY;
+        self.picker = None;
+        self.x_column = None;
+        self.y_columns.clear();
+        self.hist_column = None;
+        self.box_column = None;
+        self.kde_column = None;
+        self.heatmap_x_column = None;
+        self.heatmap_y_column = None;
+        self.x_candidates.clear();
+        self.numeric_candidates.clear();
+        self.focus = ChartFocus::Style;
+    }
+
+    // ----- Focus -----
+
+    /// The active chart kind's rows, in Tab order.
+    pub fn row_order(&self) -> &'static [ChartFocus] {
+        use ChartFocus::*;
+        match self.chart_kind {
+            ChartKind::XY => &[
+                Style,
+                XColumn,
+                YColumns,
+                YStartsAtZero,
+                LogScale,
+                ShowLegend,
+                LimitRows,
+            ],
+            ChartKind::Histogram => &[Column, Bins, LimitRows],
+            ChartKind::BoxPlot => &[Column, LimitRows],
+            ChartKind::Kde => &[Column, Bandwidth, LimitRows],
+            ChartKind::Heatmap => &[HeatmapX, HeatmapY, Bins, LimitRows],
         }
-        self.x_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
     }
 
-    /// Y-axis candidates filtered by current y search string (case-insensitive substring).
-    pub fn y_filtered(&self) -> Vec<String> {
-        let q = self.y_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.y_candidates.clone();
+    pub fn next_focus(&mut self) {
+        let order = self.row_order();
+        self.focus = match order.iter().position(|&f| f == self.focus) {
+            Some(pos) => order[(pos + 1) % order.len()],
+            None => order[0],
+        };
+    }
+
+    pub fn prev_focus(&mut self) {
+        let order = self.row_order();
+        self.focus = match order.iter().position(|&f| f == self.focus) {
+            Some(pos) if pos > 0 => order[pos - 1],
+            Some(_) => order[order.len() - 1],
+            None => order[0],
+        };
+    }
+
+    /// Switch the chart kind directly (the 1-5 keys). Focus lands on the new
+    /// form's first row; a Picker open for the old form dies with it.
+    pub fn set_chart_kind(&mut self, kind: ChartKind) {
+        self.chart_kind = kind;
+        self.picker = None;
+        self.focus = self.row_order()[0];
+    }
+
+    pub fn next_chart_kind(&mut self) {
+        let idx = ChartKind::ALL
+            .iter()
+            .position(|&k| k == self.chart_kind)
+            .unwrap_or(0);
+        self.set_chart_kind(ChartKind::ALL[(idx + 1) % ChartKind::ALL.len()]);
+    }
+
+    pub fn prev_chart_kind(&mut self) {
+        let idx = ChartKind::ALL
+            .iter()
+            .position(|&k| k == self.chart_kind)
+            .unwrap_or(0);
+        let prev = if idx == 0 {
+            ChartKind::ALL.len() - 1
+        } else {
+            idx - 1
+        };
+        self.set_chart_kind(ChartKind::ALL[prev]);
+    }
+
+    // ----- Rows -----
+
+    /// Rows edited through the Picker.
+    pub fn is_picker_row(&self, focus: ChartFocus) -> bool {
+        matches!(
+            focus,
+            ChartFocus::XColumn
+                | ChartFocus::YColumns
+                | ChartFocus::Column
+                | ChartFocus::HeatmapX
+                | ChartFocus::HeatmapY
+        )
+    }
+
+    /// Rows where the Picker toggles several choices rather than picking one.
+    pub fn is_multi_row(&self, focus: ChartFocus) -> bool {
+        focus == ChartFocus::YColumns
+    }
+
+    pub fn is_toggle_row(&self, focus: ChartFocus) -> bool {
+        matches!(
+            focus,
+            ChartFocus::YStartsAtZero | ChartFocus::LogScale | ChartFocus::ShowLegend
+        )
+    }
+
+    pub fn is_number_row(&self, focus: ChartFocus) -> bool {
+        matches!(
+            focus,
+            ChartFocus::Bins | ChartFocus::Bandwidth | ChartFocus::LimitRows
+        )
+    }
+
+    // ----- Picker -----
+
+    /// What the focused row's Picker offers.
+    pub fn picker_items(&self) -> Vec<String> {
+        match self.focus {
+            ChartFocus::XColumn => self.x_candidates.clone(),
+            ChartFocus::YColumns
+            | ChartFocus::Column
+            | ChartFocus::HeatmapX
+            | ChartFocus::HeatmapY => self.numeric_candidates.clone(),
+            _ => Vec::new(),
         }
-        self.y_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
     }
 
-    /// X display list: remembered x first (if in filtered), then rest of filtered. Used for list rendering and index.
-    pub fn x_display_list(&self) -> Vec<String> {
-        Self::display_list_with_selected(self.x_filtered(), &self.x_column)
-    }
-
-    /// Y display list: remembered y columns first (in order, that are in filtered), then rest of filtered.
-    pub fn y_display_list(&self) -> Vec<String> {
-        let filtered = self.y_filtered();
-        let mut out: Vec<String> = self
-            .y_columns
-            .iter()
-            .filter(|c| filtered.contains(c))
-            .cloned()
-            .collect();
-        for c in &filtered {
-            if !out.contains(c) {
-                out.push(c.clone());
-            }
+    /// The current single choice of the focused row, for opening the Picker on it.
+    fn focused_row_choice(&self) -> Option<&str> {
+        match self.focus {
+            ChartFocus::XColumn => self.x_column.as_deref(),
+            ChartFocus::YColumns => self.y_columns.first().map(|s| s.as_str()),
+            ChartFocus::Column => match self.chart_kind {
+                ChartKind::Histogram => self.hist_column.as_deref(),
+                ChartKind::BoxPlot => self.box_column.as_deref(),
+                ChartKind::Kde => self.kde_column.as_deref(),
+                _ => None,
+            },
+            ChartFocus::HeatmapX => self.heatmap_x_column.as_deref(),
+            ChartFocus::HeatmapY => self.heatmap_y_column.as_deref(),
+            _ => None,
         }
-        out
     }
 
-    fn display_list_with_selected(filtered: Vec<String>, selected: &Option<String>) -> Vec<String> {
-        if let Some(selected) = selected
-            && let Some(pos) = filtered.iter().position(|c| c == selected)
+    /// Open the Picker for the focused row, cursor on the current choice.
+    pub fn open_picker(&mut self) {
+        if !self.is_picker_row(self.focus) {
+            return;
+        }
+        let items = self.picker_items();
+        let mut state = PickerState::new(items.clone());
+        if let Some(current) = self.focused_row_choice()
+            && let Some(i) = items.iter().position(|item| item == current)
         {
-            let mut out = vec![filtered[pos].clone()];
-            for (i, c) in filtered.iter().enumerate() {
-                if i != pos {
-                    out.push(c.clone());
+            state.select_original(i);
+        }
+        self.picker = Some(state);
+    }
+
+    /// The item under the open Picker's cursor.
+    fn picker_cursor_item(&self) -> Option<String> {
+        let i = self.picker.as_ref()?.selected_original()?;
+        self.picker_items().get(i).cloned()
+    }
+
+    /// Enter in the Picker: a pick-one row takes the cursor's item; the Y row
+    /// keeps its toggled choices, or adopts the cursor's item when none are
+    /// toggled, so Enter on a fresh list still charts something. Either way
+    /// the Picker closes.
+    pub fn picker_choose(&mut self) {
+        let Some(item) = self.picker_cursor_item() else {
+            self.picker = None;
+            return;
+        };
+        self.picker = None;
+        match self.focus {
+            ChartFocus::XColumn => self.x_column = Some(item),
+            ChartFocus::YColumns => {
+                if self.y_columns.is_empty() {
+                    self.y_columns.push(item);
                 }
             }
-            return out;
+            ChartFocus::Column => match self.chart_kind {
+                ChartKind::Histogram => self.hist_column = Some(item),
+                ChartKind::BoxPlot => self.box_column = Some(item),
+                ChartKind::Kde => self.kde_column = Some(item),
+                _ => {}
+            },
+            ChartFocus::HeatmapX => self.heatmap_x_column = Some(item),
+            ChartFocus::HeatmapY => self.heatmap_y_column = Some(item),
+            _ => {}
         }
-        filtered
     }
 
-    pub fn hist_filtered(&self) -> Vec<String> {
-        let q = self.hist_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.hist_candidates.clone();
+    /// Space in the Y row's Picker: flip the cursor's series in or out, up to
+    /// `Y_SERIES_MAX`.
+    pub fn picker_toggle(&mut self) {
+        if !self.is_multi_row(self.focus) {
+            return;
         }
-        self.hist_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
-    }
-
-    pub fn hist_display_list(&self) -> Vec<String> {
-        Self::display_list_with_selected(self.hist_filtered(), &self.hist_column)
-    }
-
-    pub fn box_filtered(&self) -> Vec<String> {
-        let q = self.box_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.box_candidates.clone();
+        let Some(item) = self.picker_cursor_item() else {
+            return;
+        };
+        if let Some(pos) = self.y_columns.iter().position(|c| *c == item) {
+            self.y_columns.remove(pos);
+        } else if self.y_columns.len() < Y_SERIES_MAX {
+            self.y_columns.push(item);
         }
-        self.box_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
     }
 
-    pub fn box_display_list(&self) -> Vec<String> {
-        Self::display_list_with_selected(self.box_filtered(), &self.box_column)
+    /// Whether an item in the Y row's Picker is currently a series.
+    pub fn is_marked(&self, item: &str) -> bool {
+        self.focus == ChartFocus::YColumns && self.y_columns.iter().any(|c| c == item)
     }
 
-    pub fn kde_filtered(&self) -> Vec<String> {
-        let q = self.kde_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.kde_candidates.clone();
-        }
-        self.kde_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
-    }
-
-    pub fn kde_display_list(&self) -> Vec<String> {
-        Self::display_list_with_selected(self.kde_filtered(), &self.kde_column)
-    }
-
-    pub fn heatmap_x_filtered(&self) -> Vec<String> {
-        let q = self.heatmap_x_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.heatmap_x_candidates.clone();
-        }
-        self.heatmap_x_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
-    }
-
-    pub fn heatmap_y_filtered(&self) -> Vec<String> {
-        let q = self.heatmap_y_input.value().trim().to_lowercase();
-        if q.is_empty() {
-            return self.heatmap_y_candidates.clone();
-        }
-        self.heatmap_y_candidates
-            .iter()
-            .filter(|c| c.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
-    }
-
-    pub fn heatmap_x_display_list(&self) -> Vec<String> {
-        Self::display_list_with_selected(self.heatmap_x_filtered(), &self.heatmap_x_column)
-    }
-
-    pub fn heatmap_y_display_list(&self) -> Vec<String> {
-        Self::display_list_with_selected(self.heatmap_y_filtered(), &self.heatmap_y_column)
-    }
+    // ----- Effective selections (what gets charted right now) -----
 
     /// Effective x column for chart/export: the remembered x (no preview on scroll).
     pub fn effective_x_column(&self) -> Option<&String> {
         self.x_column.as_ref()
     }
 
-    /// Effective y columns for chart/export: when Y list focused, remembered + highlighted (if not already remembered); else just remembered.
+    /// Effective y columns: the toggled series, plus the Y Picker cursor's
+    /// item as a preview while that Picker is open.
     pub fn effective_y_columns(&self) -> Vec<String> {
         let mut out = self.y_columns.clone();
-        if self.focus == ChartFocus::YList {
-            let display = self.y_display_list();
-            if let Some(i) = self.y_list_state.selected()
-                && i < display.len()
-            {
-                let name = &display[i];
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            }
+        if self.focus == ChartFocus::YColumns
+            && let Some(item) = self.picker_cursor_item()
+            && !out.contains(&item)
+        {
+            out.push(item);
         }
         out
     }
 
-    pub fn effective_hist_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::HistList {
-            let display = self.hist_display_list();
-            if let Some(i) = self.hist_list_state.selected()
-                && i < display.len()
-            {
-                return Some(display[i].clone());
-            }
+    /// The value column a single-column kind would chart right now: the open
+    /// Picker's cursor previews; otherwise the remembered choice.
+    fn effective_single(&self, kind: ChartKind, remembered: &Option<String>) -> Option<String> {
+        if self.chart_kind == kind
+            && self.focus == ChartFocus::Column
+            && let Some(item) = self.picker_cursor_item()
+        {
+            return Some(item);
         }
-        self.hist_column.clone()
+        remembered.clone()
+    }
+
+    pub fn effective_hist_column(&self) -> Option<String> {
+        self.effective_single(ChartKind::Histogram, &self.hist_column)
     }
 
     pub fn effective_box_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::BoxList {
-            let display = self.box_display_list();
-            if let Some(i) = self.box_list_state.selected()
-                && i < display.len()
-            {
-                return Some(display[i].clone());
-            }
-        }
-        self.box_column.clone()
+        self.effective_single(ChartKind::BoxPlot, &self.box_column)
     }
 
     pub fn effective_kde_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::KdeList {
-            let display = self.kde_display_list();
-            if let Some(i) = self.kde_list_state.selected()
-                && i < display.len()
-            {
-                return Some(display[i].clone());
-            }
-        }
-        self.kde_column.clone()
+        self.effective_single(ChartKind::Kde, &self.kde_column)
     }
 
     pub fn effective_heatmap_x_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::HeatmapXList {
-            let display = self.heatmap_x_display_list();
-            if let Some(i) = self.heatmap_x_list_state.selected()
-                && i < display.len()
-            {
-                return Some(display[i].clone());
-            }
+        if self.focus == ChartFocus::HeatmapX
+            && let Some(item) = self.picker_cursor_item()
+        {
+            return Some(item);
         }
         self.heatmap_x_column.clone()
     }
 
     pub fn effective_heatmap_y_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::HeatmapYList {
-            let display = self.heatmap_y_display_list();
-            if let Some(i) = self.heatmap_y_list_state.selected()
-                && i < display.len()
-            {
-                return Some(display[i].clone());
-            }
+        if self.focus == ChartFocus::HeatmapY
+            && let Some(item) = self.picker_cursor_item()
+        {
+            return Some(item);
         }
         self.heatmap_y_column.clone()
     }
 
-    /// Called when Y list loses focus: if no series remembered and we had a highlighted row, remember it.
-    pub fn y_list_blur(&mut self) {
-        if !self.y_columns.is_empty() {
-            return;
-        }
-        let display = self.y_display_list();
-        if let Some(i) = self.y_list_state.selected()
-            && i < display.len()
-        {
-            self.y_columns.push(display[i].clone());
-        }
-    }
+    // ----- Toggles and numbers -----
 
-    /// Clamp x/y list selection to display list length (e.g. after search filter changes).
-    /// When a list has items but no selection (e.g. after tabbing from the filter input), select the first item.
-    pub fn clamp_list_selections_to_filtered(&mut self) {
-        let x_display = self.x_display_list();
-        let y_display = self.y_display_list();
-        let hist_display = self.hist_display_list();
-        let box_display = self.box_display_list();
-        let kde_display = self.kde_display_list();
-        let heatmap_x_display = self.heatmap_x_display_list();
-        let heatmap_y_display = self.heatmap_y_display_list();
-
-        fn clamp_one(list_state: &mut ListState, display_len: usize) {
-            if display_len == 0 {
-                list_state.select(None);
-                return;
-            }
-            match list_state.selected() {
-                Some(s) if s >= display_len => {
-                    list_state.select(Some(display_len.saturating_sub(1)));
-                }
-                None => {
-                    list_state.select(Some(0));
-                }
-                _ => {}
-            }
-        }
-
-        clamp_one(&mut self.x_list_state, x_display.len());
-        clamp_one(&mut self.y_list_state, y_display.len());
-        clamp_one(&mut self.hist_list_state, hist_display.len());
-        clamp_one(&mut self.box_list_state, box_display.len());
-        clamp_one(&mut self.kde_list_state, kde_display.len());
-        clamp_one(&mut self.heatmap_x_list_state, heatmap_x_display.len());
-        clamp_one(&mut self.heatmap_y_list_state, heatmap_y_display.len());
-    }
-
-    pub fn close(&mut self) {
-        self.active = false;
-        self.chart_kind = ChartKind::XY;
-        self.x_column = None;
-        self.y_columns.clear();
-        self.x_candidates.clear();
-        self.y_candidates.clear();
-        self.hist_column = None;
-        self.box_column = None;
-        self.kde_column = None;
-        self.heatmap_x_column = None;
-        self.heatmap_y_column = None;
-        self.hist_candidates.clear();
-        self.box_candidates.clear();
-        self.kde_candidates.clear();
-        self.heatmap_x_candidates.clear();
-        self.heatmap_y_candidates.clear();
-        self.focus = ChartFocus::TabBar;
-    }
-
-    /// Move focus to next/previous in sidebar. When leaving Y list, apply blur (remember highlight if only one).
-    pub fn next_focus(&mut self) {
-        let prev = self.focus;
-        if prev == ChartFocus::YList {
-            self.y_list_blur();
-        }
-        let order = self.focus_order();
-        if let Some(pos) = order.iter().position(|f| *f == prev) {
-            self.focus = order[(pos + 1) % order.len()];
-        } else {
-            self.focus = order[0];
-        }
-    }
-
-    pub fn prev_focus(&mut self) {
-        let prev = self.focus;
-        if prev == ChartFocus::YList {
-            self.y_list_blur();
-        }
-        let order = self.focus_order();
-        if let Some(pos) = order.iter().position(|f| *f == prev) {
-            let next = if pos == 0 { order.len() - 1 } else { pos - 1 };
-            self.focus = order[next];
-        } else {
-            self.focus = order[0];
-        }
-    }
-
-    /// Toggle Y starts at 0 (when focus is YStartsAtZero).
     pub fn toggle_y_starts_at_zero(&mut self) {
         self.y_starts_at_zero = !self.y_starts_at_zero;
     }
 
-    /// Toggle log scale (when focus is LogScale).
     pub fn toggle_log_scale(&mut self) {
         self.log_scale = !self.log_scale;
     }
 
-    /// Toggle show legend (when focus is ShowLegend).
     pub fn toggle_show_legend(&mut self) {
         self.show_legend = !self.show_legend;
     }
@@ -646,35 +531,12 @@ impl ChartModal {
         };
     }
 
-    pub fn next_chart_kind(&mut self) {
-        let idx = ChartKind::ALL
-            .iter()
-            .position(|&k| k == self.chart_kind)
-            .unwrap_or(0);
-        self.chart_kind = ChartKind::ALL[(idx + 1) % ChartKind::ALL.len()];
-        self.focus = ChartFocus::TabBar;
-    }
-
-    pub fn prev_chart_kind(&mut self) {
-        let idx = ChartKind::ALL
-            .iter()
-            .position(|&k| k == self.chart_kind)
-            .unwrap_or(0);
-        let prev = if idx == 0 {
-            ChartKind::ALL.len() - 1
-        } else {
-            idx - 1
-        };
-        self.chart_kind = ChartKind::ALL[prev];
-        self.focus = ChartFocus::TabBar;
-    }
-
     /// Effective row limit to pass to prepare_* (unlimited = CHART_ROW_LIMIT_MAX).
     pub fn effective_row_limit(&self) -> usize {
         self.row_limit.unwrap_or(CHART_ROW_LIMIT_MAX)
     }
 
-    /// Display string for Limit Rows: "Unlimited" or number with commas.
+    /// Display string for Limit rows: "Unlimited" or number with commas.
     pub fn row_limit_display(&self) -> String {
         match self.row_limit {
             None => "Unlimited".to_string(),
@@ -697,6 +559,24 @@ impl ChartModal {
     pub fn adjust_kde_bandwidth_factor(&mut self, delta: f64) {
         let next = (self.kde_bandwidth_factor + delta).clamp(KDE_BANDWIDTH_MIN, KDE_BANDWIDTH_MAX);
         self.kde_bandwidth_factor = (next * 10.0).round() / 10.0;
+    }
+
+    /// Adjust the focused number row: bins, bandwidth, or the row limit,
+    /// whichever the active form shows.
+    pub fn adjust_number_row(&mut self, delta: i32) {
+        match self.focus {
+            ChartFocus::Bins if self.chart_kind == ChartKind::Histogram => {
+                self.adjust_hist_bins(delta)
+            }
+            ChartFocus::Bins if self.chart_kind == ChartKind::Heatmap => {
+                self.adjust_heatmap_bins(delta)
+            }
+            ChartFocus::Bandwidth => {
+                self.adjust_kde_bandwidth_factor(delta as f64 * KDE_BANDWIDTH_STEP)
+            }
+            ChartFocus::LimitRows => self.adjust_row_limit(delta),
+            _ => {}
+        }
     }
 
     /// Adjust row limit by delta (+/-). Step size depends on current value. None = unlimited.
@@ -722,7 +602,7 @@ impl ChartModal {
         self.row_limit = if next == 0 { None } else { Some(next) };
     }
 
-    /// Adjust row limit by 10,000 (PgUp / PgDown). None = unlimited.
+    /// Adjust row limit by 100,000 (PgUp / PgDown). None = unlimited.
     pub fn adjust_row_limit_page(&mut self, delta: i32) {
         let current = match self.row_limit {
             None if delta > 0 => {
@@ -741,285 +621,6 @@ impl ChartModal {
         self.row_limit = if next == 0 { None } else { Some(next) };
     }
 
-    /// Move x-axis list highlight down (does not change remembered x; use spacebar to remember).
-    pub fn x_list_down(&mut self) {
-        let display = self.x_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .x_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.x_list_state.select(Some(i));
-    }
-
-    /// Move x-axis list highlight up.
-    pub fn x_list_up(&mut self) {
-        let display = self.x_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self.x_list_state.selected().unwrap_or(0).saturating_sub(1);
-        self.x_list_state.select(Some(i));
-    }
-
-    /// Toggle x selection with spacebar: set remembered x to the highlighted row (single selection).
-    pub fn x_list_toggle(&mut self) {
-        let display = self.x_display_list();
-        if let Some(i) = self.x_list_state.selected()
-            && i < display.len()
-        {
-            self.x_column = Some(display[i].clone());
-        }
-    }
-
-    /// Move y-axis list highlight down (does not change remembered y; use spacebar to toggle).
-    pub fn y_list_down(&mut self) {
-        let display = self.y_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .y_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.y_list_state.select(Some(i));
-    }
-
-    /// Move y-axis list highlight up.
-    pub fn y_list_up(&mut self) {
-        let display = self.y_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self.y_list_state.selected().unwrap_or(0).saturating_sub(1);
-        self.y_list_state.select(Some(i));
-    }
-
-    /// Toggle y selection with spacebar: add highlighted to remembered (up to Y_SERIES_MAX) or remove if already remembered.
-    pub fn y_list_toggle(&mut self) {
-        let display = self.y_display_list();
-        let Some(i) = self.y_list_state.selected() else {
-            return;
-        };
-        if i >= display.len() {
-            return;
-        }
-        let name = display[i].clone();
-        if let Some(pos) = self.y_columns.iter().position(|c| c == &name) {
-            self.y_columns.remove(pos);
-        } else if self.y_columns.len() < Y_SERIES_MAX {
-            self.y_columns.push(name);
-        }
-    }
-
-    pub fn hist_list_down(&mut self) {
-        let display = self.hist_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .hist_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.hist_list_state.select(Some(i));
-    }
-
-    pub fn hist_list_up(&mut self) {
-        let display = self.hist_display_list();
-        if display.is_empty() {
-            return;
-        }
-        let i = self
-            .hist_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        self.hist_list_state.select(Some(i));
-    }
-
-    pub fn hist_list_toggle(&mut self) {
-        let display = self.hist_display_list();
-        if let Some(i) = self.hist_list_state.selected()
-            && i < display.len()
-        {
-            self.hist_column = Some(display[i].clone());
-        }
-    }
-
-    pub fn box_list_down(&mut self) {
-        let display = self.box_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .box_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.box_list_state.select(Some(i));
-    }
-
-    pub fn box_list_up(&mut self) {
-        let display = self.box_display_list();
-        if display.is_empty() {
-            return;
-        }
-        let i = self
-            .box_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        self.box_list_state.select(Some(i));
-    }
-
-    pub fn box_list_toggle(&mut self) {
-        let display = self.box_display_list();
-        if let Some(i) = self.box_list_state.selected()
-            && i < display.len()
-        {
-            self.box_column = Some(display[i].clone());
-        }
-    }
-
-    pub fn kde_list_down(&mut self) {
-        let display = self.kde_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .kde_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.kde_list_state.select(Some(i));
-    }
-
-    pub fn kde_list_up(&mut self) {
-        let display = self.kde_display_list();
-        if display.is_empty() {
-            return;
-        }
-        let i = self
-            .kde_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        self.kde_list_state.select(Some(i));
-    }
-
-    pub fn kde_list_toggle(&mut self) {
-        let display = self.kde_display_list();
-        if let Some(i) = self.kde_list_state.selected()
-            && i < display.len()
-        {
-            self.kde_column = Some(display[i].clone());
-        }
-    }
-
-    pub fn heatmap_x_list_down(&mut self) {
-        let display = self.heatmap_x_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .heatmap_x_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.heatmap_x_list_state.select(Some(i));
-    }
-
-    pub fn heatmap_x_list_up(&mut self) {
-        let display = self.heatmap_x_display_list();
-        if display.is_empty() {
-            return;
-        }
-        let i = self
-            .heatmap_x_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        self.heatmap_x_list_state.select(Some(i));
-    }
-
-    pub fn heatmap_x_list_toggle(&mut self) {
-        let display = self.heatmap_x_display_list();
-        if let Some(i) = self.heatmap_x_list_state.selected()
-            && i < display.len()
-        {
-            self.heatmap_x_column = Some(display[i].clone());
-        }
-    }
-
-    pub fn heatmap_y_list_down(&mut self) {
-        let display = self.heatmap_y_display_list();
-        let len = display.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .heatmap_y_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_add(1)
-            .min(len.saturating_sub(1));
-        self.heatmap_y_list_state.select(Some(i));
-    }
-
-    pub fn heatmap_y_list_up(&mut self) {
-        let display = self.heatmap_y_display_list();
-        if display.is_empty() {
-            return;
-        }
-        let i = self
-            .heatmap_y_list_state
-            .selected()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        self.heatmap_y_list_state.select(Some(i));
-    }
-
-    pub fn heatmap_y_list_toggle(&mut self) {
-        let display = self.heatmap_y_display_list();
-        if let Some(i) = self.heatmap_y_list_state.selected()
-            && i < display.len()
-        {
-            self.heatmap_y_column = Some(display[i].clone());
-        }
-    }
-
-    pub fn is_text_input_focused(&self) -> bool {
-        matches!(
-            self.focus,
-            ChartFocus::XInput
-                | ChartFocus::YInput
-                | ChartFocus::HistInput
-                | ChartFocus::BoxInput
-                | ChartFocus::KdeInput
-                | ChartFocus::HeatmapXInput
-                | ChartFocus::HeatmapYInput
-        )
-    }
-
     pub fn can_export(&self) -> bool {
         match self.chart_kind {
             ChartKind::XY => {
@@ -1034,64 +635,23 @@ impl ChartModal {
             }
         }
     }
-
-    fn focus_order(&self) -> &'static [ChartFocus] {
-        match self.chart_kind {
-            ChartKind::XY => &[
-                ChartFocus::TabBar,
-                ChartFocus::ChartType,
-                ChartFocus::XInput,
-                ChartFocus::XList,
-                ChartFocus::YInput,
-                ChartFocus::YList,
-                ChartFocus::YStartsAtZero,
-                ChartFocus::LogScale,
-                ChartFocus::ShowLegend,
-                ChartFocus::LimitRows,
-            ],
-            ChartKind::Histogram => &[
-                ChartFocus::TabBar,
-                ChartFocus::HistInput,
-                ChartFocus::HistList,
-                ChartFocus::HistBins,
-                ChartFocus::LimitRows,
-            ],
-            ChartKind::BoxPlot => &[
-                ChartFocus::TabBar,
-                ChartFocus::BoxInput,
-                ChartFocus::BoxList,
-                ChartFocus::LimitRows,
-            ],
-            ChartKind::Kde => &[
-                ChartFocus::TabBar,
-                ChartFocus::KdeInput,
-                ChartFocus::KdeList,
-                ChartFocus::KdeBandwidth,
-                ChartFocus::LimitRows,
-            ],
-            ChartKind::Heatmap => &[
-                ChartFocus::TabBar,
-                ChartFocus::HeatmapXInput,
-                ChartFocus::HeatmapXList,
-                ChartFocus::HeatmapYInput,
-                ChartFocus::HeatmapYList,
-                ChartFocus::HeatmapBins,
-                ChartFocus::LimitRows,
-            ],
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
 
-    #[test]
-    fn open_no_default_columns() {
+    fn open_modal() -> ChartModal {
         let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
         let mut modal = ChartModal::new();
         modal.open(&numeric, &datetime, Some(10_000));
+        modal
+    }
+
+    #[test]
+    fn open_no_default_columns() {
+        let modal = open_modal();
         assert!(modal.active);
         assert_eq!(modal.chart_kind, ChartKind::XY);
         assert_eq!(modal.chart_type, ChartType::Line);
@@ -1100,23 +660,16 @@ mod tests {
         assert!(!modal.y_starts_at_zero);
         assert!(!modal.log_scale);
         assert!(modal.show_legend);
-        assert_eq!(modal.focus, ChartFocus::TabBar);
+        assert!(modal.picker.is_none());
+        assert_eq!(modal.focus, ChartFocus::Style);
         assert_eq!(modal.row_limit, Some(10_000));
-    }
-
-    #[test]
-    fn open_numeric_only_no_defaults() {
-        let numeric = vec!["x".to_string(), "y".to_string()];
-        let mut modal = ChartModal::new();
-        modal.open(&numeric, &[], Some(10_000));
-        assert!(modal.x_column.is_none());
-        assert!(modal.y_columns.is_empty());
+        assert_eq!(modal.x_candidates, ["date", "a", "b", "c"]);
+        assert_eq!(modal.numeric_candidates, ["a", "b", "c"]);
     }
 
     #[test]
     fn toggles_persist() {
-        let mut modal = ChartModal::new();
-        modal.open(&["a".into(), "b".into()], &[], Some(10_000));
+        let mut modal = open_modal();
         assert!(!modal.y_starts_at_zero);
         modal.toggle_y_starts_at_zero();
         assert!(modal.y_starts_at_zero);
@@ -1127,42 +680,152 @@ mod tests {
     }
 
     #[test]
-    fn x_display_list_puts_remembered_first() {
-        let mut modal = ChartModal::new();
-        modal.open(&["a".into(), "b".into(), "c".into()], &[], Some(10_000));
-        assert_eq!(modal.x_display_list(), vec!["a", "b", "c"]);
-        modal.x_column = Some("c".to_string());
-        assert_eq!(modal.x_display_list(), vec!["c", "a", "b"]);
+    fn tab_walks_the_xy_rows_and_wraps() {
+        let mut modal = open_modal();
+        let walked: Vec<ChartFocus> = (0..7)
+            .map(|_| {
+                modal.next_focus();
+                modal.focus
+            })
+            .collect();
+        assert_eq!(
+            walked,
+            vec![
+                ChartFocus::XColumn,
+                ChartFocus::YColumns,
+                ChartFocus::YStartsAtZero,
+                ChartFocus::LogScale,
+                ChartFocus::ShowLegend,
+                ChartFocus::LimitRows,
+                ChartFocus::Style,
+            ]
+        );
+        modal.prev_focus();
+        assert_eq!(modal.focus, ChartFocus::LimitRows);
+    }
+
+    /// Switching the chart kind lands focus on the new form's first row and
+    /// closes any Picker — the row it was scoped to is gone.
+    #[test]
+    fn switching_kind_resets_focus_and_closes_the_picker() {
+        let mut modal = open_modal();
+        modal.focus = ChartFocus::XColumn;
+        modal.open_picker();
+        assert!(modal.picker.is_some());
+        modal.set_chart_kind(ChartKind::Kde);
+        assert!(modal.picker.is_none());
+        assert_eq!(modal.focus, ChartFocus::Column);
+        modal.next_chart_kind();
+        assert_eq!(modal.chart_kind, ChartKind::Heatmap);
+        assert_eq!(modal.focus, ChartFocus::HeatmapX);
+        modal.prev_chart_kind();
+        modal.prev_chart_kind();
+        assert_eq!(modal.chart_kind, ChartKind::BoxPlot);
+    }
+
+    /// Each kind keeps its own column choice while the tabs change.
+    #[test]
+    fn choices_survive_kind_switches() {
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::Histogram);
+        modal.open_picker();
+        modal.picker_choose(); // "a", the cursor's initial item
+        assert_eq!(modal.hist_column.as_deref(), Some("a"));
+        modal.set_chart_kind(ChartKind::Kde);
+        assert!(modal.kde_column.is_none());
+        modal.set_chart_kind(ChartKind::Histogram);
+        assert_eq!(modal.hist_column.as_deref(), Some("a"));
     }
 
     #[test]
-    fn y_list_toggle_add_remove() {
-        let mut modal = ChartModal::new();
-        modal.open(&["a".into(), "b".into(), "c".into()], &[], Some(10_000));
-        modal.y_list_state.select(Some(0)); // highlight "a"
-        modal.y_list_toggle();
-        assert_eq!(modal.y_columns, vec!["a"]);
-        modal.y_list_toggle(); // toggle "a" off
-        assert!(modal.y_columns.is_empty());
-        modal.y_list_toggle(); // toggle "a" on again
-        assert_eq!(modal.y_columns, vec!["a"]);
-        modal.y_list_state.select(Some(1));
-        modal.y_list_toggle();
-        assert_eq!(modal.y_columns.len(), 2);
+    fn the_picker_opens_on_the_current_choice() {
+        let mut modal = open_modal();
+        modal.x_column = Some("b".to_string());
+        modal.focus = ChartFocus::XColumn;
+        modal.open_picker();
+        // x candidates are [date, a, b, c]; the cursor sits on the choice.
+        assert_eq!(modal.picker.as_ref().unwrap().selected_original(), Some(2));
     }
 
     #[test]
-    fn y_series_max_cap() {
-        let mut modal = ChartModal::new();
+    fn y_picker_toggles_and_caps_at_the_series_max() {
         let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
+        let mut modal = ChartModal::new();
         modal.open(&cols, &[], Some(10_000));
-        for i in 0..Y_SERIES_MAX {
-            modal.y_list_state.select(Some(i));
-            modal.y_list_toggle();
+        modal.focus = ChartFocus::YColumns;
+        modal.open_picker();
+        for _ in 0..=Y_SERIES_MAX {
+            modal.picker_toggle();
+            if let Some(p) = modal.picker.as_mut() {
+                p.move_down();
+            }
         }
-        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX);
-        modal.y_list_state.select(Some(Y_SERIES_MAX));
-        modal.y_list_toggle(); // should not add
-        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX);
+        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX, "capped");
+        // Toggling a chosen series off works.
+        modal.picker.as_mut().unwrap().select_original(0);
+        modal.picker_toggle();
+        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX - 1);
+    }
+
+    /// Enter on a fresh Y Picker adopts the cursor's item, so the first
+    /// series never has to be toggled explicitly.
+    #[test]
+    fn choosing_on_an_empty_y_row_takes_the_cursor_item() {
+        let mut modal = open_modal();
+        modal.focus = ChartFocus::YColumns;
+        modal.open_picker();
+        modal.picker_choose();
+        assert_eq!(modal.y_columns, ["a"]);
+        assert!(modal.picker.is_none());
+        // With series already chosen, Enter just closes.
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().move_down();
+        modal.picker_choose();
+        assert_eq!(modal.y_columns, ["a"]);
+    }
+
+    /// The open Picker's cursor previews: the chart is prepared for what the
+    /// cursor is on, before anything is committed.
+    #[test]
+    fn the_picker_cursor_previews_the_selection() {
+        let mut modal = open_modal();
+        modal.focus = ChartFocus::YColumns;
+        modal.open_picker();
+        assert_eq!(modal.effective_y_columns(), ["a"]);
+        modal.picker.as_mut().unwrap().move_down();
+        assert_eq!(modal.effective_y_columns(), ["b"]);
+        modal.picker = None;
+        assert!(modal.effective_y_columns().is_empty(), "no preview closed");
+
+        modal.set_chart_kind(ChartKind::Histogram);
+        assert_eq!(modal.effective_hist_column(), None);
+        modal.open_picker();
+        assert_eq!(modal.effective_hist_column().as_deref(), Some("a"));
+        // The x column never previews: only the remembered choice charts.
+        modal.set_chart_kind(ChartKind::XY);
+        modal.focus = ChartFocus::XColumn;
+        modal.open_picker();
+        assert_eq!(modal.effective_x_column(), None);
+    }
+
+    #[test]
+    fn adjust_number_row_routes_by_the_visible_form() {
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::Histogram);
+        modal.focus = ChartFocus::Bins;
+        modal.adjust_number_row(1);
+        assert_eq!(modal.hist_bins, super::HISTOGRAM_DEFAULT_BINS + 1);
+        assert_eq!(modal.heatmap_bins, super::HEATMAP_DEFAULT_BINS);
+        modal.set_chart_kind(ChartKind::Heatmap);
+        modal.focus = ChartFocus::Bins;
+        modal.adjust_number_row(-1);
+        assert_eq!(modal.heatmap_bins, super::HEATMAP_DEFAULT_BINS - 1);
+        modal.set_chart_kind(ChartKind::Kde);
+        modal.focus = ChartFocus::Bandwidth;
+        modal.adjust_number_row(1);
+        assert_eq!(modal.kde_bandwidth_factor, 1.1);
+        modal.focus = ChartFocus::LimitRows;
+        modal.adjust_number_row(-1);
+        assert_eq!(modal.row_limit, Some(9_000));
     }
 }

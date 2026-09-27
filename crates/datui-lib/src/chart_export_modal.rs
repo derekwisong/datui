@@ -12,8 +12,6 @@ pub enum ChartExportFocus {
     TitleInput,
     WidthInput,
     HeightInput,
-    ExportButton,
-    CancelButton,
 }
 
 pub struct ChartExportModal {
@@ -68,21 +66,17 @@ impl ChartExportModal {
             ChartExportFocus::PathInput => ChartExportFocus::TitleInput,
             ChartExportFocus::TitleInput => ChartExportFocus::WidthInput,
             ChartExportFocus::WidthInput => ChartExportFocus::HeightInput,
-            ChartExportFocus::HeightInput => ChartExportFocus::ExportButton,
-            ChartExportFocus::ExportButton => ChartExportFocus::CancelButton,
-            ChartExportFocus::CancelButton => ChartExportFocus::FormatSelector,
+            ChartExportFocus::HeightInput => ChartExportFocus::FormatSelector,
         };
     }
 
     pub fn prev_focus(&mut self) {
         self.focus = match self.focus {
-            ChartExportFocus::FormatSelector => ChartExportFocus::CancelButton,
+            ChartExportFocus::FormatSelector => ChartExportFocus::HeightInput,
             ChartExportFocus::PathInput => ChartExportFocus::FormatSelector,
             ChartExportFocus::TitleInput => ChartExportFocus::PathInput,
             ChartExportFocus::WidthInput => ChartExportFocus::TitleInput,
             ChartExportFocus::HeightInput => ChartExportFocus::WidthInput,
-            ChartExportFocus::ExportButton => ChartExportFocus::HeightInput,
-            ChartExportFocus::CancelButton => ChartExportFocus::ExportButton,
         };
     }
 

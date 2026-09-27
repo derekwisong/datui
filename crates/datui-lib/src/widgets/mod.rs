@@ -8,7 +8,6 @@ pub mod debug;
 pub mod export;
 pub mod info;
 pub mod pivot_melt;
-pub mod radio_block;
 pub mod schema;
 pub mod template_modal;
 pub mod text_input;

@@ -16,10 +16,11 @@ percentile and max. Scroll with the arrow keys.
 
 ## Distribution
 
-Fits each numeric column against Normal, LogNormal, Uniform, PowerLaw and
-Exponential and reports the best fit, along with the Shapiro-Wilk statistic
-and p-value, coefficient of variation, outlier count (IQR method), skewness and
-kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
+Fits each numeric column against fourteen distributions — Normal, Log-Normal,
+Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
+Poisson, Bernoulli, Binomial, Geometric and Weibull — and reports the best
+fit, along with the Shapiro-Wilk statistic and p-value, coefficient of
+variation, outlier count (IQR method), skewness and kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
 column with many outliers or extreme shape.
 
 Press <kbd>Enter</kbd> on a column for the detail view: a Q-Q plot against the
@@ -34,8 +35,8 @@ the table.
 
 Pairwise correlations between every numeric column, colored by strength.
 Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
-pair: coefficient, p-value, sample size, a text scatter plot and the summary
-statistics of both columns.
+pair: the Pearson coefficient with a plain reading of it, R², the p-value,
+and how many row pairs it was computed from.
 
 ## Data quality
 

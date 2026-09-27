@@ -7,7 +7,7 @@ or <kbd>Esc</kbd> closes it.
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type and, for Parquet, its codec and compression ratio |
+| **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type, for a dataset of many files how many of them carry it, and, for Parquet, its codec and compression ratio |
 | **Resources** | File size, the memory used by the buffered rows, the format, for Parquet the overall compression ratio, row groups, version and writer, and what opening the dataset cost |
 | **Partitions** | For a hive-partitioned dataset, its partition columns |
 | **Notes** | What datui noticed about the data while reading it. Only there when something is worth saying |

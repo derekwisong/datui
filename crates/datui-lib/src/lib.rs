@@ -6298,6 +6298,10 @@ pub struct App {
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
+    /// Whether the open dataset was reached through the home screen. `q` pops
+    /// the context: opened from home it returns there, launched straight onto
+    /// a file it quits — the user's mental stack, not a mode.
+    opened_from_home: bool,
     /// `--template NAME`, waiting for the dataset from the command line to land.
     /// Taken on the first install, so datasets opened later are not re-dressed.
     startup_template: Option<String>,
@@ -7201,6 +7205,11 @@ impl App {
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
+        // Home is now in the stack, so q pops back to it; never unset, since a
+        // reread from the table (H) is not a new place.
+        if self.load_from_home {
+            self.opened_from_home = true;
+        }
         self.load_from_home = false;
         if let Some(paths) = self.opening.take() {
             self.opened = Some((paths, options.clone()));
@@ -7778,6 +7787,7 @@ impl App {
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
+            opened_from_home: false,
             startup_template: None,
             analysis_modal: AnalysisModal::new(),
             quality_cache: Vec::new(),
@@ -14655,7 +14665,18 @@ impl App {
         const UP_KEYS: [KeyCode; 2] = [KeyCode::Up, KeyCode::Char('k')];
 
         match event.code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => Some(AppEvent::Exit),
+            // q pops the context: opened from the home screen, it returns
+            // there; launched straight onto a file, it quits as it always
+            // has. Q and Ctrl+Q stay unconditional.
+            KeyCode::Char('q') => {
+                if self.opened_from_home {
+                    self.enter_home();
+                    None
+                } else {
+                    Some(AppEvent::Exit)
+                }
+            }
+            KeyCode::Char('Q') => Some(AppEvent::Exit),
             KeyCode::Char('R') => Some(AppEvent::Reset),
             // Read the dataset again with its first row the other way: as column names,
             // or as data under `column_1`, `column_2`, …. Only delimited text has a
@@ -15256,6 +15277,11 @@ impl App {
             AppEvent::Open(paths, options) => {
                 if paths.is_empty() {
                     return Some(AppEvent::Crash("No paths provided".to_string()));
+                }
+                // Home is now in the stack, so q pops back to it. Never unset:
+                // a reread from the table (H) is not a new place.
+                if self.input_mode == InputMode::Home {
+                    self.opened_from_home = true;
                 }
                 // `az://container/path` and its kin name no account; where they were
                 // typed, or the config, does.
@@ -18334,8 +18360,12 @@ impl Widget for &mut App {
             crate::render::main_view::ControlBarSpec::Datatable {
                 dimmed,
                 query_active,
+                q_pops,
             } => {
-                controls = controls.with_dimmed(dimmed).with_query_active(query_active);
+                controls = controls
+                    .with_dimmed(dimmed)
+                    .with_query_active(query_active)
+                    .with_q_pops(q_pops);
             }
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);

@@ -23,7 +23,7 @@ open it.
  ▾ /mnt/data  2  configured  ──────────────────────────────────── nfs4
    ↕ events  hive                            1.1M × 9    120 MB    3h
    ↕ lookup.parquet                           980 × 4      8 KB   2mo
- Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
+ Enter Open  ↑↓ Move  ^C Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 ```
 
 Each row shows rows × columns, size and age. A pane on the right shows the
@@ -54,7 +54,8 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
 | <kbd>?</kbd> | Help |
 
-<kbd>Esc</kbd> never quits and <kbd>q</kbd> types a `q`. The control bar says
+<kbd>Esc</kbd> never quits and <kbd>q</kbd> types a `q`; from a dataset opened
+here, <kbd>q</kbd> returns here. The control bar says
 what <kbd>Esc</kbd> will do next, and when a key cannot do what it asks, the
 line beside the filter says why.
 

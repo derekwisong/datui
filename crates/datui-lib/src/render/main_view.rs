@@ -51,7 +51,12 @@ impl MainViewContent {
 #[derive(Debug, Clone)]
 pub enum ControlBarSpec {
     /// Default datatable controls (row count, etc.) with optional dimmed and query-active state.
-    Datatable { dimmed: bool, query_active: bool },
+    Datatable {
+        dimmed: bool,
+        query_active: bool,
+        /// True when `q` pops to the home screen instead of quitting.
+        q_pops: bool,
+    },
     /// Custom keybinding list for this view (e.g. analysis or chart).
     Custom(Vec<(&'static str, &'static str)>),
 }
@@ -75,15 +80,19 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             ControlBarSpec::Datatable {
                 dimmed,
                 query_active,
+                q_pops: app.opened_from_home,
             }
         }
         MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
         MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
-        MainViewContent::Loading => {
-            ControlBarSpec::Custom(vec![("^O", "Home"), ("?", "Help"), ("q", "Quit")])
-        }
+        MainViewContent::Loading => ControlBarSpec::Custom(vec![
+            ("^O", "Home"),
+            ("?", "Help"),
+            // The same meaning q carries at the table: pop or quit.
+            ("q", if app.opened_from_home { "Home" } else { "Quit" }),
+        ]),
         MainViewContent::Home => ControlBarSpec::Custom(home_control_keys(
             app.home.path_input_active,
             if app.home.below_browse_start() {

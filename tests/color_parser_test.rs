@@ -318,6 +318,7 @@ fn test_theme_with_custom_colors() {
         table_header: "white".to_string(),
         cursor_focused: "default".to_string(),
         cursor_dimmed: "default".to_string(),
+        cursor_text: "default".to_string(),
         table_header_bg: "indexed(236)".to_string(),
         row_numbers: "dark_gray".to_string(),
         column_separator: "cyan".to_string(),

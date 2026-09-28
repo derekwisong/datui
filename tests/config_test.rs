@@ -2324,3 +2324,106 @@ fn cloud_discover_flag_outranks_the_config() {
         .to_string();
     assert!(err.contains("\"aws\" is not all, none, or a kind"), "{err}");
 }
+
+#[test]
+fn glyph_overrides_parse_validate_and_merge() {
+    let config: AppConfig = toml::from_str(
+        r#"
+version = "0.2"
+
+[glyphs]
+in_object_store = "☁"
+spinner = ["◐", "◓", "◑", "◒"]
+"#,
+    )
+    .expect("a [glyphs] table parses");
+    assert_eq!(
+        config.glyphs.overrides.get("in_object_store"),
+        Some(&datui::glyphs::SlotOverride::One("☁".to_string()))
+    );
+    config.validate().expect("valid overrides pass validation");
+
+    // Layered like the theme: an import sets two slots, the user's own file
+    // overrides one of them and the other survives.
+    let mut base = AppConfig::default();
+    base.merge(config);
+    let user: AppConfig = toml::from_str(
+        r#"
+version = "0.2"
+
+[glyphs]
+in_object_store = "≋"
+"#,
+    )
+    .expect("parses");
+    base.merge(user);
+    assert_eq!(
+        base.glyphs.overrides.get("in_object_store"),
+        Some(&datui::glyphs::SlotOverride::One("≋".to_string()))
+    );
+    assert!(base.glyphs.overrides.contains_key("spinner"));
+}
+
+#[test]
+fn glyph_override_errors_name_the_slot() {
+    let unknown: AppConfig = toml::from_str("[glyphs]\nno_such_slot = \"x\"").expect("parses");
+    let err = unknown.validate().expect_err("unknown slot rejected");
+    assert!(err.to_string().contains("no_such_slot"), "{err}");
+
+    // ‹binary› is eight columns; a one-column replacement shifts the layout.
+    let narrow: AppConfig = toml::from_str("[glyphs]\nbinary_stub = \"b\"").expect("parses");
+    let err = narrow.validate().expect_err("wrong width rejected");
+    assert!(err.to_string().contains("binary_stub"), "{err}");
+}
+
+#[test]
+fn template_documents_the_glyphs_section() {
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+    assert!(template.contains("# Glyph Overrides"), "{template}");
+    assert!(template.contains("audit_glyphs.py"), "{template}");
+}
+
+#[test]
+fn cursor_text_defaults_merges_and_validates() {
+    use datui::config::ColorConfig;
+
+    let config = AppConfig::default();
+    assert_eq!(config.theme.colors.cursor_text, "default");
+    config.validate().expect("default cursor_text validates");
+
+    let mut base = ColorConfig::default();
+    base.merge(ColorConfig {
+        cursor_text: "#1a1b26".to_string(),
+        ..Default::default()
+    });
+    assert_eq!(base.cursor_text, "#1a1b26");
+
+    let mut bad = AppConfig::default();
+    bad.theme.colors.cursor_text = "not-a-color".to_string();
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn cursor_text_auto_contrast_picks_by_luminance() {
+    use datui::config::Theme;
+    use ratatui::style::Color;
+
+    let mut theme = Theme {
+        colors: std::collections::HashMap::new(),
+    };
+    // "default" (absent from the map) means: black or white by the cursor's luminance.
+    assert_eq!(theme.cursor_text_for(Color::Rgb(20, 20, 40)), Color::White);
+    assert_eq!(
+        theme.cursor_text_for(Color::Rgb(230, 230, 200)),
+        Color::Black
+    );
+    // A configured slot wins outright.
+    theme
+        .colors
+        .insert("cursor_text".to_string(), Color::Rgb(1, 2, 3));
+    assert_eq!(
+        theme.cursor_text_for(Color::Rgb(20, 20, 40)),
+        Color::Rgb(1, 2, 3)
+    );
+}

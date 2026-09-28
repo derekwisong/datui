@@ -546,7 +546,7 @@ fn render_correlation_pair_summary(
             Span::styled(format!("  ({})", describe_correlation(r)), value_style),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("R²: ", label_style),
+            Span::styled(format!("{}: ", crate::glyphs::get().r_squared), label_style),
             Span::styled(format!("{:.3}", r * r), value_style),
         ]));
         if let Some(p) = p_value {
@@ -2957,7 +2957,8 @@ mod tests {
         let text = rendered_text(&buf);
         assert!(text.contains("Pearson r: 0.874"), "{text}");
         assert!(text.contains("strong positive"), "{text}");
-        assert!(text.contains("R²: 0.764"), "{text}");
+        let r_squared = crate::glyphs::get().r_squared;
+        assert!(text.contains(&format!("{r_squared}: 0.764")), "{text}");
         assert!(text.contains("P-value: 0.004"), "{text}");
         assert!(text.contains("Pairs used: 42 of 50 rows"), "{text}");
     }

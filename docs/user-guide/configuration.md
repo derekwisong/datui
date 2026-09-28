@@ -370,6 +370,7 @@ darkened. Set any slot to change it.
 | `chart_series_color_1` to `chart_series_color_7` | Series in the chart view | `#7dcfff`, `#bb9af7`, `#9ece6a`, `#e0af68`, `#7aa2f7`, `#f7768e`, `#ff9e64` |
 | `distribution_normal`, `distribution_skewed`, `distribution_other`, `outlier_marker` | Analysis view | `#9ece6a`, `#e0af68`, `#c0caf5`, `#f7768e` |
 | `cursor_focused`, `cursor_dimmed` | The text cursor, focused and not | `default` |
+| `cursor_text` | Text under the cursor block; `default` picks black or white by the cursor color's luminance | `default` |
 
 Three formats are accepted:
 
@@ -423,6 +424,32 @@ chart_series_color_5 = "#bd93f9"
 chart_series_color_6 = "#ff5555"
 chart_series_color_7 = "#ffb86c"
 ```
+
+## Glyphs
+
+`[glyphs]` replaces individual UI symbols when your font has better ones than
+the tested coverage floor (the characters every common terminal font carries).
+Keys are the slot names in datui's
+[`glyphs.rs`](https://github.com/derekwisong/datui/blob/main/crates/datui-lib/src/glyphs.rs);
+values are laid over the Unicode set, per slot, in the same layered order as
+the theme.
+
+```toml
+[glyphs]
+in_object_store = "☁"                  # the cloud marker, for fonts that have it
+spinner = ["◐", "◓", "◑", "◒"]  # spinner, score_marks and mini_bars take lists
+```
+
+Anything the font renders at the right width works, Nerd Font icons included —
+datui's defaults avoid them only because it cannot know your font.
+
+- An override must keep the display width of the glyph it replaces, or the
+  columns beside it would shift; a wrong width is rejected at startup with the
+  slot named.
+- Overrides apply only when the Unicode set is active. In a C locale (`unicode
+  = "never"`, or no UTF-8 in the environment) the ASCII set draws, untouched.
+- `spinner` takes any number of frames; `score_marks` takes exactly 5,
+  `mini_bars` exactly 8. The wordmark cannot be overridden.
 
 ## Importing other config files
 

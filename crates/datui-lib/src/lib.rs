@@ -18868,7 +18868,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     // Choose the glyph alphabet before the first frame: on a terminal that is not
     // doing UTF-8, box-drawing characters render as replacement boxes and make the
     // UI harder to read rather than prettier.
-    glyphs::init(config.display.unicode);
+    glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
 
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(

@@ -182,11 +182,13 @@ with `LANG=C` and with `TERM` forced to a 16-color terminal. Meaning may
 never live only in a glyph or only in a color: the ASCII twin carries the
 same distinction, and a 16-color palette still separates accent, dimmed and
 error. Never assume the font: no Nerd Font glyphs, and a new Unicode
-character must pass the coverage audit — present in JetBrainsMono Nerd
-Font, Liberation Mono and Noto Sans Mono (`fc-list "<font>:charset=<hex>"`
-per codepoint), and never an `Emoji=Yes, Emoji_Presentation=No` codepoint
-those fonts don't all carry, because a missing one falls back to the color
-emoji font and renders a blank cell (#325 has the full rule and history).
+character must pass the coverage audit (`scripts/code/audit_glyphs.py`,
+documented in `docs/for-developers/glyph-audit.md`) — present in
+JetBrainsMono Nerd Font, Liberation Mono and Noto Sans Mono, and never an
+`Emoji=Yes, Emoji_Presentation=No` codepoint those fonts don't all carry,
+because a missing one falls back to the color emoji font and renders a
+blank cell (#325 has the full rule and history). Richer glyphs are the
+user's `[glyphs]` config overrides, never the defaults.
 
 **Small windows.** The baseline is full usability at 80×24, and graceful
 loss down to roughly 60×20. When width or height runs out, elements

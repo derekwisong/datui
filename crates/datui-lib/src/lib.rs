@@ -13976,7 +13976,12 @@ impl App {
                 KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
-                KeyCode::Char('r') if self.sampling_threshold.is_some() => {
+                KeyCode::Char('r')
+                    if self.sampling_threshold.is_some()
+                        && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                {
+                    // Gated to Main: inside a detail view an undocumented `r`
+                    // cleared the results out from under the detail.
                     self.analysis_modal.recalculate();
                     match self.analysis_modal.selected_tool {
                         Some(analysis_modal::AnalysisTool::Describe) => {
@@ -14864,6 +14869,15 @@ impl App {
 
             // Line number input (GoToLine): ":" then type line number, Enter to jump, Esc to cancel
             if self.input_type == Some(InputType::GoToLine) {
+                // The prompt borrows `query_input`, whose history is the query
+                // history: without this, ↑ filled the line with a past query
+                // and Enter on it closed silently.
+                let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+                if matches!(event.code, KeyCode::Up | KeyCode::Down)
+                    || (ctrl && matches!(event.code, KeyCode::Char('p' | 'n')))
+                {
+                    return None;
+                }
                 self.query_input.set_focused(true);
                 let result = self.query_input.handle_key(event, None);
                 match result {

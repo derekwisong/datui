@@ -12624,6 +12624,7 @@ impl App {
                                 current_idx - 1
                             };
                             self.export_modal.selected_format = ExportFormat::ALL[prev_idx];
+                            self.export_modal.sync_path_to_format();
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
@@ -12656,6 +12657,7 @@ impl App {
                                 .unwrap_or(0);
                             let next_idx = (current_idx + 1) % ExportFormat::ALL.len();
                             self.export_modal.selected_format = ExportFormat::ALL[next_idx];
+                            self.export_modal.sync_path_to_format();
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)

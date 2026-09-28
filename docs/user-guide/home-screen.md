@@ -7,9 +7,9 @@ open it.
 ![Home and Cloud Demo](../demos/14-cloud-home.gif)
 
 ```
- ╺┳┓┏━┓╺┳╸╻ ╻╻
-  ┃┃┣━┫ ┃ ┃ ┃┃   ~/work/analysis
- ╺┻┛╹ ╹ ╹ ┗━┛╹
+ ┌──╮ ╭──╮ ╶─┬─╴ ╷  ╷ ╶┬╴
+ │  │ ├──┤   │   │  │  │    ~/work/analysis
+ └──╯ ╵  ╵   ╵   ╰──╯ ╶┴╴
  › ▏  filter and search
  ▾ RECENT  3  ────────────────────────────────────────────────────────────
    /mnt/data/warehouse/  2 parquet                                   nfs4

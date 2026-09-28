@@ -191,7 +191,11 @@ const UNICODE: Glyphs = Glyphs {
     scroll_thumb: "█",
     binary_stub: "‹binary›",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
-    wordmark: Some(&["╺┳┓┏━┓╺┳╸╻ ╻╻", " ┃┃┣━┫ ┃ ┃ ┃┃", "╺┻┛╹ ╹ ╹ ┗━┛╹"]),
+    wordmark: Some(&[
+        "┌──╮ ╭──╮ ╶─┬─╴ ╷  ╷ ╶┬╴",
+        "│  │ ├──┤   │   │  │  │ ",
+        "└──╯ ╵  ╵   ╵   ╰──╯ ╶┴╴",
+    ]),
 };
 
 const ASCII: Glyphs = Glyphs {

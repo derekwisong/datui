@@ -38,7 +38,7 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>q</kbd> | Back to the home screen when the dataset was opened from it; otherwise quit — the control bar says which |
-| <kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |
+| <kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load; <kbd>Ctrl</kbd>+<kbd>C</kbd> anywhere outside a text field) |
 
 The three toggles last for the session; the config file sets the state at
 launch.
@@ -75,14 +75,16 @@ Letters type into the filter here, so none of them is a key.
 | Key | Action |
 |---|---|
 | <kbd>Tab</kbd> | Move between the input and the tab bar |
-| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Query, SQL, Fuzzy |
+| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Query, Fuzzy, SQL |
 | <kbd>↑</kbd> <kbd>↓</kbd> | History for the current tab |
 | <kbd>Enter</kbd> | Run. An empty query restores the full table |
 | <kbd>Esc</kbd> | Cancel |
 
 ## Text fields
 
-Every text field, from the query prompt to a file path, edits the same way:
+Every text field, from the query prompt to a file path, edits the same way
+(a picker's type-to-narrow filter is not a text field: it takes plain
+characters and <kbd>Backspace</kbd> only):
 
 | Key | Action |
 |---|---|

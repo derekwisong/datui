@@ -221,9 +221,11 @@ leaving:
 - Arrows and `h/j/k/l`; `PgUp/PgDn` (and `Ctrl+F/B`, `Ctrl+D/U` at the
   table); `Home/End` (`G`); `:` go-to-line.
 - Esc's layered back-out; `q` pops to home when the dataset was opened
-  from it and quits otherwise (the control bar says which); `Q`, `Ctrl+Q`,
-  `Ctrl+C` quit unconditionally; `Ctrl+O` home. (#320 landed the approved
-  `q` evolution.)
+  from it and quits otherwise (the control bar says which); `Ctrl+Q` quits
+  from anywhere and `Ctrl+C` from anywhere outside a text field; `Q` quits
+  at the table and during a load, and is an ordinary key inside other
+  surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
+  landed the approved `q` evolution.)
 - `?` and F1 for help, including home's empty-filter `?`.
 - The feature keys: `/ s c a p e i v V r R N F D H`, Enter-to-drill.
   (#317 moved the views list from `t`/`T` to `v`/`V` with the rename.)

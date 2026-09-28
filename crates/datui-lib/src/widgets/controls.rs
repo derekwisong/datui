@@ -118,12 +118,12 @@ impl Controls {
         self
     }
 
-    /// Set the full dataset count beside a filtered view's. See [`Self::total_row_count`].
     pub fn with_q_pops(mut self, q_pops: bool) -> Self {
         self.q_pops = q_pops;
         self
     }
 
+    /// Set the full dataset count beside a filtered view's. See [`Self::total_row_count`].
     pub fn with_total_row_count(mut self, total: Option<usize>) -> Self {
         self.total_row_count = total;
         self

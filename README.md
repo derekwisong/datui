@@ -20,7 +20,7 @@ datui                                 # or pick one from the home screen
 ```
 
 Press `?` for the keys. `/` queries, `s` sorts and filters, `c` charts,
-`a` analyzes, `q` quits. The [documentation][docs] has the rest.
+`a` analyzes, `q` backs out or quits. The [documentation][docs] has the rest.
 
 ## Install
 

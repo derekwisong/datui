@@ -5147,7 +5147,7 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     app.render(area, &mut buf);
     let bar = rendered_text(&buf);
     assert!(
-        bar.contains(" Home"),
+        bar.contains("q  Home"),
         "the bar says q goes home here: {bar:?}"
     );
 

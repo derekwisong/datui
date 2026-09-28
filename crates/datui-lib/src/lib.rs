@@ -12306,7 +12306,8 @@ impl App {
                     self.help_scroll = 0;
                 }
                 KeyCode::End => {
-                    // Will be set based on content height in render
+                    // The render clamps this to the last page and persists the result.
+                    self.help_scroll = usize::MAX;
                 }
                 _ => {}
             }

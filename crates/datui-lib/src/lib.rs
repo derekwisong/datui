@@ -2426,7 +2426,7 @@ pub mod tests {
             .map(|x| buf[(x, area.height - 1)].symbol().to_string())
             .collect();
         assert!(
-            !bar.contains("Rows: 70"),
+            !bar.contains("70 rows"),
             "a partial is not a total: {bar:?}"
         );
         // And the spinner standing in for it turns. Nothing is `busy` and no count is
@@ -2868,7 +2868,7 @@ pub mod tests {
         let live = app.data_table_state.as_ref().unwrap().len_generation();
 
         assert!(
-            !control_bar(&mut app).contains("Rows: ?"),
+            !control_bar(&mut app).contains("? rows"),
             "nothing has failed yet"
         );
 
@@ -2878,7 +2878,7 @@ pub mod tests {
 
         let bar = control_bar(&mut app);
         assert!(
-            bar.contains("Rows: ?"),
+            bar.contains("? rows"),
             "the count failed, so the total is unknown: {bar:?}"
         );
     }
@@ -2903,7 +2903,7 @@ pub mod tests {
             len_generation: live,
         });
         assert!(
-            control_bar(&mut app).contains("Rows: ?"),
+            control_bar(&mut app).contains("? rows"),
             "this frame's count failed"
         );
 
@@ -2914,7 +2914,7 @@ pub mod tests {
 
         let bar = control_bar(&mut app);
         assert!(
-            bar.contains("Rows: ?"),
+            bar.contains("? rows"),
             "a stranger's failure says nothing about this frame: {bar:?}"
         );
     }
@@ -3747,7 +3747,7 @@ pub mod tests {
             (0..area.width)
                 .map(|x| buf[(x, area.height - 1)].symbol().to_string())
                 .collect::<String>()
-                .contains("Rows: 70")
+                .contains("70 rows")
         };
         assert!(
             !bar_says_seventy(&mut app),
@@ -18354,6 +18354,15 @@ impl Widget for &mut App {
         });
         controls = controls.with_status_message(status_msg);
         controls = controls.with_flash(self.flash.as_ref().map(|f| f.message.clone()));
+        controls = controls.with_reshaped(self.data_table_state.as_ref().and_then(|s| {
+            if s.last_pivot_spec().is_some() {
+                Some("pivoted")
+            } else if s.last_melt_spec().is_some() {
+                Some("melted")
+            } else {
+                None
+            }
+        }));
         controls = controls.with_not_the_table(
             self.data_table_state
                 .as_ref()

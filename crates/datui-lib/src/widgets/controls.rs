@@ -11,7 +11,7 @@ pub struct Controls {
     /// True when `q` pops to the home screen instead of quitting; the bar says so.
     pub q_pops: bool,
     /// The dataset's full row count, when `row_count` is a filtered or queried subset
-    /// of it. The bar then reads "Rows: 417 of 1,000" instead of a bare number that
+    /// of it. The bar then reads "417 of 1,000" instead of a bare number that
     /// hides the filter. Only ever a count something already resolved.
     pub total_row_count: Option<usize>,
     pub dimmed: bool,
@@ -47,6 +47,11 @@ pub struct Controls {
     /// the table. A note in the panel says the same at length; this is the half that
     /// cannot be missed, and the read is only defensible because both are there.
     pub not_the_table: Option<&'static str>,
+    /// `"pivoted"` or `"melted"` while a reshape is standing between the data
+    /// and the table on screen. Drawn as a chip beside the row count, which is
+    /// the number it changed; `R` takes it away. Rule 6: a view mutated with
+    /// nothing on screen saying so is unfinished.
+    pub reshaped: Option<&'static str>,
 }
 
 impl Controls {
@@ -115,7 +120,7 @@ impl Controls {
 
     /// Replace the trailing row count with a caption of the view's own.
     ///
-    /// "Rows: 0" is the table's counter; on a screen that is not showing a table it
+    /// "0 rows" is the table's counter; on a screen that is not showing a table it
     /// is at best meaningless and at worst looks like an empty dataset.
     pub fn with_caption(mut self, caption: Option<String>) -> Self {
         self.caption = caption;
@@ -140,6 +145,11 @@ impl Controls {
 
     /// Say, beside the row count, that these are a lake table's files and not the
     /// table. See [`Self::not_the_table`].
+    pub fn with_reshaped(mut self, reshaped: Option<&'static str>) -> Self {
+        self.reshaped = reshaped;
+        self
+    }
+
     pub fn with_not_the_table(mut self, format: Option<&'static str>) -> Self {
         self.not_the_table = format;
         self
@@ -168,6 +178,7 @@ impl Controls {
             flash: None,
             notes_pending: false,
             row_count_pending: false,
+            reshaped: None,
             row_count_unknown: false,
             not_the_table: None,
         }
@@ -206,23 +217,25 @@ impl Widget for &Controls {
         // Row-count text: while the count is pending a spinner stands in for the number, and if
         // the count couldn't be determined a "?" is shown — so the user never mistakes an
         // incomplete partial total for the final figure. A settled count that is a subset of a
-        // known total says so ("417 of 1,000"), so a filtered view never reads as the dataset.
+        // known total says so ("417,321 of 1.2M"): the count on screen stays exact, the
+        // universe abbreviates with the same formatter the home screen uses, and the exact
+        // total is one `i` away in the Info panel.
         let row_count_text = |count: usize| -> String {
             if let Some(caption) = &self.caption {
                 return caption.clone();
             }
             if self.row_count_pending {
-                format!("Rows: {}", spinner_ch())
+                format!("{} rows", spinner_ch())
             } else if self.row_count_unknown {
-                "Rows: ?".to_string()
+                "? rows".to_string()
             } else if let Some(total) = self.total_row_count.filter(|&total| total != count) {
                 format!(
-                    "Rows: {} of {}",
+                    "{} of {}",
                     crate::numfmt::group_chrome(count),
-                    crate::numfmt::group_chrome(total)
+                    crate::discover::format_rows(total)
                 )
             } else {
-                format!("Rows: {}", crate::numfmt::group_chrome(count))
+                format!("{} rows", crate::discover::format_rows(count))
             }
         };
 
@@ -256,10 +269,15 @@ impl Widget for &Controls {
         let not_the_table = self
             .not_the_table
             .map(|format| format!(" not the {format} table "));
+        let reshaped = self.reshaped.map(|verb| format!(" {verb} "));
         let chip_width = not_the_table
             .as_ref()
             .map(|text| text.chars().count() as u16)
-            .unwrap_or(0);
+            .unwrap_or(0)
+            + reshaped
+                .as_ref()
+                .map(|text| text.chars().count() as u16 + 1)
+                .unwrap_or(0);
 
         // The chip: the bar's accent behind the bar's own colour, the same cut-out a
         // key chip is, because it is the one thing here the eye must not slide past.
@@ -300,10 +318,16 @@ impl Widget for &Controls {
             .render(layout[1], buf);
 
             let mut next = 2;
-            if let Some(text) = &not_the_table {
-                Paragraph::new(text.as_str())
-                    .style(chip_style)
-                    .render(layout[next], buf);
+            if chip_width > 0 {
+                let mut spans: Vec<ratatui::text::Span> = Vec::new();
+                if let Some(text) = &reshaped {
+                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                    spans.push(ratatui::text::Span::raw(" "));
+                }
+                if let Some(text) = &not_the_table {
+                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                }
+                Paragraph::new(ratatui::text::Line::from(spans)).render(layout[next], buf);
                 next += 1;
             }
             // Row count (right-aligned, if available)
@@ -341,10 +365,16 @@ impl Widget for &Controls {
             .style(label_style)
             .render(layout[1], buf);
             let mut next = 2;
-            if let Some(text) = &not_the_table {
-                Paragraph::new(text.as_str())
-                    .style(chip_style)
-                    .render(layout[next], buf);
+            if chip_width > 0 {
+                let mut spans: Vec<ratatui::text::Span> = Vec::new();
+                if let Some(text) = &reshaped {
+                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                    spans.push(ratatui::text::Span::raw(" "));
+                }
+                if let Some(text) = &not_the_table {
+                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                }
+                Paragraph::new(ratatui::text::Line::from(spans)).render(layout[next], buf);
                 next += 1;
             }
             if let Some(count) = self.row_count {
@@ -427,10 +457,16 @@ impl Widget for &Controls {
         bar.render(layout[0], buf);
 
         let mut next = 2;
-        if let Some(text) = &not_the_table {
-            Paragraph::new(text.as_str())
-                .style(chip_style)
-                .render(layout[next], buf);
+        if chip_width > 0 {
+            let mut spans: Vec<ratatui::text::Span> = Vec::new();
+            if let Some(text) = &reshaped {
+                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &not_the_table {
+                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+            }
+            Paragraph::new(ratatui::text::Line::from(spans)).render(layout[next], buf);
             next += 1;
         }
         if let Some(count) = self.row_count {
@@ -575,18 +611,18 @@ mod tests {
 
         let plain = bar(None);
         let labelled = bar(Some("Delta"));
-        assert!(plain.contains("Rows: 1,234"));
+        assert!(plain.contains("1,234 rows"));
         assert!(
             !plain.contains("not the"),
             "nothing is said about an ordinary dataset"
         );
         assert!(labelled.contains("not the Delta table"), "got {labelled:?}");
         assert!(
-            labelled.contains("Rows: 1,234"),
+            labelled.contains("1,234 rows"),
             "and the count it is about is still there: {labelled:?}"
         );
         assert!(
-            labelled.find("not the Delta").unwrap() < labelled.find("Rows:").unwrap(),
+            labelled.find("not the Delta").unwrap() < labelled.find("1,234 rows").unwrap(),
             "immediately left of the count: {labelled:?}"
         );
         // Room for it comes out of the keys, which the bar drops from the tail as it
@@ -641,15 +677,15 @@ mod tests {
         }
     }
 
-    /// A filtered view says what it is a view of: "Rows: 417 of 1,000".
+    /// A filtered view says what it is a view of: "417 of 1,000".
     #[test]
     fn a_filtered_count_names_the_total_beside_it() {
         let out = render_to_string(&with_row_count(417).with_total_row_count(Some(1_000)), 80);
-        assert!(out.contains("Rows: 417 of 1,000"), "got: {out:?}");
+        assert!(out.contains("417 of 1,000"), "got: {out:?}");
 
         // The same total says nothing: nothing was filtered away.
         let out = render_to_string(&with_row_count(1_000).with_total_row_count(Some(1_000)), 80);
-        assert!(out.contains("Rows: 1,000"), "got: {out:?}");
+        assert!(out.contains("1,000 rows"), "got: {out:?}");
         assert!(!out.contains(" of "), "got: {out:?}");
     }
 
@@ -663,7 +699,7 @@ mod tests {
                 .with_busy(false, 1),
             80,
         );
-        assert!(out.contains("Rows: /"), "got: {out:?}");
+        assert!(out.contains("/ rows"), "got: {out:?}");
         assert!(!out.contains(" of "), "got: {out:?}");
 
         let out = render_to_string(
@@ -672,7 +708,7 @@ mod tests {
                 .with_row_count_unknown(true),
             80,
         );
-        assert!(out.contains("Rows: ?"), "got: {out:?}");
+        assert!(out.contains("? rows"), "got: {out:?}");
         assert!(!out.contains(" of "), "got: {out:?}");
     }
 
@@ -683,14 +719,26 @@ mod tests {
             &with_row_count(999_417).with_total_row_count(Some(1_000_000)),
             80,
         );
-        assert!(out.contains("Rows: 999,417 of 1,000,000"), "got: {out:?}");
+        assert!(out.contains("999,417 of 1.0M"), "got: {out:?}");
+    }
+
+    /// A reshaped view says so beside the number the reshape changed.
+    #[test]
+    fn a_reshaped_view_carries_its_chip_beside_the_count() {
+        let controls = with_row_count(7).with_reshaped(Some("pivoted"));
+        let out = render_to_string(&controls, 80);
+        assert!(out.contains(" pivoted "), "got: {out:?}");
+        assert!(
+            out.find(" pivoted ").unwrap() < out.find("7 rows").unwrap(),
+            "the chip sits beside the count it is about: {out:?}"
+        );
     }
 
     #[test]
     fn shows_number_when_count_known() {
         let controls = with_row_count(1_234_567);
         let out = render_to_string(&controls, 80);
-        assert!(out.contains("Rows: 1,234,567"), "got: {out:?}");
+        assert!(out.contains("1.2M rows"), "got: {out:?}");
     }
 
     #[test]
@@ -700,7 +748,7 @@ mod tests {
             .with_row_count_pending(true)
             .with_busy(false, 1);
         let out = render_to_string(&controls, 80);
-        assert!(out.contains("Rows: /"), "expected spinner, got: {out:?}");
+        assert!(out.contains("/ rows"), "expected spinner, got: {out:?}");
         // The provisional number must not leak into the display.
         assert!(!out.contains("42"), "provisional count leaked: {out:?}");
     }
@@ -709,7 +757,7 @@ mod tests {
     fn shows_question_mark_when_count_failed() {
         let controls = with_row_count(42).with_row_count_unknown(true);
         let out = render_to_string(&controls, 80);
-        assert!(out.contains("Rows: ?"), "expected '?', got: {out:?}");
+        assert!(out.contains("? rows"), "expected '?', got: {out:?}");
         assert!(!out.contains("42"), "provisional count leaked: {out:?}");
     }
 
@@ -720,7 +768,7 @@ mod tests {
             .with_row_count_unknown(true)
             .with_busy(false, 1);
         let out = render_to_string(&controls, 80);
-        assert!(out.contains("Rows: /"), "expected spinner, got: {out:?}");
+        assert!(out.contains("/ rows"), "expected spinner, got: {out:?}");
         assert!(
             !out.contains('?'),
             "should not show '?' while pending: {out:?}"
@@ -759,7 +807,7 @@ mod tests {
         let out = render_to_string(&controls, 80);
         assert!(out.contains("Loading buffer..."), "got: {out:?}");
         // Frame 0 ASCII -> '|'
-        assert!(out.contains("Rows: |"), "expected spinner, got: {out:?}");
+        assert!(out.contains("| rows"), "expected spinner, got: {out:?}");
         assert!(!out.contains("99"), "provisional count leaked: {out:?}");
     }
 }

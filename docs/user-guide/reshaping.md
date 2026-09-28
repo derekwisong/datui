@@ -25,6 +25,9 @@ Both work on the table as currently queried, filtered and sorted.
 
 New columns are named after the pivot column's values, sorted alphabetically.
 
+While a reshape is applied, the bottom bar carries a `pivoted` or `melted`
+chip beside the row count; <kbd>R</kbd> resets the table and takes it away.
+
 Pivoting reads every affected row into memory to discover the column names.
 On a large table, query or filter first.
 

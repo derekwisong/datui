@@ -12,7 +12,9 @@ Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 
 Filters and sort from this sidebar apply to the loaded table. To filter the
 result of a query, put the condition in the query's `where` clause. While a
-filter or query narrows the view, the bottom bar reads `Rows: 417 of 1,000`.
+filter or query narrows the view, the bottom bar reads `417 of 1,000` — the
+count on screen exact, a large total abbreviated (`417,321 of 1.2M`); the
+exact total is in the Info panel.
 Canceling the sidebar discards whatever was staged; reopening it shows what
 is actually applied.
 

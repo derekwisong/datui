@@ -1,180 +1,113 @@
-//! Overlay rendering (confirmation/success/error modals, help).
+//! Overlay rendering (confirmation/error modals, help).
 
 use crate::render::context::RenderContext;
-use crate::render::layout::{centered_rect, centered_rect_with_min};
+use crate::render::layout::centered_rect;
+use crate::widgets::ui::{HintBar, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Widget;
-use ratatui::style::Style;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Paragraph};
 
-/// Renders the confirmation modal (Yes/No).
+/// A compact centered popup sized by its message: as wide as the message wants
+/// up to `max_width`, as tall as the wrapped text plus the frame and footer,
+/// never past three quarters of the screen. A dialog is a commitment, and it
+/// stays small rather than scaling with the terminal.
+fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> Rect {
+    let width = max_width
+        .min(area.width.saturating_sub(4))
+        .max(area.width.min(30));
+    // Frame (2) plus gutters (2) around the text.
+    let inner = width.saturating_sub(4).max(1) as usize;
+    let lines: usize = message
+        .lines()
+        .map(|l| l.chars().count().div_ceil(inner).max(1))
+        .sum::<usize>()
+        .max(1);
+    // Text, a blank, any extra rows, the footer, and the frame.
+    let height = (lines as u16 + extra_rows + 4)
+        .min(area.height * 3 / 4)
+        .max(6);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+/// Renders the confirmation modal: the question, a Yes/No choice the rail and
+/// accent mark, and the keys in the footer. No buttons.
 pub fn render_confirmation_modal(
     area: Rect,
     buf: &mut Buffer,
     modal: &crate::ConfirmationModal,
     ctx: &RenderContext,
 ) {
-    let popup_area = centered_rect_with_min(area, 64, 26, 50, 12);
-    Clear.render(popup_area, buf);
-
-    Block::default()
-        .style(Style::default().bg(ctx.background))
-        .render(popup_area, buf);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Confirm")
-        .title_style(ratatui::style::Style::reset())
+    let g = crate::glyphs::get();
+    let footer = HintBar::from_ctx(ctx)
+        .hint("Enter", "Confirm")
+        .hint(g.updown_lr, "Switch")
+        .hint("Esc", "Cancel");
+    let popup = message_popup(area, &modal.message, 2, 64);
+    let content = Surface::new("Confirm")
+        .footer(&footer)
         .border_style(Style::default().fg(ctx.modal_border_active))
-        .style(Style::default().bg(ctx.background));
-    let inner_area = block.inner(popup_area);
-    block.render(popup_area, buf);
+        .render(popup, buf, ctx);
 
-    let chunks = Layout::default()
+    let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(3)])
-        .split(inner_area);
-
-    Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.text_primary).bg(ctx.background))
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .render(chunks[0], buf);
-
-    let button_chunks = Layout::default()
-        .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Fill(1),
-            Constraint::Length(12),
-            Constraint::Length(2),
-            Constraint::Length(12),
-            Constraint::Fill(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
-        .split(chunks[1]);
-
-    let yes_style = if modal.focus_yes {
-        Style::default().fg(ctx.modal_border_active)
-    } else {
-        Style::default()
-    };
-    let no_style = if !modal.focus_yes {
-        Style::default().fg(ctx.modal_border_active)
-    } else {
-        Style::default()
-    };
-
-    Paragraph::new("Yes")
-        .centered()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(yes_style),
-        )
-        .render(button_chunks[1], buf);
-
-    Paragraph::new("No")
-        .centered()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(no_style),
-        )
-        .render(button_chunks[3], buf);
-}
-
-/// Renders the success modal (OK).
-pub fn render_success_modal(
-    area: Rect,
-    buf: &mut Buffer,
-    modal: &crate::SuccessModal,
-    ctx: &RenderContext,
-) {
-    let popup_area = centered_rect(area, 70, 40);
-    Clear.render(popup_area, buf);
-
-    Block::default()
-        .style(Style::default().bg(ctx.background))
-        .render(popup_area, buf);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Success")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(Style::default().fg(ctx.modal_border_active))
-        .style(Style::default().bg(ctx.background));
-    let inner_area = block.inner(popup_area);
-    block.render(popup_area, buf);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(inner_area);
+        .split(content);
 
     Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.text_primary).bg(ctx.background))
+        .style(Style::default().fg(ctx.text_primary))
         .wrap(ratatui::widgets::Wrap { trim: true })
-        .render(chunks[0], buf);
+        .render(rows[0], buf);
 
-    let ok_style = Style::default().fg(ctx.modal_border_active);
-    Paragraph::new("OK")
-        .centered()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(ok_style),
-        )
-        .render(chunks[1], buf);
+    // The choice the rail is on is the one Enter takes.
+    let choice = |label: &str, focused: bool| -> Vec<Span<'static>> {
+        let rail = if focused { g.rail } else { " " };
+        let style = if focused {
+            Style::default()
+                .fg(ctx.accent_bright)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_secondary)
+        };
+        vec![
+            Span::styled(rail.to_string(), Style::default().fg(ctx.accent)),
+            Span::styled(label.to_string(), style),
+        ]
+    };
+    let mut spans = choice("Yes", modal.focus_yes);
+    spans.push(Span::raw("     "));
+    spans.extend(choice("No", !modal.focus_yes));
+    Paragraph::new(Line::from(spans)).render(rows[2], buf);
 }
 
-/// Renders the error modal (OK).
+/// Renders the error modal: the message and the way out, nothing else.
 pub fn render_error_modal(
     area: Rect,
     buf: &mut Buffer,
     modal: &crate::ErrorModal,
     ctx: &RenderContext,
 ) {
-    let popup_area = centered_rect(area, 70, 40);
-    Clear.render(popup_area, buf);
-
-    Block::default()
-        .style(Style::default().bg(ctx.background))
-        .render(popup_area, buf);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Error")
-        .title_style(ratatui::style::Style::reset())
+    let footer = HintBar::from_ctx(ctx)
+        .hint("Enter", "OK")
+        .hint("Esc", "Close");
+    let popup = message_popup(area, &modal.message, 0, 64);
+    let content = Surface::new("Error")
+        .footer(&footer)
         .border_style(Style::default().fg(ctx.modal_border_error))
-        .style(Style::default().bg(ctx.background));
-    let inner_area = block.inner(popup_area);
-    block.render(popup_area, buf);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(inner_area);
+        .render(popup, buf, ctx);
 
     Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.error).bg(ctx.background))
+        .style(Style::default().fg(ctx.error))
         .wrap(ratatui::widgets::Wrap { trim: true })
-        .render(chunks[0], buf);
-
-    let ok_style = Style::default().fg(ctx.modal_border_active);
-    Paragraph::new("OK")
-        .centered()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(ok_style),
-        )
-        .render(chunks[1], buf);
+        .render(content, buf);
 }
 
 /// Renders the help overlay with wrapped text and scrollbar. Clamps and updates `scroll` so the caller can persist it.
@@ -373,6 +306,76 @@ mod tests {
         assert!(
             widest <= 101,
             "the overlay stretched with the terminal: {widest} columns"
+        );
+    }
+
+    fn grid(buf: &Buffer, area: Rect) -> Vec<String> {
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// One border, no bordered buttons: the frame's corners are the only ones.
+    #[test]
+    fn the_error_modal_is_one_surface_with_the_keys_in_the_footer() {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let mut modal = crate::ErrorModal::new();
+        modal.show("Select at least one index column.".to_string());
+        render_error_modal(area, &mut buf, &modal, &ctx);
+        let rows = grid(&buf, area);
+        let corners: usize = rows.iter().map(|r| r.matches('╭').count()).sum();
+        assert_eq!(corners, 1, "one frame, no inner boxes: {rows:#?}");
+        let text = rows.join("\n");
+        assert!(text.contains("Select at least one index column."));
+        assert!(text.contains("Enter") && text.contains("OK") && text.contains("Esc"));
+    }
+
+    /// The focused choice carries the rail; there is nothing to Tab onto.
+    #[test]
+    fn the_confirmation_modal_marks_the_choice_with_the_rail() {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let mut modal = crate::ConfirmationModal::new();
+        modal.show("Overwrite out.csv?".to_string());
+        render_confirmation_modal(area, &mut buf, &modal, &ctx);
+        let rows = grid(&buf, area);
+        let corners: usize = rows.iter().map(|r| r.matches('╭').count()).sum();
+        assert_eq!(corners, 1, "one frame, no button boxes: {rows:#?}");
+        let text = rows.join("\n");
+        assert!(text.contains("Overwrite out.csv?"));
+        let choice_row = rows
+            .iter()
+            .find(|r| r.contains("Yes") && r.contains("No"))
+            .expect("the Yes/No line is there");
+        assert!(
+            choice_row.contains("▎Yes"),
+            "the rail is on Yes by default: {choice_row:?}"
+        );
+        assert!(text.contains("Confirm") && text.contains("Cancel"));
+
+        // Switching focus moves the rail, not the labels.
+        modal.focus_yes = false;
+        let mut buf2 = Buffer::empty(area);
+        render_confirmation_modal(area, &mut buf2, &modal, &ctx);
+        let rows2 = grid(&buf2, area);
+        let choice_row2 = rows2
+            .iter()
+            .find(|r| r.contains("Yes") && r.contains("No"))
+            .unwrap();
+        assert!(choice_row2.contains("▎No"), "{choice_row2:?}");
+        // Compare columns, not byte offsets: the rail glyph is multi-byte.
+        let col = |r: &str| r.replace('\u{258e}', " ").find("Yes");
+        assert_eq!(
+            col(choice_row),
+            col(choice_row2),
+            "labels hold still while the rail moves"
         );
     }
 }

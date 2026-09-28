@@ -75,63 +75,9 @@ pub fn centered_rect_fixed(r: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// Like `centered_rect` but enforces minimum width and height.
-pub fn centered_rect_with_min(
-    r: Rect,
-    percent_x: u16,
-    percent_y: u16,
-    min_width: u16,
-    min_height: u16,
-) -> Rect {
-    let inner = centered_rect(r, percent_x, percent_y);
-
-    // Growing to the minimum must not push the rect outside its parent. On a short
-    // terminal the minimum can exceed the whole screen — a 12-row modal centred in 14
-    // rows starts at row 5 and would end at row 17 — and drawing past the buffer is a
-    // panic, not a clipped draw.
-    let width = inner.width.max(min_width).min(r.width);
-    let height = inner.height.max(min_height).min(r.height);
-    let x = inner.x.min(r.x + r.width.saturating_sub(width));
-    let y = inner.y.min(r.y + r.height.saturating_sub(height));
-
-    Rect {
-        x,
-        y,
-        width,
-        height,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn centered_rect_with_min_never_leaves_its_parent() {
-        // A modal whose minimum size exceeds the terminal must be clipped to it.
-        // Drawing outside the buffer panics, so this is a crash, not a cosmetic bug —
-        // and a 14-row terminal is an ordinary split pane, not an edge case.
-        for (w, h) in [(100, 14), (40, 6), (20, 3), (10, 1), (1, 1)] {
-            let parent = Rect::new(0, 0, w, h);
-            let got = centered_rect_with_min(parent, 64, 26, 50, 12);
-            assert!(
-                got.x + got.width <= parent.x + parent.width,
-                "{got:?} runs off the right of {parent:?}"
-            );
-            assert!(
-                got.y + got.height <= parent.y + parent.height,
-                "{got:?} runs off the bottom of {parent:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn centered_rect_with_min_still_grows_when_there_is_room() {
-        let parent = Rect::new(0, 0, 200, 60);
-        let got = centered_rect_with_min(parent, 10, 10, 50, 12);
-        assert_eq!(got.width, 50, "should grow to the minimum width");
-        assert_eq!(got.height, 12, "should grow to the minimum height");
-    }
 
     #[test]
     fn test_app_layout_minimal() {
@@ -188,23 +134,5 @@ mod tests {
         assert_eq!(centered.height, 10);
         assert_eq!(centered.x, 15);
         assert_eq!(centered.y, 15);
-    }
-
-    #[test]
-    fn test_centered_rect_with_min_enforcement() {
-        let area = Rect::new(0, 0, 100, 100);
-        let centered = centered_rect_with_min(area, 10, 10, 50, 50);
-
-        assert!(centered.width >= 50);
-        assert!(centered.height >= 50);
-    }
-
-    #[test]
-    fn test_centered_rect_with_min_no_enforcement_needed() {
-        let area = Rect::new(0, 0, 100, 100);
-        let centered = centered_rect_with_min(area, 80, 80, 50, 50);
-
-        assert_eq!(centered.width, 80);
-        assert_eq!(centered.height, 80);
     }
 }

@@ -104,6 +104,21 @@ fn render_list(
         return;
     }
 
+    // The list's own status line, directly above the footer: a refusal is
+    // said where the key was pressed, and the next key clears it.
+    if let Some(status) = &modal.status {
+        Paragraph::new(status.as_str())
+            .style(Style::default().fg(ctx.warning))
+            .render(
+                Rect {
+                    y: content.y + content.height - 1,
+                    height: 1,
+                    ..content
+                },
+                buf,
+            );
+    }
+
     if modal.rows.is_empty() && modal.broken_templates.is_empty() {
         Paragraph::new("No saved views. s saves what the table shows now.")
             .style(Style::default().fg(ctx.dimmed))

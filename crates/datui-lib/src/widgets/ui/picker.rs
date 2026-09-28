@@ -74,6 +74,34 @@ impl PickerState {
 
     pub fn clear_filter(&mut self) {
         self.filter.clear();
+        self.settle();
+    }
+
+    /// One typed character, with its modifiers: plain characters narrow,
+    /// Ctrl+W drops a word, Ctrl+U clears, and any other chord is a chord —
+    /// never a letter typed into the filter.
+    pub fn filter_key(&mut self, c: char, mods: crossterm::event::KeyModifiers) {
+        use crossterm::event::KeyModifiers;
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        if ctrl && c == 'w' {
+            self.delete_word();
+        } else if ctrl && c == 'u' {
+            self.clear_filter();
+        } else if !ctrl && !mods.contains(KeyModifiers::ALT) {
+            self.type_char(c);
+        }
+    }
+
+    /// Ctrl+W: drop the word before the cursor, readline-style. The filter
+    /// is append-only, so the cursor is always the end.
+    pub fn delete_word(&mut self) {
+        while self.filter.ends_with(' ') {
+            self.filter.pop();
+        }
+        while self.filter.chars().next_back().is_some_and(|c| c != ' ') {
+            self.filter.pop();
+        }
+        self.settle();
     }
 
     pub fn move_up(&mut self) {
@@ -354,5 +382,22 @@ mod tests {
             rows[2].starts_with(&format!("{}e", g.rail)),
             "the selected last item is drawn, not the overflow count: {rows:?}"
         );
+    }
+    /// A chord is a chord: Ctrl+W edits the filter, and no modified
+    /// character ever lands in it as a letter.
+    #[test]
+    fn the_filter_keeps_readline_chords_out_of_the_text() {
+        use crossterm::event::KeyModifiers;
+        let mut p = PickerState::new(vec!["first_name".to_string(), "start date".to_string()]);
+        for c in "start d".chars() {
+            p.filter_key(c, KeyModifiers::NONE);
+        }
+        assert_eq!(p.filter, "start d");
+        p.filter_key('w', KeyModifiers::CONTROL);
+        assert_eq!(p.filter, "start ", "Ctrl+W drops the word, not types w");
+        p.filter_key('u', KeyModifiers::CONTROL);
+        assert_eq!(p.filter, "", "Ctrl+U clears, not types u");
+        p.filter_key('x', KeyModifiers::ALT);
+        assert_eq!(p.filter, "", "an Alt chord is not a letter");
     }
 }

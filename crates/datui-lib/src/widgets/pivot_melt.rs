@@ -61,14 +61,14 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &Re
         return;
     }
 
-    // Tab line: the active tab carries the accent; the rail says the tab bar
-    // itself holds focus.
+    // Tab line: the active tab carries the accent, and the rail sits beside
+    // its name while the tab bar holds focus — never beside a tab the
+    // surface is not on. The slot is reserved either way, so nothing moves.
     let g = crate::glyphs::get();
     let pivot_tab = modal.active_tab == PivotMeltTab::Pivot;
-    let rail = if modal.focus == PivotMeltFocus::TabBar {
-        g.rail
-    } else {
-        " "
+    let on_tab_bar = modal.focus == PivotMeltFocus::TabBar;
+    let mark = |active: bool| {
+        if on_tab_bar && active { g.rail } else { " " }
     };
     let tab_style = |active: bool| {
         if active {
@@ -78,9 +78,10 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &Re
         }
     };
     let tab_line = Line::from(vec![
-        Span::styled(rail, Style::default().fg(ctx.accent)),
+        Span::styled(mark(pivot_tab), Style::default().fg(ctx.accent)),
         Span::styled("Pivot", tab_style(pivot_tab)),
-        Span::styled(format!(" {} ", g.rule), Style::default().fg(ctx.dimmed)),
+        Span::styled(format!(" {}", g.rule), Style::default().fg(ctx.dimmed)),
+        Span::styled(mark(!pivot_tab), Style::default().fg(ctx.accent)),
         Span::styled("Melt", tab_style(!pivot_tab)),
     ]);
     Paragraph::new(tab_line).render(
@@ -191,6 +192,8 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &Re
     };
     let (text, style) = match spec {
         Ok(line) => (line, Style::default().fg(ctx.text_primary)),
+        // Enter on the incomplete form lit the line up; edits dim it again.
+        Err(gap) if modal.attention => (gap, Style::default().fg(ctx.warning)),
         Err(gap) => (gap, Style::default().fg(ctx.dimmed)),
     };
     Paragraph::new(text).style(style).render(

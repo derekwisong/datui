@@ -60,6 +60,9 @@ pub struct TemplateModal {
     pub show_help: bool,
     pub delete_confirm: bool,
     pub name_error: Option<String>,
+    /// A refusal or note for the list's own status line, above the footer:
+    /// said where the key was pressed, not in a modal. The next key clears it.
+    pub status: Option<String>,
     pub history_limit: usize,
     /// Set by `i`: the selected view's score breakdown, (title, body).
     pub score_details: Option<(String, String)>,

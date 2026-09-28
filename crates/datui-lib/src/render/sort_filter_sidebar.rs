@@ -52,7 +52,12 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     // itself holds focus.
     let g = crate::glyphs::get();
     let on_tab_bar = modal.focus == SortFilterFocus::TabBar;
-    let rail = if on_tab_bar { g.rail } else { " " };
+    // The rail sits beside the active tab's name, so it never reads as
+    // marking a tab the surface is not on. The slot is reserved either way,
+    // so focus arriving or leaving moves nothing.
+    let mark = |active: bool| {
+        if on_tab_bar && active { g.rail } else { " " }
+    };
     let tab_style = |active: bool| {
         if active {
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
@@ -61,9 +66,10 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
         }
     };
     let tab_line = Line::from(vec![
-        Span::styled(rail, Style::default().fg(ctx.accent)),
+        Span::styled(mark(sort_tab), Style::default().fg(ctx.accent)),
         Span::styled("Columns", tab_style(sort_tab)),
-        Span::styled(format!(" {} ", g.rule), Style::default().fg(ctx.dimmed)),
+        Span::styled(format!(" {}", g.rule), Style::default().fg(ctx.dimmed)),
+        Span::styled(mark(!sort_tab), Style::default().fg(ctx.accent)),
         Span::styled("Filters", tab_style(!sort_tab)),
     ]);
     Paragraph::new(tab_line).render(
@@ -94,7 +100,8 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
             .hint_weighted("v", "Hide", 2)
             .hint_weighted("C", "Clear", 1)
     } else {
-        render_filters_tab(body, buf, &mut modal.filter, ctx);
+        let filters_focused = modal.focus == SortFilterFocus::Body;
+        render_filters_tab(body, buf, &mut modal.filter, filters_focused, ctx);
         match modal.filter.editor.as_ref().map(|editor| editor.step) {
             None => HintBar::from_ctx(ctx)
                 .hint_weighted("Enter", "Add/Edit", 5)
@@ -239,7 +246,13 @@ fn render_columns_tab(
 }
 
 /// The Filters tab: one row per statement, the add row, and the inline editor.
-fn render_filters_tab(area: Rect, buf: &mut Buffer, filter: &mut FilterModal, ctx: &RenderContext) {
+fn render_filters_tab(
+    area: Rect,
+    buf: &mut Buffer,
+    filter: &mut FilterModal,
+    focused: bool,
+    ctx: &RenderContext,
+) {
     let g = crate::glyphs::get();
     // Column widths shared by every row, so the three parts line up.
     let col_w = filter
@@ -347,7 +360,9 @@ fn render_filters_tab(area: Rect, buf: &mut Buffer, filter: &mut FilterModal, ct
             continue;
         }
 
-        let rail = if is_cursor && filter.editor.is_none() {
+        // The rail means focus: with the tab bar holding it, the cursor row
+        // keeps its place but not the rail.
+        let rail = if is_cursor && focused && filter.editor.is_none() {
             g.rail
         } else {
             " "

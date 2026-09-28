@@ -2426,7 +2426,7 @@ pub mod tests {
             .map(|x| buf[(x, area.height - 1)].symbol().to_string())
             .collect();
         assert!(
-            !bar.contains("Rows: 70"),
+            !bar.contains("70 rows"),
             "a partial is not a total: {bar:?}"
         );
         // And the spinner standing in for it turns. Nothing is `busy` and no count is
@@ -2868,7 +2868,7 @@ pub mod tests {
         let live = app.data_table_state.as_ref().unwrap().len_generation();
 
         assert!(
-            !control_bar(&mut app).contains("Rows: ?"),
+            !control_bar(&mut app).contains("? rows"),
             "nothing has failed yet"
         );
 
@@ -2878,7 +2878,7 @@ pub mod tests {
 
         let bar = control_bar(&mut app);
         assert!(
-            bar.contains("Rows: ?"),
+            bar.contains("? rows"),
             "the count failed, so the total is unknown: {bar:?}"
         );
     }
@@ -2903,7 +2903,7 @@ pub mod tests {
             len_generation: live,
         });
         assert!(
-            control_bar(&mut app).contains("Rows: ?"),
+            control_bar(&mut app).contains("? rows"),
             "this frame's count failed"
         );
 
@@ -2914,7 +2914,7 @@ pub mod tests {
 
         let bar = control_bar(&mut app);
         assert!(
-            bar.contains("Rows: ?"),
+            bar.contains("? rows"),
             "a stranger's failure says nothing about this frame: {bar:?}"
         );
     }
@@ -3747,7 +3747,7 @@ pub mod tests {
             (0..area.width)
                 .map(|x| buf[(x, area.height - 1)].symbol().to_string())
                 .collect::<String>()
-                .contains("Rows: 70")
+                .contains("70 rows")
         };
         assert!(
             !bar_says_seventy(&mut app),
@@ -5517,25 +5517,26 @@ impl ErrorModal {
     }
 }
 
-#[derive(Default)]
-pub struct SuccessModal {
-    pub active: bool,
+/// A completion flash (the Feedback rules' second rung): one plain sentence on
+/// the control bar, cleared by the next keypress or after two seconds,
+/// whichever comes first. The home screen's status line is the key-cleared
+/// variant of the same idea, kept separate because a home status (a load
+/// error's reason) must survive until it is read.
+pub struct Flash {
     pub message: String,
+    expires: std::time::Instant,
 }
 
-impl SuccessModal {
-    pub fn new() -> Self {
-        Self::default()
+impl Flash {
+    fn new(message: String) -> Self {
+        Self {
+            message,
+            expires: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        }
     }
 
-    pub fn show(&mut self, message: String) {
-        self.active = true;
-        self.message = message;
-    }
-
-    pub fn hide(&mut self) {
-        self.active = false;
-        self.message.clear();
+    fn expired(&self) -> bool {
+        std::time::Instant::now() >= self.expires
     }
 }
 
@@ -6332,7 +6333,7 @@ pub struct App {
     /// picks it up; `busy` stays set until then.
     chart_export_waiting: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
     error_modal: ErrorModal,
-    success_modal: SuccessModal,
+    flash: Option<Flash>,
     confirmation_modal: ConfirmationModal,
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
@@ -6651,7 +6652,21 @@ impl App {
 
     /// True while a message is in front of the user that has to be dismissed.
     pub fn modal_showing(&self) -> bool {
-        self.error_modal.active || self.success_modal.active || self.confirmation_modal.active
+        self.error_modal.active || self.confirmation_modal.active
+    }
+
+    /// Show a completion flash on the control bar.
+    fn flash_note(&mut self, message: String) {
+        self.flash = Some(Flash::new(message));
+    }
+
+    /// Drop an expired flash. Returns true when the frame must redraw.
+    pub fn tick_flash(&mut self) -> bool {
+        if self.flash.as_ref().is_some_and(Flash::expired) {
+            self.flash = None;
+            return true;
+        }
+        false
     }
 
     /// See the `input_dropped` field.
@@ -6724,7 +6739,6 @@ impl App {
             && !self.template_modal.active
             && !self.analysis_modal.active
             && !self.error_modal.active
-            && !self.success_modal.active
             && !self.confirmation_modal.active
     }
 
@@ -7803,7 +7817,7 @@ impl App {
             pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
-            success_modal: SuccessModal::new(),
+            flash: None,
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
             export_df: None,
@@ -12021,6 +12035,10 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
+        // A completion flash lives until the next key: whatever this key does,
+        // the bar's line about the last action is stale now.
+        self.flash = None;
+
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         // Ctrl-Q quits from anywhere, before any mode gets a say — including a mode
         // with no CONTROL arm of its own (the chart view) that would otherwise swallow
@@ -12038,7 +12056,6 @@ impl App {
             && self.input_mode == InputMode::Normal
             && !self.analysis_modal.active
             && !self.error_modal.active
-            && !self.success_modal.active
             && !self.confirmation_modal.active
             && self.return_from_quality_evidence(true)
         {
@@ -12058,7 +12075,6 @@ impl App {
         if self.input_mode == InputMode::Home
             && !self.confirmation_modal.active
             && !self.error_modal.active
-            && !self.success_modal.active
             && !self.show_help
         {
             return self.home_key(event);
@@ -12192,16 +12208,6 @@ impl App {
                         return None;
                     }
                     self.confirmation_modal.hide();
-                }
-                _ => {}
-            }
-            return None;
-        }
-        // Success modal
-        if self.success_modal.active {
-            match event.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    self.success_modal.hide();
                 }
                 _ => {}
             }
@@ -12394,10 +12400,10 @@ impl App {
                         editor.operator.backspace();
                     }
                     KeyCode::Char(c) if editor.step == FilterEditStep::Column => {
-                        editor.column.type_char(c);
+                        editor.column.filter_key(c, event.modifiers);
                     }
                     KeyCode::Char(c) if editor.step == FilterEditStep::Operator => {
-                        editor.operator.type_char(c);
+                        editor.operator.filter_key(c, event.modifiers);
                     }
                     // The value is an ordinary text field, readline included.
                     _ if editor.step == FilterEditStep::Value => {
@@ -12844,13 +12850,17 @@ impl App {
                     }
                     KeyCode::Char(c) => {
                         if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
-                            picker.type_char(c);
+                            picker.filter_key(c, event.modifiers);
                         }
                     }
                     _ => {}
                 }
                 return None;
             }
+
+            // Whatever this key does, the form is being edited again: the
+            // re-accented gap line goes back to plain (Enter below re-arms it).
+            self.pivot_melt_modal.attention = false;
 
             match event.code {
                 KeyCode::Esc => {
@@ -12862,8 +12872,10 @@ impl App {
                 KeyCode::Enter => {
                     return match self.pivot_melt_modal.active_tab {
                         PivotMeltTab::Pivot => {
-                            if let Some(err) = self.pivot_melt_modal.pivot_validation_error() {
-                                self.error_modal.show(err);
+                            if self.pivot_melt_modal.pivot_validation_error().is_some() {
+                                // The spec line already names the gap; it
+                                // re-accents rather than a modal repeating it.
+                                self.pivot_melt_modal.attention = true;
                                 None
                             } else {
                                 self.pivot_melt_modal
@@ -12872,8 +12884,8 @@ impl App {
                             }
                         }
                         PivotMeltTab::Melt => {
-                            if let Some(err) = self.pivot_melt_modal.melt_validation_error() {
-                                self.error_modal.show(err);
+                            if self.pivot_melt_modal.melt_validation_error().is_some() {
+                                self.pivot_melt_modal.attention = true;
                                 None
                             } else {
                                 self.pivot_melt_modal.build_melt_spec().map(AppEvent::Melt)
@@ -12907,9 +12919,17 @@ impl App {
                         .pivot_melt_modal
                         .is_picker_row(self.pivot_melt_modal.focus) =>
                 {
-                    self.pivot_melt_modal.open_picker();
-                    if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
-                        picker.type_char(c);
+                    // Only a plain character opens the picker by typing;
+                    // a chord is a chord, not the first letter of a search.
+                    if event
+                        .modifiers
+                        .intersection(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        .is_empty()
+                    {
+                        self.pivot_melt_modal.open_picker();
+                        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                            picker.type_char(c);
+                        }
                     }
                 }
                 // A text row is an ordinary text field, readline included.
@@ -13154,7 +13174,7 @@ impl App {
                     }
                     KeyCode::Char(c) if event.is_press() => {
                         if let Some(picker) = self.chart_modal.picker.as_mut() {
-                            picker.type_char(c);
+                            picker.filter_key(c, event.modifiers);
                         }
                     }
                     _ => {}
@@ -14270,6 +14290,8 @@ impl App {
         if self.template_modal.active {
             let form = self.template_modal.mode != TemplateModalMode::List;
             let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+            // The list's status line is about the last key; this one replaces it.
+            self.template_modal.status = None;
             match event.code {
                 KeyCode::Esc => {
                     if self.template_modal.score_details.is_some() {
@@ -14321,9 +14343,10 @@ impl App {
                         .as_ref()
                         .is_some_and(|state| state.is_at_defaults())
                     {
-                        self.error_modal.show(
-                            "Nothing to save: the table is at its defaults. \
-                             Set a query, filter, sort or column layout first."
+                        // A refusal is validation, not a failure: it is said on
+                        // the surface's own status line, not in a modal.
+                        self.template_modal.status = Some(
+                            "Nothing to save yet: set a query, filter, sort or column layout first."
                                 .to_string(),
                         );
                     } else {
@@ -14398,14 +14421,15 @@ impl App {
                     self.template_modal.schema_match_enabled =
                         !self.template_modal.schema_match_enabled;
                 }
-                KeyCode::Char(c) if form => {
+                KeyCode::Char(_) if form => {
                     if self.template_modal.form_focus == FormFocus::Name {
                         // The error clears as soon as the name changes.
                         self.template_modal.name_error = None;
                     }
-                    let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                    // The event goes through whole: text fields keep their
+                    // readline bindings, so Ctrl+W must arrive as Ctrl+W.
                     if let Some(input) = self.template_modal.focused_input_mut() {
-                        input.handle_key(&event, None);
+                        input.handle_key(event, None);
                     }
                 }
                 KeyCode::Backspace
@@ -16734,8 +16758,7 @@ impl App {
                     self.busy = false;
                     match result {
                         Ok(()) => {
-                            self.success_modal
-                                .show(format!("Data exported successfully to\n{}", path.display()));
+                            self.flash_note(format!("Exported to {}", path.display()));
                         }
                         Err(e) => {
                             self.error_modal.show(e.clone());
@@ -17605,10 +17628,7 @@ impl App {
         self.busy = false;
         match result {
             Ok(()) => {
-                self.success_modal.show(format!(
-                    "Chart exported successfully to\n{}",
-                    path.display()
-                ));
+                self.flash_note(format!("Chart exported to {}", path.display()));
                 self.chart_export_modal.close();
             }
             Err(message) => {
@@ -18225,9 +18245,6 @@ impl Widget for &mut App {
                 &ctx,
             );
         }
-        if self.success_modal.active {
-            crate::render::overlays::render_success_modal(area, buf, &self.success_modal, &ctx);
-        }
         if self.error_modal.active {
             crate::render::overlays::render_error_modal(area, buf, &self.error_modal, &ctx);
         }
@@ -18344,6 +18361,16 @@ impl Widget for &mut App {
             }
         });
         controls = controls.with_status_message(status_msg);
+        controls = controls.with_flash(self.flash.as_ref().map(|f| f.message.clone()));
+        controls = controls.with_reshaped(self.data_table_state.as_ref().and_then(|s| {
+            if s.last_pivot_spec().is_some() {
+                Some("pivoted")
+            } else if s.last_melt_spec().is_some() {
+                Some("melted")
+            } else {
+                None
+            }
+        }));
         controls = controls.with_not_the_table(
             self.data_table_state
                 .as_ref()
@@ -18961,6 +18988,10 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             updated = true;
         }
 
+        // A completion flash times out on its own; the idle poll interval is the
+        // clock, so no extra wake-up machinery is needed.
+        updated |= app.tick_flash();
+
         app.request_what_the_frame_needs();
 
         if updated {
@@ -19188,5 +19219,61 @@ mod cloud_csv_prefix_tests {
         .collect()
         .unwrap();
         assert_eq!(df.height(), 2);
+    }
+}
+
+#[cfg(test)]
+mod feedback_ladder_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use polars::prelude::IntoLazy;
+    use std::sync::mpsc;
+
+    fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    /// Enter on an incomplete pivot form re-accents the gap line instead of
+    /// raising a modal; the next key dims it again.
+    #[test]
+    fn an_incomplete_pivot_apply_stays_inline() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.pivot_melt_modal.active = true;
+        app.input_mode = InputMode::PivotMelt;
+        key(&mut app, KeyCode::Enter);
+        assert!(!app.error_modal.active, "validation is not a failure");
+        assert!(app.pivot_melt_modal.attention, "the gap line is lit");
+        key(&mut app, KeyCode::Tab);
+        assert!(!app.pivot_melt_modal.attention, "an edit dims it again");
+    }
+
+    /// `s` in the views list with an untouched table refuses on the list's own
+    /// status line; the next key clears it.
+    #[test]
+    fn the_views_save_refusal_stays_on_the_surface() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = polars::df!("a" => [1i64, 2]).unwrap();
+        app.data_table_state = Some(
+            crate::widgets::datatable::DataTableState::new(df.lazy(), None, None, None, None, true)
+                .unwrap(),
+        );
+        app.template_modal.active = true;
+        key(&mut app, KeyCode::Char('s'));
+        assert!(!app.error_modal.active, "a refusal is not a failure");
+        assert!(
+            app.template_modal
+                .status
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Nothing to save"),
+            "the refusal is on the list's status line"
+        );
+        key(&mut app, KeyCode::Down);
+        assert!(
+            app.template_modal.status.is_none(),
+            "the next key clears it"
+        );
     }
 }

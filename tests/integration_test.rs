@@ -3558,7 +3558,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     // `a_count_that_has_arrived_is_not_held_back_with_the_columns`, where the dataset
     // says a count is still coming exactly while it has none.
     assert!(
-        bar.contains("Rows: 3"),
+        bar.contains("3 rows"),
         "the count it does have is shown: {bar:?}"
     );
 

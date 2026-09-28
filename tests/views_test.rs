@@ -71,12 +71,19 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert!(app.template_modal.rows.is_empty());
 
     // An untouched table has nothing to save: s refuses instead of opening
-    // the form and minting a view that carries nothing.
+    // the form and minting a view that carries nothing. The refusal is said
+    // on the list's own status line, not in a modal.
     press(&mut app, KeyCode::Char('s'));
-    assert!(app.modal_showing(), "the empty save is refused");
+    assert!(!app.modal_showing(), "a refusal is not a modal");
+    assert!(
+        app.template_modal
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Nothing to save"),
+        "the refusal is on the list's status line"
+    );
     assert_eq!(app.template_modal.mode, TemplateModalMode::List);
-    press(&mut app, KeyCode::Esc);
-    assert!(!app.modal_showing());
     assert!(app.template_modal.active, "the list survives the refusal");
 
     // Give the state something to carry.

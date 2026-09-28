@@ -164,6 +164,11 @@ pub struct PivotMeltModal {
     /// The one Picker, open for the focused row; None while the form has the keys.
     pub picker: Option<PickerState>,
 
+    /// Set when Enter was pressed on an incomplete form: the spec line that
+    /// names the gap re-accents instead of a modal repeating it. Any other key
+    /// clears it.
+    pub attention: bool,
+
     // Pivot form
     pub index_columns: Vec<String>,
     pub pivot_column: Option<String>,
@@ -189,6 +194,7 @@ impl Default for PivotMeltModal {
             available_columns: Vec::new(),
             column_dtypes: HashMap::new(),
             picker: None,
+            attention: false,
             index_columns: Vec::new(),
             pivot_column: None,
             value_column: None,

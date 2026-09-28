@@ -11,7 +11,7 @@ Keys:
                     explicit time roles
   Enter on Scope:   Enter view, source, rows START..END, files 1,3,
                     partition COLUMN=VALUE, or time COLUMN=START..END
-  PgUp / PgDn:      On Scope: scroll the numbered source-file inventory
+  PgUp/PgDn:        On Scope: scroll the numbered source-file inventory
   p:                Show the detailed access plan
   1 / 2 / 3 / 4:    Overview / Columns / Segments / Trends
   [ / ]:            Choose a column in Segments or Trends

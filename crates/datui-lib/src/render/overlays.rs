@@ -178,6 +178,41 @@ pub fn render_error_modal(
 }
 
 /// Renders the help overlay with wrapped text and scrollbar. Clamps and updates `scroll` so the caller can persist it.
+/// Wrap one help line to `width` columns, breaking at word boundaries and
+/// measuring characters, not bytes; a single overlong word is split hard.
+fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    for word in line.split(' ') {
+        let word_len = word.chars().count();
+        let sep = usize::from(current_len > 0);
+        if current_len + sep + word_len <= width {
+            if sep == 1 {
+                current.push(' ');
+            }
+            current.push_str(word);
+            current_len += sep + word_len;
+            continue;
+        }
+        if current_len > 0 {
+            out.push(std::mem::take(&mut current));
+        }
+        // A word wider than the line is split hard rather than lost.
+        let mut rest: Vec<char> = word.chars().collect();
+        while rest.len() > width {
+            out.push(rest.drain(..width).collect());
+        }
+        current = rest.into_iter().collect();
+        current_len = current.chars().count();
+    }
+    out.push(current);
+    out
+}
+
 pub fn render_help_overlay(
     area: Rect,
     buf: &mut Buffer,
@@ -186,7 +221,14 @@ pub fn render_help_overlay(
     scroll: &mut usize,
     ctx: &RenderContext,
 ) {
-    let popup_area = centered_rect(area, 80, 80);
+    // A reading surface: it caps its measure instead of stretching with an
+    // ultrawide terminal.
+    let mut popup_area = centered_rect(area, 80, 80);
+    const MAX_MEASURE: u16 = 100;
+    if popup_area.width > MAX_MEASURE {
+        popup_area.x += (popup_area.width - MAX_MEASURE) / 2;
+        popup_area.width = MAX_MEASURE;
+    }
     Clear.render(popup_area, buf);
 
     let help_layout = Layout::default()
@@ -197,38 +239,22 @@ pub fn render_help_overlay(
     let text_area = help_layout[0];
     let scrollbar_area = help_layout[1];
 
-    let block = Block::default()
-        .title(title)
-        .title_style(ratatui::style::Style::reset())
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
-    let inner_area = block.inner(text_area);
-    block.render(text_area, buf);
+    let footer = crate::widgets::ui::HintBar::from_ctx(ctx)
+        .hint("Esc", "Close")
+        .hint(crate::glyphs::get().updown, "Scroll");
+    let inner_area = crate::widgets::ui::Surface::new(title)
+        .footer(&footer)
+        .render(text_area, buf, ctx);
 
-    let text_lines: Vec<&str> = text.lines().collect();
     let available_width = inner_area.width as usize;
     let available_height = inner_area.height as usize;
 
-    let mut wrapped_lines = Vec::new();
-    for line in &text_lines {
-        if line.len() <= available_width {
-            wrapped_lines.push(*line);
+    let mut wrapped_lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.chars().count() <= available_width {
+            wrapped_lines.push(line.to_string());
         } else {
-            let mut remaining = *line;
-            while !remaining.is_empty() {
-                let mut take = remaining.len().min(available_width);
-                while take > 0 && !remaining.is_char_boundary(take) {
-                    take -= 1;
-                }
-                let take_len = if take == 0 {
-                    remaining.chars().next().map_or(0, |c| c.len_utf8())
-                } else {
-                    take
-                };
-                let (chunk, rest) = remaining.split_at(take_len);
-                wrapped_lines.push(chunk);
-                remaining = rest;
-            }
+            wrapped_lines.extend(wrap_help_line(line, available_width));
         }
     }
 
@@ -237,17 +263,14 @@ pub fn render_help_overlay(
     *scroll = (*scroll).min(max_scroll);
     let scroll_pos = *scroll;
 
-    let visible_lines: Vec<&str> = wrapped_lines
+    let visible_text = wrapped_lines
         .iter()
         .skip(scroll_pos)
         .take(available_height)
-        .copied()
-        .collect();
-
-    let visible_text = visible_lines.join("\n");
-    Paragraph::new(visible_text)
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .render(inner_area, buf);
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    Paragraph::new(visible_text).render(inner_area, buf);
 
     if total_wrapped_lines > available_height {
         let scrollbar_height = scrollbar_area.height;
@@ -277,5 +300,79 @@ pub fn render_help_overlay(
                 style,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_wrap_breaks_at_word_boundaries() {
+        let wrapped = wrap_help_line("the quick brown fox jumps", 11);
+        assert_eq!(wrapped, vec!["the quick", "brown fox", "jumps"]);
+    }
+
+    /// Width is characters, not bytes: a line of multibyte glyphs (arrows,
+    /// box drawing) must not fold early or split inside a character.
+    #[test]
+    fn help_wrap_measures_characters_not_bytes() {
+        let wrapped = wrap_help_line("↑↓ / j/k: Navigate", 18);
+        assert_eq!(wrapped, vec!["↑↓ / j/k: Navigate"]);
+    }
+
+    #[test]
+    fn an_overlong_word_is_split_rather_than_lost() {
+        let wrapped = wrap_help_line("see /a/very/long/path/that/never/ends", 10);
+        assert_eq!(wrapped.first().map(String::as_str), Some("see"));
+        assert!(wrapped.iter().all(|line| line.chars().count() <= 10));
+        assert_eq!(
+            wrapped.join(""),
+            "see/a/very/long/path/that/never/ends".replace(' ', "")
+        );
+    }
+
+    /// The overlay says how to leave it, and caps its measure on wide
+    /// terminals instead of stretching.
+    #[test]
+    fn the_overlay_names_esc_and_caps_its_measure() {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 200, 40);
+        let mut buf = Buffer::empty(area);
+        let mut scroll = 0usize;
+        render_help_overlay(
+            area,
+            &mut buf,
+            "Table Help",
+            "line one\nline two",
+            &mut scroll,
+            &ctx,
+        );
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let text = rows.join("\n");
+        assert!(
+            text.contains("Esc") && text.contains("Close"),
+            "the way out is named"
+        );
+        // The drawn region's width, wherever it is centered.
+        let widest = rows
+            .iter()
+            .map(|row| {
+                let trimmed = row.trim_end();
+                let lead = trimmed.chars().take_while(|c| *c == ' ').count();
+                trimmed.chars().count().saturating_sub(lead)
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest <= 101,
+            "the overlay stretched with the terminal: {widest} columns"
+        );
     }
 }

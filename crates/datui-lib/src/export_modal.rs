@@ -115,7 +115,7 @@ pub struct ExportModal {
     pub json_compression: Option<CompressionFormat>,
     // NDJSON options
     pub ndjson_compression: Option<CompressionFormat>,
-    // Compression selection index (for horizontal radio buttons)
+    // Compression selection index (the row cycles through the choices)
     pub compression_selection_idx: usize,
     pub history_limit: usize,
 }
@@ -164,9 +164,9 @@ impl ExportModal {
         self.path_input.clear();
     }
 
-    /// Follow the typed path's extension with the format radio, so `out.csv` never
+    /// Follow the typed path's extension with the format picker, so `out.csv` never
     /// silently receives Parquet bytes. An extension that names no format leaves the
-    /// radio alone, and an explicit format picked after typing stands, because this
+    /// picker alone, and an explicit format picked after typing stands, because this
     /// runs only when the path itself changes.
     pub fn sync_format_to_path(&mut self) {
         if let Some(format) = ExportFormat::from_path(self.path_input.value().trim()) {

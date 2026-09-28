@@ -735,9 +735,10 @@ fn render_time_roles(
     .row_highlight_style(config.theme.highlight_style())
     .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
-    Paragraph::new(
-        "Left/Right cycles only date and datetime columns. Unassigned roles produce no lifecycle claims.",
-    )
+    Paragraph::new(format!(
+        "{} cycles only date and datetime columns. Unassigned roles produce no lifecycle claims.",
+        glyphs::get().updown_lr
+    ))
     .style(Style::default().fg(config.theme.get("dimmed")))
     .render(sections[2], buf);
 }

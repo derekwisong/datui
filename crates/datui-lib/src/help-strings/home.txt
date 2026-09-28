@@ -5,7 +5,7 @@ finds json; only the keys below are keys.
 Navigation:
   ↑ / ↓:            Move the selection (Ctrl+P / Ctrl+N too)
   Ctrl+↑ / Ctrl+↓:  Previous or next section
-  PgUp / PgDn:      Move ten rows
+  PgUp/PgDn:        Move a screenful, stopping at the first and last
   Home / End:       The first or last row
   ← / →:            Fold or unfold a section; → on a directory goes inside it
   Enter:            What the control bar says on this row: "Open all" reads a

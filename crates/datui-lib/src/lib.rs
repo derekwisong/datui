@@ -9525,8 +9525,15 @@ impl App {
                 }
                 None => self.home_collapse(false),
             },
-            KeyCode::PageUp => self.home.page_selection(-10),
-            KeyCode::PageDown => self.home.page_selection(10),
+            // A screenful, matching the table; the renderer keeps view_height current.
+            KeyCode::PageUp => {
+                let page = self.home.view_height.max(1) as isize;
+                self.home.page_selection(-page);
+            }
+            KeyCode::PageDown => {
+                let page = self.home.view_height.max(1) as isize;
+                self.home.page_selection(page);
+            }
             KeyCode::Home => self.home.page_selection(isize::MIN),
             KeyCode::End => self.home.page_selection(isize::MAX),
             KeyCode::Char('u') if ctrl => {

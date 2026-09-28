@@ -13,6 +13,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 pub struct Surface<'a> {
     title: &'a str,
     footer: Option<&'a HintBar<'a>>,
+    /// The frame's own style when the default border slot is wrong for it:
+    /// an error surface carries the error border, a confirmation the active one.
+    border: Option<Style>,
 }
 
 impl<'a> Surface<'a> {
@@ -20,11 +23,17 @@ impl<'a> Surface<'a> {
         Self {
             title,
             footer: None,
+            border: None,
         }
     }
 
     pub fn footer(mut self, footer: &'a HintBar<'a>) -> Self {
         self.footer = Some(footer);
+        self
+    }
+
+    pub fn border_style(mut self, style: Style) -> Self {
+        self.border = Some(style);
         self
     }
 
@@ -35,7 +44,10 @@ impl<'a> Surface<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(ctx.modal_border))
+            .border_style(
+                self.border
+                    .unwrap_or_else(|| Style::default().fg(ctx.modal_border)),
+            )
             .title(self.title)
             .title_style(Style::reset());
         let inner = block.inner(area);

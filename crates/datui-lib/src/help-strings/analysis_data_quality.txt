@@ -1,5 +1,8 @@
-Data Quality profiles the selected scope. Nothing scans values until you run
-the visible plan.
+Data Quality profiles the selected scope. On a local file, choosing the tool
+runs the default plan at once and leads with the result; the strip up top
+echoes the plan that ran, and e edits it. On a remote source — and for any
+plan that needs confirming — nothing scans values until you run the visible
+plan.
 
 Keys:
   Enter:            Run the plan, inspect an observation, or open exact

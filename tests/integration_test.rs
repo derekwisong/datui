@@ -989,18 +989,31 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    // Choosing Data Quality on a local source auto-runs the default plan and
+    // leads with the result.
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
     );
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
-    assert!(app.analysis_modal.data_quality_results.is_none());
-    app.analysis_modal.data_quality_plan.sample_seed = 7_119;
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    assert!(app.analysis_modal.data_quality_results.is_some());
 
+    // A changed plan runs again from the Plan page, one Esc away.
+    app.analysis_modal.data_quality_plan.sample_seed = 7_119;
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
     app.analysis_modal.focus = AnalysisFocus::Main;
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -1237,6 +1250,13 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_plan.sample_seed, 7_119);
     assert!(app.analysis_modal.data_quality_results.is_some());
     assert!(!app.is_busy());
+    // Selecting the tool no longer moves focus; cross into the result as the
+    // user would, with Tab.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
 
     // A drift observation's detail is the files themselves: which ones, how many rows
     // each cost the column, the type each holds, and the values the conflict hid.
@@ -1356,6 +1376,119 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
 }
 
+/// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
+/// when the user presses Tab, never as a side effect of Enter or of results
+/// arriving. Reviewers kept landing in the wrong tool because it jumped.
+#[test]
+fn selecting_a_tool_keeps_the_sidebar_focus() {
+    use datui::analysis_modal::AnalysisFocus;
+
+    let (mut app, rx, _tx) = open_query_filter_fixture("analysis_focus.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+
+    // Enter on Describe: the tool runs, the cursor stays on the sidebar.
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.analysis_modal.describe_results.is_some());
+    assert_eq!(
+        app.analysis_modal.focus,
+        AnalysisFocus::Sidebar,
+        "running a tool must not move focus"
+    );
+
+    // Tab is the one move: into the result, and back.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+}
+
+/// On a local file, choosing Data Quality runs the default plan at once and
+/// leads with the result; the plan ceremony stays one Esc away. Tab crosses
+/// sidebar and result here exactly as in the other tools.
+#[test]
+fn data_quality_on_a_local_file_leads_with_the_result() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityPage;
+
+    let (mut app, rx, _tx) = open_query_filter_fixture("dq_local_lead.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        matches!(next, Some(AppEvent::AnalysisDataQualityCompute)),
+        "a local default plan runs without ceremony"
+    );
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::Overview,
+        "the result leads; the plan stays an Esc away"
+    );
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+
+    // Esc from the result opens the plan, unchanged in meaning.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+
+    // The control bar is the one hint surface: the widget draws no key rows
+    // or prose of its own.
+    let area = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        !screen.contains("The plan is inert"),
+        "the dimmed prose line is gone"
+    );
+    assert!(
+        screen.contains("Run") && screen.contains("Edit"),
+        "the global bar names the plan page's keys"
+    );
+}
+
 #[test]
 fn test_data_quality_scope_editor_runs_selected_view_rows() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
@@ -1374,7 +1507,15 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
-    key(&mut app, KeyCode::Enter);
+    // The local auto-run of the default plan settles before the scope edit.
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
@@ -1466,15 +1607,25 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    // The local auto-run of the default plan settles first.
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
     );
     app.analysis_modal.focus = AnalysisFocus::Main;
+    // Esc leaves the led-with result for the plan; the scoped run starts there.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
     app.analysis_modal.data_quality_plan.scope = QualityScope::SourceFiles(vec![2]);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,

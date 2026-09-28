@@ -59,7 +59,6 @@ pub fn render(
             Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Fill(1),
-            Constraint::Length(2),
         ])
         .split(area);
 
@@ -87,7 +86,6 @@ pub fn render(
         QualityPage::Trends => render_trends(&config, table_state, body, buf),
         QualityPage::Detail => render_detail(&config, table_state, body, buf),
     }
-    render_controls(&config, vertical[3], buf);
 
     if config.show_access {
         render_access_plan(&config, area, buf);
@@ -333,14 +331,6 @@ fn render_plan(
     let access = Table::new(access_rows, [Constraint::Length(22), Constraint::Fill(1)])
         .block(Block::default().borders(Borders::NONE));
     Widget::render(access, sections[3], buf);
-
-    Paragraph::new(if config.editing {
-        "Editing: Up/Down field  Left/Right value  Enter details/apply  Esc cancel"
-    } else {
-        "The plan is inert until you run it. Press p for the exact access basis."
-    })
-    .style(Style::default().fg(config.theme.get("dimmed")))
-    .render(sections[4], buf);
 }
 
 fn render_scope(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
@@ -1554,83 +1544,6 @@ fn render_narrow_tool_picker(
         popup,
         buf,
     );
-}
-
-fn render_controls(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let actions = if config.running {
-        vec![("Esc", "Cancel run")]
-    } else if config.show_access {
-        vec![("Enter", "Close"), ("Esc", "Close")]
-    } else if config.observation_detail {
-        vec![("Enter", "Evidence"), ("Esc", "Back")]
-    } else if config.page == QualityPage::Scope {
-        vec![
-            ("Enter", "Use scope"),
-            ("PgUp/Dn", "Files"),
-            ("Esc", "Back"),
-        ]
-    } else if config.page == QualityPage::TimeRoles {
-        vec![
-            (glyphs::get().updown, "Role"),
-            (glyphs::get().arrow_left, "Column"),
-            ("Enter", "Done"),
-            ("Esc", "Back"),
-        ]
-    } else if config.editing {
-        vec![
-            (glyphs::get().updown, "Field"),
-            (glyphs::get().arrow_left, "Value"),
-            ("Enter", "Apply"),
-            ("Esc", "Cancel"),
-        ]
-    } else if config.page == QualityPage::Plan {
-        vec![
-            ("Enter", "Run"),
-            ("e", "Edit plan"),
-            ("p", "Plan details"),
-            ("Esc", "Back"),
-        ]
-    } else if config.page == QualityPage::Segments {
-        vec![
-            ("[ ]", "Column"),
-            ("m", "Metric"),
-            ("b", "Baseline"),
-            ("1-4", "Page"),
-        ]
-    } else if config.page == QualityPage::Trends {
-        vec![
-            ("[ ]", "Column"),
-            ("m", "Metric"),
-            ("1-4", "Page"),
-            ("p", "Access"),
-        ]
-    } else {
-        vec![
-            ("1", "Overview"),
-            ("2", "Columns"),
-            ("3", "Segments"),
-            ("4", "Trends"),
-            ("Enter", "Inspect"),
-            ("p", "Access plan"),
-        ]
-    };
-    let mut spans = Vec::new();
-    for (key, label) in actions {
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::default()
-                .fg(config.theme.get("controls_bg"))
-                .bg(config.theme.get("accent"))
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!(" {label}  "),
-            Style::default().fg(config.theme.get("dimmed")),
-        ));
-    }
-    Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(config.theme.get("controls_bg")))
-        .render(area, buf);
 }
 
 fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {

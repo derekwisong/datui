@@ -245,26 +245,12 @@ impl<'a> AnalysisWidget<'a> {
                 ])
                 .split(area);
 
-            // Breadcrumb with column name and Escape hint on top right
-            // Split breadcrumb area into left (title) and right (Escape hint)
-            let breadcrumb_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Fill(1),   // Title on left
-                    Constraint::Length(8), // Escape hint on right ("Esc Back" = 8 chars)
-                ])
-                .split(layout[0]);
-
+            // The breadcrumb carries the name alone; the control bar says Esc.
             let title_text = format!("Distribution Analysis: {}", dist.column_name);
             let header_row_style = header_style(self.theme, "controls_bg", "table_header");
             Paragraph::new(title_text)
                 .style(header_row_style)
-                .render(breadcrumb_layout[0], buf);
-
-            Paragraph::new("Esc Back")
-                .style(header_row_style)
-                .right_aligned()
-                .render(breadcrumb_layout[1], buf);
+                .render(layout[0], buf);
 
             // Main content area - optimized layout
             // Split into: condensed stats header, charts and selector area
@@ -477,12 +463,7 @@ impl<'a> AnalysisWidget<'a> {
             .constraints([Constraint::Length(1), Constraint::Fill(1)])
             .split(area);
 
-        // Breadcrumb with the pair and an Escape hint, matching the distribution detail.
-        let breadcrumb_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Fill(1), Constraint::Length(8)])
-            .split(layout[0]);
-
+        // The breadcrumb carries the pair alone; the control bar says Esc.
         let title_text = format!(
             "Correlation: {} vs {}",
             matrix.columns[row], matrix.columns[col]
@@ -490,11 +471,7 @@ impl<'a> AnalysisWidget<'a> {
         let header_row_style = header_style(self.theme, "controls_bg", "table_header");
         Paragraph::new(title_text)
             .style(header_row_style)
-            .render(breadcrumb_layout[0], buf);
-        Paragraph::new("Esc Back")
-            .style(header_row_style)
-            .right_aligned()
-            .render(breadcrumb_layout[1], buf);
+            .render(layout[0], buf);
 
         let total_rows = self.results.map(|r| r.total_rows).unwrap_or(0);
         render_correlation_pair_summary(

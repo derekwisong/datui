@@ -121,7 +121,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
         return;
     }
 
-    // The wordmark costs two rows more than the title bar, and fourteen columns
+    // The wordmark costs two rows more than the title bar, and twenty-five columns
     // beside the path. On a big terminal that is nothing; on a short one it is two
     // datasets, and on a narrow one the path beside it is all ellipsis — so in
     // either case the one-line bar comes back.
@@ -164,9 +164,9 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
 
 /// Below this many rows the wordmark gives way to the one-line title bar.
 const WORDMARK_MIN_HEIGHT: u16 = 28;
-/// Below this width, the wordmark's fourteen columns leave the path beside it
+/// Below this width, the wordmark's twenty-five columns leave the path beside it
 /// nothing but its own ellipsis.
-const WORDMARK_MIN_WIDTH: u16 = 40;
+const WORDMARK_MIN_WIDTH: u16 = 52;
 
 /// Interpolate two colours, when both are RGB. Anything else — a named ANSI colour,
 /// an indexed one, the terminal default — has no arithmetic, so the first stop is

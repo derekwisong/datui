@@ -118,6 +118,9 @@ pub struct ExportModal {
     // Compression selection index (the row cycles through the choices)
     pub compression_selection_idx: usize,
     pub history_limit: usize,
+    /// Why the form cannot export yet, said inline on its own status line.
+    /// Set by Enter on an invalid form, cleared by typing in the path.
+    pub path_error: Option<&'static str>,
 }
 
 impl ExportModal {
@@ -156,6 +159,7 @@ impl ExportModal {
         self.json_compression = None;
         self.ndjson_compression = None;
         self.compression_selection_idx = 0;
+        self.path_error = None;
     }
 
     pub fn close(&mut self) {
@@ -402,6 +406,7 @@ impl Default for ExportModal {
             ndjson_compression: None,
             compression_selection_idx: 0,
             history_limit: 1000,
+            path_error: None,
         }
     }
 }

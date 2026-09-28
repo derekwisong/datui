@@ -7731,6 +7731,8 @@ impl App {
         self.export_modal.path_input.handle_key(event, None);
         if self.export_modal.path_input.value() != before {
             self.export_modal.sync_format_to_path();
+            // Typing is the correction the message asked for.
+            self.export_modal.path_error = None;
         }
     }
 
@@ -12812,8 +12814,13 @@ impl App {
                 }
                 KeyCode::Enter => {
                     // Enter applies from anywhere in the form: build the export from
-                    // the state every row already echoes. A blank path exports nothing.
+                    // the state every row already echoes. A blank path cannot, and
+                    // says so inline instead of doing nothing.
                     let path_str = self.export_modal.path_input.value().trim().to_string();
+                    if path_str.is_empty() {
+                        self.export_modal.path_error = Some("Enter a file path.");
+                        self.export_modal.focus = ExportFocus::PathInput;
+                    }
                     if !path_str.is_empty() {
                         // `~` and `$VAR` expand as everywhere else a path is
                         // typed; unexpanded they become a literal `~` directory

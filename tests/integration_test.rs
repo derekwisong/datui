@@ -1513,6 +1513,16 @@ fn declining_an_overwrite_keeps_the_export_form() {
 
     key(&mut app, KeyCode::Char('e'));
     assert!(app.export_modal.active);
+
+    // Enter on the empty form says why inline instead of doing nothing,
+    // and typing is the correction that clears it.
+    key(&mut app, KeyCode::Enter);
+    assert!(app.export_modal.active, "an empty path raises no modal");
+    assert_eq!(app.export_modal.path_error, Some("Enter a file path."));
+    key(&mut app, KeyCode::Char('x'));
+    assert_eq!(app.export_modal.path_error, None);
+    key(&mut app, KeyCode::Backspace);
+
     let typed = target.display().to_string();
     app.export_modal.path_input.set_value(&typed);
     key(&mut app, KeyCode::Enter);

@@ -103,8 +103,9 @@ impl<'a> Widget for AnalysisWidget<'a> {
 
 impl<'a> AnalysisWidget<'a> {
     fn render_main_view(self, area: Rect, buf: &mut Buffer) {
-        // Sidebar width (~30 characters)
-        let sidebar_width = 32u16;
+        // The tool list never takes more than a third of the screen: the
+        // results are what the screen is for.
+        let sidebar_width = 32u16.min(area.width / 3);
 
         // Full-screen layout: breadcrumb, main area (no separate keybind hints line)
         let layout = Layout::default()

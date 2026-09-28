@@ -1007,14 +1007,15 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
     assert!(app.analysis_modal.data_quality_results.is_some());
 
-    // A changed plan runs again from the Plan page, one Esc away.
+    // A changed plan runs again from the Plan page, one Esc away. Esc brings the
+    // cursor to the plan with it, so the Enter that runs needs no Tab first.
     app.analysis_modal.data_quality_plan.sample_seed = 7_119;
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
-    app.analysis_modal.focus = AnalysisFocus::Main;
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1487,6 +1488,155 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         screen.contains("Run") && screen.contains("Edit"),
         "the global bar names the plan page's keys"
     );
+}
+
+/// A plan that needs a run is a form the user answers with Enter, which only the
+/// main pane hears. The cursor must move into it when the ceremony opens: left on
+/// the sidebar, ↑↓ went on moving the tool selector and Enter only reselected the
+/// tool, and there was no visible way to run the plan at all.
+#[test]
+fn the_data_quality_ceremony_takes_the_cursor_with_it() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::{QualityCompute, QualityPage};
+
+    let (mut app, _rx, _tx) = open_query_filter_fixture("dq_ceremony_focus.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    // A full-scan plan requires confirmation, so selecting the tool opens the
+    // ceremony instead of running at once.
+    app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        next.is_none(),
+        "a confirming plan must not run on selection"
+    );
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert_eq!(
+        app.analysis_modal.focus,
+        AnalysisFocus::Main,
+        "the ceremony owns the keys"
+    );
+
+    // Enter asks for confirmation, and Enter again runs — no Tab required.
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(next.is_none());
+    assert!(app.analysis_modal.data_quality_confirm_run);
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+}
+
+/// e opens the plan editor, and the editor owns the keyboard: ↑↓ change the field,
+/// never the sidebar's tool selector. Tab is swallowed while the editor is open,
+/// so unless the cursor moves in with e, no key could ever reach a field.
+#[test]
+fn e_moves_the_cursor_into_the_plan_editor() {
+    use datui::analysis_modal::AnalysisFocus;
+
+    let (mut app, rx, _tx) = open_query_filter_fixture("dq_editor_focus.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+
+    let tool_row = app.analysis_modal.sidebar_state.selected();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_editing);
+    assert_eq!(
+        app.analysis_modal.focus,
+        AnalysisFocus::Main,
+        "e moves the cursor into the editor"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_plan_field, 1,
+        "the arrow changes the field"
+    );
+    assert_eq!(
+        app.analysis_modal.sidebar_state.selected(),
+        tool_row,
+        "the tool selector never moves"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_plan_field, 0);
+}
+
+/// r works from the sidebar too, and when the plan needs a confirmation the
+/// prompt it raises is answered with Enter — so the cursor moves in with it.
+#[test]
+fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
+    use datui::analysis_modal::AnalysisFocus;
+    use datui::data_quality::QualityCompute;
+
+    let (mut app, rx, _tx) = open_query_filter_fixture("dq_run_key_focus.csv");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+
+    app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::NONE,
+    )));
+    assert!(next.is_none(), "a confirming plan asks before running");
+    assert!(app.analysis_modal.data_quality_confirm_run);
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
 }
 
 #[test]

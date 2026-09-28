@@ -13538,6 +13538,9 @@ impl App {
                         if !matches!(self.analysis_modal.data_quality_page, QualityPage::Plan) =>
                     {
                         self.analysis_modal.set_quality_page(QualityPage::Plan);
+                        // The plan page acts on Enter (run) and only the main pane
+                        // hears it; opening the page brings the cursor along.
+                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                         return None;
                     }
                     KeyCode::Char('p') => {
@@ -13551,6 +13554,10 @@ impl App {
                         self.analysis_modal.set_quality_page(QualityPage::Plan);
                         self.analysis_modal.data_quality_editing = true;
                         self.analysis_modal.data_quality_plan_field = 0;
+                        // The editor owns the keyboard, and Tab is swallowed while
+                        // it is open, so the cursor has to be moved into it here —
+                        // from the sidebar, ↑↓ would go on moving the tool selector.
+                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                         return None;
                     }
                     KeyCode::Char('1') => {
@@ -13649,6 +13656,9 @@ impl App {
                         {
                             self.analysis_modal.set_quality_page(QualityPage::Plan);
                             self.analysis_modal.data_quality_confirm_run = true;
+                            // The prompt is answered with Enter, which only the
+                            // main pane hears; r works from the sidebar too.
+                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             return None;
                         }
                         self.analysis_modal.computing = Some(AnalysisProgress {
@@ -13987,25 +13997,33 @@ impl App {
                                 self.restore_recent_quality_plan();
                                 if !self.restore_cached_quality()
                                     && self.analysis_modal.data_quality_results.is_none()
-                                    && !self
+                                {
+                                    if !self
                                         .analysis_modal
                                         .data_quality_plan
                                         .requires_confirmation()
-                                    && self
-                                        .data_table_state
-                                        .as_ref()
-                                        .is_some_and(|state| !state.is_remote_source())
-                                {
-                                    // A local read costs nothing worth confirming:
-                                    // lead with the result. The plan stays one Esc
-                                    // (or e) away, echoed in the strip up top.
-                                    self.analysis_modal.computing = Some(AnalysisProgress {
-                                        phase: "Profiling data quality".to_string(),
-                                        current: 0,
-                                        total: 1,
-                                    });
-                                    self.busy = true;
-                                    return Some(AppEvent::AnalysisDataQualityCompute);
+                                        && self
+                                            .data_table_state
+                                            .as_ref()
+                                            .is_some_and(|state| !state.is_remote_source())
+                                    {
+                                        // A local read costs nothing worth confirming:
+                                        // lead with the result. The plan stays one Esc
+                                        // (or e) away, echoed in the strip up top.
+                                        self.analysis_modal.computing = Some(AnalysisProgress {
+                                            phase: "Profiling data quality".to_string(),
+                                            current: 0,
+                                            total: 1,
+                                        });
+                                        self.busy = true;
+                                        return Some(AppEvent::AnalysisDataQualityCompute);
+                                    }
+                                    // The plan ceremony: the pane is a form waiting
+                                    // for Enter, which only the main pane hears, so
+                                    // the cursor moves into it — from the sidebar,
+                                    // Enter would only reselect the tool.
+                                    self.analysis_modal.focus =
+                                        analysis_modal::AnalysisFocus::Main;
                                 }
                             }
                             _ => {}

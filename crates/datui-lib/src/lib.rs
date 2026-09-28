@@ -14874,6 +14874,19 @@ impl App {
 
         const UP_KEYS: [KeyCode; 2] = [KeyCode::Up, KeyCode::Char('k')];
 
+        // The letter arms below are unmodified keys. Without this guard the
+        // bare-`Char` matches also fired with Ctrl or Alt held, so Ctrl+E
+        // opened Export and Ctrl+R reversed — bindings nobody declared.
+        // Paging (Ctrl+F/B/D/U) is the only modified set this match owns;
+        // the global escapes were handled before reaching here.
+        if event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && !matches!(event.code, KeyCode::Char('f' | 'b' | 'd' | 'u'))
+        {
+            return None;
+        }
+
         match event.code {
             // q pops the context: opened from the home screen, it returns
             // there; launched straight onto a file, it quits as it always

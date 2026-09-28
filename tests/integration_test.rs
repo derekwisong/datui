@@ -1455,6 +1455,41 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     );
 }
 
+/// The table's letter keys are unmodified keys: Ctrl+E must not open Export
+/// and Ctrl+R must not reverse. Paging (Ctrl+F/B/D/U) keeps its modifiers.
+#[test]
+fn modified_letters_are_not_table_feature_keys() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/people.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!app.export_modal.active, "Ctrl+E is not e");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!app.copy_modal.active, "Ctrl+Y is not y");
+
+    // And the plain letter still works. (Paging keeps Ctrl+F/B/D/U: those
+    // four are the guard's explicit exceptions, matching their declared arms.)
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.export_modal.active, "e still opens Export");
+}
+
 /// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
 /// when the user presses Tab, never as a side effect of Enter or of results
 /// arriving. Reviewers kept landing in the wrong tool because it jumped.

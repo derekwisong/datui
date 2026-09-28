@@ -6617,9 +6617,10 @@ impl DataTableState {
 
     /// Execute a SQL query against `query_root` (registered as table "df"): the drilled
     /// group or the reshaped data when one is in effect, otherwise the data as loaded —
-    /// never the sidebar filters or a previous SQL result. Sidebar filters and sort are
-    /// not baked into the result, they go on top of it. Empty SQL resets to original
-    /// state. Does not call collect(); the event loop does that via AppEvent::Collect.
+    /// never the sidebar filters or a previous SQL result. Running a query starts a
+    /// fresh view: `install_query_result` clears the sidebar filters and sort, and they
+    /// are applied after it. Empty SQL resets to original state. Does not call
+    /// collect(); the event loop does that via AppEvent::Collect.
     pub fn sql_query(&mut self, sql: String) {
         self.error = None;
         let trimmed = sql.trim();

@@ -49,11 +49,15 @@ pub fn render(
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Length(1)])
             .split(chunks[0]);
+        // The tabs name the current input mode, so they are reserved in full;
+        // the syntax description is the part that yields on a narrow strip.
+        let tab_titles = vec!["Query", "Fuzzy", "SQL"];
+        let tabs_width: u16 = tab_titles.iter().map(|t| t.len() as u16 + 2).sum::<u16>()
+            + (tab_titles.len() as u16 - 1);
         let tab_row_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Max(40)])
+            .constraints([Constraint::Length(tabs_width), Constraint::Min(0)])
             .split(tab_line_chunks[0]);
-        let tab_titles = vec!["Query", "Fuzzy", "SQL"];
         // The one tab style: the active tab carries the accent, bold.
         let tabs = Tabs::new(tab_titles)
             .style(Style::default().fg(ctx.text_secondary))
@@ -74,7 +78,9 @@ pub fn render(
                 }
             }
         };
-        if !desc_text.is_empty() {
+        // Dropped whole rather than clipped: a cut-off syntax hint reads as
+        // wrong syntax.
+        if !desc_text.is_empty() && desc_text.len() as u16 <= tab_row_chunks[1].width {
             Paragraph::new(desc_text)
                 .style(Style::default().fg(ctx.text_secondary))
                 .alignment(Alignment::Right)
@@ -166,5 +172,53 @@ pub fn render(
             .render(chunks[2], buf);
     } else {
         (&app.query_input).render(inner_area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn cells(buf: &Buffer) -> String {
+        buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// The tabs name the current input mode; the syntax description is the
+    /// part that yields. At 60 columns SQL used to lose its name.
+    #[test]
+    fn the_tab_names_survive_a_narrow_strip() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
+        app.input_type = Some(crate::InputType::Search);
+        for width in [40u16, 60, 80] {
+            let area = Rect::new(0, 0, width, 5);
+            let mut buf = Buffer::empty(area);
+            render(
+                area,
+                &mut buf,
+                &mut app,
+                false,
+                "",
+                &crate::render::context::RenderContext::for_test(),
+            );
+            let painted = cells(&buf);
+            for tab in ["Query", "Fuzzy", "SQL"] {
+                assert!(painted.contains(tab), "{tab} lost at {width} columns");
+            }
+        }
+        // At 40 columns the description has no room and is dropped whole,
+        // never clipped mid-syntax.
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        render(
+            area,
+            &mut buf,
+            &mut app,
+            false,
+            "",
+            &crate::render::context::RenderContext::for_test(),
+        );
+        assert!(!cells(&buf).contains("[cols]"));
     }
 }

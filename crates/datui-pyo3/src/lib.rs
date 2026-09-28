@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use ::datui::{
     CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, ParseStringsTarget, RunInput,
-    error_for_python, run,
+    error_for_python, run, run_captured,
 };
 use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
@@ -416,22 +416,32 @@ enum CompressionFormatPy {
 /// Newer Polars emits `{"inner": "/foo"}` (under "path" or other keys); polars-plan 0.52
 /// expects `{"Local": "/foo"}` or `{"Cloud": "..."}`. We recursively rewrite any object
 /// that is exactly `{"inner": "<string>"}` to `{"Local": "<string>"}`.
-fn run_tui(plan: DslPlan, opts: OpenOptions) -> PyResult<()> {
+fn run_tui(plan: DslPlan, opts: OpenOptions, capture: bool) -> PyResult<Option<Vec<u8>>> {
     let lf = LazyFrame::from(plan);
+    let input = RunInput::LazyFrame(Box::new(lf), opts);
+    run_input(input, capture)
+}
+
+/// Run the TUI on `input` and hand back the captured view's plan bytes, if one was
+/// asked for and a dataset was open at quit.
+fn run_input(input: RunInput, capture: bool) -> PyResult<Option<Vec<u8>>> {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let input = RunInput::LazyFrame(Box::new(lf), opts);
-        run(input, None)
+        if capture {
+            run_captured(input, None)
+        } else {
+            run(input, None).map(|()| None)
+        }
     }));
     match result {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(None)) => Ok(None),
+        Ok(Ok(Some(lf))) => serialize_captured(lf).map(Some),
         Ok(Err(e)) => {
             let (kind, msg) = error_for_python(&e);
             Err(match kind {
                 ErrorKindForPython::FileNotFound => PyFileNotFoundError::new_err(msg),
                 ErrorKindForPython::PermissionDenied => PyPermissionError::new_err(msg),
                 ErrorKindForPython::Other => PyRuntimeError::new_err(msg),
-            }
-            .into())
+            })
         }
         Err(panic_payload) => {
             let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
@@ -441,9 +451,22 @@ fn run_tui(plan: DslPlan, opts: OpenOptions) -> PyResult<()> {
             } else {
                 "datui panicked".to_string()
             };
-            Err(PyRuntimeError::new_err(format!("datui panicked: {}", msg)).into())
+            Err(PyRuntimeError::new_err(format!("datui panicked: {}", msg)))
         }
     }
+}
+
+/// Serialize a captured view's plan for Python to deserialize. Always RuntimeError on
+/// failure, never ValueError: the wrapper retries a ValueError through the JSON input
+/// path, and a failure on the way *out* must not launch the TUI a second time.
+fn serialize_captured(lf: LazyFrame) -> PyResult<Vec<u8>> {
+    let mut buf = Vec::new();
+    lf.logical_plan
+        .serialize_versioned(&mut buf, Default::default())
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!("datui could not serialize the captured view: {}", e))
+        })?;
+    Ok(buf)
 }
 
 /// Launch the datui TUI with a LazyFrame logical plan given as binary (default Polars format).
@@ -458,12 +481,15 @@ fn run_tui(plan: DslPlan, opts: OpenOptions) -> PyResult<()> {
 /// Args:
 ///     data: Bytes from LazyFrame.serialize() or df.lazy().serialize() (binary).
 ///     options: Optional DatuiOptions (includes debug); default when None.
+///     capture: When True, return the final view's plan as bytes on normal quit
+///         (None when no dataset was open); the wrapper deserializes them.
 ///
 /// Raises:
 ///     ValueError: If the bytes are not valid LazyFrame binary.
 ///     FileNotFoundError: If a path is used and the file is not found (internal).
 ///     PermissionError: If read access is denied (internal).
-///     RuntimeError: If the TUI fails or panics.
+///     RuntimeError: If the TUI fails or panics, or a captured view cannot be
+///         returned (temporary source files, serialization failure).
 /// Where the schema hash sits in a versioned plan: after the `DSL_VERSION` magic bytes and
 /// the u16 major and minor version.
 const DSL_HASH_OFFSET: usize = b"DSL_VERSION".len() + 4;
@@ -506,12 +532,13 @@ fn with_own_dsl_hash(data: &[u8]) -> Box<dyn std::io::Read + '_> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (data, *, options=None))]
+#[pyo3(signature = (data, *, options=None, capture=false))]
 fn view_from_bytes(
     _py: Python<'_>,
     data: &[u8],
     options: Option<Bound<'_, DatuiOptionsPy>>,
-) -> PyResult<()> {
+    capture: bool,
+) -> PyResult<Option<Vec<u8>>> {
     // Python `LazyFrame.serialize()` writes a DSL version and a schema hash ahead of the
     // plan. The version is checked. The hash is not comparable: it is the digest of a file
     // in the polars repository at the commit each release was cut from, and no PyPI wheel
@@ -529,7 +556,7 @@ fn view_from_bytes(
         ))
     })?;
     let opts = datui_options_to_rust(options.as_ref());
-    run_tui(plan, opts)
+    run_tui(plan, opts, capture)
 }
 
 /// Launch the datui TUI with a LazyFrame logical plan given as JSON.
@@ -549,12 +576,13 @@ fn view_from_bytes(
 ///     PermissionError: If read access is denied (internal).
 ///     RuntimeError: If the TUI fails or panics.
 #[pyfunction]
-#[pyo3(signature = (json_str, *, options=None))]
+#[pyo3(signature = (json_str, *, options=None, capture=false))]
 fn view_from_json(
     _py: Python<'_>,
     json_str: &str,
     options: Option<Bound<'_, DatuiOptionsPy>>,
-) -> PyResult<()> {
+    capture: bool,
+) -> PyResult<Option<Vec<u8>>> {
     let plan: DslPlan = serde_json::from_str(json_str).map_err(|e| {
         PyValueError::new_err(format!(
             "invalid LazyFrame JSON (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
@@ -562,7 +590,7 @@ fn view_from_json(
         ))
     })?;
     let opts = datui_options_to_rust(options.as_ref());
-    run_tui(plan, opts)
+    run_tui(plan, opts, capture)
 }
 
 /// Launch the datui TUI with one or more paths (local files, S3, GCS, or HTTP/HTTPS URLs).
@@ -584,42 +612,19 @@ fn view_from_json(
 ///     PermissionError: If read access to a path is denied.
 ///     RuntimeError: If the TUI fails or an uncategorized error occurs.
 #[pyfunction]
-#[pyo3(signature = (paths, *, options=None))]
+#[pyo3(signature = (paths, *, options=None, capture=false))]
 fn view_paths(
     _py: Python<'_>,
     paths: Vec<String>,
     options: Option<Bound<'_, DatuiOptionsPy>>,
-) -> PyResult<()> {
+    capture: bool,
+) -> PyResult<Option<Vec<u8>>> {
     if paths.is_empty() {
         return Err(PyValueError::new_err("paths must not be empty"));
     }
     let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     let opts = datui_options_to_rust(options.as_ref());
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        run(RunInput::Paths(path_bufs, opts), None)
-    }));
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => {
-            let (kind, msg) = error_for_python(&e);
-            Err(match kind {
-                ErrorKindForPython::FileNotFound => PyFileNotFoundError::new_err(msg),
-                ErrorKindForPython::PermissionDenied => PyPermissionError::new_err(msg),
-                ErrorKindForPython::Other => PyRuntimeError::new_err(msg),
-            }
-            .into())
-        }
-        Err(panic_payload) => {
-            let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "datui panicked".to_string()
-            };
-            Err(PyRuntimeError::new_err(format!("datui panicked: {}", msg)).into())
-        }
-    }
+    run_input(RunInput::Paths(path_bufs, opts), capture)
 }
 
 /// Run the datui CLI with the current process arguments (e.g. from `datui file.csv`).

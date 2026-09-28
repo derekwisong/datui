@@ -1902,16 +1902,10 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
 /// continued literal back onto one line and keeps the indentation with it, which once
 /// put twenty spaces into the middle of this sentence. See
 /// `the_pane_s_guidance_has_no_holes_in_it`.
-const INSIDE_AND_THE_DOOR: &str = concat!(
-    "Enter goes inside. The first row in there reads the whole directory ",
-    "as one table."
-);
+const INSIDE_AND_THE_DOOR: &str = "Enter steps in; the first row inside opens all of it.";
 
 /// The same, for a lake table, whose files are not its rows.
-const INSIDE_A_LAKE_TABLE: &str = concat!(
-    "Enter goes inside. The table itself is not read yet; the first row in there ",
-    "reads the files under it, which are not the table."
-);
+const INSIDE_A_LAKE_TABLE: &str = "Enter steps in; the first row reads its files, not the table.";
 
 /// Every sentence the pane offers as guidance, for the test that reads them.
 #[cfg(test)]

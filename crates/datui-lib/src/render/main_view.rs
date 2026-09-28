@@ -334,7 +334,10 @@ pub fn home_control_keys(
         crate::WhatEnter::LooksFirst => "Look",
         crate::WhatEnter::FoldsSection => "Fold",
         crate::WhatEnter::ShowsMore => "Show all",
-        crate::WhatEnter::OpensFile | crate::WhatEnter::Explains => "Open",
+        crate::WhatEnter::OpensFile => "Open",
+        // The row only explains itself — an HTTP place has no listing to
+        // browse — so the chip must not promise an Open it cannot do.
+        crate::WhatEnter::Explains => "About",
         crate::WhatEnter::Nothing => "",
     };
     let mut keys = vec![("Enter", enter_says), (g.updown, "Move")];
@@ -362,7 +365,11 @@ pub fn home_control_keys(
             keys.push(("^C", "Quit"));
         }
         keys.push(("type", "Filter"));
-        keys.push(("~", "Path"));
+        // `~` opens the path prompt only on an empty filter; with one typed it
+        // is an ordinary filter character, and the chip must not say otherwise.
+        if !has_filter {
+            keys.push(("~", "Path"));
+        }
         if browsing != Browse::Listing {
             keys.push(("Bksp", "Up"));
         }

@@ -60,34 +60,39 @@ pub fn render_export_modal(
         return;
     }
 
-    // Left: the format picker under its section rule. Right: the path and the
-    // chosen format's options, one FormRow each, values on one column.
+    // At full width the format picker sits left under its section rule with
+    // the option rows beside it. Narrow, the two-column split would leave the
+    // path a few cells, so the format becomes the first row — ↑↓ still cycle
+    // it — and every row runs the full width.
+    let narrow = content.width < FORMAT_WIDTH + 2 + LABEL_WIDTH + 16;
     let format_focused = modal.focus == ExportFocus::FormatSelector;
-    SectionRule {
-        title: "Format",
-        chip: None,
-        focused: format_focused,
-    }
-    .render(
-        Rect {
+    if !narrow {
+        SectionRule {
+            title: "Format",
+            chip: None,
+            focused: format_focused,
+        }
+        .render(
+            Rect {
+                width: FORMAT_WIDTH.min(content.width),
+                height: 1,
+                ..content
+            },
+            buf,
+            ctx,
+        );
+        let list_area = Rect {
+            y: content.y + 1,
             width: FORMAT_WIDTH.min(content.width),
-            height: 1,
+            height: content.height - 1,
             ..content
-        },
-        buf,
-        ctx,
-    );
-    let list_area = Rect {
-        y: content.y + 1,
-        width: FORMAT_WIDTH.min(content.width),
-        height: content.height - 1,
-        ..content
-    };
-    let names: Vec<&str> = ExportFormat::ALL.iter().map(|f| f.as_str()).collect();
-    let selected = ExportFormat::ALL
-        .iter()
-        .position(|f| *f == modal.selected_format);
-    Picker::new(names, selected, format_focused).render(list_area, buf, ctx);
+        };
+        let names: Vec<&str> = ExportFormat::ALL.iter().map(|f| f.as_str()).collect();
+        let selected = ExportFormat::ALL
+            .iter()
+            .position(|f| *f == modal.selected_format);
+        Picker::new(names, selected, format_focused).render(list_area, buf, ctx);
+    }
 
     modal
         .path_input
@@ -97,11 +102,19 @@ pub fn render_export_modal(
         .set_focused(modal.focus == ExportFocus::CsvDelimiter);
 
     // The rows mirror `focus_order`, so Tab walks what is on screen.
-    let mut rows: Vec<(&str, FormValue, ExportFocus)> = vec![(
+    let mut rows: Vec<(&str, FormValue, ExportFocus)> = Vec::new();
+    if narrow {
+        rows.push((
+            "Format:",
+            FormValue::Choice(modal.selected_format.as_str()),
+            ExportFocus::FormatSelector,
+        ));
+    }
+    rows.push((
         "Path:",
         FormValue::Input(&modal.path_input),
         ExportFocus::PathInput,
-    )];
+    ));
     match modal.selected_format {
         ExportFormat::Csv => rows.extend([
             (
@@ -140,14 +153,19 @@ pub fn render_export_modal(
         ));
     }
 
-    let options_x = content.x + FORMAT_WIDTH + 2;
+    let (options_x, first_y) = if narrow {
+        (content.x, content.y)
+    } else {
+        // Aligned with the format items, one row below the section rule.
+        (content.x + FORMAT_WIDTH + 2, content.y + 1)
+    };
     let options_width = (content.x + content.width).saturating_sub(options_x);
     if options_width == 0 {
         return;
     }
+    let row_count = rows.len() as u16;
     for (i, (label, value, focus)) in rows.into_iter().enumerate() {
-        // Aligned with the format items, one row below the section rule.
-        let y = content.y + 1 + i as u16;
+        let y = first_y + i as u16;
         if y >= content.y + content.height {
             break;
         }
@@ -167,5 +185,75 @@ pub fn render_export_modal(
             buf,
             ctx,
         );
+    }
+
+    // The reason the form cannot export yet, inline under the rows: a warning
+    // at most, never a modal.
+    if let Some(message) = modal.path_error {
+        let y = first_y + row_count + 1;
+        if y < content.y + content.height {
+            ratatui::widgets::Widget::render(
+                ratatui::widgets::Paragraph::new(message)
+                    .style(ratatui::style::Style::default().fg(ctx.warning)),
+                Rect {
+                    x: options_x,
+                    y,
+                    width: options_width,
+                    height: 1,
+                },
+                buf,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn painted(modal: &mut ExportModal, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        render_export_modal(area, &mut buf, modal, &RenderContext::for_test());
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Narrow, the two-column split would leave the path a few cells: the
+    /// format becomes the first row and every row runs the full width.
+    #[test]
+    fn a_narrow_export_dialog_stacks_instead_of_splitting() {
+        let mut modal = ExportModal::new();
+        modal.active = true;
+        let out = painted(&mut modal, 44, 12);
+        assert!(out.contains("Format:"), "format is a row: {out}");
+        assert!(out.contains("CSV"), "the choice is echoed: {out}");
+        assert!(out.contains("Path:"), "{out}");
+        // Wide, the picker keeps its section rule.
+        let out = painted(&mut modal, 70, 12);
+        assert!(out.contains("Format"), "{out}");
+        assert!(out.contains("Parquet"), "the list is visible: {out}");
+    }
+
+    /// An invalid form says why inline, and never with a modal.
+    #[test]
+    fn the_blank_path_message_renders_inline() {
+        let mut modal = ExportModal::new();
+        modal.active = true;
+        modal.path_error = Some("Enter a file path.");
+        for width in [44u16, 70] {
+            let out = painted(&mut modal, width, 12);
+            assert!(
+                out.contains("Enter a file path."),
+                "missing at {width}: {out}"
+            );
+        }
     }
 }

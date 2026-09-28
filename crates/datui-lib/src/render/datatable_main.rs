@@ -9,7 +9,7 @@ use crate::widgets::{copy, export, pivot_melt};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::StatefulWidget;
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 /// Renders the datatable main view: layout, table content, input strip, sidebars, export modal.
 pub fn render(
@@ -99,7 +99,7 @@ pub fn render(
 
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_set(crate::glyphs::get().border)
                     .border_style(Style::default().fg(ctx.keybind_hints))
                     .render(breadcrumb_layout[0], buf);
 

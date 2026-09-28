@@ -80,7 +80,19 @@ impl DatatableLayout {
         };
 
         let (content_area, sidebar_area) = if active_sidebar != ActiveSidebar::None {
-            let sidebar_width = active_sidebar.width(sidebar_width_override);
+            // The data never yields to chrome: a sidebar takes its preferred
+            // width — configured or built in — only out of what is left after
+            // the table keeps a readable strip. On a terminal too narrow for
+            // both, the two split evenly rather than the sidebar taking all.
+            const TABLE_MIN: u16 = 30;
+            const SIDEBAR_MIN: u16 = 20;
+            let desired = active_sidebar.width(sidebar_width_override);
+            let room = content_region.width.saturating_sub(TABLE_MIN);
+            let sidebar_width = if room >= SIDEBAR_MIN {
+                desired.min(room)
+            } else {
+                desired.min(content_region.width / 2)
+            };
             let layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Min(0), Constraint::Length(sidebar_width)])
@@ -161,12 +173,46 @@ mod tests {
 
     #[test]
     fn test_datatable_layout_with_sidebar() {
-        let main_view = Rect::new(0, 0, 100, 50);
+        let main_view = Rect::new(0, 0, 110, 50);
         let layout = DatatableLayout::compute(main_view, ActiveSidebar::Info, false, 0, None);
 
-        assert_eq!(layout.content_area.width, 28);
+        assert_eq!(layout.content_area.width, 38);
         assert_eq!(layout.sidebar_area.unwrap().width, 72);
         assert_eq!(layout.input_strip_area, None);
+    }
+
+    /// The data never yields to chrome: every sidebar leaves the table a
+    /// readable strip at 80×24 and 60×20, configured widths included.
+    #[test]
+    fn a_sidebar_never_consumes_the_table() {
+        for sidebar in [
+            ActiveSidebar::Info,
+            ActiveSidebar::SortFilter,
+            ActiveSidebar::Template,
+            ActiveSidebar::PivotMelt,
+        ] {
+            for (width, height) in [(60u16, 20u16), (80, 24), (160, 40)] {
+                for config in [None, Some(100u16)] {
+                    let main_view = Rect::new(0, 0, width, height);
+                    let layout = DatatableLayout::compute(main_view, sidebar, false, 0, config);
+                    let bar = layout.sidebar_area.unwrap();
+                    assert!(
+                        layout.content_area.width >= 30,
+                        "{sidebar:?} at {width}x{height} (config {config:?}) leaves \
+                         {} columns of table",
+                        layout.content_area.width
+                    );
+                    assert!(bar.width >= 20, "{sidebar:?} squeezed to {}", bar.width);
+                    assert_eq!(layout.content_area.width + bar.width, width);
+                }
+            }
+        }
+        // Below the floor the two split evenly rather than the sidebar
+        // taking the whole terminal.
+        let tiny = Rect::new(0, 0, 44, 16);
+        let layout = DatatableLayout::compute(tiny, ActiveSidebar::Template, false, 0, None);
+        assert_eq!(layout.sidebar_area.unwrap().width, 22);
+        assert_eq!(layout.content_area.width, 22);
     }
 
     #[test]

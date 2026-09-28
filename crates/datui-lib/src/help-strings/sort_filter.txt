@@ -5,9 +5,10 @@ filters).
   ← / →:            Switch Columns / Filters (h/l on the tab bar)
   Enter:            Apply everything staged and close
                     (on the Filters tab, Enter adds or edits instead; see below)
-  a:                On the Filters tab: apply everything staged and close
-  Ctrl+Enter:       Apply from anywhere, including mid-edit (needs a terminal
-                    that can tell Ctrl+Enter from Enter; a works everywhere)
+  a:                On the Filters tab, outside the row editor: apply and close
+  Ctrl+Enter:       Apply from anywhere, including mid-edit (the row in progress
+                    is saved). Needs a terminal that tells Ctrl+Enter from Enter;
+                    elsewhere finish the row with Enter, then press a.
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Cancel and close; staged changes are discarded, and
                     reopening shows what is applied
@@ -16,11 +17,13 @@ Columns tab:
   (type):           Narrow the column list, when the find field is focused
   Space:            Cycle the column's sort: none → ascending → descending
                     (each column carries its own direction)
-  1-9:              Put the column at that place in the sort order; 0 removes it
+  1-9:              Put the column at that place in the sort order; 0 removes
+                    it (digits past the end of the order do nothing)
   Del:              Remove the column from the sort
   [ / ]:            Move the column earlier or later in the sort order
   + / - (= / _):    Move the column's display position
-  L:                Lock the column to the left edge
+  L:                Freeze this column and every column up to it at the left
+                    edge; on a column already frozen, pull the boundary back
   v:                Show or hide the column (hidden columns stay listed, dimmed)
   C:                Clear the staged sort, order, locks and hidden columns
 
@@ -29,8 +32,11 @@ Filters tab:
   filter above (and/or).
   Enter:            Edit the row under the cursor, or add one on the last row.
                     Editing walks three steps on the row: pick the column
-                    (type to narrow, ↑↓ move, Enter chooses), pick the
-                    operator the same way, then type the value and Enter saves.
+                    (type to narrow, Enter chooses), pick the operator the
+                    same way, then type the value and Enter saves the row.
+                    Tab, → and Space also choose at the column and operator
+                    steps; Shift+Tab steps back. ↑↓ (j/k) move in both lists,
+                    and ↓ jumps from the find field into the list.
                     Esc backs out of the edit and only the edit.
   Space:            Toggle and/or on the row
   d / Del:          Delete the row

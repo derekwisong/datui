@@ -286,11 +286,56 @@ impl Widget for &Controls {
             .fg(self.chip_text_color)
             .add_modifier(Modifier::BOLD);
 
-        // Status message mode: [spinner 2ch] [message Fill] [chip] [row count or caption]
+        // The keys this bar would offer, custom or default. Worked out above the
+        // status mode too: the way-out subset stays on a busy bar.
+        const DEFAULT_CONTROLS: [(&str, &str); 11] = [
+            ("/", "Query"),
+            ("i", "Info"),
+            ("a", "Analysis"),
+            ("c", "Chart"),
+            ("s", "Sort & Filter"),
+            ("p", "Pivot & Melt"),
+            ("e", "Export"),
+            ("y", "Copy"),
+            ("^O", "Home"),
+            ("?", "Help"),
+            ("q", "Quit"),
+        ];
+        let controls: Vec<(&str, &str)> = if let Some(ref custom) = self.custom_controls {
+            custom.to_vec()
+        } else {
+            let mut defaults = DEFAULT_CONTROLS.to_vec();
+            if self.q_pops {
+                // The bar says which meaning q carries right now.
+                defaults.last_mut().expect("q is the last chip").1 = "Home";
+            }
+            defaults
+        };
+
+        // Status message mode: [spinner 2ch] [message Fill] [escape chips] [chip]
+        // [row count or caption]
         if let Some(ref msg) = self.status_message {
+            // The way out never yields to a spinner: the keys that still act
+            // while the app is busy stay on the bar, beside the status.
+            let mut escapes = crate::widgets::ui::HintBar::with_styles(
+                chip_style,
+                label_style,
+                Style::default().fg(self.key_color),
+            );
+            for (key, label) in controls
+                .iter()
+                .filter(|(key, _)| matches!(*key, "Esc" | "^C" | "^Q" | "^O" | "q" | "Q" | "?"))
+            {
+                escapes = escapes.hint(key, label);
+            }
+            // A third of the bar at most: the message and the count are what a
+            // busy bar is for, and the chips yield to them, way out last.
+            let escapes_width = escapes.width_in(area.width / 3);
+
             let mut constraints = vec![
                 Constraint::Length(2), // spinner
                 Constraint::Fill(1),   // status message
+                Constraint::Length(escapes_width),
             ];
             if chip_width > 0 {
                 constraints.push(Constraint::Length(chip_width));
@@ -317,7 +362,9 @@ impl Widget for &Controls {
             .style(label_style)
             .render(layout[1], buf);
 
-            let mut next = 2;
+            escapes.render(layout[2], buf);
+
+            let mut next = 3;
             if chip_width > 0 {
                 let mut spans: Vec<ratatui::text::Span> = Vec::new();
                 if let Some(text) = &reshaped {
@@ -388,31 +435,7 @@ impl Widget for &Controls {
 
         // Normal keybinding mode: the chips are a HintBar, the same renderer every
         // Surface footer uses.
-        const DEFAULT_CONTROLS: [(&str, &str); 11] = [
-            ("/", "Query"),
-            ("i", "Info"),
-            ("a", "Analysis"),
-            ("c", "Chart"),
-            ("s", "Sort & Filter"),
-            ("p", "Pivot & Melt"),
-            ("e", "Export"),
-            ("y", "Copy"),
-            ("^O", "Home"),
-            ("?", "Help"),
-            ("q", "Quit"),
-        ];
-
-        let controls: Vec<(&str, &str)> = if let Some(ref custom) = self.custom_controls {
-            custom.to_vec()
-        } else {
-            let mut defaults = DEFAULT_CONTROLS.to_vec();
-            if self.q_pops {
-                // The bar says which meaning q carries right now.
-                defaults.last_mut().expect("q is the last chip").1 = "Home";
-            }
-            defaults
-        };
-
+        //
         // The accented label carries no background of its own: the bar's Block above
         // painted it already, and `notes_pending` only recolors the Info label.
         let mut bar = crate::widgets::ui::HintBar::with_styles(
@@ -422,11 +445,19 @@ impl Widget for &Controls {
         );
         // The bar is cut from the right, but the way out yields last wherever
         // it sits: a chart bar that ends "Esc Back" must not lose exactly that
-        // chip on a narrow terminal.
+        // chip on a narrow terminal. Help yields second to last: nothing a
+        // first session needs may live only behind a key the bar never shows.
         let n = controls.len() as i32;
         for (i, (key, label)) in controls.iter().enumerate() {
             let way_out = matches!(*key, "Esc" | "^C" | "^Q" | "q") || *label == "Quit";
-            let weight = if way_out { n + 1 } else { n - i as i32 };
+            let help = matches!(*key, "?" | "F1");
+            let weight = if way_out {
+                n + 2
+            } else if help {
+                n + 1
+            } else {
+                n - i as i32
+            };
             bar = bar.hint_weighted(key, label, weight);
         }
         if self.notes_pending {
@@ -580,6 +611,36 @@ mod tests {
                 "the caption is whole at width {width}: {bar:?}"
             );
         }
+    }
+
+    /// The busy bar keeps the way out: the status message renders beside the
+    /// escape chips instead of replacing every key.
+    #[test]
+    fn the_busy_bar_keeps_the_way_out() {
+        let controls = with_row_count(0)
+            .with_caption(Some("Loading".to_string()))
+            .with_custom_controls(vec![("^O", "Home"), ("?", "Help"), ("q", "Quit")])
+            .with_status_message(Some("Reading footers: 12 of 6,541...".to_string()));
+        let bar = render_to_string(&controls, 100);
+        assert!(bar.contains("Reading footers"), "{bar:?}");
+        for piece in ["^O", "Home", "Help", "Quit"] {
+            assert!(
+                bar.contains(piece),
+                "{piece} missing from busy bar: {bar:?}"
+            );
+        }
+
+        // The default table bar while busy keeps its escapes too.
+        let bar = render_to_string(
+            &with_row_count(10).with_status_message(Some("Working...".to_string())),
+            100,
+        );
+        assert!(bar.contains("Working"), "{bar:?}");
+        assert!(bar.contains("Quit"), "the way out survives busy: {bar:?}");
+        assert!(
+            !bar.contains("Pivot"),
+            "the feature chips do not crowd a busy bar: {bar:?}"
+        );
     }
 
     /// The tests build the widget the way production does: from a context.
@@ -771,7 +832,7 @@ mod tests {
         let out = render_to_string(&controls, 80);
         assert!(out.contains("/ rows"), "expected spinner, got: {out:?}");
         assert!(
-            !out.contains('?'),
+            !out.contains("? rows"),
             "should not show '?' while pending: {out:?}"
         );
     }

@@ -118,11 +118,16 @@ file has no locale, and `LC_NUMERIC` is unset on most servers.
 [performance]
 # sampling_threshold = 1000000   # Analyze a sample when a table has this many rows or more
 event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
+quality_sample_rows = 10000      # Data Quality rows kept per segment, 1 to 50_000
 ```
 
 Sampling is off unless `sampling_threshold` is set. `--sampling-threshold N`
 overrides it for a run and `0` forces the full dataset. See
 [Analysis](analysis-features.md#sampling).
+
+`quality_sample_rows` is the default for the Data Quality plan's
+[Sample rows field](analysis-features.md#sampling-and-budgets); the plan
+editor changes it per run.
 
 ### Charts
 

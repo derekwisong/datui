@@ -2,7 +2,11 @@ Distribution Analysis identifies the distribution type for each numeric column a
 
 Columns:
   Column:        Name of the numeric column
-  Distribution:  Inferred distribution type (Normal, LogNormal, Uniform, PowerLaw, Exponential)
+  Distribution:  Inferred distribution type, one of 14: Normal, Log-Normal,
+                 Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared,
+                 Student's t, Poisson, Bernoulli, Binomial, Geometric, Weibull
+  P-value:       Probability of the data under the inferred distribution;
+                 higher means the fit is more credible
   Shapiro-Wilk:  W statistic from Shapiro-Wilk normality test (0-1, higher = more normal)
   SW p-value:    P-value from Shapiro-Wilk test (probability of observing W under normality)
   CV:            Coefficient of variation (std/mean, relative variability independent of scale)
@@ -11,16 +15,22 @@ Columns:
   Kurtosis:      Tail heaviness compared to normal distribution (3.0 = normal)
 
 Color Coding:
-  Distribution types are color-coded:
-    - Green/Cyan: Good fit quality (>0.75)
-    - Yellow:     Moderate fit quality (≤0.75)
-    - Red:        Very high outlier percentage (>20%) or extreme skewness/kurtosis
+  Green/Cyan:    Good fit quality (above 0.75), or a p-value above 0.05
+  Yellow:        Moderate fit quality (0.5-0.75), moderate outliers (5-20%),
+                 |skewness| of 1 or more, kurtosis 1 or more away from 3,
+                 CV above 1, or a p-value between 0.01 and 0.05
+  Red:           Poor fit quality (0.5 or less), very high outliers (above
+                 20%), extreme skewness or kurtosis, or a p-value of 0.01
+                 or less
 
 Navigation:
   ↑↓ / j/k:      Navigate rows
   ←→ / h/l:      Scroll columns horizontally
+  Home/End:      Jump to first/last row
+  PgUp/PgDn:     Navigate by page
   Tab:           Switch focus between main area and sidebar
-  Enter:         Open detail view for selected column (shows Q-Q plot and histogram)
+  Enter:         Open detail view for selected column (shows Q-Q plot and
+                 histogram); with the sidebar focused, select a tool
   Esc:           Close analysis view
   r:             Resample data (only shown if data was sampled)
 

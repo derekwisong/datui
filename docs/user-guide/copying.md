@@ -23,8 +23,9 @@ plain text. Values are raw, like an export: display formatting is not applied
 and a null is an empty field. The **Header** toggle is on for View and Table
 and off for Row; a Markdown table always keeps its header.
 
-A large Table copy asks first, and a very large one is refused with a pointer
-to [export](exporting-data.md) — a file is the medium at that size.
+A large Table copy asks first — and so does one whose size is not known yet.
+Above 200 MiB the copy is refused with a pointer to
+[export](exporting-data.md) — a file is the medium at that size.
 
 ## Keys
 

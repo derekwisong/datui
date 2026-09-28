@@ -1,5 +1,5 @@
-A view saves a query, filters, sort and column layout, and applies them to
-datasets that match by path or schema.
+A view saves a query, filters, sort, column layout and pivot/melt, and
+applies them to datasets that match by path or schema.
 
 Views list:
   ↑ / ↓ (j/k):      Move in the list
@@ -9,17 +9,21 @@ Views list:
   e:                Edit the selected view
   d:                Delete the selected view, after confirming
   i:                Show how the selected view's score was computed
+                    (Esc closes the score view)
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close
 
   The score mark says how well each view fits the open dataset, and the
-  applied view carries a check mark. The Match column says why a view fits:
-  same file, same columns, or a pattern. V at the table applies the best
-  view that matches; when none does, V opens this list instead.
+  applied view carries a check mark. The Match column says why a view fits.
+  V at the table applies the best view that matches; when none does, V
+  opens this list instead.
 
 Save and edit form:
   Tab / Shift+Tab:  Move between rows (↑/↓ outside the description)
-  Enter:            Save (in the description Enter types; Ctrl+Enter saves)
+  Enter:            Save. In the description Enter types: Tab out of it,
+                    then Enter — or Ctrl+Enter, on a terminal that tells
+                    Ctrl+Enter from Enter
+  PgUp / PgDn:      Move five lines in the description
   Space:            Expand or collapse Matching; toggle schema match
   Esc:              Back to the list, discarding edits
 
@@ -35,9 +39,12 @@ Save and edit form:
 
 Matching:
   V and [templates] auto_apply only apply a view one of whose rules fits
-  the open file; this list shows every view, ranked. Exact path ranks
-  highest, then relative path, then the schema, then patterns.
+  the open file; this list shows every view, ranked. Matches combine, so a
+  view fitting by relative path and exact schema outranks one fitting by
+  exact path alone. A dataset whose columns merely include a view's scores
+  low — below a pattern match — and how often and how recently a view was
+  used adds points.
 
 Delete confirmation:
-  Enter (or d):     Delete
+  Enter (d / D):    Delete
   Esc:              Cancel

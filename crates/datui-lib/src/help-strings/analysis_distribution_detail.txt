@@ -1,6 +1,6 @@
 SW: The W statistic of a Shapiro-Wilk test ranges from 0 to 1, where 1 indicates perfect normality. The p-value reflects the probability of observing such a W value under the hypothesis of normality.
 Skew: Measures asymmetry of the data distribution (positive = right-tailed, negative = left-tailed).
-Kurtosis: Tail heaviness compared to normal distribution (high = heavy tails, low = light tails).
+Kurt: Tail heaviness compared to normal distribution (high = heavy tails, low = light tails).
 Median: Middle value when data is sorted.
 Mean: Average value of all data points.
 Std: Standard deviation (spread of data around the mean).
@@ -12,7 +12,7 @@ Compares your data against a theoretical distribution. Points following the diag
 
 Histogram:
 
-Shows the frequency distribution of your data as bars, with a theoretical distribution overlaid as a gray line. The height of bars represents how many data points fall in each bin range. Compare bar heights to the theoretical line to see how well your data matches the expected distribution.
+Shows the frequency distribution of your data as bars, with a theoretical distribution overlaid as a line in the theme's secondary series color. The height of bars represents how many data points fall in each bin range. Compare bar heights to the theoretical line to see how well your data matches the expected distribution.
 
 
 Distributions:
@@ -23,6 +23,7 @@ Navigation:
 
 ↑↓ / j/k:    Scroll through distributions to compare different overlays
 s:           Toggle histogram scale (Linear ↔ Log)
+?:           Toggle this help
 Esc:         Return to distribution table
 
 Settings:

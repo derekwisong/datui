@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::Span,
-    widgets::{Block, BorderType, Borders, Cell, Row, Table, Widget},
+    widgets::{Block, Borders, Cell, Row, Table, Widget},
 };
 
 struct SchemaView<'a> {
@@ -17,7 +17,7 @@ impl<'a> Widget for &'a SchemaView<'a> {
             .title("Schema")
             .title_style(ratatui::style::Style::reset())
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded);
+            .border_set(crate::glyphs::get().border);
 
         let rows: Vec<Row> = match self.lf.clone().collect_schema() {
             Ok(schema) => schema

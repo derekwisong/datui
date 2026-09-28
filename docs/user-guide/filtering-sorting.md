@@ -6,7 +6,8 @@ Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 
 | Key | Does |
 |---|---|
-| <kbd>Enter</kbd> | Apply everything staged and close (on the Filters tab it adds or edits; <kbd>a</kbd> applies there) |
+| <kbd>Enter</kbd> | Apply everything staged and close (on the Filters tab it adds or edits; <kbd>a</kbd> applies there, outside the row editor) |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. Needs a terminal that tells it from <kbd>Enter</kbd> |
 | <kbd>Esc</kbd> | Close without changing anything |
 | <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
 
@@ -43,8 +44,8 @@ Every column carries its own direction, so `salary` can run descending while
 DuckDB and spreadsheets.
 
 Back in the main view, <kbd>r</kbd> reverses every direction at once and
-<kbd>R</kbd> resets everything: query, filters, sort, column order and frozen
-columns.
+<kbd>R</kbd> resets everything: query, filters, sort, column order and hidden
+columns, frozen columns, pivot/melt, drill-down and the applied view.
 
 ## Filters tab
 
@@ -63,7 +64,9 @@ above (**and**/**or**). The cursor walks the rows plus a trailing
 Editing walks three steps on the row: pick the column (type to narrow,
 <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses), pick the operator
 the same way, then type the value — <kbd>Enter</kbd> saves the row, and
-<kbd>Esc</kbd> abandons the edit and only the edit.
+<kbd>Esc</kbd> abandons the edit and only the edit. That sequence works on
+every terminal: finish the row with <kbd>Enter</kbd>, then press
+<kbd>a</kbd> to apply.
 
 | Operator | Meaning |
 |---|---|

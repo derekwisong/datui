@@ -66,13 +66,34 @@ pub enum ControlBarSpec {
 pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBarSpec {
     match content {
         MainViewContent::Datatable => {
+            // A surface that owns the keyboard gets a bar that describes it:
+            // the table's chips advertise keys that type here, not act.
+            if app.input_mode == crate::InputMode::Editing {
+                return ControlBarSpec::Custom(match app.input_type {
+                    Some(crate::InputType::GoToLine) => {
+                        vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")]
+                    }
+                    _ => vec![
+                        ("Enter", "Run"),
+                        ("Tab", "Focus"),
+                        ("F1", "Help"),
+                        ("Esc", "Cancel"),
+                    ],
+                });
+            }
+            // Export and Copy carry their own footers; the bar keeps only the
+            // globals that still act, rather than a dimmed row of untruths.
+            if app.input_mode == crate::InputMode::Export
+                || app.input_mode == crate::InputMode::Copy
+            {
+                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
+            }
             let query_active = app
                 .data_table_state
                 .as_ref()
                 .map(|s| !s.active_query.trim().is_empty())
                 .unwrap_or(false);
             let dimmed = app.show_help
-                || app.input_mode == crate::InputMode::Editing
                 || app.input_mode == crate::InputMode::SortFilter
                 || app.input_mode == crate::InputMode::PivotMelt
                 || app.input_mode == crate::InputMode::Info
@@ -133,13 +154,25 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     if modal.selected_tool == Some(AnalysisTool::DataQuality) {
         return data_quality_control_keys(app);
     }
-    let mut pairs = vec![
-        ("Esc", "Back"),
-        (g.updown, "Navigate"),
-        (g.updown_lr, "Scroll Columns"),
-        ("Tab", "Focus"),
-        ("Enter", "Select"),
-    ];
+    // The bar is cut from the right: while the tool list owns the keys, the
+    // action that advances (Enter) must outlive column scrolling.
+    let mut pairs = if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
+        vec![
+            ("Esc", "Back"),
+            ("Enter", "Select"),
+            (g.updown, "Navigate"),
+            ("Tab", "Focus"),
+            (g.updown_lr, "Scroll Columns"),
+        ]
+    } else {
+        vec![
+            ("Esc", "Back"),
+            (g.updown, "Navigate"),
+            (g.updown_lr, "Scroll Columns"),
+            ("Tab", "Focus"),
+            ("Enter", "Select"),
+        ]
+    };
     if app.sampling_threshold.is_some()
         && let Some(results) = app.analysis_modal.current_results()
         && results.sample_size.is_some()
@@ -220,6 +253,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("e", "Plan"),
             ("Tab", "Focus"),
             ("?", "Help"),
+            // Every other page carries it; the overview is not the one place
+            // without a way out.
+            ("Esc", "Back"),
         ],
     }
 }
@@ -317,7 +353,10 @@ pub fn home_control_keys(
         crate::WhatEnter::LooksFirst => "Look",
         crate::WhatEnter::FoldsSection => "Fold",
         crate::WhatEnter::ShowsMore => "Show all",
-        crate::WhatEnter::OpensFile | crate::WhatEnter::Explains => "Open",
+        crate::WhatEnter::OpensFile => "Open",
+        // The row only explains itself — an HTTP place has no listing to
+        // browse — so the chip must not promise an Open it cannot do.
+        crate::WhatEnter::Explains => "About",
         crate::WhatEnter::Nothing => "",
     };
     let mut keys = vec![("Enter", enter_says), (g.updown, "Move")];
@@ -345,7 +384,11 @@ pub fn home_control_keys(
             keys.push(("^C", "Quit"));
         }
         keys.push(("type", "Filter"));
-        keys.push(("~", "Path"));
+        // `~` opens the path prompt only on an empty filter; with one typed it
+        // is an ordinary filter character, and the chip must not say otherwise.
+        if !has_filter {
+            keys.push(("~", "Path"));
+        }
         if browsing != Browse::Listing {
             keys.push(("Bksp", "Up"));
         }
@@ -389,6 +432,36 @@ pub fn home_control_keys(
 #[cfg(test)]
 mod tests {
     use super::{Browse, home_control_keys};
+
+    /// Every Data Quality page's bar offers Esc: the overview was the one
+    /// screen without a way out.
+    #[test]
+    fn every_data_quality_page_offers_a_way_out() {
+        use crate::analysis_modal::AnalysisTool;
+        use crate::data_quality::QualityPage;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
+        app.analysis_modal.active = true;
+        app.analysis_modal.selected_tool = Some(AnalysisTool::DataQuality);
+        for page in [
+            QualityPage::Plan,
+            QualityPage::Scope,
+            QualityPage::TimeRoles,
+            QualityPage::Overview,
+            QualityPage::Columns,
+            QualityPage::Detail,
+            QualityPage::Segments,
+            QualityPage::Trends,
+        ] {
+            app.analysis_modal.data_quality_page = page;
+            let keys = super::analysis_control_keys(&app);
+            assert!(
+                keys.iter().any(|(key, _)| *key == "Esc"),
+                "{page:?} offers no way out"
+            );
+        }
+    }
 
     /// Every combination of home-screen state the control bar can be drawn in.
     fn all_states() -> Vec<(bool, Browse, bool, bool, bool)> {

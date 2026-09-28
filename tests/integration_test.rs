@@ -1144,7 +1144,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    assert!(screen.contains("MEASURED"), "sidebar should report the run");
+    assert!(screen.contains("Measured"), "sidebar should report the run");
     assert!(screen.contains("eligible"));
 
     app.analysis_modal.set_quality_page(QualityPage::Plan);
@@ -1375,6 +1375,188 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert!(!app.analysis_modal.data_quality_from_cache);
     assert!(app.analysis_modal.data_quality_results.is_none());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+}
+
+/// The Data Quality scope input is a text field: Ctrl-C must reach the
+/// textarea's Copy binding instead of quitting, and `?` must type into the
+/// scope command instead of opening help.
+#[test]
+fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityPage;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+
+    // Esc to the plan, e to edit, Enter on the Scope field opens the input.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    assert!(app.text_field_focused());
+
+    let quit = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(
+        !matches!(quit, Some(AppEvent::Exit)),
+        "Ctrl-C in the scope input must not quit"
+    );
+
+    let before = app
+        .analysis_modal
+        .data_quality_scope_input
+        .value()
+        .to_string();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('?'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_scope_input.value(),
+        format!("{before}?"),
+        "? in the scope input must type, not open help"
+    );
+}
+
+/// The table's letter keys are unmodified keys: Ctrl+E must not open Export
+/// and Ctrl+R must not reverse. Paging (Ctrl+F/B/D/U) keeps its modifiers.
+#[test]
+fn modified_letters_are_not_table_feature_keys() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/people.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!app.export_modal.active, "Ctrl+E is not e");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!app.copy_modal.active, "Ctrl+Y is not y");
+
+    // And the plain letter still works. (Paging keeps Ctrl+F/B/D/U: those
+    // four are the guard's explicit exceptions, matching their declared arms.)
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.export_modal.active, "e still opens Export");
+}
+
+/// Declining an overwrite returns to the filled export form: the typed path
+/// survives, the prompt starts on No, and the existing file is untouched.
+#[test]
+fn declining_an_overwrite_keeps_the_export_form() {
+    common::ensure_sample_data();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("already.csv");
+    std::fs::write(&target, "old contents").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/people.parquet")],
+        OpenOptions::default(),
+    );
+
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+
+    key(&mut app, KeyCode::Char('e'));
+    assert!(app.export_modal.active);
+
+    // Enter on the empty form says why inline instead of doing nothing,
+    // and typing is the correction that clears it.
+    key(&mut app, KeyCode::Enter);
+    assert!(app.export_modal.active, "an empty path raises no modal");
+    assert_eq!(app.export_modal.path_error, Some("Enter a file path."));
+    key(&mut app, KeyCode::Char('x'));
+    assert_eq!(app.export_modal.path_error, None);
+    key(&mut app, KeyCode::Backspace);
+
+    let typed = target.display().to_string();
+    app.export_modal.path_input.set_value(&typed);
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.confirmation_modal.active, "an existing file asks first");
+    assert!(
+        !app.confirmation_modal.focus_yes,
+        "a destructive confirmation starts on No"
+    );
+    assert_eq!(app.confirmation_modal.yes_label, "Overwrite");
+
+    // A reflexive second Enter declines, and the form comes back as typed.
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.confirmation_modal.active);
+    assert!(app.export_modal.active, "No returns to the form");
+    assert_eq!(app.export_modal.path_input.value(), typed);
+    assert_eq!(app.input_mode, InputMode::Export);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old contents",
+        "declining wrote nothing"
+    );
+
+    // Esc from the confirmation does the same.
+    key(&mut app, KeyCode::Enter);
+    assert!(app.confirmation_modal.active);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.export_modal.active, "Esc returns to the form");
+    assert_eq!(app.export_modal.path_input.value(), typed);
+
+    // Esc from the form itself discards it.
+    key(&mut app, KeyCode::Esc);
+    assert!(!app.export_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
 }
 
 /// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
@@ -3124,8 +3306,10 @@ fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     // Narrow, and short enough that the notes do not all fit: both halves of the last
-    // row have something to say, and not enough room to say it in.
-    let area = Rect::new(0, 0, 44, 12);
+    // row have something to say, and not enough room to say it in. 74 wide because
+    // the sidebar clamp leaves the table 30 columns, so the panel itself gets the
+    // 44 this test is about.
+    let area = Rect::new(0, 0, 74, 12);
     let _ = painted(&mut app, &rx, &tx, area);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
@@ -5091,8 +5275,9 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
 }
 
 /// Going home clears the *load's* busy state, and leaves `task_generation` alone —
-/// that counter also gates analysis and export results, which keep running. The keys
-/// typed at the frozen screen were meant for the load and go with it.
+/// that counter also gates analysis and export results, which keep running. The
+/// loading screen has nothing to type ahead into, so keys typed there are dropped
+/// rather than held (a held stray key used to queue `q` behind it).
 #[test]
 fn test_entering_home_clears_load_state_but_not_task_generation() {
     common::ensure_sample_data();
@@ -5111,8 +5296,8 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
     }
     assert_eq!(
         pump.held_keys().count(),
-        2,
-        "keys typed at a load are held, not dropped"
+        0,
+        "the loading screen holds nothing: stray keys are dropped"
     );
 
     let generation_before = pump.app.task_generation();
@@ -5123,11 +5308,6 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
     assert!(
         !pump.app.is_busy(),
         "abandoning should clear the load's busy flag"
-    );
-    assert_eq!(
-        pump.held_keys().count(),
-        0,
-        "keys typed at the frozen screen were meant for the load"
     );
     assert_eq!(
         pump.app.task_generation(),
@@ -9531,11 +9711,11 @@ fn test_the_pane_only_promises_a_door_that_exists() {
 
     let shown = pane(&mut app, "full");
     assert!(
-        shown.contains("first row in there"),
+        shown.contains("first row inside"),
         "a directory with something in it has the door to point at: {shown}"
     );
     assert!(
-        !pane(&mut app, "empty").contains("first row in there"),
+        !pane(&mut app, "empty").contains("first row inside"),
         "an empty directory has none, so nothing points at one"
     );
 }

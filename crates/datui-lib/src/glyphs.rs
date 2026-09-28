@@ -130,6 +130,9 @@ pub struct Glyphs {
     /// The home-screen wordmark, three rows of box drawing. `None` when the terminal
     /// cannot draw it, and the one-line title bar is used instead.
     pub wordmark: Option<&'static [&'static str]>,
+    /// The one border every Surface draws. Not a `[glyphs]` override slot:
+    /// its eight pieces must agree with each other, and ratatui draws them.
+    pub border: ratatui::symbols::border::Set<'static>,
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -196,6 +199,7 @@ const UNICODE: Glyphs = Glyphs {
         "│  │ ├──┤   │   │  │  │ ",
         "└──╯ ╵  ╵   ╵   ╰──╯ ╶┴╴",
     ]),
+    border: ratatui::symbols::border::ROUNDED,
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -248,6 +252,16 @@ const ASCII: Glyphs = Glyphs {
     binary_stub: "<binary>",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
     wordmark: None,
+    border: ratatui::symbols::border::Set {
+        top_left: "+",
+        top_right: "+",
+        bottom_left: "+",
+        bottom_right: "+",
+        vertical_left: "|",
+        vertical_right: "|",
+        horizontal_top: "-",
+        horizontal_bottom: "-",
+    },
 };
 
 /// What the user asked for, from `[display] unicode`.
@@ -323,6 +337,87 @@ macro_rules! with_string_slots {
             binary_stub
         )
     };
+}
+
+/// Instructional text with its Unicode characters mapped to ASCII, for the
+/// help overlay on a terminal that is not doing UTF-8. Applied at the render
+/// boundary only — user data is never transliterated. The pairs cover what
+/// the help files actually contain; the audit that counts them is
+/// `every_help_screen_is_ascii_clean`.
+pub fn asciify_instructions(text: &str) -> std::borrow::Cow<'_, str> {
+    if get().unicode || text.is_ascii() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match ascii_twin(c) {
+            Some(twin) => out.push_str(twin),
+            None if c.is_ascii() => out.push(c),
+            // A character the map does not know is marked rather than
+            // shipped to a terminal that cannot draw it; the audit test
+            // keeps this case from ever being reachable from a help file.
+            None => out.push('?'),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Display columns `text` will occupy, as the terminal draws it. Scalar
+/// counts undercount CJK and overcount combining marks; layout math that
+/// budgets cells must use this.
+pub fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+/// The longest prefix of `text` that fits `width` display columns, never
+/// splitting a wide character.
+pub fn take_columns(text: &str, width: usize) -> &str {
+    let mut used = 0usize;
+    for (i, c) in text.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            return &text[..i];
+        }
+        used += w;
+    }
+    text
+}
+
+/// The longest suffix of `text` that fits `width` display columns, never
+/// splitting a wide character.
+pub fn take_columns_end(text: &str, width: usize) -> &str {
+    let mut used = 0usize;
+    let mut start = text.len();
+    for (i, c) in text.char_indices().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        start = i;
+    }
+    &text[start..]
+}
+
+/// The ASCII twin of one instructional character, `None` for plain ASCII or
+/// a character no help file may use.
+fn ascii_twin(c: char) -> Option<&'static str> {
+    match c {
+        '↑' => Some("Up"),
+        '↓' => Some("Dn"),
+        '←' => Some("Lt"),
+        '→' => Some("Rt"),
+        '↔' => Some("Lt/Rt"),
+        '—' => Some("-"),
+        '…' => Some("..."),
+        '×' => Some("x"),
+        '≤' => Some("<="),
+        '≥' => Some(">="),
+        '∅' => Some("~"),
+        '·' => Some("."),
+        '≠' => Some("!"),
+        _ => None,
+    }
 }
 
 /// The Unicode default for a single-string slot, or `None` for a list slot or
@@ -514,6 +609,41 @@ pub fn ascii() -> &'static Glyphs {
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
+
+    /// Every character a help file uses outside ASCII has a twin in
+    /// `ascii_twin`, so the ASCII floor never sees a `?` where an
+    /// instruction was.
+    #[test]
+    fn every_help_screen_is_ascii_clean() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/help-strings");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).expect("help-strings dir") {
+            let path = entry.expect("dir entry").path();
+            let text = std::fs::read_to_string(&path).expect("help file");
+            for c in text.chars().filter(|c| !c.is_ascii()) {
+                assert!(
+                    ascii_twin(c).is_some(),
+                    "{path:?} uses {c:?}, which has no ASCII twin"
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 10, "the help files were found");
+        // And the border set's twin is pure ASCII by construction.
+        let b = ASCII.border;
+        for piece in [
+            b.top_left,
+            b.top_right,
+            b.bottom_left,
+            b.bottom_right,
+            b.vertical_left,
+            b.vertical_right,
+            b.horizontal_top,
+            b.horizontal_bottom,
+        ] {
+            assert!(piece.is_ascii(), "{piece:?}");
+        }
+    }
 
     /// Every locality marker has to be the same display width in a given set, or the
     /// name beside it starts one column further along on some rows than on others and

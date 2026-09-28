@@ -3619,6 +3619,43 @@ pub mod tests {
         );
     }
 
+    /// A whole-table copy whose size is not known yet (the row count is still
+    /// being read) must ask first, never collect an unknown amount unprompted.
+    #[test]
+    fn a_table_copy_with_no_size_yet_asks_first() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        let state = app.data_table_state.as_mut().unwrap();
+        state.invalidate_num_rows();
+        assert!(state.estimated_total_bytes().is_none());
+
+        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        let _ = app.perform_copy();
+        assert!(
+            app.confirmation_modal.active,
+            "an unknown size asks; it never collects unprompted"
+        );
+        assert!(app.pending_copy.is_some());
+    }
+
     /// A count landing while a load is in flight does not cancel the load.
     ///
     /// `BackgroundLenReady` answers an End by jumping to the end, which reaches
@@ -18146,7 +18183,8 @@ impl App {
         enum Planned {
             Copy(clipboard::Payload, String),
             Collect,
-            Confirm(usize),
+            /// None: the size is not known yet (the row count is still coming).
+            Confirm(Option<usize>),
         }
         let format = self.copy_modal.format;
         let header = self.copy_modal.header();
@@ -18196,8 +18234,13 @@ impl App {
                          Export it to a file instead (e).",
                         Self::format_bytes(bytes as u64)
                     )),
-                    Some(bytes) if bytes > Self::COPY_CONFIRM_BYTES => Ok(Planned::Confirm(bytes)),
-                    _ => Ok(Planned::Collect),
+                    Some(bytes) if bytes > Self::COPY_CONFIRM_BYTES => {
+                        Ok(Planned::Confirm(Some(bytes)))
+                    }
+                    Some(_) => Ok(Planned::Collect),
+                    // The row count has not landed yet, so the size is anyone's
+                    // guess: ask before collecting an unknown amount.
+                    None => Ok(Planned::Confirm(None)),
                 },
             },
         };
@@ -18211,10 +18254,15 @@ impl App {
             Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
             Ok(Planned::Confirm(bytes)) => {
                 self.pending_copy = Some((format, header));
-                self.confirmation_modal.show(format!(
-                    "This copies about {} to the clipboard.\n\nCopy the whole table?",
-                    Self::format_bytes(bytes as u64)
-                ));
+                self.confirmation_modal.show(match bytes {
+                    Some(bytes) => format!(
+                        "This copies about {} to the clipboard.\n\nCopy the whole table?",
+                        Self::format_bytes(bytes as u64)
+                    ),
+                    None => "The table's size is not known yet — the row count is \
+                             still being read.\n\nCopy the whole table anyway?"
+                        .to_string(),
+                });
                 None
             }
             Err(message) => {

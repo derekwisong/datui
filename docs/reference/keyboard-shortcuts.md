@@ -29,8 +29,8 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>p</kbd> | [Pivot and melt](../user-guide/reshaping.md) |
 | <kbd>e</kbd> | [Export](../user-guide/exporting-data.md) |
 | <kbd>i</kbd> | [Dataset info](../user-guide/dataset-info.md) |
-| <kbd>t</kbd> | [Templates](../user-guide/templates.md) |
-| <kbd>T</kbd> | Apply the best-matching template; with no match, open the list |
+| <kbd>v</kbd> | [Views](../user-guide/views.md) |
+| <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
 | <kbd>N</kbd> | Toggle row numbers |
 | <kbd>F</kbd> | Toggle [digit grouping](../user-guide/configuration.md#number-formatting) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
@@ -199,17 +199,17 @@ In Data Quality:
 | <kbd>Enter</kbd> | On a note, take its offer, where it has one |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
-## Templates
+## Views
 
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move through the list |
-| <kbd>Enter</kbd> | Apply the selected template |
-| <kbd>s</kbd> | Save the current state as a new template |
-| <kbd>e</kbd> | Edit the selected template |
-| <kbd>d</kbd> | Delete it, after confirming (<kbd>D</kbd> confirms) |
-| <kbd>i</kbd> | Show how the selected template's score was computed |
-| <kbd>Tab</kbd> | In the create and edit form, move between fields; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> returns to the list |
+| <kbd>Enter</kbd> | Apply the selected view |
+| <kbd>s</kbd> | Save the current state as a new view |
+| <kbd>e</kbd> | Edit the selected view |
+| <kbd>d</kbd> | Delete it, after confirming (<kbd>Enter</kbd> or <kbd>d</kbd> confirms) |
+| <kbd>i</kbd> | Show how the selected view's score was computed |
+| <kbd>Tab</kbd> | In the save and edit form, move between rows; <kbd>Space</kbd> expands Matching; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> returns to the list |
 | <kbd>Esc</kbd> | Close |
 
 ## Terminal notes

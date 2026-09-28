@@ -315,11 +315,11 @@ pub struct Args {
     #[arg(long = "clear-cache", action, help_heading = "Maintenance")]
     pub clear_cache: bool,
 
-    /// Apply a template by name when starting the application
+    /// Apply a saved view by name when starting the application
     #[arg(long = "template", value_name = "NAME")]
     pub template: Option<String>,
 
-    /// Remove all templates and exit
+    /// Remove all saved views and exit
     #[arg(long = "remove-templates", action, help_heading = "Maintenance")]
     pub remove_templates: bool,
 

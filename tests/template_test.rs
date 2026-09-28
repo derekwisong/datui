@@ -134,18 +134,51 @@ fn test_template_serialization() -> Result<()> {
     Ok(())
 }
 
+/// The suggested name comes from the state — the file stem, or the query's
+/// first words — and numbers itself past a collision, never template0001.
 #[test]
-fn test_generate_next_template_name() -> Result<()> {
+fn test_suggest_name_derives_from_state() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
-    let manager = TemplateManager::new(&config)?;
+    let mut manager = TemplateManager::new(&config)?;
+    let path = PathBuf::from("/data/sales_2024.csv");
 
-    // Should start with template0001
-    let name1 = manager.generate_next_template_name();
-    assert!(name1.starts_with("template"));
+    assert_eq!(manager.suggest_name(Some(&path), None), "sales_2024");
+    assert_eq!(
+        manager.suggest_name(
+            None,
+            Some("select region, revenue from df where year == 2024")
+        ),
+        "select region, revenue from"
+    );
+    assert_eq!(manager.suggest_name(None, None), "view");
 
-    // Cleanup
+    // A taken name gets a number.
+    let settings = TemplateSettings {
+        query: None,
+        sql_query: None,
+        fuzzy_query: None,
+        filters: Vec::new(),
+        sort_columns: Vec::new(),
+        sort_descending: Vec::new(),
+        sort_ascending: true,
+        column_order: Vec::new(),
+        locked_columns_count: 0,
+        pivot: None,
+        melt: None,
+    };
+    let criteria = MatchCriteria {
+        exact_path: None,
+        relative_path: None,
+        path_pattern: None,
+        filename_pattern: None,
+        schema_columns: None,
+        schema_types: None,
+    };
+    manager.create_template("sales_2024".to_string(), None, criteria, settings)?;
+    assert_eq!(manager.suggest_name(Some(&path), None), "sales_2024 2");
+
     let _ = std::fs::remove_dir_all(&temp_dir);
 
     Ok(())

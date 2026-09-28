@@ -14346,8 +14346,7 @@ impl App {
                         // A refusal is validation, not a failure: it is said on
                         // the surface's own status line, not in a modal.
                         self.template_modal.status = Some(
-                            "Nothing to save: the table is at its defaults. \
-                             Set a query, filter, sort or column layout first."
+                            "Nothing to save yet: set a query, filter, sort or column layout first."
                                 .to_string(),
                         );
                     } else {

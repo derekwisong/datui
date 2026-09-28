@@ -83,8 +83,9 @@ Letters type into the filter here, so none of them is a key.
 ## Text fields
 
 Every text field, from the query prompt to a file path, edits the same way
-(a picker's type-to-narrow filter is not a text field: it takes plain
-characters and <kbd>Backspace</kbd> only):
+(a picker's type-to-narrow filter is simpler: characters and
+<kbd>Backspace</kbd>, plus <kbd>Ctrl</kbd>+<kbd>W</kbd> to drop a word and
+<kbd>Ctrl</kbd>+<kbd>U</kbd> to clear):
 
 | Key | Action |
 |---|---|

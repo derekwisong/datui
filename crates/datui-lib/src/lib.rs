@@ -12400,10 +12400,10 @@ impl App {
                         editor.operator.backspace();
                     }
                     KeyCode::Char(c) if editor.step == FilterEditStep::Column => {
-                        editor.column.type_char(c);
+                        editor.column.filter_key(c, event.modifiers);
                     }
                     KeyCode::Char(c) if editor.step == FilterEditStep::Operator => {
-                        editor.operator.type_char(c);
+                        editor.operator.filter_key(c, event.modifiers);
                     }
                     // The value is an ordinary text field, readline included.
                     _ if editor.step == FilterEditStep::Value => {
@@ -12850,7 +12850,7 @@ impl App {
                     }
                     KeyCode::Char(c) => {
                         if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
-                            picker.type_char(c);
+                            picker.filter_key(c, event.modifiers);
                         }
                     }
                     _ => {}
@@ -12919,9 +12919,17 @@ impl App {
                         .pivot_melt_modal
                         .is_picker_row(self.pivot_melt_modal.focus) =>
                 {
-                    self.pivot_melt_modal.open_picker();
-                    if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
-                        picker.type_char(c);
+                    // Only a plain character opens the picker by typing;
+                    // a chord is a chord, not the first letter of a search.
+                    if event
+                        .modifiers
+                        .intersection(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        .is_empty()
+                    {
+                        self.pivot_melt_modal.open_picker();
+                        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
+                            picker.type_char(c);
+                        }
                     }
                 }
                 // A text row is an ordinary text field, readline included.
@@ -13166,7 +13174,7 @@ impl App {
                     }
                     KeyCode::Char(c) if event.is_press() => {
                         if let Some(picker) = self.chart_modal.picker.as_mut() {
-                            picker.type_char(c);
+                            picker.filter_key(c, event.modifiers);
                         }
                     }
                     _ => {}
@@ -14414,14 +14422,15 @@ impl App {
                     self.template_modal.schema_match_enabled =
                         !self.template_modal.schema_match_enabled;
                 }
-                KeyCode::Char(c) if form => {
+                KeyCode::Char(_) if form => {
                     if self.template_modal.form_focus == FormFocus::Name {
                         // The error clears as soon as the name changes.
                         self.template_modal.name_error = None;
                     }
-                    let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                    // The event goes through whole: text fields keep their
+                    // readline bindings, so Ctrl+W must arrive as Ctrl+W.
                     if let Some(input) = self.template_modal.focused_input_mut() {
-                        input.handle_key(&event, None);
+                        input.handle_key(event, None);
                     }
                 }
                 KeyCode::Backspace

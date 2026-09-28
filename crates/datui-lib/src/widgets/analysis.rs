@@ -1573,6 +1573,12 @@ fn render_sidebar(
     // even when controls_bg is "default"/none.
     let focused_style = theme.highlight_style();
 
+    // The one selection idiom: the cursor carries the rail and the tint,
+    // and the tool whose results are on screen carries the accent, the way
+    // an active tab does.
+    let g = crate::glyphs::get();
+    let accent = theme.get("accent_bright");
+    let rail_color = theme.get("accent");
     let items: Vec<ListItem> = tools
         .iter()
         .enumerate()
@@ -1580,13 +1586,24 @@ fn render_sidebar(
             let is_selected = selected_tool == Some(*tool);
             let is_focused =
                 focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(idx);
-            let prefix = if is_selected { "> " } else { "  " };
-            let style = if is_focused {
-                focused_style
+            let rail = if is_focused { g.rail } else { " " };
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
             } else {
                 Style::default().fg(text_primary)
             };
-            ListItem::new(format!("{}{}", prefix, name)).style(style)
+            let line = ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled(rail, Style::default().fg(rail_color)),
+                ratatui::text::Span::styled(format!(" {}", name), name_style),
+            ]);
+            let style = if is_focused {
+                focused_style
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(style)
         })
         .collect();
 

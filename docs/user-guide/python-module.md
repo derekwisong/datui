@@ -42,6 +42,34 @@ They mirror the [command-line flags](../reference/command-line-options.md):
 `s3_endpoint_url`, `s3_access_key_id`, `s3_secret_access_key`, `s3_region`,
 `polars_streaming` and `debug`. For a frame, only the display options apply.
 
+## Bring the result back
+
+```python
+result = datui.view(lf, capture=True)
+if result is not None:
+    result.collect()  # or keep transforming, or sink_parquet(...)
+```
+
+`capture=True` returns the final table's logical view on a normal quit: the
+applied query, filters, sort, drill-down, reshape and column order, over all
+matching rows. It is a LazyFrame even for DataFrame input, so Python decides
+when to collect or write. `None` when no dataset was open at quit; text still
+sitting in an editor and unfinished background work are not part of it.
+
+**The result is a plan, not a snapshot.** Deferred execution is not zero-copy
+transfer; Python rebuilds the plan with its own Polars resources rather than
+taking over datui's.
+
+| Source | What collecting the result does |
+|---|---|
+| Scanned files (`pl.scan_*`, paths) | Executes the plan again and rereads the files. They must still exist; datui's preview is not a result cache |
+| In-memory frame (`df.lazy()`) | The plan can embed the DataFrame, so it may be copied on the way in and again on the way out, even when the final result is a few rows |
+| Materialized intermediates | A LazyFrame built from an already computed intermediate may serialize that intermediate's data too |
+| Downloaded or decompressed files | Refused with `RuntimeError`: the temp file is removed when datui exits. [Export](exporting-data.md) with <kbd>e</kbd> instead |
+
+Without `capture`, exporting with <kbd>e</kbd> inside the TUI remains the way
+to get data out.
+
 ## Compatibility
 
 A frame is handed over as a serialized Polars plan, which the wheel reads with
@@ -57,7 +85,9 @@ its own embedded Polars (0.55). The two need to agree on the plan format:
 The wheel declares `polars>=1.38` and never downgrades the `polars` you have. A
 plan the wheel cannot read raises `ValueError` before the TUI opens, naming the
 release it is built for. Paths do not go through the plan and work with any
-`polars` version.
+`polars` version — though a view captured with `capture=True` always comes back
+as a plan, and one your `polars` cannot read raises `RuntimeError` after the
+TUI closes.
 
 ## Building from source
 

@@ -18789,6 +18789,39 @@ impl Widget for &mut App {
     }
 }
 
+impl App {
+    /// The view a caller that asked for one gets back when the app exits
+    /// (`datui.view(..., capture=True)`): the active table's committed frame with
+    /// datui's internal columns dropped. `None` when no dataset is open. Text still
+    /// sitting in an editor was never applied, so it is not here either.
+    ///
+    /// Refused when the frame would scan a temporary file, because those are removed
+    /// on exit and a plan over deleted paths fails later and worse: a remote download
+    /// (`http_temp_path`) or a decompressed archive. The in-TUI export (`e`) writes
+    /// real rows and is the way out for those datasets.
+    pub fn capture_view(&self) -> Result<Option<LazyFrame>> {
+        let Some(state) = &self.data_table_state else {
+            return Ok(None);
+        };
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        if self.http_temp_path.is_some() {
+            return Err(color_eyre::eyre::eyre!(
+                "cannot return this view: the data was downloaded to a temporary file \
+                 that is removed when datui exits. Export it from inside datui (press \
+                 e) instead."
+            ));
+        }
+        if state.scans_a_temp_file() {
+            return Err(color_eyre::eyre::eyre!(
+                "cannot return this view: the compressed file was decompressed into a \
+                 temporary file that is removed when datui exits. Export it from \
+                 inside datui (press e) instead."
+            ));
+        }
+        Ok(Some(state.visible_lf()))
+    }
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         // Opening a remote file downloads it to a temp file so Polars can scan
@@ -19049,23 +19082,35 @@ where
     rx.recv().ok()
 }
 
-/// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
-/// Folds one channel drain into the loop: records whether the app changed, or restores
-/// the terminal and returns how `run` should end.
-fn finish_drain(drained: event_pump::Drained, updated: &mut bool) -> Option<Result<()>> {
+/// How the event loop ended, for `run_impl` to turn into its return value once the
+/// terminal is restored.
+enum RunEnd {
+    Quit,
+    Crash(String),
+}
+
+/// Folds one channel drain into the loop: records whether the app changed, or says
+/// how the loop should end.
+fn finish_drain(drained: event_pump::Drained, updated: &mut bool) -> Option<RunEnd> {
     match drained {
         event_pump::Drained::Continue { updated: changed } => {
             *updated |= changed;
             None
         }
-        event_pump::Drained::Exit => {
-            restore_terminal();
-            Some(Ok(()))
-        }
-        event_pump::Drained::Crash(msg) => {
-            restore_terminal();
-            Some(Err(color_eyre::eyre::eyre!(msg)))
-        }
+        event_pump::Drained::Exit => Some(RunEnd::Quit),
+        event_pump::Drained::Crash(msg) => Some(RunEnd::Crash(msg)),
+    }
+}
+
+/// Restore the terminal, then turn how the loop ended into what `run_impl` returns.
+/// The capture is taken after the screen is handed back, so a refused capture still
+/// leaves the terminal usable.
+fn conclude(end: RunEnd, app: &App, capture: bool) -> Result<Option<LazyFrame>> {
+    restore_terminal();
+    match end {
+        RunEnd::Quit if capture => app.capture_view(),
+        RunEnd::Quit => Ok(None),
+        RunEnd::Crash(msg) => Err(color_eyre::eyre::eyre!(msg)),
     }
 }
 
@@ -19080,7 +19125,24 @@ fn restore_terminal() {
     ratatui::restore();
 }
 
+/// Run the TUI with either file paths or an existing LazyFrame. Single event loop
+/// used by the CLI and the Python binding.
 pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
+    run_impl(input, config, false).map(|_| ())
+}
+
+/// As `run`, but a normal quit hands back the active table's final view for the
+/// caller to keep working with (the Python binding's `capture=True`). `None` when no
+/// dataset was open at quit. See `App::capture_view` for what is refused and why.
+pub fn run_captured(input: RunInput, config: Option<AppConfig>) -> Result<Option<LazyFrame>> {
+    run_impl(input, config, true)
+}
+
+fn run_impl(
+    input: RunInput,
+    config: Option<AppConfig>,
+    capture: bool,
+) -> Result<Option<LazyFrame>> {
     use event_pump::EventPump;
     use std::io::Write;
     use std::sync::{Mutex, Once, mpsc};
@@ -19178,7 +19240,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(
             "datui requires an interactive terminal (TTY). No terminal detected: {}. \
-             Run from a terminal or ensure stdout is connected to a TTY.",
+             There is no TTY inside a Jupyter notebook or when output is piped or \
+             redirected; run from a terminal with stdout connected to it.",
             e
         )
     })?;
@@ -19252,8 +19315,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         let mut updated = pump.replay_one()?;
         // A replayed key may have queued a follow-up (a Search, an Export); handle it
         // before the terminal is read so a key typed now cannot overtake it.
-        if let Some(done) = finish_drain(pump.drain()?, &mut updated) {
-            return done;
+        if let Some(end) = finish_drain(pump.drain()?, &mut updated) {
+            return conclude(end, &pump.app, capture);
         }
         let app = &pump.app;
 
@@ -19281,8 +19344,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
 
-        if let Some(done) = finish_drain(pump.drain()?, &mut updated) {
-            return done;
+        if let Some(end) = finish_drain(pump.drain()?, &mut updated) {
+            return conclude(end, &pump.app, capture);
         }
         let app = &mut pump.app;
 

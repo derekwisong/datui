@@ -1,5 +1,7 @@
 """Tests for the datui Python binding."""
 
+import sys
+
 import pytest
 
 polars = pytest.importorskip("polars")
@@ -155,3 +157,123 @@ def test_view_names_the_paired_polars_for_an_unreadable_plan():
 
     with pytest.raises(ValueError, match=f"built for polars {datui.PAIRED_POLARS}"):
         datui._view_frame(Unreadable(), options=None)
+
+
+def test_view_capture_missing_path_still_raises_file_not_found():
+    """capture=True changes nothing about input validation: a missing path still raises."""
+    import datui
+
+    with pytest.raises(FileNotFoundError, match="File not found"):
+        datui.view("does-not-exist.csv", capture=True)
+
+
+def test_splice_own_dsl_hash_is_identity_on_own_plans():
+    """A plan this polars wrote already carries this polars' hash, so the splice is a no-op."""
+    import datui
+
+    payload = polars.DataFrame({"a": [1]}).lazy().serialize()
+    if not isinstance(payload, bytes):
+        pytest.skip("binary serialization unavailable")
+    assert datui._splice_own_dsl_hash(payload) == payload
+
+
+def test_deserialize_captured_reads_a_plan():
+    """The captured-plan decoder returns a working LazyFrame."""
+    import datui
+
+    payload = polars.DataFrame({"a": [1, 2]}).lazy().serialize()
+    if not isinstance(payload, bytes):
+        pytest.skip("binary serialization unavailable")
+    lf = datui._deserialize_captured(payload)
+    assert lf.collect().to_dict(as_series=False) == {"a": [1, 2]}
+
+
+def test_deserialize_captured_wraps_garbage_in_a_clear_error():
+    """Bytes polars cannot read raise RuntimeError naming the paired polars, never ValueError."""
+    import datui
+
+    with pytest.raises(RuntimeError, match=f"polars {datui.PAIRED_POLARS}"):
+        datui._deserialize_captured(b"not a plan at all")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
+def test_capture_round_trip_through_the_tui(tmp_path):
+    """view(lf, capture=True) hands the frame back after a plain q, and it collects
+    after the TUI (and its temp state) is gone — the in-memory round trip."""
+    import fcntl
+    import json
+    import os
+    import pty
+    import select
+    import struct
+    import subprocess
+    import termios
+    import time
+
+    out = tmp_path / "result.json"
+    script = (
+        "import json\n"
+        "import polars as pl\n"
+        "import datui\n"
+        'df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})\n'
+        "res = datui.view(df.lazy(), capture=True)\n"
+        "rows = None if res is None else res.collect().to_dicts()\n"
+        f"with open({str(out)!r}, 'w') as f:\n"
+        "    json.dump(rows, f)\n"
+    )
+    master, slave = pty.openpty()
+    # A fresh pty is 0x0; give the TUI a real screen to draw on.
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=slave,
+        stdout=slave,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "TERM": "xterm-256color"},
+    )
+    os.close(slave)
+    deadline = time.time() + 60
+    last_q = 0.0
+    last_output = time.time()
+    drawn = 0
+    try:
+        while proc.poll() is None and time.time() < deadline:
+            # Drain the TUI's output so it never blocks on a full pty buffer, and
+            # send q only once a real frame has been drawn (terminal init writes a
+            # few bytes long before the TUI is up) and the output has gone quiet
+            # (the loading screen redraws its spinner continuously) — a q sent
+            # during the load quits before any dataset is open, which correctly
+            # captures nothing and would fail this test.
+            readable, _, _ = select.select([master], [], [], 0.2)
+            if readable:
+                try:
+                    drawn += len(os.read(master, 65536))
+                except OSError:
+                    break
+                last_output = time.time()
+                continue
+            quiet = time.time() - last_output > 1.0
+            if drawn >= 1000 and quiet and time.time() - last_q > 2.0:
+                try:
+                    os.write(master, b"q")
+                except OSError:
+                    break
+                last_q = time.time()
+        stderr = b""
+        if proc.poll() is None:
+            proc.kill()
+            pytest.fail("the TUI did not quit on q within 60 seconds")
+        else:
+            stderr = proc.stderr.read() if proc.stderr else b""
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+    assert proc.returncode == 0, f"child failed: {stderr.decode(errors='replace')}"
+    rows = json.loads(out.read_text())
+    assert rows == [
+        {"a": 1, "b": "x"},
+        {"a": 2, "b": "y"},
+        {"a": 3, "b": "z"},
+    ]

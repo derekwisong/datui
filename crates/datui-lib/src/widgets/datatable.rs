@@ -4626,6 +4626,13 @@ impl DataTableState {
         Self::without_drift(self.lf.clone())
     }
 
+    /// Whether the frame scans a temporary file this state owns (a decompressed
+    /// archive). A view captured at exit must not reference it: the file is removed
+    /// when the state drops, and the plan would scan a path that no longer exists.
+    pub fn scans_a_temp_file(&self) -> bool {
+        self.decompress_temp_file.is_some()
+    }
+
     /// `lf` without the hidden drift column. A non-strict drop, so it is a no-op on a
     /// frame that never had one and no caller has to know which it holds.
     fn without_drift(lf: LazyFrame) -> LazyFrame {

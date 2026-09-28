@@ -32,8 +32,8 @@ Usage: datui [OPTIONS] [PATH]...
 | `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
 | `--clear-recents` | Forget every recently opened dataset and exit; other caches are kept |
 | `--clear-cache` | Clear all cache data and exit |
-| `--template <NAME>` | Apply a template by name when starting the application |
-| `--remove-templates` | Remove all templates and exit |
+| `--template <NAME>` | Apply a saved view by name when starting the application |
+| `--remove-templates` | Remove all saved views and exit |
 | `--sampling-threshold <N>` | Sample datasets with this many or more rows for analysis — faster, less memory (default: [performance] sampling_threshold in config, else the full dataset). 0 disables sampling for this run |
 | `--polars-streaming[=<BOOL>]` | Use the Polars streaming engine where available (default: true) |
 | `--pages-lookahead <N>` | Pages to buffer ahead of the visible area (default: 3). More is smoother scrolling, more memory |

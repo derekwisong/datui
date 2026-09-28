@@ -90,5 +90,5 @@ adjacent, so `smth` finds `Smith`. Matching is case-insensitive.
 
 ## Saving a query
 
-The active tab's query is saved with a [template](templates.md), along with
+The active tab's query is saved with a [view](views.md), along with
 filters and sort, so it can be replayed on the next file of the same shape.

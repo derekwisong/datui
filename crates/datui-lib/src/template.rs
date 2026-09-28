@@ -300,19 +300,26 @@ impl TemplateManager {
             .map(|(template, _)| template)
     }
 
-    pub fn generate_next_template_name(&self) -> String {
-        let mut max_num = 0;
+    /// A name for a view saved from this state: the file stem, or failing
+    /// that the query's first words — something the user will recognize in
+    /// the list, never a serial number. Numbered past the first collision.
+    pub fn suggest_name(&self, path: Option<&Path>, query: Option<&str>) -> String {
+        let base = path
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| query.map(|q| q.split_whitespace().take(4).collect::<Vec<_>>().join(" ")))
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "view".to_string());
 
-        for template in &self.templates {
-            if template.name.starts_with("template")
-                && let Some(num_str) = template.name.strip_prefix("template")
-                && let Ok(num) = num_str.parse::<u32>()
-            {
-                max_num = max_num.max(num);
-            }
+        if !self.template_exists(&base) {
+            return base;
         }
-
-        format!("template{:04}", max_num + 1)
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|name| !self.template_exists(name))
+            .expect("some numbered name is free")
     }
 
     pub fn template_exists(&self, name: &str) -> bool {
@@ -409,44 +416,72 @@ impl TemplateManager {
     }
 }
 
+/// Why a view's criteria fit the open file, in the words the list annotates
+/// rows with. The strongest reason wins: the same file beats the same columns
+/// beats a pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchReason {
+    SameFile,
+    SameColumns,
+    Pattern,
+}
+
+impl MatchReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MatchReason::SameFile => "same file",
+            MatchReason::SameColumns => "same columns",
+            MatchReason::Pattern => "pattern",
+        }
+    }
+}
+
 /// Whether the template's own criteria match this file: a path or pattern hit,
 /// or every schema column the template asks for present. Distinct from the
 /// relevance score, which also carries usage and recency and so is never zero
 /// for a template that has been used — a ranking, not a claim of fit.
 pub fn criteria_match(template: &Template, file_path: &Path, schema: &Schema) -> bool {
+    match_reason(template, file_path, schema).is_some()
+}
+
+/// The strongest criterion of the template's that fits this file, or None when
+/// none does. This is the same test `criteria_match` gates on, kept in one
+/// place so the list's "why it matches" annotation can never disagree with
+/// what `V` and auto-apply do.
+pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> Option<MatchReason> {
     let criteria = &template.match_criteria;
     if let Some(exact) = &criteria.exact_path
         && exact == file_path
     {
-        return true;
+        return Some(MatchReason::SameFile);
     }
     if let Some(relative) = &criteria.relative_path
         && let Ok(cwd) = std::env::current_dir()
         && let Ok(rel) = file_path.strip_prefix(&cwd)
         && rel.to_string_lossy() == *relative
     {
-        return true;
-    }
-    if let Some(pattern) = &criteria.path_pattern
-        && matches_pattern(file_path.to_str().unwrap_or(""), pattern)
-    {
-        return true;
-    }
-    if let Some(pattern) = &criteria.filename_pattern
-        && let Some(name) = file_path.file_name().and_then(|n| n.to_str())
-        && matches_pattern(name, pattern)
-    {
-        return true;
+        return Some(MatchReason::SameFile);
     }
     if let Some(required) = &criteria.schema_columns
         && !required.is_empty()
     {
         let file_cols: HashSet<&str> = schema.iter_names().map(|s| s.as_str()).collect();
         if required.iter().all(|col| file_cols.contains(col.as_str())) {
-            return true;
+            return Some(MatchReason::SameColumns);
         }
     }
-    false
+    if let Some(pattern) = &criteria.path_pattern
+        && matches_pattern(file_path.to_str().unwrap_or(""), pattern)
+    {
+        return Some(MatchReason::Pattern);
+    }
+    if let Some(pattern) = &criteria.filename_pattern
+        && let Some(name) = file_path.file_name().and_then(|n| n.to_str())
+        && matches_pattern(name, pattern)
+    {
+        return Some(MatchReason::Pattern);
+    }
+    None
 }
 
 fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -> f64 {
@@ -743,6 +778,64 @@ mod tests {
         ));
         assert!(!matches_pattern("test.txt", "*.csv"));
         assert!(!matches_pattern("sales.csv", "sales_*.csv"));
+    }
+
+    /// The list's annotation names the strongest criterion that fits: the
+    /// same file beats the same columns beats a pattern.
+    #[test]
+    fn match_reason_names_the_strongest_criterion() {
+        use polars::prelude::DataType;
+        let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
+        let path = Path::new("/data/sales_2024.csv");
+
+        let by_path = a_template(
+            "by path",
+            MatchCriteria {
+                exact_path: Some(path.to_path_buf()),
+                schema_columns: Some(vec!["a".into()]),
+                filename_pattern: Some("sales_*.csv".into()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_path, path, &schema),
+            Some(MatchReason::SameFile)
+        );
+
+        let by_schema = a_template(
+            "by schema",
+            MatchCriteria {
+                schema_columns: Some(vec!["a".into()]),
+                filename_pattern: Some("sales_*.csv".into()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_schema, path, &schema),
+            Some(MatchReason::SameColumns)
+        );
+
+        let by_pattern = a_template(
+            "by pattern",
+            MatchCriteria {
+                filename_pattern: Some("sales_*.csv".into()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_pattern, path, &schema),
+            Some(MatchReason::Pattern)
+        );
+
+        let fits_nothing = a_template(
+            "fits nothing",
+            MatchCriteria {
+                filename_pattern: Some("other_*.csv".into()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(match_reason(&fits_nothing, path, &schema), None);
+        assert!(!criteria_match(&fits_nothing, path, &schema));
     }
 
     #[test]

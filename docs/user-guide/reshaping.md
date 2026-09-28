@@ -55,7 +55,7 @@ pattern "q_.*"` — so a pattern that matches nothing is visible before it runs.
 | <kbd>Esc</kbd> | Close the picker; pressed again, close without applying |
 | <kbd>?</kbd> | Help |
 
-## Templates
+## Views
 
-A [template](templates.md) saved after a pivot or melt stores the reshape. When
+A [view](views.md) saved after a pivot or melt stores the reshape. When
 it is applied, the order is query, filters, sort, pivot or melt, column order.

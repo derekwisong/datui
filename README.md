@@ -58,7 +58,7 @@ See the [install guide][install-guide] for details and building from source.
 - **Draws.** Line, scatter, bar, histogram, box, KDE and heatmap charts in the
   terminal, exportable as PNG or EPS.
 - **Reshapes and saves.** Pivot and melt, export to CSV, Parquet, JSON, NDJSON,
-  Arrow or Avro, and templates that replay a query, filters and sort on the
+  Arrow or Avro, and views that replay a query, filters and sort on the
   next dataset with the same shape.
 - **Configurable.** Light and dark palettes with every color a config key,
   defaults for every option, and arrow keys or `h` `j` `k` `l`.

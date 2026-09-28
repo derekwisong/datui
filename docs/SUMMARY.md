@@ -34,6 +34,7 @@
   - [Tests](for-developers/tests.md)
   - [Security Checks](for-developers/security-checks.md)
   - [Fuzzing](for-developers/fuzzing.md)
+  - [Glyph Coverage Audit](for-developers/glyph-audit.md)
   - [Adding Configuration Options](for-developers/adding-configuration-options.md)
   - [Documentation](for-developers/documentation.md)
   - [Generating the Demos](for-developers/demos.md)

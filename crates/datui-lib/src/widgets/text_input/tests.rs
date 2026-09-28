@@ -366,6 +366,7 @@ fn a_theme_colours_the_text_and_the_cursor() {
 fn an_explicit_cursor_colour_is_drawn_as_a_block() {
     let mut input = TextInput::new().with_text_color(Color::White);
     input.cursor_color = Some(Color::Cyan);
+    input.cursor_text = Some(Color::Black);
     input.apply_styles();
     input.set_value("ab");
     input.set_cursor(0);

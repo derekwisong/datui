@@ -57,6 +57,8 @@ table_selected      = "{{ mix background accent 30% }}"
 # --- Cursor / modals -------------------------------------------------------
 cursor_focused      = "{{ accent }}"
 cursor_dimmed       = "{{ muted }}"
+# Text under the cursor block; the background reads on an accent cursor.
+cursor_text         = "{{ background }}"
 modal_border_active = "{{ accent }}"
 modal_border_error  = "{{ red }}"
 

@@ -451,7 +451,14 @@ fn render_overview(
         let lines = notes
             .iter()
             .take(4)
-            .map(|note| Line::raw(format!("{} — {}", note.summary, note.scope)))
+            .map(|note| {
+                Line::raw(format!(
+                    "{} {} {}",
+                    note.summary,
+                    glyphs::get().dash,
+                    note.scope
+                ))
+            })
             .collect::<Vec<_>>();
         Paragraph::new(lines)
             .block(

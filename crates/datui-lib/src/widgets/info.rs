@@ -77,7 +77,11 @@ fn notes_window(heights: &[usize], selected: usize, stored: usize, show: usize) 
 /// the panel. Selection changes only the marker, never a height.
 fn note_rows(note: &crate::notes::Note, selected: bool, width: usize) -> Vec<NoteRow> {
     let mut rows = Vec::new();
-    let marker = if selected { "› " } else { "  " };
+    let marker = if selected {
+        crate::glyphs::get().prompt
+    } else {
+        "  "
+    };
     let mut first = true;
     for line in wrap_to(&note.summary, width.saturating_sub(2)) {
         rows.push(NoteRow {
@@ -424,7 +428,7 @@ fn parquet_column_compression(
         let codec = codec_by_name
             .get(&name)
             .cloned()
-            .unwrap_or_else(|| "—".to_string());
+            .unwrap_or_else(|| crate::glyphs::get().dash.to_string());
         if comp > 0 && uncomp > 0 {
             let ratio = uncomp as f64 / comp as f64;
             out.insert(name, (codec, ratio));
@@ -462,9 +466,14 @@ pub struct DataTableInfo<'a> {
 /// that reads as the size of the dataset. On a directory of thousands of files still
 /// being counted it would say `Rows (total): 70` beside a control bar showing a spinner.
 fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
+    let middot = crate::glyphs::get().middot;
     match rows {
-        Some(rows) => format!("Rows (total): {} · Columns: {}", format_int(rows), columns),
-        None => format!("Rows (total): counting… · Columns: {columns}"),
+        Some(rows) => format!(
+            "Rows (total): {} {middot} Columns: {}",
+            format_int(rows),
+            columns
+        ),
+        None => format!("Rows (total): counting... {middot} Columns: {columns}"),
     }
 }
 
@@ -604,7 +613,7 @@ impl<'a> DataTableInfo<'a> {
                     Some(present) => {
                         format!("{} of {}", format_int(*present), format_int(*readable))
                     }
-                    None => "—".to_string(),
+                    None => crate::glyphs::get().dash.to_string(),
                 };
                 cells.push(files_str);
             }
@@ -612,8 +621,10 @@ impl<'a> DataTableInfo<'a> {
                 let comp_str = compression
                     .as_ref()
                     .and_then(|c| c.get(name_str))
-                    .map(|(codec, ratio)| format!("{} {:.1}×", codec, ratio))
-                    .unwrap_or_else(|| "—".to_string());
+                    .map(|(codec, ratio)| {
+                        format!("{} {:.1}{}", codec, ratio, crate::glyphs::get().times)
+                    })
+                    .unwrap_or_else(|| crate::glyphs::get().dash.to_string());
                 cells.push(comp_str);
             }
             rows.push(Row::new(cells));
@@ -667,7 +678,7 @@ impl<'a> DataTableInfo<'a> {
             return;
         }
         let file_size = self.ctx.file_size_bytes().map(format_bytes);
-        let file_size_str = file_size.as_deref().unwrap_or("—");
+        let file_size_str = file_size.as_deref().unwrap_or(crate::glyphs::get().dash);
         label_value_row(
             "File size:",
             file_size_str,
@@ -685,7 +696,11 @@ impl<'a> DataTableInfo<'a> {
         if y >= area.y + h {
             return;
         }
-        let fmt = self.ctx.format.map(|f| f.as_str()).unwrap_or("—");
+        let fmt = self
+            .ctx
+            .format
+            .map(|f| f.as_str())
+            .unwrap_or(crate::glyphs::get().dash);
         label_value_row(
             "Format:",
             fmt,
@@ -753,7 +768,7 @@ impl<'a> DataTableInfo<'a> {
             let ratio = (current_mb as f64 / max_mb as f64).min(1.0);
             let label = match buf_mb {
                 Some(m) => format!("{:.1} / {} MiB", m as f64, max_mb),
-                None => "—".to_string(),
+                None => crate::glyphs::get().dash.to_string(),
             };
             Gauge::default()
                 .gauge_style(Style::default().fg(self.primary_color))
@@ -767,7 +782,7 @@ impl<'a> DataTableInfo<'a> {
                     self.state
                         .buffered_memory_bytes()
                         .map(|b| format_bytes(b as u64))
-                        .unwrap_or_else(|| "—".to_string())
+                        .unwrap_or_else(|| crate::glyphs::get().dash.to_string())
                 });
             Paragraph::new(value).render(mb_chunks[1], buf);
         }
@@ -777,7 +792,12 @@ impl<'a> DataTableInfo<'a> {
             let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
             if comp > 0 && uncomp > 0 && y < area.y + h {
                 let ratio = uncomp as f64 / comp as f64;
-                let value = format!("{:.1}× (uncomp. {})", ratio, format_bytes(uncomp));
+                let value = format!(
+                    "{:.1}{} (uncomp. {})",
+                    ratio,
+                    crate::glyphs::get().times,
+                    format_bytes(uncomp)
+                );
                 label_value_row(
                     "Parquet comp.:",
                     &value,
@@ -1200,7 +1220,7 @@ fn columns_by_type(schema: &Schema) -> String {
         .into_iter()
         .map(|(k, v)| format!("{}: {}", k, v))
         .collect::<Vec<_>>()
-        .join(" · ")
+        .join(&format!(" {} ", crate::glyphs::get().middot))
 }
 
 impl<'a> Widget for &mut DataTableInfo<'a> {
@@ -1339,7 +1359,7 @@ mod tests {
 
         let uncounted = painted(&state);
         assert!(
-            uncounted.contains("counting…"),
+            uncounted.contains("counting..."),
             "a count not taken is not a total: {uncounted}"
         );
         assert!(

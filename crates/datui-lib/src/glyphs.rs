@@ -6,12 +6,19 @@
 //! limited one they turn into replacement boxes that make the UI harder to read
 //! rather than prettier.
 //!
-//! Nothing here is a Nerd Font glyph. These are plain Unicode from blocks that any
-//! UTF-8 font covers; Nerd Font icons appear only in the Omarchy menu definition,
-//! where the font is guaranteed. The fallback exists for terminals that are not
-//! doing UTF-8 at all.
+//! Nothing here is a Nerd Font glyph. Every Unicode character has passed the
+//! font-coverage audit (`scripts/code/audit_glyphs.py`): present in JetBrainsMono
+//! Nerd Font, and never an `Emoji=Yes, Emoji_Presentation=No` codepoint that
+//! Liberation Mono and Noto Sans Mono don't also carry, because a terminal whose
+//! font lacks one of those falls back to the *color emoji* font and renders a
+//! blank cell or a clipped blob (#325). Nerd Font icons appear only in the Omarchy
+//! menu definition, where the font is guaranteed — and in a user's own `[glyphs]`
+//! overrides, where the risk is theirs. The ASCII fallback exists for terminals
+//! that are not doing UTF-8 at all.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
+use unicode_width::UnicodeWidthStr;
 
 /// Symbols used by the UI, in whichever alphabet the terminal can render.
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +53,11 @@ pub struct Glyphs {
     pub ctrl_updown: &'static str,
     /// Separator between facts in a status line: `listing · nfs`.
     pub middot: &'static str,
+    /// A fact that is not there: a size no footer stated, a format nothing named.
+    /// Also joins a note's summary to its scope.
+    pub dash: &'static str,
+    /// The coefficient of determination, in the regression fit line.
+    pub r_squared: &'static str,
     /// Spinner frames, cycled while something is loading. Every frame must be the
     /// same display width, or the text beside it jitters.
     pub spinner: &'static [&'static str],
@@ -135,6 +147,8 @@ const UNICODE: Glyphs = Glyphs {
     updown_lr: "←→",
     ctrl_updown: "^↑↓",
     middot: "·",
+    dash: "—",
+    r_squared: "R²",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
     // Plain Unicode from blocks the common coding fonts actually cover — checked
     // against JetBrainsMono Nerd Font, Liberation Mono and Noto Sans Mono per
@@ -170,7 +184,10 @@ const UNICODE: Glyphs = Glyphs {
     dot_empty: "○",
     score_marks: &["○", "◔", "◕", "◉", "●"],
     check: "✓",
-    warning: "⚠",
+    // Not ⚠ U+26A0: emoji-class, and absent from Liberation Mono and Noto Sans
+    // Mono, so those setups hit the color-emoji fallback. The caution triangle's
+    // shape, from a codepoint all three floor fonts carry.
+    warning: "▲",
     scroll_thumb: "█",
     binary_stub: "‹binary›",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
@@ -192,6 +209,8 @@ const ASCII: Glyphs = Glyphs {
     updown_lr: "Lt/Rt",
     ctrl_updown: "^Up/Dn",
     middot: "-",
+    dash: "-",
+    r_squared: "R^2",
     spinner: &["|", "/", "-", "\\"],
     here: ".",
     in_memory: "*",
@@ -238,6 +257,185 @@ pub enum UnicodeMode {
     Never,
 }
 
+/// One `[glyphs]` override from the config: a single glyph, or a list for the
+/// slots that hold one (`spinner`, `score_marks`, `mini_bars`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum SlotOverride {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// The overridable single-string slots, passed to a callback macro so the name
+/// list, the default lookup and the assignment cannot drift apart. The wordmark
+/// is deliberately absent: it is the brand, and it already yields to the
+/// one-line title wherever it cannot be drawn.
+macro_rules! with_string_slots {
+    ($callback:ident) => {
+        $callback!(
+            selector,
+            selector_blank,
+            cursor,
+            prompt,
+            rule,
+            ellipsis,
+            times,
+            collapsed,
+            expanded,
+            updown,
+            updown_lr,
+            ctrl_updown,
+            middot,
+            dash,
+            r_squared,
+            here,
+            in_memory,
+            over_network,
+            in_object_store,
+            place_unknown,
+            null,
+            absent,
+            conflict,
+            drift_mark,
+            sort_asc,
+            sort_desc,
+            rail,
+            rule_h,
+            rule_h_focused,
+            arrow_left,
+            arrow_right,
+            trail,
+            hidden_mark,
+            checkbox_on,
+            checkbox_off,
+            radio_on,
+            radio_off,
+            dot_full,
+            dot_half,
+            dot_empty,
+            check,
+            warning,
+            scroll_thumb,
+            binary_stub
+        )
+    };
+}
+
+/// The Unicode default for a single-string slot, or `None` for a list slot or
+/// an unknown name.
+fn unicode_default(slot: &str) -> Option<&'static str> {
+    macro_rules! lookup {
+        ($($name:ident),*) => {
+            match slot {
+                $(stringify!($name) => Some(UNICODE.$name),)*
+                _ => None,
+            }
+        };
+    }
+    with_string_slots!(lookup)
+}
+
+/// Check a `[glyphs]` override map without touching the active set, so a bad
+/// config fails at load time with the slot named, not mid-draw.
+///
+/// An override must keep the display width of the glyph it replaces: every
+/// width invariant in the layout arithmetic — the locality markers, the header
+/// marks, the equal-width spinner frames — holds automatically that way.
+pub fn validate_overrides(overrides: &BTreeMap<String, SlotOverride>) -> Result<(), String> {
+    let same_width = |slot: &str, text: &str, default: &str| -> Result<(), String> {
+        if text.width() == default.width() {
+            Ok(())
+        } else {
+            Err(format!(
+                "glyph override for `{slot}` is {} columns wide; {default:?} is {} — \
+                 an override must keep the width of the glyph it replaces",
+                text.width(),
+                default.width(),
+            ))
+        }
+    };
+    for (slot, value) in overrides {
+        match (unicode_default(slot), value) {
+            (Some(default), SlotOverride::One(text)) => same_width(slot, text, default)?,
+            (Some(_), SlotOverride::Many(_)) => {
+                return Err(format!(
+                    "glyph slot `{slot}` takes a single string, not a list"
+                ));
+            }
+            (None, _) => {
+                let (len, default) = match slot.as_str() {
+                    "spinner" => (None, UNICODE.spinner),
+                    "score_marks" => (Some(5), &UNICODE.score_marks[..]),
+                    "mini_bars" => (Some(8), &UNICODE.mini_bars[..]),
+                    _ => return Err(format!("unknown glyph slot `{slot}`")),
+                };
+                let SlotOverride::Many(entries) = value else {
+                    return Err(format!("glyph slot `{slot}` takes a list of strings"));
+                };
+                match len {
+                    Some(len) if entries.len() != len => {
+                        return Err(format!(
+                            "glyph slot `{slot}` takes exactly {len} entries, got {}",
+                            entries.len()
+                        ));
+                    }
+                    None if entries.is_empty() => {
+                        return Err(format!("glyph slot `{slot}` takes at least one entry"));
+                    }
+                    _ => {}
+                }
+                for entry in entries {
+                    same_width(slot, entry, default[0])?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A config string lives as long as the run does; the set holds `&'static str`.
+fn leak(text: &str) -> &'static str {
+    Box::leak(text.to_string().into_boxed_str())
+}
+
+/// Lay a validated override map over a set. Called once at startup.
+fn apply_overrides(set: &mut Glyphs, overrides: &BTreeMap<String, SlotOverride>) {
+    for (slot, value) in overrides {
+        match (slot.as_str(), value) {
+            ("spinner", SlotOverride::Many(frames)) => {
+                set.spinner = Box::leak(
+                    frames
+                        .iter()
+                        .map(|f| leak(f))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+            }
+            ("score_marks", SlotOverride::Many(marks)) if marks.len() == 5 => {
+                set.score_marks = Box::leak(Box::new(std::array::from_fn(|i| leak(&marks[i]))));
+            }
+            ("mini_bars", SlotOverride::Many(bars)) if bars.len() == 8 => {
+                set.mini_bars = Box::leak(Box::new(std::array::from_fn(|i| leak(&bars[i]))));
+            }
+            (name, SlotOverride::One(text)) => {
+                let text = leak(text);
+                macro_rules! assign {
+                    ($($slot:ident),*) => {
+                        match name {
+                            $(stringify!($slot) => set.$slot = text,)*
+                            // Validated at config load; an unknown name that
+                            // still got here changes nothing.
+                            _ => {}
+                        }
+                    };
+                }
+                with_string_slots!(assign)
+            }
+            _ => {}
+        }
+    }
+}
+
 static GLYPHS: OnceLock<Glyphs> = OnceLock::new();
 
 /// Whether the environment claims a UTF-8 locale.
@@ -261,7 +459,14 @@ pub fn locale_is_utf8() -> bool {
 /// Choose the glyph set for this run. Later calls are ignored, so this is safe to
 /// call once from startup and never think about again.
 pub fn init(mode: UnicodeMode) {
-    let chosen = match mode {
+    init_with_overrides(mode, &BTreeMap::new());
+}
+
+/// [`init`], with the config's `[glyphs]` overrides laid over the Unicode set.
+/// The ASCII set is never touched: it is the tested floor a C locale falls back
+/// to, and an override written for a rich font would garble exactly there.
+pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotOverride>) {
+    let mut chosen = match mode {
         UnicodeMode::Always => UNICODE,
         UnicodeMode::Never => ASCII,
         UnicodeMode::Auto => {
@@ -272,6 +477,9 @@ pub fn init(mode: UnicodeMode) {
             }
         }
     };
+    if chosen.unicode && !overrides.is_empty() {
+        apply_overrides(&mut chosen, overrides);
+    }
     let _ = GLYPHS.set(chosen);
 }
 
@@ -374,6 +582,63 @@ mod tests {
         assert_eq!(active_is_unicode(), expected);
         assert!(unicode().unicode);
         assert!(!ascii().unicode);
+    }
+
+    /// A bad `[glyphs]` line must fail at config load with the slot named.
+    #[test]
+    fn overrides_validate_names_arity_and_width() {
+        let one =
+            |k: &str, v: &str| BTreeMap::from([(k.to_string(), SlotOverride::One(v.to_string()))]);
+        assert!(validate_overrides(&one("in_object_store", "☁")).is_ok());
+        assert!(
+            validate_overrides(&one("no_such_slot", "x"))
+                .is_err_and(|e| e.contains("no_such_slot"))
+        );
+        // ‹binary› is eight columns; a one-column override moves every layout after it.
+        assert!(
+            validate_overrides(&one("binary_stub", "b")).is_err_and(|e| e.contains("binary_stub"))
+        );
+        assert!(validate_overrides(&one("checkbox_on", "")).is_err());
+        // The wordmark is not a slot.
+        assert!(validate_overrides(&one("wordmark", "datui")).is_err());
+
+        let many = |k: &str, v: &[&str]| {
+            BTreeMap::from([(
+                k.to_string(),
+                SlotOverride::Many(v.iter().map(|s| s.to_string()).collect()),
+            )])
+        };
+        assert!(validate_overrides(&many("spinner", &["◐", "◓", "◑", "◒"])).is_ok());
+        assert!(validate_overrides(&many("spinner", &[])).is_err());
+        assert!(
+            validate_overrides(&many("score_marks", &["a", "b"]))
+                .is_err_and(|e| e.contains("exactly 5"))
+        );
+        assert!(
+            validate_overrides(&many("times", &["×"])).is_err_and(|e| e.contains("single string"))
+        );
+        assert!(validate_overrides(&one("spinner", "◐")).is_err_and(|e| e.contains("list")));
+    }
+
+    /// Overrides land on the set they name and leave every other slot alone.
+    #[test]
+    fn overrides_apply_over_the_unicode_set() {
+        let mut set = UNICODE;
+        let overrides = BTreeMap::from([
+            (
+                "in_object_store".to_string(),
+                SlotOverride::One("☁".to_string()),
+            ),
+            (
+                "spinner".to_string(),
+                SlotOverride::Many(vec!["◐".to_string(), "◑".to_string()]),
+            ),
+        ]);
+        validate_overrides(&overrides).expect("a valid override map");
+        apply_overrides(&mut set, &overrides);
+        assert_eq!(set.in_object_store, "☁");
+        assert_eq!(set.spinner, &["◐", "◑"]);
+        assert_eq!(set.checkbox_on, UNICODE.checkbox_on);
     }
 
     /// A marker that is also a letter or a space would read as part of the name.

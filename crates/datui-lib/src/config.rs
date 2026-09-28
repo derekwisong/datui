@@ -406,6 +406,7 @@ pub struct AppConfig {
     pub performance: PerformanceConfig,
     pub chart: ChartConfig,
     pub theme: ThemeConfig,
+    pub glyphs: GlyphsConfig,
     pub data: DataConfig,
     pub ui: UiConfig,
     pub query: QueryConfig,
@@ -460,6 +461,10 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
     (
         "theme.colors",
         "# Color definitions\n# Supported formats:\n#   - Named colors: \"red\", \"blue\", \"bright_red\", \"dark_gray\", etc. (case-insensitive)\n#   - Hex colors: \"#ff0000\" or \"#FF0000\" (case-insensitive)\n#   - Indexed colors: \"indexed(0-255)\" for specific xterm 256-color palette entries\n# Colors automatically adapt to your terminal's capabilities",
+    ),
+    (
+        "glyphs",
+        "# ============================================================================\n# Glyph Overrides\n# ============================================================================\n# Replace individual UI glyphs when your font carries more than the tested\n# coverage floor (see scripts/code/audit_glyphs.py in the datui repo). Keys\n# are the slot names in glyphs.rs; an override must keep the display width of\n# the glyph it replaces, and applies only when the Unicode set is active — the\n# ASCII tier never changes. Examples, for fonts that carry them:\n#   in_object_store = \"☁\"                  # the cloud, back again\n#   spinner = [\"◐\", \"◓\", \"◑\", \"◒\"]  # quarter-circle spinner",
     ),
     (
         "ui",
@@ -2060,6 +2065,10 @@ pub struct ColorConfig {
     pub outlier_marker: String,
     pub cursor_focused: String,
     pub cursor_dimmed: String,
+    /// Text under the solid cursor block. "default" picks black or white by the
+    /// cursor color's luminance.
+    #[serde(default = "default_cursor_text")]
+    pub cursor_text: String,
     /// "default" = no alternate row color; any other value is parsed as a color (e.g. "dark_gray")
     pub alternate_row_color: String,
     /// Column type colors (main data table): string, integer, float, boolean, temporal
@@ -2097,6 +2106,9 @@ fn default_true() -> bool {
     true
 }
 
+fn default_cursor_text() -> String {
+    ColorConfig::default().cursor_text
+}
 fn default_accent() -> String {
     ColorConfig::default().accent
 }
@@ -2153,11 +2165,15 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("outlier_marker", "Outlier indicators"),
     (
         "cursor_focused",
-        "Cursor color when text input is focused\nText under cursor uses reverse of this color",
+        "Cursor color when text input is focused\n\"default\" reverses the text under the cursor instead",
     ),
     (
         "cursor_dimmed",
         "Cursor color when text input is unfocused (currently unused - unfocused inputs hide cursor)",
+    ),
+    (
+        "cursor_text",
+        "Text color under the cursor block\n\"default\" picks black or white by the cursor color's luminance",
     ),
     (
         "alternate_row_color",
@@ -2271,6 +2287,26 @@ const DEBUG_COMMENTS: &[(&str, &str)] = &[
 ];
 
 // Default implementations
+/// `[glyphs]`: per-slot overrides laid over the Unicode set, so a font that has
+/// more than the coverage floor gets to use it — `☁` back for the object-store
+/// mark, a Nerd Font icon for a checkbox. Keys are the slot names in
+/// `glyphs.rs`; values keep the display width of the glyph they replace.
+/// Overrides never touch the ASCII set, which stays the tested floor. Layered
+/// like every section: defaults, then each import, then the user's file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GlyphsConfig {
+    #[serde(flatten)]
+    pub overrides: std::collections::BTreeMap<String, crate::glyphs::SlotOverride>,
+}
+
+impl GlyphsConfig {
+    pub fn merge(&mut self, other: Self) {
+        // Per key, later layers win; a layer that says nothing changes nothing.
+        self.overrides.extend(other.overrides);
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -2282,6 +2318,7 @@ impl Default for AppConfig {
             performance: PerformanceConfig::default(),
             chart: ChartConfig::default(),
             theme: ThemeConfig::default(),
+            glyphs: GlyphsConfig::default(),
             data: DataConfig::default(),
             ui: UiConfig::default(),
             query: QueryConfig::default(),
@@ -2377,6 +2414,7 @@ impl ColorConfig {
             outlier_marker: "#f7768e".to_string(),
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
+            cursor_text: "default".to_string(),
             alternate_row_color: "#1e2030".to_string(),
             str_col: "#9ece6a".to_string(),
             int_col: "#7aa2f7".to_string(),
@@ -2439,6 +2477,7 @@ impl ColorConfig {
             outlier_marker: "#f52a65".to_string(),
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
+            cursor_text: "default".to_string(),
             alternate_row_color: "#dcdfea".to_string(),
             str_col: "#587539".to_string(),
             int_col: "#2e7de9".to_string(),
@@ -2740,6 +2779,7 @@ impl AppConfig {
         self.performance.merge(other.performance);
         self.chart.merge(other.chart);
         self.theme.merge(other.theme);
+        self.glyphs.merge(other.glyphs);
         self.data.merge(other.data);
         self.ui.merge(other.ui);
         self.query.merge(other.query);
@@ -2789,6 +2829,9 @@ impl AppConfig {
         // Validate all colors can be parsed
         let parser = ColorParser::new();
         self.theme.colors.validate(&parser)?;
+
+        crate::glyphs::validate_overrides(&self.glyphs.overrides)
+            .map_err(|e| eyre!("[glyphs]: {e}"))?;
 
         Ok(())
     }
@@ -2952,6 +2995,7 @@ impl ColorConfig {
         validate_color!(&self.outlier_marker, "outlier_marker");
         validate_color!(&self.cursor_focused, "cursor_focused");
         validate_color!(&self.cursor_dimmed, "cursor_dimmed");
+        validate_color!(&self.cursor_text, "cursor_text");
         if self.alternate_row_color != "default" {
             validate_color!(&self.alternate_row_color, "alternate_row_color");
         }
@@ -3065,6 +3109,9 @@ impl ColorConfig {
         }
         if other.cursor_dimmed != default.cursor_dimmed {
             self.cursor_dimmed = other.cursor_dimmed;
+        }
+        if other.cursor_text != default.cursor_text {
+            self.cursor_text = other.cursor_text;
         }
         if other.alternate_row_color != default.alternate_row_color {
             self.alternate_row_color = other.alternate_row_color;
@@ -3498,6 +3545,10 @@ impl Theme {
             "cursor_dimmed".to_string(),
             parser.parse(&config.colors.cursor_dimmed)?,
         );
+        colors.insert(
+            "cursor_text".to_string(),
+            parser.parse(&config.colors.cursor_text)?,
+        );
         if config.colors.alternate_row_color != "default" {
             colors.insert(
                 "alternate_row_color".to_string(),
@@ -3585,6 +3636,87 @@ impl Theme {
             None => {
                 ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED)
             }
+        }
+    }
+
+    /// Text color for the solid cursor block: the `cursor_text` slot, or black or
+    /// white by the cursor color's luminance when the slot says "default". Lives
+    /// here so widgets never pick colors themselves.
+    pub fn cursor_text_for(&self, cursor: Color) -> Color {
+        match self.get("cursor_text") {
+            Color::Reset => contrasting_text(cursor),
+            configured => configured,
+        }
+    }
+}
+
+/// Black or white, whichever reads on a solid block of `bg` (Rec. 601 luma).
+fn contrasting_text(bg: Color) -> Color {
+    let (r, g, b) = approx_rgb(bg);
+    let luma = 299 * r as u32 + 587 * g as u32 + 114 * b as u32;
+    if luma >= 128_000 {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
+/// A representative RGB for any terminal color, for luminance arithmetic. The
+/// named colors use the xterm defaults; the real palette is the terminal's, so
+/// this is an estimate — good enough to pick black or white.
+fn approx_rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(i) => xterm_rgb(i),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 0, 0),
+        Color::Green => (0, 205, 0),
+        Color::Yellow => (205, 205, 0),
+        Color::Blue => (0, 0, 238),
+        Color::Magenta => (205, 0, 205),
+        Color::Cyan => (0, 205, 205),
+        Color::Gray => (229, 229, 229),
+        Color::DarkGray => (127, 127, 127),
+        Color::LightRed => (255, 0, 0),
+        Color::LightGreen => (0, 255, 0),
+        Color::LightYellow => (255, 255, 0),
+        Color::LightBlue => (92, 92, 255),
+        Color::LightMagenta => (255, 0, 255),
+        Color::LightCyan => (0, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Reset => (0, 0, 0),
+    }
+}
+
+/// The standard xterm 256-color palette entry, as RGB.
+fn xterm_rgb(i: u8) -> (u8, u8, u8) {
+    match i {
+        0..=15 => approx_rgb(match i {
+            0 => Color::Black,
+            1 => Color::Red,
+            2 => Color::Green,
+            3 => Color::Yellow,
+            4 => Color::Blue,
+            5 => Color::Magenta,
+            6 => Color::Cyan,
+            7 => Color::Gray,
+            8 => Color::DarkGray,
+            9 => Color::LightRed,
+            10 => Color::LightGreen,
+            11 => Color::LightYellow,
+            12 => Color::LightBlue,
+            13 => Color::LightMagenta,
+            14 => Color::LightCyan,
+            _ => Color::White,
+        }),
+        16..=231 => {
+            let level = |n: u8| if n == 0 { 0 } else { 55 + 40 * n };
+            let c = i - 16;
+            (level(c / 36), level(c / 6 % 6), level(c % 6))
+        }
+        232..=255 => {
+            let v = 8 + 10 * (i - 232);
+            (v, v, v)
         }
     }
 }

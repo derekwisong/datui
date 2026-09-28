@@ -63,6 +63,8 @@ pub struct TextInput {
     text_color: Option<Color>,
     background_color: Option<Color>,
     cursor_color: Option<Color>,
+    /// Text under the cursor block; the theme picks it, never this widget.
+    cursor_text: Option<Color>,
     focused: bool,
 }
 
@@ -92,6 +94,7 @@ impl TextInput {
             text_color: None,
             background_color: None,
             cursor_color: None,
+            cursor_text: None,
             focused: false,
         };
         input.apply_styles();
@@ -124,7 +127,9 @@ impl TextInput {
     /// Take text and cursor colours from the theme.
     pub fn with_theme(mut self, theme: &Theme) -> Self {
         self.text_color = Some(theme.get("text_primary"));
-        self.cursor_color = Some(theme.get("cursor_focused"));
+        let cursor = theme.get("cursor_focused");
+        self.cursor_color = Some(cursor);
+        self.cursor_text = Some(theme.cursor_text_for(cursor));
         self.apply_styles();
         self
     }
@@ -161,9 +166,9 @@ impl TextInput {
     /// The cursor highlight. A theme that leaves the cursor colour unset falls
     /// back to reversing the text, which works on every terminal.
     fn cursor_style(&self) -> Style {
-        match self.cursor_color {
-            Some(color) if color != Color::Reset => {
-                Style::default().bg(color).fg(contrasting_fg(color))
+        match (self.cursor_color, self.cursor_text) {
+            (Some(color), Some(text)) if color != Color::Reset => {
+                Style::default().bg(color).fg(text)
             }
             _ => Style::default().add_modifier(Modifier::REVERSED),
         }
@@ -388,14 +393,6 @@ impl Widget for &TextInput {
 /// Collapse line breaks so a single-line field stays on one line.
 fn flatten(value: &str) -> String {
     value.replace(['\n', '\r'], " ")
-}
-
-/// A readable foreground for a solid cursor block of the given colour.
-fn contrasting_fg(cursor: Color) -> Color {
-    match cursor {
-        Color::Black | Color::Red | Color::Blue | Color::Magenta | Color::DarkGray => Color::White,
-        _ => Color::Black,
-    }
 }
 
 #[cfg(test)]

@@ -139,79 +139,99 @@ fn render_breadcrumb(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
         .render(area, buf);
 }
 
+/// Whole leading segments that fit `width` columns: a strip cut mid-word
+/// ("-> compa") reads as a different fact, so trailing facts yield whole.
+fn fit_segments(segments: Vec<Vec<Span<'static>>>, width: u16) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for segment in segments {
+        let w: usize = segment
+            .iter()
+            .map(|s| crate::glyphs::display_width(&s.content))
+            .sum();
+        if used + w > width as usize && !spans.is_empty() {
+            break;
+        }
+        used += w;
+        spans.extend(segment);
+    }
+    Line::from(spans)
+}
+
 fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let remote = config.state.is_remote_source();
     let bytes = planned_read_bytes(config.state, config.plan);
     let source = if remote {
-        "REMOTE TRANSFER"
+        "remote transfer"
     } else {
-        "LOCAL READ"
+        "local read"
     };
     let source_style = if remote {
         Style::default().fg(config.theme.get("warning"))
     } else {
         Style::default().fg(config.theme.get("text_primary"))
     };
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("scope ", Style::default().fg(config.theme.get("dimmed"))),
-            Span::styled(
-                config.plan.scope.label(),
-                Style::default()
-                    .fg(config.theme.get("accent"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " -> grain ",
-                Style::default().fg(config.theme.get("dimmed")),
-            ),
-            Span::styled(
-                config.plan.grain.label(),
-                Style::default().fg(config.theme.get("accent")),
-            ),
-            Span::styled(
-                " -> compute ",
-                Style::default().fg(config.theme.get("dimmed")),
-            ),
-            Span::styled(
-                compute_label(config.plan),
-                Style::default().fg(config.theme.get("accent")),
-            ),
-            Span::styled(
-                " -> compare ",
-                Style::default().fg(config.theme.get("dimmed")),
-            ),
-            Span::styled(
-                config.plan.comparison_label(),
-                Style::default().fg(config.theme.get("accent")),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(format!("{source} "), source_style),
-            Span::styled(
-                if remote {
-                    "unknown".to_string()
-                } else {
-                    approximate_bytes_option(bytes)
-                },
-                source_style.add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" | ", Style::default().fg(config.theme.get("dimmed"))),
-            Span::styled(
-                if remote {
-                    "requests unknown".to_string()
-                } else {
-                    "no network requests".to_string()
-                },
-                Style::default().fg(config.theme.get("dimmed")),
-            ),
-            Span::styled(" | ", Style::default().fg(config.theme.get("dimmed"))),
-            Span::styled(
-                "REMOTE WRITE 0 B",
-                Style::default().fg(config.theme.get("success")),
-            ),
-        ]),
-    ];
+    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let accent = Style::default().fg(config.theme.get("accent"));
+    let plan_line = fit_segments(
+        vec![
+            vec![
+                Span::styled("scope ", dimmed),
+                Span::styled(
+                    config.plan.scope.label(),
+                    accent.add_modifier(Modifier::BOLD),
+                ),
+            ],
+            vec![
+                Span::styled(" -> grain ", dimmed),
+                Span::styled(config.plan.grain.label(), accent),
+            ],
+            vec![
+                Span::styled(" -> compute ", dimmed),
+                Span::styled(compute_label(config.plan), accent),
+            ],
+            vec![
+                Span::styled(" -> compare ", dimmed),
+                Span::styled(config.plan.comparison_label(), accent),
+            ],
+        ],
+        area.width,
+    );
+    let cost_line = fit_segments(
+        vec![
+            vec![
+                Span::styled(format!("{source} "), source_style),
+                Span::styled(
+                    if remote {
+                        "unknown".to_string()
+                    } else {
+                        approximate_bytes_option(bytes)
+                    },
+                    source_style.add_modifier(Modifier::BOLD),
+                ),
+            ],
+            vec![
+                Span::styled(" | ", dimmed),
+                Span::styled(
+                    if remote {
+                        "requests unknown".to_string()
+                    } else {
+                        "no network requests".to_string()
+                    },
+                    dimmed,
+                ),
+            ],
+            vec![
+                Span::styled(" | ", dimmed),
+                Span::styled(
+                    "remote write 0 B",
+                    Style::default().fg(config.theme.get("success")),
+                ),
+            ],
+        ],
+        area.width,
+    );
+    let lines = vec![plan_line, cost_line];
     Paragraph::new(lines)
         .style(Style::default().bg(config.theme.get("table_header_bg")))
         .render(area, buf);
@@ -1431,7 +1451,14 @@ fn render_sidebar(
         let focused =
             config.focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(index);
         let selected = *tool == AnalysisTool::DataQuality;
-        let prefix = if selected { "> " } else { "  " };
+        let g = crate::glyphs::get();
+        // The middot marks the applied choice, as in every Picker; the rail
+        // and tint stay with focus.
+        let prefix = if selected {
+            format!("{} ", g.middot)
+        } else {
+            "  ".to_string()
+        };
         ListItem::new(format!("{prefix}{name}")).style(if focused {
             config.theme.highlight_style()
         } else {
@@ -1460,9 +1487,27 @@ fn render_sidebar(
     } else {
         "0 B written"
     };
+    // A section heading on a rule, not another box: the sidebar already sits
+    // inside the screen's chrome, and a nested border spent two columns the
+    // 18-wide panel did not have.
+    let heading = |title: &str| {
+        let g = crate::glyphs::get();
+        let width = parts[1].width as usize;
+        let fill = width.saturating_sub(crate::glyphs::display_width(title) + 1);
+        Line::from(vec![
+            Span::styled(
+                title.to_string(),
+                Style::default().fg(config.theme.get("accent")),
+            ),
+            Span::styled(
+                format!(" {}", g.rule_h.repeat(fill)),
+                Style::default().fg(config.theme.get("modal_border")),
+            ),
+        ])
+    };
     let lines = match config.results {
         Some(results) => vec![
-            Line::styled("MEASURED", Style::default().fg(config.theme.get("accent"))),
+            heading("Measured"),
             Line::raw(format!(
                 "{} rows{}",
                 numfmt::group_chrome(results.evaluated_rows),
@@ -1491,7 +1536,7 @@ fn render_sidebar(
             Line::styled(written, Style::default().fg(config.theme.get("success"))),
         ],
         None => vec![
-            Line::styled("PLANNED", Style::default().fg(config.theme.get("accent"))),
+            heading("Planned"),
             Line::raw(format!(
                 "{} rows",
                 planned_rows(config.state, config.plan)
@@ -1506,14 +1551,7 @@ fn render_sidebar(
             Line::styled(written, Style::default().fg(config.theme.get("success"))),
         ],
     };
-    Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(config.theme.get("modal_border"))),
-        )
-        .render(parts[1], buf);
+    Paragraph::new(lines).render(parts[1], buf);
 }
 
 fn render_narrow_tool_picker(

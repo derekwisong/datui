@@ -1144,7 +1144,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    assert!(screen.contains("MEASURED"), "sidebar should report the run");
+    assert!(screen.contains("Measured"), "sidebar should report the run");
     assert!(screen.contains("eligible"));
 
     app.analysis_modal.set_quality_page(QualityPage::Plan);

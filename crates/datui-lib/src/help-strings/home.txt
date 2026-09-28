@@ -10,17 +10,22 @@ Navigation:
   ← / →:            Fold or unfold a section; → on a directory goes inside it
   Enter:            What the control bar says on this row: "Open all" reads a
                     whole directory as one table, "Inside" steps into it,
-                    "Open" loads a file, "Look" finds out first
-  Backspace:        Up a level; from a bucket, back to its cloud source
+                    "Open" loads a file, "Look" finds out first. On a section
+                    header, fold or unfold it; on the More row, show the rest
+  Backspace:        Delete a filter character; on an empty filter, up a
+                    level (from a bucket, back to its cloud source)
   Tab:              Cycle the sort; the control bar names the order in effect
-  Esc:              Back out one layer: the filter, the directory, then to
-                    the open data
+  Esc:              Back out one layer: the path prompt, the filter, the
+                    directory, then to the open data
 
 Finding:
   (type):           Filter by name or column; fuzzy, so "sal" finds "sales".
-                    Typing also searches below the working directory and the
-                    listed bucket names; matches appear under "Found"
-  ~:                Type a path or URL by hand (Tab completes)
+                    Typing also searches below the directory you are inside
+                    and the listed bucket names; matches appear under "Found"
+  ~:                While the filter is empty: type a path or URL by hand.
+                    The prompt is a plain editor: characters, Backspace,
+                    Ctrl+U clears, Tab completes, Enter opens, Esc closes.
+                    With a filter typed, ~ types into it
   Ctrl+U:           Clear the filter or path input
   Ctrl+R:           List again what is on screen
   Ctrl+A:           Show or hide files datui cannot read
@@ -40,10 +45,13 @@ Sections, in order:
 Reading a row:
   A directory's label says what is directly inside: a count and format
   ("12 parquet"), hive, delta, iceberg, hudi, "mixed", or "dir". A label of
-  … has not been looked at yet; labels fill in as you scroll. The first row
-  inside any directory is "(all files)" — Enter there reads the whole
-  directory as one table whatever the label says. The details pane carries
-  the full tally, and the Notes tab says what a read had to decide.
+  … has not been looked at yet; labels fill in as you scroll. Inside a
+  directory with something openable, the first row is "(all files)" — or
+  "(all partitions)" in a hive directory — and Enter there reads the whole
+  directory as one table whatever the label says. The row hides while a
+  filter is typed, and is absent when nothing inside is openable. The
+  details pane carries the full tally, and the Notes tab says what a read
+  had to decide.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)
@@ -51,5 +59,6 @@ Help and leaving:
 
 What datui remembers, all under its cache directory and never the data
 itself: recent paths, the shapes and column names it measured (so this
-screen can say 1,000 × 11 without reading anything), and query history.
+screen can say 1,000 × 11 without reading anything), query history, section
+folds, bucket listings, hidden cloud sources and public places.
 datui --clear-cache removes all of it.

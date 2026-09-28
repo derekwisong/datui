@@ -16,12 +16,15 @@ or <kbd>Esc</kbd> closes it.
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> | Switch tab |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tab; afterward focus rests on the tab bar |
 | <kbd>i</kbd> | Open the panel — on the Notes tab while notes are unread |
 | <kbd>Tab</kbd> | On the Schema tab, move focus between the tab bar and the column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table, or move through the notes |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the column table (when it is focused), or move through the notes |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
+
+The panel's footer names the keys that work now, and when the schema table
+is taller than the panel it counts the columns out of view.
 
 The row count is for the whole dataset, not the rows on screen. The type of
 each column is also shown in the table's second header row, which <kbd>D</kbd>
@@ -81,8 +84,8 @@ as text**: press <kbd>Enter</kbd> on it and the column is read from the files
 that disagree too, at the type each of them wrote, so the values the conflict hid
 appear. While the cursor is on such a note the panel's last row says so. A filter
 or sort on the column then compares text, and a note stays to say it. A column
-any file holds as a list, a duration or binary cannot be shown as text at all,
-and no offer is made for it.
+any file holds as a list, an array, a duration, binary or an unknown type
+cannot be shown as text at all, and no offer is made for it.
 
 Every note but one kind describes the dataset as opened. The exception is the
 note about a filter or sort leaving rows out, which describes the view: one

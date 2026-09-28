@@ -14624,7 +14624,7 @@ impl App {
                         // A refusal is validation, not a failure: it is said on
                         // the surface's own status line, not in a modal.
                         self.template_modal.status = Some(
-                            "Nothing to save yet: set a query, filter, sort or column layout first."
+                            "Nothing to save yet: set a query, filter, sort, column layout, or pivot/melt first."
                                 .to_string(),
                         );
                     } else {
@@ -18695,7 +18695,7 @@ impl App {
             InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
                 Some(InputType::Search) => ("Query Help", help_strings::query()),
-                _ => ("Editing Help", help_strings::editing()),
+                _ => ("Go to Line", help_strings::go_to_line()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
             InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),

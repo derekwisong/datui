@@ -1,6 +1,6 @@
 Navigation:
   Arrows (h/j/k/l): Scroll table
-  PgUp/PgDn:       Scroll pages (Ctrl+F / Ctrl+B)
+  PgUp/PgDn:       Scroll pages (Ctrl+F down, Ctrl+B up)
   Home/End:        Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:   Half page down/up
   ::               Go to line number (e.g. :0 Enter for top)
@@ -10,20 +10,21 @@ Data Operations:
   /:                Open Query input
   c:                Open charts
   s:                Open the Sort & Filter sidebar (tabs: Columns, Filters)
-  a:                Open Statistical Analysis
+  a:                Open Statistical Analysis. In a Data Quality evidence
+                    drill a is disabled; Esc returns to the observation
   p:                Open Pivot & Melt
   e:                Export data to file
   y:                Copy to the clipboard (cell, row, view or table)
   r:                Reverse sort order (sorted columns carry a direction
-                    mark in the header)
-  R:                Reset table (clear queries, filters, sorts, locks)
+                    mark in the header); with no sort, reverse the row order
+  R:                Reset table: clear the query, filters, sort, column
+                    order and hidden columns, frozen columns, pivot/melt,
+                    drill-down and the applied view
   V:                Apply the best-matching view (or open the list)
   v:                Open the views list
 
 Display:
   i:                Open Info panel (tabs: Schema, Resources, Partitions, Notes)
-  Tab / Shift+Tab:  In Info: move focus (tab bar ↔ schema table)
-  Left / Right:     In Info: switch tabs from anywhere (h/l too)
   N:                Toggle row numbers
   F:                Toggle number formatting (thousands separators)
   D:                Toggle the type row under the column headers
@@ -32,16 +33,13 @@ Display:
                     file again, so the query, filters and sort are cleared
   ? / F1:           Open this help (F1 works in text fields). Esc or ? to close.
 
+  Only the keys above are table keys: a letter with Ctrl or Alt held does
+  nothing here, beyond Ctrl+F/Ctrl+B and Ctrl+D/Ctrl+U paging.
+
 Help Navigation:
-  Arrow keys (↑↓):  Scroll help content
+  ↑↓ (j/k):         Scroll help content
   PageUp/PageDown:  Scroll help pages
   Home/End:         Jump to top/bottom
-
-Analysis View:
-  a:                Open statistical analysis
-  r:                Resample data (if sampled)
-  Arrow keys:       Scroll statistics table
-  Esc:              Return to main view
 
 Exit:
   Ctrl+O:           Home screen (works during a load; abandons it)
@@ -51,18 +49,20 @@ Exit:
   Q:                Quit
 
 While busy:
-  Keys typed at a spinner are queued and replayed once the work is done, so
-  typing ahead is never lost. Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load
-  at once; at the plain table, q, Q, column scroll (←/→, h/l), ? and F1
-  also act at once when nothing is queued.
+  At the plain table, q, Q, column scroll (←/→, h/l), ? and F1 act at once;
+  Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once. Other keys are
+  queued and replayed in order once the work is done — except a bare Enter
+  or Esc, which is dropped. At most 32 keys are held, and held keys die
+  with the screen they were typed at. At the loading screen nothing is
+  held: the allowed keys act, the rest are dropped.
 
 Empty cells:
   A directory of Parquet files may hold files that disagree, so an empty cell
   says which kind of empty it is:
-    null         the data's own null
-    absent       the file this row came from has no such column
-    conflicting  the file holds the column in another type, so it was not
-                 read from that file
-  A column whose name is followed by a mark is not in every file, or the
-  files disagree on its type. The Info panel's Schema tab says where the
-  schema came from.
+    ∅ (ASCII ~)    null: the data's own null
+    · (ASCII .)    absent: the file this row came from has no such column
+    ≠ (ASCII !)    conflicting: the file holds the column in another type,
+                   so it was not read from that file
+  A column whose name carries a * mark is not in every file, or the files
+  disagree on its type. The Info panel's Schema tab says where the schema
+  came from.

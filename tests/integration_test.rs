@@ -3306,8 +3306,10 @@ fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     // Narrow, and short enough that the notes do not all fit: both halves of the last
-    // row have something to say, and not enough room to say it in.
-    let area = Rect::new(0, 0, 44, 12);
+    // row have something to say, and not enough room to say it in. 74 wide because
+    // the sidebar clamp leaves the table 30 columns, so the panel itself gets the
+    // 44 this test is about.
+    let area = Rect::new(0, 0, 74, 12);
     let _ = painted(&mut app, &rx, &tx, area);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
@@ -5273,8 +5275,9 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
 }
 
 /// Going home clears the *load's* busy state, and leaves `task_generation` alone —
-/// that counter also gates analysis and export results, which keep running. The keys
-/// typed at the frozen screen were meant for the load and go with it.
+/// that counter also gates analysis and export results, which keep running. The
+/// loading screen has nothing to type ahead into, so keys typed there are dropped
+/// rather than held (a held stray key used to queue `q` behind it).
 #[test]
 fn test_entering_home_clears_load_state_but_not_task_generation() {
     common::ensure_sample_data();
@@ -5293,8 +5296,8 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
     }
     assert_eq!(
         pump.held_keys().count(),
-        2,
-        "keys typed at a load are held, not dropped"
+        0,
+        "the loading screen holds nothing: stray keys are dropped"
     );
 
     let generation_before = pump.app.task_generation();
@@ -5305,11 +5308,6 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
     assert!(
         !pump.app.is_busy(),
         "abandoning should clear the load's busy flag"
-    );
-    assert_eq!(
-        pump.held_keys().count(),
-        0,
-        "keys typed at the frozen screen were meant for the load"
     );
     assert_eq!(
         pump.app.task_generation(),
@@ -9713,11 +9711,11 @@ fn test_the_pane_only_promises_a_door_that_exists() {
 
     let shown = pane(&mut app, "full");
     assert!(
-        shown.contains("first row in there"),
+        shown.contains("first row inside"),
         "a directory with something in it has the door to point at: {shown}"
     );
     assert!(
-        !pane(&mut app, "empty").contains("first row in there"),
+        !pane(&mut app, "empty").contains("first row inside"),
         "an empty directory has none, so nothing points at one"
     );
 }

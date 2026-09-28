@@ -12,8 +12,9 @@ the input.
 
 <kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
 walk the history of the current tab. Submit an empty query to return to the
-full table. <kbd>R</kbd> in the main view does the same and also clears filters
-and sort.
+full table. Running a query — or clearing one — starts a fresh view: sidebar
+filters, sort, frozen columns and pivot/melt are dropped. This is deliberate;
+apply them after the query.
 
 ![Querying Demo](../demos/02-querying.gif)
 
@@ -46,7 +47,9 @@ select where city.contains["York"]       # string accessors
 
 `+`, `-`, `*` and `/` for divide; `%` also divides. The language is a q/kdb+
 dialect, which is where `%` and the **right to left** binding come from:
-`a * b + c` is `a * (b + c)`. Use parentheses when in doubt.
+`a * b + c` is `a * (b + c)`. Use parentheses when in doubt. Comparisons bind
+the same way, so `(a + b) * 2 > 100` parses as `(a + b) * (2 > 100)` — put
+the comparison first: `100 < (a + b) * 2`.
 
 ```
 select margin: (price - cost) / price where qty > 0

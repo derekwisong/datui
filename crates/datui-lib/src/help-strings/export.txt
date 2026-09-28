@@ -3,16 +3,29 @@ Export current data to a file.
   Tab / Shift+Tab:  Move focus between fields
   ↑ / ↓ (j/k):      In the format list: change format
                     On Compression: change compression
-                    In other fields: move focus
+                    In Path and Delimiter: nothing (no history there, and
+                    j/k are characters)
   ← / → (h/l):      Move the cursor in text fields
                     On Compression: change compression
+                    On Include header and Source file: move focus
   Space:            Toggle a checkbox (Include header, Source file)
-  Enter:            Export, from anywhere in the form
+  Enter:            Export, from anywhere in the form. On a blank path the
+                    form says "Enter a file path." instead of exporting
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close without exporting
 
-  Typing a known extension (.csv, .parquet, .json, .jsonl, .arrow, .avro,
-  also before .gz/.zst/.bz2/.xz) selects the matching format.
+  Typing a known extension (.csv, .parquet, .json, .jsonl, .ndjson, .arrow,
+  .ipc, .feather, .avro) selects the matching format, and a trailing
+  .gz/.zst/.bz2/.xz sets the compression. Picking a format rewrites a typed
+  format extension to match, so the name and the bytes agree.
+
+  On a narrow terminal the dialog stacks into one column, Format first;
+  ↑/↓ still cycle it.
+
+If the file exists:
+  Enter asks first, starting on No. ← / → (h/l) or Tab pick Overwrite or
+  No, Enter confirms the one picked, Esc declines. Declining returns to
+  the filled form, path intact.
 
 Formats:
   CSV:     Comma-separated values (configurable delimiter, header)
@@ -32,5 +45,8 @@ Source file:
   under the next free number.
 
 CSV Options:
-  Delimiter:        Character to separate columns (default: comma)
+  Delimiter:        Separates columns: --delimiter when given, else comma.
+                    Only the first ASCII character counts, and Tab moves
+                    focus, so a tab cannot be typed here — TSV needs
+                    --delimiter
   Include header:   Whether to write column names as first row

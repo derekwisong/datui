@@ -3,11 +3,15 @@ panel on the Notes tab; after that, on Schema.
 
   Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
                     On other tabs: focus stays on tab bar.
-  Left / Right:     Switch tabs
-  ↑ / ↓:            Schema tab (when focused) or Notes tab: move the cursor
+  ← / → (h/l):      Switch tabs. Afterward focus rests on the tab bar, so
+                    Tab returns to the body before ↑/↓ scroll
+  ↑ / ↓ (j/k):      Schema tab (when focused) or Notes tab: move the cursor
   Enter:            Notes tab: take the offer on the note, where it has one
   ? / F1:           Show this help
   Esc / i:          Close info panel
+
+  The panel's footer names the keys that work now, and when the schema
+  table is taller than the panel it counts the columns out of view.
 
 Tabs:
   Schema:     Every column, its type, and which footers the schema came from
@@ -37,8 +41,9 @@ Notes:
   too, at the type each of them wrote, so the values the conflict hid can be
   seen; the marks and the note go with the conflict. Nothing is listed again and
   no footer is read again. A filter or sort on the column then compares text,
-  and a note says so. A column any file holds as a list, a duration or binary
-  has no text form datui can show, and is not offered.
+  and a note says so. A column any file holds as a list, an array, a duration,
+  binary or an unknown type has no text form datui can show, and is not
+  offered.
 
   When there is something to note, the i key in the control bar takes a quiet
   accent until this panel has been opened. display.notes_accent = false turns

@@ -1377,6 +1377,84 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
 }
 
+/// The Data Quality scope input is a text field: Ctrl-C must reach the
+/// textarea's Copy binding instead of quitting, and `?` must type into the
+/// scope command instead of opening help.
+#[test]
+fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityPage;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+
+    // Esc to the plan, e to edit, Enter on the Scope field opens the input.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    assert!(app.text_field_focused());
+
+    let quit = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(
+        !matches!(quit, Some(AppEvent::Exit)),
+        "Ctrl-C in the scope input must not quit"
+    );
+
+    let before = app
+        .analysis_modal
+        .data_quality_scope_input
+        .value()
+        .to_string();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('?'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_scope_input.value(),
+        format!("{before}?"),
+        "? in the scope input must type, not open help"
+    );
+}
+
 /// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
 /// when the user presses Tab, never as a side effect of Enter or of results
 /// arriving. Reviewers kept landing in the wrong tool because it jumped.

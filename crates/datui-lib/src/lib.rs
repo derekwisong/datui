@@ -6809,17 +6809,18 @@ impl App {
                 }
             }
             InputMode::Normal => {
-                self.template_modal.active
-                    && self.template_modal.mode != TemplateModalMode::List
-                    && matches!(
-                        self.template_modal.form_focus,
-                        FormFocus::Name
-                            | FormFocus::Description
-                            | FormFocus::ExactPath
-                            | FormFocus::RelativePath
-                            | FormFocus::PathPattern
-                            | FormFocus::FilenamePattern
-                    )
+                self.analysis_modal.quality_scope_typing()
+                    || (self.template_modal.active
+                        && self.template_modal.mode != TemplateModalMode::List
+                        && matches!(
+                            self.template_modal.form_focus,
+                            FormFocus::Name
+                                | FormFocus::Description
+                                | FormFocus::ExactPath
+                                | FormFocus::RelativePath
+                                | FormFocus::PathPattern
+                                | FormFocus::FilenamePattern
+                        ))
             }
             InputMode::Home | InputMode::Info => false,
         }

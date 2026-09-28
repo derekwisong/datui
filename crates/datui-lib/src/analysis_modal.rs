@@ -321,6 +321,19 @@ impl AnalysisModal {
         }
     }
 
+    /// Whether the Data Quality scope input owns typed characters. Mirrors the key
+    /// routing in `App::key`, so Ctrl-C and `?` stay ordinary text keys there.
+    pub fn quality_scope_typing(&self) -> bool {
+        self.active
+            && self.selected_tool == Some(AnalysisTool::DataQuality)
+            && self.view == AnalysisView::Main
+            && self.data_quality_page == QualityPage::Scope
+            && self.focus == AnalysisFocus::Main
+            && !self.data_quality_confirm_run
+            && !self.data_quality_show_access
+            && !self.data_quality_observation_detail
+    }
+
     pub fn set_quality_page(&mut self, page: QualityPage) {
         self.data_quality_page = page;
         self.data_quality_observation_detail = false;

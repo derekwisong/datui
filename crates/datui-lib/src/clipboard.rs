@@ -234,14 +234,24 @@ pub fn markdown(df: &DataFrame) -> Result<String, String> {
                 .max(3)
         })
         .collect();
-    let pad = |s: &str, w: usize| format!("{s}{}", " ".repeat(w - s.chars().count()));
+    // A numeric column is padded to the right, so the raw text reads the way
+    // the `---:` delimiter tells a renderer to draw it; the two agree.
+    let pad = |s: &str, w: usize, right: bool| {
+        let fill = " ".repeat(w - s.chars().count());
+        if right {
+            format!("{fill}{s}")
+        } else {
+            format!("{s}{fill}")
+        }
+    };
     let mut lines = Vec::with_capacity(df.height() + 2);
     lines.push(format!(
         "| {} |",
         names
             .iter()
             .zip(&widths)
-            .map(|(n, &w)| pad(n, w))
+            .zip(&numeric)
+            .map(|((n, &w), &num)| pad(n, w, num))
             .collect::<Vec<_>>()
             .join(" | ")
     ));
@@ -266,7 +276,8 @@ pub fn markdown(df: &DataFrame) -> Result<String, String> {
             cells
                 .iter()
                 .zip(&widths)
-                .map(|(body, &w)| pad(&body[row], w))
+                .zip(&numeric)
+                .map(|((body, &w), &num)| pad(&body[row], w, num))
                 .collect::<Vec<_>>()
                 .join(" | ")
         ));
@@ -372,8 +383,11 @@ mod tests {
         let text = markdown(&tricky()).unwrap();
         let lines: Vec<&str> = text.split('\n').collect();
         assert!(lines[0].starts_with("| name"));
-        // The numeric column's delimiter declares right alignment.
+        // The numeric column's delimiter declares right alignment, and the raw
+        // text pads its header and cells the same way, so the two agree.
         assert!(lines[1].contains("-: |"), "{}", lines[1]);
+        assert!(lines[0].ends_with("|   n |"), "{}", lines[0]);
+        assert!(lines[2].ends_with("|   1 |"), "{}", lines[2]);
         assert!(text.contains("pipe\\|and newline"), "{text}");
         // Every row spans the same padded width.
         let width = lines[0].chars().count();

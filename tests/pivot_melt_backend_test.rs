@@ -606,7 +606,7 @@ fn test_template_save_and_apply_pivot() {
         "raw data must have key column before apply"
     );
 
-    send_key(&mut app, KeyCode::Char('T'));
+    send_key(&mut app, KeyCode::Char('V'));
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();

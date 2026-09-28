@@ -1,0 +1,43 @@
+A view saves a query, filters, sort and column layout, and applies them to
+datasets that match by path or schema.
+
+Views list:
+  ↑ / ↓ (j/k):      Move in the list
+  Enter:            Apply the selected view
+  s:                Save the current state as a view (an untouched table
+                    has nothing to save, and s says so)
+  e:                Edit the selected view
+  d:                Delete the selected view, after confirming
+  i:                Show how the selected view's score was computed
+  ? / F1:           Show this help (F1 works in text fields)
+  Esc:              Close
+
+  The score mark says how well each view fits the open dataset, and the
+  applied view carries a check mark. The Match column says why a view fits:
+  same file, same columns, or a pattern. V at the table applies the best
+  view that matches; when none does, V opens this list instead.
+
+Save and edit form:
+  Tab / Shift+Tab:  Move between rows (↑/↓ outside the description)
+  Enter:            Save (in the description Enter types; Ctrl+Enter saves)
+  Space:            Expand or collapse Matching; toggle schema match
+  Esc:              Back to the list, discarding edits
+
+  Name is required and starts as the file's name. The Matching section
+  holds the optional criteria: exact path, relative path, path pattern and
+  filename pattern (glob-like), and schema match (column names). Schema
+  match starts enabled — it is what carries the view to the next table
+  with these columns.
+
+  Editing changes a view's name, description and matching. Its saved
+  settings follow the table only while the view is the one applied, so
+  renaming a view never overwrites what it carries.
+
+Matching:
+  V and [templates] auto_apply only apply a view one of whose rules fits
+  the open file; this list shows every view, ranked. Exact path ranks
+  highest, then relative path, then the schema, then patterns.
+
+Delete confirmation:
+  Enter (or d):     Delete
+  Esc:              Cancel

@@ -190,7 +190,13 @@ pub fn render(
     }
 
     if app.template_modal.active {
-        crate::render::template_sidebar::render(sort_area, buf, app, ctx);
+        crate::render::template_sidebar::render(
+            sort_area,
+            buf,
+            &mut app.template_modal,
+            app.active_template_id.as_deref(),
+            ctx,
+        );
     }
 
     if app.pivot_melt_modal.active {

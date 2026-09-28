@@ -472,7 +472,7 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
     ),
     (
         "templates",
-        "# ============================================================================\n# Template Settings\n# ============================================================================",
+        "# ============================================================================\n# View Settings (the section keeps its pre-0.4 name)\n# ============================================================================",
     ),
     (
         "debug",
@@ -1607,7 +1607,7 @@ panel has not been opened since. The Notes tab is there either way",
     ),
     (
         "sidebar_width",
-        "Optional: fixed width in characters for all sidebars (Info, Sort & Filter, Templates, Pivot & Melt). When unset, each sidebar uses its default width. Example: sidebar_width = 70",
+        "Optional: fixed width in characters for all sidebars (Info, Sort & Filter, Views, Pivot & Melt). When unset, each sidebar uses its default width. Example: sidebar_width = 70",
     ),
     (
         "align_numeric_right",
@@ -1641,7 +1641,7 @@ panel has not been opened since. The Notes tab is there either way",
          preset. Formatting is otherwise never taken from the environment, because a data file has\n\
          no locale and the same file should render identically on every machine.\n\
          \n\
-         Formatting is display-only. Exports, queries, filters and templates always use raw values.",
+         Formatting is display-only. Exports, queries, filters and views always use raw values.",
     ),
 ];
 
@@ -2244,7 +2244,7 @@ pub struct TemplateConfig {
 // Field comments for TemplateConfig
 const TEMPLATE_COMMENTS: &[(&str, &str)] = &[(
     "auto_apply",
-    "Auto-apply most relevant template on file open",
+    "Apply the best-matching view when a file opens",
 )];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

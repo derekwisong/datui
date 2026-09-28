@@ -8,6 +8,8 @@ use ratatui::{
 
 pub struct Controls {
     pub row_count: Option<usize>,
+    /// True when `q` pops to the home screen instead of quitting; the bar says so.
+    pub q_pops: bool,
     /// The dataset's full row count, when `row_count` is a filtered or queried subset
     /// of it. The bar then reads "Rows: 417 of 1,000" instead of a bare number that
     /// hides the filter. Only ever a count something already resolved.
@@ -117,6 +119,11 @@ impl Controls {
     }
 
     /// Set the full dataset count beside a filtered view's. See [`Self::total_row_count`].
+    pub fn with_q_pops(mut self, q_pops: bool) -> Self {
+        self.q_pops = q_pops;
+        self
+    }
+
     pub fn with_total_row_count(mut self, total: Option<usize>) -> Self {
         self.total_row_count = total;
         self
@@ -135,6 +142,7 @@ impl Controls {
         Self {
             caption: None,
             row_count: Some(row_count),
+            q_pops: false,
             total_row_count: None,
             dimmed: false,
             query_active: false,
@@ -317,7 +325,12 @@ impl Widget for &Controls {
         let controls: Vec<(&str, &str)> = if let Some(ref custom) = self.custom_controls {
             custom.to_vec()
         } else {
-            DEFAULT_CONTROLS.to_vec()
+            let mut defaults = DEFAULT_CONTROLS.to_vec();
+            if self.q_pops {
+                // The bar says which meaning q carries right now.
+                defaults.last_mut().expect("q is the last chip").1 = "Home";
+            }
+            defaults
         };
 
         // The accented label carries no background of its own: the bar's Block above
@@ -332,7 +345,7 @@ impl Widget for &Controls {
         // chip on a narrow terminal.
         let n = controls.len() as i32;
         for (i, (key, label)) in controls.iter().enumerate() {
-            let way_out = matches!(*key, "Esc" | "^C" | "^Q") || *label == "Quit";
+            let way_out = matches!(*key, "Esc" | "^C" | "^Q" | "q") || *label == "Quit";
             let weight = if way_out { n + 1 } else { n - i as i32 };
             bar = bar.hint_weighted(key, label, weight);
         }

@@ -37,7 +37,8 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
-| <kbd>q</kbd> <kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |
+| <kbd>q</kbd> | Back to the home screen when the dataset was opened from it; otherwise quit — the control bar says which |
+| <kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |
 
 The three toggles last for the session; the config file sets the state at
 launch.

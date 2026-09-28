@@ -192,9 +192,10 @@ leaving:
 
 - Arrows and `h/j/k/l`; `PgUp/PgDn` (and `Ctrl+F/B`, `Ctrl+D/U` at the
   table); `Home/End` (`G`); `:` go-to-line.
-- Esc's layered back-out; `q`, `Q`, `Ctrl+Q`, `Ctrl+C` to quit; `Ctrl+O`
-  home. (An approved evolution of `q` to "pop to home when home is in the
-  stack" is tracked in the navigation issue; until it lands, `q` quits.)
+- Esc's layered back-out; `q` pops to home when the dataset was opened
+  from it and quits otherwise (the control bar says which); `Q`, `Ctrl+Q`,
+  `Ctrl+C` quit unconditionally; `Ctrl+O` home. (#320 landed the approved
+  `q` evolution.)
 - `?` and F1 for help, including home's empty-filter `?`.
 - The feature keys: `/ s c a p e i t T r R N F D H`, Enter-to-drill.
 - Text fields keep their readline bindings.

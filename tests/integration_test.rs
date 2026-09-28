@@ -5107,6 +5107,72 @@ fn test_len_generations_are_unique_across_datasets() {
     );
 }
 
+/// q pops the context: a dataset opened from the home screen returns there,
+/// one launched straight from the command line quits as it always has. Q is
+/// unconditional, and the control bar says which meaning q carries.
+#[test]
+fn q_pops_to_home_only_when_home_is_in_the_stack() {
+    // Launched straight onto a file: q quits.
+    let (mut app, _rx, _tx) = open_query_filter_fixture("q_direct.csv");
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        matches!(out, Some(AppEvent::Exit)),
+        "a direct launch keeps q as quit"
+    );
+    let area = Rect::new(0, 0, 110, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    assert!(
+        rendered_text(&buf).contains(" Quit"),
+        "the bar says q quits here"
+    );
+
+    // Opened from the home screen: q returns there.
+    let (mut app, rx, _tx) = open_query_filter_fixture("q_from_home.csv");
+    app.enter_home();
+    assert_eq!(app.input_mode, InputMode::Home);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/q_from_home.csv")],
+        OpenOptions::default(),
+    );
+    // As `home_open_path` does before it emits the `Open`.
+    app.input_mode = InputMode::Normal;
+
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar = rendered_text(&buf);
+    assert!(
+        bar.contains(" Home"),
+        "the bar says q goes home here: {bar:?}"
+    );
+
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )));
+    assert!(out.is_none(), "q does not quit with home in the stack");
+    assert_eq!(app.input_mode, InputMode::Home, "q pops to home");
+
+    // Q stays unconditional, from the same stack.
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/q_from_home.csv")],
+        OpenOptions::default(),
+    );
+    app.input_mode = InputMode::Normal;
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('Q'),
+        KeyModifiers::SHIFT,
+    )));
+    assert!(matches!(out, Some(AppEvent::Exit)), "Q always quits");
+}
+
 /// PgUp/PgDn at home move a screenful, like the table, not a fixed ten rows.
 #[test]
 fn home_paging_moves_a_screenful() {

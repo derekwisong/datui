@@ -40,11 +40,13 @@ and how many row pairs it was computed from.
 
 ## Data quality
 
-Choose **Data Quality** to profile selected rows at several scales. The first
-screen is an inert plan: no values are read until you press <kbd>Enter</kbd>.
-It shows the scope, profile grain, compute mode, comparison, estimated rows
-and transfer direction; <kbd>p</kbd> shows the estimate basis. A full value
-scan asks for confirmation.
+Choose **Data Quality** to profile selected rows at several scales. On a
+local file the default plan runs at once and the result opens first; the
+strip at the top echoes the plan that ran, and <kbd>e</kbd> edits it. On a
+remote source the first screen is an inert plan: no values are read until
+you press <kbd>Enter</kbd>. The plan shows the scope, profile grain, compute
+mode, comparison, estimated rows and transfer direction; <kbd>p</kbd> shows
+the estimate basis. A full value scan always asks for confirmation.
 
 | Setting | Choices |
 |---|---|

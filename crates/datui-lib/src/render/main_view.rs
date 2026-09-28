@@ -77,23 +77,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                 query_active,
             }
         }
-        MainViewContent::Analysis => {
-            let mut pairs = vec![
-                ("Esc", "Back"),
-                (crate::glyphs::get().updown, "Navigate"),
-                (crate::glyphs::get().updown_lr, "Scroll Columns"),
-                ("Tab", "Sidebar"),
-                ("Enter", "Select"),
-            ];
-            if app.sampling_threshold.is_some()
-                && let Some(results) = app.analysis_modal.current_results()
-                && results.sample_size.is_some()
-            {
-                pairs.push(("r", "Resample"));
-            }
-            pairs.push(("?", "Help"));
-            ControlBarSpec::Custom(pairs)
-        }
+        MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
         MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
@@ -114,6 +98,120 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             app.selected_directory_to_enter().is_some(),
             app.what_enter_does(),
         )),
+    }
+}
+
+/// Control bar keys for the analysis screen, per view, tool and Data Quality
+/// page. This is the screen's one hint surface: the widgets draw no key rows
+/// of their own, and a detail view's bar describes the detail, not the view
+/// it came from.
+fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+    use crate::analysis_modal::{AnalysisTool, AnalysisView};
+    let g = crate::glyphs::get();
+    let modal = &app.analysis_modal;
+    match modal.view {
+        AnalysisView::DistributionDetail => {
+            return vec![
+                ("Esc", "Back"),
+                (g.updown, "Distribution"),
+                ("s", "Scale"),
+                ("?", "Help"),
+            ];
+        }
+        AnalysisView::CorrelationDetail => return vec![("Esc", "Back"), ("?", "Help")],
+        AnalysisView::Main => {}
+    }
+    if modal.selected_tool == Some(AnalysisTool::DataQuality) {
+        return data_quality_control_keys(app);
+    }
+    let mut pairs = vec![
+        ("Esc", "Back"),
+        (g.updown, "Navigate"),
+        (g.updown_lr, "Scroll Columns"),
+        ("Tab", "Focus"),
+        ("Enter", "Select"),
+    ];
+    if app.sampling_threshold.is_some()
+        && let Some(results) = app.analysis_modal.current_results()
+        && results.sample_size.is_some()
+    {
+        pairs.push(("r", "Resample"));
+    }
+    pairs.push(("?", "Help"));
+    pairs
+}
+
+/// The Data Quality pages' keys. Whatever owns the keys right now — a run in
+/// flight, a popup, the scope editor, the plan editor — the bar says so.
+fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+    use crate::data_quality::QualityPage;
+    let g = crate::glyphs::get();
+    let modal = &app.analysis_modal;
+    if modal.computing.is_some() {
+        return vec![("Esc", "Cancel")];
+    }
+    if modal.data_quality_show_access {
+        return vec![("Enter", "Close"), ("Esc", "Close")];
+    }
+    if modal.data_quality_confirm_run {
+        return vec![("Enter", "Run"), ("Esc", "Cancel")];
+    }
+    if modal.data_quality_observation_detail {
+        return vec![("Enter", "Evidence"), ("Esc", "Back")];
+    }
+    if modal.data_quality_page == QualityPage::Scope {
+        return vec![("Enter", "Apply"), ("PgUp/PgDn", "Files"), ("Esc", "Back")];
+    }
+    if modal.data_quality_page == QualityPage::TimeRoles {
+        return vec![
+            (g.updown, "Role"),
+            (g.updown_lr, "Column"),
+            ("Enter", "Done"),
+            ("Esc", "Back"),
+        ];
+    }
+    if modal.data_quality_editing {
+        return vec![
+            (g.updown, "Field"),
+            (g.updown_lr, "Value"),
+            ("Enter", "Apply"),
+            ("Esc", "Cancel"),
+        ];
+    }
+    match modal.data_quality_page {
+        QualityPage::Plan => vec![
+            ("Enter", "Run"),
+            ("e", "Edit"),
+            ("p", "Access"),
+            ("Tab", "Focus"),
+            ("Esc", "Back"),
+            ("?", "Help"),
+        ],
+        QualityPage::Segments => vec![
+            ("[ ]", "Column"),
+            ("m", "Metric"),
+            ("b", "Baseline"),
+            ("1-4", "Page"),
+            ("e", "Plan"),
+            ("Esc", "Back"),
+        ],
+        QualityPage::Trends => vec![
+            ("[ ]", "Column"),
+            ("m", "Metric"),
+            ("1-4", "Page"),
+            ("e", "Plan"),
+            ("Esc", "Back"),
+        ],
+        _ => vec![
+            ("1", "Overview"),
+            ("2", "Columns"),
+            ("3", "Segments"),
+            ("4", "Trends"),
+            ("Enter", "Inspect"),
+            ("e", "Plan"),
+            ("Tab", "Focus"),
+            ("?", "Help"),
+        ],
     }
 }
 

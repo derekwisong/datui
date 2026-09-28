@@ -13494,7 +13494,6 @@ impl App {
                             .requires_confirmation()
                         {
                             self.analysis_modal.set_quality_page(QualityPage::Plan);
-                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             self.analysis_modal.data_quality_confirm_run = true;
                             return None;
                         }
@@ -13773,17 +13772,10 @@ impl App {
                     }
                 }
                 KeyCode::Tab => {
+                    // One rule for the whole screen: Tab moves sidebar <-> result.
+                    // The detail views have a single focusable thing, so it stays.
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        // Switch focus between main area and sidebar
                         self.analysis_modal.switch_focus();
-                    } else if self.analysis_modal.view
-                        == analysis_modal::AnalysisView::DistributionDetail
-                    {
-                        // In distribution detail view, only the distribution selector is focusable
-                        // Tab does nothing - focus stays on the distribution selector
-                    } else {
-                        // In other detail views, Tab cycles through sections
-                        self.analysis_modal.next_detail_section();
                     }
                 }
                 KeyCode::Enter
@@ -13839,7 +13831,28 @@ impl App {
                             }
                             Some(analysis_modal::AnalysisTool::DataQuality) => {
                                 self.restore_recent_quality_plan();
-                                self.restore_cached_quality();
+                                if !self.restore_cached_quality()
+                                    && self.analysis_modal.data_quality_results.is_none()
+                                    && !self
+                                        .analysis_modal
+                                        .data_quality_plan
+                                        .requires_confirmation()
+                                    && self
+                                        .data_table_state
+                                        .as_ref()
+                                        .is_some_and(|state| !state.is_remote_source())
+                                {
+                                    // A local read costs nothing worth confirming:
+                                    // lead with the result. The plan stays one Esc
+                                    // (or e) away, echoed in the strip up top.
+                                    self.analysis_modal.computing = Some(AnalysisProgress {
+                                        phase: "Profiling data quality".to_string(),
+                                        current: 0,
+                                        total: 1,
+                                    });
+                                    self.busy = true;
+                                    return Some(AppEvent::AnalysisDataQualityCompute);
+                                }
                             }
                             _ => {}
                         }

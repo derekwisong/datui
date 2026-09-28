@@ -66,7 +66,6 @@ pub struct AnalysisModal {
     pub selected_tool: Option<AnalysisTool>,
     pub selected_distribution: Option<usize>, // Selected row in distribution table
     pub selected_correlation: Option<(usize, usize)>, // Selected cell in correlation matrix (row, col)
-    pub detail_section: usize, // Current section in detail view (0=Characteristics, 1=Outliers, 2=Percentiles)
     pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
     pub distribution_selector_state: TableState,             // For distribution selector list
     pub histogram_scale: HistogramScale,                     // Scale for histogram (linear or log)
@@ -116,7 +115,6 @@ impl AnalysisModal {
         self.selected_tool = None; // No tool until user selects from sidebar
         self.selected_distribution = Some(0);
         self.selected_correlation = Some((0, 0));
-        self.detail_section = 0;
         self.computing = None;
         self.describe_results = None;
         self.distribution_results = None;
@@ -157,7 +155,6 @@ impl AnalysisModal {
         self.selected_tool = None;
         self.selected_distribution = None;
         self.selected_correlation = None;
-        self.detail_section = 0;
         self.computing = None;
         self.describe_results = None;
         self.distribution_results = None;
@@ -205,6 +202,8 @@ impl AnalysisModal {
         }
     }
 
+    /// Select the tool under the sidebar cursor. Focus stays on the sidebar:
+    /// it moves only when the user presses Tab, never as a side effect.
     pub fn select_tool(&mut self) {
         if let Some(idx) = self.sidebar_state.selected() {
             self.selected_tool = Some(match idx {
@@ -214,7 +213,6 @@ impl AnalysisModal {
                 3 => AnalysisTool::DataQuality,
                 _ => AnalysisTool::Describe,
             });
-            self.focus = AnalysisFocus::Main;
         }
     }
 
@@ -244,7 +242,6 @@ impl AnalysisModal {
                 self.selected_theoretical_distribution = dist_analysis.distribution_type;
             }
             self.view = AnalysisView::DistributionDetail;
-            self.detail_section = 0;
             self.focus = AnalysisFocus::DistributionSelector;
             if self.selected_theoretical_distribution == DistributionType::Unknown {
                 self.selected_theoretical_distribution = DistributionType::Normal;
@@ -265,20 +262,7 @@ impl AnalysisModal {
 
     pub fn close_detail(&mut self) {
         self.view = AnalysisView::Main;
-        self.detail_section = 0;
         self.focus = AnalysisFocus::Main;
-    }
-
-    pub fn next_detail_section(&mut self) {
-        self.detail_section = (self.detail_section + 1) % 3;
-    }
-
-    pub fn previous_detail_section(&mut self) {
-        self.detail_section = if self.detail_section == 0 {
-            2
-        } else {
-            self.detail_section - 1
-        };
     }
 
     pub fn scroll_left(&mut self) {

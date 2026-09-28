@@ -71,7 +71,7 @@ the same way, then type the value — <kbd>Enter</kbd> saves the row, and
 
 The value is parsed as the column's type, so `> 1000` on a number column is a
 numeric comparison. Filters stay in place while you chart, analyze or export,
-and are saved in [templates](templates.md).
+and are saved in [views](views.md).
 
 ## From the query prompt
 

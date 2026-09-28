@@ -5867,6 +5867,26 @@ impl DataTableState {
         &self.column_order
     }
 
+    /// Whether the table shows its defaults: no query, filters, sort or
+    /// reshape, every column in file order, nothing locked. A view saved
+    /// from this state would carry nothing — and, matching by schema, it
+    /// would shadow real views in the apply gate as a well-used no-op.
+    pub fn is_at_defaults(&self) -> bool {
+        self.active_query.is_empty()
+            && self.active_sql_query.is_empty()
+            && self.active_fuzzy_query.is_empty()
+            && self.filters.is_empty()
+            && self.sort_columns.is_empty()
+            && self.last_pivot_spec.is_none()
+            && self.last_melt_spec.is_none()
+            && self.locked_columns_count() == 0
+            && self
+                .column_order
+                .iter()
+                .map(String::as_str)
+                .eq(self.schema.iter_names().map(|s| s.as_str()))
+    }
+
     pub fn get_active_query(&self) -> &str {
         &self.active_query
     }

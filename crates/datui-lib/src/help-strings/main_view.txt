@@ -16,8 +16,8 @@ Data Operations:
   r:                Reverse sort order (sorted columns carry a direction
                     mark in the header)
   R:                Reset table (clear queries, filters, sorts, locks)
-  T:                Apply the best-matching template (or open the list)
-  t:                Open Template menu
+  V:                Apply the best-matching view (or open the list)
+  v:                Open the views list
 
 Display:
   i:                Open Info panel (modal: Schema & Resources)

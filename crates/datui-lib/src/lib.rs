@@ -117,7 +117,7 @@ pub use template::{Template, TemplateManager};
 use widgets::controls::Controls;
 use widgets::datatable::DataTableState;
 use widgets::debug::DebugState;
-use widgets::template_modal::{CreateFocus, TemplateFocus, TemplateModal, TemplateModalMode};
+use widgets::template_modal::{FormFocus, TemplateModal, TemplateModalMode, ViewRow};
 use widgets::text_input::{TextInput, TextInputEvent};
 
 /// Application name used for cache directory and other app-specific paths
@@ -6772,13 +6772,13 @@ impl App {
                 self.template_modal.active
                     && self.template_modal.mode != TemplateModalMode::List
                     && matches!(
-                        self.template_modal.create_focus,
-                        CreateFocus::Name
-                            | CreateFocus::Description
-                            | CreateFocus::ExactPath
-                            | CreateFocus::RelativePath
-                            | CreateFocus::PathPattern
-                            | CreateFocus::FilenamePattern
+                        self.template_modal.form_focus,
+                        FormFocus::Name
+                            | FormFocus::Description
+                            | FormFocus::ExactPath
+                            | FormFocus::RelativePath
+                            | FormFocus::PathPattern
+                            | FormFocus::FilenamePattern
                     )
             }
             InputMode::Home | InputMode::Info => false,
@@ -7265,17 +7265,18 @@ impl App {
         // The dataset is installed and its schema known, so this is where a template
         // meets it. `--template` names one and applies to this first open alone;
         // `[templates] auto_apply` dresses every open that has a matching template.
+        // A fresh dataset starts with no view applied: the previous file's view
+        // must not wear the check mark here, nor count as applied when edited.
+        self.active_template_id = None;
         if let Some(name) = self.startup_template.take() {
             match self.template_manager.get_template_by_name(&name).cloned() {
                 Some(template) => {
                     if let Err(e) = self.apply_template(&template) {
                         self.error_modal
-                            .show(format!("Error applying template \"{name}\": {e}"));
+                            .show(format!("Error applying view \"{name}\": {e}"));
                     }
                 }
-                None => self
-                    .error_modal
-                    .show(format!("No template named \"{name}\"")),
+                None => self.error_modal.show(format!("No view named \"{name}\"")),
             }
         } else if self.app_config.templates.auto_apply
             && let Some(path) = self.path.clone()
@@ -7285,10 +7286,8 @@ impl App {
             })
             && let Err(e) = self.apply_template(&template)
         {
-            self.error_modal.show(format!(
-                "Error applying template \"{}\": {e}",
-                template.name
-            ));
+            self.error_modal
+                .show(format!("Error applying view \"{}\": {e}", template.name));
         }
     }
 
@@ -11664,25 +11663,326 @@ impl App {
         self.show_help
     }
 
-    /// Open the template list for the dataset on screen, scored against it.
+    /// Open the views list for the dataset on screen, scored against it.
     fn open_template_list(&mut self) {
+        if self.data_table_state.is_none() || self.path.is_none() {
+            return;
+        }
+        self.template_modal.table_state.select(Some(0));
+        self.refresh_view_list();
+        self.template_modal.active = true;
+        self.template_modal.mode = TemplateModalMode::List;
+    }
+
+    /// Rebuild the list's rows from the store, scored and annotated against
+    /// the open dataset; the selection stays near where it was.
+    fn refresh_view_list(&mut self) {
         let (Some(state), Some(path)) = (&self.data_table_state, &self.path) else {
             return;
         };
-        self.template_modal.templates = self
+        let rows: Vec<ViewRow> = self
             .template_manager
-            .find_relevant_templates(path, &state.schema);
+            .find_relevant_templates(path, &state.schema)
+            .into_iter()
+            .map(|(template, score)| {
+                let reason = template::match_reason(&template, path, &state.schema);
+                ViewRow {
+                    template,
+                    score,
+                    reason,
+                }
+            })
+            .collect();
         self.template_modal.broken_templates = self.template_manager.broken_templates.clone();
+        let selected = self.template_modal.table_state.selected().unwrap_or(0);
+        self.template_modal.table_state.select(if rows.is_empty() {
+            None
+        } else {
+            Some(selected.min(rows.len() - 1))
+        });
+        self.template_modal.rows = rows;
+    }
+
+    /// Open the save-view form prefilled from the open dataset: a name the
+    /// user will recognize, this file's paths and patterns as criteria, and
+    /// schema match on — the criterion that carries the view to the next
+    /// table shaped like this one.
+    fn open_save_view_form(&mut self) {
         self.template_modal
-            .table_state
-            .select(if self.template_modal.templates.is_empty() {
-                None
+            .enter_create_mode(self.history_limit, &self.theme);
+
+        let query = self.data_table_state.as_ref().and_then(|state| {
+            let (query, sql_query, fuzzy_query) = active_query_settings(
+                state.get_active_query(),
+                state.get_active_sql_query(),
+                state.get_active_fuzzy_query(),
+            );
+            sql_query.or(fuzzy_query).or(query)
+        });
+        self.template_modal.name_input.set_value(
+            self.template_manager
+                .suggest_name(self.path.as_deref(), query.as_deref()),
+        );
+
+        if let Some(ref path) = self.path {
+            // Pin this file: its absolute path, its path relative to the
+            // working directory when under it, and glob suggestions.
+            let absolute_path = if path.is_absolute() {
+                crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+            } else if let Ok(cwd) = std::env::current_dir() {
+                let abs = cwd.join(path);
+                crate::canonical::canonicalize(&abs).unwrap_or(abs)
             } else {
-                Some(0)
-            });
-        self.template_modal.active = true;
-        self.template_modal.mode = TemplateModalMode::List;
-        self.template_modal.focus = TemplateFocus::TemplateList;
+                path.to_path_buf()
+            };
+            self.template_modal
+                .exact_path_input
+                .set_value(absolute_path.to_string_lossy());
+
+            if let Ok(cwd) = std::env::current_dir() {
+                let canonical_cwd = crate::canonical::canonicalize(&cwd).unwrap_or(cwd);
+                if let Ok(rel_path) = absolute_path.strip_prefix(&canonical_cwd) {
+                    let rel_str = rel_path.to_string_lossy().to_string();
+                    self.template_modal
+                        .relative_path_input
+                        .set_value(rel_str.strip_prefix('/').unwrap_or(&rel_str));
+                }
+            }
+
+            // Suggest a path pattern from the absolute path: the parent of a
+            // bare relative name is "", and ""/*.parquet is a pattern that
+            // matches every parquet file anywhere, forever.
+            if let Some(parent) = absolute_path.parent()
+                && let Some(parent_str) = parent.to_str()
+                && !parent_str.is_empty()
+                && let Some(ext) = absolute_path.extension()
+            {
+                self.template_modal.path_pattern_input.set_value(format!(
+                    "{}/*.{}",
+                    parent_str,
+                    ext.to_string_lossy()
+                ));
+            }
+
+            // Suggest a filename pattern with digit runs wildcarded, so
+            // sales_2024.csv offers itself to sales_2025.csv.
+            if let Some(filename) = path.file_name()
+                && let Some(filename_str) = filename.to_str()
+            {
+                use regex::Regex;
+                let pattern = match Regex::new(r"\d+") {
+                    Ok(re) => re.replace_all(filename_str, "*").to_string(),
+                    Err(_) => filename_str.to_string(),
+                };
+                self.template_modal
+                    .filename_pattern_input
+                    .set_value(pattern);
+            }
+        }
+
+        // Schema match starts on: "apply this to a similar table" is the
+        // reason views exist, and the columns are the only criterion that
+        // says similar.
+        if let Some(ref state) = self.data_table_state
+            && !state.schema.is_empty()
+        {
+            self.template_modal.schema_match_enabled = true;
+        }
+    }
+
+    /// Validate and persist the form: a new view, or the edited one. The
+    /// settings are rebuilt from the table's applied state either way. A
+    /// failed save keeps the form open.
+    fn save_view_form(&mut self) {
+        self.template_modal.name_error = None;
+        let name = self.template_modal.name_input.value().trim().to_string();
+        if name.is_empty() {
+            self.template_modal.name_error = Some("name is required".to_string());
+            self.template_modal.form_focus = FormFocus::Name;
+            return;
+        }
+        let renaming_to_taken = match &self.template_modal.editing_template_id {
+            None => self.template_manager.template_exists(&name),
+            Some(id) => self
+                .template_manager
+                .get_template_by_name(&name)
+                .is_some_and(|other| other.id != *id),
+        };
+        if renaming_to_taken {
+            self.template_modal.name_error = Some("name already exists".to_string());
+            self.template_modal.form_focus = FormFocus::Name;
+            return;
+        }
+
+        let non_empty = |input: &widgets::text_input::TextInput| {
+            let value = input.value().trim();
+            (!value.is_empty()).then(|| value.to_string())
+        };
+        let match_criteria = template::MatchCriteria {
+            exact_path: non_empty(&self.template_modal.exact_path_input)
+                .map(std::path::PathBuf::from),
+            relative_path: non_empty(&self.template_modal.relative_path_input),
+            path_pattern: non_empty(&self.template_modal.path_pattern_input),
+            filename_pattern: non_empty(&self.template_modal.filename_pattern_input),
+            schema_columns: if self.template_modal.schema_match_enabled {
+                self.data_table_state
+                    .as_ref()
+                    .map(|state| state.schema.iter_names().map(|s| s.to_string()).collect())
+            } else {
+                None
+            },
+            schema_types: None,
+        };
+        let description = {
+            let value = self.template_modal.description_input.value();
+            (!value.is_empty()).then(|| value.to_string())
+        };
+
+        let saved = if let Some(editing_id) = self.template_modal.editing_template_id.clone() {
+            let Some(mut template) = self
+                .template_manager
+                .get_template_by_id(&editing_id)
+                .cloned()
+            else {
+                return;
+            };
+            template.name = name;
+            template.description = description;
+            template.match_criteria = match_criteria;
+            // The settings follow the table only while this view is the one
+            // dressing it. Editing an unapplied view changes its name,
+            // description and matching alone — it must not overwrite what
+            // the view carries with whatever the table happens to show.
+            if self.active_template_id.as_deref() == Some(editing_id.as_str())
+                && let Some(state) = &self.data_table_state
+            {
+                let (query, sql_query, fuzzy_query) = active_query_settings(
+                    state.get_active_query(),
+                    state.get_active_sql_query(),
+                    state.get_active_fuzzy_query(),
+                );
+                template.settings = template::TemplateSettings {
+                    query,
+                    sql_query,
+                    fuzzy_query,
+                    filters: state.get_filters().to_vec(),
+                    sort_columns: state.get_sort_columns().to_vec(),
+                    sort_descending: state.get_sort_descending().to_vec(),
+                    sort_ascending: state.get_sort_ascending(),
+                    column_order: state.get_column_order().to_vec(),
+                    locked_columns_count: state.locked_columns_count(),
+                    pivot: state.last_pivot_spec().cloned(),
+                    melt: state.last_melt_spec().cloned(),
+                };
+            }
+            self.template_manager.update_template(&template).is_ok()
+        } else {
+            self.create_template_from_current_state(name, description, match_criteria)
+                .is_ok()
+        };
+        if saved {
+            self.refresh_view_list();
+            self.template_modal.exit_form();
+        }
+    }
+
+    /// The selected view's score breakdown, for the list's `i` popup.
+    fn view_score_details(&self) -> Option<(String, String)> {
+        let state = self.data_table_state.as_ref()?;
+        let path = self.path.as_ref()?;
+        let idx = self.template_modal.table_state.selected()?;
+        let row = self.template_modal.rows.get(idx)?;
+        let template = &row.template;
+
+        let exact_path_match = template
+            .match_criteria
+            .exact_path
+            .as_ref()
+            .is_some_and(|exact| exact == path);
+        let relative_path_match =
+            template
+                .match_criteria
+                .relative_path
+                .as_ref()
+                .is_some_and(|relative| {
+                    std::env::current_dir().is_ok_and(|cwd| {
+                        path.strip_prefix(&cwd)
+                            .is_ok_and(|rel| rel.to_string_lossy() == *relative)
+                    })
+                });
+        let file_cols: std::collections::HashSet<&str> =
+            state.schema.iter_names().map(|s| s.as_str()).collect();
+        let exact_schema_match =
+            template
+                .match_criteria
+                .schema_columns
+                .as_ref()
+                .is_some_and(|required| {
+                    let required: std::collections::HashSet<&str> =
+                        required.iter().map(|s| s.as_str()).collect();
+                    required.is_subset(&file_cols) && file_cols.len() == required.len()
+                });
+
+        let mut details = format!("Total score: {:.1}\n\n", row.score);
+        if exact_path_match && exact_schema_match {
+            details.push_str("Exact path + exact schema: 2000.0\n");
+        } else if exact_path_match {
+            details.push_str("Exact path: 1000.0\n");
+        } else if relative_path_match && exact_schema_match {
+            details.push_str("Relative path + exact schema: 1950.0\n");
+        } else if relative_path_match {
+            details.push_str("Relative path: 950.0\n");
+        } else if exact_schema_match {
+            details.push_str("Exact schema: 900.0\n");
+        } else {
+            if let Some(pattern) = &template.match_criteria.path_pattern
+                && path
+                    .to_str()
+                    .map(|p| p.contains(pattern.trim_end_matches("/*")))
+                    .unwrap_or(false)
+            {
+                details.push_str("Path pattern match: 50.0+\n");
+            }
+            if let Some(pattern) = &template.match_criteria.filename_pattern
+                && path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .map(|f| f.contains(pattern.trim_end_matches('*')) || pattern == "*")
+                    .unwrap_or(false)
+            {
+                details.push_str("Filename pattern match: 30.0+\n");
+            }
+            if let Some(required_cols) = &template.match_criteria.schema_columns {
+                let matching_count = required_cols
+                    .iter()
+                    .filter(|col| file_cols.contains(col.as_str()))
+                    .count();
+                if matching_count > 0 {
+                    details.push_str(&format!(
+                        "Partial schema match: {:.1} ({} columns)\n",
+                        matching_count as f64 * 2.0,
+                        matching_count
+                    ));
+                }
+            }
+        }
+        if template.usage_count > 0 {
+            details.push_str(&format!(
+                "Usage count: {:.1}\n",
+                (template.usage_count.min(10) as f64) * 1.0
+            ));
+        }
+        if let Some(last_used) = template.last_used
+            && let Ok(duration) = std::time::SystemTime::now().duration_since(last_used)
+        {
+            let days_since = duration.as_secs() / 86400;
+            if days_since <= 7 {
+                details.push_str("Recent usage: 5.0\n");
+            } else if days_since <= 30 {
+                details.push_str("Recent usage: 2.0\n");
+            }
+        }
+        Some((format!("Score: {}", template.name), details))
     }
 
     /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
@@ -13967,760 +14267,115 @@ impl App {
         }
 
         if self.template_modal.active {
+            let form = self.template_modal.mode != TemplateModalMode::List;
+            let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
             match event.code {
                 KeyCode::Esc => {
-                    if self.template_modal.show_score_details {
-                        // Close score details popup
-                        self.template_modal.show_score_details = false;
+                    if self.template_modal.score_details.is_some() {
+                        self.template_modal.score_details = None;
                     } else if self.template_modal.delete_confirm {
-                        // Cancel delete confirmation
                         self.template_modal.delete_confirm = false;
-                    } else if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit
-                    {
-                        // In create/edit mode, Esc goes back to list mode
-                        self.template_modal.exit_create_mode();
+                    } else if self.template_modal.show_help {
+                        self.template_modal.show_help = false;
+                    } else if form {
+                        // Back to the list; the form's staged edits die with it.
+                        self.template_modal.exit_form();
                     } else {
-                        // In list mode, Esc closes modal
-                        if self.template_modal.show_help {
-                            self.template_modal.show_help = false;
-                        } else {
-                            self.template_modal.active = false;
-                            self.template_modal.show_help = false;
-                            self.template_modal.delete_confirm = false;
-                        }
+                        self.template_modal.close();
                     }
                 }
-                KeyCode::BackTab if self.template_modal.delete_confirm => {
-                    self.template_modal.delete_confirm_focus =
-                        !self.template_modal.delete_confirm_focus;
-                }
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Char('h')
-                | KeyCode::Char('l')
-                | KeyCode::Char('j')
-                | KeyCode::Char('k')
+                // The delete confirmation owns the keys while it is up.
+                KeyCode::Enter | KeyCode::Char('d') | KeyCode::Char('D')
                     if self.template_modal.delete_confirm =>
                 {
-                    self.template_modal.delete_confirm_focus =
-                        !self.template_modal.delete_confirm_focus;
-                }
-                KeyCode::Tab if !self.template_modal.delete_confirm => {
-                    self.template_modal.next_focus();
-                }
-                KeyCode::BackTab => {
-                    self.template_modal.prev_focus();
-                }
-                KeyCode::Char('s') if self.template_modal.mode == TemplateModalMode::List => {
-                    // Switch to create mode from list mode
-                    self.template_modal
-                        .enter_create_mode(self.history_limit, &self.theme);
-                    // Auto-populate fields
-                    if let Some(ref path) = self.path {
-                        // Auto-populate name
-                        self.template_modal
-                            .create_name_input
-                            .set_value(self.template_manager.generate_next_template_name());
-
-                        // Auto-populate exact_path (absolute) - canonicalize to ensure absolute path
-                        let absolute_path = if path.is_absolute() {
-                            crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-                        } else {
-                            // If relative, make it absolute from current dir
-                            if let Ok(cwd) = std::env::current_dir() {
-                                let abs = cwd.join(path);
-                                crate::canonical::canonicalize(&abs).unwrap_or(abs)
-                            } else {
-                                path.to_path_buf()
-                            }
-                        };
-                        self.template_modal
-                            .create_exact_path_input
-                            .set_value(absolute_path.to_string_lossy());
-
-                        // Auto-populate relative_path from current working directory
-                        if let Ok(cwd) = std::env::current_dir() {
-                            let abs_path = if path.is_absolute() {
-                                crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-                            } else {
-                                let abs = cwd.join(path);
-                                crate::canonical::canonicalize(&abs).unwrap_or(abs)
-                            };
-                            if let Ok(canonical_cwd) = crate::canonical::canonicalize(&cwd) {
-                                if let Ok(rel_path) = abs_path.strip_prefix(&canonical_cwd) {
-                                    // Ensure relative path starts with ./ or just the path
-                                    let rel_str = rel_path.to_string_lossy().to_string();
-                                    self.template_modal
-                                        .create_relative_path_input
-                                        .set_value(rel_str.strip_prefix('/').unwrap_or(&rel_str));
-                                } else {
-                                    // Path is not under CWD, leave empty or use full path
-                                    self.template_modal.create_relative_path_input.clear();
-                                }
-                            } else {
-                                // Fallback: try without canonicalization
-                                if let Ok(rel_path) = abs_path.strip_prefix(&cwd) {
-                                    let rel_str = rel_path.to_string_lossy().to_string();
-                                    self.template_modal
-                                        .create_relative_path_input
-                                        .set_value(rel_str.strip_prefix('/').unwrap_or(&rel_str));
-                                } else {
-                                    self.template_modal.create_relative_path_input.clear();
-                                }
-                            }
-                        } else {
-                            self.template_modal.create_relative_path_input.clear();
-                        }
-
-                        // Suggest a path pattern from the absolute path: the parent of a
-                        // bare relative name is "", and ""/*.parquet is a pattern that
-                        // matches every parquet file anywhere, forever.
-                        if let Some(parent) = absolute_path.parent()
-                            && let Some(parent_str) = parent.to_str()
-                            && !parent_str.is_empty()
-                            && let Some(ext) = absolute_path.extension()
-                        {
-                            self.template_modal.create_path_pattern_input.set_value(
-                                format!("{}/*.{}", parent_str, ext.to_string_lossy()),
-                            );
-                        }
-
-                        // Suggest filename pattern
-                        if let Some(filename) = path.file_name()
-                            && let Some(filename_str) = filename.to_str() {
-                                // Try to create a pattern by replacing numbers/dates with *
-                                let mut pattern = filename_str.to_string();
-                                // Simple heuristic: replace sequences of digits with *
-                                use regex::Regex;
-                                if let Ok(re) = Regex::new(r"\d+") {
-                                    pattern = re.replace_all(&pattern, "*").to_string();
-                                }
-                                self.template_modal
-                                    .create_filename_pattern_input
-                                    .set_value(pattern);
-                            }
-                    }
-
-                    // Schema match starts on: "apply this to a similar table" is the
-                    // reason templates exist, and the columns are the only criterion
-                    // that says similar. The paths above pin this file; this one is
-                    // what carries the template to the next file shaped like it.
-                    if let Some(ref state) = self.data_table_state
-                        && !state.schema.is_empty()
+                    self.template_modal.delete_confirm = false;
+                    if let Some(template) = self.template_modal.selected_template().cloned()
+                        && self.template_manager.delete_template(&template.id).is_ok()
                     {
-                        self.template_modal.create_schema_match_enabled = true;
+                        self.refresh_view_list();
                     }
                 }
-                KeyCode::Char('e') if self.template_modal.mode == TemplateModalMode::List => {
-                    // Edit selected template
-                    if let Some(idx) = self.template_modal.table_state.selected()
-                        && let Some((template, _)) = self.template_modal.templates.get(idx) {
-                            let template_clone = template.clone();
-                            self.template_modal.enter_edit_mode(
-                                &template_clone,
-                                self.history_limit,
-                                &self.theme,
-                            );
+                _ if self.template_modal.delete_confirm => {}
+                _ if self.template_modal.score_details.is_some() => {}
+                // The list.
+                KeyCode::Up | KeyCode::Char('k') if !form => self.template_modal.select_prev(),
+                KeyCode::Down | KeyCode::Char('j') if !form => self.template_modal.select_next(),
+                KeyCode::Enter if !form => {
+                    if let Some(template) = self.template_modal.selected_template().cloned() {
+                        if let Err(e) = self.apply_template(&template) {
+                            // The list stays open, so the user sees what failed.
+                            self.error_modal.show(format!("Error applying view: {}", e));
+                        } else {
+                            self.template_modal.active = false;
                         }
-                }
-                KeyCode::Char('d')
-                    if self.template_modal.mode == TemplateModalMode::List
-                        && !self.template_modal.delete_confirm =>
-                {
-                    // Show delete confirmation
-                    if let Some(_idx) = self.template_modal.table_state.selected() {
-                        self.template_modal.delete_confirm = true;
-                        self.template_modal.delete_confirm_focus = false; // Cancel is default
                     }
                 }
-                // `i`, not `?`: the global help gate takes `?` before this branch is
-                // reached, so bound there the popup could never open. `i` is the
-                // details key the info panel already taught.
-                KeyCode::Char('i')
-                    if self.template_modal.mode == TemplateModalMode::List
-                        && !self.template_modal.delete_confirm =>
-                {
-                    self.template_modal.show_score_details = true;
-                }
-                KeyCode::Char('D') if self.template_modal.delete_confirm => {
-                    // Delete with capital D
-                    if let Some(idx) = self.template_modal.table_state.selected()
-                        && let Some((template, _)) = self.template_modal.templates.get(idx) {
-                            if self.template_manager.delete_template(&template.id).is_err() {
-                                // Delete failed; list will be unchanged
-                            } else {
-                                // Reload templates
-                                if let Some(ref state) = self.data_table_state
-                                    && let Some(ref path) = self.path {
-                                        self.template_modal.templates = self
-                                            .template_manager
-                                            .find_relevant_templates(path, &state.schema);
-                                        self.template_modal.broken_templates =
-                                            self.template_manager.broken_templates.clone();
-                                        if !self.template_modal.templates.is_empty() {
-                                            let new_idx = idx.min(
-                                                self.template_modal
-                                                    .templates
-                                                    .len()
-                                                    .saturating_sub(1),
-                                            );
-                                            self.template_modal.table_state.select(Some(new_idx));
-                                        } else {
-                                            self.template_modal.table_state.select(None);
-                                        }
-                                    }
-                            }
-                            self.template_modal.delete_confirm = false;
-                        }
-                }
-                KeyCode::Tab if self.template_modal.delete_confirm => {
-                    // Toggle between Cancel and Delete buttons
-                    self.template_modal.delete_confirm_focus =
-                        !self.template_modal.delete_confirm_focus;
-                }
-                KeyCode::Enter if self.template_modal.delete_confirm => {
-                    // Enter cancels by default (Cancel is selected)
-                    if self.template_modal.delete_confirm_focus {
-                        // Delete button is selected
-                        if let Some(idx) = self.template_modal.table_state.selected()
-                            && let Some((template, _)) = self.template_modal.templates.get(idx) {
-                                if self.template_manager.delete_template(&template.id).is_err() {
-                                    // Delete failed; list will be unchanged
-                                } else {
-                                    // Reload templates
-                                    if let Some(ref state) = self.data_table_state
-                                        && let Some(ref path) = self.path {
-                                            self.template_modal.templates = self
-                                                .template_manager
-                                                .find_relevant_templates(path, &state.schema);
-                                            self.template_modal.broken_templates =
-                                                self.template_manager.broken_templates.clone();
-                                            if !self.template_modal.templates.is_empty() {
-                                                let new_idx = idx.min(
-                                                    self.template_modal
-                                                        .templates
-                                                        .len()
-                                                        .saturating_sub(1),
-                                                );
-                                                self.template_modal
-                                                    .table_state
-                                                    .select(Some(new_idx));
-                                            } else {
-                                                self.template_modal.table_state.select(None);
-                                            }
-                                        }
-                                }
-                                self.template_modal.delete_confirm = false;
-                            }
+                KeyCode::Char('s') if !form => {
+                    // A view saved from an untouched table would carry
+                    // nothing, and — matching by schema — it would shadow
+                    // real views in the V/auto-apply gate as a well-used
+                    // no-op. Refuse at the door, not after the form.
+                    if self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.is_at_defaults())
+                    {
+                        self.error_modal.show(
+                            "Nothing to save: the table is at its defaults. \
+                             Set a query, filter, sort or column layout first."
+                                .to_string(),
+                        );
                     } else {
-                        // Cancel button is selected (default)
-                        self.template_modal.delete_confirm = false;
+                        self.open_save_view_form();
                     }
                 }
-                KeyCode::Enter => {
-                    match self.template_modal.mode {
-                        TemplateModalMode::List => {
-                            match self.template_modal.focus {
-                                TemplateFocus::TemplateList => {
-                                    // Apply selected template (skip broken template rows)
-                                    let template_idx = self.template_modal.table_state.selected();
-                                    if let Some(idx) = template_idx {
-                                        // Broken templates are rendered after valid ones — skip them
-                                        if idx >= self.template_modal.templates.len() {
-                                            // This is a broken template row; ignore Enter
-                                        } else if let Some((template, _)) =
-                                            self.template_modal.templates.get(idx)
-                                        {
-                                            let template_clone = template.clone();
-                                            match self.apply_template(&template_clone) { Err(e) => {
-                                                // Show error modal instead of just printing
-                                                self.error_modal.show(format!(
-                                                    "Error applying template: {}",
-                                                    e
-                                                ));
-                                                // Keep template modal open so user can see what failed
-                                            } _ => {
-                                                // Only close template modal on success
-                                                self.template_modal.active = false;
-                                            }}
-                                        }
-                                    }
-                                }
-                                TemplateFocus::CreateButton => {
-                                    // Same as 's' key - enter create mode
-                                    // (handled by 's' key handler above)
-                                }
-                                _ => {}
-                            }
-                        }
-                        TemplateModalMode::Create | TemplateModalMode::Edit => {
-                            // If in description field, Enter adds a newline instead of moving to next field
-                            if self.template_modal.create_focus == CreateFocus::Description {
-                                let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
-                                self.template_modal
-                                    .create_description_input
-                                    .handle_key(&event, None);
-                                return None;
-                            }
-                            match self.template_modal.create_focus {
-                                CreateFocus::SaveButton => {
-                                    // Validate name
-                                    self.template_modal.name_error = None;
-                                    if self
-                                        .template_modal
-                                        .create_name_input
-                                        .value()
-                                        .trim()
-                                        .is_empty()
-                                    {
-                                        self.template_modal.name_error =
-                                            Some("(required)".to_string());
-                                        self.template_modal.create_focus = CreateFocus::Name;
-                                        return None;
-                                    }
-
-                                    // Check for duplicate name (only if creating new, not editing)
-                                    if self.template_modal.editing_template_id.is_none()
-                                        && self.template_manager.template_exists(
-                                            self.template_modal.create_name_input.value().trim(),
-                                        )
-                                    {
-                                        self.template_modal.name_error =
-                                            Some("(name already exists)".to_string());
-                                        self.template_modal.create_focus = CreateFocus::Name;
-                                        return None;
-                                    }
-
-                                    // Create template from current state
-                                    let match_criteria = template::MatchCriteria {
-                                        exact_path: if !self
-                                            .template_modal
-                                            .create_exact_path_input
-                                            .value()
-                                            .trim()
-                                            .is_empty()
-                                        {
-                                            Some(std::path::PathBuf::from(
-                                                self.template_modal
-                                                    .create_exact_path_input
-                                                    .value()
-                                                    .trim(),
-                                            ))
-                                        } else {
-                                            None
-                                        },
-                                        relative_path: if !self
-                                            .template_modal
-                                            .create_relative_path_input
-                                            .value()
-                                            .trim()
-                                            .is_empty()
-                                        {
-                                            Some(
-                                                self.template_modal
-                                                    .create_relative_path_input
-                                                    .value()
-                                                    .trim()
-                                                    .to_string(),
-                                            )
-                                        } else {
-                                            None
-                                        },
-                                        path_pattern: if !self
-                                            .template_modal
-                                            .create_path_pattern_input
-                                            .value()
-                                            .is_empty()
-                                        {
-                                            Some(
-                                                self.template_modal
-                                                    .create_path_pattern_input
-                                                    .value()
-                                                    .to_string(),
-                                            )
-                                        } else {
-                                            None
-                                        },
-                                        filename_pattern: if !self
-                                            .template_modal
-                                            .create_filename_pattern_input
-                                            .value()
-                                            .is_empty()
-                                        {
-                                            Some(
-                                                self.template_modal
-                                                    .create_filename_pattern_input
-                                                    .value()
-                                                    .to_string(),
-                                            )
-                                        } else {
-                                            None
-                                        },
-                                        schema_columns: if self
-                                            .template_modal
-                                            .create_schema_match_enabled
-                                        {
-                                            self.data_table_state.as_ref().map(|state| {
-                                                state
-                                                    .schema
-                                                    .iter_names()
-                                                    .map(|s| s.to_string())
-                                                    .collect()
-                                            })
-                                        } else {
-                                            None
-                                        },
-                                        schema_types: None, // Can be enhanced later
-                                    };
-
-                                    let description = if !self
-                                        .template_modal
-                                        .create_description_input
-                                        .value()
-                                        .is_empty()
-                                    {
-                                        Some(
-                                            self.template_modal
-                                                .create_description_input
-                                                .value()
-                                                .to_string(),
-                                        )
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Some(ref editing_id) =
-                                        self.template_modal.editing_template_id
-                                    {
-                                        // Update existing template
-                                        if let Some(mut template) = self
-                                            .template_manager
-                                            .get_template_by_id(editing_id)
-                                            .cloned()
-                                        {
-                                            template.name = self
-                                                .template_modal
-                                                .create_name_input
-                                                .value()
-                                                .trim()
-                                                .to_string();
-                                            template.description = description;
-                                            template.match_criteria = match_criteria;
-                                            // Update settings from current state
-                                            if let Some(state) = &self.data_table_state {
-                                                let (query, sql_query, fuzzy_query) =
-                                                    active_query_settings(
-                                                        state.get_active_query(),
-                                                        state.get_active_sql_query(),
-                                                        state.get_active_fuzzy_query(),
-                                                    );
-                                                template.settings = template::TemplateSettings {
-                                                    query,
-                                                    sql_query,
-                                                    fuzzy_query,
-                                                    filters: state.get_filters().to_vec(),
-                                                    sort_columns: state.get_sort_columns().to_vec(),
-                                                    sort_descending: state
-                                                        .get_sort_descending()
-                                                        .to_vec(),
-                                                    sort_ascending: state.get_sort_ascending(),
-                                                    column_order: state.get_column_order().to_vec(),
-                                                    locked_columns_count: state
-                                                        .locked_columns_count(),
-                                                    pivot: state.last_pivot_spec().cloned(),
-                                                    melt: state.last_melt_spec().cloned(),
-                                                };
-                                            }
-
-                                            match self.template_manager.update_template(&template) {
-                                                Ok(_) => {
-                                                    // Reload templates and go back to list mode
-                                                    if let Some(ref state) = self.data_table_state
-                                                        && let Some(ref path) = self.path {
-                                                            self.template_modal.templates = self
-                                                                .template_manager
-                                                                .find_relevant_templates(
-                                                                    path,
-                                                                    &state.schema,
-                                                                );
-                                                            self.template_modal.broken_templates =
-                                                                self.template_manager
-                                                                    .broken_templates
-                                                                    .clone();
-                                                            self.template_modal.table_state.select(
-                                                                if self
-                                                                    .template_modal
-                                                                    .templates
-                                                                    .is_empty()
-                                                                {
-                                                                    None
-                                                                } else {
-                                                                    Some(0)
-                                                                },
-                                                            );
-                                                        }
-                                                    self.template_modal.exit_create_mode();
-                                                }
-                                                Err(_) => {
-                                                    // Update failed; stay in edit mode
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // Create new template
-                                        match self.create_template_from_current_state(
-                                            self.template_modal
-                                                .create_name_input
-                                                .value()
-                                                .trim()
-                                                .to_string(),
-                                            description,
-                                            match_criteria,
-                                        ) {
-                                            Ok(_) => {
-                                                // Reload templates and go back to list mode
-                                                if let Some(ref state) = self.data_table_state
-                                                    && let Some(ref path) = self.path {
-                                                        self.template_modal.templates = self
-                                                            .template_manager
-                                                            .find_relevant_templates(
-                                                                path,
-                                                                &state.schema,
-                                                            );
-                                                        self.template_modal.broken_templates = self
-                                                            .template_manager
-                                                            .broken_templates
-                                                            .clone();
-                                                        self.template_modal.table_state.select(
-                                                            if self
-                                                                .template_modal
-                                                                .templates
-                                                                .is_empty()
-                                                            {
-                                                                None
-                                                            } else {
-                                                                Some(0)
-                                                            },
-                                                        );
-                                                    }
-                                                self.template_modal.exit_create_mode();
-                                            }
-                                            Err(_) => {
-                                                // Create failed; stay in create mode
-                                            }
-                                        }
-                                    }
-                                }
-                                CreateFocus::CancelButton => {
-                                    self.template_modal.exit_create_mode();
-                                }
-                                _ => {
-                                    // Move to next field
-                                    self.template_modal.next_focus();
-                                }
-                            }
-                        }
+                KeyCode::Char('e') if !form => {
+                    if let Some(template) = self.template_modal.selected_template().cloned() {
+                        self.template_modal.enter_edit_mode(
+                            &template,
+                            self.history_limit,
+                            &self.theme,
+                        );
                     }
                 }
-                KeyCode::Up => {
-                    match self.template_modal.mode {
-                        TemplateModalMode::List => {
-                            if self.template_modal.focus == TemplateFocus::TemplateList {
-                                let i = match self.template_modal.table_state.selected() {
-                                    Some(i) => {
-                                        if i == 0 {
-                                            self.template_modal.templates.len().saturating_sub(1)
-                                        } else {
-                                            i - 1
-                                        }
-                                    }
-                                    None => 0,
-                                };
-                                self.template_modal.table_state.select(Some(i));
-                            }
-                        }
-                        TemplateModalMode::Create | TemplateModalMode::Edit => {
-                            // If in description field, move cursor up one line
-                            if self.template_modal.create_focus == CreateFocus::Description {
-                                let event = KeyEvent::new(KeyCode::Up, KeyModifiers::empty());
-                                self.template_modal
-                                    .create_description_input
-                                    .handle_key(&event, None);
-                            } else {
-                                // Move to previous field (works for all fields)
-                                self.template_modal.prev_focus();
-                            }
-                        }
+                KeyCode::Char('d') if !form => {
+                    if self.template_modal.selected_template().is_some() {
+                        self.template_modal.delete_confirm = true;
                     }
                 }
-                KeyCode::Down => {
-                    match self.template_modal.mode {
-                        TemplateModalMode::List => {
-                            if self.template_modal.focus == TemplateFocus::TemplateList {
-                                let i = match self.template_modal.table_state.selected() {
-                                    Some(i) => {
-                                        if i >= self
-                                            .template_modal
-                                            .templates
-                                            .len()
-                                            .saturating_sub(1)
-                                        {
-                                            0
-                                        } else {
-                                            i + 1
-                                        }
-                                    }
-                                    None => 0,
-                                };
-                                self.template_modal.table_state.select(Some(i));
-                            }
-                        }
-                        TemplateModalMode::Create | TemplateModalMode::Edit => {
-                            // If in description field, move cursor down one line
-                            if self.template_modal.create_focus == CreateFocus::Description {
-                                let event = KeyEvent::new(KeyCode::Down, KeyModifiers::empty());
-                                self.template_modal
-                                    .create_description_input
-                                    .handle_key(&event, None);
-                            } else {
-                                // Move to next field (works for all fields)
-                                self.template_modal.next_focus();
-                            }
-                        }
+                KeyCode::Char('i') if !form => {
+                    self.template_modal.score_details = self.view_score_details();
+                }
+                // The form.
+                KeyCode::Tab if form => self.template_modal.next_focus(),
+                KeyCode::BackTab if form => self.template_modal.prev_focus(),
+                KeyCode::Enter if form && ctrl => self.save_view_form(),
+                KeyCode::Enter if form => {
+                    // Enter saves from anywhere; inside the multiline
+                    // description it types, and the footer names Ctrl+Enter.
+                    if self.template_modal.form_focus == FormFocus::Description {
+                        let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+                        self.template_modal
+                            .description_input
+                            .handle_key(&event, None);
+                    } else {
+                        self.save_view_form();
                     }
                 }
-                KeyCode::Char('j')
-                    if self.template_modal.mode == TemplateModalMode::List
-                        && self.template_modal.focus == TemplateFocus::TemplateList
-                        && !self.template_modal.delete_confirm =>
+                KeyCode::Up | KeyCode::Down
+                    if form && self.template_modal.form_focus == FormFocus::Description =>
                 {
-                    let i = match self.template_modal.table_state.selected() {
-                        Some(i) => {
-                            if i >= self.template_modal.templates.len().saturating_sub(1) {
-                                0
-                            } else {
-                                i + 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    self.template_modal.table_state.select(Some(i));
+                    let event = KeyEvent::new(event.code, KeyModifiers::empty());
+                    self.template_modal
+                        .description_input
+                        .handle_key(&event, None);
                 }
-                KeyCode::Char('k')
-                    if self.template_modal.mode == TemplateModalMode::List
-                        && self.template_modal.focus == TemplateFocus::TemplateList
-                        && !self.template_modal.delete_confirm =>
-                {
-                    let i = match self.template_modal.table_state.selected() {
-                        Some(i) => {
-                            if i == 0 {
-                                self.template_modal.templates.len().saturating_sub(1)
-                            } else {
-                                i - 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    self.template_modal.table_state.select(Some(i));
-                }
-                KeyCode::Char(c)
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
-                {
-                    match self.template_modal.create_focus {
-                        CreateFocus::Name => {
-                            // Clear error when user starts typing
-                            self.template_modal.name_error = None;
-                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-                            self.template_modal
-                                .create_name_input
-                                .handle_key(&event, None);
-                        }
-                        CreateFocus::Description => {
-                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-                            self.template_modal
-                                .create_description_input
-                                .handle_key(&event, None);
-                        }
-                        CreateFocus::ExactPath => {
-                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-                            self.template_modal
-                                .create_exact_path_input
-                                .handle_key(&event, None);
-                        }
-                        CreateFocus::RelativePath => {
-                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-                            self.template_modal
-                                .create_relative_path_input
-                                .handle_key(&event, None);
-                        }
-                        CreateFocus::PathPattern => {
-                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-                            self.template_modal
-                                .create_path_pattern_input
-                                .handle_key(&event, None);
-                        }
-                        CreateFocus::FilenamePattern => {
-                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-                            self.template_modal
-                                .create_filename_pattern_input
-                                .handle_key(&event, None);
-                        }
-                        CreateFocus::SchemaMatch if c == ' ' => {
-                            // Space toggles
-                            self.template_modal.create_schema_match_enabled =
-                                !self.template_modal.create_schema_match_enabled;
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
-                {
-                    match self.template_modal.create_focus {
-                        CreateFocus::Name => {
-                            self.template_modal
-                                .create_name_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::Description => {
-                            self.template_modal
-                                .create_description_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::ExactPath => {
-                            self.template_modal
-                                .create_exact_path_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::RelativePath => {
-                            self.template_modal
-                                .create_relative_path_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::PathPattern => {
-                            self.template_modal
-                                .create_path_pattern_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::FilenamePattern => {
-                            self.template_modal
-                                .create_filename_pattern_input
-                                .handle_key(event, None);
-                        }
-                        _ => {}
-                    }
-                }
+                KeyCode::Up if form => self.template_modal.prev_focus(),
+                KeyCode::Down if form => self.template_modal.next_focus(),
                 KeyCode::PageUp | KeyCode::PageDown
-                    // PageUp/PageDown move through the description five lines at a time.
-                    if (self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit)
-                        && self.template_modal.create_focus == CreateFocus::Description =>
+                    if form && self.template_modal.form_focus == FormFocus::Description =>
                 {
+                    // PageUp/PageDown move through the description five lines at a time.
                     const DESCRIPTION_PAGE_LINES: isize = 5;
                     let delta = if event.code == KeyCode::PageUp {
                         -DESCRIPTION_PAGE_LINES
@@ -14728,8 +14383,29 @@ impl App {
                         DESCRIPTION_PAGE_LINES
                     };
                     self.template_modal
-                        .create_description_input
+                        .description_input
                         .move_cursor_by_lines(delta);
+                }
+                KeyCode::Char(' ')
+                    if form && self.template_modal.form_focus == FormFocus::Matching =>
+                {
+                    self.template_modal.toggle_matching();
+                }
+                KeyCode::Char(' ')
+                    if form && self.template_modal.form_focus == FormFocus::SchemaMatch =>
+                {
+                    self.template_modal.schema_match_enabled =
+                        !self.template_modal.schema_match_enabled;
+                }
+                KeyCode::Char(c) if form => {
+                    if self.template_modal.form_focus == FormFocus::Name {
+                        // The error clears as soon as the name changes.
+                        self.template_modal.name_error = None;
+                    }
+                    let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                    if let Some(input) = self.template_modal.focused_input_mut() {
+                        input.handle_key(&event, None);
+                    }
                 }
                 KeyCode::Backspace
                 | KeyCode::Delete
@@ -14737,41 +14413,13 @@ impl App {
                 | KeyCode::Right
                 | KeyCode::Home
                 | KeyCode::End
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
+                    if form =>
                 {
-                    match self.template_modal.create_focus {
-                        CreateFocus::Name => {
-                            self.template_modal
-                                .create_name_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::Description => {
-                            self.template_modal
-                                .create_description_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::ExactPath => {
-                            self.template_modal
-                                .create_exact_path_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::RelativePath => {
-                            self.template_modal
-                                .create_relative_path_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::PathPattern => {
-                            self.template_modal
-                                .create_path_pattern_input
-                                .handle_key(event, None);
-                        }
-                        CreateFocus::FilenamePattern => {
-                            self.template_modal
-                                .create_filename_pattern_input
-                                .handle_key(event, None);
-                        }
-                        _ => {}
+                    if self.template_modal.form_focus == FormFocus::Name {
+                        self.template_modal.name_error = None;
+                    }
+                    if let Some(input) = self.template_modal.focused_input_mut() {
+                        input.handle_key(event, None);
                     }
                 }
                 _ => {}
@@ -15364,18 +15012,17 @@ impl App {
                 }
                 None
             }
-            KeyCode::Char('T') => {
-                // Apply the best template whose criteria match this dataset. When none
+            KeyCode::Char('V') => {
+                // Apply the best view whose criteria match this dataset. When none
                 // does, the answer is not silence and not the best-scored stranger: the
-                // list opens, so the user sees what exists and picks — or creates one.
+                // list opens, so the user sees what exists and picks — or saves one.
                 if let Some(ref state) = self.data_table_state
                     && let Some(ref path) = self.path
                 {
                     match self.template_manager.get_most_relevant(path, &state.schema) {
                         Some(template) => {
                             if let Err(e) = self.apply_template(&template) {
-                                self.error_modal
-                                    .show(format!("Error applying template: {}", e));
+                                self.error_modal.show(format!("Error applying view: {}", e));
                             }
                         }
                         None => self.open_template_list(),
@@ -15383,7 +15030,7 @@ impl App {
                 }
                 None
             }
-            KeyCode::Char('t') => {
+            KeyCode::Char('v') => {
                 if self.data_table_state.is_some() && self.path.is_some() {
                     self.open_template_list();
                 }
@@ -18591,10 +18238,7 @@ impl Widget for &mut App {
                 if self.analysis_modal.active && self.analysis_modal.show_help {
                     crate::render::analysis_view::help_title_and_text(&self.analysis_modal)
                 } else if self.template_modal.active {
-                    (
-                        "Template Help".to_string(),
-                        help_strings::template().to_string(),
-                    )
+                    ("Views Help".to_string(), help_strings::views().to_string())
                 } else {
                     let (t, txt) = self.get_help_info();
                     (t.to_string(), txt.to_string())

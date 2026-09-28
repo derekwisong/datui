@@ -37,6 +37,12 @@ impl SortFilterModal {
         self.active_tab = SortFilterTab::Sort;
         self.focus = SortFilterFocus::TabBar;
         self.sort.focus = SortFocus::ColumnList;
+        // The render draws the cursor rail at `selected().unwrap_or(0)`; select
+        // the row for real, or Space/L/v on the first row silently do nothing
+        // until an arrow press makes the shown cursor true.
+        if self.sort.table_state.selected().is_none() && !self.sort.columns.is_empty() {
+            self.sort.table_state.select(Some(0));
+        }
         self.sort.history_limit = history_limit;
         self.sort.filter_input = crate::widgets::text_input::TextInput::new()
             .with_history_limit(history_limit)

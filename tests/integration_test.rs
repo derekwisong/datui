@@ -5173,6 +5173,43 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     assert!(matches!(out, Some(AppEvent::Exit)), "Q always quits");
 }
 
+/// The Columns list is workable with keys alone from the moment it opens:
+/// the render draws the cursor on the first row, so the first Space must sort
+/// it. The state used to hold no selection while the rail showed one, and
+/// Space, L and v silently did nothing until an arrow press.
+#[test]
+fn the_sort_list_cursor_is_real_on_open() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_cursor_open.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(
+        app.sort_filter_modal.sort.table_state.selected(),
+        Some(0),
+        "the cursor the rail shows is the cursor the keys act on"
+    );
+    press(&mut app, KeyCode::Char(' '));
+    let sorted: Vec<String> = app
+        .sort_filter_modal
+        .sort
+        .columns
+        .iter()
+        .filter(|c| c.sort_order.is_some())
+        .map(|c| c.name.clone())
+        .collect();
+    assert_eq!(sorted, vec!["a".to_string()], "the first Space sorts");
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().get_sort_columns(),
+        &["a".to_string()],
+        "Enter applies the staged sort"
+    );
+}
+
 /// PgUp/PgDn at home move a screenful, like the table, not a fixed ten rows.
 #[test]
 fn home_paging_moves_a_screenful() {
@@ -10150,7 +10187,7 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Down);
+    // The list opens with the first column ("a") already under the cursor.
     press(&mut app, KeyCode::Char('v'));
     if let Some(next) = press(&mut app, KeyCode::Enter) {
         let _ = tx.send(next);
@@ -10181,8 +10218,7 @@ fn test_sort_filter_per_column_directions_reach_the_table() {
 
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Tab); // tab bar -> find
-    press(&mut app, KeyCode::Tab); // find -> column list
-    press(&mut app, KeyCode::Down); // first column: a
+    press(&mut app, KeyCode::Tab); // find -> column list, cursor on a
     press(&mut app, KeyCode::Char(' ')); // ascending
     press(&mut app, KeyCode::Char(' ')); // descending
     press(&mut app, KeyCode::Down); // c
@@ -10320,8 +10356,7 @@ fn test_del_removes_a_column_from_the_sort() {
 
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Down); // a
+    press(&mut app, KeyCode::Tab); // cursor opens on a
     press(&mut app, KeyCode::Char(' ')); // 1, ascending
     press(&mut app, KeyCode::Down); // c
     press(&mut app, KeyCode::Char(' ')); // 2

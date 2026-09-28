@@ -164,6 +164,16 @@ impl ExportModal {
         self.path_input.clear();
     }
 
+    /// Hide behind a child confirmation without discarding the form; `resume`
+    /// brings it back exactly as typed. `close` is the discard.
+    pub fn suspend(&mut self) {
+        self.active = false;
+    }
+
+    pub fn resume(&mut self) {
+        self.active = true;
+    }
+
     /// Follow the typed path's extension with the format picker, so `out.csv` never
     /// silently receives Parquet bytes. An extension that names no format leaves the
     /// picker alone, and an explicit format picked after typing stands, because this

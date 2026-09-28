@@ -82,7 +82,7 @@ pub fn render_confirmation_modal(
             Span::styled(label.to_string(), style),
         ]
     };
-    let mut spans = choice("Yes", modal.focus_yes);
+    let mut spans = choice(modal.yes_label, modal.focus_yes);
     spans.push(Span::raw("     "));
     spans.extend(choice("No", !modal.focus_yes));
     Paragraph::new(Line::from(spans)).render(rows[2], buf);

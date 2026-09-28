@@ -60,6 +60,16 @@ impl ChartExportModal {
         self.path_input.clear();
     }
 
+    /// Hide behind a child confirmation without discarding the form; `resume`
+    /// brings it back exactly as typed. `close` is the discard.
+    pub fn suspend(&mut self) {
+        self.active = false;
+    }
+
+    pub fn resume(&mut self) {
+        self.active = true;
+    }
+
     pub fn next_focus(&mut self) {
         self.focus = match self.focus {
             ChartExportFocus::FormatSelector => ChartExportFocus::PathInput,

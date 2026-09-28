@@ -1490,6 +1490,65 @@ fn modified_letters_are_not_table_feature_keys() {
     assert!(app.export_modal.active, "e still opens Export");
 }
 
+/// Declining an overwrite returns to the filled export form: the typed path
+/// survives, the prompt starts on No, and the existing file is untouched.
+#[test]
+fn declining_an_overwrite_keeps_the_export_form() {
+    common::ensure_sample_data();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("already.csv");
+    std::fs::write(&target, "old contents").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/people.parquet")],
+        OpenOptions::default(),
+    );
+
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+
+    key(&mut app, KeyCode::Char('e'));
+    assert!(app.export_modal.active);
+    let typed = target.display().to_string();
+    app.export_modal.path_input.set_value(&typed);
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.confirmation_modal.active, "an existing file asks first");
+    assert!(
+        !app.confirmation_modal.focus_yes,
+        "a destructive confirmation starts on No"
+    );
+    assert_eq!(app.confirmation_modal.yes_label, "Overwrite");
+
+    // A reflexive second Enter declines, and the form comes back as typed.
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.confirmation_modal.active);
+    assert!(app.export_modal.active, "No returns to the form");
+    assert_eq!(app.export_modal.path_input.value(), typed);
+    assert_eq!(app.input_mode, InputMode::Export);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old contents",
+        "declining wrote nothing"
+    );
+
+    // Esc from the confirmation does the same.
+    key(&mut app, KeyCode::Enter);
+    assert!(app.confirmation_modal.active);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.export_modal.active, "Esc returns to the form");
+    assert_eq!(app.export_modal.path_input.value(), typed);
+
+    // Esc from the form itself discards it.
+    key(&mut app, KeyCode::Esc);
+    assert!(!app.export_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
 /// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
 /// when the user presses Tab, never as a side effect of Enter or of results
 /// arriving. Reviewers kept landing in the wrong tool because it jumped.

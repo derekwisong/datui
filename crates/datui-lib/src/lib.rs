@@ -5594,11 +5594,23 @@ impl Flash {
     }
 }
 
-#[derive(Default)]
 pub struct ConfirmationModal {
     pub active: bool,
     pub message: String,
     pub focus_yes: bool, // true = Yes focused, false = No focused
+    /// What Enter-on-Yes does, named: "Overwrite", not a generic "Yes".
+    pub yes_label: &'static str,
+}
+
+impl Default for ConfirmationModal {
+    fn default() -> Self {
+        Self {
+            active: false,
+            message: String::new(),
+            focus_yes: true,
+            yes_label: "Yes",
+        }
+    }
 }
 
 impl ConfirmationModal {
@@ -5610,12 +5622,23 @@ impl ConfirmationModal {
         self.active = true;
         self.message = message;
         self.focus_yes = true; // Default to Yes
+        self.yes_label = "Yes";
+    }
+
+    /// A confirmation whose Yes destroys something: it starts on No, so a
+    /// reflexive second Enter declines, and the action is named on the choice.
+    pub fn show_destructive(&mut self, message: String, yes_label: &'static str) {
+        self.active = true;
+        self.message = message;
+        self.focus_yes = false;
+        self.yes_label = yes_label;
     }
 
     pub fn hide(&mut self) {
         self.active = false;
         self.message.clear();
         self.focus_yes = true;
+        self.yes_label = "Yes";
     }
 }
 
@@ -6395,7 +6418,7 @@ pub struct App {
     chart_export_waiting: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
     error_modal: ErrorModal,
     flash: Option<Flash>,
-    confirmation_modal: ConfirmationModal,
+    pub confirmation_modal: ConfirmationModal,
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
@@ -12258,11 +12281,15 @@ impl App {
                     } else {
                         self.pending_clear_recents = false;
                         self.pending_forget_place = None;
-                        // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
-                        if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
-                            self.chart_export_modal.reopen_with_path(&path, format);
+                        // Declining an overwrite returns to the filled form:
+                        // the typed path, format and options survive the No.
+                        if self.pending_chart_export.take().is_some() {
+                            self.chart_export_modal.resume();
                         }
-                        self.pending_export = None;
+                        if self.pending_export.take().is_some() {
+                            self.export_modal.resume();
+                            self.input_mode = InputMode::Export;
+                        }
                         self.pending_copy = None;
                         #[cfg(any(feature = "http", feature = "cloud"))]
                         if self.pending_download.is_some() {
@@ -12277,11 +12304,15 @@ impl App {
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
                     self.pending_forget_place = None;
-                    // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
-                    if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
-                        self.chart_export_modal.reopen_with_path(&path, format);
+                    // Declining an overwrite returns to the filled form: the
+                    // typed path, format and options survive the Esc.
+                    if self.pending_chart_export.take().is_some() {
+                        self.chart_export_modal.resume();
                     }
-                    self.pending_export = None;
+                    if self.pending_export.take().is_some() {
+                        self.export_modal.resume();
+                        self.input_mode = InputMode::Export;
+                    }
                     self.pending_copy = None;
                     #[cfg(any(feature = "http", feature = "cloud"))]
                     if self.pending_download.is_some() {
@@ -12817,11 +12848,13 @@ impl App {
                         if path.exists() {
                             let path_display = path.display().to_string();
                             self.pending_export = Some((path, format, options));
-                            self.confirmation_modal.show(format!(
-                                "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                path_display
-                            ));
-                            self.export_modal.close();
+                            self.confirmation_modal.show_destructive(
+                                format!("File already exists:\n{path_display}\n\nOverwrite it?"),
+                                "Overwrite",
+                            );
+                            // Suspended, not closed: declining returns to the
+                            // filled form with the typed path intact.
+                            self.export_modal.suspend();
                             self.input_mode = InputMode::Normal;
                         } else {
                             // Start export with progress
@@ -13235,11 +13268,15 @@ impl App {
                             if path.exists() {
                                 self.pending_chart_export =
                                     Some((path, format, title, width, height));
-                                self.chart_export_modal.close();
-                                self.confirmation_modal.show(format!(
-                                    "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                    path_display
-                                ));
+                                // Suspended, not closed: declining returns to
+                                // the filled form with the typed path intact.
+                                self.chart_export_modal.suspend();
+                                self.confirmation_modal.show_destructive(
+                                    format!(
+                                        "File already exists:\n{path_display}\n\nOverwrite it?"
+                                    ),
+                                    "Overwrite",
+                                );
                             } else {
                                 self.chart_export_modal.close();
                                 return Some(AppEvent::ChartExport(

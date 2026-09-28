@@ -28,6 +28,10 @@ pub struct Controls {
     pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
     /// When Some, replaces keybindings with spinner + message.
     pub status_message: Option<String>,
+    /// A completion flash: one plain sentence in the gap between the chips and
+    /// the row count. Drawn only in keybinding mode, so a busy status message
+    /// always wins; appearing and expiring move nothing around it.
+    pub flash: Option<String>,
     /// See `with_notes_pending`.
     pub notes_pending: bool,
     pub row_count_pending: bool, // When true, the exact count is still being determined: show a spinner in place of the (provisional, possibly inaccurate) number
@@ -99,6 +103,11 @@ impl Controls {
         self
     }
 
+    pub fn with_flash(mut self, flash: Option<String>) -> Self {
+        self.flash = flash;
+        self
+    }
+
     pub fn with_row_count_pending(mut self, pending: bool) -> Self {
         self.row_count_pending = pending;
         self
@@ -156,6 +165,7 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            flash: None,
             notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
@@ -307,6 +317,45 @@ impl Widget for &Controls {
             return;
         }
 
+        // Completion flash mode: the same layout the busy status message uses,
+        // minus the spinner — the message takes the chips' row for two seconds
+        // and the trailing count holds still. The transition is the one the eye
+        // already knows: spinner and phase, then the sentence, then the chips.
+        if let Some(ref msg) = self.flash {
+            let mut constraints = vec![
+                Constraint::Length(2), // where the spinner would be
+                Constraint::Fill(1),   // the sentence
+            ];
+            if chip_width > 0 {
+                constraints.push(Constraint::Length(chip_width));
+            }
+            if let Some(width) = trailing {
+                constraints.push(Constraint::Length(width));
+            }
+            let layout = Layout::new(Direction::Horizontal, constraints).split(area);
+            Paragraph::new("").style(fill_style).render(layout[0], buf);
+            Paragraph::new(crate::render::loading_view::truncate(
+                msg,
+                layout[1].width as usize,
+            ))
+            .style(label_style)
+            .render(layout[1], buf);
+            let mut next = 2;
+            if let Some(text) = &not_the_table {
+                Paragraph::new(text.as_str())
+                    .style(chip_style)
+                    .render(layout[next], buf);
+                next += 1;
+            }
+            if let Some(count) = self.row_count {
+                Paragraph::new(row_count_text(count))
+                    .style(label_style)
+                    .right_aligned()
+                    .render(layout[next], buf);
+            }
+            return;
+        }
+
         // Normal keybinding mode: the chips are a HintBar, the same renderer every
         // Surface footer uses.
         const DEFAULT_CONTROLS: [(&str, &str); 10] = [
@@ -398,6 +447,31 @@ impl Widget for &Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The flash takes the chips' row the way the busy message does, and the
+    /// trailing count holds still while it comes and goes.
+    #[test]
+    fn a_flash_reads_in_full_and_the_count_holds_still() {
+        let quiet = with_row_count(1000);
+        let flashed = with_row_count(1000).with_flash(Some("Exported to out.csv".to_string()));
+        let width = 80u16;
+        let before = render_to_string(&quiet, width);
+        let during = render_to_string(&flashed, width);
+        assert!(during.contains("Exported to out.csv"), "{during:?}");
+        assert_eq!(
+            before.find("1,000"),
+            during.find("1,000"),
+            "the count moved"
+        );
+        // A busy status message outranks the flash: work in progress is never
+        // hidden behind a sentence about work already done.
+        let busy = with_row_count(1000)
+            .with_flash(Some("Exported to out.csv".to_string()))
+            .with_status_message(Some("Collecting rows".to_string()));
+        let bar = render_to_string(&busy, width);
+        assert!(bar.contains("Collecting rows"), "{bar:?}");
+        assert!(!bar.contains("Exported"), "{bar:?}");
+    }
 
     /// A long caption does not cost the last chip the bar decided it had room for.
     ///

@@ -5517,25 +5517,26 @@ impl ErrorModal {
     }
 }
 
-#[derive(Default)]
-pub struct SuccessModal {
-    pub active: bool,
+/// A completion flash (the Feedback rules' second rung): one plain sentence on
+/// the control bar, cleared by the next keypress or after two seconds,
+/// whichever comes first. The home screen's status line is the key-cleared
+/// variant of the same idea, kept separate because a home status (a load
+/// error's reason) must survive until it is read.
+pub struct Flash {
     pub message: String,
+    expires: std::time::Instant,
 }
 
-impl SuccessModal {
-    pub fn new() -> Self {
-        Self::default()
+impl Flash {
+    fn new(message: String) -> Self {
+        Self {
+            message,
+            expires: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        }
     }
 
-    pub fn show(&mut self, message: String) {
-        self.active = true;
-        self.message = message;
-    }
-
-    pub fn hide(&mut self) {
-        self.active = false;
-        self.message.clear();
+    fn expired(&self) -> bool {
+        std::time::Instant::now() >= self.expires
     }
 }
 
@@ -6332,7 +6333,7 @@ pub struct App {
     /// picks it up; `busy` stays set until then.
     chart_export_waiting: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
     error_modal: ErrorModal,
-    success_modal: SuccessModal,
+    flash: Option<Flash>,
     confirmation_modal: ConfirmationModal,
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
@@ -6651,7 +6652,21 @@ impl App {
 
     /// True while a message is in front of the user that has to be dismissed.
     pub fn modal_showing(&self) -> bool {
-        self.error_modal.active || self.success_modal.active || self.confirmation_modal.active
+        self.error_modal.active || self.confirmation_modal.active
+    }
+
+    /// Show a completion flash on the control bar.
+    fn flash_note(&mut self, message: String) {
+        self.flash = Some(Flash::new(message));
+    }
+
+    /// Drop an expired flash. Returns true when the frame must redraw.
+    pub fn tick_flash(&mut self) -> bool {
+        if self.flash.as_ref().is_some_and(Flash::expired) {
+            self.flash = None;
+            return true;
+        }
+        false
     }
 
     /// See the `input_dropped` field.
@@ -6724,7 +6739,6 @@ impl App {
             && !self.template_modal.active
             && !self.analysis_modal.active
             && !self.error_modal.active
-            && !self.success_modal.active
             && !self.confirmation_modal.active
     }
 
@@ -7803,7 +7817,7 @@ impl App {
             pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
-            success_modal: SuccessModal::new(),
+            flash: None,
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
             export_df: None,
@@ -12021,6 +12035,10 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
+        // A completion flash lives until the next key: whatever this key does,
+        // the bar's line about the last action is stale now.
+        self.flash = None;
+
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         // Ctrl-Q quits from anywhere, before any mode gets a say — including a mode
         // with no CONTROL arm of its own (the chart view) that would otherwise swallow
@@ -12038,7 +12056,6 @@ impl App {
             && self.input_mode == InputMode::Normal
             && !self.analysis_modal.active
             && !self.error_modal.active
-            && !self.success_modal.active
             && !self.confirmation_modal.active
             && self.return_from_quality_evidence(true)
         {
@@ -12058,7 +12075,6 @@ impl App {
         if self.input_mode == InputMode::Home
             && !self.confirmation_modal.active
             && !self.error_modal.active
-            && !self.success_modal.active
             && !self.show_help
         {
             return self.home_key(event);
@@ -12192,16 +12208,6 @@ impl App {
                         return None;
                     }
                     self.confirmation_modal.hide();
-                }
-                _ => {}
-            }
-            return None;
-        }
-        // Success modal
-        if self.success_modal.active {
-            match event.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    self.success_modal.hide();
                 }
                 _ => {}
             }
@@ -16734,8 +16740,7 @@ impl App {
                     self.busy = false;
                     match result {
                         Ok(()) => {
-                            self.success_modal
-                                .show(format!("Data exported successfully to\n{}", path.display()));
+                            self.flash_note(format!("Exported to {}", path.display()));
                         }
                         Err(e) => {
                             self.error_modal.show(e.clone());
@@ -17605,10 +17610,7 @@ impl App {
         self.busy = false;
         match result {
             Ok(()) => {
-                self.success_modal.show(format!(
-                    "Chart exported successfully to\n{}",
-                    path.display()
-                ));
+                self.flash_note(format!("Chart exported to {}", path.display()));
                 self.chart_export_modal.close();
             }
             Err(message) => {
@@ -18225,9 +18227,6 @@ impl Widget for &mut App {
                 &ctx,
             );
         }
-        if self.success_modal.active {
-            crate::render::overlays::render_success_modal(area, buf, &self.success_modal, &ctx);
-        }
         if self.error_modal.active {
             crate::render::overlays::render_error_modal(area, buf, &self.error_modal, &ctx);
         }
@@ -18344,6 +18343,7 @@ impl Widget for &mut App {
             }
         });
         controls = controls.with_status_message(status_msg);
+        controls = controls.with_flash(self.flash.as_ref().map(|f| f.message.clone()));
         controls = controls.with_not_the_table(
             self.data_table_state
                 .as_ref()
@@ -18960,6 +18960,10 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             app.throbber_frame = app.throbber_frame.wrapping_add(1);
             updated = true;
         }
+
+        // A completion flash times out on its own; the idle poll interval is the
+        // clock, so no extra wake-up machinery is needed.
+        updated |= app.tick_flash();
 
         app.request_what_the_frame_needs();
 

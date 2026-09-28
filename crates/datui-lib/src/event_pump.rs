@@ -1155,13 +1155,21 @@ mod tests {
 
         settle(&mut p);
         assert!(
-            p.app.success_modal.active,
+            p.app
+                .flash
+                .as_ref()
+                .is_some_and(|f| f.message.starts_with("Exported to ")),
             "the held Left+Enter answered the prompt and the export ran"
         );
         assert!(
             std::fs::read(&path).unwrap().len() > 3,
             "the file was overwritten with exported data"
         );
+
+        // The next key clears the flash: the bar's line about the last action
+        // is stale the moment another key does something.
+        p.terminal_key(plain(KeyCode::Down)).unwrap();
+        assert!(p.app.flash.is_none(), "a keypress clears the flash");
     }
 
     /// Going home mid-load drops the keys typed at the load: replayed into the home

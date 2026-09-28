@@ -1,4 +1,4 @@
-//! Overlay rendering (confirmation/success/error modals, help).
+//! Overlay rendering (confirmation/error modals, help).
 
 use crate::render::context::RenderContext;
 use crate::render::layout::{centered_rect, centered_rect_with_min};
@@ -83,52 +83,6 @@ pub fn render_confirmation_modal(
                 .border_style(no_style),
         )
         .render(button_chunks[3], buf);
-}
-
-/// Renders the success modal (OK).
-pub fn render_success_modal(
-    area: Rect,
-    buf: &mut Buffer,
-    modal: &crate::SuccessModal,
-    ctx: &RenderContext,
-) {
-    let popup_area = centered_rect(area, 70, 40);
-    Clear.render(popup_area, buf);
-
-    Block::default()
-        .style(Style::default().bg(ctx.background))
-        .render(popup_area, buf);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Success")
-        .title_style(ratatui::style::Style::reset())
-        .border_style(Style::default().fg(ctx.modal_border_active))
-        .style(Style::default().bg(ctx.background));
-    let inner_area = block.inner(popup_area);
-    block.render(popup_area, buf);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(inner_area);
-
-    Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.text_primary).bg(ctx.background))
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .render(chunks[0], buf);
-
-    let ok_style = Style::default().fg(ctx.modal_border_active);
-    Paragraph::new("OK")
-        .centered()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(ok_style),
-        )
-        .render(chunks[1], buf);
 }
 
 /// Renders the error modal (OK).

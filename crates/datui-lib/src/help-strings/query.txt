@@ -1,11 +1,17 @@
 Keys:
   Enter:            Run the query (reopening / restores the last query,
-                    selected: typing replaces it, arrows edit it)
-  Tab:              Move focus between the input and the tab bar
+                    selected: typing replaces it, arrows edit it).
+                    On the tab bar, Enter returns to the input
+  Tab / Shift+Tab:  Move focus between the input and the tab bar
   ← / → (h/l):      On the tab bar: switch Query / Fuzzy / SQL
   ↑ / ↓:            Earlier and later queries from the history
+                    (Ctrl+P / Ctrl+N too; each tab keeps its own)
   F1:               Show this help (works from the input)
   Esc:              Close
+
+Running a query — or clearing one — starts a fresh view: sidebar filters,
+sort, frozen columns and pivot/melt are dropped. This is deliberate; apply
+them after the query.
 
 Query Syntax:
   select [columns] [by group_cols] [where conditions]
@@ -24,7 +30,7 @@ Column Selection:
   - Empty select: select (selects all columns)
   - With grouping: select by city (all columns grouped by city)
   - String literals: b:"foo" (creates column b with value "foo")
-  - Column names with spaces: col["first name"] or col[first name]
+  - Column names with spaces: col["first name"] (the quotes are required)
   - col[] syntax works for any column: col[name] or col["name"]
 
 Column Assignment (by clause):
@@ -40,6 +46,7 @@ Aggregation Functions (square brackets optional):
   std[expr] or std expr    - Standard deviation (also: stddev)
   med[expr] or med expr    - Median value (also: median)
   sum[expr] or sum expr    - Sum of values
+  first[expr], last[expr]  - First and last value in the group
 
   Unaliased aggregates of a column are named fn_column (avg[salary] -> avg_salary);
   an alias overrides this (total:sum[price] -> total).
@@ -51,10 +58,18 @@ Aggregation Examples:
   select avg[price], std[price] by category, region
 
 Functions (square brackets optional):
-  not[expr] or not expr    - Logical negation
-  Examples:
-    not[a=b] or not a=b    - Equivalent to a!=b
-    not[a>10] or not a>10  - Equivalent to a<=10
+  not[expr]                - Logical negation (not a=b is a!=b)
+  null[expr]               - True where the value is null
+  len[expr] (length)       - String length in characters
+  upper[expr], lower[expr] - Change a string's case
+  abs[expr]                - Absolute value
+  floor[expr], ceil[expr]  - Round down or up (ceil also: ceiling)
+
+Dates and strings:
+  Date columns have dot-accessors (order_date.year, order_date.month) and
+  date literals are written YYYY.MM.DD; strings have their own accessors
+  (city.contains["York"]). The user guide's Querying data page has the
+  full list.
 
 Grouping:
   - Group by columns: select a, b by category, region
@@ -65,7 +80,8 @@ Grouping:
 Where Conditions:
   - Multiple conditions: a > 10, b < 5 (AND)
   - OR within condition: a > 10 | a < 5
-  - Expressions: (a + b) * 2 > 100
+  - , and | are logic only inside where; elsewhere , separates columns
+  - Expressions: 100 < (a + b) * 2
   - String comparisons: name="george", city="New York"
   - Use not function: not[a=b]
   - Note: Where clause does NOT support column assignment
@@ -79,6 +95,8 @@ Operators:
 Expression Evaluation:
   - Operators evaluated right-to-left
   - Example: 1/c+a evaluates as 1/(c+a)
+  - The trap: (a+b)*2 > 100 parses as (a+b) * (2 > 100), not a comparison
+    of the product. Put the comparison first: 100 < (a+b)*2
   - Use parentheses () for grouping: (a+b)*2
   - Square brackets [] are for function calls only
 
@@ -90,3 +108,11 @@ Function Syntax:
   - Use parentheses for grouping: (a+b)*2
   - Example: b:avg[(1%c)+a] or b:avg (1%c)+a
 
+Fuzzy tab:
+  A row matches when its string columns contain the characters of every
+  word, in order but not necessarily adjacent, so "smth" finds "Smith".
+  Case-insensitive; needs at least one string column.
+
+SQL tab:
+  Full SQL over the loaded, drilled or reshaped data; the table name is df.
+  Example: SELECT city, count(*) FROM df GROUP BY city

@@ -6,7 +6,7 @@ use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Widget};
 
 /// The frame every surface draws: rounded border, unpadded Title Case title,
 /// optionally a one-line chip footer on the last inner row.
@@ -43,7 +43,7 @@ impl<'a> Surface<'a> {
         Clear.render(area, buf);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(
                 self.border
                     .unwrap_or_else(|| Style::default().fg(ctx.modal_border)),

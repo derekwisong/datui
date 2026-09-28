@@ -133,6 +133,15 @@ impl EventPump {
         if !self.app.is_busy() && !queued {
             return Act::Now;
         }
+        // The loading screen has nothing to type ahead into, so nothing is
+        // held there: the allowed keys act, everything else is dropped. Held
+        // once, a stray key would queue `q` behind it for the whole load.
+        if self.app.is_busy() && self.app.awaiting_dataset {
+            if self.app.key_acts_while_busy(key) {
+                return Act::Now;
+            }
+            return Act::Drop;
+        }
         // Busy, nothing queued yet, at the plain table view: the harmless view keys act
         // (quit, column scroll, help); a bare Enter/Esc confirms nothing and is dropped;
         // everything else is type-ahead and waits. Once anything is queued, or the view
@@ -1192,6 +1201,29 @@ mod tests {
         assert_eq!(p.app.input_mode, InputMode::Home);
         assert!(!p.app.is_busy());
         assert!(held(&p).is_empty());
+    }
+
+    /// The loading screen has nothing to type ahead into, so nothing is held
+    /// there. Held once, a stray key queued `q` behind it for the whole load.
+    #[test]
+    fn the_loading_screen_never_holds_keys() {
+        let mut p = pump();
+        p.app.opened_from_home = true;
+        p.app.set_loading_phase("Scanning input", 10);
+        assert!(p.app.awaiting_dataset && p.app.is_busy());
+
+        // A stray key is dropped, not held.
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(held(&p).is_empty(), "the loading screen holds nothing");
+
+        // And q still acts at once, stray keys or not.
+        p.terminal_key(plain(KeyCode::Char('q'))).unwrap();
+        assert_eq!(
+            p.app.input_mode,
+            InputMode::Home,
+            "q pops home from the loading screen"
+        );
     }
 
     /// Ctrl-C and Ctrl-Q quit from any mode while busy, including the chart view,

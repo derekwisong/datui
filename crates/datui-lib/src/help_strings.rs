@@ -20,8 +20,8 @@ pub fn query() -> &'static str {
     include_help!("query")
 }
 
-pub fn editing() -> &'static str {
-    include_help!("editing")
+pub fn go_to_line() -> &'static str {
+    include_help!("go_to_line")
 }
 
 pub fn sort_filter() -> &'static str {

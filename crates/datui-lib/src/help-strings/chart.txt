@@ -8,10 +8,21 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap.
                     or Limit rows (+ / - too)
   PgUp/PgDn:        Adjust Limit rows in bigger steps
   Limit rows:       Caps how many rows are used to build the chart
-  e:                Export the chart to PNG or EPS
-  ? / F1:           Show this help
+  e:                Export the chart to PNG or EPS. Needs the chart's
+                    required columns picked first
+  ? / F1:           Show this help (with a picker open ? types into the
+                    filter; F1 still opens help)
   Esc:              Back to the table
 
 In the picker: ↑/↓ move, typing narrows, Enter or Space chooses (on
-the Y series row Space toggles a series in or out), Esc backs out of
-the picker alone.
+the Y series row Space toggles a series in or out), Tab or Shift+Tab
+chooses and moves to the next or previous row, Esc backs out of the
+picker alone.
+
+Export dialog:
+  Tab / Shift+Tab:  Cycle Format → Path → Title → Width → Height
+  ↑ / ↓ (j/k):      Change the format
+  Enter:            Export, from anywhere in the dialog
+  Esc:              Back to the chart
+  An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab
+  pick, Enter confirms, and declining returns to the filled dialog.

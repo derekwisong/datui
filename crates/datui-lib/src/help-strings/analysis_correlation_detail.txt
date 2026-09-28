@@ -10,3 +10,6 @@ Correlation Pair Detail shows what the matrix knows about the selected pair:
 Keys:
   ?:             Toggle this help
   Esc:           Return to the correlation matrix
+
+Resampling (r) works from the main analysis view, not from inside this
+detail; return to the matrix first.

@@ -42,10 +42,10 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
-| <kbd>~</kbd> | Type a path or URL. <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
-| <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
-| <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
-| <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen, ignoring what is cached |
+| <kbd>~</kbd> | While the filter is empty, type a path or URL (with a filter typed, <kbd>~</kbd> types into it). <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
+| <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows |
+| <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
 | <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or hide a cloud source |
@@ -203,7 +203,8 @@ one is not counted, and its columns come from a spread of the directory rather
 than all of it, so it shows `? × 39+`: neither figure is a total, and both say
 so. CSV and other formats that need a scan to count show neither. Below the
 counts, the pane lists the full schema of a Parquet dataset, each type in the
-color the table uses.
+color the table uses. The pane leads with facts; at most one dimmed line of
+guidance follows, and it yields first when the terminal is small.
 
 ### What a row's label says
 

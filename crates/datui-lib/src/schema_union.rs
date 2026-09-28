@@ -74,6 +74,9 @@ pub struct FooterProgress {
     passes: AtomicUsize,
     /// What the last pass was over, kept after `done` for the same reason.
     last_total: AtomicUsize,
+    /// The load this counter belongs to was abandoned: passes stop issuing
+    /// reads. Shared out to the read tasks through [`Self::cancel_flag`].
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FooterProgress {
@@ -129,6 +132,21 @@ impl FooterProgress {
     pub fn reading(&self) -> Option<(usize, usize)> {
         let total = self.total.load(Ordering::Acquire);
         (total > 0).then(|| (self.read.load(Ordering::Relaxed).min(total), total))
+    }
+
+    /// The load was abandoned: any pass on this counter stops issuing reads.
+    /// Cancelling is one-way; a new load gets a new counter.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// The flag itself, for read tasks that outlive the borrow.
+    pub fn cancel_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.cancelled.clone()
     }
 }
 

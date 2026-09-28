@@ -193,4 +193,49 @@ fn the_views_surface_saves_applies_and_deletes() {
     );
     press(&mut app, KeyCode::Esc);
     assert!(!app.template_modal.active);
+
+    // A view's schema criterion belongs to the view: editing it while a
+    // different table is open must not swap in that table's columns.
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(
+        app.template_modal.rows[0]
+            .template
+            .match_criteria
+            .schema_columns
+            .as_deref(),
+        Some(&["vs_id".to_string(), "vs_group".to_string()][..]),
+        "the saved view carries this table's columns"
+    );
+    press(&mut app, KeyCode::Esc);
+
+    let other_path = test_data_dir.join("views_surface_other.csv");
+    let mut other = df!("other_col" => (0..5i64).collect::<Vec<_>>()).unwrap();
+    CsvWriter::new(&mut File::create(&other_path).unwrap())
+        .finish(&mut other)
+        .unwrap();
+    let other_path = other_path.canonicalize().unwrap();
+    pump_open_until_loaded(&mut app, &rx, vec![other_path], OpenOptions::default());
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.template_modal.rows.len(), 1);
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.template_modal.mode, TemplateModalMode::Edit);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.template_modal.rows[0]
+            .template
+            .match_criteria
+            .schema_columns
+            .as_deref(),
+        Some(&["vs_id".to_string(), "vs_group".to_string()][..]),
+        "editing from another table keeps the view's stored schema"
+    );
+
+    // Leave no view behind: the suggested path pattern matches every fixture.
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.template_modal.rows.is_empty());
+    press(&mut app, KeyCode::Esc);
 }

@@ -18,7 +18,7 @@ use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
+    Block, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
 };
 
 use super::datatable::DataTableState;
@@ -585,14 +585,16 @@ impl<'a> DataTableInfo<'a> {
         let visible_height = inner.height as usize;
         block.render(area, buf);
 
-        let data_height = visible_height.saturating_sub(1);
+        // One row of header; one more reserved for the out-of-view count when
+        // the columns do not all fit, so their existence is stated before any
+        // scrolling ("… 3 more" beats half a schema presented as whole).
+        let fits = total_rows <= visible_height.saturating_sub(1);
+        let data_height = visible_height.saturating_sub(1 + usize::from(!fits));
         self.modal.schema_visible_height = data_height;
         self.modal.sync_schema_table_state(total_rows, data_height);
 
         let offset = self.modal.schema_scroll_offset;
-        let take = visible_height
-            .saturating_sub(1)
-            .min(total_rows.saturating_sub(offset));
+        let take = data_height.min(total_rows.saturating_sub(offset));
         let mut rows = vec![];
         for (idx, (name, dtype)) in self.state.schema.iter().enumerate() {
             if idx < offset {
@@ -649,12 +651,41 @@ impl<'a> DataTableInfo<'a> {
             ],
             (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
         };
+        // The rail, not a bespoke `>>`: one selection language everywhere.
         let table = Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
             .row_highlight_style(self.highlight)
-            .highlight_symbol(">> ");
-        StatefulWidget::render(table, inner, buf, &mut self.modal.schema_table_state);
+            .highlight_symbol(crate::glyphs::get().selector);
+        let table_area = Rect {
+            height: inner.height.saturating_sub(u16::from(!fits)),
+            ..inner
+        };
+        StatefulWidget::render(table, table_area, buf, &mut self.modal.schema_table_state);
+
+        if !fits && inner.height > 0 {
+            let above = offset;
+            let below = total_rows.saturating_sub(offset + take);
+            let counted = match (above, below) {
+                (0, 0) => None,
+                (0, n) => Some(format!("{} below", format_int(n))),
+                (n, 0) => Some(format!("{} above", format_int(n))),
+                (a, b) => Some(format!("{} above, {} below", format_int(a), format_int(b))),
+            };
+            if let Some(text) = counted {
+                Paragraph::new(text)
+                    .style(Style::default().fg(self.border_color))
+                    .alignment(ratatui::layout::Alignment::Right)
+                    .render(
+                        Rect {
+                            y: inner.y + inner.height - 1,
+                            height: 1,
+                            ..inner
+                        },
+                        buf,
+                    );
+            }
+        }
     }
 
     fn render_resources_tab(&self, area: Rect, buf: &mut Buffer) {
@@ -1228,7 +1259,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let tab_bar_focused = self.modal.focus == InfoFocus::TabBar;
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .title("Info")
             .title_style(ratatui::style::Style::reset());
 
@@ -1237,8 +1268,28 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(4)])
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Min(4),
+                Constraint::Length(1),
+            ])
             .split(inner);
+
+        // The panel's own keys, said where they work: nothing here may live
+        // only in `?`.
+        let g = crate::glyphs::get();
+        crate::widgets::ui::HintBar::with_styles(
+            Style::default()
+                .fg(self.active_color)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(self.border_color),
+            Style::default().fg(self.active_color),
+        )
+        .hint(g.updown_lr, "Tabs")
+        .hint("Tab", "Focus")
+        .hint(g.updown, "Scroll")
+        .hint_weighted("Esc", "Close", 8)
+        .render(chunks[2], buf);
 
         let tab_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1274,7 +1325,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         };
         Block::default()
             .borders(Borders::BOTTOM)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(line_style)
             .render(tab_chunks[1], buf);
 
@@ -1373,6 +1424,65 @@ mod tests {
             counted.contains("Rows (total): 70"),
             "and once it has been counted, that is what it says: {counted}"
         );
+    }
+
+    /// A schema taller than the panel says how many columns are out of view
+    /// before any scrolling, the selection carries the shared rail, and the
+    /// panel names its keys in a footer.
+    #[test]
+    fn a_tall_schema_counts_its_hidden_columns() {
+        use crate::widgets::datatable::DataTableState;
+        use polars::prelude::*;
+
+        let wide = || {
+            let base = df!("col_0" => &[1i64]).unwrap().lazy();
+            let extra: Vec<Expr> = (1..24)
+                .map(|i| lit(1i64).alias(format!("col_{i}")))
+                .collect();
+            base.with_columns(extra)
+        };
+        let mut lf = wide();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            wide(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        let area = Rect::new(0, 0, 60, 16);
+        let mut buf = Buffer::empty(area);
+        let mut modal = InfoModal::default();
+        let mut panel = DataTableInfo::new(
+            &state,
+            InfoContext {
+                path: None,
+                format: None,
+                parquet_metadata: None,
+            },
+            &mut modal,
+            ratatui::style::Color::White,
+            ratatui::style::Color::Cyan,
+            ratatui::style::Color::White,
+            Style::default(),
+        );
+        (&mut panel).render(area, &mut buf);
+        let text = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("below"),
+            "the hidden columns are counted: {text}"
+        );
+        assert!(text.contains("Esc"), "the footer names the way out: {text}");
+        assert!(text.contains("Tabs"), "and the tab keys: {text}");
+        assert!(!text.contains(">>"), "the bespoke marker is gone: {text}");
     }
 
     /// Times read in the unit the docs promise, on both sides of the switch.

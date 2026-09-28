@@ -30,8 +30,11 @@ whole directory — `--no-header`, `--skip-rows`, `--skip-lines`,
 judges the directory as headerless, finds its files stack, and opens it;
 without the flag the same directory is judged with a header, its files do not
 agree, and the home screen opens on it instead. datui draws the screen first,
-and <kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> work
-throughout.
+and the loading screen keeps the way out visible: <kbd>Ctrl</kbd>+<kbd>O</kbd>,
+<kbd>q</kbd> and <kbd>?</kbd> stay in the bar beside the progress and act at
+once (<kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>Q</kbd> too). Keys
+are not held during a load — the allowed keys act, the rest are dropped — and
+abandoning a cloud load stops its reads instead of letting them run on.
 
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the

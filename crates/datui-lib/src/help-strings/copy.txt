@@ -1,24 +1,31 @@
 Copy data to the clipboard.
 
-  Tab / Shift+Tab:  Move focus between rows
-  ↑ / ↓ (j/k):      Move focus; in an open picker: move the cursor
+  Tab / Shift+Tab:  Move focus between rows; in an open picker: choose
+  ↑ / ↓:            Move focus; in an open picker: move the cursor
+                    (j/k narrow the picker; only ↑/↓ move there)
   Space:            Open the focused row's picker; on Header: toggle
+                    In an open picker: choose
   Enter:            Copy, from anywhere in the form
                     In an open picker: choose
+                    On the Cell scope with no column picked, Enter
+                    re-accents the spec line instead of copying
   type:             In an open picker: narrow the list
-  ? / F1:           Show this help
+  ? / F1:           Show this help (F1 works in text fields; with a
+                    picker open ? narrows, so use F1)
   Esc:              Close a picker, then the dialog, without copying
 
   The last scope, format and header choices are kept, so repeating a copy
-  is y Enter.
+  is y Enter. The Header row disappears for the Cell scope and the
+  Markdown format, where it has no meaning.
 
 Scopes:
   Cell:   The current row's value in one column, as plain text
   Row:    The current row
   View:   The rows on screen, with every displayed column
   Table:  Everything the view holds, as exported — rows and columns as
-          queried, filtered and sorted. Large tables ask first; very large
-          ones belong in an export (e) instead.
+          queried, filtered and sorted. Large tables ask first, and so
+          does a table whose size is not known yet; above 200 MiB the
+          copy is refused with an error — use an export (e) instead.
 
 Formats:
   TSV:       Tab-separated, what spreadsheets expect from a paste

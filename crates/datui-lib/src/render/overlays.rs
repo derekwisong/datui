@@ -18,13 +18,11 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
     let width = max_width
         .min(area.width.saturating_sub(4))
         .max(area.width.min(30));
-    // Frame (2) plus gutters (2) around the text.
+    // Frame (2) plus gutters (2) around the text. Counted with the same
+    // wrap the modal draws, in display columns, so the estimate cannot
+    // disagree with the render.
     let inner = width.saturating_sub(4).max(1) as usize;
-    let lines: usize = message
-        .lines()
-        .map(|l| l.chars().count().div_ceil(inner).max(1))
-        .sum::<usize>()
-        .max(1);
+    let lines: usize = wrap_message(message, inner).len().max(1);
     // Text, a blank, any extra rows, the footer, and the frame.
     let height = (lines as u16 + extra_rows + 4)
         .min(area.height * 3 / 4)
@@ -39,7 +37,7 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
 pub fn render_confirmation_modal(
     area: Rect,
     buf: &mut Buffer,
-    modal: &crate::ConfirmationModal,
+    modal: &mut crate::ConfirmationModal,
     ctx: &RenderContext,
 ) {
     let g = crate::glyphs::get();
@@ -62,10 +60,14 @@ pub fn render_confirmation_modal(
         ])
         .split(content);
 
-    Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.text_primary))
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .render(rows[0], buf);
+    render_scrollable_message(
+        rows[0],
+        buf,
+        &modal.message,
+        &mut modal.scroll,
+        Style::default().fg(ctx.text_primary),
+        ctx,
+    );
 
     // The choice the rail is on is the one Enter takes.
     let choice = |label: &str, focused: bool| -> Vec<Span<'static>> {
@@ -82,7 +84,7 @@ pub fn render_confirmation_modal(
             Span::styled(label.to_string(), style),
         ]
     };
-    let mut spans = choice("Yes", modal.focus_yes);
+    let mut spans = choice(modal.yes_label, modal.focus_yes);
     spans.push(Span::raw("     "));
     spans.extend(choice("No", !modal.focus_yes));
     Paragraph::new(Line::from(spans)).render(rows[2], buf);
@@ -92,7 +94,7 @@ pub fn render_confirmation_modal(
 pub fn render_error_modal(
     area: Rect,
     buf: &mut Buffer,
-    modal: &crate::ErrorModal,
+    modal: &mut crate::ErrorModal,
     ctx: &RenderContext,
 ) {
     let footer = HintBar::from_ctx(ctx)
@@ -104,10 +106,66 @@ pub fn render_error_modal(
         .border_style(Style::default().fg(ctx.modal_border_error))
         .render(popup, buf, ctx);
 
-    Paragraph::new(modal.message.as_str())
-        .style(Style::default().fg(ctx.error))
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .render(content, buf);
+    render_scrollable_message(
+        content,
+        buf,
+        &modal.message,
+        &mut modal.scroll,
+        Style::default().fg(ctx.error),
+        ctx,
+    );
+}
+
+/// One message, wrapped the way the height estimate counted it.
+fn wrap_message(message: &str, inner: usize) -> Vec<String> {
+    message
+        .lines()
+        .flat_map(|line| {
+            if crate::glyphs::display_width(line) <= inner {
+                vec![line.to_string()]
+            } else {
+                wrap_help_line(line, inner)
+            }
+        })
+        .collect()
+}
+
+/// A message body that scrolls when its frame is capped: every character of
+/// a long path or backend diagnostic stays reachable, and the last visible
+/// row counts what is below rather than half-drawing it.
+fn render_scrollable_message(
+    area: Rect,
+    buf: &mut Buffer,
+    message: &str,
+    scroll: &mut usize,
+    style: Style,
+    ctx: &RenderContext,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let lines = wrap_message(message, area.width as usize);
+    let height = area.height as usize;
+    let max_scroll = lines.len().saturating_sub(height);
+    *scroll = (*scroll).min(max_scroll);
+    let mut shown: Vec<String> = lines.iter().skip(*scroll).take(height).cloned().collect();
+    let below = lines.len().saturating_sub(*scroll + height);
+    if below > 0
+        && let Some(last) = shown.last_mut()
+    {
+        let g = crate::glyphs::get();
+        *last = format!(
+            "{} {} more ({}/{})",
+            g.ellipsis,
+            below,
+            *scroll + height,
+            lines.len()
+        );
+    }
+    Paragraph::new(shown.join("\n"))
+        .style(style)
+        .render(area, buf);
+    let _ = ctx;
 }
 
 /// Renders the help overlay with wrapped text and scrollbar. Clamps and updates `scroll` so the caller can persist it.
@@ -121,7 +179,7 @@ fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
     let mut current = String::new();
     let mut current_len = 0usize;
     for word in line.split(' ') {
-        let word_len = word.chars().count();
+        let word_len = crate::glyphs::display_width(word);
         let sep = usize::from(current_len > 0);
         if current_len + sep + word_len <= width {
             if sep == 1 {
@@ -134,13 +192,17 @@ fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
         if current_len > 0 {
             out.push(std::mem::take(&mut current));
         }
-        // A word wider than the line is split hard rather than lost.
-        let mut rest: Vec<char> = word.chars().collect();
-        while rest.len() > width {
-            out.push(rest.drain(..width).collect());
+        // A word wider than the line is split hard rather than lost, on a
+        // character boundary measured in columns.
+        let mut rest = word;
+        while crate::glyphs::display_width(rest) > width {
+            let head = crate::glyphs::take_columns(rest, width);
+            let cut = head.len().max(1);
+            out.push(rest[..cut].to_string());
+            rest = &rest[cut..];
         }
-        current = rest.into_iter().collect();
-        current_len = current.chars().count();
+        current = rest.to_string();
+        current_len = crate::glyphs::display_width(rest);
     }
     out.push(current);
     out
@@ -182,9 +244,13 @@ pub fn render_help_overlay(
     let available_width = inner_area.width as usize;
     let available_height = inner_area.height as usize;
 
+    // The help files are written once, in Unicode; a terminal on the ASCII
+    // floor gets the twins here, at the one boundary all of them cross.
+    let text = crate::glyphs::asciify_instructions(text);
+
     let mut wrapped_lines: Vec<String> = Vec::new();
     for line in text.lines() {
-        if line.chars().count() <= available_width {
+        if crate::glyphs::display_width(line) <= available_width {
             wrapped_lines.push(line.to_string());
         } else {
             wrapped_lines.extend(wrap_help_line(line, available_width));
@@ -319,6 +385,37 @@ mod tests {
             .collect()
     }
 
+    /// A message taller than the capped frame scrolls: the first row is
+    /// there at the top, the last is reachable at the bottom, and the cut
+    /// row counts what is below instead of half-drawing it.
+    #[test]
+    fn a_long_error_scrolls_instead_of_hiding_its_tail() {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 60, 20);
+        let long = (0..40)
+            .map(|i| format!("diagnostic line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut modal = crate::ErrorModal::new();
+        modal.show(long.clone());
+        let mut buf = Buffer::empty(area);
+        render_error_modal(area, &mut buf, &mut modal, &ctx);
+        let text = grid(&buf, area).join("\n");
+        assert!(text.contains("diagnostic line 0"), "{text}");
+        assert!(text.contains("more"), "the cut says what is below: {text}");
+
+        // Over-scrolling clamps, and the tail becomes reachable.
+        modal.scroll = usize::MAX;
+        let mut buf = Buffer::empty(area);
+        render_error_modal(area, &mut buf, &mut modal, &ctx);
+        let text = grid(&buf, area).join("\n");
+        assert!(
+            text.contains("diagnostic line 39"),
+            "the last line is reachable: {text}"
+        );
+    }
+
     /// One border, no bordered buttons: the frame's corners are the only ones.
     #[test]
     fn the_error_modal_is_one_surface_with_the_keys_in_the_footer() {
@@ -327,7 +424,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut modal = crate::ErrorModal::new();
         modal.show("Select at least one index column.".to_string());
-        render_error_modal(area, &mut buf, &modal, &ctx);
+        render_error_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);
         let corners: usize = rows.iter().map(|r| r.matches('╭').count()).sum();
         assert_eq!(corners, 1, "one frame, no inner boxes: {rows:#?}");
@@ -344,7 +441,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut modal = crate::ConfirmationModal::new();
         modal.show("Overwrite out.csv?".to_string());
-        render_confirmation_modal(area, &mut buf, &modal, &ctx);
+        render_confirmation_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);
         let corners: usize = rows.iter().map(|r| r.matches('╭').count()).sum();
         assert_eq!(corners, 1, "one frame, no button boxes: {rows:#?}");
@@ -363,7 +460,7 @@ mod tests {
         // Switching focus moves the rail, not the labels.
         modal.focus_yes = false;
         let mut buf2 = Buffer::empty(area);
-        render_confirmation_modal(area, &mut buf2, &modal, &ctx);
+        render_confirmation_modal(area, &mut buf2, &mut modal, &ctx);
         let rows2 = grid(&buf2, area);
         let choice_row2 = rows2
             .iter()

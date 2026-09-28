@@ -21,7 +21,7 @@ Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
 Poisson, Bernoulli, Binomial, Geometric and Weibull — and reports the best
 fit, along with the Shapiro-Wilk statistic and p-value, coefficient of
 variation, outlier count (IQR method), skewness and kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
-column with many outliers or extreme shape.
+poor fit or a column with many outliers or extreme shape.
 
 Press <kbd>Enter</kbd> on a column for the detail view: a Q-Q plot against the
 chosen distribution and a histogram with the theoretical curve overlaid.
@@ -55,6 +55,7 @@ the estimate basis. A full value scan always asks for confirmation.
 | Compute | Metadata only, seeded sample (bounded prefix for dataset grain; per-segment after a full selected-scope read for other grains), or full scan |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
+| Sample rows | Rows kept per segment for a sampled compute: <kbd>←</kbd> <kbd>→</kbd> cycle 1,000 to 50,000; the default comes from [`[performance] quality_sample_rows`](configuration.md#performance) |
 
 <kbd>e</kbd> edits a copy of the plan. In the editor, <kbd>←</kbd> <kbd>→</kbd> on Scope
 picks a preset and <kbd>Enter</kbd> on Scope opens a precise entry:
@@ -122,9 +123,9 @@ Sampling is a compute choice, not a grain.
 
 | | |
 |---|---|
-| Dataset grain | Selects without replacement from at most the first 50,000 eligible rows; not a random sample of the entire dataset |
-| File, partition, chunk, window grain | A streaming full-scope read retains up to 50,000 seeded rows per segment, without replacement; the access plan says the value-read size is unknown and asks for confirmation |
-| Budgets | The per-segment budget multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower the budget |
+| Dataset grain | Selects without replacement from a bounded prefix of the scope — about twice the Sample rows budget, never more than the first 50,000 eligible rows; not a random sample of the entire dataset |
+| File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Sample rows budget of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
+| Budgets | The Sample rows budget multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower the Sample rows budget |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
 | Time windows | `1h`, `1d`, `1w`, `1mo` on each assigned time role, starting on the calendar boundary for their width (weeks start on Monday); a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |

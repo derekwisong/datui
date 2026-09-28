@@ -1665,6 +1665,9 @@ panel has not been opened since. The Notes tab is there either way",
 pub struct PerformanceConfig {
     /// When None, analysis uses full dataset (no sampling). When Some(n), datasets with >= n rows are sampled.
     pub sampling_threshold: Option<usize>,
+    /// Rows per segment a Data Quality sample reads. The plan editor can
+    /// change it per run; this is where the default comes from.
+    pub quality_sample_rows: usize,
     pub event_poll_interval_ms: u64,
     /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
     pub polars_streaming: bool,
@@ -1672,6 +1675,10 @@ pub struct PerformanceConfig {
 
 // Field comments for PerformanceConfig
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
+    (
+        "quality_sample_rows",
+        "Rows per segment a Data Quality sample reads (default 10000, at most 50000).\nThe plan editor's Sample rows field changes it per run.",
+    ),
     (
         "sampling_threshold",
         "Optional: when set, datasets with >= this many rows are sampled for analysis (faster, less memory).\nWhen unset or omitted, full dataset is used. Example: sampling_threshold = 10000",
@@ -2412,6 +2419,7 @@ impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
             sampling_threshold: None,
+            quality_sample_rows: 10_000,
             event_poll_interval_ms: 25,
             polars_streaming: true,
         }
@@ -2858,6 +2866,11 @@ impl AppConfig {
         }
 
         // Validate performance settings
+        if self.performance.quality_sample_rows == 0
+            || self.performance.quality_sample_rows > 50_000
+        {
+            return Err(eyre!("quality_sample_rows must be between 1 and 50000"));
+        }
         if let Some(t) = self.performance.sampling_threshold
             && t == 0
         {
@@ -2993,6 +3006,9 @@ impl PerformanceConfig {
         let default = PerformanceConfig::default();
         if other.sampling_threshold != default.sampling_threshold {
             self.sampling_threshold = other.sampling_threshold;
+        }
+        if other.quality_sample_rows != default.quality_sample_rows {
+            self.quality_sample_rows = other.quality_sample_rows;
         }
         if other.event_poll_interval_ms != default.event_poll_interval_ms {
             self.event_poll_interval_ms = other.event_poll_interval_ms;

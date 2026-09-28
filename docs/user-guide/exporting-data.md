@@ -10,8 +10,8 @@ as queried, filtered and sorted.
 | CSV | `.csv` | Delimiter, include header |
 | Parquet | `.parquet` | |
 | JSON | `.json` | One array |
-| NDJSON | `.jsonl` | One object per line |
-| Arrow IPC | `.arrow` | |
+| NDJSON | `.jsonl`, `.ndjson` | One object per line |
+| Arrow IPC | `.arrow`, `.ipc`, `.feather` | |
 | Avro | `.avro` | |
 
 Every format also offers **Source file** for a dataset whose files disagree; see
@@ -26,13 +26,19 @@ Excel and ORC can be read but not written.
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path and options |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Change the format, or the compression |
 | <kbd>Space</kbd> | Toggle a checkbox |
-| <kbd>Enter</kbd> | Export, from anywhere in the form |
+| <kbd>Enter</kbd> | Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Close without exporting |
 
-Typing a path with a known extension selects the matching format, including
-before a compression suffix (`out.csv.gz` selects CSV); picking a format
-afterward overrides it.
+Typing a path with a known extension selects the matching format, and a
+trailing `.gz`/`.zst`/`.bz2`/`.xz` sets the compression (`out.csv.gz` selects
+CSV, gzipped); picking a format afterward rewrites the typed extension to
+match, so the file's name and its bytes agree.
+
+If the file exists, <kbd>Enter</kbd> asks first, starting on No; declining
+returns to the filled form, path intact. On a narrow terminal the dialog
+stacks into one column, Format first, and <kbd>↑</kbd> <kbd>↓</kbd> still
+cycle it.
 
 Numbers are written as raw values, whatever the
 [display formatting](configuration.md#number-formatting) shows on screen.

@@ -3619,6 +3619,43 @@ pub mod tests {
         );
     }
 
+    /// A whole-table copy whose size is not known yet (the row count is still
+    /// being read) must ask first, never collect an unknown amount unprompted.
+    #[test]
+    fn a_table_copy_with_no_size_yet_asks_first() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        let state = app.data_table_state.as_mut().unwrap();
+        state.invalidate_num_rows();
+        assert!(state.estimated_total_bytes().is_none());
+
+        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        let _ = app.perform_copy();
+        assert!(
+            app.confirmation_modal.active,
+            "an unknown size asks; it never collects unprompted"
+        );
+        assert!(app.pending_copy.is_some());
+    }
+
     /// A count landing while a load is in flight does not cancel the load.
     ///
     /// `BackgroundLenReady` answers an End by jumping to the end, which reaches
@@ -5516,6 +5553,8 @@ pub enum QueryFocus {
 pub struct ErrorModal {
     pub active: bool,
     pub message: String,
+    /// How far a long message is scrolled; the render clamps it.
+    pub scroll: usize,
 }
 
 impl ErrorModal {
@@ -5526,11 +5565,13 @@ impl ErrorModal {
     pub fn show(&mut self, message: String) {
         self.active = true;
         self.message = message;
+        self.scroll = 0;
     }
 
     pub fn hide(&mut self) {
         self.active = false;
         self.message.clear();
+        self.scroll = 0;
     }
 }
 
@@ -5557,11 +5598,26 @@ impl Flash {
     }
 }
 
-#[derive(Default)]
 pub struct ConfirmationModal {
     pub active: bool,
     pub message: String,
     pub focus_yes: bool, // true = Yes focused, false = No focused
+    /// What Enter-on-Yes does, named: "Overwrite", not a generic "Yes".
+    pub yes_label: &'static str,
+    /// How far a long message is scrolled; the render clamps it.
+    pub scroll: usize,
+}
+
+impl Default for ConfirmationModal {
+    fn default() -> Self {
+        Self {
+            active: false,
+            message: String::new(),
+            focus_yes: true,
+            yes_label: "Yes",
+            scroll: 0,
+        }
+    }
 }
 
 impl ConfirmationModal {
@@ -5573,12 +5629,26 @@ impl ConfirmationModal {
         self.active = true;
         self.message = message;
         self.focus_yes = true; // Default to Yes
+        self.yes_label = "Yes";
+        self.scroll = 0;
+    }
+
+    /// A confirmation whose Yes destroys something: it starts on No, so a
+    /// reflexive second Enter declines, and the action is named on the choice.
+    pub fn show_destructive(&mut self, message: String, yes_label: &'static str) {
+        self.active = true;
+        self.message = message;
+        self.focus_yes = false;
+        self.yes_label = yes_label;
+        self.scroll = 0;
     }
 
     pub fn hide(&mut self) {
         self.active = false;
         self.message.clear();
         self.focus_yes = true;
+        self.yes_label = "Yes";
+        self.scroll = 0;
     }
 }
 
@@ -6358,7 +6428,7 @@ pub struct App {
     chart_export_waiting: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
     error_modal: ErrorModal,
     flash: Option<Flash>,
-    confirmation_modal: ConfirmationModal,
+    pub confirmation_modal: ConfirmationModal,
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
@@ -6809,17 +6879,18 @@ impl App {
                 }
             }
             InputMode::Normal => {
-                self.template_modal.active
-                    && self.template_modal.mode != TemplateModalMode::List
-                    && matches!(
-                        self.template_modal.form_focus,
-                        FormFocus::Name
-                            | FormFocus::Description
-                            | FormFocus::ExactPath
-                            | FormFocus::RelativePath
-                            | FormFocus::PathPattern
-                            | FormFocus::FilenamePattern
-                    )
+                self.analysis_modal.quality_scope_typing()
+                    || (self.template_modal.active
+                        && self.template_modal.mode != TemplateModalMode::List
+                        && matches!(
+                            self.template_modal.form_focus,
+                            FormFocus::Name
+                                | FormFocus::Description
+                                | FormFocus::ExactPath
+                                | FormFocus::RelativePath
+                                | FormFocus::PathPattern
+                                | FormFocus::FilenamePattern
+                        ))
             }
             InputMode::Home | InputMode::Info => false,
         }
@@ -7670,6 +7741,8 @@ impl App {
         self.export_modal.path_input.handle_key(event, None);
         if self.export_modal.path_input.value() != before {
             self.export_modal.sync_format_to_path();
+            // Typing is the correction the message asked for.
+            self.export_modal.path_error = None;
         }
     }
 
@@ -8547,12 +8620,19 @@ impl App {
     /// Returning home puts the cursor on whatever you currently have open, so the
     /// round trip out and back lands where you left rather than at the top.
     ///
-    /// Abandoning is `load_active = false` plus clearing the load's own UI state.
-    /// Nothing is cancelled: the background work runs to completion and its results
-    /// are dropped on arrival. Work that is not a load — an export, an analysis — is
-    /// deliberately left alone, so its progress indicator and its completion modal
-    /// must survive this.
+    /// Abandoning is `load_active = false` plus clearing the load's own UI state,
+    /// and cancelling the load's footer counter, so an in-flight cloud pass stops
+    /// issuing paid reads within a wave. Other background work runs to completion
+    /// and its results are dropped on arrival. Work that is not a load — an
+    /// export, an analysis — is deliberately left alone, so its progress
+    /// indicator and its completion modal must survive this.
     pub fn abandon_load(&mut self) {
+        // Only the in-flight load's counter: with no load running, this counter
+        // belongs to the installed dataset's own background pass, which a trip
+        // home must not stop.
+        if self.load_active {
+            self.footer_progress.cancel();
+        }
         self.load_active = false;
         // A chart being prepared for the dataset we are leaving would otherwise keep
         // the throbber up on the home screen, and its result could later land in a
@@ -11891,14 +11971,25 @@ impl App {
             };
             template.name = name;
             template.description = description;
+            let stored_schema = template.match_criteria.schema_columns.take();
             template.match_criteria = match_criteria;
+            let editing_the_active_view =
+                self.active_template_id.as_deref() == Some(editing_id.as_str());
+            // The same principle as the settings below: editing an unapplied
+            // view must not swap the columns it matches on for the columns of
+            // whatever table happens to be open. The toggle still works — off
+            // drops the criterion — and the active view follows its table.
+            if !editing_the_active_view
+                && self.template_modal.schema_match_enabled
+                && stored_schema.is_some()
+            {
+                template.match_criteria.schema_columns = stored_schema;
+            }
             // The settings follow the table only while this view is the one
             // dressing it. Editing an unapplied view changes its name,
             // description and matching alone — it must not overwrite what
             // the view carries with whatever the table happens to show.
-            if self.active_template_id.as_deref() == Some(editing_id.as_str())
-                && let Some(state) = &self.data_table_state
-            {
+            if editing_the_active_view && let Some(state) = &self.data_table_state {
                 let (query, sql_query, fuzzy_query) = active_query_settings(
                     state.get_active_query(),
                     state.get_active_sql_query(),
@@ -12134,6 +12225,16 @@ impl App {
                     // Toggle between Yes and No
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
+                // ←→ carry the choice, so ↑↓ scroll a long question; the
+                // render clamps the offset.
+                KeyCode::Up => {
+                    self.confirmation_modal.scroll =
+                        self.confirmation_modal.scroll.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.confirmation_modal.scroll =
+                        self.confirmation_modal.scroll.saturating_add(1);
+                }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
                         // Forgetting every recent is checked first: it is the only
@@ -12209,11 +12310,15 @@ impl App {
                     } else {
                         self.pending_clear_recents = false;
                         self.pending_forget_place = None;
-                        // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
-                        if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
-                            self.chart_export_modal.reopen_with_path(&path, format);
+                        // Declining an overwrite returns to the filled form:
+                        // the typed path, format and options survive the No.
+                        if self.pending_chart_export.take().is_some() {
+                            self.chart_export_modal.resume();
                         }
-                        self.pending_export = None;
+                        if self.pending_export.take().is_some() {
+                            self.export_modal.resume();
+                            self.input_mode = InputMode::Export;
+                        }
                         self.pending_copy = None;
                         #[cfg(any(feature = "http", feature = "cloud"))]
                         if self.pending_download.is_some() {
@@ -12228,11 +12333,15 @@ impl App {
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
                     self.pending_forget_place = None;
-                    // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
-                    if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
-                        self.chart_export_modal.reopen_with_path(&path, format);
+                    // Declining an overwrite returns to the filled form: the
+                    // typed path, format and options survive the Esc.
+                    if self.pending_chart_export.take().is_some() {
+                        self.chart_export_modal.resume();
                     }
-                    self.pending_export = None;
+                    if self.pending_export.take().is_some() {
+                        self.export_modal.resume();
+                        self.input_mode = InputMode::Export;
+                    }
                     self.pending_copy = None;
                     #[cfg(any(feature = "http", feature = "cloud"))]
                     if self.pending_download.is_some() {
@@ -12251,6 +12360,23 @@ impl App {
         // Error modal
         if self.error_modal.active {
             match event.code {
+                // A long diagnostic scrolls; the render clamps the offset.
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_sub(1);
+                    return None;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_add(1);
+                    return None;
+                }
+                KeyCode::PageUp => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_sub(8);
+                    return None;
+                }
+                KeyCode::PageDown => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_add(8);
+                    return None;
+                }
                 KeyCode::Esc | KeyCode::Enter => {
                     self.error_modal.hide();
                     // With nothing loaded, dismissing the error would otherwise leave
@@ -12623,6 +12749,7 @@ impl App {
                                 current_idx - 1
                             };
                             self.export_modal.selected_format = ExportFormat::ALL[prev_idx];
+                            self.export_modal.sync_path_to_format();
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
@@ -12655,6 +12782,7 @@ impl App {
                                 .unwrap_or(0);
                             let next_idx = (current_idx + 1) % ExportFormat::ALL.len();
                             self.export_modal.selected_format = ExportFormat::ALL[next_idx];
+                            self.export_modal.sync_path_to_format();
                         }
                         ExportFocus::PathInput => {
                             // Pass to text input widget (for history navigation)
@@ -12723,8 +12851,13 @@ impl App {
                 }
                 KeyCode::Enter => {
                     // Enter applies from anywhere in the form: build the export from
-                    // the state every row already echoes. A blank path exports nothing.
+                    // the state every row already echoes. A blank path cannot, and
+                    // says so inline instead of doing nothing.
                     let path_str = self.export_modal.path_input.value().trim().to_string();
+                    if path_str.is_empty() {
+                        self.export_modal.path_error = Some("Enter a file path.");
+                        self.export_modal.focus = ExportFocus::PathInput;
+                    }
                     if !path_str.is_empty() {
                         // `~` and `$VAR` expand as everywhere else a path is
                         // typed; unexpanded they become a literal `~` directory
@@ -12766,11 +12899,13 @@ impl App {
                         if path.exists() {
                             let path_display = path.display().to_string();
                             self.pending_export = Some((path, format, options));
-                            self.confirmation_modal.show(format!(
-                                "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                path_display
-                            ));
-                            self.export_modal.close();
+                            self.confirmation_modal.show_destructive(
+                                format!("File already exists:\n{path_display}\n\nOverwrite it?"),
+                                "Overwrite",
+                            );
+                            // Suspended, not closed: declining returns to the
+                            // filled form with the typed path intact.
+                            self.export_modal.suspend();
                             self.input_mode = InputMode::Normal;
                         } else {
                             // Start export with progress
@@ -13184,11 +13319,15 @@ impl App {
                             if path.exists() {
                                 self.pending_chart_export =
                                     Some((path, format, title, width, height));
-                                self.chart_export_modal.close();
-                                self.confirmation_modal.show(format!(
-                                    "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                    path_display
-                                ));
+                                // Suspended, not closed: declining returns to
+                                // the filled form with the typed path intact.
+                                self.chart_export_modal.suspend();
+                                self.confirmation_modal.show_destructive(
+                                    format!(
+                                        "File already exists:\n{path_display}\n\nOverwrite it?"
+                                    ),
+                                    "Overwrite",
+                                );
                             } else {
                                 self.chart_export_modal.close();
                                 return Some(AppEvent::ChartExport(
@@ -13888,7 +14027,12 @@ impl App {
                 KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
-                KeyCode::Char('r') if self.sampling_threshold.is_some() => {
+                KeyCode::Char('r')
+                    if self.sampling_threshold.is_some()
+                        && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                {
+                    // Gated to Main: inside a detail view an undocumented `r`
+                    // cleared the results out from under the detail.
                     self.analysis_modal.recalculate();
                     match self.analysis_modal.selected_tool {
                         Some(analysis_modal::AnalysisTool::Describe) => {
@@ -14480,7 +14624,7 @@ impl App {
                         // A refusal is validation, not a failure: it is said on
                         // the surface's own status line, not in a modal.
                         self.template_modal.status = Some(
-                            "Nothing to save yet: set a query, filter, sort or column layout first."
+                            "Nothing to save yet: set a query, filter, sort, column layout, or pivot/melt first."
                                 .to_string(),
                         );
                     } else {
@@ -14592,7 +14736,10 @@ impl App {
                 const LEFT_KEYS: [KeyCode; 2] = [KeyCode::Left, KeyCode::Char('h')];
 
                 if self.query_focus == QueryFocus::TabBar && event.is_press() {
+                    // Enter included: it must never dead-end, so from the tab
+                    // bar it returns to the input, one keystroke from running.
                     if event.code == KeyCode::BackTab
+                        || event.code == KeyCode::Enter
                         || (event.code == KeyCode::Tab
                             && !event.modifiers.contains(KeyModifiers::SHIFT))
                     {
@@ -14776,6 +14923,15 @@ impl App {
 
             // Line number input (GoToLine): ":" then type line number, Enter to jump, Esc to cancel
             if self.input_type == Some(InputType::GoToLine) {
+                // The prompt borrows `query_input`, whose history is the query
+                // history: without this, ↑ filled the line with a past query
+                // and Enter on it closed silently.
+                let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+                if matches!(event.code, KeyCode::Up | KeyCode::Down)
+                    || (ctrl && matches!(event.code, KeyCode::Char('p' | 'n')))
+                {
+                    return None;
+                }
                 self.query_input.set_focused(true);
                 let result = self.query_input.handle_key(event, None);
                 match result {
@@ -14822,6 +14978,19 @@ impl App {
         const DOWN_KEYS: [KeyCode; 2] = [KeyCode::Down, KeyCode::Char('j')];
 
         const UP_KEYS: [KeyCode; 2] = [KeyCode::Up, KeyCode::Char('k')];
+
+        // The letter arms below are unmodified keys. Without this guard the
+        // bare-`Char` matches also fired with Ctrl or Alt held, so Ctrl+E
+        // opened Export and Ctrl+R reversed — bindings nobody declared.
+        // Paging (Ctrl+F/B/D/U) is the only modified set this match owns;
+        // the global escapes were handled before reaching here.
+        if event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && !matches!(event.code, KeyCode::Char('f' | 'b' | 'd' | 'u'))
+        {
+            return None;
+        }
 
         match event.code {
             // q pops the context: opened from the home screen, it returns
@@ -15219,6 +15388,9 @@ impl App {
                     && self.quality_evidence_return.is_none()
                 {
                     self.analysis_modal.open();
+                    // The configured default; the plan editor changes it per run.
+                    self.analysis_modal.data_quality_plan.sample_rows =
+                        self.app_config.performance.quality_sample_rows;
                 }
                 None
             }
@@ -15491,13 +15663,14 @@ impl App {
                 }
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
-                // A new counter for a new load. Abandoning a load cancels nothing —
-                // the footers keep being read — so a shared one would go on reporting
-                // the abandoned directory's progress under the next file's name.
+                // A new counter for a new load, and the old counter cancelled: what
+                // the last dataset was still reading is no longer wanted, and unread,
+                // unpaid-for is better than read and dropped.
                 //
                 // The meter needs no equivalent: it belongs to the dataset rather than
                 // to the app, so a load that never reaches the screen never has one
                 // installed. See `DataTableState::measurements`.
+                self.footer_progress.cancel();
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 // Whatever the last dataset was still reading is no longer wanted.
                 *self
@@ -15552,13 +15725,14 @@ impl App {
                 self.opened = None;
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
-                // A new counter for a new load. Abandoning a load cancels nothing —
-                // the footers keep being read — so a shared one would go on reporting
-                // the abandoned directory's progress under the next file's name.
+                // A new counter for a new load, and the old counter cancelled: what
+                // the last dataset was still reading is no longer wanted, and unread,
+                // unpaid-for is better than read and dropped.
                 //
                 // The meter needs no equivalent: it belongs to the dataset rather than
                 // to the app, so a load that never reaches the screen never has one
                 // installed. See `DataTableState::measurements`.
+                self.footer_progress.cancel();
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 // Whatever the last dataset was still reading is no longer wanted.
                 *self
@@ -18143,7 +18317,8 @@ impl App {
         enum Planned {
             Copy(clipboard::Payload, String),
             Collect,
-            Confirm(usize),
+            /// None: the size is not known yet (the row count is still coming).
+            Confirm(Option<usize>),
         }
         let format = self.copy_modal.format;
         let header = self.copy_modal.header();
@@ -18193,8 +18368,13 @@ impl App {
                          Export it to a file instead (e).",
                         Self::format_bytes(bytes as u64)
                     )),
-                    Some(bytes) if bytes > Self::COPY_CONFIRM_BYTES => Ok(Planned::Confirm(bytes)),
-                    _ => Ok(Planned::Collect),
+                    Some(bytes) if bytes > Self::COPY_CONFIRM_BYTES => {
+                        Ok(Planned::Confirm(Some(bytes)))
+                    }
+                    Some(_) => Ok(Planned::Collect),
+                    // The row count has not landed yet, so the size is anyone's
+                    // guess: ask before collecting an unknown amount.
+                    None => Ok(Planned::Confirm(None)),
                 },
             },
         };
@@ -18208,10 +18388,15 @@ impl App {
             Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
             Ok(Planned::Confirm(bytes)) => {
                 self.pending_copy = Some((format, header));
-                self.confirmation_modal.show(format!(
-                    "This copies about {} to the clipboard.\n\nCopy the whole table?",
-                    Self::format_bytes(bytes as u64)
-                ));
+                self.confirmation_modal.show(match bytes {
+                    Some(bytes) => format!(
+                        "This copies about {} to the clipboard.\n\nCopy the whole table?",
+                        Self::format_bytes(bytes as u64)
+                    ),
+                    None => "The table's size is not known yet — the row count is \
+                             still being read.\n\nCopy the whole table anyway?"
+                        .to_string(),
+                });
                 None
             }
             Err(message) => {
@@ -18510,7 +18695,7 @@ impl App {
             InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
                 Some(InputType::Search) => ("Query Help", help_strings::query()),
-                _ => ("Editing Help", help_strings::editing()),
+                _ => ("Go to Line", help_strings::go_to_line()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
             InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
@@ -18564,12 +18749,12 @@ impl Widget for &mut App {
             crate::render::overlays::render_confirmation_modal(
                 area,
                 buf,
-                &self.confirmation_modal,
+                &mut self.confirmation_modal,
                 &ctx,
             );
         }
         if self.error_modal.active {
-            crate::render::overlays::render_error_modal(area, buf, &self.error_modal, &ctx);
+            crate::render::overlays::render_error_modal(area, buf, &mut self.error_modal, &ctx);
         }
         if self.show_help
             || (self.template_modal.active && self.template_modal.show_help)

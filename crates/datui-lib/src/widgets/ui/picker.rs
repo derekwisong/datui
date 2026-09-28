@@ -198,10 +198,11 @@ impl<'a> Picker<'a> {
             }
             // The rail marks focus, not selection: inside one Surface it is
             // the one "you are here", and Tab visibly moves it. The choice
-            // stays visible without focus through the accent alone.
+            // stays marked without focus by a glyph, not by color alone —
+            // under NO_COLOR an accent-only selection disappeared.
             let (marker, mut style) = if is_selected {
                 (
-                    if self.focused { g.rail } else { " " },
+                    if self.focused { g.rail } else { g.middot },
                     Style::default().fg(ctx.accent),
                 )
             } else {
@@ -327,14 +328,20 @@ mod tests {
     }
 
     /// The rail leaves with focus — it is the form's one "you are here" —
-    /// but the chosen item never stops being visible: it keeps the accent.
+    /// but the chosen item never stops being visible: it keeps the accent
+    /// and a marker glyph, so it survives a terminal with no color at all.
     #[test]
     fn an_unfocused_selection_stays_visible_without_the_rail() {
+        let g = crate::glyphs::get();
         let picker = Picker::new(vec!["CSV", "Parquet"], Some(0), false);
         let rows = render_rows(&picker, 20, 2);
         assert!(
-            rows[0].starts_with(" CSV"),
-            "no rail without focus: {rows:?}"
+            rows[0].starts_with(&format!("{}CSV", g.middot)),
+            "the choice keeps a glyph without focus: {rows:?}"
+        );
+        assert!(
+            !rows[0].starts_with(g.rail),
+            "but never the rail, which means focus: {rows:?}"
         );
 
         let ctx = RenderContext::for_test();

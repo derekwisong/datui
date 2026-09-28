@@ -97,9 +97,11 @@ impl<'a> HintBar<'a> {
     }
 
     /// A chip's cost in columns: the key padded one cell each side, a space,
-    /// the label, then two cells before the next chip.
+    /// the label, then two cells before the next chip. Measured in display
+    /// columns — a `[glyphs]` override may be wide.
     fn chip_width(hint: &Hint) -> u16 {
-        (hint.key.chars().count() as u16 + 2) + (hint.label.chars().count() as u16 + 3)
+        (crate::glyphs::display_width(hint.key) as u16 + 2)
+            + (crate::glyphs::display_width(hint.label) as u16 + 3)
     }
 
     /// Which chips a row of `width` shows: chips are dropped whole, lightest

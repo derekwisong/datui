@@ -56,14 +56,14 @@ the estimate basis. A full value scan always asks for confirmation.
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 
-<kbd>e</kbd> edits a copy of the plan. In the editor, Left/Right on Scope
+<kbd>e</kbd> edits a copy of the plan. In the editor, <kbd>←</kbd> <kbd>→</kbd> on Scope
 picks a preset and <kbd>Enter</kbd> on Scope opens a precise entry:
 
 | Scope entry | Meaning |
 |---|---|
 | `view` / `source` | Current table pipeline / loaded source, ignoring the active query, filters, and sort |
 | `rows 100..200` | Inclusive 1-based row range in the current view order |
-| `files 1,3` | Source files by the numbered inventory on the Scope page; PageUp/PageDown scrolls it |
+| `files 1,3` | Source files by the numbered inventory on the Scope page; <kbd>PgUp</kbd> <kbd>PgDn</kbd> scrolls it |
 | `partition region=west` | Rows with that source-column value; `∅` selects null |
 | `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
 

@@ -43,61 +43,7 @@ pub struct Controls {
     pub not_the_table: Option<&'static str>,
 }
 
-impl Default for Controls {
-    fn default() -> Self {
-        Self {
-            caption: None,
-            row_count: None,
-            total_row_count: None,
-            dimmed: false,
-            query_active: false,
-            custom_controls: None,
-            bg_color: Color::Indexed(236), // Default for backward compatibility
-            key_color: Color::Cyan,        // Keys in cyan
-            label_color: Color::White,     // Labels in white
-            chip_text_color: Color::Black,
-            throbber_color: Color::Cyan,
-            use_unicode_throbber: false,
-            busy: false,
-            throbber_frame: 0,
-            status_message: None,
-            notes_pending: false,
-            row_count_pending: false,
-            row_count_unknown: false,
-            not_the_table: None,
-        }
-    }
-}
-
 impl Controls {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_row_count(row_count: usize) -> Self {
-        Self {
-            caption: None,
-            row_count: Some(row_count),
-            total_row_count: None,
-            dimmed: false,
-            query_active: false,
-            custom_controls: None,
-            bg_color: Color::Indexed(236), // Default
-            key_color: Color::Cyan,        // Keys in cyan
-            label_color: Color::White,     // Labels in white
-            chip_text_color: Color::Black,
-            throbber_color: Color::Cyan,
-            use_unicode_throbber: false,
-            busy: false,
-            throbber_frame: 0,
-            status_message: None,
-            notes_pending: false,
-            row_count_pending: false,
-            row_count_unknown: false,
-            not_the_table: None,
-        }
-    }
-
     pub fn with_busy(mut self, busy: bool, throbber_frame: u8) -> Self {
         self.busy = busy;
         self.throbber_frame = throbber_frame;
@@ -198,36 +144,6 @@ impl Controls {
             label_color: ctx.keybind_labels,
             chip_text_color: ctx.text_inverse,
             throbber_color: ctx.throbber,
-            use_unicode_throbber: false,
-            busy: false,
-            throbber_frame: 0,
-            status_message: None,
-            notes_pending: false,
-            row_count_pending: false,
-            row_count_unknown: false,
-            not_the_table: None,
-        }
-    }
-
-    pub fn with_row_count_and_colors(
-        row_count: usize,
-        bg_color: Color,
-        key_color: Color,
-        label_color: Color,
-        throbber_color: Color,
-    ) -> Self {
-        Self {
-            caption: None,
-            row_count: Some(row_count),
-            total_row_count: None,
-            dimmed: false,
-            query_active: false,
-            custom_controls: None,
-            bg_color,
-            key_color,
-            label_color,
-            chip_text_color: Color::Black,
-            throbber_color,
             use_unicode_throbber: false,
             busy: false,
             throbber_frame: 0,
@@ -480,7 +396,7 @@ mod tests {
     #[test]
     fn a_long_caption_does_not_squeeze_the_last_chip() {
         let caption = "by recent  ·  128 datasets".to_string();
-        let controls = Controls::with_row_count(0)
+        let controls = with_row_count(0)
             .with_custom_controls(vec![
                 ("Enter", "Open"),
                 ("↑↓", "Move"),
@@ -529,7 +445,7 @@ mod tests {
     #[test]
     fn a_status_message_does_not_truncate_the_caption() {
         let caption = "by recent  ·  128 datasets".to_string();
-        let controls = Controls::with_row_count(0)
+        let controls = with_row_count(0)
             .with_caption(Some(caption.clone()))
             .with_status_message(Some("Counting rows to find the end…".to_string()));
 
@@ -540,6 +456,14 @@ mod tests {
                 "the caption is whole at width {width}: {bar:?}"
             );
         }
+    }
+
+    /// The tests build the widget the way production does: from a context.
+    fn with_row_count(row_count: usize) -> Controls {
+        Controls::from_context(
+            row_count,
+            &crate::render::context::RenderContext::for_test(),
+        )
     }
 
     fn render_to_string(controls: &Controls, width: u16) -> String {
@@ -559,10 +483,7 @@ mod tests {
     #[test]
     fn a_lake_table_s_files_say_so_beside_the_row_count() {
         let bar = |format: Option<&'static str>| {
-            render_to_string(
-                &Controls::with_row_count(1_234).with_not_the_table(format),
-                80,
-            )
+            render_to_string(&with_row_count(1_234).with_not_the_table(format), 80)
         };
 
         let plain = bar(None);
@@ -594,9 +515,9 @@ mod tests {
         let area = Rect::new(0, 0, 80, 1);
         let paint = |pending: bool| {
             let mut buf = Buffer::empty(area);
-            Controls::new()
-                .with_notes_pending(pending)
-                .render(area, &mut buf);
+            let mut controls = with_row_count(0).with_notes_pending(pending);
+            controls.row_count = None;
+            controls.render(area, &mut buf);
             buf
         };
         let plain = paint(false);
@@ -636,17 +557,11 @@ mod tests {
     /// A filtered view says what it is a view of: "Rows: 417 of 1,000".
     #[test]
     fn a_filtered_count_names_the_total_beside_it() {
-        let out = render_to_string(
-            &Controls::with_row_count(417).with_total_row_count(Some(1_000)),
-            80,
-        );
+        let out = render_to_string(&with_row_count(417).with_total_row_count(Some(1_000)), 80);
         assert!(out.contains("Rows: 417 of 1,000"), "got: {out:?}");
 
         // The same total says nothing: nothing was filtered away.
-        let out = render_to_string(
-            &Controls::with_row_count(1_000).with_total_row_count(Some(1_000)),
-            80,
-        );
+        let out = render_to_string(&with_row_count(1_000).with_total_row_count(Some(1_000)), 80);
         assert!(out.contains("Rows: 1,000"), "got: {out:?}");
         assert!(!out.contains(" of "), "got: {out:?}");
     }
@@ -655,7 +570,7 @@ mod tests {
     #[test]
     fn the_total_defers_to_pending_and_unknown() {
         let out = render_to_string(
-            &Controls::with_row_count(417)
+            &with_row_count(417)
                 .with_total_row_count(Some(1_000))
                 .with_row_count_pending(true)
                 .with_busy(false, 1),
@@ -665,7 +580,7 @@ mod tests {
         assert!(!out.contains(" of "), "got: {out:?}");
 
         let out = render_to_string(
-            &Controls::with_row_count(417)
+            &with_row_count(417)
                 .with_total_row_count(Some(1_000))
                 .with_row_count_unknown(true),
             80,
@@ -678,7 +593,7 @@ mod tests {
     #[test]
     fn a_long_count_pair_is_not_clipped() {
         let out = render_to_string(
-            &Controls::with_row_count(999_417).with_total_row_count(Some(1_000_000)),
+            &with_row_count(999_417).with_total_row_count(Some(1_000_000)),
             80,
         );
         assert!(out.contains("Rows: 999,417 of 1,000,000"), "got: {out:?}");
@@ -686,7 +601,7 @@ mod tests {
 
     #[test]
     fn shows_number_when_count_known() {
-        let controls = Controls::with_row_count(1_234_567);
+        let controls = with_row_count(1_234_567);
         let out = render_to_string(&controls, 80);
         assert!(out.contains("Rows: 1,234,567"), "got: {out:?}");
     }
@@ -694,7 +609,7 @@ mod tests {
     #[test]
     fn shows_spinner_not_number_when_count_pending() {
         // ASCII throbber, frame 1 -> '/'
-        let controls = Controls::with_row_count(42)
+        let controls = with_row_count(42)
             .with_row_count_pending(true)
             .with_busy(false, 1);
         let out = render_to_string(&controls, 80);
@@ -705,7 +620,7 @@ mod tests {
 
     #[test]
     fn shows_question_mark_when_count_failed() {
-        let controls = Controls::with_row_count(42).with_row_count_unknown(true);
+        let controls = with_row_count(42).with_row_count_unknown(true);
         let out = render_to_string(&controls, 80);
         assert!(out.contains("Rows: ?"), "expected '?', got: {out:?}");
         assert!(!out.contains("42"), "provisional count leaked: {out:?}");
@@ -713,7 +628,7 @@ mod tests {
 
     #[test]
     fn pending_takes_precedence_over_unknown() {
-        let controls = Controls::with_row_count(42)
+        let controls = with_row_count(42)
             .with_row_count_pending(true)
             .with_row_count_unknown(true)
             .with_busy(false, 1);
@@ -736,7 +651,7 @@ mod tests {
         let ellipsis = crate::glyphs::get().ellipsis;
         let long = "Reading footers: 1,203 of 6,541... (40%)";
         for width in 40..=70u16 {
-            let controls = Controls::with_row_count(99).with_status_message(Some(long.to_string()));
+            let controls = with_row_count(99).with_status_message(Some(long.to_string()));
             let out = render_to_string(&controls, width);
             if out.contains("(40%)") {
                 continue; // it fitted whole
@@ -750,7 +665,7 @@ mod tests {
 
     #[test]
     fn pending_spinner_shown_in_status_message_mode() {
-        let controls = Controls::with_row_count(99)
+        let controls = with_row_count(99)
             .with_row_count_pending(true)
             .with_status_message(Some("Loading buffer...".to_string()))
             .with_busy(false, 0);

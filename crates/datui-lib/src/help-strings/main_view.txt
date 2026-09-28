@@ -1,6 +1,6 @@
 Navigation:
   Arrows (h/j/k/l): Scroll table
-  PgUp/PgDown:     Scroll pages (Ctrl+F / Ctrl+B)
+  PgUp/PgDn:       Scroll pages (Ctrl+F / Ctrl+B)
   Home/End:        Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:   Half page down/up
   ::               Go to line number (e.g. :0 Enter for top)

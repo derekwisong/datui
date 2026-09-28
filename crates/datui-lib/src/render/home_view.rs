@@ -651,10 +651,10 @@ fn place_line(
     } else {
         g.selector_blank
     };
-    let base = match ctx.table_selected {
-        Some(bg) if selected => Style::default().bg(bg),
-        None if selected => Style::default().add_modifier(Modifier::REVERSED),
-        _ => Style::default(),
+    let base = if selected {
+        ctx.highlight_style()
+    } else {
+        Style::default()
     };
     let source = source.unwrap_or("").to_string();
     // Unknown or local: nothing to say. Only a place that could be slow or cost money
@@ -725,10 +725,10 @@ fn more_line(
     } else {
         g.selector_blank
     };
-    let base = match ctx.table_selected {
-        Some(bg) if selected => Style::default().bg(bg),
-        None if selected => Style::default().add_modifier(Modifier::REVERSED),
-        _ => Style::default(),
+    let base = if selected {
+        ctx.highlight_style()
+    } else {
+        Style::default()
     };
     let text = format!(
         "{} {hidden} more in {places} {}",
@@ -942,10 +942,10 @@ fn source_line<'a>(
     ctx: &RenderContext,
 ) -> Line<'a> {
     let g = glyphs::get();
-    let base = match ctx.table_selected {
-        Some(bg) if selected => Style::default().bg(bg),
-        None if selected => Style::default().add_modifier(Modifier::REVERSED),
-        _ => Style::default(),
+    let base = if selected {
+        ctx.highlight_style()
+    } else {
+        Style::default()
     };
     let marker = if selected {
         g.selector
@@ -1289,10 +1289,10 @@ fn entry_line<'a>(
     // the table marks its current row. Tinted rather than reversed so the colours
     // that say what a row is survive on the row you are looking at. A theme that
     // asks for "reversed" gets the old look.
-    let base = match ctx.table_selected {
-        Some(bg) if selected => Style::default().bg(bg),
-        None if selected => Style::default().add_modifier(Modifier::REVERSED),
-        _ => Style::default(),
+    let base = if selected {
+        ctx.highlight_style()
+    } else {
+        Style::default()
     };
     // A file datui cannot read is listed so the directory reads as it is, and dimmed
     // so the eye passes over it to the data.

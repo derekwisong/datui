@@ -54,13 +54,10 @@ pub fn render(
             .constraints([Constraint::Min(0), Constraint::Max(40)])
             .split(tab_line_chunks[0]);
         let tab_titles = vec!["Query", "Fuzzy", "SQL"];
+        // The one tab style: the active tab carries the accent, bold.
         let tabs = Tabs::new(tab_titles)
-            .style(Style::default().fg(border_c))
-            .highlight_style(
-                Style::default()
-                    .fg(active_c)
-                    .add_modifier(Modifier::REVERSED),
-            )
+            .style(Style::default().fg(ctx.text_secondary))
+            .highlight_style(Style::default().fg(active_c).add_modifier(Modifier::BOLD))
             .select(app.query_tab.index());
         tabs.render(tab_row_chunks[0], buf);
         let desc_text = match app.query_tab {

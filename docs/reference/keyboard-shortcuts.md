@@ -50,7 +50,7 @@ Letters type into the filter here, so none of them is a key.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | Move |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows, stopping at the first and last |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A screenful, stopping at the first and last |
 | <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, or on a place row under `RECENT`, goes inside it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section. The control bar names which, for the row you are on |

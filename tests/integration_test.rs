@@ -5107,6 +5107,44 @@ fn test_len_generations_are_unique_across_datasets() {
     );
 }
 
+/// PgUp/PgDn at home move a screenful, like the table, not a fixed ten rows.
+#[test]
+fn home_paging_moves_a_screenful() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    for i in 0..80 {
+        std::fs::write(tmp.path().join(format!("f{i:03}.csv")), b"a,b\n1,2\n").unwrap();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.enter_home();
+
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    pump_home(&mut app, &rx, area, &mut buf, |app| {
+        app.home.visible().len() >= 80 && app.home.view_height > 0
+    });
+
+    let page = app.home.view_height;
+    assert!(page > 10, "the fixture should give more than the old ten");
+    let before = app.home.selected;
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.home.selected,
+        (before + page).min(app.home.visible().len() - 1),
+        "PgDn moves what one screen holds"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::PageUp,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.home.selected, before, "PgUp comes back the same amount");
+}
+
 /// Browsing a directory of more than 64 subdirectories: nothing is looked into while the
 /// listing is built, so no row is labelled from where it sits, and the rows the frame
 /// draws are looked into after it — on a worker, a screenful at a time.

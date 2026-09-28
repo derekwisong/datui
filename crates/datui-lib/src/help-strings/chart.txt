@@ -6,7 +6,7 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap.
                     or cycle the plot style
   ← / → (h/l):      Cycle the plot style; adjust bins, bandwidth,
                     or Limit rows (+ / - too)
-  PgUp / PgDn:      Adjust Limit rows in bigger steps
+  PgUp/PgDn:        Adjust Limit rows in bigger steps
   Limit rows:       Caps how many rows are used to build the chart
   e:                Export the chart to PNG or EPS
   ? / F1:           Show this help

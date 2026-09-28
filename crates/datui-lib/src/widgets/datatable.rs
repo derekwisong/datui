@@ -6678,6 +6678,8 @@ pub struct DataTable {
     pub dtype_row: bool,
     /// Tint under the row the cursor is on. `None` falls back to reversed video.
     pub selected_bg: Option<Color>,
+    /// The full selected-row style, from the theme's `highlight_style` helper.
+    pub selection_style: Style,
     /// The rail beside the selected row and the off-screen column hints.
     pub accent: Color,
     /// Null cells and the type row.
@@ -6697,10 +6699,10 @@ pub struct DataTable {
 impl Default for DataTable {
     fn default() -> Self {
         Self {
-            header_bg: Color::Indexed(236),
-            header_fg: Color::White,
-            row_numbers_fg: Color::DarkGray,
-            separator_fg: Color::White,
+            header_bg: Color::Reset,
+            header_fg: Color::Reset,
+            row_numbers_fg: Color::Reset,
+            separator_fg: Color::Reset,
             table_cell_padding: 1,
             alternate_row_bg: None,
             column_colors: false,
@@ -6714,8 +6716,9 @@ impl Default for DataTable {
             number_format: NumberFormatSettings::default(),
             dtype_row: false,
             selected_bg: None,
-            accent: Color::Cyan,
-            dimmed: Color::DarkGray,
+            selection_style: Style::default(),
+            accent: Color::Reset,
+            dimmed: Color::Reset,
             drift_rows: Vec::new(),
             drift_groups: Arc::new(Vec::new()),
             sort_columns: Vec::new(),
@@ -6953,13 +6956,17 @@ impl DataTable {
             .collect()
     }
 
-    /// The tint under the selected row, the rail colour, and the dim colour for nulls.
+    /// The selected row's style and tint, the rail colour, and the dim colour
+    /// for nulls. The style comes from the theme's `highlight_style` helper,
+    /// so this widget never invents a fallback of its own.
     pub fn with_selection_colors(
         mut self,
+        selection_style: Style,
         selected_bg: Option<Color>,
         accent: Color,
         dimmed: Color,
     ) -> Self {
+        self.selection_style = selection_style;
         self.selected_bg = selected_bg;
         self.accent = accent;
         self.dimmed = dimmed;
@@ -6971,12 +6978,9 @@ impl DataTable {
         if self.dtype_row { 2 } else { 1 }
     }
 
-    /// Style of the highlighted row: a tint when the theme gives one, else reversed video.
+    /// Style of the highlighted row, from the theme's `highlight_style` helper.
     fn highlight_style(&self) -> Style {
-        match self.selected_bg {
-            Some(bg) => Style::default().bg(bg),
-            None => Style::default().add_modifier(Modifier::REVERSED),
-        }
+        self.selection_style
     }
 
     /// Return the color for a column dtype when column_colors is enabled.

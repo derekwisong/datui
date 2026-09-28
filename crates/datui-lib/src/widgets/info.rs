@@ -1237,12 +1237,13 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             .map(InfoTab::title)
             .collect();
         let sel = self.modal.active_tab.index(has_partitions, has_notes);
+        // The one tab style: the active tab carries the accent, bold.
         let tabs = Tabs::new(tab_titles)
             .style(Style::default().fg(self.border_color))
             .highlight_style(
                 Style::default()
                     .fg(self.active_color)
-                    .add_modifier(Modifier::REVERSED),
+                    .add_modifier(Modifier::BOLD),
             )
             .select(sel);
         tabs.render(tab_chunks[0], buf);

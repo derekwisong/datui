@@ -2427,3 +2427,28 @@ fn cursor_text_auto_contrast_picks_by_luminance() {
         Color::Rgb(1, 2, 3)
     );
 }
+
+#[test]
+fn clipboard_config_defaults_merge_and_validate() {
+    let config = AppConfig::default();
+    assert_eq!(config.clipboard.backend, "auto");
+    assert_eq!(config.clipboard.osc52_limit_kb, 100);
+    config.validate().expect("defaults validate");
+
+    let parsed: AppConfig =
+        toml::from_str("[clipboard]\nbackend = \"osc52\"\nosc52_limit_kb = 512").expect("parses");
+    let mut base = AppConfig::default();
+    base.merge(parsed);
+    assert_eq!(base.clipboard.backend, "osc52");
+    assert_eq!(base.clipboard.osc52_limit_kb, 512);
+    base.validate().expect("a named backend validates");
+
+    let mut bad = AppConfig::default();
+    bad.clipboard.backend = "wayland".to_string();
+    let err = bad.validate().expect_err("unknown backend rejected");
+    assert!(err.to_string().contains("osc52"), "{err}");
+
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+    assert!(template.contains("# [clipboard]"), "{template}");
+}

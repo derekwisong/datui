@@ -36,6 +36,10 @@ pub fn export() -> &'static str {
     include_help!("export")
 }
 
+pub fn copy() -> &'static str {
+    include_help!("copy")
+}
+
 pub fn info_panel() -> &'static str {
     include_help!("info_panel")
 }

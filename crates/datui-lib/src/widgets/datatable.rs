@@ -5987,6 +5987,55 @@ impl DataTableState {
         }
     }
 
+    /// The selected row with every display column, raw and in display order:
+    /// what a row copy carries.
+    pub fn copy_row_df(&self) -> Option<DataFrame> {
+        let df = self.buffered_df.as_ref()?;
+        let absolute = self.start_row + self.table_state.selected()?;
+        let offset = absolute.checked_sub(self.buffered_start_row)?;
+        if offset >= df.height() {
+            return None;
+        }
+        let names: Vec<&str> = self.column_order.iter().map(|s| s.as_str()).collect();
+        df.select(names).ok().map(|d| d.slice(offset as i64, 1))
+    }
+
+    /// The rows on screen with every display column, raw, in display order and
+    /// untouched by the column scroll: a copy that lost the columns scrolled
+    /// past would deny exactly the identifiers that make the rows readable.
+    pub fn copy_view_df(&self) -> Option<DataFrame> {
+        let df = self.buffered_df.as_ref()?;
+        let names: Vec<&str> = self.column_order.iter().map(|s| s.as_str()).collect();
+        let selected = df.select(names).ok()?;
+        let offset = self.start_row.saturating_sub(self.buffered_start_row);
+        let len = self
+            .visible_rows
+            .min(selected.height().saturating_sub(offset));
+        (len > 0).then(|| selected.slice(offset as i64, len))
+    }
+
+    /// The selected row's raw value in one column. A null is an empty string,
+    /// like a null in an export — never the UI's glyph.
+    pub fn copy_cell_value(&self, column: &str) -> Option<String> {
+        let row = self.copy_row_df()?;
+        let series = row.column(column).ok()?.as_materialized_series();
+        Some(match series.get(0).ok()? {
+            AnyValue::Null => String::new(),
+            v => v.str_value().into_owned(),
+        })
+    }
+
+    /// The selected row's number as the row-numbers column would print it.
+    pub fn selected_display_row(&self) -> Option<usize> {
+        Some(self.start_row + self.table_state.selected()? + self.row_start_index)
+    }
+
+    /// Rows times estimated row width: what collecting the whole view would
+    /// hold in memory, for the copy guard. None until the count has run.
+    pub fn estimated_total_bytes(&self) -> Option<usize> {
+        Some(self.num_rows_if_valid()? * self.bytes_per_row())
+    }
+
     /// The drift group of each row from the top of the view down, for a frame
     /// `frame_rows` tall, when the dataset's files differ.
     ///

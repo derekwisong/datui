@@ -425,6 +425,16 @@ chart_series_color_6 = "#ff5555"
 chart_series_color_7 = "#ffb86c"
 ```
 
+## Clipboard
+
+How the [copy dialog](copying.md) (<kbd>y</kbd>) reaches the system clipboard.
+
+```toml
+[clipboard]
+backend = "auto"      # "auto", "native" (display server) or "osc52" (terminal escape; SSH)
+osc52_limit_kb = 100  # longest osc52 copy to attempt, in KB of base64
+```
+
 ## Glyphs
 
 `[glyphs]` replaces individual UI symbols when your font has better ones than

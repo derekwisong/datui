@@ -49,6 +49,7 @@ pub mod chart_export;
 pub mod chart_export_modal;
 pub mod chart_modal;
 pub mod cli;
+pub mod clipboard;
 #[cfg(feature = "cloud")]
 pub mod cloud_browse;
 #[cfg(feature = "cloud")]
@@ -59,6 +60,7 @@ mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
 pub mod config;
+pub mod copy_modal;
 pub mod data_quality;
 pub mod discover;
 pub mod error_display;
@@ -5074,6 +5076,19 @@ pub enum AppEvent {
     Pivot(PivotSpec),
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
+    /// Collect and format the whole view off-thread for a table-scope copy.
+    CopyTable {
+        format: crate::clipboard::CopyFormat,
+        header: bool,
+    },
+    /// A table-scope copy, collected and formatted; the write happens on the
+    /// event thread, which owns the clipboard handle.
+    BackgroundCopyReady {
+        generation: u64,
+        payload: crate::clipboard::Payload,
+        rows: usize,
+        format: crate::clipboard::CopyFormat,
+    },
     ChartExport(PathBuf, ChartExportFormat, String, u32, u32), // path, format, title, width, height
     DoChartExport(PathBuf, ChartExportFormat, String, u32, u32), // Deferred: run chart export
     Collect,
@@ -5443,6 +5458,8 @@ pub enum InputMode {
     PivotMelt,
     Editing,
     Export,
+    /// The copy dialog over the table.
+    Copy,
     Info,
     Chart,
 }
@@ -6313,6 +6330,13 @@ pub struct App {
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
+    pub copy_modal: copy_modal::CopyModal,
+    /// Where copies go. Built at the first copy and kept for the run: on
+    /// Wayland and X11 the clipboard offer dies with the process that owns it,
+    /// so this handle must live as long as the copy should.
+    clipboard: Option<Box<dyn clipboard::Destination>>,
+    /// A table-scope copy waiting on the size confirmation.
+    pending_copy: Option<(clipboard::CopyFormat, bool)>,
     pub(crate) chart_cache: ChartCache,
     /// The one chart preparation allowed to run at a time. Render draws only what is in
     /// `chart_cache`; this drives the throbber while it is current. Its result is
@@ -6751,6 +6775,8 @@ impl App {
                 self.export_modal.focus,
                 ExportFocus::PathInput | ExportFocus::CsvDelimiter
             ),
+            // The Picker narrows by typing, so it types.
+            InputMode::Copy => self.copy_modal.picker.is_some(),
             InputMode::SortFilter => {
                 self.sort_filter_modal.focus == SortFilterFocus::Body
                     && match self.sort_filter_modal.active_tab {
@@ -7810,6 +7836,9 @@ impl App {
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
+            copy_modal: copy_modal::CopyModal::new(),
+            clipboard: None,
+            pending_copy: None,
             chart_cache: ChartCache::default(),
             chart_inflight: None,
             chart_export_generation: 0,
@@ -12136,6 +12165,10 @@ impl App {
                             self.confirmation_modal.hide();
                             return Some(AppEvent::Export(path, format, options));
                         }
+                        if let Some((format, header)) = self.pending_copy.take() {
+                            self.confirmation_modal.hide();
+                            return Some(AppEvent::CopyTable { format, header });
+                        }
                         #[cfg(any(feature = "http", feature = "cloud"))]
                         if let Some((pending, lease)) = self.pending_download.take() {
                             // Dropped rather than held: the event returned below is a
@@ -12181,6 +12214,7 @@ impl App {
                             self.chart_export_modal.reopen_with_path(&path, format);
                         }
                         self.pending_export = None;
+                        self.pending_copy = None;
                         #[cfg(any(feature = "http", feature = "cloud"))]
                         if self.pending_download.is_some() {
                             self.enter_home();
@@ -12199,6 +12233,7 @@ impl App {
                         self.chart_export_modal.reopen_with_path(&path, format);
                     }
                     self.pending_export = None;
+                    self.pending_copy = None;
                     #[cfg(any(feature = "http", feature = "cloud"))]
                     if self.pending_download.is_some() {
                         // Declining a download used to quit datui outright, which made
@@ -12787,6 +12822,87 @@ impl App {
                             // Don't input text in format selector
                         }
                         _ => {}
+                    }
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        if self.input_mode == InputMode::Copy {
+            let picker_open = self.copy_modal.picker.is_some();
+            if event.code == KeyCode::Char('?') && !picker_open {
+                self.show_help = true;
+                return None;
+            }
+
+            // The open Picker owns the keys: type to narrow, ↑↓ move, Enter
+            // chooses, and Esc backs out of the Picker and only the Picker.
+            if picker_open {
+                match event.code {
+                    KeyCode::Esc => self.copy_modal.picker = None,
+                    KeyCode::Enter => self.copy_modal.picker_choose(),
+                    KeyCode::Tab => {
+                        self.copy_modal.picker_choose();
+                        self.copy_modal.next_focus();
+                    }
+                    KeyCode::BackTab => {
+                        self.copy_modal.picker_choose();
+                        self.copy_modal.prev_focus();
+                    }
+                    KeyCode::Up => {
+                        if let Some(picker) = self.copy_modal.picker.as_mut() {
+                            picker.move_up();
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(picker) = self.copy_modal.picker.as_mut() {
+                            picker.move_down();
+                        }
+                    }
+                    // Every row here picks one, so Space chooses like Enter; a
+                    // typed space would narrow the list to nothing.
+                    KeyCode::Char(' ') => self.copy_modal.picker_choose(),
+                    KeyCode::Backspace => {
+                        if let Some(picker) = self.copy_modal.picker.as_mut() {
+                            picker.backspace();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(picker) = self.copy_modal.picker.as_mut() {
+                            picker.filter_key(c, event.modifiers);
+                        }
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+
+            // Whatever this key does, the form is being edited again: the
+            // re-accented gap line goes back to plain (Enter below re-arms it).
+            self.copy_modal.attention = false;
+
+            match event.code {
+                KeyCode::Esc => {
+                    self.copy_modal.close();
+                    self.input_mode = InputMode::Normal;
+                }
+                // Enter copies from anywhere in the form; what it will do has
+                // been echoed on the spec line all along.
+                KeyCode::Enter => {
+                    if self.copy_modal.validation_error().is_some() {
+                        self.copy_modal.attention = true;
+                        return None;
+                    }
+                    return self.perform_copy();
+                }
+                KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => self.copy_modal.next_focus(),
+                KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => self.copy_modal.prev_focus(),
+                KeyCode::Char(' ') => {
+                    if self.copy_modal.focus == copy_modal::CopyFocus::Header {
+                        self.copy_modal.toggle_header();
+                    } else {
+                        self.copy_modal.open_picker();
                     }
                 }
                 _ => {}
@@ -15151,6 +15267,22 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('y') => {
+                if self.input_mode == InputMode::Normal
+                    && let Some(state) = self.data_table_state.as_ref()
+                {
+                    let columns = state.get_column_order().to_vec();
+                    let context = copy_modal::CopyContext {
+                        row_number: state.selected_display_row().unwrap_or(0),
+                        view_rows: state.copy_view_df().map(|d| d.height()).unwrap_or(0),
+                        view_cols: columns.len(),
+                        total_rows: state.num_rows_if_valid(),
+                    };
+                    self.copy_modal.open(columns, context);
+                    self.input_mode = InputMode::Copy;
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -17331,6 +17463,55 @@ impl App {
                 }
                 None
             }
+            AppEvent::CopyTable { format, header } => {
+                if let Some(state) = &self.data_table_state {
+                    let lf = state.visible_lf();
+                    let streaming = state.polars_streaming;
+                    let (format, header) = (*format, *header);
+                    self.spawn_bg("Collecting data for copy...", move |task_gen, tx| {
+                        let ready = crate::statistics::collect_lazy(lf, streaming)
+                            .map_err(|e| crate::error_display::user_message_from_polars(&e))
+                            .and_then(|df| {
+                                crate::clipboard::tabular_payload(&df, format, header)
+                                    .map(|payload| (payload, df.height()))
+                            });
+                        let _ = tx.send(match ready {
+                            Ok((payload, rows)) => AppEvent::BackgroundCopyReady {
+                                generation: task_gen,
+                                payload,
+                                rows,
+                                format,
+                            },
+                            Err(message) => AppEvent::BackgroundError {
+                                generation: task_gen,
+                                message: format!("Copy failed: {message}"),
+                            },
+                        });
+                    });
+                } else {
+                    self.busy = false;
+                }
+                None
+            }
+            AppEvent::BackgroundCopyReady {
+                generation,
+                payload,
+                rows,
+                format,
+            } => {
+                if *generation == self.task_generation {
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    let message = format!(
+                        "Copied {} rows as {}",
+                        copy_modal::thousands(*rows),
+                        format.as_str()
+                    );
+                    self.finish_copy(payload.clone(), message);
+                }
+                None
+            }
             AppEvent::DoLoadParquetMetadata => {
                 let path = self.path.clone();
                 if let Some(p) = &path
@@ -17928,6 +18109,129 @@ impl App {
     }
 
     /// Write an already-collected DataFrame to file. Used by two-phase export (DoExportWrite).
+    /// Above this estimated size a table copy asks first: most paste targets
+    /// choke long before it, and the clipboard holds the whole thing at once.
+    const COPY_CONFIRM_BYTES: usize = 10 * 1024 * 1024;
+    /// Above this a table copy is refused outright; a file is the medium for
+    /// data this size, and export writes one without holding it all in text.
+    const COPY_REFUSE_BYTES: usize = 200 * 1024 * 1024;
+
+    /// Enter in the copy dialog: the synchronous scopes copy from the buffer
+    /// and flash; the table scope guards on size, then collects off-thread.
+    fn perform_copy(&mut self) -> Option<AppEvent> {
+        use copy_modal::{CopyScope, thousands};
+        /// What Enter decided, worked out under the table borrow and acted on
+        /// after it: writing to the clipboard needs the whole app back.
+        enum Planned {
+            Copy(clipboard::Payload, String),
+            Collect,
+            Confirm(usize),
+        }
+        let format = self.copy_modal.format;
+        let header = self.copy_modal.header();
+        let scope = self.copy_modal.scope;
+        let planned: Result<Planned, String> = match self.data_table_state.as_ref() {
+            None => Err("Nothing to copy: no table is open".to_string()),
+            Some(state) => match scope {
+                CopyScope::Cell => {
+                    let column = self.copy_modal.column.clone().unwrap_or_default();
+                    match state.copy_cell_value(&column) {
+                        Some(value) => {
+                            let row = state.selected_display_row().unwrap_or(0);
+                            Ok(Planned::Copy(
+                                clipboard::Payload::text(value),
+                                format!("Copied cell {column} of row {}", thousands(row)),
+                            ))
+                        }
+                        None => Err("Nothing to copy: the current row is not buffered".to_string()),
+                    }
+                }
+                CopyScope::Row => match state.copy_row_df() {
+                    Some(df) => clipboard::tabular_payload(&df, format, header).map(|payload| {
+                        let row = state.selected_display_row().unwrap_or(0);
+                        Planned::Copy(
+                            payload,
+                            format!("Copied row {} as {}", thousands(row), format.as_str()),
+                        )
+                    }),
+                    None => Err("Nothing to copy: the current row is not buffered".to_string()),
+                },
+                CopyScope::View => match state.copy_view_df() {
+                    Some(df) => clipboard::tabular_payload(&df, format, header).map(|payload| {
+                        Planned::Copy(
+                            payload,
+                            format!(
+                                "Copied {} rows as {}",
+                                thousands(df.height()),
+                                format.as_str()
+                            ),
+                        )
+                    }),
+                    None => Err("Nothing to copy: no rows are on screen".to_string()),
+                },
+                CopyScope::Table => match state.estimated_total_bytes() {
+                    Some(bytes) if bytes > Self::COPY_REFUSE_BYTES => Err(format!(
+                        "The table is about {} — too much to hold on a clipboard. \
+                         Export it to a file instead (e).",
+                        Self::format_bytes(bytes as u64)
+                    )),
+                    Some(bytes) if bytes > Self::COPY_CONFIRM_BYTES => Ok(Planned::Confirm(bytes)),
+                    _ => Ok(Planned::Collect),
+                },
+            },
+        };
+        self.copy_modal.close();
+        self.input_mode = InputMode::Normal;
+        match planned {
+            Ok(Planned::Copy(payload, message)) => {
+                self.finish_copy(payload, message);
+                None
+            }
+            Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
+            Ok(Planned::Confirm(bytes)) => {
+                self.pending_copy = Some((format, header));
+                self.confirmation_modal.show(format!(
+                    "This copies about {} to the clipboard.\n\nCopy the whole table?",
+                    Self::format_bytes(bytes as u64)
+                ));
+                None
+            }
+            Err(message) => {
+                self.error_modal.show(message);
+                None
+            }
+        }
+    }
+
+    /// Hand a payload to the clipboard destination, building the destination
+    /// at the first copy, and flash or raise the error modal — a copy that
+    /// silently did nothing would be worse than one that failed out loud.
+    fn finish_copy(&mut self, payload: clipboard::Payload, message: String) {
+        if self.clipboard.is_none() {
+            let choice = clipboard::BackendChoice::parse(&self.app_config.clipboard.backend)
+                .unwrap_or_default();
+            let limit = self.app_config.clipboard.osc52_limit_kb * 1024;
+            match clipboard::destination(choice, limit) {
+                Ok(destination) => self.clipboard = Some(destination),
+                Err(e) => {
+                    self.error_modal.show(e);
+                    return;
+                }
+            }
+        }
+        let destination = self.clipboard.as_mut().expect("destination just built");
+        match destination.write(&payload) {
+            Ok(()) => self.flash_note(message),
+            Err(e) => self.error_modal.show(e),
+        }
+    }
+
+    /// Replace the clipboard destination, so tests can watch what a copy sends
+    /// without a display server or a terminal in the loop.
+    pub fn set_clipboard_destination(&mut self, destination: Box<dyn clipboard::Destination>) {
+        self.clipboard = Some(destination);
+    }
+
     fn export_data_from_df(
         df: &mut DataFrame,
         path: &Path,
@@ -18193,6 +18497,7 @@ impl App {
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
             InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
             InputMode::Export => ("Export Help", help_strings::export()),
+            InputMode::Copy => ("Copy Help", help_strings::copy()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
             InputMode::Home => ("Home Help", help_strings::home()),

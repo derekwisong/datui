@@ -1,0 +1,63 @@
+# Copying to the Clipboard
+
+Press <kbd>y</kbd> to copy from the current view to the system clipboard. The
+dialog picks a scope and a format; the last choices are kept, so repeating a
+copy is <kbd>y</kbd> <kbd>Enter</kbd>.
+
+| Scope | What it copies |
+|---|---|
+| Cell | The current row's value in one column, as plain text |
+| Row | The current row |
+| View | The rows on screen, with every displayed column |
+| Table | Everything the view holds, as an export would: rows and columns as queried, filtered and sorted |
+
+| Format | Details |
+|---|---|
+| TSV | Tab-separated, what spreadsheets expect from a paste |
+| CSV | Comma-separated |
+| Markdown | A pipe table, padded and aligned, numeric columns right-aligned |
+
+A TSV or CSV copy also carries an HTML table flavor, so a paste into a
+spreadsheet or an email keeps its columns while a paste into a terminal stays
+plain text. Values are raw, like an export: display formatting is not applied
+and a null is an empty field. The **Header** toggle is on for View and Table
+and off for Row; a Markdown table always keeps its header.
+
+A large Table copy asks first, and a very large one is refused with a pointer
+to [export](exporting-data.md) — a file is the medium at that size.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between rows |
+| <kbd>Space</kbd> | Open the focused row's picker; on Header, toggle |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move focus, or the picker cursor |
+| <kbd>Enter</kbd> | Copy, from anywhere in the form; in a picker, choose |
+| <kbd>?</kbd> | Help |
+| <kbd>Esc</kbd> | Close a picker, then the dialog, without copying |
+
+In a picker, typing narrows the list.
+
+## How the copy reaches the clipboard
+
+`[clipboard] backend` in the [configuration](configuration.md#clipboard)
+chooses the mechanism:
+
+| Backend | How |
+|---|---|
+| `auto` (default) | `native` where a display server answers, `osc52` elsewhere |
+| `native` | The display server (Wayland, X11, macOS, Windows), with the HTML flavor |
+| `osc52` | An escape sequence the terminal applies to the system clipboard |
+
+`osc52` is what works over SSH: no display server is involved, the terminal
+you are sitting at does the copy. Caveats terminals impose:
+
+- tmux needs `set-clipboard on` to pass the sequence through.
+- Terminals cap the sequence length; datui refuses payloads above
+  `osc52_limit_kb` (default 100) rather than sending a copy that arrives
+  truncated. Some terminals disable OSC 52 writes entirely by default.
+
+A `native` copy on Wayland or X11 belongs to the datui process: quitting can
+drop it unless a clipboard manager keeps copies. datui holds the offer for as
+long as it runs.

@@ -17,6 +17,7 @@
   - [Analysis](user-guide/analysis-features.md)
   - [Pivot and Melt](user-guide/reshaping.md)
   - [Exporting Data](user-guide/exporting-data.md)
+  - [Copying to the Clipboard](user-guide/copying.md)
   - [Views](user-guide/views.md)
   - [Dataset Info](user-guide/dataset-info.md)
   - [Python Module](user-guide/python-module.md)

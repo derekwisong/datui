@@ -388,7 +388,7 @@ impl Widget for &Controls {
 
         // Normal keybinding mode: the chips are a HintBar, the same renderer every
         // Surface footer uses.
-        const DEFAULT_CONTROLS: [(&str, &str); 10] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 11] = [
             ("/", "Query"),
             ("i", "Info"),
             ("a", "Analysis"),
@@ -396,6 +396,7 @@ impl Widget for &Controls {
             ("s", "Sort & Filter"),
             ("p", "Pivot & Melt"),
             ("e", "Export"),
+            ("y", "Copy"),
             ("^O", "Home"),
             ("?", "Help"),
             ("q", "Quit"),

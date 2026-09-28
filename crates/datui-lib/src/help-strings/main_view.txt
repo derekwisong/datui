@@ -13,6 +13,7 @@ Data Operations:
   a:                Open Statistical Analysis
   p:                Open Pivot & Melt
   e:                Export data to file
+  y:                Copy to the clipboard (cell, row, view or table)
   r:                Reverse sort order (sorted columns carry a direction
                     mark in the header)
   R:                Reset table (clear queries, filters, sorts, locks)

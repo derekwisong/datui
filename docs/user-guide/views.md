@@ -53,6 +53,10 @@ patterns; <kbd>i</kbd> in the list shows the arithmetic.
 Only the active query tab is saved: **Query**, **SQL** or **Fuzzy**. Filters,
 sort, column order and reshape are saved regardless.
 
+Editing (<kbd>e</kbd>) changes a view's name, description and matching. Its
+saved settings follow the table only while the view is the one applied, so
+renaming a view never overwrites what it carries.
+
 ## Applying on open
 
 ```toml

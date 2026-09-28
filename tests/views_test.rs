@@ -128,9 +128,43 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert_eq!(app.template_modal.name_input.value(), "views_surface 2");
     press(&mut app, KeyCode::Esc);
 
+    // Editing a view that is not applied keeps what it carries: the table's
+    // sort has moved on, and save must not overwrite the view's with it.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["vs_group".to_string()], vec![false]);
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.template_modal.mode, TemplateModalMode::Edit);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
+    assert_eq!(
+        app.template_modal.rows[0].template.settings.sort_columns,
+        vec!["vs_id".to_string()],
+        "editing an unapplied view leaves its settings alone"
+    );
+
     // Enter applies the selected view and closes the list.
     press(&mut app, KeyCode::Enter);
     assert!(!app.template_modal.active, "apply closes the list");
+
+    // Applied, the view follows the table: adjust the sort and re-save
+    // through edit, and the view carries the new state.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["vs_group".to_string()], vec![false]);
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('e'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.template_modal.rows[0].template.settings.sort_columns,
+        vec!["vs_group".to_string()],
+        "editing the applied view updates its settings from the table"
+    );
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.template_modal.active);
+    press(&mut app, KeyCode::Char('v'));
 
     // Esc cancels the delete confirmation and only it; Enter confirms.
     press(&mut app, KeyCode::Char('v'));

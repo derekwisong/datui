@@ -7256,6 +7256,9 @@ impl App {
         // The dataset is installed and its schema known, so this is where a template
         // meets it. `--template` names one and applies to this first open alone;
         // `[templates] auto_apply` dresses every open that has a matching template.
+        // A fresh dataset starts with no view applied: the previous file's view
+        // must not wear the check mark here, nor count as applied when edited.
+        self.active_template_id = None;
         if let Some(name) = self.startup_template.take() {
             match self.template_manager.get_template_by_name(&name).cloned() {
                 Some(template) => {
@@ -11829,7 +11832,13 @@ impl App {
             template.name = name;
             template.description = description;
             template.match_criteria = match_criteria;
-            if let Some(state) = &self.data_table_state {
+            // The settings follow the table only while this view is the one
+            // dressing it. Editing an unapplied view changes its name,
+            // description and matching alone — it must not overwrite what
+            // the view carries with whatever the table happens to show.
+            if self.active_template_id.as_deref() == Some(editing_id.as_str())
+                && let Some(state) = &self.data_table_state
+            {
                 let (query, sql_query, fuzzy_query) = active_query_settings(
                     state.get_active_query(),
                     state.get_active_sql_query(),

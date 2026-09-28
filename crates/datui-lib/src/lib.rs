@@ -11929,14 +11929,25 @@ impl App {
             };
             template.name = name;
             template.description = description;
+            let stored_schema = template.match_criteria.schema_columns.take();
             template.match_criteria = match_criteria;
+            let editing_the_active_view =
+                self.active_template_id.as_deref() == Some(editing_id.as_str());
+            // The same principle as the settings below: editing an unapplied
+            // view must not swap the columns it matches on for the columns of
+            // whatever table happens to be open. The toggle still works — off
+            // drops the criterion — and the active view follows its table.
+            if !editing_the_active_view
+                && self.template_modal.schema_match_enabled
+                && stored_schema.is_some()
+            {
+                template.match_criteria.schema_columns = stored_schema;
+            }
             // The settings follow the table only while this view is the one
             // dressing it. Editing an unapplied view changes its name,
             // description and matching alone — it must not overwrite what
             // the view carries with whatever the table happens to show.
-            if self.active_template_id.as_deref() == Some(editing_id.as_str())
-                && let Some(state) = &self.data_table_state
-            {
+            if editing_the_active_view && let Some(state) = &self.data_table_state {
                 let (query, sql_query, fuzzy_query) = active_query_settings(
                     state.get_active_query(),
                     state.get_active_sql_query(),

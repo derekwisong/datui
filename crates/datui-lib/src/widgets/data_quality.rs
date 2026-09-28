@@ -14,8 +14,8 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, StatefulWidget, Table,
-    TableState, Widget, Wrap,
+    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, StatefulWidget, Table, TableState,
+    Widget, Wrap,
 };
 
 pub struct DataQualityWidgetConfig<'a> {
@@ -301,7 +301,7 @@ fn render_plan(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("modal_border"))),
         )
         .row_highlight_style(config.theme.highlight_style())
@@ -465,7 +465,7 @@ fn render_overview(
                 Block::default()
                     .title("Dataset Notes")
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_set(crate::glyphs::get().border)
                     .border_style(Style::default().fg(config.theme.get("modal_border"))),
             )
             .render(sections[1], buf);
@@ -683,7 +683,7 @@ fn render_observation_detail(
             Block::default()
                 .title("Observation")
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
         )
         .render(popup, buf);
@@ -1399,7 +1399,7 @@ fn render_detail(
             Block::default()
                 .title(" Evidence ")
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
         )
         .render(area, buf);
@@ -1443,7 +1443,7 @@ fn render_sidebar(
             Block::default()
                 .title("Analysis Tools")
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("modal_border"))),
         ),
         parts[0],
@@ -1510,7 +1510,7 @@ fn render_sidebar(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("modal_border"))),
         )
         .render(parts[1], buf);
@@ -1546,7 +1546,7 @@ fn render_narrow_tool_picker(
             Block::default()
                 .title("Analysis Tools")
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("accent"))),
         ),
         popup,
@@ -1644,7 +1644,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         Block::default()
             .title("Access Plan")
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(Style::default().fg(config.theme.get("accent"))),
     );
     Widget::render(table, popup, buf);
@@ -1681,7 +1681,7 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
         Block::default()
             .title("Confirm Access")
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(Style::default().fg(config.theme.get("warning"))),
     )
     .render(popup, buf);
@@ -1705,7 +1705,7 @@ fn render_running(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Bu
         Block::default()
             .title("Running")
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(Style::default().fg(config.theme.get("accent"))),
     )
     .render(popup, buf);

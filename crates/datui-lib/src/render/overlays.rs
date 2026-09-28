@@ -182,6 +182,10 @@ pub fn render_help_overlay(
     let available_width = inner_area.width as usize;
     let available_height = inner_area.height as usize;
 
+    // The help files are written once, in Unicode; a terminal on the ASCII
+    // floor gets the twins here, at the one boundary all of them cross.
+    let text = crate::glyphs::asciify_instructions(text);
+
     let mut wrapped_lines: Vec<String> = Vec::new();
     for line in text.lines() {
         if line.chars().count() <= available_width {

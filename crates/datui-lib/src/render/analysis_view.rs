@@ -5,7 +5,7 @@ use crate::analysis_modal::{self, AnalysisModal};
 use crate::render::context::RenderContext;
 use crate::widgets::{analysis, data_quality};
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget};
 
 /// Renders the analysis view when analysis_modal is active: progress overlay, main widget, or "No data available".
 pub fn render(
@@ -25,7 +25,7 @@ pub fn render(
         Clear.render(area, buf);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(ratatui::style::Style::default().fg(ctx.modal_border))
             .title(" Analysis ")
             .title_style(ratatui::style::Style::reset());

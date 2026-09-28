@@ -18,7 +18,7 @@ use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
+    Block, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
 };
 
 use super::datatable::DataTableState;
@@ -1228,7 +1228,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let tab_bar_focused = self.modal.focus == InfoFocus::TabBar;
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .title("Info")
             .title_style(ratatui::style::Style::reset());
 
@@ -1274,7 +1274,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         };
         Block::default()
             .borders(Borders::BOTTOM)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(line_style)
             .render(tab_chunks[1], buf);
 

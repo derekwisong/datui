@@ -5,8 +5,8 @@ use ratatui::{
     symbols,
     text::{Line, Span},
     widgets::{
-        Axis, Bar, BarChart, BarGroup, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType,
-        List, ListItem, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
+        Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, GraphType, List,
+        ListItem, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
     },
 };
 
@@ -1477,7 +1477,7 @@ fn render_distribution_selector(
             .title("Distribution")
             .title_style(ratatui::style::Style::reset())
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(Style::default().fg(theme.get("sidebar_border"))),
     )
     .row_highlight_style(theme.highlight_style());
@@ -1506,7 +1506,7 @@ fn render_distribution_settings(
         .title("Settings")
         .title_style(ratatui::style::Style::reset())
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_set(crate::glyphs::get().border)
         .border_style(Style::default().fg(theme.get("sidebar_border")));
 
     // Settings content: Scale option
@@ -1617,7 +1617,7 @@ fn render_sidebar(
         .title("Analysis Tools")
         .title_style(ratatui::style::Style::reset())
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_set(crate::glyphs::get().border)
         .border_style(Style::default().fg(border_color));
 
     let list = List::new(items).block(block);

@@ -3,7 +3,7 @@
 use crate::render::context::RenderContext;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Tabs, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Tabs, Widget};
 
 /// Renders the input strip (query/fuzzy/SQL tabs, inputs, error) when in Editing mode.
 pub fn render(
@@ -28,7 +28,7 @@ pub fn render(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_set(crate::glyphs::get().border)
         .title(title)
         .title_style(ratatui::style::Style::reset())
         .border_style(border_style);
@@ -93,7 +93,7 @@ pub fn render(
         };
         Block::default()
             .borders(Borders::BOTTOM)
-            .border_type(BorderType::Rounded)
+            .border_set(crate::glyphs::get().border)
             .border_style(line_style)
             .render(tab_line_chunks[1], buf);
 

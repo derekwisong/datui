@@ -454,6 +454,7 @@ pub async fn footers_of_files_reporting(
     let began = std::time::Instant::now();
     let pass = progress.pass(read.len());
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
+    let cancelled = progress.cancel_flag();
     let mut reads = tokio::task::JoinSet::new();
     for (slot, file) in read
         .iter()
@@ -462,8 +463,15 @@ pub async fn footers_of_files_reporting(
         .enumerate()
     {
         let (store, permits, meter) = (store.clone(), permits.clone(), meter.clone());
+        let cancelled = cancelled.clone();
         reads.spawn(async move {
             let _permit = permits.acquire_owned().await;
+            // Checked at the permit, so an abandoned load stops issuing
+            // requests within one wave instead of reading every footer for a
+            // dataset nobody is waiting on.
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return (slot, None);
+            }
             (slot, footer_of_file(&store, &file, &meter).await.ok())
         });
     }
@@ -693,6 +701,42 @@ mod tests {
     /// whether datui can say anything about row groups at all. Dropping the sizes on
     /// this side leaves the note working perfectly for local datasets and silent for
     /// the ones it exists for.
+    /// An abandoned load's footer pass stops issuing reads: with the counter
+    /// cancelled, the pass returns empty-handed and requests nothing.
+    #[test]
+    fn a_cancelled_pass_reads_no_footers() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let mut frame = df!("n" => (0..10i64).collect::<Vec<i64>>()).unwrap();
+        let mut bytes = Vec::new();
+        ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for key in ["data/a.parquet", "data/b.parquet"] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(bytes.clone()))
+                    .await
+                    .unwrap();
+            }
+            let (files, _skipped) = list_dataset_files(&store, "data/", None).await.unwrap();
+            let read: Vec<usize> = (0..files.len()).collect();
+            let progress = crate::schema_union::FooterProgress::default();
+            progress.cancel();
+            let meter = Arc::new(crate::measurements::Meter::default());
+            let footers =
+                footers_of_files_reporting(&store, &files, &read, &progress, &meter).await;
+            assert!(footers.iter().all(|f| f.is_none()), "nothing was read");
+            let requests = meter
+                .footers()
+                .and_then(|cost| cost.over_the_wire)
+                .map(|wire| wire.requests)
+                .unwrap_or(0);
+            assert_eq!(requests, 0, "nothing was requested");
+        });
+    }
+
     #[test]
     fn a_remote_dataset_carries_its_row_group_sizes_into_the_schema() {
         use object_store::PutPayload;

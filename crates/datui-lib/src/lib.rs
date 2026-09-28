@@ -8608,12 +8608,19 @@ impl App {
     /// Returning home puts the cursor on whatever you currently have open, so the
     /// round trip out and back lands where you left rather than at the top.
     ///
-    /// Abandoning is `load_active = false` plus clearing the load's own UI state.
-    /// Nothing is cancelled: the background work runs to completion and its results
-    /// are dropped on arrival. Work that is not a load — an export, an analysis — is
-    /// deliberately left alone, so its progress indicator and its completion modal
-    /// must survive this.
+    /// Abandoning is `load_active = false` plus clearing the load's own UI state,
+    /// and cancelling the load's footer counter, so an in-flight cloud pass stops
+    /// issuing paid reads within a wave. Other background work runs to completion
+    /// and its results are dropped on arrival. Work that is not a load — an
+    /// export, an analysis — is deliberately left alone, so its progress
+    /// indicator and its completion modal must survive this.
     pub fn abandon_load(&mut self) {
+        // Only the in-flight load's counter: with no load running, this counter
+        // belongs to the installed dataset's own background pass, which a trip
+        // home must not stop.
+        if self.load_active {
+            self.footer_progress.cancel();
+        }
         self.load_active = false;
         // A chart being prepared for the dataset we are leaving would otherwise keep
         // the throbber up on the home screen, and its result could later land in a
@@ -15606,13 +15613,14 @@ impl App {
                 }
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
-                // A new counter for a new load. Abandoning a load cancels nothing —
-                // the footers keep being read — so a shared one would go on reporting
-                // the abandoned directory's progress under the next file's name.
+                // A new counter for a new load, and the old counter cancelled: what
+                // the last dataset was still reading is no longer wanted, and unread,
+                // unpaid-for is better than read and dropped.
                 //
                 // The meter needs no equivalent: it belongs to the dataset rather than
                 // to the app, so a load that never reaches the screen never has one
                 // installed. See `DataTableState::measurements`.
+                self.footer_progress.cancel();
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 // Whatever the last dataset was still reading is no longer wanted.
                 *self
@@ -15667,13 +15675,14 @@ impl App {
                 self.opened = None;
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
-                // A new counter for a new load. Abandoning a load cancels nothing —
-                // the footers keep being read — so a shared one would go on reporting
-                // the abandoned directory's progress under the next file's name.
+                // A new counter for a new load, and the old counter cancelled: what
+                // the last dataset was still reading is no longer wanted, and unread,
+                // unpaid-for is better than read and dropped.
                 //
                 // The meter needs no equivalent: it belongs to the dataset rather than
                 // to the app, so a load that never reaches the screen never has one
                 // installed. See `DataTableState::measurements`.
+                self.footer_progress.cancel();
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 // Whatever the last dataset was still reading is no longer wanted.
                 *self

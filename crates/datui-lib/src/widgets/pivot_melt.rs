@@ -191,6 +191,8 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &Re
     };
     let (text, style) = match spec {
         Ok(line) => (line, Style::default().fg(ctx.text_primary)),
+        // Enter on the incomplete form lit the line up; edits dim it again.
+        Err(gap) if modal.attention => (gap, Style::default().fg(ctx.warning)),
         Err(gap) => (gap, Style::default().fg(ctx.dimmed)),
     };
     Paragraph::new(text).style(style).render(

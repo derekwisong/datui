@@ -14692,7 +14692,10 @@ impl App {
                 const LEFT_KEYS: [KeyCode; 2] = [KeyCode::Left, KeyCode::Char('h')];
 
                 if self.query_focus == QueryFocus::TabBar && event.is_press() {
+                    // Enter included: it must never dead-end, so from the tab
+                    // bar it returns to the input, one keystroke from running.
                     if event.code == KeyCode::BackTab
+                        || event.code == KeyCode::Enter
                         || (event.code == KeyCode::Tab
                             && !event.modifiers.contains(KeyModifiers::SHIFT))
                     {

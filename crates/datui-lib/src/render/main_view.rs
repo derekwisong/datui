@@ -66,18 +66,37 @@ pub enum ControlBarSpec {
 pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBarSpec {
     match content {
         MainViewContent::Datatable => {
+            // A surface that owns the keyboard gets a bar that describes it:
+            // the table's chips advertise keys that type here, not act.
+            if app.input_mode == crate::InputMode::Editing {
+                return ControlBarSpec::Custom(match app.input_type {
+                    Some(crate::InputType::GoToLine) => {
+                        vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")]
+                    }
+                    _ => vec![
+                        ("Enter", "Run"),
+                        ("Tab", "Focus"),
+                        ("F1", "Help"),
+                        ("Esc", "Cancel"),
+                    ],
+                });
+            }
+            // Export and Copy carry their own footers; the bar keeps only the
+            // globals that still act, rather than a dimmed row of untruths.
+            if app.input_mode == crate::InputMode::Export
+                || app.input_mode == crate::InputMode::Copy
+            {
+                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
+            }
             let query_active = app
                 .data_table_state
                 .as_ref()
                 .map(|s| !s.active_query.trim().is_empty())
                 .unwrap_or(false);
             let dimmed = app.show_help
-                || app.input_mode == crate::InputMode::Editing
                 || app.input_mode == crate::InputMode::SortFilter
                 || app.input_mode == crate::InputMode::PivotMelt
                 || app.input_mode == crate::InputMode::Info
-                || app.input_mode == crate::InputMode::Export
-                || app.input_mode == crate::InputMode::Copy
                 || app.sort_filter_modal.active;
             ControlBarSpec::Datatable {
                 dimmed,

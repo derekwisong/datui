@@ -303,7 +303,7 @@ pub fn home_control_keys(
     //
     // Ordered by what a narrow terminal can least afford to lose: the bar is cut from
     // the right, so the way out comes before the conveniences. At 70 columns this is
-    // the difference between seeing "Esc Quit" and seeing nothing about leaving.
+    // the difference between seeing "^C Quit" and seeing nothing about leaving.
     let g = crate::glyphs::get();
     // Enter is labelled with what it will do on *this* row, not with the word "Open". On
     // a directory whose files are not one table, Enter goes inside — and a bar saying

@@ -8,7 +8,7 @@ Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 |---|---|
 | <kbd>Enter</kbd> | Apply everything staged and close (on the Filters tab it adds or edits; <kbd>a</kbd> applies there) |
 | <kbd>Esc</kbd> | Close without changing anything |
-| <kbd>C</kbd> | Clear the current tab's staged state |
+| <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
 
 Filters and sort from this sidebar apply to the loaded table. To filter the
 result of a query, put the condition in the query's `where` clause. While a

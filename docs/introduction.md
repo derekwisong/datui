@@ -12,7 +12,8 @@ datui                                 # or pick one from the home screen
 ```
 
 Press <kbd>?</kbd> for the keys. <kbd>/</kbd> queries, <kbd>s</kbd> sorts and
-filters, <kbd>c</kbd> charts, <kbd>a</kbd> analyzes, <kbd>q</kbd> quits.
+filters, <kbd>c</kbd> charts, <kbd>a</kbd> analyzes, <kbd>q</kbd> backs out
+or quits.
 
 ## Where to go
 

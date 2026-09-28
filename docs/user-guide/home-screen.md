@@ -23,7 +23,7 @@ open it.
  ▾ /mnt/data  2  configured  ──────────────────────────────────── nfs4
    ↕ events  hive                            1.1M × 9    120 MB    3h
    ↕ lookup.parquet                           980 × 4      8 KB   2mo
- Enter Open  ↑↓ Move  ^C Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
+ Enter Open  ↑↓ Move  ^C Quit  type Filter  ~ Path  ←→ Fold  ^↑↓ Section  Tab Sort  ? Help
 ```
 
 Each row shows rows × columns, size and age. A pane on the right shows the

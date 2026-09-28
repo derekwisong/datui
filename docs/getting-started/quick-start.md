@@ -37,7 +37,7 @@ datui.view(pl.scan_parquet("data.parquet"))
 | <kbd>:</kbd> | Go to a row number |
 | <kbd>?</kbd> | Help for the screen you are on |
 | <kbd>Esc</kbd> | Close whatever is open |
-| <kbd>q</kbd> | Quit |
+| <kbd>q</kbd> | Back to the home screen when the dataset came from it; otherwise quit |
 
 The bottom bar always shows the keys that matter on the current screen.
 

@@ -21,7 +21,7 @@ Both work on the table as currently queried, filtered and sorted.
 1. **Index**: the columns that stay as rows. Type to search, <kbd>Space</kbd> to select. Order matters.
 2. **Columns**: the column whose distinct values become new column names.
 3. **Values**: the column that fills the new cells.
-4. **Aggregate**: how to combine several values per cell. `last` (default), `first`, `min`, `max`, `avg`, `med`, `std` or `count`. A string value column allows only `first` and `last`.
+4. **Aggregate**: how to combine several values per cell. `last` (default), `first`, `min`, `max`, `avg`, `med`, `std` or `count`. A string value column allows only `first` and `last`. `first` and `last` are positional and keep nulls: after a sort (nulls sort last), `last` returns null for every group that contains one, so a mostly-empty pivot usually means the value column has nulls, not that the pivot failed.
 
 New columns are named after the pivot column's values, sorted alphabetically.
 

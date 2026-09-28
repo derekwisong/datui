@@ -140,6 +140,34 @@ switch tabs whenever a tab bar exists, from anywhere in the Surface. Focus
 never silently jumps (the analysis screen's jump-to-results is a defect, not
 a pattern). Selection that is not focused stays visible, dimmed.
 
+## Feedback
+
+Every message earns its interruption level. The channel is chosen by what
+the user must do about the information, never by which feature sent it:
+
+1. **State gets a mark, not a message.** Anything that stays true while it
+   holds — sort direction, the row count, the reshape chip, the drill
+   breadcrumb — lives on screen as state (hard rule 6) and is never
+   re-announced in a message.
+2. **Completions get a flash.** An action that finished and needs no
+   decision — a copy, an export, a saved view — shows one plain sentence in
+   the control bar's status region, without a spinner, cleared after about
+   two seconds or on the next keypress, whichever comes first. Appearing
+   and expiring move nothing around it: the flash renders exactly where the
+   busy status message renders.
+3. **Validation stays inline.** A form that cannot apply says why on its
+   own status line inside the Surface, `warning` at most. Enter on an
+   invalid form re-accents that line; it never raises a modal.
+4. **Only a failure that stops the user gets a modal** — a load that
+   failed, an export that could not write, an auth that was refused.
+   Acknowledge to continue. The modal is a Surface like any other.
+
+One flash component serves every screen: the home status line is the same
+component, not a sibling, so duration, clearing and styling cannot drift.
+The success modal is retired — any use of it that fits rung 2 becomes a
+flash. Non-critical background errors (cache, history) keep logging and
+continuing; silence is the right channel for them.
+
 ## Every terminal, every size
 
 datui runs on a truecolor desktop terminal, over SSH with a C locale and a
@@ -193,9 +221,11 @@ leaving:
 - Arrows and `h/j/k/l`; `PgUp/PgDn` (and `Ctrl+F/B`, `Ctrl+D/U` at the
   table); `Home/End` (`G`); `:` go-to-line.
 - Esc's layered back-out; `q` pops to home when the dataset was opened
-  from it and quits otherwise (the control bar says which); `Q`, `Ctrl+Q`,
-  `Ctrl+C` quit unconditionally; `Ctrl+O` home. (#320 landed the approved
-  `q` evolution.)
+  from it and quits otherwise (the control bar says which); `Ctrl+Q` quits
+  from anywhere and `Ctrl+C` from anywhere outside a text field; `Q` quits
+  at the table and during a load, and is an ordinary key inside other
+  surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
+  landed the approved `q` evolution.)
 - `?` and F1 for help, including home's empty-filter `?`.
 - The feature keys: `/ s c a p e i v V r R N F D H`, Enter-to-drill.
   (#317 moved the views list from `t`/`T` to `v`/`V` with the rename.)

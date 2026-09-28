@@ -1,7 +1,8 @@
 # Querying Data
 
-Press <kbd>/</kbd> to open the query prompt. It has three tabs; <kbd>Tab</kbd>
-and <kbd>Shift</kbd>+<kbd>Tab</kbd> move between them and into the input.
+Press <kbd>/</kbd> to open the query prompt. It has three tabs; <kbd>←</kbd>
+<kbd>→</kbd> switch them, and <kbd>Tab</kbd> moves between the tab bar and
+the input.
 
 | Tab | What you type | Example |
 |---|---|---|

@@ -28,6 +28,7 @@ typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
 | <kbd>a</kbd> | [Analysis](../user-guide/analysis-features.md) |
 | <kbd>p</kbd> | [Pivot and melt](../user-guide/reshaping.md) |
 | <kbd>e</kbd> | [Export](../user-guide/exporting-data.md) |
+| <kbd>y</kbd> | [Copy to the clipboard](../user-guide/copying.md) |
 | <kbd>i</kbd> | [Dataset info](../user-guide/dataset-info.md) |
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
@@ -192,6 +193,16 @@ In Data Quality:
 | <kbd>Space</kbd> | Toggle a checkbox |
 | <kbd>Enter</kbd> | Export, from anywhere in the form |
 | <kbd>Esc</kbd> | Close |
+
+## Copy
+
+| Key | Action |
+|---|---|
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between rows |
+| <kbd>Space</kbd> | Open the focused row's picker; on Header, toggle |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move focus, or the picker cursor; typing narrows a picker |
+| <kbd>Enter</kbd> | Copy, from anywhere in the form; in a picker, choose |
+| <kbd>Esc</kbd> | Close a picker, then the dialog |
 
 ## Dataset info
 

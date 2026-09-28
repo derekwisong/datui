@@ -160,6 +160,11 @@ impl ConfigManager {
             comments.insert(format!("theme.colors.{}", field), comment.to_string());
         }
 
+        // Clipboard fields
+        for (field, comment) in CLIPBOARD_COMMENTS {
+            comments.insert(format!("clipboard.{}", field), comment.to_string());
+        }
+
         // Controls fields
         for (field, comment) in CONTROLS_COMMENTS {
             comments.insert(format!("ui.controls.{}", field), comment.to_string());
@@ -407,6 +412,7 @@ pub struct AppConfig {
     pub chart: ChartConfig,
     pub theme: ThemeConfig,
     pub glyphs: GlyphsConfig,
+    pub clipboard: ClipboardConfig,
     pub data: DataConfig,
     pub ui: UiConfig,
     pub query: QueryConfig,
@@ -465,6 +471,10 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
     (
         "glyphs",
         "# ============================================================================\n# Glyph Overrides\n# ============================================================================\n# Replace individual UI glyphs when your font carries more than the tested\n# coverage floor (see scripts/code/audit_glyphs.py in the datui repo). Keys\n# are the slot names in glyphs.rs; an override must keep the display width of\n# the glyph it replaces, and applies only when the Unicode set is active — the\n# ASCII tier never changes. Examples, for fonts that carry them:\n#   in_object_store = \"☁\"                  # the cloud, back again\n#   spinner = [\"◐\", \"◓\", \"◑\", \"◒\"]  # quarter-circle spinner",
+    ),
+    (
+        "clipboard",
+        "# ============================================================================\n# Clipboard\n# ============================================================================\n# How the copy dialog (y) reaches the system clipboard.",
     ),
     (
         "ui",
@@ -2287,6 +2297,54 @@ const DEBUG_COMMENTS: &[(&str, &str)] = &[
 ];
 
 // Default implementations
+/// `[clipboard]`: how the copy dialog reaches the system clipboard.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClipboardConfig {
+    /// "auto", "native" (display server through arboard) or "osc52" (an
+    /// escape sequence the terminal applies; what works over SSH).
+    pub backend: String,
+    /// Longest OSC 52 payload to attempt, in KB of base64. Terminals cap the
+    /// sequences they accept; a generous terminal's user can raise this.
+    pub osc52_limit_kb: usize,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self {
+            backend: "auto".to_string(),
+            osc52_limit_kb: 100,
+        }
+    }
+}
+
+impl ClipboardConfig {
+    pub fn merge(&mut self, other: Self) {
+        let default = Self::default();
+        if other.backend != default.backend {
+            self.backend = other.backend;
+        }
+        if other.osc52_limit_kb != default.osc52_limit_kb {
+            self.osc52_limit_kb = other.osc52_limit_kb;
+        }
+    }
+}
+
+// Field comments for ClipboardConfig
+const CLIPBOARD_COMMENTS: &[(&str, &str)] = &[
+    (
+        "backend",
+        "How the copy dialog (y) reaches the system clipboard\n\
+         \"auto\": native where a display server answers, osc52 elsewhere (SSH)\n\
+         \"native\": the display server, with an HTML flavor beside tabular copies\n\
+         \"osc52\": an escape sequence the terminal applies; tmux needs set-clipboard on",
+    ),
+    (
+        "osc52_limit_kb",
+        "Longest osc52 copy to attempt, in KB of base64 (terminals cap what they accept)",
+    ),
+];
+
 /// `[glyphs]`: per-slot overrides laid over the Unicode set, so a font that has
 /// more than the coverage floor gets to use it — `☁` back for the object-store
 /// mark, a Nerd Font icon for a checkbox. Keys are the slot names in
@@ -2319,6 +2377,7 @@ impl Default for AppConfig {
             chart: ChartConfig::default(),
             theme: ThemeConfig::default(),
             glyphs: GlyphsConfig::default(),
+            clipboard: ClipboardConfig::default(),
             data: DataConfig::default(),
             ui: UiConfig::default(),
             query: QueryConfig::default(),
@@ -2780,6 +2839,7 @@ impl AppConfig {
         self.chart.merge(other.chart);
         self.theme.merge(other.theme);
         self.glyphs.merge(other.glyphs);
+        self.clipboard.merge(other.clipboard);
         self.data.merge(other.data);
         self.ui.merge(other.ui);
         self.query.merge(other.query);
@@ -2832,6 +2892,16 @@ impl AppConfig {
 
         crate::glyphs::validate_overrides(&self.glyphs.overrides)
             .map_err(|e| eyre!("[glyphs]: {e}"))?;
+
+        if crate::clipboard::BackendChoice::parse(&self.clipboard.backend).is_none() {
+            return Err(eyre!(
+                "[clipboard] backend must be auto, native or osc52, got {:?}",
+                self.clipboard.backend
+            ));
+        }
+        if self.clipboard.osc52_limit_kb == 0 {
+            return Err(eyre!("[clipboard] osc52_limit_kb must be greater than 0"));
+        }
 
         Ok(())
     }

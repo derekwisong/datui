@@ -60,6 +60,13 @@ http = { version = "1", optional = true }
 # Already in the tree through object_store; used for its stream helpers.
 futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util", "sync"] }
+# The system clipboard for the copy dialog. `wayland-data-control` is not
+# negotiable: without it arboard writes the XWayland clipboard, which
+# Wayland-native pastes never see. Default features off to leave the
+# image-data flavor (and the image crate) out.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+# OSC 52 payloads; already in the tree transitively.
+base64 = "0.22"
 polars-sql = { version = "0.55", optional = true }
 ignore = "0.4.33"
 

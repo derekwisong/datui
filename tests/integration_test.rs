@@ -10787,3 +10787,112 @@ fn the_wordmark_yields_to_small_terminals() {
         "the one-line title stands in"
     );
 }
+
+/// The copy dialog end to end: `y` opens it, the scopes copy what they say
+/// through whatever destination the app holds, choices are sticky, and a
+/// null copies as empty, never as the UI's glyph.
+#[test]
+fn test_copy_dialog_sends_each_scope_to_the_destination() {
+    use datui::clipboard::{Destination, Payload};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<Payload>>>);
+    impl Destination for Capture {
+        fn write(&mut self, payload: &Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload.clone());
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("copy_test.csv");
+    std::fs::write(&path, "city,pop\nOslo,700000\nParis,2100000\nQuito,\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    // A frame must have been drawn for the view scope to know its rows.
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capture(copies.clone())));
+
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+
+    // Row scope is the default, header off: the current row as bare TSV.
+    key(&mut app, KeyCode::Char('y'));
+    assert_eq!(app.input_mode, InputMode::Copy);
+    assert!(app.copy_modal.active);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(copies.lock().unwrap()[0].text, "Oslo\t700000");
+
+    // The view scope: header on by default, every buffered screen row, and
+    // the HTML flavor beside the TSV.
+    key(&mut app, KeyCode::Char('y'));
+    key(&mut app, KeyCode::Char(' ')); // open the scope picker
+    key(&mut app, KeyCode::Down); // Row -> View
+    key(&mut app, KeyCode::Enter); // choose
+    key(&mut app, KeyCode::Enter); // copy
+    {
+        let copies = copies.lock().unwrap();
+        assert_eq!(
+            copies[1].text,
+            "city\tpop\nOslo\t700000\nParis\t2100000\nQuito\t"
+        );
+        let html = copies[1].html.as_deref().expect("tsv carries html");
+        assert!(html.contains("<th>city</th>"), "{html}");
+    }
+
+    // The cell scope narrows by typing: 'c' leaves only Cell, 'p' only pop.
+    key(&mut app, KeyCode::Char('y'));
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Char('c'));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Tab); // Scope -> Column
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Char('p'));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter); // copy
+    assert_eq!(copies.lock().unwrap()[2].text, "700000");
+
+    // Scope and column are sticky, and a null cell copies as empty.
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('y'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(copies.lock().unwrap()[3].text, "");
+
+    // The table scope collects off-thread, then lands on the same destination
+    // with the header the scope defaults to.
+    key(&mut app, KeyCode::Char('y'));
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Enter);
+    let mut next = key(&mut app, KeyCode::Enter);
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    {
+        let copies = copies.lock().unwrap();
+        assert_eq!(copies.len(), 5, "the background copy landed");
+        assert_eq!(
+            copies[4].text,
+            "city\tpop\nOslo\t700000\nParis\t2100000\nQuito\t"
+        );
+    }
+
+    // The completion is a flash on the control bar, not a modal.
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Copied 3 rows as TSV"), "no flash drawn");
+}

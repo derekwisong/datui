@@ -5,7 +5,7 @@ use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
 use crate::render::main_view::MainViewContent;
 use crate::widgets::datatable::DataTable;
 use crate::widgets::info::{DataTableInfo, InfoContext};
-use crate::widgets::{export, pivot_melt};
+use crate::widgets::{copy, export, pivot_melt};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::StatefulWidget;
 use ratatui::style::{Modifier, Style};
@@ -222,5 +222,25 @@ pub fn render(
             height: modal_height,
         };
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
+    }
+
+    if app.copy_modal.active {
+        // A commitment like export: compact and centered. The dialog holds
+        // its rows, the spec and the footer; an open Picker earns the room
+        // it drops into.
+        let modal_width = (area.width * 3 / 4).min(46);
+        let wanted = if app.copy_modal.picker.is_some() {
+            14
+        } else {
+            app.copy_modal.row_order().len() as u16 + 5
+        };
+        let modal_height = wanted.min(area.height);
+        let modal_area = Rect {
+            x: (area.width.saturating_sub(modal_width)) / 2,
+            y: (area.height.saturating_sub(modal_height)) / 2,
+            width: modal_width,
+            height: modal_height,
+        };
+        copy::render_copy_modal(modal_area, buf, &mut app.copy_modal, ctx);
     }
 }

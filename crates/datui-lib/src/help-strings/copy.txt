@@ -1,0 +1,37 @@
+Copy data to the clipboard.
+
+  Tab / Shift+Tab:  Move focus between rows
+  ↑ / ↓ (j/k):      Move focus; in an open picker: move the cursor
+  Space:            Open the focused row's picker; on Header: toggle
+  Enter:            Copy, from anywhere in the form
+                    In an open picker: choose
+  type:             In an open picker: narrow the list
+  ? / F1:           Show this help
+  Esc:              Close a picker, then the dialog, without copying
+
+  The last scope, format and header choices are kept, so repeating a copy
+  is y Enter.
+
+Scopes:
+  Cell:   The current row's value in one column, as plain text
+  Row:    The current row
+  View:   The rows on screen, with every displayed column
+  Table:  Everything the view holds, as exported — rows and columns as
+          queried, filtered and sorted. Large tables ask first; very large
+          ones belong in an export (e) instead.
+
+Formats:
+  TSV:       Tab-separated, what spreadsheets expect from a paste
+  CSV:       Comma-separated
+  Markdown:  A pipe table, aligned, numeric columns right-aligned
+
+  A TSV or CSV copy also carries an HTML table flavor, so pasting into a
+  spreadsheet or an email keeps the columns. Values are raw, like an
+  export: display formatting is not applied and a null is an empty field.
+
+Clipboard:
+  [clipboard] backend picks the mechanism: "native" talks to the display
+  server, "osc52" prints an escape sequence the terminal applies (works
+  over SSH; tmux needs set-clipboard on), "auto" (default) uses native
+  where it works and osc52 elsewhere. A native copy belongs to datui, so
+  quitting can drop it unless a clipboard manager holds copies.

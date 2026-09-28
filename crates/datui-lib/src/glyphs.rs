@@ -362,6 +362,43 @@ pub fn asciify_instructions(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+/// Display columns `text` will occupy, as the terminal draws it. Scalar
+/// counts undercount CJK and overcount combining marks; layout math that
+/// budgets cells must use this.
+pub fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+/// The longest prefix of `text` that fits `width` display columns, never
+/// splitting a wide character.
+pub fn take_columns(text: &str, width: usize) -> &str {
+    let mut used = 0usize;
+    for (i, c) in text.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            return &text[..i];
+        }
+        used += w;
+    }
+    text
+}
+
+/// The longest suffix of `text` that fits `width` display columns, never
+/// splitting a wide character.
+pub fn take_columns_end(text: &str, width: usize) -> &str {
+    let mut used = 0usize;
+    let mut start = text.len();
+    for (i, c) in text.char_indices().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        start = i;
+    }
+    &text[start..]
+}
+
 /// The ASCII twin of one instructional character, `None` for plain ASCII or
 /// a character no help file may use.
 fn ascii_twin(c: char) -> Option<&'static str> {

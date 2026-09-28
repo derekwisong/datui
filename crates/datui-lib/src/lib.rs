@@ -5553,6 +5553,8 @@ pub enum QueryFocus {
 pub struct ErrorModal {
     pub active: bool,
     pub message: String,
+    /// How far a long message is scrolled; the render clamps it.
+    pub scroll: usize,
 }
 
 impl ErrorModal {
@@ -5563,11 +5565,13 @@ impl ErrorModal {
     pub fn show(&mut self, message: String) {
         self.active = true;
         self.message = message;
+        self.scroll = 0;
     }
 
     pub fn hide(&mut self) {
         self.active = false;
         self.message.clear();
+        self.scroll = 0;
     }
 }
 
@@ -5600,6 +5604,8 @@ pub struct ConfirmationModal {
     pub focus_yes: bool, // true = Yes focused, false = No focused
     /// What Enter-on-Yes does, named: "Overwrite", not a generic "Yes".
     pub yes_label: &'static str,
+    /// How far a long message is scrolled; the render clamps it.
+    pub scroll: usize,
 }
 
 impl Default for ConfirmationModal {
@@ -5609,6 +5615,7 @@ impl Default for ConfirmationModal {
             message: String::new(),
             focus_yes: true,
             yes_label: "Yes",
+            scroll: 0,
         }
     }
 }
@@ -5623,6 +5630,7 @@ impl ConfirmationModal {
         self.message = message;
         self.focus_yes = true; // Default to Yes
         self.yes_label = "Yes";
+        self.scroll = 0;
     }
 
     /// A confirmation whose Yes destroys something: it starts on No, so a
@@ -5632,6 +5640,7 @@ impl ConfirmationModal {
         self.message = message;
         self.focus_yes = false;
         self.yes_label = yes_label;
+        self.scroll = 0;
     }
 
     pub fn hide(&mut self) {
@@ -5639,6 +5648,7 @@ impl ConfirmationModal {
         self.message.clear();
         self.focus_yes = true;
         self.yes_label = "Yes";
+        self.scroll = 0;
     }
 }
 
@@ -12215,6 +12225,16 @@ impl App {
                     // Toggle between Yes and No
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
+                // ←→ carry the choice, so ↑↓ scroll a long question; the
+                // render clamps the offset.
+                KeyCode::Up => {
+                    self.confirmation_modal.scroll =
+                        self.confirmation_modal.scroll.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.confirmation_modal.scroll =
+                        self.confirmation_modal.scroll.saturating_add(1);
+                }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
                         // Forgetting every recent is checked first: it is the only
@@ -12340,6 +12360,23 @@ impl App {
         // Error modal
         if self.error_modal.active {
             match event.code {
+                // A long diagnostic scrolls; the render clamps the offset.
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_sub(1);
+                    return None;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_add(1);
+                    return None;
+                }
+                KeyCode::PageUp => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_sub(8);
+                    return None;
+                }
+                KeyCode::PageDown => {
+                    self.error_modal.scroll = self.error_modal.scroll.saturating_add(8);
+                    return None;
+                }
                 KeyCode::Esc | KeyCode::Enter => {
                     self.error_modal.hide();
                     // With nothing loaded, dismissing the error would otherwise leave
@@ -18709,12 +18746,12 @@ impl Widget for &mut App {
             crate::render::overlays::render_confirmation_modal(
                 area,
                 buf,
-                &self.confirmation_modal,
+                &mut self.confirmation_modal,
                 &ctx,
             );
         }
         if self.error_modal.active {
-            crate::render::overlays::render_error_modal(area, buf, &self.error_modal, &ctx);
+            crate::render::overlays::render_error_modal(area, buf, &mut self.error_modal, &ctx);
         }
         if self.show_help
             || (self.template_modal.active && self.template_modal.show_help)

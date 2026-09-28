@@ -47,16 +47,15 @@ const META_MIN_WIDTH: u16 = 56;
 /// ellipsis is measured rather than assumed to be one column: it is three characters
 /// wide when datui has fallen back to ASCII.
 fn truncate_start(text: &str, width: usize) -> String {
-    let len = text.chars().count();
-    if len <= width {
+    if glyphs::display_width(text) <= width {
         return text.to_string();
     }
     let ellipsis = glyphs::get().ellipsis;
-    let ellipsis_width = ellipsis.chars().count();
+    let ellipsis_width = glyphs::display_width(ellipsis);
     if width <= ellipsis_width {
-        return text.chars().skip(len - width).collect();
+        return glyphs::take_columns_end(text, width).to_string();
     }
-    let tail: String = text.chars().skip(len - (width - ellipsis_width)).collect();
+    let tail = glyphs::take_columns_end(text, width - ellipsis_width);
     format!("{ellipsis}{tail}")
 }
 

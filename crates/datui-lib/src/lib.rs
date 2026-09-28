@@ -15388,6 +15388,9 @@ impl App {
                     && self.quality_evidence_return.is_none()
                 {
                     self.analysis_modal.open();
+                    // The configured default; the plan editor changes it per run.
+                    self.analysis_modal.data_quality_plan.sample_rows =
+                        self.app_config.performance.quality_sample_rows;
                 }
                 None
             }

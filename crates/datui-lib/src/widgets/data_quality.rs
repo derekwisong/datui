@@ -246,7 +246,7 @@ fn render_plan(
     // The plan table is the page; when the terminal cannot hold everything, drop
     // the access summary — the plan strip and `p` both still carry it — rather
     // than let the solver shave a row off the plan and hide a field.
-    const PLAN_ROWS: u16 = 8;
+    const PLAN_ROWS: u16 = 9;
     const ACCESS_ROWS: u16 = 7;
     let compact = area.height.saturating_sub(2) < 2 + PLAN_ROWS + ACCESS_ROWS;
     let sections = Layout::default()
@@ -310,6 +310,13 @@ fn render_plan(
                     .map(|seconds| duration_label(Some(seconds)))
                     .unwrap_or_else(|| "none".to_string()),
             ),
+        ]),
+        Row::new(vec![
+            Cell::from("Sample rows"),
+            Cell::from(format!(
+                "{} per segment",
+                numfmt::group_chrome(config.plan.sample_rows)
+            )),
         ]),
     ];
     if config.editing {

@@ -901,11 +901,16 @@ mod quality_scope_tests {
         modal.adjust_quality_plan(false, &[]);
         assert_eq!(modal.data_quality_plan.sample_rows, 10_000);
 
-        // A configured odd value stays reachable in the cycle.
+        // A configured odd value joins the ring while it is current — the
+        // arrows move from where the user is — and forward lands on the
+        // first preset.
         modal.data_quality_plan.sample_rows = 7_500;
         modal.adjust_quality_plan(true, &[]);
         assert_eq!(modal.data_quality_plan.sample_rows, 1_000);
         modal.adjust_quality_plan(false, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 7_500);
+        assert_eq!(
+            modal.data_quality_plan.sample_rows, 50_000,
+            "off the custom value, the ring is the presets"
+        );
     }
 }

@@ -14204,6 +14204,22 @@ impl App {
             {
                 use crate::data_quality::QualityPage;
 
+                // A finding's popup scrolls when it holds more than the screen does.
+                if self.analysis_modal.data_quality_observation_detail {
+                    let rows = match event.code {
+                        KeyCode::Down | KeyCode::Char('j') => Some(1),
+                        KeyCode::Up | KeyCode::Char('k') => Some(-1),
+                        KeyCode::PageDown => Some(10),
+                        KeyCode::PageUp => Some(-10),
+                        KeyCode::End => Some(i32::from(u16::MAX)),
+                        KeyCode::Home => Some(-i32::from(u16::MAX)),
+                        _ => None,
+                    };
+                    if let Some(rows) = rows {
+                        self.analysis_modal.scroll_quality_detail(rows);
+                        return None;
+                    }
+                }
                 if (self.analysis_modal.data_quality_confirm_run
                     || self.analysis_modal.data_quality_show_access
                     || self.analysis_modal.data_quality_observation_detail)
@@ -14241,6 +14257,7 @@ impl App {
                         if self.analysis_modal.quality_selected_is_clean() {
                             self.analysis_modal.data_quality_checks_expanded =
                                 !self.analysis_modal.data_quality_checks_expanded;
+                            self.analysis_modal.data_quality_detail_scroll.offset = 0;
                             return None;
                         }
                         let event = self.open_quality_evidence();
@@ -14435,6 +14452,8 @@ impl App {
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
                             let findings = self.analysis_modal.quality_row_count();
                             self.analysis_modal.data_quality_checks_expanded = false;
+                            self.analysis_modal.data_quality_detail_scroll =
+                                analysis_modal::DetailScroll::default();
                             self.analysis_modal.data_quality_observation_detail = self
                                 .analysis_modal
                                 .data_quality_table_state

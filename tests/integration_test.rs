@@ -2024,6 +2024,77 @@ fn data_quality_reads_as_a_report() {
     assert_eq!(state.num_rows, 4);
 }
 
+/// A finding with more evidence than the screen holds scrolls inside its popup,
+/// counts what is below, and lists the values with the most rows first.
+#[test]
+fn a_long_finding_scrolls() {
+    use datui::data_quality::QualityPage;
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_long_finding.parquet");
+    // Sixty names, each also written in capitals; name 0 has the most rows.
+    let names = (0..3_000usize)
+        .map(|row| {
+            let name = format!("Company {:02}", row % 60);
+            if row % 120 < 60 {
+                name
+            } else {
+                name.to_uppercase()
+            }
+        })
+        .chain(std::iter::repeat_n("Company 00".to_string(), 500))
+        .collect::<Vec<_>>();
+    let rows = names.len() as i64;
+    let mut df = df!("id" => (0..rows).collect::<Vec<_>>(), "name" => names).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let press = |app: &mut App, code| {
+        let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+    };
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_observation_detail);
+
+    let area = Rect::new(0, 0, 100, 20);
+    let render = |app: &mut App| {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let screen = render(&mut app);
+    assert!(screen.contains("Mixed spellings"));
+    assert!(
+        screen.contains("\"Company 00\" (525)  \"COMPANY 00\" (25)"),
+        "the value with the most rows leads, its commonest spelling first"
+    );
+    assert!(screen.contains(" more "), "the frame counts what is below");
+    assert!(screen.contains("Scroll"), "the bar says the popup scrolls");
+    press(&mut app, KeyCode::End);
+    let screen = render(&mut app);
+    assert!(!screen.contains(" more "), "nothing left below at the end");
+    assert!(screen.contains("Show Rows"), "the Enter line is reachable");
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.analysis_modal.data_quality_detail_scroll.offset, 0);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.data_quality_observation_detail);
+}
+
 /// A finding measured on a sample opens the sample's matching rows, drawn again
 /// from its seed: the count the popup promises is the count in the table.
 #[test]

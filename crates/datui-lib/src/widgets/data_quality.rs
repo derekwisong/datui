@@ -1,4 +1,4 @@
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
+use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll};
 use crate::config::Theme;
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison, QualityCompute,
@@ -69,6 +69,7 @@ pub fn render(
     config: DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
     sidebar_state: &mut TableState,
+    detail_scroll: &mut DetailScroll,
     area: Rect,
     buf: &mut Buffer,
 ) {
@@ -118,7 +119,7 @@ pub fn render(
     if config.show_access {
         render_access_plan(&config, area, buf);
     } else if config.observation_detail {
-        render_finding_detail(&config, table_state, area, buf);
+        render_finding_detail(&config, table_state, detail_scroll, area, buf);
     } else if config.confirm_run {
         render_run_confirmation(&config, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
@@ -685,6 +686,7 @@ fn fit(text: &str, width: usize) -> String {
 fn render_finding_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &TableState,
+    scroll: &mut DetailScroll,
     area: Rect,
     buf: &mut Buffer,
 ) {
@@ -798,25 +800,38 @@ fn render_finding_detail(
             lines.push(Line::styled(rows, dimmed));
         }
     }
-    // Grow with the text up to the screen rather than cut it.
-    let inner = inner as usize;
-    let needed = lines
+    // Grow with the text up to the screen, then scroll inside the frame; the
+    // bottom edge counts what is below.
+    let rows = lines
         .iter()
-        .map(|line| line.width().max(1).div_ceil(inner))
-        .sum::<usize>() as u16
-        + 2;
-    let popup = centered_rect(width, needed.min(area.height.saturating_sub(2)), area);
+        .map(|line| crate::render::home_view::wrapped_rows(line, inner as usize))
+        .sum::<usize>()
+        .min(u16::MAX as usize) as u16;
+    let height = (rows + 2).min(area.height.saturating_sub(2));
+    scroll.max = rows.saturating_sub(height.saturating_sub(2));
+    scroll.offset = scroll.offset.min(scroll.max);
+    let below = scroll.max - scroll.offset;
+    let popup = centered_rect(width, height, area);
     Clear.render(popup, buf);
+    let mut block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_set(crate::glyphs::get().border)
+        .border_style(Style::default().fg(theme.get("modal_border_active")))
+        .padding(ratatui::widgets::Padding::horizontal(1));
+    if below > 0 {
+        block = block.title_bottom(
+            Line::styled(
+                format!(" {} {below} more ", glyphs::get().ellipsis),
+                Style::default().fg(theme.get("dimmed")),
+            )
+            .right_aligned(),
+        );
+    }
     Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(theme.get("modal_border_active")))
-                .padding(ratatui::widgets::Padding::horizontal(1)),
-        )
+        .scroll((scroll.offset, 0))
+        .block(block)
         .render(popup, buf);
 }
 

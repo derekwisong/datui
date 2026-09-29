@@ -48,6 +48,13 @@ pub enum AnalysisFocus {
     DistributionSelector, // Focus on distribution selector in detail view
 }
 
+/// A popup taller than the screen scrolls: the offset, and the most it can be.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DetailScroll {
+    pub offset: u16,
+    pub max: u16,
+}
+
 #[derive(Default)]
 pub struct AnalysisModal {
     pub active: bool,
@@ -95,6 +102,8 @@ pub struct AnalysisModal {
     pub data_quality_plan_field: usize,
     pub data_quality_show_access: bool,
     pub data_quality_observation_detail: bool,
+    /// Where the finding popup is scrolled to, and how far it can go (set as it draws).
+    pub data_quality_detail_scroll: DetailScroll,
     /// The clean entry's popup lists every check rather than the most important.
     pub data_quality_checks_expanded: bool,
     pub data_quality_confirm_run: bool,
@@ -406,6 +415,12 @@ impl AnalysisModal {
         self.set_quality_page(page);
         self.data_quality_table_state
             .select(Some(self.data_quality_column_index));
+    }
+
+    /// Move the finding popup by `rows`, within what it last drew.
+    pub fn scroll_quality_detail(&mut self, rows: i32) {
+        let scroll = &mut self.data_quality_detail_scroll;
+        scroll.offset = (scroll.offset as i32 + rows).clamp(0, scroll.max as i32) as u16;
     }
 
     /// Show a tab, keeping the column in view across Columns, Segments and Trends.

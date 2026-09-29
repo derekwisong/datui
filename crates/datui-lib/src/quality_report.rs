@@ -249,8 +249,12 @@ fn rank(finding: &Finding) -> u8 {
 
 fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
     let mut indices = indices.to_vec();
-    // Missing values list their columns worst first.
-    if results.observations[indices[0]].kind == ObservationKind::Nulls {
+    // Missing values list their columns, and mixed spellings their values, worst
+    // first.
+    if matches!(
+        results.observations[indices[0]].kind,
+        ObservationKind::Nulls | ObservationKind::CategoryVariants
+    ) {
         indices.sort_by_key(|index| std::cmp::Reverse(results.observations[*index].affected_rows));
     }
     let indices = indices.as_slice();
@@ -905,10 +909,11 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                 else {
                     continue;
                 };
+                let mut variants = group.variants.iter().collect::<Vec<_>>();
+                variants.sort_by_key(|(_, rows)| std::cmp::Reverse(*rows));
                 evidence.push(
-                    group
-                        .variants
-                        .iter()
+                    variants
+                        .into_iter()
                         .take(4)
                         .map(|(value, rows)| format!("{} ({})", quoted(value, 28), count(*rows)))
                         .collect::<Vec<_>>()

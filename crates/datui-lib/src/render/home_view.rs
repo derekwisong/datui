@@ -1461,7 +1461,7 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
 /// one high on a line that happens to break there. Which way it errs matters: what it
 /// feeds is a budget, and a row too few leaves a blank line where a row too many draws
 /// over the bottom of the pane.
-fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
+pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     use unicode_width::UnicodeWidthStr;
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     if width == 0 {

@@ -138,7 +138,8 @@ sampled, or metadata-only.
 - **Overview** — the report. <kbd>Enter</kbd> on a finding lists its numbers,
   what to check and its evidence: the spellings, the most
   repeated value, the files behind a missing or mistyped column and the values
-  a conflict hides. <kbd>Enter</kbd> again opens the matching rows in a
+  a conflict hides, values with the most rows first. A finding taller than the
+  screen scrolls with <kbd>↑</kbd> <kbd>↓</kbd>. <kbd>Enter</kbd> again opens the matching rows in a
   temporary table (every column's rows, for a grouped finding): from the table
   when every row was read, from the sample when one was. <kbd>Esc</kbd> returns
   to the report.

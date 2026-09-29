@@ -260,7 +260,10 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
                     },
                 ),
                 ("Esc", "Back"),
-            ];
+            ]
+            .into_iter()
+            .chain((modal.data_quality_detail_scroll.max > 0).then_some((g.updown, "Scroll")))
+            .collect();
         }
         // Enter opens the rows when there are exact rows to open, and otherwise
         // only closes the popup; the chip says which.
@@ -272,11 +275,15 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
                 .and_then(|index| report.findings.get(index))
                 .is_some_and(|finding| finding.can_open_rows(results))
         });
-        return if opens {
+        let mut keys = if opens {
             vec![("Enter", "Show Rows"), ("Esc", "Back")]
         } else {
             vec![("Enter", "Close"), ("Esc", "Back")]
         };
+        if modal.data_quality_detail_scroll.max > 0 {
+            keys.push((g.updown, "Scroll"));
+        }
+        return keys;
     }
     if modal.data_quality_page == QualityPage::TimeRoles {
         return vec![

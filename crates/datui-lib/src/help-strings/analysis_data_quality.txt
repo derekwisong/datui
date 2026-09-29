@@ -49,7 +49,8 @@ Keys:
   m:                Choose the measurement in Segments or Trends, likewise
   b:                Use the highlighted segment as the comparison baseline
                     without rescanning
-  ↑ / ↓ (j/k):      Move through fields or results
+  ↑ / ↓ (j/k):      Move through fields or results; in a finding taller
+                    than the screen, scroll it (PgUp/PgDn, Home/End too)
   Home/End:         Jump to the first or last result (PgUp/PgDn page)
   r:                Rerun with a new sample seed, for every tool
   Tab:              Move between the result and Analysis tools

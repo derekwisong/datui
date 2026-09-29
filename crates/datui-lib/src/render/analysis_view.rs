@@ -104,6 +104,7 @@ fn render_body(
                 config,
                 &mut modal.data_quality_table_state,
                 &mut modal.sidebar_state,
+                &mut modal.data_quality_detail_scroll,
                 area,
                 buf,
             );

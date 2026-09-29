@@ -1,9 +1,8 @@
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
 use crate::config::Theme;
 use crate::data_quality::{
-    DataQualityPlan, DataQualityResults, MAX_RETAINED_SAMPLE_ROWS, ObservationKind,
-    QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityPrecision,
-    QualityScope, TemporalRole,
+    DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison, QualityCompute,
+    QualityGrain, QualityMetric, QualityPage, QualityPrecision, QualityScope, TemporalRole,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -315,7 +314,7 @@ fn render_plan(
     // The plan table is the page; when the terminal cannot hold everything, drop
     // the access summary — the plan strip and `p` both still carry it — rather
     // than let the solver shave a row off the plan and hide a field.
-    const PLAN_ROWS: u16 = 9;
+    const PLAN_ROWS: u16 = 8;
     const ACCESS_ROWS: u16 = 7;
     let compact = area.height.saturating_sub(2) < 2 + PLAN_ROWS + ACCESS_ROWS;
     let sections = Layout::default()
@@ -383,13 +382,6 @@ fn render_plan(
                     .map(|seconds| duration_label(Some(seconds)))
                     .unwrap_or_else(|| "none".to_string()),
             ),
-        ]),
-        Row::new(vec![
-            Cell::from("Rows per segment"),
-            Cell::from(format!(
-                "{} per segment",
-                numfmt::group_chrome(config.plan.sample_rows)
-            )),
         ]),
     ];
     if config.editing {
@@ -1841,11 +1833,6 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let bytes = planned_read_label(config.state, config.plan);
     let rows_label = match rows {
         Some(rows) => numfmt::group_chrome(rows),
-        None if config.plan.samples_each_segment() => format!(
-            "unknown; {} per segment, refused over {}",
-            numfmt::group_chrome(config.plan.sample_rows.min(50_000)),
-            numfmt::group_chrome(MAX_RETAINED_SAMPLE_ROWS)
-        ),
         None => "unknown".to_string(),
     };
     let source = if config.state.is_remote_source() {
@@ -1913,11 +1900,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         Row::new(vec![Cell::from("Local file writes"), Cell::from("none")]),
         Row::new(vec![
             Cell::from("Estimate basis"),
-            Cell::from(if config.plan.samples_each_segment() {
-                "full scope read; refused over 500,000 rows or 512 MiB retained"
-            } else {
-                "spread sample; at most one read of the scope"
-            }),
+            Cell::from("the shared sample; at most one read of the scope"),
         ]),
     ];
     let table = Table::new(table_rows, [Constraint::Length(20), Constraint::Fill(1)]).block(
@@ -1935,22 +1918,13 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     Clear.render(popup, buf);
     Paragraph::new(vec![
         Line::styled(
-            if config.plan.samples_each_segment() {
-                "Full read for per-segment sampling"
-            } else {
-                "Full value scan"
-            },
+            "Full value scan",
             Style::default()
                 .fg(config.theme.get("warning"))
                 .add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
-        Line::raw(if config.plan.samples_each_segment() {
-            "Every eligible row is read; the budget is kept per segment. If that \
-             would total over 500,000 rows or 512 MiB the run is refused, not trimmed."
-        } else {
-            "This plan evaluates every eligible row and may read the full source."
-        }),
+        Line::raw("This plan evaluates every eligible row and may read the full source."),
         Line::raw("The source remains read-only; remote writes are 0 B."),
         Line::raw(""),
         Line::raw("Enter run    Esc cancel"),
@@ -2035,14 +2009,13 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
     };
     match plan.compute {
         QualityCompute::Metadata => unreachable!(),
-        QualityCompute::Sample if plan.samples_each_segment() => None,
         QualityCompute::Sample => Some(total.min(dataset_rows(plan))),
         QualityCompute::Full => Some(total),
     }
 }
 
 fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize> {
-    if plan.scope.uses_source() || plan.samples_each_segment() {
+    if plan.scope.uses_source() {
         return None;
     }
     let rows = match plan.compute {
@@ -2101,11 +2074,6 @@ fn dataset_rows(plan: &DataQualityPlan) -> usize {
 fn compute_label(plan: &DataQualityPlan) -> String {
     match plan.compute {
         QualityCompute::Metadata => "metadata only".to_string(),
-        QualityCompute::Sample if plan.samples_each_segment() => format!(
-            "{} rows/segment / seed {}",
-            numfmt::group_chrome(plan.sample_rows.min(50_000)),
-            plan.sample_seed
-        ),
         QualityCompute::Sample => format!(
             "{} rows {} / seed {}",
             numfmt::group_chrome(dataset_rows(plan)),

@@ -93,7 +93,6 @@ Sample row, opens its form.
 | Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
-| Rows per segment | Rows kept per segment when a grain other than the dataset samples each one: <kbd>←</kbd> <kbd>→</kbd> cycle 1,000 to 50,000; the default comes from [`[performance] quality_sample_rows`](configuration.md#performance) |
 
 <kbd>e</kbd> edits a copy of the plan; <kbd>Esc</kbd> discards it.
 
@@ -101,10 +100,8 @@ Before a run, source-scoped plans report unknown row counts and read sizes,
 and metadata-only runs do not count rows. A local dataset-grain sample
 estimates its read as a ceiling (`up to`), since a single Parquet or IPC file
 is read in short runs and anything else is streamed once; the run reports the
-exact eligible count. Other grains sample each segment after reading the full
-selected scope, so they require confirmation and report exact eligible and
-per-segment counts afterward. The scope is applied before
-sampling, so sampling never reaches beyond its bounds.
+exact eligible count. The scope is applied before sampling, so sampling never
+reaches beyond its bounds.
 
 The Time roles row opens an explicit mapping table; every role starts
 unassigned. Datui recognizes physical date and datetime types but never
@@ -149,13 +146,14 @@ sampled, or metadata-only.
 
 ### Sampling and budgets
 
-Sampling is the shared sample's, not a grain.
+Every grain reads the shared [sample](#sampling), the same rows every tool
+reads, and splits it into segments. Only a full scan (the sample's method set
+to Every row) asks for confirmation.
 
 | | |
 |---|---|
-| Dataset grain | The shared [sample](#sampling), the same rows every tool reads: random, equal per value, the first rows, or every row |
-| File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Rows per segment of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
-| Budgets | Rows per segment multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower Rows per segment |
+| Dataset grain | The whole sample is one segment |
+| File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. A segment's total is shown when it is known without reading it (a file's rows from its footer when whole files are in scope, a row chunk's size) and is otherwise unknown on a sample |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
 | Time windows | `1h`, `1d`, `1w`, `1mo` on each assigned time role, starting on the calendar boundary for their width (weeks start on Monday); a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |

@@ -341,7 +341,7 @@ impl AnalysisModal {
             return 0;
         };
         match self.data_quality_page {
-            QualityPage::Plan => 7,
+            QualityPage::Plan => 6,
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
             QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
@@ -518,27 +518,6 @@ impl AnalysisModal {
                     current - 1
                 };
                 self.data_quality_plan.latency_threshold_seconds = choices[next];
-            }
-            6 => {
-                // The engine caps a sample at 50,000 rows per segment, so the
-                // ring stops where the cap starts. A configured value that is
-                // none of these stays in the cycle, like a typed scope does.
-                let mut choices = vec![1_000usize, 5_000, 10_000, 25_000, 50_000];
-                if !choices.contains(&self.data_quality_plan.sample_rows) {
-                    choices.insert(0, self.data_quality_plan.sample_rows);
-                }
-                let current = choices
-                    .iter()
-                    .position(|choice| *choice == self.data_quality_plan.sample_rows)
-                    .unwrap_or(0);
-                let next = if forward {
-                    (current + 1) % choices.len()
-                } else if current == 0 {
-                    choices.len() - 1
-                } else {
-                    current - 1
-                };
-                self.data_quality_plan.sample_rows = choices[next];
             }
             _ => {}
         }
@@ -901,34 +880,5 @@ mod quality_scope_tests {
                 "comparison back"
             );
         }
-    }
-
-    /// The Sample rows field cycles the sample budget, keeps a configured
-    /// value that is none of the presets in its ring, and never leaves the
-    /// engine's 50,000-row cap.
-    #[test]
-    fn the_sample_rows_field_cycles_within_the_cap() {
-        let mut modal = AnalysisModal::new();
-        modal.data_quality_plan_field = 6;
-        assert_eq!(modal.data_quality_plan.sample_rows, 10_000);
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 25_000);
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 50_000);
-        modal.adjust_quality_plan(false, &[]);
-        modal.adjust_quality_plan(false, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 10_000);
-
-        // A configured odd value joins the ring while it is current — the
-        // arrows move from where the user is — and forward lands on the
-        // first preset.
-        modal.data_quality_plan.sample_rows = 7_500;
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 1_000);
-        modal.adjust_quality_plan(false, &[]);
-        assert_eq!(
-            modal.data_quality_plan.sample_rows, 50_000,
-            "off the custom value, the ring is the presets"
-        );
     }
 }

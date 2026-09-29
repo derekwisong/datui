@@ -15861,9 +15861,6 @@ impl App {
                     && self.quality_evidence_return.is_none()
                 {
                     self.analysis_modal.open();
-                    // The configured default; the plan editor changes it per run.
-                    self.analysis_modal.data_quality_plan.sample_rows =
-                        self.app_config.performance.quality_sample_rows;
                     // The sample outlives a close, but its scope names this
                     // dataset's rows: another dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {

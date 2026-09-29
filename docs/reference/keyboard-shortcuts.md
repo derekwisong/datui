@@ -202,13 +202,12 @@ In Data Quality:
 |---|---|
 | <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends |
 | <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, show all checks on the clean entry, or close an open popup |
-| <kbd>e</kbd> | Edit the plan's seven fields — Sample, Grain, Values, Compare, Time roles, Latency threshold, Rows per segment — in a copy of the plan |
+| <kbd>e</kbd> | Edit the plan's six fields — Sample, Grain, Values, Compare, Time roles, Latency threshold — in a copy of the plan |
 | <kbd>s</kbd> | Open the shared Sample form |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
 | <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Sample | Open the Sample form |
 | <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |
-| <kbd>←</kbd> <kbd>→</kbd> on Rows per segment | Cycle 1,000 to 50,000 rows kept per segment (default: `[performance] quality_sample_rows`) |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column |
 | <kbd>m</kbd> | In Segments/Trends, choose a measurement |

@@ -3,19 +3,13 @@ use color_eyre::Result;
 use color_eyre::eyre::Report;
 use polars::prelude::*;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // A dataset-grain sample is spread across the whole scope (see `statistics::analysis_rows`).
 const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
 const QUALITY_SAMPLE_POSITION: &str = "__datui_quality_sample_position";
 const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
-const MAX_SAMPLE_SEGMENTS: usize = 10_000;
-const MAX_RETAINED_SAMPLE_BYTES: usize = 512 * 1024 * 1024;
-// A per-segment budget multiplies by the segment count, so a 10,000-row budget
-// over 100 partitions keeps a million rows. Profiling those is eager and costs
-// roughly ten seconds a million rows, so bound the total as well as the bytes.
-pub const MAX_RETAINED_SAMPLE_ROWS: usize = 500_000;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
 /// How nearly unique a column's values must be before its repeats are worth naming.
 ///
@@ -554,8 +548,6 @@ pub struct DataQualityPlan {
     pub method: crate::sampling::SampleMethod,
     /// Rows a dataset-grain sample keeps: the shared analysis sample's size.
     pub dataset_rows: usize,
-    /// Rows kept per segment when a grain other than the dataset samples each one.
-    pub sample_rows: usize,
     pub sample_seed: u64,
     pub grain: QualityGrain,
     pub comparison: QualityComparison,
@@ -571,7 +563,6 @@ impl Default for DataQualityPlan {
             compute: QualityCompute::Sample,
             method: crate::sampling::SampleMethod::Spread,
             dataset_rows: DEFAULT_SAMPLE_ROWS,
-            sample_rows: DEFAULT_SAMPLE_ROWS,
             sample_seed: 42_891,
             grain: QualityGrain::Dataset,
             comparison: QualityComparison::None,
@@ -583,12 +574,10 @@ impl Default for DataQualityPlan {
 }
 
 impl DataQualityPlan {
-    pub fn samples_each_segment(&self) -> bool {
-        self.compute == QualityCompute::Sample && !matches!(self.grain, QualityGrain::Dataset)
-    }
-
+    /// Only a full scan asks first. Every grain reads the shared sample and cuts it
+    /// into segments, so no grain reads more than the sample says.
     pub fn requires_confirmation(&self) -> bool {
-        self.compute == QualityCompute::Full || self.samples_each_segment()
+        self.compute == QualityCompute::Full
     }
 
     pub fn comparison_label(&self) -> String {
@@ -622,9 +611,6 @@ impl DataQualityPlan {
             self.scope.label(),
             self.grain.label(),
             match self.compute {
-                QualityCompute::Sample if self.samples_each_segment() => {
-                    format!("{} rows/segment", self.sample_rows.min(50_000))
-                }
                 QualityCompute::Sample => format!(
                     "{} rows {}",
                     self.dataset_rows,
@@ -1100,54 +1086,50 @@ pub fn compute_data_quality(
         return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming);
     }
 
-    let (profile_df, sample_positions, evaluated_rows, precision, total_rows, segment_totals) =
-        match plan.compute {
-            QualityCompute::Sample if plan.samples_each_segment() => {
-                let sampled = sample_quality_segments(lf, plan, source, polars_streaming)?;
-                let height = sampled.rows.height();
-                let precision = if height == sampled.total_rows {
-                    QualityPrecision::Exact
-                } else {
-                    QualityPrecision::Sampled
-                };
-                (
-                    sampled.rows,
-                    Some(sampled.positions),
-                    height,
-                    precision,
-                    Some(sampled.total_rows),
-                    Some(sampled.segment_totals),
-                )
-            }
-            // The shared analysis sampler, as every other tool reads: by default spread
-            // across the whole scope, so a file sorted by date is not judged by its
-            // first stretch. Dataset grain has one segment, so no row needs its position.
-            QualityCompute::Sample => {
-                let sample = crate::sampling::Sample {
-                    scope: QualityScope::CurrentView,
-                    method: plan.method.clone(),
-                    rows: plan.dataset_rows,
-                    seed: plan.sample_seed,
-                };
-                let sampled =
-                    crate::sampling::read_rows(lf, &sample, total_rows, polars_streaming)?;
-                let height = sampled.df.height();
-                let precision = if sampled.sample_size.is_some() {
-                    QualityPrecision::Sampled
-                } else {
-                    QualityPrecision::Exact
-                };
-                (
-                    sampled.df,
-                    None,
-                    height,
-                    precision,
-                    Some(sampled.total_rows),
-                    None,
-                )
-            }
-            QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
-        };
+    // The shared analysis sampler, as every other tool reads: by default spread
+    // across the whole scope, so a file sorted by date is not judged by its first
+    // stretch. Every grain cuts its segments from this one sample, so a segmented
+    // run reads no more than the sample says and measures the rows every tool reads.
+    let chunked = matches!(plan.grain, QualityGrain::RowChunks(_));
+    let (profile_df, sample_positions, evaluated_rows, precision, total_rows) = match plan.compute {
+        QualityCompute::Sample => {
+            let sample = crate::sampling::Sample {
+                scope: QualityScope::CurrentView,
+                method: plan.method.clone(),
+                rows: plan.dataset_rows,
+                seed: plan.sample_seed,
+            };
+            // A row chunk is a stretch of the scope's order, so a sampled row has to
+            // remember where it sat.
+            let read_from = if chunked {
+                lf.clone().with_row_index(QUALITY_SAMPLE_POSITION, None)
+            } else {
+                lf.clone()
+            };
+            let sampled =
+                crate::sampling::read_rows(&read_from, &sample, total_rows, polars_streaming)?;
+            let (df, positions) = if chunked {
+                let positions = sampled
+                    .df
+                    .column(QUALITY_SAMPLE_POSITION)?
+                    .cast(&DataType::UInt32)?
+                    .u32()?
+                    .into_no_null_iter()
+                    .collect::<Vec<_>>();
+                (sampled.df.drop(QUALITY_SAMPLE_POSITION)?, Some(positions))
+            } else {
+                (sampled.df, None)
+            };
+            let height = df.height();
+            let precision = if sampled.sample_size.is_some() {
+                QualityPrecision::Sampled
+            } else {
+                QualityPrecision::Exact
+            };
+            (df, positions, height, precision, Some(sampled.total_rows))
+        }
+        QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
+    };
 
     // Rows chosen by the sample that match nothing are a mistake to name, not an
     // empty report that reads as clean.
@@ -1184,7 +1166,7 @@ pub fn compute_data_quality(
         &schema,
         SegmentSampleProvenance {
             positions: sample_positions.as_deref(),
-            totals: segment_totals.as_ref(),
+            totals: &known_segment_totals(plan, total_rows, source),
         },
         polars_streaming,
     )?;
@@ -1204,186 +1186,6 @@ pub fn compute_data_quality(
         category_variants,
         shared_nulls,
         source_files: source.map(|source| source.file_names.len()),
-    })
-}
-
-#[derive(Default)]
-struct SegmentSampleState {
-    total_rows: usize,
-    retained_rows: usize,
-    retained_bytes: usize,
-    segments: BTreeMap<String, SegmentSample>,
-}
-
-struct SegmentSample {
-    total_rows: usize,
-    rows: DataFrame,
-    ranks: Vec<(u64, u32)>,
-}
-
-struct SegmentSampleOutput {
-    rows: DataFrame,
-    positions: Vec<u32>,
-    segment_totals: BTreeMap<String, usize>,
-    total_rows: usize,
-}
-
-impl SegmentSampleState {
-    fn observe(
-        &mut self,
-        batch: DataFrame,
-        plan: &DataQualityPlan,
-        source: Option<&QualitySourceContext>,
-    ) -> PolarsResult<()> {
-        let positions = batch
-            .column(QUALITY_SAMPLE_POSITION)?
-            .u32()?
-            .into_no_null_iter()
-            .collect::<Vec<_>>();
-        let labeled = if matches!(plan.grain, QualityGrain::File) {
-            attach_source_file(batch.clone(), source)
-                .map_err(|error| PolarsError::ComputeError(error.to_string().into()))?
-        } else {
-            batch.clone()
-        };
-        let groups = segment_rows(&labeled, plan, Some(&positions))
-            .map_err(|error| PolarsError::ComputeError(error.to_string().into()))?;
-        let requested = plan.sample_rows.clamp(1, 50_000);
-        self.total_rows += batch.height();
-        for group in groups {
-            let mut candidates = group
-                .indices
-                .iter()
-                .map(|index| {
-                    let position = positions[*index as usize];
-                    (
-                        crate::statistics::sample_rank(plan.sample_seed, u64::from(position)),
-                        position,
-                        *index,
-                    )
-                })
-                .collect::<Vec<_>>();
-            candidates.sort_unstable();
-            candidates.truncate(requested);
-            let candidate_indices = candidates.iter().map(|item| item.2).collect::<Vec<_>>();
-            let candidate_rows = take_rows(&batch, &candidate_indices)?;
-            let candidate_ranks = candidates
-                .iter()
-                .map(|item| (item.0, item.1))
-                .collect::<Vec<_>>();
-            if let Some(segment) = self.segments.get_mut(&group.label) {
-                self.retained_bytes -= segment.rows.estimated_size();
-                self.retained_rows -= segment.rows.height();
-                segment.total_rows += group.indices.len();
-                let combined = segment.rows.vstack(&candidate_rows)?;
-                let mut ranks = std::mem::take(&mut segment.ranks);
-                ranks.extend(candidate_ranks);
-                let mut order = (0..ranks.len()).collect::<Vec<_>>();
-                order.sort_unstable_by_key(|index| ranks[*index]);
-                order.truncate(requested);
-                let indices = order.iter().map(|index| *index as u32).collect::<Vec<_>>();
-                segment.rows = take_rows(&combined, &indices)?;
-                segment.ranks = order.iter().map(|index| ranks[*index]).collect();
-                self.retained_bytes += segment.rows.estimated_size();
-                self.retained_rows += segment.rows.height();
-            } else {
-                if self.segments.len() >= MAX_SAMPLE_SEGMENTS {
-                    return Err(PolarsError::ComputeError(
-                        "Data quality sample exceeds 10,000 segments; narrow the scope".into(),
-                    ));
-                }
-                self.retained_bytes += candidate_rows.estimated_size();
-                self.retained_rows += candidate_rows.height();
-                self.segments.insert(
-                    group.label,
-                    SegmentSample {
-                        total_rows: group.indices.len(),
-                        rows: candidate_rows,
-                        ranks: candidate_ranks,
-                    },
-                );
-            }
-            if self.retained_rows > MAX_RETAINED_SAMPLE_ROWS {
-                return Err(PolarsError::ComputeError(
-                    format!(
-                        "Data quality sample would keep more than {MAX_RETAINED_SAMPLE_ROWS} rows ({} rows/segment across {} segments so far); narrow the scope or reduce sample rows",
-                        requested,
-                        self.segments.len()
-                    )
-                    .into(),
-                ));
-            }
-            if self.retained_bytes > MAX_RETAINED_SAMPLE_BYTES {
-                return Err(PolarsError::ComputeError(
-                    "Data quality sample exceeds 512 MiB retained; narrow the scope or reduce sample rows"
-                        .into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn sample_quality_segments(
-    lf: &LazyFrame,
-    plan: &DataQualityPlan,
-    source: Option<&QualitySourceContext>,
-    polars_streaming: bool,
-) -> Result<SegmentSampleOutput> {
-    let state = Arc::new(Mutex::new(SegmentSampleState::default()));
-    let callback_state = Arc::clone(&state);
-    let callback_plan = plan.clone();
-    let callback_source = source.cloned();
-    let sink = lf
-        .clone()
-        .with_row_index(QUALITY_SAMPLE_POSITION, None)
-        .sink_batches(
-            PlanCallback::new(move |batch| {
-                callback_state
-                    .lock()
-                    .map_err(|_| {
-                        PolarsError::ComputeError("Data quality sampler lock failed".into())
-                    })?
-                    .observe(batch, &callback_plan, callback_source.as_ref())?;
-                Ok(false)
-            }),
-            true,
-            None,
-        )?;
-    collect_lazy(sink, polars_streaming).map_err(Report::from)?;
-    let mut state = state
-        .lock()
-        .map_err(|_| Report::msg("Data quality sampler lock failed"))?;
-    let state = std::mem::take(&mut *state);
-    if state.segments.is_empty() {
-        return Ok(SegmentSampleOutput {
-            rows: collect_lazy(lf.clone().limit(0), polars_streaming).map_err(Report::from)?,
-            positions: Vec::new(),
-            segment_totals: BTreeMap::new(),
-            total_rows: 0,
-        });
-    }
-    let mut rows: Option<DataFrame> = None;
-    let mut positions = Vec::new();
-    let mut totals = BTreeMap::new();
-    for (label, segment) in state.segments {
-        totals.insert(label, segment.total_rows);
-        positions.extend(segment.ranks.iter().map(|rank| rank.1));
-        rows = Some(match rows {
-            Some(frame) => frame.vstack(&segment.rows)?,
-            None => segment.rows,
-        });
-    }
-    let mut order = (0..positions.len()).collect::<Vec<_>>();
-    order.sort_unstable_by_key(|index| positions[*index]);
-    let indices = order.iter().map(|index| *index as u32).collect::<Vec<_>>();
-    let rows = take_rows(&rows.expect("sample has segments"), &indices)?;
-    let positions = order.iter().map(|index| positions[*index]).collect();
-    Ok(SegmentSampleOutput {
-        rows,
-        positions,
-        segment_totals: totals,
-        total_rows: state.total_rows,
     })
 }
 
@@ -1886,7 +1688,46 @@ fn take_rows(df: &DataFrame, indices: &[u32]) -> PolarsResult<DataFrame> {
 
 struct SegmentSampleProvenance<'a> {
     positions: Option<&'a [u32]>,
-    totals: Option<&'a BTreeMap<String, usize>>,
+    totals: &'a BTreeMap<String, usize>,
+}
+
+/// Segment sizes known without reading them: a file's rows from its footer, when
+/// the scope holds whole files, and a row chunk's from the scope's size. Others are
+/// unknown on a sample, and are left unknown rather than estimated.
+fn known_segment_totals(
+    plan: &DataQualityPlan,
+    total_rows: Option<usize>,
+    source: Option<&QualitySourceContext>,
+) -> BTreeMap<String, usize> {
+    let mut totals = BTreeMap::new();
+    match &plan.grain {
+        QualityGrain::File => {
+            let Some(source) = source else {
+                return totals;
+            };
+            let whole_files = matches!(plan.scope, QualityScope::SourceFiles(_))
+                || total_rows == Some(source.dataset_rows);
+            if whole_files {
+                for (index, name) in source.file_names.iter().enumerate() {
+                    totals.insert(format!("file {name}"), source.file_rows(index));
+                }
+            }
+        }
+        QualityGrain::RowChunks(size) => {
+            let (Some(total), size) = (total_rows, (*size).max(1)) else {
+                return totals;
+            };
+            for chunk in 0..total.div_ceil(size) {
+                let start = chunk * size;
+                totals.insert(
+                    format!("rows {}-{}", start + 1, (chunk + 1).saturating_mul(size)),
+                    size.min(total - start),
+                );
+            }
+        }
+        _ => {}
+    }
+    totals
 }
 
 fn profile_segments(
@@ -1908,7 +1749,7 @@ fn profile_segments(
             .map(|column| column.null_count)
             .sum::<usize>();
         let denominator = segment.height().saturating_mul(columns.len());
-        let known_segment_rows = sample.totals.and_then(|totals| totals.get(&group.label));
+        let known_segment_rows = sample.totals.get(&group.label);
         profiles.push(SegmentQualityProfile {
             label: group.label,
             total_rows: if let Some(total) = known_segment_rows {
@@ -3378,110 +3219,117 @@ mod tests {
         assert_ne!(ids(1), ids(2));
     }
 
+    /// Row chunks are cut from the shared sample by where each sampled row sat, and
+    /// a chunk's size is known without reading it.
     #[test]
-    fn sample_is_seeded_without_replacement_per_row_chunk() {
+    fn row_chunks_cut_the_shared_sample_where_its_rows_sat() {
         let frame = DataFrame::new(
             100,
-            vec![Column::new("id".into(), (0..100).collect::<Vec<_>>())],
+            vec![Column::new("id".into(), (0..100i64).collect::<Vec<_>>())],
         )
         .unwrap()
         .lazy();
-        let mut plan = DataQualityPlan {
-            sample_rows: 3,
+        let plan = DataQualityPlan {
+            dataset_rows: 30,
             sample_seed: 1,
             grain: QualityGrain::RowChunks(10),
             ..DataQualityPlan::default()
         };
-
-        let sampled = sample_quality_segments(&frame, &plan, None, false).unwrap();
-        let same = sample_quality_segments(&frame, &plan, None, false).unwrap();
-        assert_eq!(sampled.rows, same.rows);
-        assert_eq!(sampled.positions, same.positions);
-        assert_eq!(sampled.positions.len(), 30);
-        assert_eq!(sampled.total_rows, 100);
-        assert_eq!(sampled.segment_totals.len(), 10);
-        plan.sample_seed += 1;
-        let other = sample_quality_segments(&frame, &plan, None, false).unwrap();
-        assert_ne!(sampled.positions, other.positions);
-
         let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
         assert_eq!(results.total_rows, Some(100));
         assert_eq!(results.evaluated_rows, 30);
         assert_eq!(results.precision, QualityPrecision::Sampled);
-        assert_eq!(results.segments.len(), 10);
+        assert!(!plan.requires_confirmation(), "a sample never asks first");
+        assert_eq!(
+            results
+                .segments
+                .iter()
+                .map(|segment| segment.evaluated_rows)
+                .sum::<usize>(),
+            30
+        );
+        for segment in &results.segments {
+            assert_eq!(segment.total_rows, Some(10), "{}", segment.label);
+            // Every sampled id sits inside the chunk its label names.
+            let (start, end) = segment
+                .label
+                .trim_start_matches("rows ")
+                .split_once('-')
+                .map(|(a, b)| (a.parse::<i64>().unwrap(), b.parse::<i64>().unwrap()))
+                .unwrap();
+            let id = segment.columns.iter().find(|c| c.name == "id").unwrap();
+            let min = id.min.as_deref().unwrap().parse::<i64>().unwrap() + 1;
+            let max = id.max.as_deref().unwrap().parse::<i64>().unwrap() + 1;
+            assert!(
+                start <= min && max <= end,
+                "{} holds {min}..{max}",
+                segment.label
+            );
+        }
+        let again = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+        assert_eq!(
+            results
+                .segments
+                .iter()
+                .map(|s| s.label.clone())
+                .collect::<Vec<_>>(),
+            again
+                .segments
+                .iter()
+                .map(|s| s.label.clone())
+                .collect::<Vec<_>>(),
+            "seeded"
+        );
+    }
+
+    /// Segments are the shared sample's rows, split. A random sample gives each
+    /// segment its share; equal per value gives each the same number, which is how a
+    /// small partition is measured as well as a large one.
+    #[test]
+    fn segments_are_the_shared_sample_split() {
+        let frame = df!(
+            "id" => (0..120i32).collect::<Vec<_>>(),
+            "region" => (0..120)
+                .map(|row| if row < 100 { "big" } else { "small" })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let grain = QualityGrain::Partition("region".into());
+        let random = DataQualityPlan {
+            dataset_rows: 24,
+            grain: grain.clone(),
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, None, &random, None, false).unwrap();
+        assert_eq!(results.total_rows, Some(120));
+        assert_eq!(results.evaluated_rows, 24);
         assert!(
             results
                 .segments
                 .iter()
-                .all(|segment| segment.total_rows == Some(10) && segment.evaluated_rows == 3)
+                .all(|segment| segment.total_rows.is_none()),
+            "a partition's size is unknown from a sample, and not guessed"
         );
-        plan.compute = QualityCompute::Full;
-        let full = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
-        assert!(
-            full.segments
-                .iter()
-                .all(|segment| segment.total_rows.is_some())
-        );
-    }
 
-    #[test]
-    fn partition_and_time_window_samples_reach_later_segments() {
-        let frame = df!(
-            "id" => &[0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-            "region" => &["a", "a", "a", "a", "b", "b", "b", "b", "c", "c", "c", "c"],
-            "week" => &[0i64, 0, 0, 0, 604_800_000_000, 604_800_000_000,
-                604_800_000_000, 604_800_000_000, 1_209_600_000_000,
-                1_209_600_000_000, 1_209_600_000_000, 1_209_600_000_000]
-        )
-        .unwrap()
-        .lazy()
-        .with_columns([col("week").cast(DataType::Datetime(TimeUnit::Microseconds, None))]);
-        for grain in [
-            QualityGrain::Partition("region".into()),
-            QualityGrain::TimeWindows {
-                column: "week".into(),
-                every: "1w".into(),
+        let equal = DataQualityPlan {
+            method: crate::sampling::SampleMethod::PerPartition {
+                column: "region".into(),
             },
-        ] {
-            let plan = DataQualityPlan {
-                sample_rows: 2,
-                dataset_rows: 2,
-                grain,
-                ..DataQualityPlan::default()
-            };
-            let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
-            assert_eq!(results.total_rows, Some(12));
-            assert_eq!(results.evaluated_rows, 6);
-            assert_eq!(results.segments.len(), 3);
-            assert!(
-                results
-                    .segments
-                    .iter()
-                    .all(|segment| segment.total_rows == Some(4) && segment.evaluated_rows == 2)
-            );
-            let full = compute_data_quality(
-                &frame,
-                Some(12),
-                &DataQualityPlan {
-                    compute: QualityCompute::Full,
-                    ..plan
-                },
-                None,
-                false,
-            )
-            .unwrap();
-            assert_eq!(
-                results
-                    .segments
-                    .iter()
-                    .map(|segment| segment.label.as_str())
-                    .collect::<Vec<_>>(),
-                full.segments
-                    .iter()
-                    .map(|segment| segment.label.as_str())
-                    .collect::<Vec<_>>()
-            );
-        }
+            dataset_rows: 5,
+            grain,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, None, &equal, None, false).unwrap();
+        assert_eq!(results.evaluated_rows, 10);
+        assert_eq!(
+            results
+                .segments
+                .iter()
+                .map(|segment| (segment.label.as_str(), segment.evaluated_rows))
+                .collect::<Vec<_>>(),
+            vec![("partition big", 5), ("partition small", 5)]
+        );
     }
 
     #[test]
@@ -3503,7 +3351,7 @@ mod tests {
         plan.comparison = QualityComparison::Previous;
         assert_eq!(
             plan.compact_summary(),
-            "scope current view -> grain 1000000 rows (physical order) -> compute 10000 rows/segment -> compare previous"
+            "scope current view -> grain 1000000 rows (physical order) -> compute 10000 rows random -> compare previous"
         );
     }
 
@@ -4315,60 +4163,6 @@ mod tests {
     }
 
     #[test]
-    fn a_per_segment_budget_stops_before_it_multiplies_into_millions_of_rows() {
-        // 60,000 rows over 30 partitions at 10,000 rows/segment wants 60,000 back
-        // — under the cap, so it runs. Multiply the same budget by enough
-        // segments and it must be refused rather than silently kept.
-        let rows = 60_000usize;
-        let frame = DataFrame::new(
-            rows,
-            vec![
-                Column::new(
-                    "part".into(),
-                    (0..rows)
-                        .map(|r| format!("p{:03}", r % 30))
-                        .collect::<Vec<_>>(),
-                ),
-                Column::new("id".into(), (0..rows as i64).collect::<Vec<_>>()),
-            ],
-        )
-        .unwrap()
-        .lazy();
-        let plan = DataQualityPlan {
-            sample_rows: 10_000,
-            grain: QualityGrain::Partition("part".to_string()),
-            ..DataQualityPlan::default()
-        };
-        let results = compute_data_quality(&frame, Some(rows), &plan, None, false).unwrap();
-        assert_eq!(results.evaluated_rows, rows);
-        assert!(results.evaluated_rows <= MAX_RETAINED_SAMPLE_ROWS);
-
-        // The same budget over 60 partitions of 10,000 rows wants 600,000 back.
-        let big = 600_000usize;
-        let wide = DataFrame::new(
-            big,
-            vec![
-                Column::new(
-                    "part".into(),
-                    (0..big)
-                        .map(|r| format!("p{:03}", r % 60))
-                        .collect::<Vec<_>>(),
-                ),
-                Column::new("id".into(), (0..big as i64).collect::<Vec<_>>()),
-            ],
-        )
-        .unwrap()
-        .lazy();
-        let error = compute_data_quality(&wide, Some(big), &plan, None, false)
-            .expect_err("a budget that multiplies past the cap must be refused");
-        let message = error.to_string();
-        assert!(
-            message.contains("narrow the scope") && message.contains("rows/segment"),
-            "the refusal should say what to change: {message}"
-        );
-    }
-
-    #[test]
     fn an_exact_run_measures_everything_a_sampled_run_does() {
         let frame = df!(
             "when" => &["2024-01-01", "2024-01-02", "not a date", "2024-03-09"],
@@ -4710,7 +4504,6 @@ mod tests {
         .unwrap()
         .lazy();
         let plan = DataQualityPlan {
-            sample_rows: 1,
             grain: QualityGrain::TimeWindows {
                 column: "event_at".to_string(),
                 every: "1w".to_string(),

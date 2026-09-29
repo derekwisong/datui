@@ -2410,7 +2410,6 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
 
     app.analysis_modal.sample.scope = QualityScope::WholeSource;
     app.analysis_modal.sample.rows = 1;
-    app.analysis_modal.data_quality_plan.sample_rows = 1;
     app.event(&AppEvent::AnalysisDataQualityCompute);
     drain_events(&mut app, &rx);
     let sampled = app.analysis_modal.data_quality_results.as_ref().unwrap();
@@ -2429,19 +2428,30 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     assert_eq!(full.total_rows, Some(4));
     assert_eq!(full.evaluated_rows, 4);
 
+    // By file, the segments are the shared sample's rows split by the file each
+    // came from; a file's size is its footer's, not a guess from the sample.
     app.analysis_modal.sample.method = datui::sampling::SampleMethod::Spread;
+    app.analysis_modal.sample.rows = 3;
     app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::File;
     app.event(&AppEvent::AnalysisDataQualityCompute);
     drain_events(&mut app, &rx);
     let by_file = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(by_file.total_rows, Some(4));
-    assert_eq!(by_file.evaluated_rows, 2);
+    assert_eq!(by_file.evaluated_rows, 3);
     assert_eq!(by_file.segments.len(), 2);
     assert!(
         by_file
             .segments
             .iter()
-            .all(|segment| segment.total_rows == Some(2) && segment.evaluated_rows == 1)
+            .all(|segment| segment.total_rows == Some(2))
+    );
+    assert_eq!(
+        by_file
+            .segments
+            .iter()
+            .map(|segment| segment.evaluated_rows)
+            .sum::<usize>(),
+        3
     );
 }
 

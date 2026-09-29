@@ -45,8 +45,8 @@ pub enum SampleMethod {
 impl SampleMethod {
     pub fn label(&self) -> String {
         match self {
-            Self::Spread => "Spread".to_string(),
-            Self::PerPartition { column } => format!("Per {column}"),
+            Self::Spread => "Random".to_string(),
+            Self::PerPartition { column } => format!("Equal per {column}"),
             Self::FirstRows => "First rows".to_string(),
             Self::EveryRow => "Every row".to_string(),
         }

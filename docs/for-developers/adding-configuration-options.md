@@ -220,10 +220,14 @@ fn validate(&self) -> Result<()> {
     // ... existing validation ...
 
     // Validate the new field's range
-    if self.performance.quality_sample_rows == 0
-        || self.performance.quality_sample_rows > 50_000
+    if let Some(n) = self.chart.row_limit
+        && (n == 0 || n > MAX_CHART_ROW_LIMIT)
     {
-        return Err(eyre!("quality_sample_rows must be between 1 and 50000"));
+        return Err(eyre!(
+            "chart.row_limit must be between 1 and {} when set, got {}",
+            MAX_CHART_ROW_LIMIT,
+            n
+        ));
     }
 
     Ok(())

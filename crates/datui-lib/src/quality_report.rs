@@ -289,9 +289,17 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         .iter()
         .find(|profile| profile.name == first.column);
     let reading = profile.and_then(text_reading).map(|(_, reading)| reading);
+    let shared = results.shared_nulls.iter().find(|shared| {
+        shared.null_rows == first.affected_rows
+            && columns.iter().all(|column| shared.columns.contains(column))
+    });
+    let same_rows =
+        kind == ObservationKind::Nulls && grouped && shared.is_some_and(|s| s.same_rows());
     let title = match kind {
         ObservationKind::Nulls if always_missing => "Always missing",
         ObservationKind::Nulls if mostly_missing => "Mostly missing",
+        // No row lacks one of these columns without lacking them all.
+        ObservationKind::Nulls if same_rows => "Missing together",
         ObservationKind::Nulls => "Missing values",
         ObservationKind::Empty => "Empty text",
         ObservationKind::Whitespace => "Blank text",
@@ -310,12 +318,6 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         ObservationKind::TypeConflict => "Type mismatch",
         ObservationKind::KeyLike => "Nearly unique",
     };
-    let shared = results.shared_nulls.iter().find(|shared| {
-        shared.null_rows == first.affected_rows
-            && columns.iter().all(|column| shared.columns.contains(column))
-    });
-    let same_rows =
-        kind == ObservationKind::Nulls && grouped && shared.is_some_and(|s| s.same_rows());
     let affected_rows = match kind {
         // One group per normalized value; the column's cost is all of them.
         ObservationKind::CategoryVariants => indices
@@ -335,7 +337,7 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
     let rows = |count: usize| rows_each(count, "");
     let summary = match kind {
         ObservationKind::Nulls if always_missing => "no value in any row".to_string(),
-        ObservationKind::Nulls if same_rows => format!("same {}", rows(first.affected_rows)),
+        ObservationKind::Nulls if same_rows => rows(first.affected_rows),
         ObservationKind::Nulls if grouped => {
             let fewest = results.observations[indices[indices.len() - 1]].affected_rows;
             let (low, high) = (
@@ -572,7 +574,12 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             looks_for: "nulls in any column",
             applies_to: reach(all, ""),
             outcome: outcome(
-                &["Missing values", "Mostly missing", "Always missing"],
+                &[
+                    "Missing values",
+                    "Missing together",
+                    "Mostly missing",
+                    "Always missing",
+                ],
                 all,
                 "no columns",
             ),
@@ -678,100 +685,74 @@ fn found(report: &QualityReport, titles: &[&str]) -> Outcome {
     }
 }
 
-/// Plain words for each kind of finding: what it is, why it matters, what to do.
-pub struct Explanation {
-    pub what: &'static str,
-    pub why: &'static str,
-    pub check: &'static str,
+/// What a finding means for the data and what to do about it, a fragment a line.
+/// The reader knows what a null is; this says only what is particular.
+pub fn advice(finding: &Finding) -> Vec<String> {
+    let lines: &[&str] = match (finding.kind, finding.title) {
+        (Some(ObservationKind::Nulls), "Always missing") => {
+            &["Carries nothing; check the load or a rename upstream"]
+        }
+        (Some(ObservationKind::Nulls), "Mostly missing") => {
+            let rest = finding.evaluated_rows.saturating_sub(finding.affected_rows);
+            return vec![
+                if finding.columns.len() == 1 {
+                    format!(
+                        "Aggregates and joins see only {}",
+                        percent(rest, finding.evaluated_rows)
+                    )
+                } else {
+                    "Aggregates and joins see only the filled rows".to_string()
+                },
+                "Check: filled only for some rows, or stopped at some point".to_string(),
+            ];
+        }
+        (Some(ObservationKind::Nulls), "Missing together") => {
+            &["Likely one cause: a join with no match, or a source with gaps"]
+        }
+        (Some(ObservationKind::Nulls), _) => {
+            &["Check: clustered in some files or dates (Segments, by file or window)"]
+        }
+        (Some(ObservationKind::Empty), _) => {
+            &["Counted as filled; treat as null if it means missing"]
+        }
+        (Some(ObservationKind::Whitespace), _) => {
+            &["Counted as filled; trim to null if it means missing"]
+        }
+        (Some(ObservationKind::NonFinite), _) => {
+            &["Sums and means become NaN; check for division by zero upstream"]
+        }
+        (Some(ObservationKind::Constant), _) => {
+            &["Tells no rows apart; a stuck feed if it should vary"]
+        }
+        (Some(ObservationKind::ParseableText), "Codes as text") => {
+            &["Fine as text; cast only for arithmetic"]
+        }
+        (Some(ObservationKind::ParseableText), "Dates as text") => {
+            &["Sorts as text; parse as a date to filter by range"]
+        }
+        (Some(ObservationKind::ParseableText), _) => {
+            &["Sorts as text (\"10\" before \"9\"); cast to a number to sum"]
+        }
+        (Some(ObservationKind::DuplicateRows), _) => {
+            &["Counted more than once; check for a double load or a join fan-out"]
+        }
+        (Some(ObservationKind::CategoryVariants), _) => {
+            &["Group-bys and joins split them; trim and normalize case"]
+        }
+        (Some(ObservationKind::Absent), _) => &["Check: files written before the column existed"],
+        (Some(ObservationKind::TypeConflict), _) => {
+            &["Values dropped, not converted; read as text in Info, or fix the writer"]
+        }
+        (Some(ObservationKind::KeyLike), _) => {
+            &["Duplicates if it is a key; expected if it is a measurement"]
+        }
+        (None, _) => &[],
+    };
+    lines.iter().map(|line| line.to_string()).collect()
 }
 
-pub fn explain(finding: &Finding) -> Explanation {
-    match (finding.kind, finding.title) {
-        (Some(ObservationKind::Nulls), "Always missing") => Explanation {
-            what: "Every row checked has no value in this column.",
-            why: "The column carries no information.",
-            check: "Whether it failed to load, was renamed upstream, or is only filled in elsewhere.",
-        },
-        (Some(ObservationKind::Nulls), "Mostly missing") => Explanation {
-            what: "Columns with no value in more than half the rows checked.",
-            why: "Anything computed from them rests on the minority of rows that have one.",
-            check: "Whether they are filled only for some kinds of rows, or stopped being filled at some point.",
-        },
-        (Some(ObservationKind::Nulls), _) => Explanation {
-            what: "Rows with no value in this column.",
-            why: "Counts, sums and averages skip them, and joins on them never match.",
-            check: "Whether they cluster in certain rows, dates or files.",
-        },
-        (Some(ObservationKind::Empty), _) => Explanation {
-            what: "Text values that are the empty string.",
-            why: "They look filled in, so they are not counted as missing, but carry nothing.",
-            check: "Whether the source means missing; if so, treat them as null.",
-        },
-        (Some(ObservationKind::Whitespace), _) => Explanation {
-            what: "Text values made only of spaces or tabs.",
-            why: "They look filled in, so they are not counted as missing, but carry nothing.",
-            check: "Whether the source means missing; if so, trim them to null.",
-        },
-        (Some(ObservationKind::NonFinite), _) => Explanation {
-            what: "Floating-point values that are NaN or infinite.",
-            why: "One NaN turns a sum or mean into NaN; infinities distort min, max and averages.",
-            check: "Division by zero or a failed calculation upstream.",
-        },
-        (Some(ObservationKind::Constant), _) => Explanation {
-            what: "Every value in the rows checked is the same.",
-            why: "The column tells no rows apart. If it should vary, the feed may be stuck.",
-            check: "Whether that is by design. A sample can miss a rare second value; a full run settles it.",
-        },
-        (Some(ObservationKind::ParseableText), "Codes as text") => Explanation {
-            what: "Text that reads as numbers, written with leading zeros or at a fixed width.",
-            why: "That is the shape of a code, such as a ZIP or an industry code; as text it keeps its zeros.",
-            check: "Nothing, if it is a code. Convert it only if you need to do arithmetic with it.",
-        },
-        (Some(ObservationKind::ParseableText), "Dates as text") => Explanation {
-            what: "Text whose values read as ISO dates or datetimes.",
-            why: "As text they sort as strings and cannot be filtered by a date range.",
-            check: "Whether to parse the column as a date when loading.",
-        },
-        (Some(ObservationKind::ParseableText), _) => Explanation {
-            what: "Text whose values read as numbers.",
-            why: "Text sorts as strings (\"10\" before \"9\") and cannot be summed or averaged.",
-            check: "Whether to cast it to a number when loading.",
-        },
-        (Some(ObservationKind::DuplicateRows), _) => Explanation {
-            what: "Rows that are identical in every column.",
-            why: "Counts and sums include them more than once.",
-            check: "A file loaded twice, or a join that matched more rows than expected.",
-        },
-        (Some(ObservationKind::CategoryVariants), _) => Explanation {
-            what: "Values that differ only in letter case or surrounding spaces.",
-            why: "Grouping and joining treat each spelling as a different value.",
-            check: "Whether to trim and normalize case before grouping.",
-        },
-        (Some(ObservationKind::Absent), _) => Explanation {
-            what: "Some files have no such column, so their rows read it as missing.",
-            why: "The column's gaps come from the files, not from the values.",
-            check: "Whether those files predate the column.",
-        },
-        (Some(ObservationKind::TypeConflict), _) => Explanation {
-            what: "Some files store this column in a type the dataset cannot read.",
-            why: "Those files' values are dropped from the column, not converted.",
-            check: "Read the column as text from Dataset Info, or fix the writer.",
-        },
-        (Some(ObservationKind::KeyLike), _) => Explanation {
-            what: "Almost every value is different, but some repeat.",
-            why: "If the column identifies rows (an ID or key), each repeat is a duplicate record.",
-            check: "Whether it is meant to be unique. If it is a measurement, this is expected.",
-        },
-        (None, _) => Explanation {
-            what: "No check found anything in these columns.",
-            why: "",
-            check: "",
-        },
-    }
-}
-
-/// The finding in one sentence with its numbers, then the evidence that makes it
-/// concrete: the values, the spellings, the files.
+/// The finding's numbers in a fragment, then the evidence that makes it concrete:
+/// the values, the spellings, the files.
 pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec<String>) {
     let count = |value: usize| numfmt::group_chrome(value);
     let of = format!(
@@ -786,7 +767,7 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
     let mut evidence = Vec::new();
     let headline = match finding.kind {
         None => format!(
-            "{} {} passed every check.",
+            "{} {} passed every check",
             count(finding.columns.len()),
             if finding.columns.len() == 1 {
                 "column"
@@ -794,19 +775,18 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                 "columns"
             }
         ),
-        Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => format!(
-            "{} no value in any of the {} rows checked.",
-            if grouped {
-                "These columns have"
+        Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => {
+            format!("Null in all {} rows checked", count(finding.evaluated_rows))
+        }
+        Some(ObservationKind::Nulls) if finding.same_rows => {
+            if finding.columns.len() == 2 {
+                evidence.push("No row misses one without the other".to_string());
+                format!("{of} null in both columns")
             } else {
-                "This column has"
-            },
-            count(finding.evaluated_rows)
-        ),
-        Some(ObservationKind::Nulls) if finding.same_rows => format!(
-            "{of} have no value in any of these {} columns: the same rows every time.",
-            finding.columns.len()
-        ),
+                evidence.push("No row misses one of them without the others".to_string());
+                format!("{of} null in all {} columns", finding.columns.len())
+            }
+        }
         Some(ObservationKind::Nulls) if finding.varied() => {
             // Each column's own rate, worst first: the list row gave only the range.
             let rows = finding
@@ -835,42 +815,42 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                     }
                 ));
             }
-            if finding.title == "Mostly missing" {
-                format!(
-                    "More than half the rows checked have no value in each of these {} columns.",
-                    finding.columns.len()
-                )
-            } else {
-                format!("{} columns have rows with no value.", finding.columns.len())
-            }
+            format!("Null rate in {} columns:", finding.columns.len())
         }
-        Some(ObservationKind::Nulls) if grouped => {
-            format!("{of} have no value, in each of these columns.")
-        }
-        Some(ObservationKind::Nulls) => format!("{of} have no value."),
-        Some(ObservationKind::Empty) => format!("{of} hold an empty string."),
-        Some(ObservationKind::Whitespace) => format!("{of} hold only spaces or tabs."),
+        Some(ObservationKind::Nulls) if grouped => format!("{of} null in each column"),
+        Some(ObservationKind::Nulls) => format!("{of} null"),
+        Some(ObservationKind::Empty) => format!("{of} empty strings"),
+        Some(ObservationKind::Whitespace) => format!("{of} only spaces or tabs"),
         Some(ObservationKind::NonFinite) => {
             if let Some(profile) = profile(&finding.columns[0]) {
                 evidence.push(format!(
-                    "NaN {}, +infinity {}, -infinity {}",
+                    "NaN {}, +inf {}, -inf {}",
                     count(profile.nan_count.unwrap_or(0)),
                     count(profile.positive_infinity_count.unwrap_or(0)),
                     count(profile.negative_infinity_count.unwrap_or(0))
                 ));
             }
-            format!("{of} are not ordinary numbers.")
+            format!("{of} NaN or infinite")
         }
-        Some(ObservationKind::Constant) => {
+        Some(ObservationKind::Constant) if grouped => {
             for column in &finding.columns {
                 if let Some(value) = profile(column).and_then(|p| p.dominant_value.as_ref()) {
-                    evidence.push(format!("{column} is always {}", quoted(value, 40)));
+                    evidence.push(format!("{column}: always {}", quoted(value, 40)));
                 }
             }
-            if grouped {
-                "Each of these columns holds a single value in the rows checked.".to_string()
-            } else {
-                "Every value in the rows checked is the same.".to_string()
+            format!(
+                "One value per column in {} rows",
+                count(finding.evaluated_rows)
+            )
+        }
+        Some(ObservationKind::Constant) => {
+            match profile(&finding.columns[0]).and_then(|p| p.dominant_value.as_ref()) {
+                Some(value) => format!(
+                    "Always {} in {} rows",
+                    quoted(value, 40),
+                    count(finding.evaluated_rows)
+                ),
+                None => format!("One value in {} rows", count(finding.evaluated_rows)),
             }
         }
         Some(ObservationKind::ParseableText) => {
@@ -880,23 +860,19 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             if let (Some(profile), Some((parsed, reading))) = (profile, reading) {
                 if let (Some(min), Some(max)) = (profile.min_length, profile.max_length) {
                     evidence.push(if min == max {
-                        format!("Every value is {min} characters long")
+                        format!("{min} characters each")
                     } else {
-                        format!("Lengths run from {min} to {max} characters")
+                        format!("{min} to {max} characters")
                     });
                 }
                 if let Some(zeros) = profile.leading_zero_count.filter(|zeros| *zeros > 0) {
-                    evidence.push(format!("{} written with a leading zero", count(zeros)));
+                    evidence.push(format!("{} with a leading zero", count(zeros)));
                 }
                 if let (Some(min), Some(max)) = (&profile.min, &profile.max) {
-                    evidence.push(format!(
-                        "Values run from {} to {}",
-                        quoted(min, 24),
-                        quoted(max, 24)
-                    ));
+                    evidence.push(format!("From {} to {}", quoted(min, 24), quoted(max, 24)));
                 }
                 format!(
-                    "{} of {} values ({}) read as {}.",
+                    "{} of {} values ({}) parse as {}",
                     count(parsed),
                     count(profile.non_null_rows()),
                     percent(parsed, profile.non_null_rows()),
@@ -908,9 +884,14 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
         }
         Some(ObservationKind::DuplicateRows) => match results.identity.as_ref() {
             Some(identity) => format!(
-                "{} rows appear more than once; removing the repeats would drop {} rows.",
+                "{} rows repeated; {} extra {}",
                 count(identity.duplicate_groups),
-                count(identity.extra_rows)
+                count(identity.extra_rows),
+                if identity.extra_rows == 1 {
+                    "copy"
+                } else {
+                    "copies"
+                }
             ),
             None => observation(&finding.observations[0]).fact.clone(),
         },
@@ -936,13 +917,9 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             }
             let values = finding.observations.len();
             format!(
-                "{} {} spelled more than one way, across {of}.",
+                "{} {} spelled more than one way, {of}",
                 count(values),
-                if values == 1 {
-                    "value is"
-                } else {
-                    "values are"
-                }
+                if values == 1 { "value" } else { "values" }
             )
         }
         Some(ObservationKind::KeyLike) => {
@@ -952,13 +929,13 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                     (&profile.dominant_value, profile.dominant_count)
                 {
                     evidence.push(format!(
-                        "Most repeated: {} appears {} times",
+                        "Most repeated: {} ({} times)",
                         quoted(value, 32),
                         count(times)
                     ));
                 }
                 format!(
-                    "{} distinct values in {} rows; {} rows repeat a value already seen.",
+                    "{} distinct in {} rows; {} repeats",
                     count(profile.distinct_count.unwrap_or(0)),
                     count(profile.non_null_rows()),
                     count(finding.affected_rows)
@@ -1009,7 +986,7 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                     crate::glyphs::get().ellipsis
                 ));
             }
-            format!("{}.", upper_first(&observation.fact))
+            upper_first(&observation.fact)
         }
     };
     (headline, evidence)
@@ -1136,11 +1113,11 @@ mod tests {
         let report = build_report(&results);
         assert_eq!(report.findings.len(), 2, "one note and the clean entry");
         let missing = &report.findings[0];
-        assert_eq!(missing.title, "Missing values");
+        assert_eq!(missing.title, "Missing together");
         assert_eq!(missing.severity, Severity::Note);
         assert_eq!(missing.columns.len(), 4);
         assert!(missing.same_rows);
-        assert_eq!(missing.summary, "same 4 rows (4.0%)");
+        assert_eq!(missing.summary, "4 rows (4.0%)");
         assert_eq!(report.findings[1].severity, Severity::Clean);
         assert_eq!(report.findings[1].columns, vec!["ticker".to_string()]);
         assert_eq!(report.problems, 0);
@@ -1174,7 +1151,7 @@ mod tests {
         assert_eq!(missing.columns, vec!["b", "c", "a"]);
         assert_eq!(missing.summary, "3.0% to 40.0%");
         let (headline, evidence) = describe(missing, &results);
-        assert_eq!(headline, "3 columns have rows with no value.");
+        assert_eq!(headline, "Null rate in 3 columns:");
         assert_eq!(evidence[0], "b    40.0%  40 rows");
         assert_eq!(evidence[2], "a     3.0%  3 rows");
     }

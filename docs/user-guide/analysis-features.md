@@ -52,7 +52,7 @@ value scan always asks for confirmation.
 
 The first line counts problems, notes and clean columns. Below it, findings
 are grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
-finding says what it is, why it matters and what to check; <kbd>Enter</kbd>
+finding lists its numbers, evidence and what to check; <kbd>Enter</kbd>
 again shows its rows. On a sampled run those are the sample's rows, drawn again
 from its seed, so the count the finding gave is the count in the table.
 
@@ -71,7 +71,8 @@ run finds nothing, the list is on the page under the verdict.
 | Always missing | Problem | A column with no value in any row checked |
 | Missing in files / Type mismatch | Problem | Files without the column, or holding it in a type the dataset cannot read |
 | Mostly missing | Note | Columns with no value in more than half the rows checked, listed above other missing values |
-| Missing values | Note | Nulls, as one finding with each column's rate inside it, highest first; columns missing on exactly the same rows are a finding of their own |
+| Missing together | Note | Columns only ever null together: no row misses one without the others, so one cause is likely |
+| Missing values | Note | Nulls, as one finding with each column's rate inside it, highest first |
 | Numbers as text / Dates as text | Note | At least 95% of a text column parses as numbers or ISO dates |
 | Codes as text | Note | Whole numbers with leading zeros or a fixed width: a code, fine as text |
 | Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
@@ -134,8 +135,8 @@ View Rows and <kbd>e</kbd> Plan.
 Every result states eligible and evaluated rows and whether values are exact,
 sampled, or metadata-only.
 
-- **Overview** — the report. <kbd>Enter</kbd> on a finding shows its numbers,
-  why it matters, what to check and its evidence: the spellings, the most
+- **Overview** — the report. <kbd>Enter</kbd> on a finding lists its numbers,
+  what to check and its evidence: the spellings, the most
   repeated value, the files behind a missing or mistyped column and the values
   a conflict hides. <kbd>Enter</kbd> again opens the matching rows in a
   temporary table (every column's rows, for a grouped finding): from the table

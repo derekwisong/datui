@@ -7,7 +7,7 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
-    CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, build_report, checks, describe, explain,
+    CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, advice, build_report, checks, describe,
     verdict,
 };
 use crate::widgets::datatable::DataTableState;
@@ -700,8 +700,6 @@ fn render_finding_detail(
     };
     let theme = config.theme;
     let dimmed = Style::default().fg(theme.get("dimmed"));
-    let label = Style::default().fg(theme.get("accent"));
-    let explanation = explain(finding);
     let (headline, evidence) = describe(finding, results);
     // A reading surface: cap the measure on a wide terminal. The checks table on
     // the clean entry is a table, and may use more of the width.
@@ -710,35 +708,37 @@ fn render_finding_detail(
         .saturating_sub(4)
         .min(if finding.kind.is_none() { 118 } else { 84 });
     let inner = width.saturating_sub(4).max(1);
-    let mut lines = vec![
-        Line::styled(
-            finding.columns.join(", "),
-            Style::default()
-                .fg(theme.get("text_primary"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(""),
-        Line::raw(headline),
-    ];
-    if !evidence.is_empty() {
-        lines.push(Line::raw(""));
-        lines.extend(
-            evidence
-                .into_iter()
-                .map(|line| Line::raw(format!("  {line}"))),
-        );
+    // The name and the columns on the frame; the facts as a list under it.
+    let title = if finding.kind.is_none() {
+        finding.title.to_string()
+    } else {
+        let name = format!("{} {} ", finding.title, glyphs::get().middot);
+        let room = (width as usize).saturating_sub(glyphs::display_width(&name) + 4);
+        format!("{name}{}", finding.columns_label(room))
+    };
+    let bullet = |text: String| {
+        Line::from(vec![
+            Span::styled(format!("{} ", glyphs::get().middot), dimmed),
+            Span::raw(text),
+        ])
+    };
+    let mut lines = Vec::new();
+    // The frame cut the list short: the whole of it, unless the evidence lists
+    // every column with its rate already.
+    if finding.kind.is_some()
+        && finding.columns.len() > 1
+        && !finding.varied()
+        && finding.columns_label(usize::MAX) != finding.columns_label(inner as usize)
+    {
+        lines.push(bullet(finding.columns.join(", ")));
     }
-    if !explanation.why.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled("Why it matters: ", label),
-            Span::raw(explanation.why),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("What to check: ", label),
-            Span::raw(explanation.check),
-        ]));
-    }
+    lines.push(bullet(headline));
+    lines.extend(
+        evidence
+            .into_iter()
+            .map(|line| Line::raw(format!("  {line}"))),
+    );
+    lines.extend(advice(finding).into_iter().map(bullet));
     if finding.kind.is_none() {
         lines.push(Line::raw(""));
         lines.extend(check_lines(
@@ -811,7 +811,7 @@ fn render_finding_detail(
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
-                .title(finding.title)
+                .title(title)
                 .borders(Borders::ALL)
                 .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(theme.get("modal_border_active")))

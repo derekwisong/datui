@@ -1120,8 +1120,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-            .contains("Why it matters"),
-        "the finding explains itself, not only its formula"
+            .contains("Check: clustered"),
+        "the finding says what to check, not only its formula"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -1874,8 +1874,8 @@ fn data_quality_reads_as_a_report() {
         "Segments",
         "Trends",
         "Mixed spellings",
-        "Missing values",
-        "same 4 rows (2.0%)",
+        "Missing together",
+        "4 rows (2.0%)",
         "Single value",
         "No findings",
     ] {
@@ -1886,7 +1886,7 @@ fn data_quality_reads_as_a_report() {
     }
     let problem = screen.find("Mixed spellings").unwrap();
     assert!(
-        problem < screen.find("Missing values").unwrap(),
+        problem < screen.find("Missing together").unwrap(),
         "problems rank above notes"
     );
     assert!(
@@ -2002,8 +2002,13 @@ fn data_quality_reads_as_a_report() {
     app.render(area, &mut buffer);
     let screen = rendered_text(&buffer);
     assert!(
-        screen.contains("the same rows"),
+        screen.contains("null in both columns")
+            && screen.contains("No row misses one without the other"),
         "the detail says the columns go missing together"
+    );
+    assert!(
+        !screen.contains("Why it matters"),
+        "facts and advice as a list, not a lecture"
     );
     assert!(
         screen.contains("Show Rows"),

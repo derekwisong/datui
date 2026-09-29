@@ -15,10 +15,11 @@ Reading the report:
                 a single value, numbers or dates stored as text, a nearly
                 unique column whose values repeat
   Clean:        the columns no check found anything in
-  Missing values are one finding, each column's rate inside it; columns
-  missing on the same rows are one finding of their own. Enter on a
-  finding says what it is, why it matters and what to check; Enter again
-  shows its rows, from the sample when the run read one.
+  Missing values are one finding, each column's rate inside it. Columns
+  that are only ever null together (no row misses one without the
+  others) are one Missing together finding. Enter on a finding lists its
+  numbers, evidence and what to check; Enter again shows its rows, from
+  the sample when the run read one.
   Enter on the clean entry lists the checks the run made: what each
   covered, what it found, or why it did not run. Enter again shows all
   of them. When nothing is found, the list is on the page.

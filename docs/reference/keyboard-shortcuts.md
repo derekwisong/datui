@@ -180,6 +180,7 @@ In the chart export dialog:
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
 | <kbd>Enter</kbd> | Pick the highlighted tool: its result, or before its first run its Sample form, where Enter again runs it; or open the detail of a column or a correlation pair |
 | <kbd>s</kbd> | On a tool's main view, open the Sample form: the rows every tool reads. In the distribution detail, toggle the histogram between linear and log |
+| <kbd>v</kbd> | On a tool's main view, show the sample's rows in the table viewer; <kbd>Esc</kbd> returns to the tool |
 | <kbd>r</kbd> | On a sampled result, draw another sample for every tool (from the main analysis view, not inside a detail) |
 | <kbd>a</kbd> | On a sampled result, read every row instead, after confirming; the sample's method becomes Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress; otherwise back one level |
@@ -203,6 +204,7 @@ In Data Quality:
 | <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, show all checks on the clean entry, or close an open popup |
 | <kbd>e</kbd> | Edit the plan's seven fields — Sample, Grain, Values, Compare, Time roles, Latency threshold, Rows per segment — in a copy of the plan |
 | <kbd>s</kbd> | Open the shared Sample form |
+| <kbd>v</kbd> | Show the rows Data Quality reads (up to 50,000 of the sample) in the table viewer |
 | <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Sample | Open the Sample form |
 | <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |

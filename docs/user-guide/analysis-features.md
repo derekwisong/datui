@@ -249,6 +249,7 @@ read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..202
 | Key | Action |
 |---|---|
 | <kbd>s</kbd> | Open the Sample form |
+| <kbd>v</kbd> | View the sample's rows in the table viewer: sort, filter, query, copy or export them; <kbd>Esc</kbd> returns to the tool |
 | <kbd>r</kbd> | Draw another sample (a new seed) |
 | <kbd>a</kbd> | Read every row, after confirming the count; sets the method to Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress |

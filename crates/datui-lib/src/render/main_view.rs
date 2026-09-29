@@ -198,6 +198,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     // never names is a feature nobody finds.
     if modal.view == crate::analysis_modal::AnalysisView::Main && modal.selected_tool.is_some() {
         pairs.insert(1, ("s", "Sample"));
+        pairs.insert(2, ("v", "View Rows"));
     }
     // On a sample: another one, or every row.
     if modal.view == crate::analysis_modal::AnalysisView::Main
@@ -286,6 +287,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         ],
         QualityPage::Segments => vec![
             ("s", "Sample"),
+            ("v", "View Rows"),
             ("[ ]", "Column"),
             ("m", "Metric"),
             ("b", "Baseline"),
@@ -295,6 +297,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         ],
         QualityPage::Trends => vec![
             ("s", "Sample"),
+            ("v", "View Rows"),
             ("[ ]", "Column"),
             ("m", "Metric"),
             ("1-4", "Page"),
@@ -314,6 +317,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
                     },
                 ),
                 ("s", "Sample"),
+                ("v", "View Rows"),
             ];
             keys.extend(
                 [

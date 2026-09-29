@@ -13,6 +13,9 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 /// How many source files the inventory under the scope row lists at once.
 const FILES_SHOWN: usize = 5;
 
+/// Lines the note under the rows may wrap to: the scope grammar is the longest.
+const NOTE_LINES: u16 = 3;
+
 /// `cap` is the most rows the current tool keeps whatever the form asks for, so the
 /// form can say so rather than let a larger number stand unexplained.
 /// `focused` is whether the form has the cursor; an inline form waiting beside a
@@ -51,23 +54,16 @@ pub fn render(
     // Rows, a gap, the note (up to two lines), the error, the file inventory, the
     // footer, the frame.
     let lead = u16::from(form.inline) * 2;
-    let height = lead + fields.len() as u16 + 1 + 2 + 1 + files_height + 1 + 2;
-    // Inline, the form is the pane: it takes the pane's width, capped at a reading
-    // measure, from the pane's top. Floating, it is a compact dialog in the middle.
-    let frame = if form.inline {
-        Rect {
-            width: area.width.min(78),
-            height: height.min(area.height),
-            ..area
-        }
-    } else {
-        let width = area.width.saturating_sub(4).clamp(40, 76);
-        Rect {
-            x: area.x + area.width.saturating_sub(width) / 2,
-            y: area.y + area.height.saturating_sub(height) / 2,
-            width: width.min(area.width),
-            height: height.min(area.height),
-        }
+    let height = lead + fields.len() as u16 + 1 + NOTE_LINES + 1 + files_height + 1 + 2;
+    // Centered in whatever it is drawn over: the tool's empty pane before a first
+    // run, the whole screen when it floats over a result. A compact dialog either
+    // way, never wider than a reading measure.
+    let width = area.width.saturating_sub(4).clamp(40, 76).min(area.width);
+    let frame = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height: height.min(area.height),
     };
     let inner = Surface::new("Sample")
         .footer(&footer)
@@ -75,7 +71,7 @@ pub fn render(
 
     let mut y = inner.y;
     if form.inline && inner.height > 0 {
-        Paragraph::new("Which rows this tool reads. Enter runs it; s changes them later.")
+        Paragraph::new("The rows this tool reads. Enter runs it.")
             .style(Style::default().fg(ctx.text_primary))
             .render(Rect { height: 1, ..inner }, buf);
         y += 2;
@@ -151,20 +147,20 @@ pub fn render(
             crate::numfmt::group_chrome(cap)
         ));
     }
-    if y + 2 <= bottom {
+    if y + NOTE_LINES <= bottom {
         Paragraph::new(note)
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(ctx.dimmed))
             .render(
                 Rect {
                     y,
-                    height: 2,
+                    height: NOTE_LINES,
                     ..inner
                 },
                 buf,
             );
     }
-    y += 2;
+    y += NOTE_LINES;
     if let Some(error) = &form.error
         && y < bottom
     {

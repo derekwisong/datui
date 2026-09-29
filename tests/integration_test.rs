@@ -1999,6 +1999,25 @@ fn one_sample_serves_every_analysis_tool() {
         "the header names the rows read"
     );
 
+    // v shows the sample itself in the table viewer; Esc brings back the table
+    // and the tool as they were.
+    let next = key(&mut app, KeyCode::Char('v'));
+    run(&mut app, next);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active, "the sample replaces the tool");
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("Sample") && screen.contains("Esc goes back"),
+        "the view says what it is and the way out"
+    );
+    key(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 1_000);
+    assert!(app.analysis_modal.describe_results.is_some());
+
     // Data Quality reads the same rows without being told again.
     app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(3));

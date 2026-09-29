@@ -29,6 +29,8 @@ Keys:
                     segment
   s:                Choose the sample every analysis tool reads: which
                     rows, how they are picked, how many, the seed
+  v:                View the rows Data Quality reads as a table; Esc
+                    comes back
   ← / →:            In the plan editor: change the focused field's value;
                     on Time roles, cycle the column
   Enter on Sample:  Open the Sample form (the same as s)

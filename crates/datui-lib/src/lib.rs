@@ -5194,6 +5194,12 @@ pub enum AppEvent {
     AnalysisCorrelationCompute,
     /// Run the configured data-quality plan off the UI thread.
     AnalysisDataQualityCompute,
+    /// Background task completed: the shared sample's rows, to show as a table.
+    BackgroundSampleReady {
+        generation: u64,
+        df: polars::prelude::DataFrame,
+        label: String,
+    },
     /// Background task completed: describe/statistics results.
     BackgroundDescribeReady {
         generation: u64,
@@ -6450,7 +6456,12 @@ pub struct App {
     startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
     quality_cache: Vec<QualityCacheEntry>,
+    /// The table an analysis drill left behind: Data Quality's matching rows or the
+    /// sample's, shown in its place until Esc brings it back.
     quality_evidence_return: Option<Box<DataTableState>>,
+    /// The shared sample is being read to show as a table; a cancel leaves the tool
+    /// on screen as it was.
+    reading_sample: bool,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -6652,7 +6663,7 @@ impl App {
             (None, None) => return,
         };
         let label = format!(
-            "{} / {}",
+            "Data Quality / {} / {}",
             finding.title,
             quality_report::columns_label(&finding.columns, 40)
         );
@@ -6961,6 +6972,68 @@ impl App {
         None
     }
 
+    /// Read the shared sample, as the tool on screen reads it, to show as a table.
+    ///
+    /// Read again rather than kept from the last run: the seed makes it the same rows,
+    /// and holding every tool's rows between runs would hold memory nobody asked for.
+    fn read_sample_view(&mut self) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let (source, known_total) = self.sample_source(state);
+        let mut sample = self.analysis_modal.sample.clone();
+        if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
+            // The rows Data Quality keeps, not the size it was offered.
+            sample.rows = sample.rows.min(50_000);
+        }
+        let streaming = self.app_config.performance.polars_streaming;
+        self.reading_sample = true;
+        self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the sample"));
+        self.busy = true;
+        self.spawn_bg("Reading the sample...", move |task_gen, tx| {
+            let read = source
+                .cut(&sample.scope)
+                .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming));
+            let _ = tx.send(match read {
+                Ok(rows) => AppEvent::BackgroundSampleReady {
+                    generation: task_gen,
+                    label: format!(
+                        "Sample {} {}",
+                        crate::glyphs::get().middot,
+                        sample.outcome(rows.total_rows, rows.sample_size)
+                    ),
+                    df: rows.df,
+                },
+                Err(error) => AppEvent::BackgroundError {
+                    generation: task_gen,
+                    message: format!("{error}"),
+                },
+            });
+        });
+        None
+    }
+
+    /// Put the sample's rows in the table viewer in place of the table, as Data
+    /// Quality's drill-in does; Esc brings the table and Analysis back.
+    fn show_sample_view(&mut self, df: polars::prelude::DataFrame, label: String) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let view = match state.sample_view(df) {
+            Ok(view) => view,
+            Err(error) => {
+                self.error_modal
+                    .show(format!("Cannot show the sample: {error}"));
+                return;
+            }
+        };
+        if let Some(original) = self.data_table_state.replace(view) {
+            self.quality_evidence_return = Some(Box::new(original));
+            self.quality_evidence_label = Some(label);
+            self.analysis_modal.active = false;
+            self.collect_inflight = None;
+            self.spawn_async_collect("Loading the sample...");
+        }
+    }
+
     /// Mirror the shared sample into the Data Quality plan, which carries it into the
     /// engine and into the session cache's key. Metadata-only stays metadata-only.
     fn sync_quality_plan(&mut self) {
@@ -7082,6 +7155,11 @@ impl App {
         self.analysis_computation = None;
         self.busy = false;
         self.status_message = None;
+        // Reading the sample to look at changed nothing on screen; the tool stays.
+        if std::mem::take(&mut self.reading_sample) {
+            self.flash_note("Sample view cancelled".to_string());
+            return;
+        }
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             self.analysis_modal.data_quality_results = None;
         } else {
@@ -8262,6 +8340,7 @@ impl App {
             quality_cache: Vec::new(),
             quality_evidence_return: None,
             quality_evidence_label: None,
+            reading_sample: false,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -14036,6 +14115,9 @@ impl App {
                 self.open_sample_form();
                 return None;
             }
+            if event.code == KeyCode::Char('v') && self.analysis_modal.sample_key_opens_form() {
+                return self.read_sample_view();
+            }
             if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
                 && self.analysis_modal.view == analysis_modal::AnalysisView::Main
                 // Before the first run the pane is the Sample form, not the plan.
@@ -17318,6 +17400,20 @@ impl App {
                     self.busy = false;
                 }
                 // Stale message (generation mismatch) — ignore entirely.
+                None
+            }
+            AppEvent::BackgroundSampleReady {
+                generation,
+                df,
+                label,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.computing = None;
+                    self.reading_sample = false;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.show_sample_view(df.clone(), label.clone());
+                }
                 None
             }
             AppEvent::BackgroundDescribeReady {

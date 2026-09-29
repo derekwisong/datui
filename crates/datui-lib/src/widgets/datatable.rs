@@ -3881,6 +3881,26 @@ impl DataTableState {
 
     /// Build a temporary filtered table without changing the current pipeline. The
     /// caller keeps this state to restore its query, filters, sort, and buffer.
+    /// A table of rows already read: an analysis's sample, shown in the table viewer
+    /// with everything it offers (sort, filter, query, copy, export). The rows are in
+    /// memory, so nothing here reads the source again.
+    pub(crate) fn sample_view(&self, df: DataFrame) -> Result<Self> {
+        let options = crate::OpenOptions {
+            pages_lookahead: Some(self.pages_lookahead),
+            pages_lookback: Some(self.pages_lookback),
+            max_buffered_rows: Some(self.max_buffered_rows),
+            max_buffered_mb: Some(self.max_buffered_mb),
+            row_numbers: self.row_numbers,
+            row_start_index: self.row_start_index,
+            polars_streaming: self.polars_streaming,
+            ..crate::OpenOptions::default()
+        };
+        let schema = df.schema().clone();
+        let mut view = Self::from_schema_and_lazyframe(schema, df.lazy(), &options, None)?;
+        view.visible_rows = self.visible_rows;
+        Ok(view)
+    }
+
     pub(crate) fn quality_evidence_view(
         &self,
         scope: &crate::data_quality::QualityScope,

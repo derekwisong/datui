@@ -972,6 +972,13 @@ pub fn coverage(results: &DataQualityResults, plan: &DataQualityPlan) -> String 
     }
     let checked = results.evaluated_rows;
     let segments = results.segments.len();
+    // The head never counts what follows it, so its total cannot say "all".
+    if results.precision == QualityPrecision::Sampled
+        && plan.method == crate::sampling::SampleMethod::FirstRows
+        && matches!(plan.grain, QualityGrain::Dataset)
+    {
+        return format!("The first {} {scope}", rows(checked));
+    }
     if results.precision == QualityPrecision::Exact
         || results.total_rows == Some(checked)
         || plan.compute == QualityCompute::Full
@@ -985,6 +992,17 @@ pub fn coverage(results: &DataQualityResults, plan: &DataQualityPlan) -> String 
             rows(checked),
             numfmt::group_chrome(segments),
             if segments == 1 { "segment" } else { "segments" }
+        );
+    }
+    if let crate::sampling::SampleMethod::PerPartition { column } = &plan.method {
+        return format!(
+            "Sampled {} of {} rows {scope}, up to {} per {column}",
+            numfmt::group_chrome(checked),
+            results
+                .total_rows
+                .map(numfmt::group_chrome)
+                .unwrap_or_else(|| "?".to_string()),
+            numfmt::group_chrome(plan.dataset_rows.min(50_000))
         );
     }
     // Spread across the whole scope, which the sampler counts as it goes.

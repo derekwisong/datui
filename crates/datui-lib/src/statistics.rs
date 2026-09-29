@@ -299,9 +299,31 @@ pub fn compute_statistics_with_options(
     seed: u64,
     options: ComputeOptions,
 ) -> Result<AnalysisResults> {
+    let sample = crate::sampling::Sample {
+        method: if sample_size.is_some() {
+            crate::sampling::SampleMethod::Spread
+        } else {
+            crate::sampling::SampleMethod::EveryRow
+        },
+        rows: sample_size.unwrap_or(0),
+        seed,
+        ..crate::sampling::Sample::default()
+    };
+    compute_statistics_for_sample(lf, &sample, None, options)
+}
+
+/// [`compute_statistics_with_options`] over the rows a [`crate::sampling::Sample`]
+/// picks from `lf`, which is already cut to the sample's scope.
+pub fn compute_statistics_for_sample(
+    lf: &LazyFrame,
+    sample: &crate::sampling::Sample,
+    known_total: Option<usize>,
+    options: ComputeOptions,
+) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let use_streaming = options.polars_streaming;
-    let rows = analysis_rows(lf, sample_size, None, seed, use_streaming)?;
+    let seed = sample.seed;
+    let rows = crate::sampling::read(lf, sample, known_total, use_streaming)?;
     let total_rows = rows.total_rows;
     let actual_sample_size = rows.sample_size;
     let should_sample = actual_sample_size.is_some();
@@ -606,13 +628,13 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
 pub fn compute_describe_from_lazy(
     lf: &LazyFrame,
     known_total: Option<usize>,
-    sample_size: Option<usize>,
-    seed: u64,
+    sample: &crate::sampling::Sample,
     polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
-    if sample_size.is_some() {
-        let rows = analysis_rows(lf, sample_size, known_total, seed, polars_streaming)?;
+    let seed = sample.seed;
+    if sample.method != crate::sampling::SampleMethod::EveryRow {
+        let rows = crate::sampling::read(lf, sample, known_total, polars_streaming)?;
         return compute_describe_single_aggregation(
             &rows.df,
             &schema,
@@ -691,17 +713,10 @@ fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
 pub fn compute_distribution_statistics(
     results: &mut AnalysisResults,
     lf: &LazyFrame,
-    sample_size: Option<usize>,
-    seed: u64,
+    sample: &crate::sampling::Sample,
     polars_streaming: bool,
 ) -> Result<()> {
-    let rows = analysis_rows(
-        lf,
-        sample_size,
-        Some(results.total_rows),
-        seed,
-        polars_streaming,
-    )?;
+    let rows = crate::sampling::read(lf, sample, Some(results.total_rows), polars_streaming)?;
     let actual_sample_size = rows.sample_size;
     let should_sample = actual_sample_size.is_some();
     let df = rows.df;

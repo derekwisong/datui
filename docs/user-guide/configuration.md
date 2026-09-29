@@ -116,7 +116,7 @@ file has no locale, and `LC_NUMERIC` is unset on most servers.
 
 ```toml
 [performance]
-analysis_sample_rows = 100000    # Rows analyzed from a larger table; 0 reads every row
+analysis_sample_rows = 100000    # The analysis sample's starting size; 0 starts at every row
 event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
 quality_sample_rows = 10000      # Data Quality rows kept per segment, 1 to 50_000
 ```
@@ -125,8 +125,9 @@ quality_sample_rows = 10000      # Data Quality rows kept per segment, 1 to 50_0
 [Analysis](analysis-features.md#sampling).
 
 `quality_sample_rows` is the default for the Data Quality plan's
-[Sample rows field](analysis-features.md#sampling-and-budgets); the plan
-editor changes it per run.
+[Rows per segment](analysis-features.md#sampling-and-budgets), used when a grain
+samples each file, partition, chunk or window; the plan editor changes it per
+run. The dataset-grain sample is the shared one.
 
 ### Charts
 

@@ -58,8 +58,15 @@ impl QualityScope {
         match self {
             Self::CurrentView => "current view".to_string(),
             Self::WholeSource => "whole source".to_string(),
-            Self::FirstRows(rows) => format!("first {rows} view rows"),
-            Self::ViewRows { start, end } => format!("view rows {start}..{end}"),
+            Self::FirstRows(rows) => format!(
+                "first {} rows of the view",
+                crate::numfmt::group_chrome(*rows)
+            ),
+            Self::ViewRows { start, end } => format!(
+                "view rows {}-{}",
+                crate::numfmt::group_chrome(*start),
+                crate::numfmt::group_chrome(*end)
+            ),
             Self::SourceFiles(indices) => format!(
                 "source files {}",
                 indices
@@ -300,6 +307,43 @@ pub fn prepare_source_quality_scan(
     )
 }
 
+/// The rows of one partition value, a list of them (`2019,2021`), or an inclusive
+/// range (`2020..2022`). A range compares in the column's own type, so years and
+/// dates order as numbers and dates, not as text; `∅` is the null partition.
+fn partition_predicate(column: &str, value: &str, schema: &Schema) -> Result<Expr> {
+    let dtype = schema
+        .get(column)
+        .ok_or_else(|| color_eyre::eyre::eyre!("partition column {column:?} is unavailable"))?;
+    let one = |value: &str| {
+        if value == "∅" {
+            col(column).is_null()
+        } else {
+            col(column)
+                .cast(DataType::String)
+                .eq(lit(value.to_string()))
+        }
+    };
+    if let Some((start, end)) = value.split_once("..") {
+        let (start, end) = (start.trim(), end.trim());
+        if start.is_empty() || end.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "a partition range needs both ends, for example year=2020..2022"
+            ));
+        }
+        let bound = |text: &str| lit(text.to_string()).cast(dtype.clone());
+        return Ok(col(column)
+            .gt_eq(bound(start))
+            .and(col(column).lt_eq(bound(end))));
+    }
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(one)
+        .reduce(Expr::or)
+        .ok_or_else(|| color_eyre::eyre::eyre!("name at least one partition value"))
+}
+
 pub fn apply_quality_scope(
     lf: LazyFrame,
     scope: &QualityScope,
@@ -351,12 +395,7 @@ pub fn apply_quality_scope(
                     "partition column {column:?} is unavailable"
                 ));
             }
-            let predicate = if value == "∅" {
-                col(column).is_null()
-            } else {
-                col(column).cast(DataType::String).eq(lit(value.clone()))
-            };
-            Ok(lf.filter(predicate))
+            Ok(lf.filter(partition_predicate(column, value, &schema)?))
         }
         QualityScope::SourceTimeRange { column, start, end } => {
             let schema = lf.clone().collect_schema()?;
@@ -390,7 +429,6 @@ pub fn apply_quality_scope(
 pub enum QualityPage {
     #[default]
     Plan,
-    Scope,
     Overview,
     Columns,
     Segments,
@@ -512,6 +550,12 @@ pub struct TemporalRoleAssignment {
 pub struct DataQualityPlan {
     pub scope: QualityScope,
     pub compute: QualityCompute,
+    /// How a dataset-grain sample picks its rows, from the shared analysis sample.
+    pub method: crate::sampling::SampleMethod,
+    /// Rows a dataset-grain sample keeps, from the shared analysis sample; the
+    /// engine keeps at most 50,000 of them.
+    pub dataset_rows: usize,
+    /// Rows kept per segment when a grain other than the dataset samples each one.
     pub sample_rows: usize,
     pub sample_seed: u64,
     pub grain: QualityGrain,
@@ -526,6 +570,8 @@ impl Default for DataQualityPlan {
         Self {
             scope: QualityScope::CurrentView,
             compute: QualityCompute::Sample,
+            method: crate::sampling::SampleMethod::Spread,
+            dataset_rows: DEFAULT_SAMPLE_ROWS,
             sample_rows: DEFAULT_SAMPLE_ROWS,
             sample_seed: 42_891,
             grain: QualityGrain::Dataset,
@@ -557,6 +603,16 @@ impl DataQualityPlan {
         }
     }
 
+    /// The shared analysis sample this plan carries, as the Sample form shows it.
+    pub fn sample(&self) -> crate::sampling::Sample {
+        crate::sampling::Sample {
+            scope: self.scope.clone(),
+            method: self.method.clone(),
+            rows: self.dataset_rows,
+            seed: self.sample_seed,
+        }
+    }
+
     pub fn set_row_chunks(&mut self) {
         self.grain = QualityGrain::RowChunks(DEFAULT_CHUNK_ROWS);
     }
@@ -570,7 +626,11 @@ impl DataQualityPlan {
                 QualityCompute::Sample if self.samples_each_segment() => {
                     format!("{} rows/segment", self.sample_rows.min(50_000))
                 }
-                QualityCompute::Sample => format!("{} rows", self.sample_rows.min(50_000)),
+                QualityCompute::Sample => format!(
+                    "{} rows {}",
+                    self.dataset_rows.min(50_000),
+                    self.method.label().to_lowercase()
+                ),
                 other => other.label().to_string(),
             },
             self.comparison_label()
@@ -1057,17 +1117,17 @@ pub fn compute_data_quality(
                     Some(sampled.segment_totals),
                 )
             }
-            // The sampler Describe and Distribution use: spread across the whole scope,
-            // so a file sorted by date is not judged by its first stretch. Dataset grain
-            // has one segment, so no row needs its position.
+            // The shared analysis sampler, as every other tool reads: by default spread
+            // across the whole scope, so a file sorted by date is not judged by its
+            // first stretch. Dataset grain has one segment, so no row needs its position.
             QualityCompute::Sample => {
-                let sampled = crate::statistics::analysis_rows(
-                    lf,
-                    Some(plan.sample_rows.min(50_000)),
-                    total_rows,
-                    plan.sample_seed,
-                    polars_streaming,
-                )?;
+                let sample = crate::sampling::Sample {
+                    scope: QualityScope::CurrentView,
+                    method: plan.method.clone(),
+                    rows: plan.dataset_rows.min(50_000),
+                    seed: plan.sample_seed,
+                };
+                let sampled = crate::sampling::read(lf, &sample, total_rows, polars_streaming)?;
                 let height = sampled.df.height();
                 let precision = if sampled.sample_size.is_some() {
                     QualityPrecision::Sampled
@@ -3297,7 +3357,7 @@ mod tests {
     fn sample_is_disclosed_and_bounded() {
         let plan = DataQualityPlan {
             compute: QualityCompute::Sample,
-            sample_rows: 2,
+            dataset_rows: 2,
             sample_seed: 7,
             ..DataQualityPlan::default()
         };
@@ -3318,7 +3378,7 @@ mod tests {
         .unwrap()
         .lazy();
         let plan = DataQualityPlan {
-            sample_rows: 10,
+            dataset_rows: 10,
             ..DataQualityPlan::default()
         };
         let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
@@ -3355,7 +3415,7 @@ mod tests {
         .unwrap()
         .lazy();
         let plan = DataQualityPlan {
-            sample_rows: 1_000,
+            dataset_rows: 1_000,
             ..DataQualityPlan::default()
         };
         let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
@@ -3460,6 +3520,7 @@ mod tests {
         ] {
             let plan = DataQualityPlan {
                 sample_rows: 2,
+                dataset_rows: 2,
                 grain,
                 ..DataQualityPlan::default()
             };
@@ -3903,7 +3964,7 @@ mod tests {
             Some(1_000_000),
             &DataQualityPlan {
                 compute: QualityCompute::Sample,
-                sample_rows: 10,
+                dataset_rows: 10,
                 ..DataQualityPlan::default()
             },
             None,
@@ -3918,6 +3979,35 @@ mod tests {
                 .any(|observation| observation.kind == ObservationKind::KeyLike),
             "a sampled distinct share cannot say a column is nearly a key"
         );
+    }
+
+    /// A partition scope takes one value, a list, or an inclusive range compared in the
+    /// column's own type: 9..10 includes 10, which as text would sort before 9.
+    #[test]
+    fn a_partition_scope_takes_a_value_a_list_or_a_range() {
+        let frame = df!(
+            "year" => [Some(8i64), Some(9), Some(10), Some(11), None],
+            "id" => [1i64, 2, 3, 4, 5],
+        )
+        .unwrap()
+        .lazy();
+        let ids = |value: &str| {
+            let scope = QualityScope::parse_command(&format!("partition year={value}")).unwrap();
+            let rows = apply_quality_scope(frame.clone(), &scope, None)
+                .unwrap()
+                .collect()
+                .unwrap();
+            rows.column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("9"), vec![2]);
+        assert_eq!(ids("8,11"), vec![1, 4]);
+        assert_eq!(ids("9..10"), vec![2, 3]);
+        assert_eq!(ids("∅"), vec![5]);
     }
 
     /// A float measure is nearly unique by nature: prices and volumes repeat by
@@ -4212,7 +4302,7 @@ mod tests {
             .unwrap()
             .lazy();
         let plan = DataQualityPlan {
-            sample_rows: 3,
+            dataset_rows: 3,
             ..DataQualityPlan::default()
         };
         let results = compute_data_quality(&frame, Some(3), &plan, None, false).unwrap();

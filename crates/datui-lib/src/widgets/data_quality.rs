@@ -12,7 +12,6 @@ use crate::quality_report::{
     describe, explain, verdict,
 };
 use crate::widgets::datatable::DataTableState;
-use crate::widgets::text_input::TextInput;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -34,9 +33,6 @@ pub struct DataQualityWidgetConfig<'a> {
     pub page: QualityPage,
     pub editing: bool,
     pub plan_field: usize,
-    pub scope_input: &'a TextInput,
-    pub scope_error: Option<&'a str>,
-    pub scope_file_offset: usize,
     pub show_access: bool,
     pub observation_detail: bool,
     pub confirm_run: bool,
@@ -84,7 +80,6 @@ pub fn render(
 
     match config.page {
         QualityPage::Plan => render_plan(&config, table_state, body, buf),
-        QualityPage::Scope => render_scope(&config, body, buf),
         QualityPage::TimeRoles => render_time_roles(&config, table_state, body, buf),
         QualityPage::Overview => render_overview(&config, table_state, body, buf),
         QualityPage::Columns => render_columns(&config, table_state, body, buf),
@@ -109,7 +104,6 @@ pub fn render(
 fn render_breadcrumb(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let page = match config.page {
         QualityPage::Plan => None,
-        QualityPage::Scope => Some("Scope"),
         QualityPage::TimeRoles => Some("Time roles"),
         QualityPage::Overview => Some("Overview"),
         QualityPage::Columns => Some("Columns"),
@@ -181,7 +175,10 @@ fn render_coverage_strip(
     if plan.comparison != QualityComparison::None {
         facts.push(format!("compared with {}", plan.comparison_label()));
     }
-    if plan.compute == QualityCompute::Sample && results.precision != QualityPrecision::Exact {
+    if plan.compute == QualityCompute::Sample
+        && results.precision != QualityPrecision::Exact
+        && plan.method != crate::sampling::SampleMethod::FirstRows
+    {
         facts.push(format!("seed {}", results.sample_seed));
     }
     if config.state.is_remote_source() {
@@ -201,10 +198,7 @@ fn render_coverage_strip(
 
 fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     if let Some(results) = config.results
-        && !matches!(
-            config.page,
-            QualityPage::Plan | QualityPage::Scope | QualityPage::TimeRoles
-        )
+        && !matches!(config.page, QualityPage::Plan | QualityPage::TimeRoles)
     {
         render_coverage_strip(config, results, area, buf);
         return;
@@ -331,16 +325,20 @@ fn render_plan(
     };
     let rows = vec![
         Row::new(vec![
-            Cell::from("Scope"),
-            Cell::from(config.plan.scope.label()),
+            Cell::from("Sample"),
+            Cell::from(config.plan.sample().summary()),
         ]),
         Row::new(vec![
             Cell::from("Grain"),
             Cell::from(config.plan.grain.label()),
         ]),
         Row::new(vec![
-            Cell::from("Compute"),
-            Cell::from(compute_label(config.plan)),
+            Cell::from("Values"),
+            Cell::from(if config.plan.compute == QualityCompute::Metadata {
+                "metadata only"
+            } else {
+                "read"
+            }),
         ]),
         Row::new(vec![
             Cell::from("Compare"),
@@ -358,7 +356,7 @@ fn render_plan(
             ),
         ]),
         Row::new(vec![
-            Cell::from("Sample rows"),
+            Cell::from("Rows per segment"),
             Cell::from(format!(
                 "{} per segment",
                 numfmt::group_chrome(config.plan.sample_rows)
@@ -403,66 +401,6 @@ fn render_plan(
     let access = Table::new(access_rows, [Constraint::Length(22), Constraint::Fill(1)])
         .block(Block::default().borders(Borders::NONE));
     Widget::render(access, sections[3], buf);
-}
-
-fn render_scope(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(7),
-            Constraint::Length(3),
-            Constraint::Fill(1),
-        ])
-        .margin(1)
-        .split(area);
-    render_section_title("ELIGIBLE ROWS", sections[0], config.theme, buf);
-    Paragraph::new(vec![
-        Line::raw("view  |  source  |  rows 100..200"),
-        Line::raw("files 1,3  (source inventory order)"),
-        Line::raw("partition column=value  (source)"),
-        Line::raw("time column=2024-01-01..2024-02-01"),
-        Line::raw("Time end is exclusive; dates use UTC midnight."),
-    ])
-    .style(Style::default().fg(config.theme.get("text_primary")))
-    .render(sections[1], buf);
-    Widget::render(config.scope_input, sections[2], buf);
-    let bottom = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Fill(1)])
-        .split(sections[3]);
-    if let Some(error) = config.scope_error {
-        Paragraph::new(error)
-            .style(Style::default().fg(config.theme.get("warning")))
-            .render(bottom[0], buf);
-    }
-    let files = config.state.quality_source_file_names();
-    if !files.is_empty() {
-        render_section_title(
-            &format!(
-                "SOURCE FILES  {} / {}",
-                config.scope_file_offset + 1,
-                files.len()
-            ),
-            bottom[1],
-            config.theme,
-            buf,
-        );
-        let list_area = Rect {
-            y: bottom[1].y.saturating_add(2),
-            height: bottom[1].height.saturating_sub(2),
-            ..bottom[1]
-        };
-        let visible = list_area.height as usize;
-        let items = files
-            .iter()
-            .enumerate()
-            .skip(config.scope_file_offset)
-            .take(visible)
-            .map(|(index, name)| ListItem::new(format!("{:>3}  {name}", index + 1)))
-            .collect::<Vec<_>>();
-        Widget::render(List::new(items), list_area, buf);
-    }
 }
 
 fn render_overview(
@@ -2091,7 +2029,7 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
     match plan.compute {
         QualityCompute::Metadata => unreachable!(),
         QualityCompute::Sample if plan.samples_each_segment() => None,
-        QualityCompute::Sample => Some(total.min(plan.sample_rows.min(50_000))),
+        QualityCompute::Sample => Some(total.min(dataset_rows(plan))),
         QualityCompute::Full => Some(total),
     }
 }
@@ -2102,8 +2040,12 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
     }
     let rows = match plan.compute {
         QualityCompute::Metadata => 0,
-        // A ceiling: the sample is spread across the whole scope, which one Parquet or
-        // IPC file serves in a few dozen short runs and anything else in one stream.
+        // The head reads what it keeps. Anything else is a ceiling: a spread sample
+        // is one Parquet or IPC file's few dozen short runs or one stream of the
+        // scope, and a per-partition one streams the scope.
+        QualityCompute::Sample if plan.method == crate::sampling::SampleMethod::FirstRows => {
+            planned_scope_rows(state, plan)?.min(dataset_rows(plan))
+        }
         QualityCompute::Sample => planned_scope_rows(state, plan)?,
         QualityCompute::Full => return None,
     };
@@ -2127,7 +2069,8 @@ fn planned_scope_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<
 fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
     let bytes = planned_read_bytes(state, plan);
     let sampled = plan.compute == QualityCompute::Sample
-        && planned_scope_rows(state, plan).is_some_and(|rows| rows > plan.sample_rows.min(50_000));
+        && plan.method != crate::sampling::SampleMethod::FirstRows
+        && planned_scope_rows(state, plan).is_some_and(|rows| rows > dataset_rows(plan));
     match bytes {
         Some(bytes) if sampled => format!(
             "up to {}",
@@ -2143,17 +2086,23 @@ fn approximate_bytes_option(bytes: Option<usize>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Rows a dataset-grain run keeps: the shared sample's size, to the engine's cap.
+fn dataset_rows(plan: &DataQualityPlan) -> usize {
+    plan.dataset_rows.min(50_000)
+}
+
 fn compute_label(plan: &DataQualityPlan) -> String {
     match plan.compute {
         QualityCompute::Metadata => "metadata only".to_string(),
-        QualityCompute::Sample => format!(
-            "{} rows{} / seed {}",
+        QualityCompute::Sample if plan.samples_each_segment() => format!(
+            "{} rows/segment / seed {}",
             numfmt::group_chrome(plan.sample_rows.min(50_000)),
-            if plan.samples_each_segment() {
-                "/segment"
-            } else {
-                ""
-            },
+            plan.sample_seed
+        ),
+        QualityCompute::Sample => format!(
+            "{} rows {} / seed {}",
+            numfmt::group_chrome(dataset_rows(plan)),
+            plan.method.label().to_lowercase(),
             plan.sample_seed
         ),
         QualityCompute::Full => "full scan".to_string(),

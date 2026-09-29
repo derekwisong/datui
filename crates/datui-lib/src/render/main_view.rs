@@ -151,6 +151,10 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         AnalysisView::CorrelationDetail => return vec![("Esc", "Back"), ("?", "Help")],
         AnalysisView::Main => {}
     }
+    // The Sample form owns the keys over whichever tool; its footer names the rest.
+    if modal.sample_form.is_some() {
+        return vec![("Enter", "Apply"), ("Esc", "Cancel")];
+    }
     if modal.selected_tool == Some(AnalysisTool::DataQuality) {
         return data_quality_control_keys(app);
     }
@@ -177,6 +181,10 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             ("Enter", "Select"),
         ]
     };
+    // Which rows: the shared sample, for any tool on its main view.
+    if modal.view == crate::analysis_modal::AnalysisView::Main && modal.selected_tool.is_some() {
+        pairs.push(("s", "Sample"));
+    }
     // On a sample: another one, or every row.
     if modal.view == crate::analysis_modal::AnalysisView::Main
         && app
@@ -236,9 +244,6 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             vec![("Enter", "Close"), ("Esc", "Back")]
         };
     }
-    if modal.data_quality_page == QualityPage::Scope {
-        return vec![("Enter", "Apply"), ("PgUp/PgDn", "Files"), ("Esc", "Back")];
-    }
     if modal.data_quality_page == QualityPage::TimeRoles {
         return vec![
             (g.updown, "Role"),
@@ -259,6 +264,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         QualityPage::Plan => vec![
             ("Enter", "Run"),
             ("e", "Edit"),
+            ("s", "Sample"),
             ("p", "Access"),
             ("Tab", "Focus"),
             ("Esc", "Back"),
@@ -303,6 +309,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             );
             keys.extend([
                 ("e", "Plan"),
+                ("s", "Sample"),
                 ("Tab", "Focus"),
                 ("?", "Help"),
                 // Every other page carries it; the overview is not the one place
@@ -501,7 +508,6 @@ mod tests {
         app.analysis_modal.selected_tool = Some(AnalysisTool::DataQuality);
         for page in [
             QualityPage::Plan,
-            QualityPage::Scope,
             QualityPage::TimeRoles,
             QualityPage::Overview,
             QualityPage::Columns,

@@ -81,28 +81,21 @@ rows were sampled of how many.
 
 ### The plan
 
-The plan shows the scope, profile grain, compute mode, comparison, estimated
-rows and transfer direction; <kbd>p</kbd> shows the estimate basis.
+The plan shows the sample, profile grain, what is read, comparison, estimated
+rows and transfer direction; <kbd>p</kbd> shows the estimate basis. The rows
+are the shared [sample](#sampling): <kbd>s</kbd>, or <kbd>Enter</kbd> on the
+Sample row, opens its form.
 
 | Setting | Choices |
 |---|---|
-| Scope | Current view, whole loaded source, a view row range, selected source files, one source partition value, or a source time range |
+| Sample | The shared sample: scope, method, rows and seed |
 | Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or hourly, daily, weekly, or monthly windows on an assigned time role |
-| Compute | Metadata only, seeded sample (spread across the scope for dataset grain; per-segment after a full selected-scope read for other grains), or full scan |
+| Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
-| Sample rows | Rows kept per segment for a sampled compute: <kbd>←</kbd> <kbd>→</kbd> cycle 1,000 to 50,000; the default comes from [`[performance] quality_sample_rows`](configuration.md#performance) |
+| Rows per segment | Rows kept per segment when a grain other than the dataset samples each one: <kbd>←</kbd> <kbd>→</kbd> cycle 1,000 to 50,000; the default comes from [`[performance] quality_sample_rows`](configuration.md#performance) |
 
-<kbd>e</kbd> edits a copy of the plan. In the editor, <kbd>←</kbd> <kbd>→</kbd> on Scope
-picks a preset and <kbd>Enter</kbd> on Scope opens a precise entry:
-
-| Scope entry | Meaning |
-|---|---|
-| `view` / `source` | Current table pipeline / loaded source, ignoring the active query, filters, and sort |
-| `rows 100..200` | Inclusive 1-based row range in the current view order |
-| `files 1,3` | Source files by the numbered inventory on the Scope page; <kbd>PgUp</kbd> <kbd>PgDn</kbd> scrolls it |
-| `partition region=west` | Rows with that source-column value; `∅` selects null |
-| `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
+<kbd>e</kbd> edits a copy of the plan; <kbd>Esc</kbd> discards it.
 
 Before a run, source-scoped plans report unknown row counts and read sizes,
 and metadata-only runs do not count rows. A local dataset-grain sample
@@ -124,12 +117,13 @@ picker includes source time columns hidden by the current view.
 |---|---|
 | <kbd>Enter</kbd> | Run the plan, open a finding, or show its exact rows |
 | <kbd>e</kbd> | Edit a copy of the plan; <kbd>Esc</kbd> discards edits |
+| <kbd>s</kbd> | Open the shared [Sample](#sampling) form |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends |
 | <kbd>[</kbd> <kbd>]</kbd> | Choose a column in Segments or Trends |
 | <kbd>m</kbd> | Cycle the measurement: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
-| <kbd>r</kbd> | Rerun with a new sample seed |
+| <kbd>r</kbd> | Rerun with a new sample seed, for every tool |
 | <kbd>Esc</kbd> | Back one level |
 
 Every result states eligible and evaluated rows and whether values are exact,
@@ -155,13 +149,13 @@ sampled, or metadata-only.
 
 ### Sampling and budgets
 
-Sampling is a compute choice, not a grain.
+Sampling is the shared sample's, not a grain.
 
 | | |
 |---|---|
-| Dataset grain | A seeded sample of up to 50,000 rows without replacement, spread across the whole scope: a few dozen runs of one Parquet or IPC file, or one streamed pass over anything else; the same sampler as Describe and Distribution |
-| File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Sample rows budget of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
-| Budgets | The Sample rows budget multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower the Sample rows budget |
+| Dataset grain | The shared [sample](#sampling), up to 50,000 rows: spread, per partition, the first rows, or every row |
+| File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Rows per segment of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
+| Budgets | Rows per segment multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower Rows per segment |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
 | Time windows | `1h`, `1d`, `1w`, `1mo` on each assigned time role, starting on the calendar boundary for their width (weeks start on Monday); a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
@@ -217,20 +211,49 @@ and offer to read a conflicting column as text.
 
 ## Sampling
 
-Describe, Distribution and Correlation read a table of up to 100,000 rows
-whole. A larger one is analyzed from a sample of 100,000 rows, spread across
-the whole table rather than taken from its start, and the title says so:
-`Distribution Analysis · sample of 100,000 of 36,839,175 rows`.
+Every analysis tool reads the same sample: which rows, how they are picked,
+how many, and the seed. <kbd>s</kbd> opens the **Sample** form from any tool;
+<kbd>Enter</kbd> applies it and runs the tool on screen again, and
+<kbd>Esc</kbd> discards the edit. The other tools' results go with the old
+sample, so switching tools compares like with like. The header says what was
+read: `Describe · sample of 100,000 of 17,559,636 rows · source year=2020..2022`.
+
+| Field | Choices |
+|---|---|
+| Rows from | The scope, typed; see below |
+| Method | **Spread** (default), **Per partition**, **First rows**, **Every row** |
+| Per | For Per partition: the column to split by; partition columns come first |
+| Rows | 1,000 to 1,000,000 in all, or per value for Per partition; the default is `[performance] analysis_sample_rows` |
+| Seed | For Spread and Per partition; <kbd>←</kbd> <kbd>→</kbd> or <kbd>r</kbd> draws a new one |
+
+| Method | What it reads |
+|---|---|
+| Spread | A seeded random sample across the whole scope |
+| Per partition | Up to the row count from each value of a column, so a small partition is represented beside a large one; refused past 10,000 values or 2,000,000 rows kept |
+| First rows | The first rows of the scope in order: the fastest read, and only the head |
+| Every row | No sampling |
+
+| Scope | Meaning |
+|---|---|
+| `view` | The table as shown: query and filters applied |
+| `source` | The loaded source, ignoring the query, filters and sort |
+| `rows 100..200` | An inclusive 1-based row range in the order the table shows |
+| `files 1,3` | Source files by number; the form lists them under the scope row, <kbd>PgUp</kbd> <kbd>PgDn</kbd> scrolls |
+| `partition year=2021` | Source rows with that value; `∅` selects null |
+| `partition year=2019,2021` | Any of the listed values |
+| `partition year=2020..2022` | An inclusive range, compared in the column's own type |
+| `time date=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 interval; the end is exclusive |
 
 | Key | Action |
 |---|---|
-| <kbd>r</kbd> | Draw another sample |
-| <kbd>a</kbd> | Read every row, after confirming the count |
+| <kbd>s</kbd> | Open the Sample form |
+| <kbd>r</kbd> | Draw another sample (a new seed) |
+| <kbd>a</kbd> | Read every row, after confirming the count; sets the method to Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress |
 
-How the sample is drawn depends on what the view is:
+How a spread sample is read depends on the source:
 
-| View | Sample | Reads |
+| Source | Sample | Reads |
 |---|---|---|
 | One Parquet or IPC file, unfiltered | 50 runs of rows at seeded places across it | The row groups those runs fall in |
 | Anything else: a directory or hive table, a filter, a query, CSV | A seeded uniform sample, kept while the rows stream past | Every row once, holding only the sample |
@@ -243,9 +266,9 @@ cancelled full read is still finishing.
 
 ```toml
 [performance]
-analysis_sample_rows = 100000   # 0 reads every row of every table
+analysis_sample_rows = 100000   # the sample's starting size; 0 starts at Every row
 ```
 
-or `--sample-rows N` for one run. Data Quality does not use this setting: its
-plan chooses between metadata, a seeded sample of a stated size and a full
-scan, and says what each will read before it runs.
+or `--sample-rows N` for one run. Data Quality keeps at most 50,000 rows of the
+sample, since its checks look at each row; the form says so when the size is
+larger.

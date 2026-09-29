@@ -9,8 +9,30 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 
-/// Renders the analysis view when analysis_modal is active: progress overlay, main widget, or "No data available".
+/// Renders the analysis view when analysis_modal is active: progress overlay, main
+/// widget, or "No data available", with the Sample form over it while it is open.
 pub fn render(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    app: &mut crate::App,
+    ctx: &RenderContext,
+) {
+    render_body(area, buf, app, ctx);
+    if let Some(form) = &app.analysis_modal.sample_form {
+        let files = app
+            .data_table_state
+            .as_ref()
+            .map(|state| state.quality_source_file_names())
+            .unwrap_or_default();
+        // Data Quality's row-by-row checks keep at most 50,000 rows a run.
+        let cap = (app.analysis_modal.selected_tool
+            == Some(analysis_modal::AnalysisTool::DataQuality))
+        .then_some(50_000);
+        crate::widgets::sample_form::render(form, files, cap, area, buf, ctx);
+    }
+}
+
+fn render_body(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     app: &mut crate::App,
@@ -40,13 +62,7 @@ pub fn render(
             ]),
             // What decides how long this takes, stated rather than left to guess.
             Line::from(Span::styled(
-                match app.analysis_sample_rows {
-                    Some(n) if !app.analysis_modal.reads_all => format!(
-                        "   Samples {} rows, spread across the table, when it has more",
-                        crate::numfmt::group_chrome(n)
-                    ),
-                    _ => "   Reads every row".to_string(),
-                },
+                format!("   Reads {}", app.analysis_modal.sample.summary()),
                 Style::default().fg(ctx.dimmed),
             )),
         ];
@@ -68,9 +84,6 @@ pub fn render(
                 page: modal.data_quality_page,
                 editing: modal.data_quality_editing,
                 plan_field: modal.data_quality_plan_field,
-                scope_input: &modal.data_quality_scope_input,
-                scope_error: modal.data_quality_scope_error.as_deref(),
-                scope_file_offset: modal.data_quality_scope_file_offset,
                 show_access: modal.data_quality_show_access,
                 observation_detail: modal.data_quality_observation_detail,
                 confirm_run: modal.data_quality_confirm_run,
@@ -119,6 +132,7 @@ pub fn render(
             theme: &app.theme,
             table_cell_padding: app.table_cell_padding,
             number_format: &ctx.number_format,
+            sample: &app.analysis_modal.sample,
         };
         let widget = analysis::AnalysisWidget::new(
             config,

@@ -179,10 +179,21 @@ In the chart export dialog:
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
 | <kbd>Enter</kbd> | Run the highlighted tool, or open the detail of a column or a correlation pair |
-| <kbd>s</kbd> | In the distribution detail, toggle the histogram between linear and log |
-| <kbd>r</kbd> | On a sampled result, draw another sample (from the main analysis view, not inside a detail) |
-| <kbd>a</kbd> | On a sampled result, read every row instead, after confirming |
+| <kbd>s</kbd> | On a tool's main view, open the Sample form: the rows every tool reads. In the distribution detail, toggle the histogram between linear and log |
+| <kbd>r</kbd> | On a sampled result, draw another sample for every tool (from the main analysis view, not inside a detail) |
+| <kbd>a</kbd> | On a sampled result, read every row instead, after confirming; the sample's method becomes Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress; otherwise back one level |
+
+In the Sample form:
+
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> | Apply the sample and run the tool on screen again |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> | Move between Rows from, Method, Per, Rows and Seed |
+| <kbd>←</kbd> <kbd>→</kbd> | Change the focused value; on Seed, draw a new one |
+| typing | On Rows from, the scope: `view`, `source`, `rows 1..5000`, `files 1,3`, `partition year=2019,2021`, `partition year=2020..2022`, `time date=A..B` |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | On Rows from, scroll the numbered source files |
+| <kbd>Esc</kbd> | Discard the edit |
 
 In Data Quality:
 
@@ -190,17 +201,17 @@ In Data Quality:
 |---|---|
 | <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends |
 | <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, show all checks on the clean entry, or close an open popup |
-| <kbd>e</kbd> | Edit the plan's seven fields — Scope, Grain, Compute, Compare, Time roles, Latency threshold, Sample rows — in a copy of the plan |
+| <kbd>e</kbd> | Edit the plan's seven fields — Sample, Grain, Values, Compare, Time roles, Latency threshold, Rows per segment — in a copy of the plan |
+| <kbd>s</kbd> | Open the shared Sample form |
 | <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
-| <kbd>Enter</kbd> on Scope | Open the precise scope entry |
+| <kbd>Enter</kbd> on Sample | Open the Sample form |
 | <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |
-| <kbd>←</kbd> <kbd>→</kbd> on Sample rows | Cycle 1,000 to 50,000 rows kept per segment (default: `[performance] quality_sample_rows`) |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> on Scope | Scroll the numbered source-file inventory |
+| <kbd>←</kbd> <kbd>→</kbd> on Rows per segment | Cycle 1,000 to 50,000 rows kept per segment (default: `[performance] quality_sample_rows`) |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column |
 | <kbd>m</kbd> | In Segments/Trends, choose a measurement |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
-| <kbd>r</kbd> | Rerun with a new seed |
+| <kbd>r</kbd> | Rerun with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
 | <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to its finding, then Analysis itself |
 

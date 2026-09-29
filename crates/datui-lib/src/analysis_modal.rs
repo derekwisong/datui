@@ -1,9 +1,8 @@
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, QUALITY_WINDOW_WIDTHS, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
+    QualityGrain, QualityMetric, QualityPage, TemporalRole, TemporalRoleAssignment,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
-use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -57,10 +56,14 @@ pub struct AnalysisModal {
     pub describe_column_offset: usize, // For horizontal scrolling in describe table
     pub distribution_column_offset: usize, // For horizontal scrolling in distribution table
     pub correlation_column_offset: usize, // For horizontal scrolling in correlation matrix
-    pub random_seed: u64,
-    /// The run in flight, or the last one, reads every row rather than a sample: `a`
-    /// asked for it. Any other run clears it.
-    pub reads_all: bool,
+    /// The rows every tool reads: one scope, method, size and seed for all of them,
+    /// so switching tools compares like with like. Kept across opens; `s` edits it.
+    pub sample: crate::sampling::Sample,
+    /// The dataset the sample's scope was chosen for. A scope naming a partition or a
+    /// file of one dataset means nothing on the next.
+    pub sample_dataset: Option<u64>,
+    /// The Sample form, while it is open.
+    pub sample_form: Option<crate::sample_modal::SampleForm>,
     pub table_state: TableState,              // For describe table
     pub distribution_table_state: TableState, // For distribution table
     pub correlation_table_state: TableState,  // For correlation matrix
@@ -87,9 +90,6 @@ pub struct AnalysisModal {
     pub data_quality_table_state: TableState,
     pub data_quality_editing: bool,
     pub data_quality_plan_field: usize,
-    pub data_quality_scope_input: TextInput,
-    pub data_quality_scope_error: Option<String>,
-    pub data_quality_scope_file_offset: usize,
     pub data_quality_show_access: bool,
     pub data_quality_observation_detail: bool,
     /// The clean entry's popup lists every check rather than the most important.
@@ -112,6 +112,19 @@ pub enum HistogramScale {
 impl AnalysisModal {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A modal whose shared sample starts at the configured size: `[performance]
+    /// analysis_sample_rows`, where 0 means every row.
+    pub fn with_sample_rows(rows: usize) -> Self {
+        let mut modal = Self::default();
+        modal.sample.seed = crate::sample_modal::new_seed();
+        if rows == 0 {
+            modal.sample.method = crate::sampling::SampleMethod::EveryRow;
+        } else {
+            modal.sample.rows = rows;
+        }
+        modal
     }
 
     pub fn open(&mut self) {
@@ -140,9 +153,6 @@ impl AnalysisModal {
         self.data_quality_table_state.select(Some(0));
         self.data_quality_editing = false;
         self.data_quality_plan_field = 0;
-        self.data_quality_scope_input = TextInput::new();
-        self.data_quality_scope_error = None;
-        self.data_quality_scope_file_offset = 0;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
         self.data_quality_confirm_run = false;
@@ -151,11 +161,7 @@ impl AnalysisModal {
         self.data_quality_from_cache = false;
         self.data_quality_metric = QualityMetric::NullRate;
         self.data_quality_column_index = 0;
-        // Generate initial random seed (use 0 if system time is before UNIX_EPOCH)
-        self.random_seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        self.sample_form = None;
     }
 
     pub fn close(&mut self) {
@@ -177,9 +183,6 @@ impl AnalysisModal {
         self.data_quality_results = None;
         self.data_quality_page = QualityPage::Plan;
         self.data_quality_editing = false;
-        self.data_quality_scope_input = TextInput::new();
-        self.data_quality_scope_error = None;
-        self.data_quality_scope_file_offset = 0;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
         self.data_quality_confirm_run = false;
@@ -220,7 +223,6 @@ impl AnalysisModal {
     /// Select the tool under the sidebar cursor. Focus stays on the sidebar:
     /// it moves only when the user presses Tab, never as a side effect.
     pub fn select_tool(&mut self) {
-        self.reads_all = false;
         if let Some(idx) = self.sidebar_state.selected() {
             self.selected_tool = Some(match idx {
                 0 => AnalysisTool::Describe,
@@ -315,12 +317,9 @@ impl AnalysisModal {
         }
     }
 
+    /// Another sample: a new seed for the shared sample.
     pub fn recalculate(&mut self) {
-        self.reads_all = false;
-        self.random_seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        self.sample.seed = crate::sample_modal::new_seed();
     }
 
     pub fn quality_row_count(&self) -> usize {
@@ -329,7 +328,6 @@ impl AnalysisModal {
         };
         match self.data_quality_page {
             QualityPage::Plan => 7,
-            QualityPage::Scope => 0,
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
             QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
@@ -350,17 +348,28 @@ impl AnalysisModal {
             })
     }
 
-    /// Whether the Data Quality scope input owns typed characters. Mirrors the key
-    /// routing in `App::key`, so Ctrl-C and `?` stay ordinary text keys there.
-    pub fn quality_scope_typing(&self) -> bool {
+    /// Whether `s` opens the Sample form here: on a tool's main view, with nothing
+    /// else holding the keys — no run, no popup, no editor, no text field.
+    pub fn sample_key_opens_form(&self) -> bool {
         self.active
-            && self.selected_tool == Some(AnalysisTool::DataQuality)
             && self.view == AnalysisView::Main
-            && self.data_quality_page == QualityPage::Scope
-            && self.focus == AnalysisFocus::Main
+            && self.selected_tool.is_some()
+            && self.computing.is_none()
+            && !self.show_help
+            && !self.data_quality_editing
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
+    }
+
+    /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
+    /// are text there as in any field.
+    pub fn sample_scope_typing(&self) -> bool {
+        self.active
+            && self
+                .sample_form
+                .as_ref()
+                .is_some_and(|form| form.field == crate::sample_modal::SampleField::Scope)
     }
 
     pub fn set_quality_page(&mut self, page: QualityPage) {
@@ -405,31 +414,9 @@ impl AnalysisModal {
 
     pub fn adjust_quality_plan(&mut self, forward: bool, partition_columns: &[String]) {
         match self.data_quality_plan_field {
-            0 => {
-                let mut choices = vec![
-                    QualityScope::CurrentView,
-                    QualityScope::WholeSource,
-                    QualityScope::FirstRows(10_000),
-                    QualityScope::FirstRows(1_000_000),
-                ];
-                // A scope typed into the editor is not a preset. Keep it in the
-                // cycle so the arrows move from where the user is rather than
-                // silently jumping to the first preset.
-                if !choices.contains(&self.data_quality_plan.scope) {
-                    choices.insert(0, self.data_quality_plan.scope.clone());
-                }
-                let current = choices
-                    .iter()
-                    .position(|choice| choice == &self.data_quality_plan.scope)
-                    .unwrap_or(0);
-                let next = if forward {
-                    (current + 1) % choices.len()
-                } else {
-                    (current + choices.len() - 1) % choices.len()
-                };
-                self.data_quality_plan.scope = choices[next].clone();
-                self.data_quality_plan.baseline_segment = None;
-            }
+            // The sample is every tool's, edited in the Sample form (Enter opens it);
+            // the arrows have nothing of this plan's own to change here.
+            0 => {}
             1 => {
                 let mut choices = vec![QualityGrain::Dataset, QualityGrain::File];
                 choices.extend(
@@ -473,19 +460,18 @@ impl AnalysisModal {
                 self.data_quality_plan.grain = choices[next].clone();
                 self.data_quality_plan.baseline_segment = None;
             }
+            // Values read, or only the footers. How many values, and which, is the
+            // shared sample's to say: every row reads as a full scan.
             2 => {
-                // Forward is metadata to sample to full; backward is the same ring the
-                // other way, so each value's Left undoes its own Right.
-                self.data_quality_plan.compute = match (self.data_quality_plan.compute, forward) {
-                    (QualityCompute::Metadata, true) | (QualityCompute::Full, false) => {
-                        QualityCompute::Sample
-                    }
-                    (QualityCompute::Sample, true) | (QualityCompute::Metadata, false) => {
+                let _ = forward;
+                self.data_quality_plan.compute = match self.data_quality_plan.compute {
+                    QualityCompute::Metadata
+                        if self.sample.method == crate::sampling::SampleMethod::EveryRow =>
+                    {
                         QualityCompute::Full
                     }
-                    (QualityCompute::Full, true) | (QualityCompute::Sample, false) => {
-                        QualityCompute::Metadata
-                    }
+                    QualityCompute::Metadata => QualityCompute::Sample,
+                    QualityCompute::Sample | QualityCompute::Full => QualityCompute::Metadata,
                 };
             }
             3 => {
@@ -849,20 +835,16 @@ impl AnalysisModal {
 mod quality_scope_tests {
     use super::*;
 
+    /// The Sample row is every tool's sample, chosen in the Sample form; the arrows
+    /// on it change nothing of this plan's.
     #[test]
-    fn scope_choices_wrap_without_changing_grain() {
+    fn the_sample_row_is_not_cycled_in_the_plan() {
         let mut modal = AnalysisModal::new();
+        let before = modal.data_quality_plan.clone();
         modal.data_quality_plan_field = 0;
         modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.scope, QualityScope::WholeSource);
         modal.adjust_quality_plan(false, &[]);
-        assert_eq!(modal.data_quality_plan.scope, QualityScope::CurrentView);
-        modal.adjust_quality_plan(false, &[]);
-        assert_eq!(
-            modal.data_quality_plan.scope,
-            QualityScope::FirstRows(1_000_000)
-        );
-        assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
+        assert_eq!(modal.data_quality_plan, before);
     }
 
     /// Left undoes Right on every plan field that cycles a fixed ring. A field whose
@@ -872,24 +854,17 @@ mod quality_scope_tests {
     fn every_cycling_plan_field_steps_both_ways() {
         let mut modal = AnalysisModal::new();
 
+        // Values: read or metadata only. Which of sample and full scan a read is,
+        // the shared sample says.
         modal.data_quality_plan_field = 2;
-        let computes = [
-            QualityCompute::Metadata,
-            QualityCompute::Sample,
-            QualityCompute::Full,
-        ];
-        modal.data_quality_plan.compute = computes[0];
-        for expected in computes.iter().skip(1).chain(computes.first()) {
-            modal.adjust_quality_plan(true, &[]);
-            assert_eq!(
-                modal.data_quality_plan.compute, *expected,
-                "compute forward"
-            );
-        }
-        for expected in computes.iter().rev() {
-            modal.adjust_quality_plan(false, &[]);
-            assert_eq!(modal.data_quality_plan.compute, *expected, "compute back");
-        }
+        modal.data_quality_plan.compute = QualityCompute::Metadata;
+        modal.adjust_quality_plan(true, &[]);
+        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Sample);
+        modal.adjust_quality_plan(false, &[]);
+        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Metadata);
+        modal.sample.method = crate::sampling::SampleMethod::EveryRow;
+        modal.adjust_quality_plan(true, &[]);
+        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Full);
 
         modal.data_quality_plan_field = 3;
         let comparisons = [

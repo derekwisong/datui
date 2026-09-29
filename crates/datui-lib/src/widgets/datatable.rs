@@ -11407,9 +11407,16 @@ mod tests {
         let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
         let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
-        let results =
-            crate::statistics::compute_describe_from_lazy(&analysis_lf, Some(3), None, 0, false)
-                .expect("describe should not fail on binary columns");
+        let results = crate::statistics::compute_describe_from_lazy(
+            &analysis_lf,
+            Some(3),
+            &crate::sampling::Sample {
+                method: crate::sampling::SampleMethod::EveryRow,
+                ..crate::sampling::Sample::default()
+            },
+            false,
+        )
+        .expect("describe should not fail on binary columns");
 
         let blob_stat = results
             .column_statistics

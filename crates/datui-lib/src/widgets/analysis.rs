@@ -36,6 +36,8 @@ pub struct AnalysisWidgetConfig<'a> {
     pub table_cell_padding: u16,
     /// Display-time number formatting, so counts here match the data table.
     pub number_format: &'a NumberFormatSettings,
+    /// The shared sample the results were read with, for the header.
+    pub sample: &'a crate::sampling::Sample,
 }
 
 pub struct AnalysisWidget<'a> {
@@ -57,6 +59,7 @@ pub struct AnalysisWidget<'a> {
     theme: &'a Theme,
     table_cell_padding: u16,
     number_format: &'a NumberFormatSettings,
+    sample: &'a crate::sampling::Sample,
 }
 
 impl<'a> AnalysisWidget<'a> {
@@ -87,6 +90,7 @@ impl<'a> AnalysisWidget<'a> {
             theme: config.theme,
             table_cell_padding: config.table_cell_padding,
             number_format: config.number_format,
+            sample: config.sample,
         }
     }
 }
@@ -125,16 +129,16 @@ impl<'a> AnalysisWidget<'a> {
             None => "Analysis",
         };
 
-        // What the numbers are of, stated rather than implied: a sample says how big
-        // and of how many, so a surprising figure can be told apart from a rare one.
-        let breadcrumb_text = match self.results.and_then(|r| r.sample_size.map(|n| (n, r))) {
-            Some((n, results)) => format!(
-                "{tool_name} {} sample of {} of {} rows",
+        // What the numbers are of, stated rather than implied: a sample says how big,
+        // of how many, and of which rows, so a surprising figure can be told apart
+        // from a rare one.
+        let breadcrumb_text = match self.results {
+            Some(results) if self.selected_tool.is_some() => format!(
+                "{tool_name} {} {}",
                 crate::glyphs::get().middot,
-                crate::numfmt::group_chrome(n),
-                crate::numfmt::group_chrome(results.total_rows)
+                self.sample.outcome(results.total_rows, results.sample_size)
             ),
-            None => tool_name.to_string(),
+            _ => tool_name.to_string(),
         };
 
         let header_row_style = header_style(self.theme, "controls_bg", "table_header");

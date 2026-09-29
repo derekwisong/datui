@@ -969,6 +969,56 @@ fn test_stale_background_events_are_ignored() {
     );
 }
 
+/// Esc cancels an analysis while it runs, for every tool: it acts at once rather than
+/// queueing behind the run, the bar says so first, and the answer that arrives later
+/// is dropped rather than installed.
+#[test]
+fn test_esc_cancels_a_distribution_analysis_in_flight() {
+    use datui::analysis_modal::AnalysisTool;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&key(KeyCode::Char('a')));
+    app.analysis_modal.sidebar_state.select(Some(1));
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(matches!(next, Some(AppEvent::AnalysisDistributionCompute)));
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DistributionAnalysis)
+    );
+    // The run starts on a worker.
+    app.event(&next.unwrap());
+    assert!(app.analysis_modal.computing.is_some());
+
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(screen.contains("Cancel"), "{screen:?}");
+    assert!(!screen.contains("0 / 1"), "no gauge that cannot move");
+
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.hard_escape_while_busy(&esc), "Esc jumps the queue");
+    app.event(&AppEvent::Key(esc));
+    assert!(app.analysis_modal.computing.is_none());
+    assert_eq!(app.analysis_modal.selected_tool, None);
+    assert!(app.analysis_modal.active, "still on the analysis screen");
+    assert_eq!(app.flash_message(), Some("Analysis cancelled"));
+
+    // The worker finishes anyway; what it sends is stale.
+    drain_events(&mut app, &rx);
+    assert!(app.analysis_modal.computing.is_none());
+    assert_eq!(app.analysis_modal.selected_tool, None);
+}
+
 #[test]
 fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};

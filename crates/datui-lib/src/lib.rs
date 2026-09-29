@@ -3432,12 +3432,45 @@ pub mod tests {
         let finished = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the lease reports back");
-        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
         let _ = app.handle(&finished);
         assert!(
             !app.work_a_bump_would_strand(),
             "and the generation is free again"
         );
+    }
+
+    /// Work a cancel passed holds nothing up. Polars cannot stop the query, so the worker
+    /// runs on with its lease; the bump made its answer stale, and the table must not
+    /// wait on it. A lease on the new generation still counts.
+    #[test]
+    fn a_cancelled_lease_does_not_hold_the_generation() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let old = app.lease_for_tests();
+        let leased_on = app.task_generation;
+        app.task_generation = app.task_generation.wrapping_add(1);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "the abandoned worker is not waited on"
+        );
+
+        let current = app.lease_for_tests();
+        assert!(app.work_a_bump_would_strand());
+
+        // The abandoned worker finishing does not release the current one.
+        std::mem::forget(old);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: leased_on,
+        });
+        assert!(app.work_a_bump_would_strand());
+        std::mem::forget(current);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation,
+        });
+        assert!(!app.work_a_bump_would_strand());
     }
 
     /// A worker that panics still returns its lease.
@@ -3457,7 +3490,7 @@ pub mod tests {
         let finished = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the lease reports back even from a panic");
-        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
         let _ = app.handle(&finished);
         assert!(
             !app.work_a_bump_would_strand(),
@@ -3612,7 +3645,9 @@ pub mod tests {
 
         // Declining puts the errand down, and the generation with it.
         let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation(),
+        });
         assert!(
             !app.work_a_bump_would_strand(),
             "nothing waits on it once the download is declined"
@@ -3728,7 +3763,9 @@ pub mod tests {
 
         // The open finishes, and the jump gets its turn.
         drop(lease);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation(),
+        });
         assert!(
             app.collect_owed.is_none(),
             "the collect the jump asked for runs once nothing is waiting"
@@ -4027,7 +4064,9 @@ pub mod tests {
         // The export finishes, and the errand gets its turn on the next event.
         app.loading_state = LoadingState::Idle;
         drop(lease);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation(),
+        });
         let _ = app.handle(&AppEvent::Update);
 
         assert!(
@@ -4109,7 +4148,9 @@ pub mod tests {
             // The lease is released by dropping it, which sends the event the count is
             // decremented by — behind whatever result the work had already sent.
             drop(lease);
-            let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+            let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+                generation: app.task_generation(),
+            });
             app.chart_inflight = None;
         };
 
@@ -5258,7 +5299,9 @@ pub enum AppEvent {
     /// A [`GenerationLease`] was released: the work holding it has finished, however it
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
-    BackgroundWorkFinished,
+    BackgroundWorkFinished {
+        generation: u64,
+    },
     /// A directory named on the command line: look at it on a worker, then do with it
     /// whatever `Enter` on its row would do.
     ///
@@ -5354,12 +5397,17 @@ struct ClassifyRequest {
 /// app is wedged with or without this, but the count does not rescue it.
 struct GenerationLease {
     events: Sender<AppEvent>,
+    /// The generation it was taken on. Work on an older one was cancelled by the bump
+    /// that passed it, and its answer will be dropped, so it holds nothing up.
+    generation: u64,
 }
 
 impl Drop for GenerationLease {
     fn drop(&mut self) {
         // Nobody to tell means the app is gone, and so is the count.
-        let _ = self.events.send(AppEvent::BackgroundWorkFinished);
+        let _ = self.events.send(AppEvent::BackgroundWorkFinished {
+            generation: self.generation,
+        });
     }
 }
 
@@ -6533,9 +6581,10 @@ pub struct App {
     /// ordinary count the pass was going to save it — hence an errand of its own, tried
     /// again after every event until the work it would cancel is done.
     reread_owed: Option<u64>,
-    /// Leases outstanding on `task_generation`: background work a bump would strand.
-    /// See [`GenerationLease`].
-    leases: usize,
+    /// Leases outstanding, by the generation each was taken on. Those on the current
+    /// `task_generation` are background work a bump would strand. See
+    /// [`GenerationLease`].
+    leases: HashMap<u64, usize>,
     /// A buffer collect that was asked for while a lease was outstanding, and the
     /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
     /// dropped when the dataset it belonged to is replaced.
@@ -6749,6 +6798,27 @@ impl App {
         self.error_modal.active || self.confirmation_modal.active
     }
 
+    /// Stop waiting for the analysis in flight.
+    ///
+    /// Polars cannot stop a query partway, so the worker runs to the end and its answer
+    /// is dropped: the bump makes it stale, and its lease no longer holds the table up.
+    /// The tool is put back unchosen, so its view does not sit on a spinner for a run
+    /// that is not coming; Enter on it runs it again.
+    fn cancel_analysis(&mut self) {
+        self.task_generation = self.task_generation.wrapping_add(1);
+        self.analysis_modal.computing = None;
+        self.analysis_computation = None;
+        self.busy = false;
+        self.status_message = None;
+        if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
+            self.analysis_modal.data_quality_results = None;
+        } else {
+            self.analysis_modal.selected_tool = None;
+            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        }
+        self.flash_note("Analysis cancelled".to_string());
+    }
+
     /// Show a completion flash on the control bar.
     fn flash_note(&mut self, message: String) {
         self.flash = Some(Flash::new(message));
@@ -6779,15 +6849,14 @@ impl App {
             && (key.code == KeyCode::Char('q')
                 || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
         let home = ctrl && key.code == KeyCode::Char('o');
-        let cancel_quality = self.analysis_modal.active
-            && self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
+        let cancel_analysis = self.analysis_modal.active
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
         let leave_quality_evidence = self.quality_evidence_return.is_some()
             && self.input_mode == InputMode::Normal
             && key.code == KeyCode::Esc;
         quit || home
-            || cancel_quality
+            || cancel_analysis
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -7638,9 +7707,10 @@ impl App {
 
     /// Take a lease on the current `task_generation`. See [`GenerationLease`].
     fn lease_the_generation(&mut self) -> GenerationLease {
-        self.leases += 1;
+        *self.leases.entry(self.task_generation).or_default() += 1;
         GenerationLease {
             events: self.events.clone(),
+            generation: self.task_generation,
         }
     }
 
@@ -7655,7 +7725,14 @@ impl App {
         //  - `EventPump`, for as long as a continuation it has not dispatched is
         //    waiting, which is the gap between two phases of one errand;
         //  - an errand parked on the user, which is the download confirmation.
-        self.leases > 0
+        //
+        // Counted per generation, and only the current one asked about: work leased on an
+        // older one was cancelled by the bump that passed it — an analysis the user
+        // stopped with Esc, whose worker Polars cannot interrupt — and waiting for it
+        // would hold the table up for work nobody wants.
+        self.leases
+            .get(&self.task_generation)
+            .is_some_and(|n| *n > 0)
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -7966,7 +8043,7 @@ impl App {
             dataset_generation: 0,
             footers_held: None,
             reread_owed: None,
-            leases: 0,
+            leases: HashMap::new(),
             collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
@@ -13527,6 +13604,13 @@ impl App {
         }
 
         if self.analysis_modal.active {
+            // A run in flight, whichever tool: Esc stops waiting for it. It acts at once
+            // (see `hard_escape_while_busy`) rather than queueing behind the run it is
+            // meant to cancel.
+            if event.code == KeyCode::Esc && self.analysis_modal.computing.is_some() {
+                self.cancel_analysis();
+                return None;
+            }
             if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
                 && self.analysis_modal.view == analysis_modal::AnalysisView::Main
             {
@@ -13622,14 +13706,6 @@ impl App {
                 }
 
                 match event.code {
-                    KeyCode::Esc if self.analysis_modal.computing.is_some() => {
-                        self.task_generation = self.task_generation.wrapping_add(1);
-                        self.analysis_modal.computing = None;
-                        self.analysis_modal.data_quality_results = None;
-                        self.status_message = Some("Data-quality run cancelled".to_string());
-                        self.busy = false;
-                        return None;
-                    }
                     KeyCode::Esc if self.analysis_modal.data_quality_show_access => {
                         self.analysis_modal.data_quality_show_access = false;
                         return None;
@@ -13800,11 +13876,8 @@ impl App {
                             self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             return None;
                         }
-                        self.analysis_modal.computing = Some(AnalysisProgress {
-                            phase: "Profiling data quality".to_string(),
-                            current: 0,
-                            total: 1,
-                        });
+                        self.analysis_modal.computing =
+                            Some(AnalysisProgress::new("Profiling data quality"));
                         self.busy = true;
                         return Some(AppEvent::AnalysisDataQualityCompute);
                     }
@@ -13865,11 +13938,8 @@ impl App {
                             self.analysis_modal.data_quality_confirm_run = false;
                             self.analysis_modal.data_quality_results = None;
                             self.analysis_modal.data_quality_from_cache = false;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Profiling data quality".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
+                            self.analysis_modal.computing =
+                                Some(AnalysisProgress::new("Profiling data quality"));
                             self.busy = true;
                             return Some(AppEvent::AnalysisDataQualityCompute);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
@@ -14037,11 +14107,7 @@ impl App {
                     match self.analysis_modal.selected_tool {
                         Some(analysis_modal::AnalysisTool::Describe) => {
                             self.analysis_modal.describe_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Describing data".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
+                            self.analysis_modal.computing = Some(AnalysisProgress::new("Describing data"));
                             self.analysis_computation = Some(AnalysisComputationState {
                                 df: None,
                                 schema: None,
@@ -14057,21 +14123,13 @@ impl App {
                         }
                         Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                             self.analysis_modal.distribution_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Distribution".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
+                            self.analysis_modal.computing = Some(AnalysisProgress::new("Analyzing distributions"));
                             self.busy = true;
                             return Some(AppEvent::AnalysisDistributionCompute);
                         }
                         Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                             self.analysis_modal.correlation_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Correlation".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
+                            self.analysis_modal.computing = Some(AnalysisProgress::new("Computing correlations"));
                             self.busy = true;
                             return Some(AppEvent::AnalysisCorrelationCompute);
                         }
@@ -14097,11 +14155,7 @@ impl App {
                             Some(analysis_modal::AnalysisTool::Describe)
                                 if self.analysis_modal.describe_results.is_none() =>
                             {
-                                self.analysis_modal.computing = Some(AnalysisProgress {
-                                    phase: "Describing data".to_string(),
-                                    current: 0,
-                                    total: 1,
-                                });
+                                self.analysis_modal.computing = Some(AnalysisProgress::new("Describing data"));
                                 self.analysis_computation = Some(AnalysisComputationState {
                                     df: None,
                                     schema: None,
@@ -14118,22 +14172,14 @@ impl App {
                             Some(analysis_modal::AnalysisTool::DistributionAnalysis)
                                 if self.analysis_modal.distribution_results.is_none() =>
                             {
-                                self.analysis_modal.computing = Some(AnalysisProgress {
-                                    phase: "Distribution".to_string(),
-                                    current: 0,
-                                    total: 1,
-                                });
+                                self.analysis_modal.computing = Some(AnalysisProgress::new("Analyzing distributions"));
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisDistributionCompute);
                             }
                             Some(analysis_modal::AnalysisTool::CorrelationMatrix)
                                 if self.analysis_modal.correlation_results.is_none() =>
                             {
-                                self.analysis_modal.computing = Some(AnalysisProgress {
-                                    phase: "Correlation".to_string(),
-                                    current: 0,
-                                    total: 1,
-                                });
+                                self.analysis_modal.computing = Some(AnalysisProgress::new("Computing correlations"));
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisCorrelationCompute);
                             }
@@ -14154,11 +14200,7 @@ impl App {
                                         // A local read costs nothing worth confirming:
                                         // lead with the result. The plan stays one Esc
                                         // (or e) away, echoed in the strip up top.
-                                        self.analysis_modal.computing = Some(AnalysisProgress {
-                                            phase: "Profiling data quality".to_string(),
-                                            current: 0,
-                                            total: 1,
-                                        });
+                                        self.analysis_modal.computing = Some(AnalysisProgress::new("Profiling data quality"));
                                         self.busy = true;
                                         return Some(AppEvent::AnalysisDataQualityCompute);
                                     }
@@ -17304,11 +17346,16 @@ impl App {
                 };
                 self.open_what_it_is(path.clone(), kind, *jump)
             }
-            AppEvent::BackgroundWorkFinished => {
+            AppEvent::BackgroundWorkFinished { generation } => {
                 // Behind the result its work sent, so the handler that consumed that
                 // result has already run. Saturating because a lease released twice
                 // would otherwise wrap into "nothing is ever safe to bump".
-                self.leases = self.leases.saturating_sub(1);
+                if let Some(n) = self.leases.get_mut(generation) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.leases.remove(generation);
+                    }
+                }
                 None
             }
             AppEvent::BackgroundError {

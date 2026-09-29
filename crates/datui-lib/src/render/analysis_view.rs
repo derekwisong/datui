@@ -5,7 +5,9 @@ use crate::analysis_modal::{self, AnalysisModal};
 use crate::render::context::RenderContext;
 use crate::widgets::{analysis, data_quality};
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Paragraph, Widget};
 
 /// Renders the analysis view when analysis_modal is active: progress overlay, main widget, or "No data available".
 pub fn render(
@@ -17,47 +19,38 @@ pub fn render(
     if let Some(ref progress) = app.analysis_modal.computing
         && app.analysis_modal.selected_tool != Some(analysis_modal::AnalysisTool::DataQuality)
     {
-        let percent = if progress.total > 0 {
-            (progress.current as u16).saturating_mul(100) / progress.total as u16
-        } else {
-            0
-        };
+        // A run is one Polars query with no steps to count, so a gauge could only ever
+        // read 0%. What moves is time: the spinner and the clock say it is alive, and
+        // the control bar says Esc cancels.
         Clear.render(area, buf);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(crate::glyphs::get().border)
-            .border_style(ratatui::style::Style::default().fg(ctx.modal_border))
-            .title(" Analysis ")
-            .title_style(ratatui::style::Style::reset());
-        let inner = block.inner(area);
-        block.render(area, buf);
-        let text = format!(
-            "{}: {} / {}",
-            progress.phase, progress.current, progress.total
-        );
-        Paragraph::new(text)
-            .style(ratatui::style::Style::default().fg(ctx.text_primary))
-            .render(
-                Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
+        let g = crate::glyphs::get();
+        let spinner = g.spinner[app.throbber_frame as usize % g.spinner.len()];
+        let lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(format!(" {spinner} "), Style::default().fg(ctx.accent)),
+                Span::styled(
+                    progress.phase.clone(),
+                    Style::default().fg(ctx.text_primary),
+                ),
+                Span::styled(
+                    format!("  {}", elapsed(progress.started.elapsed())),
+                    Style::default().fg(ctx.dimmed),
+                ),
+            ]),
+            // What decides how long this takes, stated rather than left to guess.
+            Line::from(Span::styled(
+                match app.sampling_threshold {
+                    Some(n) => format!(
+                        "   Samples {} rows from a larger table",
+                        crate::numfmt::group_chrome(n)
+                    ),
+                    None => "   Reads every row".to_string(),
                 },
-                buf,
-            );
-        Gauge::default()
-            .gauge_style(ratatui::style::Style::default().fg(ctx.label))
-            .ratio(percent as f64 / 100.0)
-            .render(
-                Rect {
-                    x: inner.x,
-                    y: inner.y + 1,
-                    width: inner.width,
-                    height: 1,
-                },
-                buf,
-            );
+                Style::default().fg(ctx.dimmed),
+            )),
+        ];
+        Paragraph::new(lines).render(area, buf);
     } else if let Some(state) = &app.data_table_state {
         if app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             // Borrowed field by field, never cloned. A per-file profile of a large
@@ -178,5 +171,15 @@ pub fn help_title_and_text(modal: &AnalysisModal) -> (String, String) {
                 "Select an analysis tool from the sidebar.".to_string(),
             ),
         },
+    }
+}
+
+/// `12s`, `3m 05s`, `1h 02m`: a clock for a wait, to the second while seconds matter.
+fn elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
+        _ => format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60),
     }
 }

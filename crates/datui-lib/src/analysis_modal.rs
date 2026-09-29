@@ -27,8 +27,18 @@ pub enum AnalysisTool {
 #[derive(Debug, Clone)]
 pub struct AnalysisProgress {
     pub phase: String,
-    pub current: usize,
-    pub total: usize,
+    /// When the run began, for the elapsed time on screen. A run is one Polars query
+    /// with no steps to count, so time is the only progress there is to show.
+    pub started: std::time::Instant,
+}
+
+impl AnalysisProgress {
+    pub fn new(phase: &str) -> Self {
+        Self {
+            phase: phase.to_string(),
+            started: std::time::Instant::now(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

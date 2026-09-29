@@ -1,94 +1,88 @@
 # Python Bindings
 
-The **datui-pyo3** crate and the **datui** Python package let you open the datui TUI from Python with a Polars `LazyFrame` or `DataFrame` (`datui.view(lf)` or `datui.view(df)`), or with paths. A frame is passed as the binary form of `LazyFrame.serialize()`, so the Python `polars` in use must produce a plan the crate's Rust Polars (currently 0.55) can read: 1.43 is the release Polars pairs with 0.55, and the wheel declares `polars>=1.38` with no upper bound, so a newer polars fails per plan (1.44 refuses joins) rather than at install. The plan's DSL version is checked; its schema hash is not, since that hash is per polars commit and no PyPI wheel shares one with a crates.io release — the Rust binding splices its own hash into an incoming plan, and `datui.view(..., capture=True)` returns the final view over the same bridge in reverse, with the Python wrapper splicing its polars' hash into the plan handed back before deserializing it. Move the floor in `python/pyproject.toml`, `PAIRED_POLARS` in `python/datui/__init__.py` and the pin in `scripts/requirements.txt` with every Rust Polars bump. The crate lives at `crates/datui-pyo3` and is excluded from the Cargo workspace; it is built with **maturin** from the `python/` directory.
+Build with **maturin** from `python/`. The extension crate,
+`crates/datui-pyo3`, is separate from the Cargo workspace.
+For using the installed package, see the [Python guide](../user-guide/python-module.md).
 
-## Summary
+<a id="virtual-environment"></a>
 
-| Task | Command |
-|------|--------|
-| Build and install (development) | `cd python && maturin develop` |
-| Run Python tests | `pytest python/tests/ -v` |
-| Use in Python | `import datui; datui.view(lf)` or `datui.view(df)` |
+## Set up
 
-Use a **virtual environment** so the extension and package are installed into that env.
-
----
-
-## Virtual environment
-
-Use a venv so the datui package and its dependencies (e.g. polars) are isolated.
-
-The [Setup Script](setup-script.md) (`scripts/setup_dev.py`) creates `.venv` and installs `scripts/requirements.txt`
-which contain all the requirements here.
-
-**Create and activate (from repo root):**
+From the repository root, create or activate a virtual environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-```
-
-**Install build and test dependencies in the venv:**
-
-```bash
-pip install --upgrade pip
 pip install maturin "polars==1.43.*" "pytest>=7.0"
 ```
 
----
+You also need Rust and Python development headers (`python3-dev` on Debian/Ubuntu).
+The [setup script](setup-script.md) creates `.venv`, but does not install
+maturin or pytest; install those separately as above.
 
-## Building locally
+<a id="building-locally"></a>
+<a id="testing"></a>
 
-Build and install the full **datui** package (Python wrapper + Rust extension) into the current environment. From the **python/** directory:
+## Build and test
 
 ```bash
-# Activate venv first (see above)
+cd python
+maturin develop
+cd ..
+pytest python/tests/ -v
+```
+
+Add `--release` to `maturin develop` for an optimized build. The tests cover
+imports, options, invalid inputs and serialized plans. On platforms with PTY
+support, they also open the TUI and check that a captured frame survives closing it.
+
+<a id="running"></a>
+
+## Run
+
+```python
+import datui
+import polars as pl
+
+datui.view(pl.scan_csv("data.csv"))
+```
+
+Press `q` to close the view. See [capture](../user-guide/python-module.md)
+for returning the edited view as a LazyFrame.
+
+The Python `datui` command needs a bundled binary. For local development,
+build and copy it from the repository root, then rerun maturin:
+
+```bash
+cargo build
+mkdir -p python/datui_bin
+cp target/debug/datui python/datui_bin/
 cd python
 maturin develop
 ```
 
-- **Debug** (default): faster to compile, larger binary. Omit `--release`.
-- **Release**: add `--release` for a smaller, faster binary:
+On Windows, copy `target/debug/datui.exe` instead. The console script looks
+beside the package for this binary; it does not search `PATH`. You can also
+run `target/debug/datui` directly.
 
-  ```bash
-  maturin develop --release
-  ```
+## Polars compatibility
 
-You need **Rust** and **Python development headers** (e.g. `python3-dev` on Debian/Ubuntu). Maturin will use the Python that runs `maturin` (or the one in your activated venv). From the repo root you can run `cd python && maturin develop`.
+Python frames cross the extension boundary as serialized LazyFrame plans.
+Rust Polars **0.55** is paired with Python Polars **1.43**. The wheel declares
+`polars>=1.38` without an upper bound, so installation alone does not prove
+that every plan is compatible. Use the paired version when debugging a plan
+that cannot be read.
 
----
+The bridge checks the plan's DSL version and replaces its per-commit schema
+hash with the receiver's hash. Capture uses the same process in reverse.
+This handles differing build hashes; it does not translate incompatible plans.
 
-## Testing
+When upgrading Rust Polars, review these together:
 
-With the package installed in your venv (after `cd python && maturin develop`), run the Python tests from the **repo root**:
+| File | Setting |
+|---|---|
+| `python/pyproject.toml` | Minimum supported Python Polars version |
+| `python/datui/__init__.py` | `PAIRED_POLARS` |
+| `scripts/requirements.txt` | Development/test Polars pin |
 
-```bash
-pytest python/tests/ -v
-```
-
-Tests check that the module imports, that `view`, `view_from_json`, and `run_cli` exist, and that invalid inputs raise (they do not run the TUI).
-
----
-
-## Running
-
-**In Python (view a LazyFrame):**
-
-```python
-import polars as pl
-import datui
-
-lf = pl.scan_csv("data.csv")
-datui.view(lf)   # Opens TUI; press q to exit
-```
-
-**CLI from the same env:**  
-If you built the datui binary (`cargo build` (from repo root)) and it’s on your `PATH`, the `datui` console script (from `pip` / maturin) will use it. Otherwise install the CLI separately (e.g. from GitHub releases or your system package manager).
-
----
-
-## More
-
-- User-facing usage: [Python Module](../user-guide/python-module.md), and
-  [python/README.md](https://github.com/derekwisong/datui/blob/main/python/README.md) in the repo.
-- PyPI package: `pip install datui`
+Run the Python tests after changing either side of the bridge.

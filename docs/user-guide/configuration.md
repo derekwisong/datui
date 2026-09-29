@@ -1,7 +1,6 @@
 # Configuration
 
-Datui reads one [TOML](https://toml.io) file. Generate it with every option
-present and commented out:
+Run this to create your [TOML](https://toml.io) config:
 
 ```bash
 datui --generate-config
@@ -12,6 +11,9 @@ datui --generate-config
 | Linux | `~/.config/datui/config.toml` |
 | macOS | `~/Library/Application Support/datui/config.toml` |
 | Windows | `%APPDATA%\datui\config.toml` |
+
+Most generated settings are commented examples. The public-dataset catalog is
+active so you can edit its entries.
 
 Settings apply in this order, later winning: built-in defaults, imported files
 in the order listed, this file, command-line flags.
@@ -29,6 +31,18 @@ directories = ["/mnt/data", "~/datasets"]
 [theme.colors]
 accent = "#ff9e64"
 ```
+
+## Find a setting
+
+| Change | Section |
+|---|---|
+| CSV inference, nulls or decompression | [File loading](#file-loading) |
+| Row numbers, number formatting or buffers | [Display](#display) |
+| Analysis sampling or chart size | [Performance](#performance) · [Charts](#charts) |
+| Home directories or recursive search | [Data](#data) |
+| Cloud sources and discovery | [Cloud](#cloud) |
+| Clipboard over SSH or on the desktop | [Clipboard](#clipboard) |
+| Colors or terminal appearance | [Theme](#theme) |
 
 ## Sections
 
@@ -126,7 +140,7 @@ overrides it for a run and `0` forces the full dataset. See
 [Analysis](analysis-features.md#sampling).
 
 `quality_sample_rows` is the default for the Data Quality plan's
-[Sample rows field](analysis-features.md#sampling-and-budgets); the plan
+[Sample rows field](data-quality.md#sampling-and-budgets); the plan
 editor changes it per run.
 
 ### Charts
@@ -298,7 +312,7 @@ unless you list files: reading whatever `.env` sits in the current directory,
 unasked, would be reading secrets you did not mean to hand over.
 
 See [The Home Screen](home-screen.md) for
-[`discover`](home-screen.md#which-sources-appear) and
+[`discover`](cloud-browser.md#which-sources-appear) and
 [`list_on_start`](home-screen.md#loading). `--cloud-discover` overrides `discover`
 for one run.
 

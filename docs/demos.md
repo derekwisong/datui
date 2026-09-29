@@ -1,8 +1,18 @@
 # Demos
 
-Every recording uses real data: the local
+These recordings use real data: the local
 [demo datasets](https://github.com/derekwisong/datui/blob/main/demo/DATA-LICENSES.md)
 and the publisher-hosted datasets in datui's public cloud catalog.
+
+## Find a workflow
+
+| Watch | Guide |
+|---|---|
+| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud browser](user-guide/cloud-browser.md) |
+| [Querying](#querying) | [Queries, SQL and fuzzy search](user-guide/querying-data.md) |
+| [Sorting](#sorting) · [Filtering](#filtering) | [Table controls](user-guide/filtering-sorting.md) |
+| [Pivot](#pivot) · [Melt](#melt) | [Reshaping](user-guide/reshaping.md) |
+| [Export](#export) | [Export a file](user-guide/exporting-data.md) |
 
 ## Home and cloud
 
@@ -90,16 +100,8 @@ The Palmer penguins written to Parquet. See [Exporting Data](user-guide/exportin
 
 ![Export Demo](demos/08-export.gif)
 
-## Correlation matrix
+## Charts and analysis
 
-Daily Bitcoin chain statistics: blocks, addresses, transaction counts, values
-and fees. See [Analysis](user-guide/analysis-features.md).
-
-![Correlation Matrix Demo](demos/09-correlation-matrix.gif)
-
-## Charting
-
-Transactions per day since the genesis block as a line chart, exported to PNG.
-See [Charting](user-guide/charting.md).
-
-![Charting Demo](demos/10-charting.gif)
+For chart settings, export formats and analysis scope, use the
+[charting guide](user-guide/charting.md), [analysis guide](user-guide/analysis-features.md)
+and [data-quality guide](user-guide/data-quality.md).

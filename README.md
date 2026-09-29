@@ -1,104 +1,115 @@
-# Datui
+# datui
 
-[![Release](https://img.shields.io/github/v/release/derekwisong/datui?style=flat-square&logo=github&color=blue&label=release)](https://github.com/derekwisong/datui/releases/latest)
-[![crates.io](https://img.shields.io/crates/v/datui?style=flat-square&logo=rust&color=blue)](https://crates.io/crates/datui)
-[![PyPI](https://img.shields.io/pypi/v/datui?style=flat-square&logo=pypi&logoColor=white&color=blue)](https://pypi.org/project/datui/)
-[![Downloads](https://img.shields.io/github/downloads/derekwisong/datui/total?style=flat-square&logo=github&color=blue)](https://github.com/derekwisong/datui/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/derekwisong/datui/actions)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+**Explore tabular data without leaving your terminal.**
 
-**Datui** is a terminal UI for looking at tabular data: Parquet, CSV, JSON,
-Arrow and more, on disk or in S3, GCS and HTTP, from a few rows to a few
-billion.
+Open a file, ask a question, and take the result with you. datui reads Parquet,
+CSV, JSON, Excel and more, from your disk or cloud storage. Query with SQL or
+its short query language; sort, chart, reshape and export with the keyboard.
 
-![Home and Cloud Demo](demos/14-cloud-home.gif)
+[![Release](https://img.shields.io/github/v/release/derekwisong/datui?style=flat-square)](https://github.com/derekwisong/datui/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square)](https://github.com/derekwisong/datui/actions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+
+[Website][site] · [Documentation][docs] · [Quick start][quick-start] · [All demos][demos]
 
 ```bash
-datui data.parquet                    # open a file
-datui --hive s3://bucket/warehouse/   # or a partitioned dataset in the cloud
-datui                                 # or pick one from the home screen
+datui flights.parquet              # open a file
+datui ./exports/                   # open a dataset or browse its files
+datui s3://bucket/events/           # S3, GCS and Azure work too
+datui                              # find a dataset from the home screen
 ```
 
-Press `?` for the keys. `/` queries, `s` sorts and filters, `c` charts,
-`a` analyzes, `q` backs out or quits. The [documentation][docs] has the rest.
+![Filtering public US baby-name data to see one name's history](demos/02-querying.gif)
 
 ## Install
+
+On Linux or macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
 
-| | |
+| Prefer a package manager? | Command |
 |---|---|
 | macOS | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
 | Windows | `winget install derekwisong.datui` |
-| Arch Linux | `paru -S datui-bin` |
-| Debian, Ubuntu | [apt repository][install-guide] |
 | Python | `pip install datui` |
 | Rust | `cargo install datui --locked` |
-| Anything else | [Pre-built binaries][latest-release] for Linux, macOS and Windows |
+| Arch Linux | `paru -S datui-bin` |
 
-See the [install guide][install-guide] for details and building from source.
+The [installation guide][install-guide] covers apt, RPMs, user-only installs
+and building from source. [Prebuilt binaries][latest-release] are also available.
 
-## What it does
+## From rows to an answer
 
-- **Opens the file where it is.** Local paths, `s3://` and `gs://` URLs, and
-  hive-partitioned directories; HTTP URLs are fetched first. Parquet is read
-  lazily through [Polars](https://pola.rs), one row group at a time, so a
-  dataset larger than memory scrolls like a small one.
-- **Shows you what is around you.** Run `datui` with no arguments for the
-  [home screen][home-screen]: recent datasets, the current directory, your
-  data directories, and the buckets your credentials can reach. Each row shows
-  rows, columns and size before you open it; the schema is one keystroke away.
-- **Answers questions.** SQL, a short [query language][query-syntax]
-  (`select a, b by region where c > 10`), and fuzzy text search across every
-  column. Sort, filter, freeze and hide columns from a sidebar.
-- **Summarizes.** Describe, distribution fitting with Q-Q plots, and a
-  correlation matrix, computed on the data as filtered.
-- **Draws.** Line, scatter, bar, histogram, box, KDE and heatmap charts in the
-  terminal, exportable as PNG or EPS.
-- **Reshapes and saves.** Pivot and melt, export to CSV, Parquet, JSON, NDJSON,
-  Arrow or Avro, and views that replay a query, filters and sort on the
-  next dataset with the same shape.
-- **Configurable.** Light and dark palettes with every color a config key,
-  defaults for every option, and arrow keys or `h` `j` `k` `l`.
+| Do this | Press | Read more |
+|---|---|---|
+| Query, run SQL, or search text | `/` | [Queries][query-guide] |
+| Sort, filter, hide or freeze columns | `s` | [Table controls][filter-guide] |
+| Plot a trend or distribution | `c` | [Charts][chart-guide] |
+| Check statistics, correlations or data quality | `a` | [Analysis][analysis-guide] |
+| Pivot or melt | `p` | [Reshaping][reshape-guide] |
+| Copy a result or export a file | `y` / `e` | [Copy][copy-guide] · [Export][export-guide] |
+| Save a view to reuse on another file | `v` | [Views][views-guide] |
 
-## From Python
+Press `?` for help on any screen. `Esc` backs out; `Ctrl+Q` quits.
+The [quick start][quick-start] walks through a real public dataset, from opening
+it to saving a chart and a table.
+
+Parquet and other scan-based formats use [Polars](https://pola.rs) to load rows
+as needed. Queries, sorting and analysis can read much more than the visible
+page; see [performance tips][performance] for large datasets.
+
+## Use it from Python
+
+`pip install datui` includes both the command and the Python module:
 
 ```python
-import polars as pl
 import datui
+import polars as pl
 
-datui.view(pl.scan_parquet("data.parquet"))   # a LazyFrame stays lazy
-datui.view("s3://bucket/events/", hive=True)  # paths and URLs work too
+datui.view(pl.scan_parquet("flights.parquet"))
+
+# Bring the view you built in the UI back to Python.
+result = datui.view("flights.parquet", capture=True)
+if result is not None:
+    result.collect()
 ```
 
-See the [Python module][python-module].
+[Python guide][python-module] · [Supported formats and cloud access][loading-guide]
 
-## Configure
+## Make it yours
 
-```bash
-datui --generate-config
-```
-
-Data directories for the home screen, S3 endpoints, CSV defaults, number
-formatting and every color live in one TOML file. See the
+Run `datui --generate-config` to create a TOML config. Set your data directories,
+cloud sources, number formatting, and light or dark colors in the
 [configuration guide][config-guide].
 
-## Contributing
+## Contribute
 
-Bug reports and feature requests go to the
-[issue tracker](https://github.com/derekwisong/datui/issues); security problems
-go to [SECURITY.md](SECURITY.md) instead. To build, test or contribute, start
-with the [developer guide][for-developers].
+Found a bug or have an idea? [Open an issue][issues]. For code and documentation
+changes, start with the [developer guide][for-developers]. Report security
+issues using [SECURITY.md](SECURITY.md).
 
-Datui is MIT licensed. See [LICENSE](LICENSE).
+Built with [Polars](https://pola.rs) and [Ratatui](https://ratatui.rs).
+Released under the [MIT license](LICENSE).
 
-[docs]: https://derekwisong.github.io/datui/
+[site]: https://derekwisong.github.io/datui/
+[docs]: https://derekwisong.github.io/datui/latest/
+[quick-start]: https://derekwisong.github.io/datui/latest/getting-started/quick-start.html
+[demos]: https://derekwisong.github.io/datui/latest/demos.html
 [install-guide]: https://derekwisong.github.io/datui/latest/getting-started/installation.html
 [latest-release]: https://github.com/derekwisong/datui/releases/latest
-[config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html
-[home-screen]: https://derekwisong.github.io/datui/latest/user-guide/home-screen.html
-[query-syntax]: https://derekwisong.github.io/datui/latest/reference/query-syntax.html
+[query-guide]: https://derekwisong.github.io/datui/latest/user-guide/querying-data.html
+[filter-guide]: https://derekwisong.github.io/datui/latest/user-guide/filtering-sorting.html
+[chart-guide]: https://derekwisong.github.io/datui/latest/user-guide/charting.html
+[analysis-guide]: https://derekwisong.github.io/datui/latest/user-guide/analysis-features.html
+[reshape-guide]: https://derekwisong.github.io/datui/latest/user-guide/reshaping.html
+[copy-guide]: https://derekwisong.github.io/datui/latest/user-guide/copying.html
+[export-guide]: https://derekwisong.github.io/datui/latest/user-guide/exporting-data.html
+[views-guide]: https://derekwisong.github.io/datui/latest/user-guide/views.html
+[performance]: https://derekwisong.github.io/datui/latest/advanced/performance-tips.html
+[loading-guide]: https://derekwisong.github.io/datui/latest/user-guide/loading-data.html
 [python-module]: https://derekwisong.github.io/datui/latest/user-guide/python-module.html
+[config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html
 [for-developers]: https://derekwisong.github.io/datui/latest/for-developers.html
+[issues]: https://github.com/derekwisong/datui/issues

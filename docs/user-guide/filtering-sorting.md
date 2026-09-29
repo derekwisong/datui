@@ -11,8 +11,9 @@ Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 | <kbd>Esc</kbd> | Close without changing anything |
 | <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
 
-Filters and sort from this sidebar apply to the loaded table. To filter the
-result of a query, put the condition in the query's `where` clause. While a
+Sidebar filters and sort apply to the current query or reshape result. Running
+a new query clears them, so apply the query first and the sidebar settings
+afterward. While a
 filter or query narrows the view, the bottom bar reads `417 of 1,000` — the
 count on screen exact, a large total abbreviated (`417,321 of 1.2M`); the
 exact total is in the Info panel.
@@ -40,8 +41,7 @@ list, then:
 | <kbd>v</kbd> | Hide or show this column (it stays in the list, dimmed) |
 
 Every column carries its own direction, so `salary` can run descending while
-`start_date` runs ascending. Nulls go last either way, as they do in pandas,
-DuckDB and spreadsheets.
+`start_date` runs ascending. Nulls go last in either direction.
 
 Back in the main view, <kbd>r</kbd> reverses every direction at once and
 <kbd>R</kbd> resets everything: query, filters, sort, column order and hidden

@@ -31,8 +31,7 @@ file, the same columns, or a pattern.
 ## Saving
 
 Press <kbd>s</kbd> in the list. There must be something to save: on an
-untouched table <kbd>s</kbd> refuses, rather than minting a view that carries
-nothing. The name starts as the file's name; add an optional description, and
+untouched table <kbd>s</kbd> refuses, because there are no changes to save. The name starts as the file's name; add an optional description, and
 expand the Matching section (<kbd>Space</kbd>) to change how the view offers
 itself to future files:
 
@@ -73,5 +72,6 @@ overwrites what it carries.
 auto_apply = true   # apply the best match when a file opens
 ```
 
-Views are JSON files in `~/.config/datui/templates/`.
+Views are JSON files in the `templates/` directory beside your
+[config file](configuration.md).
 `datui --remove-templates` deletes them all.

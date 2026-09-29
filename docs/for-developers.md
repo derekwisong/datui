@@ -41,6 +41,7 @@ The release build takes much longer and produces a much smaller, faster binary.
 | [Security Checks](for-developers/security-checks.md) | cargo-deny and zizmor, locally and in CI |
 | [Fuzzing](for-developers/fuzzing.md) | The fuzz targets and how to run them |
 | [Adding Configuration Options](for-developers/adding-configuration-options.md) | The seven places a new option touches |
+| [Glyphs](for-developers/glyph-audit.md) | Adding symbols with ASCII fallbacks |
 | [Documentation](for-developers/documentation.md) | Building this site |
 | [Generating the Demos](for-developers/demos.md) | Re-recording the GIFs |
 | [Building Packages](for-developers/packaging.md) | deb, rpm, AUR and winget |

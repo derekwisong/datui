@@ -1,76 +1,101 @@
-# Quick Start
+# Quick start
 
-Five minutes from install to your first chart. Not installed yet? See
-[Installation](installation.md).
+Open a small public dataset, compare three penguin species, and save the result.
+[Install datui](installation.md) first.
 
-## Open something
+## 1. Open the data
+
+Download the [Palmer Penguins CSV][penguins] (344 rows, CC0), then open it:
 
 ```bash
-datui data.parquet                          # one file
-datui part-1.csv part-2.csv                 # several files of the same shape, as one table
-datui /data/events/                         # a directory: read as one table, or browsed into
-datui s3://bucket/events/                   # the same, in S3 (also gs:// and https://)
-datui                                       # no path: the home screen
+curl -fL -o penguins.csv https://raw.githubusercontent.com/allisonhorst/palmerpenguins/main/inst/extdata/penguins.csv
+datui --null-value NA penguins.csv
 ```
 
-With no path, the [home screen](../user-guide/home-screen.md) lists recent
-datasets, the current directory, your configured data directories and the
-buckets your credentials reach. Type to filter, <kbd>Enter</kbd> to open.
-<kbd>Ctrl</kbd>+<kbd>O</kbd> brings you back to it from anywhere.
-
-From Python:
-
-```python
-import polars as pl
-import datui
-
-datui.view(pl.scan_parquet("data.parquet"))
-```
-
-## Move around
+On Windows, use `curl.exe` for the download. You can also download the file in
+your browser and run the second command. `--null-value NA` reads the source's
+missing-value marker as null, shown as `∅`.
 
 | Key | Action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page at a time |
-| <kbd>Home</kbd> <kbd>End</kbd> | First and last row |
-| <kbd>:</kbd> | Go to a row number |
-| <kbd>?</kbd> | Help for the screen you are on |
-| <kbd>Esc</kbd> | Close whatever is open |
-| <kbd>q</kbd> | Back to the home screen when the dataset came from it; otherwise quit |
+| Arrow keys or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move around |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
+| <kbd>i</kbd> | Inspect columns and file details |
+| <kbd>?</kbd> | Show help for this screen |
+| <kbd>Esc</kbd> | Close a panel or go back |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
-The bottom bar always shows the keys that matter on the current screen.
+## 2. Ask a question
 
-## Ask a question
+Which species has the highest average body mass? Press <kbd>/</kbd>, type this
+on the **Query** tab, then press <kbd>Enter</kbd>:
 
-Press <kbd>/</kbd> and type a query:
-
-```
-select name, city, salary by department where salary > 100000
+```text
+select mean_mass_g: avg body_mass_g by species
 ```
 
-<kbd>Enter</kbd> runs it. A `by` clause groups; press <kbd>Enter</kbd> on a
-group to drill into it and <kbd>Esc</kbd> to come back. The same prompt has a
-**SQL** tab (`SELECT * FROM df WHERE ...`) and a **Fuzzy** tab that matches text
-in any column. See [Querying Data](../user-guide/querying-data.md).
+You get three rows, one per species. `avg` ignores null values; Gentoo has the
+highest mean, about 5,076 g. Press <kbd>s</kbd> to open **Sort & Filter**,
+select `mean_mass_g` on **Columns**, and press <kbd>Space</kbd> twice for
+descending order, then <kbd>Enter</kbd> to apply.
 
-## Sort, filter, chart, analyze
+Prefer SQL? Open <kbd>/</kbd>, press <kbd>Tab</kbd> to focus the tab bar,
+select **SQL** with the arrow keys, then <kbd>Tab</kbd> back to the input:
 
-| Key | Opens |
+```sql
+SELECT species, AVG(body_mass_g) AS mean_mass_g
+FROM df
+GROUP BY species
+ORDER BY mean_mass_g DESC
+```
+
+The loaded table is named `df`. A new query starts a fresh view, clearing
+sidebar filters and sort. See [querying](../user-guide/querying-data.md) for
+fuzzy search, expressions and grouped drill-down.
+
+## 3. Plot individual measurements
+
+Press <kbd>R</kbd> to reset to the original rows, then <kbd>c</kbd> for charts.
+On the **XY** tab, use <kbd>Tab</kbd> to move between settings:
+
+| Setting | Choose |
 |---|---|
-| <kbd>s</kbd> | Sort and filter: order, freeze and hide columns, add row filters |
-| <kbd>c</kbd> | Charts: line, scatter, bar, histogram, box, KDE, heatmap |
-| <kbd>a</kbd> | Analysis: describe, distribution fitting, correlation matrix |
-| <kbd>p</kbd> | Pivot and melt |
-| <kbd>e</kbd> | Export the current view to a file |
-| <kbd>i</kbd> | Schema and file details |
-| <kbd>R</kbd> | Reset: clear the query, filters and sort |
+| Plot style | Scatter |
+| X | `flipper_length_mm` |
+| Y | `body_mass_g` |
 
-Everything works on the data as you currently see it. Filter first, then chart,
-analyze or export the result.
+Use <kbd>Space</kbd> on a column setting to open its picker. Type part of the
+name, then select it; on Y, <kbd>Space</kbd> toggles the series and
+<kbd>Enter</kbd> closes the picker. All 342 complete measurement pairs fit
+within the default 10,000-row chart limit.
 
-## Next
+Press <kbd>e</kbd> in the chart to save a PNG or EPS. Press <kbd>Esc</kbd>
+to return to the table. [More chart options](../user-guide/charting.md).
 
-- [Keyboard Shortcuts](../reference/keyboard-shortcuts.md) lists every key on every screen.
-- [Loading Data](../user-guide/loading-data.md) covers formats, compression, CSV options and cloud credentials.
-- [Configuration](../user-guide/configuration.md) sets defaults and colors. Start with `datui --generate-config`.
+## 4. Take the result with you
+
+Run the three-row summary again, then choose an output:
+
+| Do this | How |
+|---|---|
+| Copy the summary into a note | <kbd>y</kbd> → Table → Markdown → <kbd>Enter</kbd> |
+| Save a data file | <kbd>e</kbd> → type `penguin-summary.csv` in Path → <kbd>Enter</kbd> |
+| Reuse the query on another file | <kbd>v</kbd> → <kbd>s</kbd> to save a view |
+
+Export and copy use the current rows and columns. They do not overwrite the
+input file unless you explicitly export to that path and confirm.
+
+## Use your own data
+
+```bash
+datui flights.parquet
+datui ./exports/
+datui s3://bucket/events/
+datui                        # browse from the home screen
+```
+
+Next: [file formats](../user-guide/loading-data.md),
+[cloud access](../user-guide/remote-data.md), or
+[all keyboard shortcuts](../reference/keyboard-shortcuts.md).
+
+[penguins]: https://allisonhorst.github.io/palmerpenguins/

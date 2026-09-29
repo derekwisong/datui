@@ -23,7 +23,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension) |
 | `--debug` | Enable debug mode to show operational information |
 | `--hive` | Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file |
-| `--single-spine-schema[=<BOOL>]` | Infer a partitioned Parquet dataset's schema from one file for a faster open (default: true). Set to false to scan every file's schema |
+| `--single-spine-schema[=<BOOL>]` | Combine Parquet file schemas from their footers (default: true). Set to false to use Polars' single-file schema inference |
 | `--parse-dates[=<BOOL>]` | Parse CSV string columns that look like dates (e.g. YYYY-MM-DD, ISO datetime) as dates (default: true) |
 | `--parse-strings[=<COL>]` | Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float (default: all string columns). --parse-strings=COL (repeatable) limits it to named columns; --no-parse-strings disables it |
 | `--no-parse-strings` | Do not trim or type-infer CSV string columns. Overrides config and --parse-strings |

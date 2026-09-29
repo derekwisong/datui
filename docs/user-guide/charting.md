@@ -5,7 +5,8 @@ chart type — switch it from anywhere with <kbd>1</kbd>–<kbd>5</kbd> or
 <kbd>[</kbd> <kbd>]</kbd> — and the sidebar holds the active type's columns
 and options. <kbd>Esc</kbd> returns to the table.
 
-![Charting Demo](../demos/10-charting.gif)
+To follow a complete example with public data, use the
+[quick start](../getting-started/quick-start.md#3-plot-individual-measurements).
 
 ## Chart types
 
@@ -19,7 +20,8 @@ and options. <kbd>Esc</kbd> returns to the table.
 
 Every type has a **Limit Rows** option at the bottom of the sidebar: how many
 rows are used to build the chart. The default comes from `row_limit` in the
-[`[chart]` config section](configuration.md#charts) and is 10,000.
+[`[chart]` config section](configuration.md#charts) and is 10,000. This is a row cap, not random sampling. Filter or aggregate
+first when the chart needs to represent a larger period or dataset.
 
 ## Keys
 

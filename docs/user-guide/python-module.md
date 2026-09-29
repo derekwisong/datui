@@ -20,7 +20,8 @@ datui.view(lf.collect())  # a DataFrame works too
 ```
 
 <kbd>q</kbd> closes datui and returns to Python. A LazyFrame stays lazy, so
-scanning a large file and viewing it costs no more than it does in the CLI.
+datui can request rows without collecting the entire frame first. Sorting,
+aggregation and other operations may still scan the full input.
 
 ## View a path
 
@@ -56,9 +57,8 @@ matching rows. It is a LazyFrame even for DataFrame input, so Python decides
 when to collect or write. `None` when no dataset was open at quit; text still
 sitting in an editor and unfinished background work are not part of it.
 
-**The result is a plan, not a snapshot.** Deferred execution is not zero-copy
-transfer; Python rebuilds the plan with its own Polars resources rather than
-taking over datui's.
+**Collecting runs the returned plan again.** Python rebuilds it with its own
+Polars resources; the rows you saw in datui are not cached for Python.
 
 | Source | What collecting the result does |
 |---|---|

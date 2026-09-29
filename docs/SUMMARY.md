@@ -2,8 +2,6 @@
 
 [Introduction](introduction.md)
 
-- [Demos](demos.md)
-
 - [Getting Started](getting-started.md)
   - [Installation](getting-started/installation.md)
   - [Quick Start](getting-started/quick-start.md)
@@ -11,10 +9,13 @@
 - [User Guide](user-guide.md)
   - [The Home Screen](user-guide/home-screen.md)
   - [Loading Data](user-guide/loading-data.md)
+  - [Remote Data](user-guide/remote-data.md)
+  - [Cloud Browser](user-guide/cloud-browser.md)
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)
   - [Charting](user-guide/charting.md)
   - [Analysis](user-guide/analysis-features.md)
+  - [Data Quality](user-guide/data-quality.md)
   - [Pivot and Melt](user-guide/reshaping.md)
   - [Exporting Data](user-guide/exporting-data.md)
   - [Copying to the Clipboard](user-guide/copying.md)
@@ -24,6 +25,7 @@
   - [Configuration](user-guide/configuration.md)
   - [Theming from Your System](user-guide/system-theming.md)
   - [Performance Tips](advanced/performance-tips.md)
+  - [Demos](demos.md)
 
 - [Reference](reference.md)
   - [Keyboard Shortcuts](reference/keyboard-shortcuts.md)

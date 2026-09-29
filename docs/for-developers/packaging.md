@@ -79,17 +79,14 @@ The same script is used in GitHub Actions:
 generates a body from the commit subjects since the previous tag. The body is
 therefore never empty, and hand-written notes are always optional.
 
-The timing is the point. `publish-packages.yml` starts about a minute after the
-release is created, and komac copies the release body into the winget manifest
-as `ReleaseNotes`. Notes typed onto the release page afterwards fix what people
-read on GitHub and nothing else, because winget already has whatever the body
-said. Version 0.3.1 shipped to winget with no release notes that way.
+Write notes before tagging: `publish-packages.yml` copies the release body into
+the winget manifest. Editing the GitHub release afterward does not update winget.
 
 To write notes for a release, run `python scripts/bump_version.py notes` and
 commit the file with the release. `tests/release_notes_test.rs` checks the
 wiring in CI, which runs on the release commit before the tag is pushed, and the
 winget job refuses to run komac against an empty release body. See
-`release-notes/README.md`.
+[the release-notes guide](https://github.com/derekwisong/datui/blob/main/release-notes/README.md).
 
 ### Arch Linux Installation
 
@@ -137,7 +134,7 @@ Use **stable** release tags only (e.g. `v0.3.2`); the AUR package fetches the ta
 
 ### Automated AUR updates (GitHub Actions)
 
-The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically when you push a version tag. It publishes to the **datui-bin** AUR package (per AUR convention for pre-built binaries). It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
+The release workflow calls `publish-packages.yml` to push PKGBUILD and .SRCINFO to the AUR after creating the release. It publishes to the **datui-bin** AUR package (per AUR convention for pre-built binaries). It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
 
 **Required repository secrets** (Settings → Secrets and variables → Actions):
 

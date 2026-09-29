@@ -55,8 +55,9 @@ The format is taken from the extension, or from `--format` when there is none.
 | Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | | |
 | ORC | `.orc` | | |
 
-**Lazy** formats are scanned, so only the rows on screen are read and a file
-larger than memory is fine. The others are read whole before the table appears.
+**Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
+queries, sorting and analysis may read the full input. The other formats are
+loaded in full before the table appears.
 
 **Excel** opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).
@@ -103,104 +104,83 @@ remote prefix does.
 
 ### Files that disagree
 
-The table has every column any file has. datui reads each file's Parquet footer
-— a small read at the end of the file, never the data — and folds them into one
-schema:
+By default, datui combines schemas from Parquet footers. It does not need to
+scan data values to find the columns.
 
 | Across the files | In the table |
 |---|---|
-| A column only some files have | Shown; the other files' rows read null |
-| `Int32` and `Int64`, `Int` and `Float`, `ms` and `ns` | The wider type |
-| Types that cannot meet, such as a number and text | The type most rows have; the column is not read from the other files |
-| A file whose footer cannot be read | Left out; the rest still opens |
+| A column appears in only some files | Shown, with nulls for files missing the column |
+| Compatible types, such as `Int32` and `Int64` | Widened to a shared type |
+| Incompatible types, such as numbers and text | Uses the type with the most rows; values of incompatible types are not read |
+| An unreadable footer | Skips that file |
 
-The **Schema** tab of the [Info panel](dataset-info.md) says which footers the
-schema came from. Past 20,000 files, a sample spread evenly across them stands
-in and the tab says so; so does a cloud directory that is still reading the rest
-of its footers behind the data.
+The [Info panel](dataset-info.md) reports the metadata scope. Above 20,000
+files, datui samples evenly across the file list. A cloud dataset may also
+start with a partial schema while the remaining footers load.
 
-An empty cell says which kind of empty it is, so a gap in the data is never
-confused with a gap in the files:
+When all file row counts are known, empty cells distinguish three cases:
 
-| Cell | Means |
+| Cell | Meaning |
 |---|---|
-| `∅` | A null the data holds |
-| `·` | The file this row came from has no such column |
-| `≠` | The file holds the column in another type, so it was not read from that file |
+| `∅` | A null value |
+| `·` | The source file has no such column |
+| `≠` | The source file stores an incompatible type, so the value was not read |
 
-A mark after a column's name means it is not in every file, or the files
-disagree on its type. The distinction survives a filter and a sort. Telling the
-three apart needs every file's row count, so where datui does not have one —
-past 20,000 files, where the schema comes from a sample, or when a footer could
-not be read — the marks still appear but every empty cell reads as `∅`. A group-by,
-pivot or SQL query builds new rows that stand for no one file, so their nulls are
-plain nulls again, and an export writes every empty cell as null.
+Column-name markers also identify missing or conflicting fields. When row
+counts are incomplete, empty cells all display as `∅`, though the column
+markers remain. Queries, pivots and other transformations create new rows
+without this file-level distinction. Exports write all three cases as null.
 
-A `≠` cell's value can still be seen. The **Notes** tab's note about the column
-offers **read this column as text**, and taking it reads the column from the files
-that disagree too, at the type each of them wrote, spelled as text. Nothing is
-read past any more, so the `≠` marks and the note go, and it costs no re-listing
-and no footer read. A column any file stores as a list, a duration or binary has
-no text form datui can show, and is not offered.
+To recover conflicting values, open the column's note in **Info → Notes**
+and apply **read as text**, if offered. This reuses the existing metadata.
+Lists, arrays, durations, binary and unknown types cannot use this action.
+Filters and sorting then compare strings: `"10"` sorts before `"2"`.
+Compatible numeric types still widen as usual; their mixed-type note remains.
 
-A filter or sort on a column read as text compares text: `n > 5` keeps `"sixty"`
-and drops `"10"`. A note says so for as long as the column is read that way.
+**Sidebar filters and sorting can exclude conflicting rows.** When every
+file's row count is known, using a conflicting column removes rows from files
+that store its incompatible type. A note reports the affected count. Clearing
+that filter or sort restores the rows. With incomplete row counts, those rows
+remain as nulls instead.
 
-A file whose type merely *widens* into the column's is read at the column's type
-either way, so an integer in a column read as a float still reads as `7.0`, and
-the note saying the column is stored as more than one type stays.
-
-A `≠` cell has no value the column can be compared or ordered by, so where datui
-has every file's row count, filtering or sorting by a column the files disagree
-on leaves those rows out rather than gathering them at one end. The **Notes** tab
-says how many rows are in the files that hold the column in another type, and the
-`i` key takes its quiet accent again to say there is something new there. Clearing
-the filter or sort brings the rows back. Where datui does not have those counts —
-the same cases that flatten the marks above — the rows stay, gathered at one end
-and unremarked.
-
-The rows go whatever else the filter says. A sidebar filter of **id** = 3 **or**
-**n** = 0 leaves out a row whose file stores `n` as text even where its `id` is
-3: that file's `n` was never read, so the view cannot stand behind either half.
-A query typed in the [query bar](querying-data.md) is a different thing — it
-builds rows of its own, and none of this applies to them.
-
-Only `≠` rows go that way. A `·` cell's file never had the column at all, so a
-sort keeps its rows. A filter is a different matter: no comparison holds against
-an empty cell, so a `·` or `∅` row fails one as it would in any query, and datui
-says nothing about that because nothing unusual happened.
+This exclusion applies even to an OR filter: `id = 3 OR n = 0` still removes
+rows from files where `n` has an incompatible type. Queries in the
+[query bar](querying-data.md) create a separate result and do not apply this
+file-level rule. Missing-column (`·`) rows remain during sorting; filters
+handle missing values as nulls.
 
 ### How large remote datasets open
 
-A directory in the cloud of more than 64 files does not wait for every footer.
-It opens from the first file and the last, by name, and reads the rest behind
-the data, with the count in the control bar. Columns those files turn out to
-have join the table at the end of the column order when they arrive; until
-then the row count is not shown, every empty cell reads as `∅`, the Notes are
-scoped to `in 2 of 6,541 footers (sample)`, and a query, pivot or drill-down
-holds the new columns off until you come back to the data. Local directories
-read every footer up front. While footers are read they are counted, `Reading
-footers: 1,203 of 6,541`; past 20,000 files the count is the sample it reads.
+Cloud directories with more than 64 files open using the first and last files
+by name, then read the remaining footers in the background. New columns join
+the end of the table as they are found. Until then:
 
-The Notes tab flags layouts that cost time to read:
+- The total row count is unavailable and empty cells display as `∅`.
+- Notes state the partial metadata scope.
+- A query, pivot or drill-down defers the new columns until you return to the original data.
 
-| Note | Means |
+Local directories read metadata before opening. Above 20,000 files, both
+routes use a sample. The control bar reports footer-reading progress.
+
+The Notes tab also flags storage layouts that may explain a slow open:
+
+| Finding | Why it matters |
 |---|---|
-| the middle row group is past 64 MiB | rows are read a row group at a time, so over a network a page waits on the whole group |
-| more than 10,000 files, the middle one under a mebibyte | many footers were opened before a row was; the remedy — fewer, larger files — is upstream in whatever writes them |
-| `3 files by date, 1 file by dt` | the directories do not all partition by the same keys. The same keys in a different order are fine |
+| Median row-group size above 64 MiB | Reading a page may require a large row group |
+| More than 10,000 files, median size below 1 MiB | Many metadata reads before data can be displayed |
+| Different partition keys, such as `date` and `dt` | Partition columns vary across the dataset; key order alone is fine |
 
-`--single-spine-schema=false` skips the footer pass and lets Polars decide the
-schema from one file; the partition-keys note is not checked on that route.
+`--single-spine-schema=false` skips datui's footer union and uses Polars'
+single-file schema inference. That route also omits the partition-key check.
 
 ### Opening it again
 
-What a remote dataset's footers said is kept in the cache directory, under the
-URL you opened, so the same dataset opens again with its columns and row count
-at once. The listing still happens, and decides whether what was kept still
-holds: a file added, removed, renamed, resized or rewritten — its name, size,
-modification time or etag — means the footers are read again. `--clear-cache`
-forgets it; deleting it costs speed and nothing else.
+Remote schema metadata is cached by URL. Datui still lists the files to check
+for changes to names, sizes, timestamps or etags. A changed listing triggers
+fresh metadata reads.
+
+`--clear-cache` clears this metadata along with other cached state, including
+query history. See [cache contents](home-screen.md#what-datui-remembers).
 
 ## Binary columns
 
@@ -211,271 +191,32 @@ analysis. The placeholder color is `binary_col` in the
 
 ## Remote data
 
-Pass an `s3://`, `gs://` or `https://` URL where you would pass a path. In S3
-and GCS, Parquet is read in place with range requests, one row group at a time:
-opening fetches the footer and the first row group, <kbd>End</kbd> fetches the
-last, and a query that has to look at every row transfers about the size of the
-object. Row groups up to `max_buffered_rows` and the `max_buffered_mb` budget
-are held whole; a larger one is read one window at a time, so small row groups
-keep both the first screen and paging cheap. Each group or window is fetched
-once.
-
-Paging reads ahead: as the view nears the end of the rows on hand, the next ones
-are fetched in the background while you keep paging. If you get there first, the
-page you were on stays up until the new rows arrive.
-
-| Path | Opens as |
-|---|---|
-| A prefix of Parquet files (`s3://bucket/events/`) | One dataset. The files are listed once; the schema is the newest file's, so older files read later columns as empty; the row count comes from the footers. Reading any part of it opens only the files holding those rows, and <kbd>End</kbd> pressed before the count is in waits for it |
-| A glob (`s3://bucket/events/*/*.parquet`) | The same kind of dataset: datui lists the literal part of the key and matches the rest itself |
-| A directory named without `--format` | The way its `(all files)` row opens on the home screen: CSV or JSON Lines read as one table in place; one holding only directories opens the home screen browsed into it |
-| Every other format, and anything over HTTP | Downloaded to a temporary file (`--temp-dir` chooses where; you are asked first when it is large), then opened like a local file |
-
-One remote path per run.
-
-Once credentials are in place, the buckets they reach are also listed on the
-[home screen](home-screen.md#cloud-storage), so you can browse instead of
-typing URLs.
-
-### Amazon S3
-
-Set the keys and region in the environment:
-
 ```bash
-export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_REGION=us-east-1          # or AWS_DEFAULT_REGION
-datui s3://my-bucket/events/2024/
-```
-
-`AWS_SESSION_TOKEN` adds temporary credentials, and the keys under `[cloud]` in
-the config work the same way. On ECS, Lambda and EKS the task role is used. An EC2
-instance role is used only with `[cloud] instance_identity = true`, since finding it
-means a request that hangs on some networks; with no other AWS login, datui reads S3
-unsigned, which reaches public buckets only.
-
-Each bucket is read in its own region, asked of S3 once per session, so one login
-reaches buckets in every region.
-
-### AWS profiles
-
-With no keys in the environment or the config, datui uses the profile the AWS
-tools would: `AWS_PROFILE`, else `default`.
-
-```bash
-AWS_PROFILE=analytics datui s3://analytics-exports/2024/
-```
-
-| Profile holds | datui |
-|---|---|
-| `aws_access_key_id` and `aws_secret_access_key` | Uses them |
-| `credential_process` | Runs it (aws-vault, granted, 1Password and the like) |
-| `sso_session`, `role_arn`, `credential_source` or `web_identity_token_file` | Runs `aws configure export-credentials --profile <name>`, so the AWS CLI must be installed |
-
-The files are `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`, else
-`~/.aws/config` and `~/.aws/credentials`. A profile's `region` and `endpoint_url`
-(or an `s3` `endpoint_url` under its `services` section) apply too, after
-`AWS_ENDPOINT_URL_S3` and `AWS_ENDPOINT_URL`. Every other profile that can log in
-is its own source on the [home screen](home-screen.md#cloud-storage), named
-`aws-<profile>`; one with an endpoint is S3-compatible, so its URLs are
-`s3://aws-<profile>@bucket/key`.
-
-### S3-compatible storage (MinIO, R2, Ceph)
-
-Point datui at the endpoint. Command line beats environment beats config.
-
-```toml
-# ~/.config/datui/config.toml
-[cloud]
-s3_endpoint_url = "http://localhost:9000"
-s3_access_key_id = "minioadmin"
-s3_secret_access_key = "minioadmin"
-s3_region = "us-east-1"
-```
-
-```bash
-# or per shell
-export AWS_ENDPOINT_URL=http://localhost:9000
-# or per run
-datui --s3-endpoint-url http://localhost:9000 s3://bucket/file.parquet
-```
-
-The command-line flags are `--s3-endpoint-url`, `--s3-access-key-id`,
-`--s3-secret-access-key` and `--s3-region`. In the environment the endpoint is
-taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
-`AWS_ENDPOINT` that is set, the keys from `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`, and the region from `AWS_REGION` or
-`AWS_DEFAULT_REGION`. A variable or flag that is set but empty counts as unset.
-
-### Several stores at once
-
-Name each store in the config, with the environment variables that hold its keys.
-The keys themselves never go in the file.
-
-```toml
-[[cloud.sources]]
-name = "lab"                                  # lowercase letters, digits and -
-kind = "s3"
-endpoint_url = "http://localhost:9000"
-access_key_id_env = "LAB_KEY"
-secret_access_key_env = "LAB_SECRET"
-
-[[cloud.sources]]
-name = "onprem"
-label = "On-prem MinIO"
-kind = "s3"
-endpoint_url = "https://minio.corp.example:9000"
-access_key_id_env = "ONPREM_KEY"
-secret_access_key_env = "ONPREM_SECRET"
-```
-
-Servers already set up in the MinIO client (`mc alias set`, or `MC_HOST_<alias>`)
-or in s3cmd need no config: they are the sources `mc-<alias>` and `s3cfg`.
-
-Open an object from a named S3-compatible store by putting its name before the
-bucket. Two servers can have a bucket with the same name, and the name says which
-one you mean:
-
-```bash
-datui s3://lab@data/sales.parquet
-datui s3://onprem@data/sales.parquet
-```
-
-| URL | Reaches |
-|---|---|
-| `s3://<name>@bucket/key` | The S3-compatible store with that name |
-| `s3://bucket/key` | The `[cloud] s3_*` settings, the `AWS_*` environment and the `--s3-*` flags, as above |
-| `gs://bucket/key` | The Google login, as below |
-
-A source of `kind = "s3"` without `endpoint_url` is a second AWS login. Its URLs stay
-`s3://bucket/key`, and a bucket you reach by browsing it opens with its keys. See
-[Configuration](configuration.md#cloud) for every field.
-
-### Google Cloud Storage
-
-Either login works:
-
-```bash
-gcloud auth login                         # the gcloud CLI's own login
-gcloud auth application-default login     # or Application Default Credentials
-datui gs://my-bucket/path/file.parquet
-```
-
-| Login | datui |
-|---|---|
-| `GOOGLE_APPLICATION_CREDENTIALS`, a service account variable, or `gcloud auth application-default login` | Uses it directly |
-| Only `gcloud auth login` | Asks `gcloud` for a token, for the active configuration |
-| Workload identity federation or an impersonated service account in the application-default file | Asks `gcloud`; without it, the row says `unsupported login` |
-| Another `gcloud` configuration with a different account | Its own source, `gcloud-<configuration>` |
-
-Every project the login can see is listed on the
-[home screen](home-screen.md#cloud-storage), so no project setting is needed. A
-project in `GOOGLE_CLOUD_PROJECT` (or `DATUI_GCP_PROJECT`, or the active `gcloud`
-configuration's) is listed first, and it is the one listed when the login cannot
-search for projects.
-
-### Azure Blob Storage
-
-Sign in, and every storage account the login can see is listed on the
-[home screen](home-screen.md#cloud-storage).
-
-```bash
-az login                  # the Azure CLI
-Connect-AzAccount         # or Azure PowerShell
-datui abfss://datui-test@datalake001.dfs.core.windows.net/demo/penguins.parquet
-```
-
-| URL | Also accepted |
-|---|---|
-| `abfss://<container>@<account>.dfs.core.windows.net/<path>` | `abfs://`, and `https://<account>.blob.core.windows.net/<container>/<path>` or its `dfs` form |
-| | `az://<container>/<path>`, `adl://` and `azure://`, when the account is known: typed inside an account on the home screen, named in the environment, or the only `kind = "azure"` source |
-
-datui writes and remembers the `abfss://` form, which Polars, Spark and DuckDB
-read too.
-
-| Login | Found by |
-|---|---|
-| `az login` | `~/.azure` (or `AZURE_CONFIG_DIR`); datui runs `az account get-access-token` |
-| Azure PowerShell, `Connect-AzAccount` | `~/.Azure/AzureRmContext.json`; datui runs `pwsh` (or `powershell.exe`) once for its tokens. When `az` is signed in too, `az` is used |
-| A service principal or AKS workload identity | `AZURE_TENANT_ID` and `AZURE_CLIENT_ID`, with `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`. With `AZURE_STORAGE_ACCOUNT_NAME` it reads that account; without, it finds its accounts like a sign-in |
-| `AZURE_STORAGE_CONNECTION_STRING` | A connection string with `AccountKey` or `SharedAccessSignature`; `UseDevelopmentStorage=true` for Azurite |
-| `AZURE_STORAGE_ACCOUNT_NAME` with `AZURE_STORAGE_ACCOUNT_KEY` or `AZURE_STORAGE_SAS_TOKEN` | An account and its key or SAS token |
-
-With Azure tools installed but nobody signed in, the Azure row says
-`not signed in` and names the command to run.
-
-Reading blobs with a sign-in needs the *Storage Blob Data Reader* role on the
-account. Owner or Contributor on the subscription is not enough, except on an
-account with hierarchical namespace where your login owns the container. When a
-read is refused for that reason and your login may fetch the account's access keys
-(Owner and Contributor may), datui reads that account with its key instead, as the
-Azure Portal does. The details pane then says `access key`. The key stays in
-memory. Accounts with shared-key access disabled are never read this way, and the
-refusal says so. To read only as your sign-in:
-
-```toml
-[cloud]
-azure_account_keys = false
-```
-
-In **Azure Cloud Shell**, `az` is already signed in, so the Azure row lists your
-accounts with no setup. The install script puts datui in `~/.local/bin` there; see
-[Installation](../getting-started/installation.md#without-root).
-
-### Public data
-
-Public buckets and containers open with no login at all:
-
-```bash
-datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/
-datui gs://cloud-samples-data/bigquery/us-states/us-states.parquet
-datui abfss://release@overturemapswestus2.dfs.core.windows.net/
-```
-
-| Machine has | datui |
-|---|---|
-| No login for that cloud | Reads unsigned straight away |
-| A login | Signs with it. If the place refuses, datui tries once more unsigned, and remembers for the session which one worked |
-
-The retry matters most on Azure, which refuses a public container to a login from
-another tenant. A public bucket or container read this way is listed with the
-[public datasets](home-screen.md#public-datasets) from then on.
-
-A few well-known datasets are built in; see the
-[home screen](home-screen.md#public-datasets). For a compact list of your own, add a
-source with `public = true` and its data as URLs of any cloud:
-
-```toml
-# GBIF occurrence snapshots: CC BY-NC 4.0, see https://www.gbif.org/terms
-[[cloud.sources]]
-name = "gbif"
-label = "GBIF"
-public = true
-buckets = ["s3://gbif-open-data-us-east-1/occurrence/"]
-```
-
-Use structured `[[cloud.sources.datasets]]` tables to give entries names,
-descriptions, publishers, licenses and homepages; see
-[Configuration](configuration.md#cloud).
-
-A license is the publisher's, not datui's: check it before you use the data.
-
-Parquet part files with no extension, like GBIF's `occurrence.parquet/000001`,
-open as Parquet. So does a local file with no extension that starts and ends with
-`PAR1`.
-
-### HTTP and HTTPS
-
-```bash
+datui s3://bucket/events/
+datui gs://bucket/data.parquet
+datui abfss://container@account.dfs.core.windows.net/data.parquet
 datui https://example.com/data.csv
-datui --format parquet https://example.com/download?id=42
 ```
 
-The file is downloaded, then opened. Use `--format` when the URL has no useful
-extension.
+[Remote data](remote-data.md) explains credentials, public access and what gets
+downloaded. Use the [cloud browser](cloud-browser.md) to find data without
+typing a URL.
 
-### Building without cloud support
+| Connect to | Setup |
+|---|---|
+| AWS | [S3](remote-data.md#amazon-s3) · [Profiles and SSO](remote-data.md#aws-profiles) |
+| S3-compatible storage | [Custom endpoint](remote-data.md#s3-compatible-storage-minio-r2-ceph) · [Multiple stores](remote-data.md#several-stores-at-once) |
+| Google Cloud | [GCS](remote-data.md#google-cloud-storage) |
+| Azure | [Blob Storage](remote-data.md#azure-blob-storage) |
+| Public data | [No-login access](remote-data.md#public-data) |
+| Web URL | [HTTP and HTTPS](remote-data.md#http-and-https) |
 
-`cargo build --release --no-default-features` leaves out the cloud
-dependencies. A binary built that way rejects remote URLs with a message
-saying so.
+<a id="amazon-s3"></a>
+<a id="aws-profiles"></a>
+<a id="s3-compatible-storage-minio-r2-ceph"></a>
+<a id="several-stores-at-once"></a>
+<a id="google-cloud-storage"></a>
+<a id="azure-blob-storage"></a>
+<a id="public-data"></a>
+<a id="http-and-https"></a>
+<a id="building-without-cloud-support"></a>

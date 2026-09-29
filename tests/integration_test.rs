@@ -1194,7 +1194,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     let mut buffer = Buffer::empty(wide);
     app.render(wide, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    assert!(screen.contains("Measure") && screen.contains("distinct"));
+    assert!(
+        screen.contains("current view"),
+        "the drill-in names its segment"
+    );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
@@ -1285,19 +1288,15 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    // The measure the Trends table draws; every column is on it at once.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('m'),
-        KeyModifiers::NONE,
-    )));
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char(']'),
         KeyModifiers::NONE,
     )));
     assert_eq!(
         app.analysis_modal.data_quality_metric,
         datui::data_quality::QualityMetric::EmptyRate
     );
-    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
 
     // Enter on a highlighted column must open that column, not the first one.
     app.analysis_modal.set_quality_page(QualityPage::Columns);

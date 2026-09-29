@@ -336,9 +336,20 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
         QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
         QualityPage::Detail => own.push(("Enter", "Columns")),
-        QualityPage::Segments if segmented => own.extend([("Enter", "Details"), ("b", "Baseline")]),
+        QualityPage::Segments if segmented => own.extend([
+            ("Enter", "Details"),
+            (
+                "o",
+                if modal.data_quality_segments_by_change {
+                    "In Order"
+                } else {
+                    "By Change"
+                },
+            ),
+            ("b", "Baseline"),
+        ]),
         QualityPage::SegmentDetail => own.push(("Enter", "Segments")),
-        QualityPage::Trends if trend => own.extend([("[ ]", "Column"), ("m", "Metric")]),
+        QualityPage::Trends if trend => own.push(("m", "Measure")),
         _ => {}
     }
     let mut own = own.into_iter();

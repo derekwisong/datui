@@ -485,8 +485,114 @@ impl QualitySetup {
 pub fn shows_trend(plan: &DataQualityPlan, results: &DataQualityResults) -> bool {
     matches!(
         plan.grain,
-        QualityGrain::RowChunks(_) | QualityGrain::TimeWindows { .. }
+        QualityGrain::RowChunks(_) | QualityGrain::TimeWindows { .. } | QualityGrain::Partition(_)
     ) && results.segments.len() > 1
+}
+
+/// One line of the Trends table: the rows each segment holds, or a column's
+/// measure, pooled into bars of consecutive segments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrendRow {
+    /// The columns whose lines are the same line, as columns missing together are.
+    pub names: Vec<String>,
+    /// Whether this is the rows line, counted rather than a rate.
+    pub rows: bool,
+    pub bars: Vec<Option<f64>>,
+    pub low: f64,
+    pub high: f64,
+}
+
+/// The Trends table for `metric`, `bars` wide: rows per segment first, then every
+/// column the measure is above zero in somewhere, the one that moves most first.
+/// Each bar pools consecutive segments (their counts over their rows), so a daily
+/// grain over years reads as years, and a thin day's sample does not make a bar
+/// alone. Also returns how many segments a bar holds.
+pub fn trend_rows(
+    results: &DataQualityResults,
+    metric: QualityMetric,
+    bars: usize,
+) -> (Vec<TrendRow>, usize) {
+    let segments = &results.segments;
+    if segments.is_empty() || bars == 0 {
+        return (Vec::new(), 1);
+    }
+    let per_bar = segments.len().div_ceil(bars);
+    let buckets = segments.chunks(per_bar).collect::<Vec<_>>();
+    let summarize = |name: String, rows: bool, values: Vec<Option<f64>>| {
+        let names = vec![name];
+        let known = values.iter().flatten().copied();
+        let low = known.clone().fold(f64::INFINITY, f64::min);
+        let high = known.fold(0.0, f64::max);
+        TrendRow {
+            names,
+            rows,
+            bars: values,
+            low: if low.is_finite() { low } else { 0.0 },
+            high,
+        }
+    };
+    // Exact rows where every segment's count is known; the sampled rows otherwise.
+    let counted = segments.iter().all(|segment| segment.total_rows.is_some());
+    let mut lines = vec![summarize(
+        if counted { "rows" } else { "sampled rows" }.to_string(),
+        true,
+        buckets
+            .iter()
+            .map(|bucket| {
+                let total = bucket
+                    .iter()
+                    .map(|segment| {
+                        if counted {
+                            segment.total_rows.unwrap_or(0)
+                        } else {
+                            segment.evaluated_rows
+                        }
+                    })
+                    .sum::<usize>();
+                Some(total as f64 / bucket.len() as f64)
+            })
+            .collect(),
+    )];
+    let mut columns = Vec::new();
+    for (index, profile) in segments[0].columns.iter().enumerate() {
+        let values = buckets
+            .iter()
+            .map(|bucket| {
+                let (mut part, mut whole) = (0.0, 0.0);
+                for segment in *bucket {
+                    let Some(column) = segment.columns.get(index) else {
+                        continue;
+                    };
+                    let Some(value) = metric.value(column) else {
+                        continue;
+                    };
+                    let rows = metric.denominator(column) as f64;
+                    part += value * rows;
+                    whole += rows;
+                }
+                (whole > 0.0).then(|| part / whole)
+            })
+            .collect::<Vec<_>>();
+        let row = summarize(profile.name.clone(), false, values);
+        if row.high == 0.0 {
+            continue;
+        }
+        // Columns that go missing together draw the same line; draw it once.
+        match columns
+            .iter_mut()
+            .find(|other: &&mut TrendRow| other.bars == row.bars)
+        {
+            Some(other) => other.names.push(profile.name.clone()),
+            None => columns.push(row),
+        }
+    }
+    columns.sort_by(|left, right| {
+        (right.high - right.low)
+            .total_cmp(&(left.high - left.low))
+            .then_with(|| right.high.total_cmp(&left.high))
+    });
+    lines.extend(columns);
+    (lines, per_bar)
 }
 
 /// The plan setting a result page needs before it has anything to show, if any.
@@ -775,6 +881,18 @@ impl QualityMetric {
         }
     }
 
+    /// The rows a rate is taken over: every row, or the rows with a value.
+    pub fn denominator(self, column: &ColumnQualityProfile) -> usize {
+        match self {
+            Self::NullRate | Self::EmptyRate | Self::WhitespaceRate | Self::NonFiniteRate => {
+                column.evaluated_rows
+            }
+            Self::DistinctShare | Self::IntegerParseShare | Self::DecimalParseShare => {
+                column.non_null_rows()
+            }
+        }
+    }
+
     /// The measure's name in a table cell or a change: "nulls", "distinct".
     pub fn short_label(self) -> &'static str {
         match self {
@@ -1033,6 +1151,9 @@ pub struct SegmentQualityProfile {
     pub null_rate: f64,
     pub compared_with: Option<String>,
     pub largest_change: Option<String>,
+    /// How big `largest_change` is (points, or percent for a row count), to rank
+    /// segments by; `None` when nothing clear moved.
+    pub change_size: Option<f64>,
 }
 
 /// One column's measure in a segment, and in the segment it is compared with.
@@ -1042,6 +1163,9 @@ pub struct SegmentChange {
     pub metric: QualityMetric,
     pub before: Option<f64>,
     pub now: f64,
+    /// The move is past sampling noise (always, on an exact profile) and a point
+    /// or more.
+    pub clear: bool,
 }
 
 impl SegmentChange {
@@ -1051,17 +1175,23 @@ impl SegmentChange {
     }
 }
 
+/// The order Segments lists its rows in: as they fall, or the clearest change
+/// first (ties, and segments with no clear change, keep their order).
+pub fn segment_order(results: &DataQualityResults, by_change: bool) -> Vec<usize> {
+    let mut order = (0..results.segments.len()).collect::<Vec<_>>();
+    if by_change {
+        order.sort_by(|&left, &right| {
+            let size = |index: usize| results.segments[index].change_size.unwrap_or(-1.0);
+            size(right).total_cmp(&size(left))
+        });
+    }
+    order
+}
+
 /// Every column's measures in segment `index`: beside the segment it is compared
 /// with and largest move first, or on its own worst first. A measure that is zero
 /// on both sides says nothing and is left out.
 pub fn segment_changes(results: &DataQualityResults, index: usize) -> Vec<SegmentChange> {
-    const MEASURES: [QualityMetric; 5] = [
-        QualityMetric::NullRate,
-        QualityMetric::EmptyRate,
-        QualityMetric::WhitespaceRate,
-        QualityMetric::NonFiniteRate,
-        QualityMetric::DistinctShare,
-    ];
     let Some(segment) = results.segments.get(index) else {
         return Vec::new();
     };
@@ -1072,7 +1202,7 @@ pub fn segment_changes(results: &DataQualityResults, index: usize) -> Vec<Segmen
     let mut changes = Vec::new();
     for column in &segment.columns {
         let prior = compared.and_then(|other| other.columns.iter().find(|c| c.name == column.name));
-        for metric in MEASURES {
+        for metric in CHANGE_MEASURES {
             let Some(now) = metric.value(column) else {
                 continue;
             };
@@ -1080,18 +1210,36 @@ pub fn segment_changes(results: &DataQualityResults, index: usize) -> Vec<Segmen
             if now == 0.0 && before.unwrap_or(0.0) == 0.0 {
                 continue;
             }
+            let clear = match (prior, before) {
+                (Some(prior), Some(before)) => {
+                    (now - before).abs() * 100.0 >= MATERIAL_CHANGE_PP
+                        && (results.precision == QualityPrecision::Exact
+                            || beyond_noise(
+                                now,
+                                metric.denominator(column),
+                                before,
+                                metric.denominator(prior),
+                            ))
+                }
+                _ => false,
+            };
             changes.push(SegmentChange {
                 column: column.name.clone(),
                 metric,
                 before,
                 now,
+                clear,
             });
         }
     }
     if compared.is_some() {
+        // What cleared the noise first, then the rest, each largest first.
         changes.sort_by(|left, right| {
             let size = |change: &SegmentChange| change.change().unwrap_or(0.0).abs();
-            size(right).total_cmp(&size(left))
+            right
+                .clear
+                .cmp(&left.clear)
+                .then_with(|| size(right).total_cmp(&size(left)))
         });
     } else {
         changes.sort_by(|left, right| right.now.total_cmp(&left.now));
@@ -1158,6 +1306,7 @@ impl DataQualityResults {
             &mut self.segments,
             plan.comparison,
             plan.baseline_segment.as_deref(),
+            self.precision,
         );
     }
 
@@ -1339,7 +1488,13 @@ pub fn compute_data_quality(
         &schema,
         SegmentSampleProvenance {
             positions: sample_positions.as_deref(),
-            totals: &known_segment_totals(plan, total_rows, source),
+            totals: &{
+                let mut totals = known_segment_totals(plan, total_rows, source);
+                if precision == QualityPrecision::Sampled {
+                    totals.extend(counted_segment_totals(lf, plan, polars_streaming)?);
+                }
+                totals
+            },
         },
         polars_streaming,
     )?;
@@ -1876,6 +2031,44 @@ struct SegmentSampleProvenance<'a> {
 /// Segment sizes known without reading them: a file's rows from its footer, when
 /// the scope holds whole files, and a row chunk's from the scope's size. Others are
 /// unknown on a sample, and are left unknown rather than estimated.
+///
+/// Partitions and time windows are counted instead: a grouped count reads only
+/// the grain's column, a small read beside the sample's, and a day whose rows fell
+/// by half is the first thing a daily check is for.
+fn counted_segment_totals(
+    lf: &LazyFrame,
+    plan: &DataQualityPlan,
+    polars_streaming: bool,
+) -> Result<BTreeMap<String, usize>> {
+    const KEY: &str = "__quality_count_key";
+    const ROWS: &str = "__quality_count_rows";
+    let key = match &plan.grain {
+        QualityGrain::Partition(column) => col(column.as_str()),
+        QualityGrain::TimeWindows { column, every } => time_window_start(column, every),
+        _ => return Ok(BTreeMap::new()),
+    };
+    let counts = collect_lazy(
+        lf.clone()
+            .select([key.alias(KEY)])
+            .group_by([col(KEY)])
+            .agg([len().alias(ROWS)]),
+        polars_streaming,
+    )
+    .map_err(Report::from)?;
+    let keys = counts.column(KEY)?;
+    let mut totals = BTreeMap::new();
+    for row in 0..counts.height() {
+        let raw = keys.get(row)?;
+        let raw = (!raw.is_null()).then(|| raw.str_value().into_owned());
+        // Named as the sample's segments are, so each count finds its segment.
+        totals.insert(
+            segment_label(&plan.grain, raw.as_deref()),
+            usize_value_at(&counts, ROWS, row),
+        );
+    }
+    Ok(totals)
+}
+
 fn known_segment_totals(
     plan: &DataQualityPlan,
     total_rows: Option<usize>,
@@ -1979,6 +2172,7 @@ fn profile_segments(
             null_rate: rate(null_cells, denominator),
             compared_with: None,
             largest_change: None,
+            change_size: None,
         });
     }
     order_segments(&mut profiles);
@@ -1986,6 +2180,7 @@ fn profile_segments(
         &mut profiles,
         plan.comparison,
         plan.baseline_segment.as_deref(),
+        precision,
     );
     Ok(profiles)
 }
@@ -2071,6 +2266,7 @@ fn profile_segments_lazy(
             null_rate: rate(null_cells, denominator),
             compared_with: None,
             largest_change: None,
+            change_size: None,
         }]);
     }
 
@@ -2105,6 +2301,7 @@ fn profile_segments_lazy(
             null_rate: rate(null_cells, denominator),
             compared_with: None,
             largest_change: None,
+            change_size: None,
         });
     }
     // Rows the grain could not place carry no order, so they follow the ones it could.
@@ -2127,6 +2324,7 @@ fn profile_segments_lazy(
         &mut segments,
         plan.comparison,
         plan.baseline_segment.as_deref(),
+        QualityPrecision::Exact,
     );
     Ok(segments)
 }
@@ -2204,10 +2402,12 @@ fn apply_comparisons(
     segments: &mut [SegmentQualityProfile],
     comparison: QualityComparison,
     baseline_segment: Option<&str>,
+    precision: QualityPrecision,
 ) {
     for segment in segments.iter_mut() {
         segment.compared_with = None;
         segment.largest_change = None;
+        segment.change_size = None;
     }
     let baseline_index = baseline_segment
         .and_then(|label| segments.iter().position(|segment| segment.label == label))
@@ -2226,9 +2426,12 @@ fn apply_comparisons(
             QualityComparison::Previous | QualityComparison::Baseline => None,
         };
         if let Some(other) = compared {
-            let change = largest_material_change(&segments[index], &segments[other]);
+            let change = largest_material_change(&segments[index], &segments[other], precision);
             segments[index].compared_with = Some(segments[other].label.clone());
-            segments[index].largest_change = Some(change);
+            if let Some((what, size)) = change {
+                segments[index].largest_change = Some(what);
+                segments[index].change_size = Some(size);
+            }
         }
     }
 }
@@ -2237,18 +2440,60 @@ fn apply_comparisons(
 /// percentage points.
 const MATERIAL_CHANGE_PP: f64 = 1.0;
 
-/// The largest measured move between two segments, over every column.
+/// How many standard errors apart two sampled rates must be before the difference
+/// is named. A segment is dozens of columns and measures, and a daily grain is
+/// thousands of segments: at three, sampling alone would name a change most days.
+const NOISE_Z: f64 = 4.0;
+
+/// Whether rates `a` of `n_a` rows and `b` of `n_b` rows differ by more than two
+/// samples of those sizes would by chance (a two-proportion z-test).
+pub fn beyond_noise(a: f64, n_a: usize, b: f64, n_b: usize) -> bool {
+    if n_a == 0 || n_b == 0 {
+        return false;
+    }
+    let (n_a, n_b) = (n_a as f64, n_b as f64);
+    let pooled = (a * n_a + b * n_b) / (n_a + n_b);
+    let error = (pooled * (1.0 - pooled) * (1.0 / n_a + 1.0 / n_b)).sqrt();
+    error > 0.0 && (a - b).abs() / error >= NOISE_Z
+}
+
+/// The rates a segment is compared on. A distinct share is not one of them: it
+/// falls as a segment grows, so two segments of different sizes differ by it
+/// whatever their data.
+const CHANGE_MEASURES: [QualityMetric; 4] = [
+    QualityMetric::NullRate,
+    QualityMetric::EmptyRate,
+    QualityMetric::WhitespaceRate,
+    QualityMetric::NonFiniteRate,
+];
+
+/// The clearest move between two segments, and its size.
 ///
-/// #196 asks where a column's null rate, distinct count or range shifts sharply, which
-/// is a question about the sharpest single move rather than about the average of all
-/// of them: one column going from never-null to always-null is the finding, and a mean
-/// over sixty columns buries it. A range that moved is reported when no rate did,
-/// because a column whose values slid into a new interval shifted without any rate
-/// noticing.
+/// #196 asks where a column's null rate or range shifts sharply, which is a
+/// question about the sharpest single move rather than about the average of all of
+/// them: one column going from never-null to always-null is the finding, and a mean
+/// over sixty columns buries it. A row count that halved or doubled comes first:
+/// for a feed split by day it is the loudest thing that can go wrong. On a sample,
+/// a move is named only past sampling noise; a range that moved only on an exact
+/// profile, since a sample's minimum and maximum move with the draw.
 fn largest_material_change(
     segment: &SegmentQualityProfile,
     baseline: &SegmentQualityProfile,
-) -> String {
+    precision: QualityPrecision,
+) -> Option<(String, f64)> {
+    if let (Some(now), Some(before)) = (segment.total_rows, baseline.total_rows)
+        && before > 0
+    {
+        let ratio = now as f64 / before as f64;
+        if !(0.5..2.0).contains(&ratio) {
+            let percent = (ratio - 1.0) * 100.0;
+            return Some((
+                format!("rows {} ({percent:+.0}%)", crate::numfmt::group_chrome(now)),
+                percent.abs(),
+            ));
+        }
+    }
+    let sampled = precision != QualityPrecision::Exact;
     let mut largest: Option<(f64, String)> = None;
     let mut range: Option<String> = None;
     for (index, column) in segment.columns.iter().enumerate() {
@@ -2269,11 +2514,22 @@ fn largest_material_change(
         else {
             continue;
         };
-        for metric in [QualityMetric::NullRate, QualityMetric::DistinctShare] {
+        for metric in CHANGE_MEASURES {
             let (Some(now), Some(before)) = (metric.value(column), metric.value(prior)) else {
                 continue;
             };
             let change = (now - before) * 100.0;
+            if change.abs() < MATERIAL_CHANGE_PP
+                || sampled
+                    && !beyond_noise(
+                        now,
+                        metric.denominator(column),
+                        before,
+                        metric.denominator(prior),
+                    )
+            {
+                continue;
+            }
             if largest
                 .as_ref()
                 .is_none_or(|(most, _)| change.abs() > most.abs())
@@ -2281,7 +2537,7 @@ fn largest_material_change(
                 largest = Some((change, format!("{} {}", column.name, metric.short_label())));
             }
         }
-        if range.is_none() && (column.min != prior.min || column.max != prior.max) {
+        if !sampled && range.is_none() && (column.min != prior.min || column.max != prior.max) {
             range = Some(format!(
                 "{} range {} -> {}",
                 column.name,
@@ -2290,15 +2546,10 @@ fn largest_material_change(
             ));
         }
     }
-    // The header says whether the rows were sampled; the change needs no tag.
-    match largest {
-        Some((change, what)) if change.abs() >= MATERIAL_CHANGE_PP => {
-            format!("{what} {change:+.1} pp")
-        }
-        _ => match range {
-            Some(moved) => moved,
-            None => format!("none over {MATERIAL_CHANGE_PP:.0} pp"),
-        },
+    match (largest, range) {
+        (Some((change, what)), _) => Some((format!("{what} {change:+.1} pp"), change.abs())),
+        (None, Some(moved)) => Some((moved, 0.0)),
+        (None, None) => None,
     }
 }
 
@@ -3501,6 +3752,84 @@ mod tests {
         assert!(natural_cmp("year=2024", "year=2025").is_lt());
     }
 
+    /// A thin sample a day names a change only past sampling noise, knows each
+    /// day's exact rows, and says when a day's rows halve; Trends pools the days and
+    /// draws columns that go missing together once.
+    #[test]
+    fn a_daily_sample_names_real_changes_and_counts_every_day() {
+        let mut day = Vec::new();
+        let (mut switched, mut noisy, mut twin) = (Vec::new(), Vec::new(), Vec::new());
+        for d in 0..200i32 {
+            // Day 150 delivered 20 rows instead of 50.
+            let rows = if d == 150 { 20 } else { 50 };
+            for r in 0..rows {
+                let key = d * 50 + r;
+                day.push(d);
+                // Filled until day 100, then never.
+                switched.push((d < 100).then_some(1i64));
+                // About 30% missing every day: steady, and noisy on a sample.
+                let gap = (key * 7919) % 10 < 3;
+                noisy.push((!gap).then_some(1i64));
+                twin.push((!gap).then_some(2i64));
+            }
+        }
+        let total = day.len();
+        let frame = df!("day" => day, "switched" => switched, "noisy" => noisy, "twin" => twin)
+            .unwrap()
+            .lazy()
+            .with_column(col("day").cast(DataType::Date));
+        let plan = DataQualityPlan {
+            dataset_rows: 5_000,
+            grain: QualityGrain::TimeWindows {
+                column: "day".to_string(),
+                every: "1d".to_string(),
+            },
+            comparison: QualityComparison::Previous,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(total), &plan, None, false).unwrap();
+        assert_eq!(results.precision, QualityPrecision::Sampled);
+        assert_eq!(results.segments.len(), 200);
+        assert_eq!(
+            results.segments[0].total_rows,
+            Some(50),
+            "counted, not sampled"
+        );
+        assert_eq!(
+            results.segments[100].largest_change.as_deref(),
+            Some("switched nulls +100.0 pp")
+        );
+        assert_eq!(
+            results.segments[150].largest_change.as_deref(),
+            Some("rows 20 (-60%)")
+        );
+        let named = results
+            .segments
+            .iter()
+            .filter_map(|segment| segment.largest_change.as_deref())
+            .collect::<Vec<_>>();
+        assert!(
+            named.iter().all(|change| !change.starts_with("noisy")),
+            "a steady rate is never named: {named:?}"
+        );
+        // The clearest changes first; the rest keep their order.
+        let order = segment_order(&results, true);
+        assert!(order[..3].contains(&100) && order[..3].contains(&150));
+
+        let (rows, per_bar) = trend_rows(&results, QualityMetric::NullRate, 20);
+        assert_eq!(per_bar, 10);
+        assert_eq!(rows[0].names, ["rows"]);
+        assert_eq!(rows[0].bars[0], Some(50.0));
+        assert_eq!(rows[1].names, ["switched"], "the column that moved leads");
+        assert_eq!(rows[1].bars[0], Some(0.0));
+        assert_eq!(rows[1].bars[19], Some(1.0));
+        assert!(
+            rows.iter()
+                .any(|row| row.names == ["noisy".to_string(), "twin".to_string()]),
+            "columns missing together are one line"
+        );
+    }
+
     /// Hundreds of segments are profiled in one grouped query, and each keeps its
     /// own counts: every other day here has one missing price.
     #[test]
@@ -3622,12 +3951,14 @@ mod tests {
         let results = compute_data_quality(&frame, None, &random, None, false).unwrap();
         assert_eq!(results.total_rows, Some(120));
         assert_eq!(results.evaluated_rows, 24);
-        assert!(
+        assert_eq!(
             results
                 .segments
                 .iter()
-                .all(|segment| segment.total_rows.is_none()),
-            "a partition's size is unknown from a sample, and not guessed"
+                .map(|segment| segment.total_rows)
+                .collect::<Vec<_>>(),
+            [Some(100), Some(20)],
+            "a partition's size is counted beside the sample, not guessed from it"
         );
 
         let equal = DataQualityPlan {

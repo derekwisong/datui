@@ -145,6 +145,8 @@ pub struct AnalysisModal {
     pub data_quality_detail_scroll: DetailScroll,
     /// The segment a drill-in shows, and the one Segments selects on the way back.
     pub data_quality_segment_index: usize,
+    /// Segments listed clearest change first rather than in their own order.
+    pub data_quality_segments_by_change: bool,
     /// The clean entry's popup lists every check rather than the most important.
     pub data_quality_checks_expanded: bool,
     pub data_quality_confirm_run: bool,
@@ -399,7 +401,12 @@ impl AnalysisModal {
             QualityPage::SegmentDetail => {
                 crate::data_quality::segment_changes(results, self.data_quality_segment_index).len()
             }
-            QualityPage::Trends => results.temporal.len(),
+            // The trend table's lines; the width only changes how many bars.
+            QualityPage::Trends => {
+                crate::data_quality::trend_rows(results, self.data_quality_metric, 1)
+                    .0
+                    .len()
+            }
         }
     }
 
@@ -465,14 +472,47 @@ impl AnalysisModal {
     /// Open the highlighted segment's columns, or go back to the list with the
     /// segment still selected.
     pub fn open_segment_detail(&mut self) {
-        self.data_quality_segment_index = self.data_quality_table_state.selected().unwrap_or(0);
-        self.set_quality_page(QualityPage::SegmentDetail);
+        if let Some(segment) = self.selected_segment() {
+            self.data_quality_segment_index = segment;
+            self.set_quality_page(QualityPage::SegmentDetail);
+        }
     }
 
     pub fn close_segment_detail(&mut self) {
         self.set_quality_page(QualityPage::Segments);
+        let position = self
+            .segment_order()
+            .iter()
+            .position(|segment| *segment == self.data_quality_segment_index);
         self.data_quality_table_state
-            .select(Some(self.data_quality_segment_index));
+            .select(Some(position.unwrap_or(0)));
+    }
+
+    /// The order Segments lists its rows in.
+    pub fn segment_order(&self) -> Vec<usize> {
+        self.data_quality_results
+            .as_ref()
+            .map(|results| {
+                crate::data_quality::segment_order(results, self.data_quality_segments_by_change)
+            })
+            .unwrap_or_default()
+    }
+
+    /// The segment under the cursor on Segments, whichever order it is listed in.
+    pub fn selected_segment(&self) -> Option<usize> {
+        let position = self.data_quality_table_state.selected()?;
+        self.segment_order().get(position).copied()
+    }
+
+    /// List segments in their own order or clearest change first, keeping the one
+    /// under the cursor under it.
+    pub fn toggle_segment_order(&mut self) {
+        let segment = self.selected_segment();
+        self.data_quality_segments_by_change = !self.data_quality_segments_by_change;
+        let position = segment
+            .and_then(|segment| self.segment_order().iter().position(|s| *s == segment))
+            .unwrap_or(0);
+        self.data_quality_table_state.select(Some(position));
     }
 
     /// Move the finding popup by `rows`, within what it last drew.
@@ -526,16 +566,6 @@ impl AnalysisModal {
             .position(|metric| *metric == self.data_quality_metric)
             .unwrap_or(0);
         self.data_quality_metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
-    }
-
-    pub fn cycle_quality_column(&mut self, count: usize, forward: bool) {
-        if count == 0 {
-            self.data_quality_column_index = 0;
-        } else if forward {
-            self.data_quality_column_index = (self.data_quality_column_index + 1) % count;
-        } else {
-            self.data_quality_column_index = (self.data_quality_column_index + count - 1) % count;
-        }
     }
 
     /// The plan the result on screen was measured with; the working plan until a

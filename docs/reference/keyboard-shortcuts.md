@@ -211,8 +211,8 @@ In Data Quality:
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its frame counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
-| <kbd>[</kbd> <kbd>]</kbd> | In Trends, choose the column the chart follows |
-| <kbd>m</kbd> | In Trends, choose the measurement the chart follows |
+| <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
+| <kbd>m</kbd> | In Trends, choose the measure the table draws |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | Rerun with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |

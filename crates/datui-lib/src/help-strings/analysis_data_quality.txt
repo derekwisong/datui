@@ -50,8 +50,8 @@ Keys:
                     findings per column) / Segments / Trends, directly
   Enter on a segment: List its columns' measures beside the compared
                     segment, largest change first; Esc goes back
-  [ / ]:            Choose the column the Trends chart follows
-  m:                Choose the measurement the Trends chart follows
+  o:                On Segments, list the largest change first, or in order
+  m:                Choose the measure the Trends table draws
   b:                Use the highlighted segment as the comparison baseline
                     without rescanning
   ↑ / ↓ (j/k):      Move through fields or results; in a finding taller
@@ -75,4 +75,5 @@ Full scans require confirmation. While a plan is running, Esc cancels the result
 For missing values, empty or blank text, NaN or infinite values, a single value, a nearly unique column, and mixed spellings, Enter from the detail opens a temporary view of exactly the rows the finding counted: from the table when every row was read, and from the sample, drawn again from its seed, when a sample was. A grouped finding opens the rows of every column in it. Esc returns to the report.
 Nearly unique is checked on whole-number and text columns only, and only from an exact profile: a null rate measured on a sample stands for the whole, but a distinct count does not. The count is rows beyond one per value; Enter opens every row that shares one, which is always more.
 Columns missing from some files and type mismatches are read from the footers, so they are reported at every compute budget and counted over the whole loaded source rather than the profiled scope. Their detail names the files, and Enter opens the rows those files contributed. A full scan also reads the first few values each conflicting file holds; the access plan says how many extra one-column reads that costs.
-Segments names the largest change any column made against the compared segment, so the first segment with a material one is where a shift starts.
+Segments names the largest change against the compared segment: a row count that halved or doubled first, then any column's rate. On a sample a rate change is named only when it is past sampling noise, so a thin sample a segment names only large ones; Trends pools segments into bars and shows smaller ones. Partition and time-window rows are counted exactly, beside the sample.
+Trends lists the rows per segment and every column whose measure is above zero somewhere, the one that moves most first, each as a line of bars over the whole range. Columns that draw the same line, as columns missing together do, share one.

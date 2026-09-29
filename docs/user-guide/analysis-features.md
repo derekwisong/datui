@@ -136,8 +136,8 @@ View Rows and <kbd>e</kbd> Plan.
 | <kbd>s</kbd> | Open the shared [Sample](#sampling) form |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends, directly |
-| <kbd>[</kbd> <kbd>]</kbd> | Choose the column the Trends chart follows |
-| <kbd>m</kbd> | Cycle the measurement: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
+| <kbd>o</kbd> | On Segments, list the largest change first, or back in order |
+| <kbd>m</kbd> | Cycle the measure Trends draws: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | Rerun with a new sample seed, for every tool |
 | <kbd>Esc</kbd> | Back one level |
@@ -158,13 +158,22 @@ sampled, or metadata-only.
 - **Segments** — needs a Grain other than the whole dataset; until then the
   page says so and <kbd>Enter</kbd> opens the plan on Grain. One row per
   segment (`year=2019`, a file, a row chunk, a window) in the order its name
-  counts: its rows, its share of null cells, and, when compared, the largest
-  change any column made against the compared segment (`price nulls -12.0
-  pp`). The first segment with a material one is where a shift starts.
-  <kbd>Enter</kbd> on a segment lists every column's measures beside the
-  compared segment, largest change first; <kbd>Esc</kbd> goes back.
-- **Trends** — charts the measurement across ordered row chunks or time
-  windows, and reports the time between dates for assigned role pairs: missing
+  counts: its rows (`38 of 6,812`: sampled, of the exact count), its share of
+  null cells, and, when compared, the largest change against the compared
+  segment. A row count that halved or doubled comes first (`rows 1,203
+  (-82%)`), then any column's null, empty, blank or NaN rate (`price nulls
+  -12.0 pp`). On a sample a rate change is named only when it is past sampling
+  noise, so a daily grain over a sample names only large ones; the page says
+  how many sampled rows a segment has. <kbd>o</kbd> lists the largest change
+  first. <kbd>Enter</kbd> on a segment lists every column's measures beside the
+  compared segment, the ones past noise first and the rest dimmed;
+  <kbd>Esc</kbd> goes back.
+- **Trends** — one line per column over the whole range, with the rows per
+  segment first: each bar pools as many consecutive segments as the width
+  needs (`each bar 35 days`), so a thin day's sample never makes a bar alone.
+  Columns whose measure moves most come first, and columns that draw the same
+  line, such as columns missing together, share one. <kbd>m</kbd> changes the
+  measure. Below, the time between dates for assigned role pairs: missing
   endpoints, negative durations, p50/p90/p95/p99, and maximum duration. Each
   part says what it needs when it has nothing, and <kbd>Enter</kbd> opens it:
   Time roles when the data has date columns, Grain otherwise.

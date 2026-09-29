@@ -14456,11 +14456,11 @@ impl App {
                         if self.analysis_modal.data_quality_page == QualityPage::Segments
                             && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
+                        // The segment under the cursor, looked up while the results
+                        // still order the list.
+                        let selected = self.analysis_modal.selected_segment();
                         if let Some(mut results) = self.analysis_modal.data_quality_results.take() {
-                            if let Some(label) = self
-                                .analysis_modal
-                                .data_quality_table_state
-                                .selected()
+                            if let Some(label) = selected
                                 .and_then(|index| results.segments.get(index))
                                 .map(|segment| segment.label.clone())
                             {
@@ -14479,17 +14479,10 @@ impl App {
                         }
                         return None;
                     }
-                    KeyCode::Char('[') | KeyCode::Char(']')
-                        if self.analysis_modal.data_quality_page == QualityPage::Trends =>
+                    KeyCode::Char('o')
+                        if self.analysis_modal.data_quality_page == QualityPage::Segments =>
                     {
-                        let count = self
-                            .analysis_modal
-                            .data_quality_results
-                            .as_ref()
-                            .map(|results| results.columns.len())
-                            .unwrap_or(0);
-                        self.analysis_modal
-                            .cycle_quality_column(count, event.code == KeyCode::Char(']'));
+                        self.analysis_modal.toggle_segment_order();
                         return None;
                     }
                     // Another sample for every tool: the seed is the shared sample's.

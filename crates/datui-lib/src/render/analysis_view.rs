@@ -167,6 +167,7 @@ fn render_body(
                 metric: modal.data_quality_metric,
                 column_index: modal.data_quality_column_index,
                 segment_index: modal.data_quality_segment_index,
+                segments_by_change: modal.data_quality_segments_by_change,
                 page: modal.data_quality_page,
                 pending: modal.quality_plan_pending(),
                 plan_field: modal.data_quality_plan_field,

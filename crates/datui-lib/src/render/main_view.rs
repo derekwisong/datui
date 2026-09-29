@@ -294,72 +294,53 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Cancel"),
         ];
     }
-    match modal.data_quality_page {
-        QualityPage::Plan => vec![
-            ("Enter", "Run"),
-            ("e", "Edit"),
-            ("s", "Sample"),
-            ("p", "Access"),
-            ("Tab", "Focus"),
-            ("Esc", "Back"),
-            ("?", "Help"),
-        ],
-        QualityPage::Segments => vec![
-            ("s", "Sample"),
-            ("v", "View Rows"),
-            ("[ ]", "Column"),
-            ("m", "Metric"),
-            ("b", "Baseline"),
-            ("1-4", "Page"),
-            ("e", "Plan"),
-            ("Esc", "Back"),
-        ],
-        QualityPage::Trends => vec![
-            ("s", "Sample"),
-            ("v", "View Rows"),
-            ("[ ]", "Column"),
-            ("m", "Metric"),
-            ("1-4", "Page"),
-            ("e", "Plan"),
-            ("Esc", "Back"),
-        ],
-        page => {
-            // Enter leads: the bar is cut from the right, and opening a finding is
-            // what these pages are for. The page already shown needs no chip.
-            let mut keys = vec![
-                (
-                    "Enter",
-                    if page == QualityPage::Overview {
-                        "Details"
-                    } else {
-                        "Inspect"
-                    },
-                ),
-                ("s", "Sample"),
-                ("v", "View Rows"),
-            ];
-            keys.extend(
-                [
-                    ("1", "Overview", QualityPage::Overview),
-                    ("2", "Columns", QualityPage::Columns),
-                    ("3", "Segments", QualityPage::Segments),
-                    ("4", "Trends", QualityPage::Trends),
-                ]
-                .into_iter()
-                .filter(|(_, _, shown)| *shown != page)
-                .map(|(key, label, _)| (key, label)),
-            );
-            keys.extend([
-                ("e", "Plan"),
-                ("Tab", "Focus"),
-                ("?", "Help"),
-                // Every other page carries it; the overview is not the one place
-                // without a way out.
-                ("Esc", "Back"),
-            ]);
-            keys
-        }
+    // One shape on every page: the way out, then what this page is for, then the
+    // keys every page shares in one order, then the rest of this page's. The bar is
+    // cut by position, so the page's own action and the sample, which every tool's
+    // bar names, are what survive 80 columns; the tabs on screen name the pages.
+    let page = modal.data_quality_page;
+    let results = modal.data_quality_results.as_ref();
+    // Column and metric pick what the segments show; with nothing split they would
+    // change nothing, so they are not offered.
+    let segmented = results.is_some()
+        && modal.data_quality_plan.grain != crate::data_quality::QualityGrain::Dataset;
+    let trend = results
+        .is_some_and(|results| crate::data_quality::shows_trend(&modal.data_quality_plan, results));
+    let mut own: Vec<(&'static str, &'static str)> = Vec::new();
+    // An empty page says which plan setting fills it, and Enter opens that.
+    if let Some(setup) = app.quality_page_setup() {
+        own.push(("Enter", setup.label()));
     }
+    match page {
+        QualityPage::Plan => own.extend([("Enter", "Run"), ("p", "Access")]),
+        QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
+        QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
+        QualityPage::Detail => own.push(("Enter", "Columns")),
+        QualityPage::Segments if segmented => {
+            own.extend([("[ ]", "Column"), ("m", "Metric"), ("b", "Baseline")])
+        }
+        QualityPage::Trends if trend => own.extend([("[ ]", "Column"), ("m", "Metric")]),
+        _ => {}
+    }
+    let mut own = own.into_iter();
+    let mut keys = vec![("Esc", "Back")];
+    keys.extend(own.next());
+    keys.extend([
+        ("s", "Sample"),
+        (g.updown_lr, "Page"),
+        ("v", "View Rows"),
+        (
+            "e",
+            if page == QualityPage::Plan {
+                "Edit"
+            } else {
+                "Plan"
+            },
+        ),
+    ]);
+    keys.extend(own);
+    keys.extend([("Tab", "Focus"), ("?", "Help")]);
+    keys
 }
 
 /// Control bar keys for the chart view: what works right now, most-needed

@@ -200,21 +200,22 @@ In Data Quality:
 
 | Key | Action |
 |---|---|
-| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends |
-| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, show all checks on the clean entry, or close an open popup |
+| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends, Plan |
+| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends directly |
+| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the plan setting that fills it |
 | <kbd>e</kbd> | Edit the plan's six fields — Sample, Grain, Values, Compare, Time roles, Latency threshold — in a copy of the plan |
 | <kbd>s</kbd> | Open the shared Sample form |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
-| <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
+| <kbd>←</kbd> <kbd>→</kbd> in the plan editor | Change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Sample | Open the Sample form |
 | <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |
 | <kbd>p</kbd> | Show the detailed access plan |
-| <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column |
-| <kbd>m</kbd> | In Segments/Trends, choose a measurement |
+| <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column, once the plan's Grain splits the rows |
+| <kbd>m</kbd> | In Segments/Trends, choose a measurement, likewise |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | Rerun with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to its finding, then Analysis itself |
+| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to the report, then Analysis itself |
 
 ## Pivot and melt
 

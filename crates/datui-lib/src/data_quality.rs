@@ -431,6 +431,80 @@ pub enum QualityPage {
     TimeRoles,
 }
 
+impl QualityPage {
+    /// The tabs, in the order ←→ walk them. A column's detail sits under Columns and
+    /// the time roles editor under Plan.
+    pub const TABS: [Self; 5] = [
+        Self::Overview,
+        Self::Columns,
+        Self::Segments,
+        Self::Trends,
+        Self::Plan,
+    ];
+
+    pub fn tab(self) -> Self {
+        match self {
+            Self::Detail => Self::Columns,
+            Self::TimeRoles => Self::Plan,
+            page => page,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self.tab() {
+            Self::Overview => "Overview",
+            Self::Columns => "Columns",
+            Self::Segments => "Segments",
+            Self::Trends => "Trends",
+            _ => "Plan",
+        }
+    }
+}
+
+/// What an empty page is missing, which Enter opens in the plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualitySetup {
+    Grain,
+    TimeRoles,
+}
+
+impl QualitySetup {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grain => "Set Grain",
+            Self::TimeRoles => "Time Roles",
+        }
+    }
+}
+
+/// Whether the Trends page can draw a column's measure across segments: that
+/// needs segments in an order, and more than one of them.
+pub fn shows_trend(plan: &DataQualityPlan, results: &DataQualityResults) -> bool {
+    matches!(
+        plan.grain,
+        QualityGrain::RowChunks(_) | QualityGrain::TimeWindows { .. }
+    ) && results.segments.len() > 1
+}
+
+/// The plan setting a result page needs before it has anything to show, if any.
+/// Time roles come first on Trends, and only when there are dates to assign.
+pub fn page_setup(
+    page: QualityPage,
+    plan: &DataQualityPlan,
+    results: Option<&DataQualityResults>,
+    has_time_columns: bool,
+) -> Option<QualitySetup> {
+    let results = results?;
+    match page {
+        QualityPage::Segments if plan.grain == QualityGrain::Dataset => Some(QualitySetup::Grain),
+        QualityPage::Trends if results.temporal.is_empty() && has_time_columns => {
+            Some(QualitySetup::TimeRoles)
+        }
+        QualityPage::Trends if !shows_trend(plan, results) => Some(QualitySetup::Grain),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QualityCompute {
     Metadata,
@@ -3788,6 +3862,36 @@ mod tests {
                 .map(|identity| identity.evaluated_rows),
             Some(60_000)
         );
+    }
+
+    /// An empty page names the one setting that fills it: a grain for Segments, time
+    /// roles for Trends when there are dates to assign, and a grain there otherwise.
+    #[test]
+    fn an_empty_page_names_the_setting_that_fills_it() {
+        let mut plan = DataQualityPlan::default();
+        let results = DataQualityResults::empty(Some(10), &plan, &Schema::default());
+        let setup =
+            |page, plan: &DataQualityPlan, dates| page_setup(page, plan, Some(&results), dates);
+        assert_eq!(
+            setup(QualityPage::Segments, &plan, false),
+            Some(QualitySetup::Grain)
+        );
+        assert_eq!(
+            setup(QualityPage::Trends, &plan, true),
+            Some(QualitySetup::TimeRoles)
+        );
+        assert_eq!(
+            setup(QualityPage::Trends, &plan, false),
+            Some(QualitySetup::Grain)
+        );
+        assert_eq!(setup(QualityPage::Overview, &plan, true), None);
+        assert_eq!(
+            page_setup(QualityPage::Segments, &plan, None, true),
+            None,
+            "nothing to set up before a run"
+        );
+        plan.grain = QualityGrain::RowChunks(5);
+        assert_eq!(setup(QualityPage::Segments, &plan, false), None);
     }
 
     /// A partition scope takes one value, a list, or an inclusive range compared in the

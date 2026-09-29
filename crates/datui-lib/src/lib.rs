@@ -6636,23 +6636,17 @@ pub struct App {
 }
 
 impl App {
-    fn open_quality_evidence(&mut self) {
-        let Some(results) = self.analysis_modal.data_quality_results.as_ref() else {
-            return;
-        };
+    fn open_quality_evidence(&mut self) -> Option<AppEvent> {
+        let results = self.analysis_modal.data_quality_results.as_ref()?;
         let report = quality_report::build_report(results);
-        // An observation read from the footers is exact whatever the run's compute
-        // budget was: the files it names are the files it names. Everything measured
-        // over values is not.
-        let Some(finding) = self
+        // Files named from the footers open from the table whatever the run read;
+        // a sampled measurement opens the sample it was taken on.
+        let finding = self
             .analysis_modal
             .data_quality_table_state
             .selected()
             .and_then(|index| report.findings.get(index))
-            .filter(|finding| finding.can_open_rows(results))
-        else {
-            return;
-        };
+            .filter(|finding| finding.can_open_rows(results))?;
         // A column its file never had, or holds in a type the scan cannot read, has no
         // value to filter on: its rows are the ones those files contributed, which is a
         // scope rather than a predicate.
@@ -6660,16 +6654,23 @@ impl App {
         let predicate = match (&by_files, finding.evidence_predicate(results)) {
             (Some(_), _) => polars::prelude::lit(true),
             (None, Some(predicate)) => predicate,
-            (None, None) => return,
+            (None, None) => return None,
         };
         let label = format!(
             "Data Quality / {} / {}",
             finding.title,
             quality_report::columns_label(&finding.columns, 40)
         );
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
+        if finding.opens_sample(results) {
+            let sample = self
+                .analysis_modal
+                .data_quality_last_plan
+                .as_ref()
+                .unwrap_or(&self.analysis_modal.data_quality_plan)
+                .sample();
+            return self.read_sample_rows(sample, Some((predicate, format!("{label} / sampled"))));
+        }
+        let state = self.data_table_state.as_ref()?;
         let scope = by_files.as_ref().unwrap_or_else(|| {
             self.analysis_modal
                 .data_quality_last_plan
@@ -6682,7 +6683,7 @@ impl App {
             Err(error) => {
                 self.error_modal
                     .show(format!("Cannot open matching rows: {error}"));
-                return;
+                return None;
             }
         };
         if let Some(original) = self.data_table_state.replace(view) {
@@ -6692,6 +6693,7 @@ impl App {
             self.collect_inflight = None;
             self.spawn_async_collect("Loading matching rows...");
         }
+        None
     }
 
     fn return_from_quality_evidence(&mut self, reopen_analysis: bool) -> bool {
@@ -6726,6 +6728,23 @@ impl App {
         }) {
             self.analysis_modal.data_quality_plan = cached.plan.clone();
         }
+    }
+
+    /// The plan setting the Data Quality page on screen lacks before it can show
+    /// anything; Enter opens it, and the control bar says so.
+    pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
+        let modal = &self.analysis_modal;
+        let has_time_columns = self.data_table_state.as_ref().is_some_and(|state| {
+            !state
+                .quality_temporal_columns(&modal.data_quality_plan.scope)
+                .is_empty()
+        });
+        data_quality::page_setup(
+            modal.data_quality_page,
+            &modal.data_quality_plan,
+            modal.data_quality_results.as_ref(),
+            has_time_columns,
+        )
     }
 
     fn clear_quality_result_if_plan_changed(&mut self) {
@@ -6839,7 +6858,13 @@ impl App {
     /// counted in the order the table shows; every other view scope reads without the
     /// sort, which no statistic needs and which makes a sampled read read everything.
     fn sample_source(&self, state: &DataTableState) -> (sampling::SampleSource, Option<usize>) {
-        let scope = &self.analysis_modal.sample.scope;
+        Self::sample_source_for(state, &self.analysis_modal.sample.scope)
+    }
+
+    fn sample_source_for(
+        state: &DataTableState,
+        scope: &data_quality::QualityScope,
+    ) -> (sampling::SampleSource, Option<usize>) {
         if scope.uses_source() {
             let (lf, source) = state.data_quality_source_scan();
             return (sampling::SampleSource::loaded(lf, source), None);
@@ -7007,26 +7032,53 @@ impl App {
     /// Read again rather than kept from the last run: the seed makes it the same rows,
     /// and holding every tool's rows between runs would hold memory nobody asked for.
     fn read_sample_view(&mut self) -> Option<AppEvent> {
-        let state = self.data_table_state.as_ref()?;
-        let (source, known_total) = self.sample_source(state);
         let sample = self.analysis_modal.sample.clone();
+        self.read_sample_rows(sample, None)
+    }
+
+    /// Read `sample` off the UI thread and show its rows: all of them, or only a
+    /// finding's, under the finding's label. The sample is drawn again from its seed,
+    /// so these are the rows the tool measured.
+    fn read_sample_rows(
+        &mut self,
+        sample: sampling::Sample,
+        evidence: Option<(polars::prelude::Expr, String)>,
+    ) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let (source, known_total) = Self::sample_source_for(state, &sample.scope);
         let streaming = self.app_config.performance.polars_streaming;
         self.reading_sample = true;
-        self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the sample"));
+        self.analysis_modal.computing = Some(AnalysisProgress::new(if evidence.is_some() {
+            "Reading the matching sampled rows"
+        } else {
+            "Reading the sample"
+        }));
         self.busy = true;
         self.spawn_bg("Reading the sample...", move |task_gen, tx| {
             let read = source
                 .cut(&sample.scope)
-                .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming));
-            let _ = tx.send(match read {
-                Ok(rows) => AppEvent::BackgroundSampleReady {
-                    generation: task_gen,
-                    label: format!(
+                .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming))
+                .and_then(|rows| {
+                    let label = format!(
                         "Sample {} {}",
                         crate::glyphs::get().middot,
                         sample.outcome(rows.total_rows, rows.sample_size)
-                    ),
-                    df: rows.df,
+                    );
+                    match evidence {
+                        Some((predicate, label)) => {
+                            let df = polars::prelude::IntoLazy::lazy(rows.df)
+                                .filter(predicate)
+                                .collect()?;
+                            Ok((df, label))
+                        }
+                        None => Ok((rows.df, label)),
+                    }
+                });
+            let _ = tx.send(match read {
+                Ok((df, label)) => AppEvent::BackgroundSampleReady {
+                    generation: task_gen,
+                    label,
+                    df,
                 },
                 Err(error) => AppEvent::BackgroundError {
                     generation: task_gen,
@@ -14191,11 +14243,11 @@ impl App {
                                 !self.analysis_modal.data_quality_checks_expanded;
                             return None;
                         }
-                        self.open_quality_evidence();
+                        let event = self.open_quality_evidence();
                         if self.analysis_modal.active && !self.error_modal.active {
                             self.analysis_modal.data_quality_observation_detail = false;
                         }
-                        return None;
+                        return event;
                     }
                     KeyCode::Esc if self.analysis_modal.data_quality_confirm_run => {
                         self.analysis_modal.data_quality_confirm_run = false;
@@ -14247,37 +14299,9 @@ impl App {
                         self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                         return None;
                     }
-                    KeyCode::Char('1') => {
-                        self.analysis_modal.set_quality_page(QualityPage::Overview);
-                        return None;
-                    }
-                    KeyCode::Char('2') => {
-                        self.analysis_modal.set_quality_page(QualityPage::Columns);
-                        self.analysis_modal
-                            .data_quality_table_state
-                            .select(Some(self.analysis_modal.data_quality_column_index));
-                        return None;
-                    }
-                    KeyCode::Char('3') => {
-                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
-                            self.analysis_modal.data_quality_column_index = self
-                                .analysis_modal
-                                .data_quality_table_state
-                                .selected()
-                                .unwrap_or(0);
-                        }
-                        self.analysis_modal.set_quality_page(QualityPage::Segments);
-                        return None;
-                    }
-                    KeyCode::Char('4') => {
-                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
-                            self.analysis_modal.data_quality_column_index = self
-                                .analysis_modal
-                                .data_quality_table_state
-                                .selected()
-                                .unwrap_or(0);
-                        }
-                        self.analysis_modal.set_quality_page(QualityPage::Trends);
+                    KeyCode::Char(digit @ '1'..='4') => {
+                        let tab = digit as usize - '1' as usize;
+                        self.analysis_modal.show_quality_tab(QualityPage::TABS[tab]);
                         return None;
                     }
                     KeyCode::Char('m')
@@ -14394,6 +14418,20 @@ impl App {
                                 Some(AnalysisProgress::new("Profiling data quality"));
                             self.busy = true;
                             return Some(AppEvent::AnalysisDataQualityCompute);
+                        } else if let Some(setup) = self.quality_page_setup() {
+                            self.analysis_modal.data_quality_plan_before_edit =
+                                Some(self.analysis_modal.data_quality_plan.clone());
+                            self.analysis_modal.data_quality_editing = true;
+                            match setup {
+                                data_quality::QualitySetup::Grain => {
+                                    self.analysis_modal.set_quality_page(QualityPage::Plan);
+                                    self.analysis_modal.data_quality_plan_field = 1;
+                                }
+                                data_quality::QualitySetup::TimeRoles => {
+                                    self.analysis_modal.set_quality_page(QualityPage::TimeRoles);
+                                    self.analysis_modal.data_quality_plan_field = 0;
+                                }
+                            }
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
                             let findings = self.analysis_modal.quality_row_count();
                             self.analysis_modal.data_quality_checks_expanded = false;
@@ -14497,6 +14535,14 @@ impl App {
                                 .unwrap_or_default();
                             self.analysis_modal.adjust_quality_plan(true, &partitions);
                         }
+                        return None;
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        self.analysis_modal.step_quality_tab(false);
+                        return None;
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        self.analysis_modal.step_quality_tab(true);
                         return None;
                     }
                     KeyCode::PageDown
@@ -17138,7 +17184,12 @@ impl App {
                         let (lf, source) = state.data_quality_source_scan();
                         (lf, source, None)
                     } else {
-                        let (lf, source) = state.data_quality_scan();
+                        let ordered = matches!(
+                            plan.scope,
+                            data_quality::QualityScope::FirstRows(_)
+                                | data_quality::QualityScope::ViewRows { .. }
+                        );
+                        let (lf, source) = state.data_quality_scan(ordered);
                         let rows = state.num_rows_if_valid().map(|rows| match &plan.scope {
                             data_quality::QualityScope::CurrentView => rows,
                             data_quality::QualityScope::FirstRows(limit) => rows.min(*limit),

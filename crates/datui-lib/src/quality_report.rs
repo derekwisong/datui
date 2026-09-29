@@ -6,8 +6,8 @@
 //! only groups and ranks them.
 
 use crate::data_quality::{
-    ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityCompute,
-    QualityGrain, QualityPrecision, QualityScope, TextReading, text_reading,
+    ColumnQualityProfile, DataQualityResults, ObservationKind, QualityPrecision, QualityScope,
+    TextReading, text_reading,
 };
 use crate::numfmt;
 use polars::prelude::Expr;
@@ -77,12 +77,28 @@ impl Finding {
         }
     }
 
-    /// Whether Enter can open the rows: files are named exactly at any budget, and a
-    /// value predicate is exact only on an exact profile.
+    /// Whether Enter can open the rows: files are named at any budget, and a value
+    /// predicate over whatever rows were read, all of them or the sample.
     pub fn can_open_rows(&self, results: &DataQualityResults) -> bool {
         self.evidence_scope(results).is_some()
-            || (results.precision == QualityPrecision::Exact
-                && self.evidence_predicate(results).is_some())
+            || (matches!(
+                results.precision,
+                QualityPrecision::Exact | QualityPrecision::Sampled
+            ) && self.evidence_predicate(results).is_some())
+    }
+
+    /// The rows open from the sample the run measured, not from the whole table:
+    /// the counts on screen are the sample's, and so are the rows.
+    pub fn opens_sample(&self, results: &DataQualityResults) -> bool {
+        self.evidence_scope(results).is_none() && results.precision == QualityPrecision::Sampled
+    }
+
+    /// Missing values grouped across columns that go missing at different rates.
+    pub fn varied(&self) -> bool {
+        self.kind == Some(ObservationKind::Nulls)
+            && self.columns.len() > 1
+            && !self.same_rows
+            && self.severity == Severity::Note
     }
 }
 
@@ -109,10 +125,22 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
         let always_missing = observation.kind == ObservationKind::Nulls
             && observation.evaluated_rows > 0
             && observation.affected_rows == observation.evaluated_rows;
+        let mostly_missing = observation.affected_rows * 2 > observation.evaluated_rows;
+        // Columns missing on the very same rows are one fact about those rows; any
+        // other missing values are one finding, with each column's rate inside it.
+        let same_rows = results.shared_nulls.iter().any(|shared| {
+            shared.same_rows()
+                && shared.columns.len() > 1
+                && shared.null_rows == observation.affected_rows
+                && shared.columns.contains(&observation.column)
+        });
         let kind = observation.kind as u8 + 1;
         let key = match observation.kind {
             ObservationKind::Nulls if always_missing => (0, 0, String::new()),
-            ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace => {
+            ObservationKind::Nulls if mostly_missing => (kind, usize::MAX, "mostly".to_string()),
+            ObservationKind::Nulls if same_rows => (kind, observation.affected_rows, String::new()),
+            ObservationKind::Nulls => (kind, usize::MAX, String::new()),
+            ObservationKind::Empty | ObservationKind::Whitespace => {
                 (kind, observation.affected_rows, String::new())
             }
             ObservationKind::Constant => (kind, 0, String::new()),
@@ -206,6 +234,7 @@ fn rank(finding: &Finding) -> u8 {
         Some(ObservationKind::Absent) => 1,
         Some(ObservationKind::DuplicateRows) => 2,
         Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => 3,
+        Some(ObservationKind::Nulls) if finding.title == "Mostly missing" => 9,
         Some(ObservationKind::NonFinite) => 4,
         Some(ObservationKind::CategoryVariants) => 5,
         Some(ObservationKind::Whitespace) => 6,
@@ -219,6 +248,12 @@ fn rank(finding: &Finding) -> u8 {
 }
 
 fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
+    let mut indices = indices.to_vec();
+    // Missing values list their columns worst first.
+    if results.observations[indices[0]].kind == ObservationKind::Nulls {
+        indices.sort_by_key(|index| std::cmp::Reverse(results.observations[*index].affected_rows));
+    }
+    let indices = indices.as_slice();
     let first = &results.observations[indices[0]];
     let kind = first.kind;
     let mut columns = Vec::new();
@@ -232,6 +267,9 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
     let always_missing = kind == ObservationKind::Nulls
         && first.evaluated_rows > 0
         && first.affected_rows == first.evaluated_rows;
+    let mostly_missing = kind == ObservationKind::Nulls
+        && !always_missing
+        && first.affected_rows * 2 > first.evaluated_rows;
     let severity = match kind {
         ObservationKind::Nulls if always_missing => Severity::Problem,
         ObservationKind::Nulls
@@ -253,6 +291,7 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
     let reading = profile.and_then(text_reading).map(|(_, reading)| reading);
     let title = match kind {
         ObservationKind::Nulls if always_missing => "Always missing",
+        ObservationKind::Nulls if mostly_missing => "Mostly missing",
         ObservationKind::Nulls => "Missing values",
         ObservationKind::Empty => "Empty text",
         ObservationKind::Whitespace => "Blank text",
@@ -297,6 +336,18 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
     let summary = match kind {
         ObservationKind::Nulls if always_missing => "no value in any row".to_string(),
         ObservationKind::Nulls if same_rows => format!("same {}", rows(first.affected_rows)),
+        ObservationKind::Nulls if grouped => {
+            let fewest = results.observations[indices[indices.len() - 1]].affected_rows;
+            let (low, high) = (
+                percent(fewest, first.evaluated_rows),
+                percent(first.affected_rows, first.evaluated_rows),
+            );
+            if low == high {
+                rows_each(first.affected_rows, " each")
+            } else {
+                format!("{low} to {high}")
+            }
+        }
         ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace
             if grouped =>
         {
@@ -351,7 +402,7 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
             if indices.len() == 1 {
                 example
             } else {
-                format!("{} values spelled 2+ ways", indices.len())
+                format!("{} values spelled more than one way", indices.len())
             }
         }
         ObservationKind::KeyLike => {
@@ -520,7 +571,11 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             name: "Missing values",
             looks_for: "nulls in any column",
             applies_to: reach(all, ""),
-            outcome: outcome(&["Missing values", "Always missing"], all, "no columns"),
+            outcome: outcome(
+                &["Missing values", "Mostly missing", "Always missing"],
+                all,
+                "no columns",
+            ),
         },
         Check {
             name: "NaN or infinite",
@@ -637,6 +692,11 @@ pub fn explain(finding: &Finding) -> Explanation {
             why: "The column carries no information.",
             check: "Whether it failed to load, was renamed upstream, or is only filled in elsewhere.",
         },
+        (Some(ObservationKind::Nulls), "Mostly missing") => Explanation {
+            what: "Columns with no value in more than half the rows checked.",
+            why: "Anything computed from them rests on the minority of rows that have one.",
+            check: "Whether they are filled only for some kinds of rows, or stopped being filled at some point.",
+        },
         (Some(ObservationKind::Nulls), _) => Explanation {
             what: "Rows with no value in this column.",
             why: "Counts, sums and averages skip them, and joins on them never match.",
@@ -747,6 +807,43 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             "{of} have no value in any of these {} columns: the same rows every time.",
             finding.columns.len()
         ),
+        Some(ObservationKind::Nulls) if finding.varied() => {
+            // Each column's own rate, worst first: the list row gave only the range.
+            let rows = finding
+                .observations
+                .iter()
+                .map(&observation)
+                .collect::<Vec<_>>();
+            let name_width = rows
+                .iter()
+                .map(|row| crate::glyphs::display_width(&row.column))
+                .max()
+                .unwrap_or(0)
+                .min(28);
+            for row in rows {
+                let name = columns_label(std::slice::from_ref(&row.column), name_width);
+                let pad = name_width.saturating_sub(crate::glyphs::display_width(&name));
+                evidence.push(format!(
+                    "{name}{}  {:>7}  {} {}",
+                    " ".repeat(pad),
+                    percent(row.affected_rows, row.evaluated_rows),
+                    count(row.affected_rows),
+                    if row.affected_rows == 1 {
+                        "row"
+                    } else {
+                        "rows"
+                    }
+                ));
+            }
+            if finding.title == "Mostly missing" {
+                format!(
+                    "More than half the rows checked have no value in each of these {} columns.",
+                    finding.columns.len()
+                )
+            } else {
+                format!("{} columns have rows with no value.", finding.columns.len())
+            }
+        }
         Some(ObservationKind::Nulls) if grouped => {
             format!("{of} have no value, in each of these columns.")
         }
@@ -957,97 +1054,10 @@ pub fn verdict(report: &QualityReport) -> String {
     }
 }
 
-/// What the numbers were measured on, in words: how many rows, picked how, from where.
-pub fn coverage(results: &DataQualityResults, plan: &DataQualityPlan) -> String {
-    let rows = |count: usize| {
-        format!(
-            "{} {}",
-            numfmt::group_chrome(count),
-            if count == 1 { "row" } else { "rows" }
-        )
-    };
-    let scope = scope_phrase(&plan.scope);
-    if results.precision == QualityPrecision::Metadata {
-        return format!("No values read; file metadata only, {scope}");
-    }
-    let checked = results.evaluated_rows;
-    let segments = results.segments.len();
-    // The head never counts what follows it, so its total cannot say "all".
-    if results.precision == QualityPrecision::Sampled
-        && plan.method == crate::sampling::SampleMethod::FirstRows
-        && matches!(plan.grain, QualityGrain::Dataset)
-    {
-        return format!("The first {} {scope}", rows(checked));
-    }
-    if results.precision == QualityPrecision::Exact
-        || results.total_rows == Some(checked)
-        || plan.compute == QualityCompute::Full
-    {
-        let all = if checked == 1 { "The only" } else { "All" };
-        return format!("{all} {} {scope} checked", rows(checked));
-    }
-    if !matches!(plan.grain, QualityGrain::Dataset) {
-        return format!(
-            "Sampled {} across {} {}, {scope}",
-            rows(checked),
-            numfmt::group_chrome(segments),
-            if segments == 1 { "segment" } else { "segments" }
-        );
-    }
-    if let crate::sampling::SampleMethod::PerPartition { column } = &plan.method {
-        return format!(
-            "Sampled {} of {} rows {scope}, up to {} per {column}",
-            numfmt::group_chrome(checked),
-            results
-                .total_rows
-                .map(numfmt::group_chrome)
-                .unwrap_or_else(|| "?".to_string()),
-            numfmt::group_chrome(plan.dataset_rows)
-        );
-    }
-    // Spread across the whole scope, which the sampler counts as it goes.
-    match results.total_rows {
-        Some(total) => format!(
-            "Sampled {} of {} rows {scope}",
-            numfmt::group_chrome(checked),
-            numfmt::group_chrome(total)
-        ),
-        None => format!("Sampled {} {scope}", rows(checked)),
-    }
-}
-
-fn scope_phrase(scope: &QualityScope) -> String {
-    match scope {
-        QualityScope::CurrentView => "in the current view".to_string(),
-        QualityScope::WholeSource => "in the whole source".to_string(),
-        QualityScope::FirstRows(rows) => format!("in rows 1-{}", numfmt::group_chrome(*rows)),
-        QualityScope::ViewRows { start, end } => format!(
-            "in rows {}-{}",
-            numfmt::group_chrome(*start),
-            numfmt::group_chrome(*end)
-        ),
-        QualityScope::SourceFiles(files) => format!(
-            "in source {} {}",
-            if files.len() == 1 { "file" } else { "files" },
-            files
-                .iter()
-                .map(usize::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        QualityScope::SourcePartition { column, value } => {
-            format!("where {column}={value}")
-        }
-        QualityScope::SourceTimeRange { column, start, end } => {
-            format!("where {column} is in {start}..{end}")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::{QualityObservation, SharedNulls};
+    use crate::data_quality::{DataQualityPlan, QualityObservation, SharedNulls};
     use polars::prelude::DataType;
 
     fn profile(name: &str, dtype: DataType) -> ColumnQualityProfile {
@@ -1135,6 +1145,38 @@ mod tests {
         assert_eq!(report.findings[1].columns, vec!["ticker".to_string()]);
         assert_eq!(report.problems, 0);
         assert!(verdict(&report).starts_with("No problems found"));
+    }
+
+    /// Missing values at different rates are one finding listing each column worst
+    /// first; columns missing in most rows are their own note, ranked above it.
+    #[test]
+    fn missing_values_collapse_and_mostly_missing_leads() {
+        let names = ["a", "b", "c", "d"];
+        let results = results(
+            names
+                .iter()
+                .map(|name| profile(name, DataType::Float64))
+                .collect(),
+            vec![
+                observation(ObservationKind::Nulls, "a", 3),
+                observation(ObservationKind::Nulls, "b", 40),
+                observation(ObservationKind::Nulls, "c", 12),
+                observation(ObservationKind::Nulls, "d", 80),
+            ],
+        );
+        let report = build_report(&results);
+        assert_eq!(report.findings.len(), 2);
+        let mostly = &report.findings[0];
+        assert_eq!(mostly.title, "Mostly missing");
+        assert_eq!(mostly.columns, vec!["d".to_string()]);
+        let missing = &report.findings[1];
+        assert_eq!(missing.title, "Missing values");
+        assert_eq!(missing.columns, vec!["b", "c", "a"]);
+        assert_eq!(missing.summary, "3.0% to 40.0%");
+        let (headline, evidence) = describe(missing, &results);
+        assert_eq!(headline, "3 columns have rows with no value.");
+        assert_eq!(evidence[0], "b    40.0%  40 rows");
+        assert_eq!(evidence[2], "a     3.0%  3 rows");
     }
 
     #[test]
@@ -1268,24 +1310,5 @@ mod tests {
         assert_eq!(columns_label(&columns, 40), "open, high, low, close");
         assert_eq!(columns_label(&columns, 14), "open, high +2");
         assert_eq!(columns_label(&columns[..1], 2), "open");
-    }
-
-    #[test]
-    fn coverage_names_the_sample_and_its_total() {
-        let plan = DataQualityPlan::default();
-        let mut results = results(Vec::new(), Vec::new());
-        results.precision = QualityPrecision::Sampled;
-        results.evaluated_rows = 10_000;
-        results.total_rows = Some(200_000);
-        assert_eq!(
-            coverage(&results, &plan),
-            "Sampled 10,000 of 200,000 rows in the current view"
-        );
-        results.precision = QualityPrecision::Exact;
-        results.total_rows = Some(10_000);
-        assert_eq!(
-            coverage(&results, &plan),
-            "All 10,000 rows in the current view checked"
-        );
     }
 }

@@ -3788,8 +3788,12 @@ impl DataTableState {
     /// Frame and optional row-to-file map used by the data-quality worker. The hidden
     /// scan index is projected only while it still identifies source files; the worker
     /// replaces it with file names before profiling and never exposes it as user data.
+    /// Unsorted unless `ordered`, as every tool's sample reads it: a sample drawn by
+    /// position is then the same rows whichever tool drew it. A row range is the one
+    /// scope whose meaning is the order on screen.
     pub(crate) fn data_quality_scan(
         &self,
+        ordered: bool,
     ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
         let known_files =
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
@@ -3810,7 +3814,12 @@ impl DataTableState {
         if self.can_name_source_files() {
             expressions.push(col(crate::schema_union::DRIFT_COLUMN));
         }
-        let lf = self.lf.clone().select(expressions);
+        let lf = if ordered {
+            self.lf.clone()
+        } else {
+            self.analysis_lf()
+        }
+        .select(expressions);
         let lf = if source
             .as_ref()
             .is_some_and(|mapping| mapping.row_index_column == "__datui_quality_row")
@@ -11331,7 +11340,7 @@ mod tests {
         state.drift_files = vec!["first.parquet".into(), "second.parquet".into()];
         state.drift_file_starts = vec![0, 2];
         state.query("select a where a > 2".to_string());
-        let (current, _) = state.data_quality_scan();
+        let (current, _) = state.data_quality_scan(false);
         let (source, context) = state.data_quality_source_scan();
         let source =
             crate::data_quality::prepare_source_quality_scan(source, context.as_ref()).unwrap();

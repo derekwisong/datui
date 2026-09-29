@@ -7,8 +7,8 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
-    CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, build_report, checks, coverage,
-    describe, explain, verdict,
+    CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, build_report, checks, describe, explain,
+    verdict,
 };
 use crate::widgets::datatable::DataTableState;
 use ratatui::buffer::Buffer;
@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, StatefulWidget, Table, TableState,
-    Widget, Wrap,
+    Tabs, Widget, Wrap,
 };
 
 pub struct DataQualityWidgetConfig<'a> {
@@ -52,12 +52,12 @@ fn data_quality_sidebar_width(width: u16) -> u16 {
     }
 }
 
-/// Where the result goes: under the breadcrumb and the strip, left of the tool list.
+/// Where the result goes: under the header and the page tabs, left of the tool list.
 /// The Sample form fills it before the first run.
 pub(crate) fn main_pane(area: Rect) -> Rect {
     Rect {
-        y: area.y + 3,
-        height: area.height.saturating_sub(3),
+        y: area.y + 2,
+        height: area.height.saturating_sub(2),
         width: area
             .width
             .saturating_sub(data_quality_sidebar_width(area.width)),
@@ -77,14 +77,14 @@ pub fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Fill(1),
         ])
         .split(area);
 
-    render_breadcrumb(&config, vertical[0], buf);
+    render_header(&config, vertical[0], buf);
     if !config.first_run {
-        render_plan_strip(&config, vertical[1], buf);
+        render_tabs(&config, vertical[1], buf);
     }
 
     let body = if sidebar_width > 0 {
@@ -126,33 +126,24 @@ pub fn render(
     }
 }
 
-fn render_breadcrumb(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let page = match config.page {
-        QualityPage::Plan => None,
-        QualityPage::TimeRoles => Some("Time roles"),
-        QualityPage::Overview => Some("Overview"),
-        QualityPage::Columns => Some("Columns"),
-        QualityPage::Segments => Some("Segments"),
-        QualityPage::Trends => Some("Trends"),
-        QualityPage::Detail => Some("Detail"),
-    };
-    let mut spans = vec![
-        Span::raw("Analysis"),
-        Span::styled(" / ", Style::default().fg(config.theme.get("dimmed"))),
-        Span::raw("Data Quality"),
-    ];
-    if let Some(page) = page {
-        spans.push(Span::styled(
-            " / ",
-            Style::default().fg(config.theme.get("dimmed")),
-        ));
-        spans.push(Span::styled(
-            page,
-            Style::default()
-                .fg(config.theme.get("accent"))
-                .add_modifier(Modifier::BOLD),
-        ));
+/// One line, as every analysis tool heads its result: the tool, then what the
+/// numbers were measured on.
+fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
+    let middot = glyphs::get().middot;
+    let mut text = "Data Quality".to_string();
+    if let Some(results) = config.results.filter(|_| !config.first_run) {
+        text.push_str(&format!(" {middot} {}", measured_on(config.plan, results)));
+        if config.plan.grain != QualityGrain::Dataset {
+            text.push_str(&format!(" {middot} by {}", config.plan.grain.label()));
+        }
+        if config.plan.comparison != QualityComparison::None {
+            text.push_str(&format!(
+                " {middot} compared with {}",
+                config.plan.comparison_label()
+            ));
+        }
     }
+    let mut spans = vec![Span::raw(text)];
     if config.from_cache {
         spans.push(Span::styled(
             "  [session cache]",
@@ -160,148 +151,49 @@ fn render_breadcrumb(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
         ));
     }
     Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(config.theme.get("controls_bg")))
+        .style(crate::widgets::analysis::header_style(
+            config.theme,
+            "controls_bg",
+            "table_header",
+        ))
         .render(area, buf);
 }
 
-/// Whole leading segments that fit `width` columns: a strip cut mid-word
-/// ("-> compa") reads as a different fact, so trailing facts yield whole.
-fn fit_segments(segments: Vec<Vec<Span<'static>>>, width: u16) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    for segment in segments {
-        let w: usize = segment
-            .iter()
-            .map(|s| crate::glyphs::display_width(&s.content))
-            .sum();
-        if used + w > width as usize && !spans.is_empty() {
-            break;
+/// The rows a result was measured on, in the words the other tools' headers use.
+fn measured_on(plan: &DataQualityPlan, results: &DataQualityResults) -> String {
+    let sample = plan.sample();
+    let scope = if plan.scope == QualityScope::CurrentView {
+        String::new()
+    } else {
+        format!(" {} {}", glyphs::get().middot, plan.scope.label())
+    };
+    match (results.precision, results.total_rows) {
+        (QualityPrecision::Metadata, _) => format!("file metadata only, no values read{scope}"),
+        (QualityPrecision::Exact, _) => sample.outcome(results.evaluated_rows, None),
+        (QualityPrecision::Sampled | QualityPrecision::Estimated, Some(total)) => {
+            sample.outcome(total, Some(results.evaluated_rows))
         }
-        used += w;
-        spans.extend(segment);
-    }
-    Line::from(spans)
-}
-
-/// Over a result, the strip says what the numbers were measured on, in words; the
-/// plan's own vocabulary is for the Plan page, where it is being chosen.
-fn render_coverage_strip(
-    config: &DataQualityWidgetConfig<'_>,
-    results: &DataQualityResults,
-    area: Rect,
-    buf: &mut Buffer,
-) {
-    let dimmed = Style::default().fg(config.theme.get("dimmed"));
-    let plan = config.plan;
-    let mut facts = Vec::new();
-    if plan.grain != QualityGrain::Dataset {
-        facts.push(format!("by {}", plan.grain.label()));
-    }
-    if plan.comparison != QualityComparison::None {
-        facts.push(format!("compared with {}", plan.comparison_label()));
-    }
-    if plan.compute == QualityCompute::Sample
-        && results.precision != QualityPrecision::Exact
-        && plan.method != crate::sampling::SampleMethod::FirstRows
-    {
-        facts.push(format!("seed {}", results.sample_seed));
-    }
-    if config.state.is_remote_source() {
-        facts.push("remote source, read only".to_string());
-    }
-    let separator = format!(" {} ", glyphs::get().middot);
-    Paragraph::new(vec![
-        Line::styled(
-            fit(&coverage(results, plan), area.width as usize),
-            Style::default().fg(config.theme.get("text_primary")),
+        (QualityPrecision::Sampled | QualityPrecision::Estimated, None) => format!(
+            "sample of {} rows{scope}",
+            numfmt::group_chrome(results.evaluated_rows)
         ),
-        Line::styled(facts.join(&separator), dimmed),
-    ])
-    .style(Style::default().bg(config.theme.get("table_header_bg")))
-    .render(area, buf);
+    }
 }
 
-fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    if let Some(results) = config.results
-        && !matches!(config.page, QualityPage::Plan | QualityPage::TimeRoles)
-    {
-        render_coverage_strip(config, results, area, buf);
-        return;
-    }
-    let remote = config.state.is_remote_source();
-    let bytes = planned_read_label(config.state, config.plan);
-    let source = if remote {
-        "remote transfer"
-    } else {
-        "local read"
-    };
-    let source_style = if remote {
-        Style::default().fg(config.theme.get("warning"))
-    } else {
-        Style::default().fg(config.theme.get("text_primary"))
-    };
-    let dimmed = Style::default().fg(config.theme.get("dimmed"));
-    let accent = Style::default().fg(config.theme.get("accent"));
-    let plan_line = fit_segments(
-        vec![
-            vec![
-                Span::styled("scope ", dimmed),
-                Span::styled(
-                    config.plan.scope.label(),
-                    accent.add_modifier(Modifier::BOLD),
-                ),
-            ],
-            vec![
-                Span::styled(" -> grain ", dimmed),
-                Span::styled(config.plan.grain.label(), accent),
-            ],
-            vec![
-                Span::styled(" -> compute ", dimmed),
-                Span::styled(compute_label(config.plan), accent),
-            ],
-            vec![
-                Span::styled(" -> compare ", dimmed),
-                Span::styled(config.plan.comparison_label(), accent),
-            ],
-        ],
-        area.width,
-    );
-    let cost_line = fit_segments(
-        vec![
-            vec![
-                Span::styled(format!("{source} "), source_style),
-                Span::styled(
-                    if remote { "unknown".to_string() } else { bytes },
-                    source_style.add_modifier(Modifier::BOLD),
-                ),
-            ],
-            vec![
-                Span::styled(" | ", dimmed),
-                Span::styled(
-                    if remote {
-                        "requests unknown".to_string()
-                    } else {
-                        "no network requests".to_string()
-                    },
-                    dimmed,
-                ),
-            ],
-            vec![
-                Span::styled(" | ", dimmed),
-                Span::styled(
-                    "remote write 0 B",
-                    Style::default().fg(config.theme.get("success")),
-                ),
-            ],
-        ],
-        area.width,
-    );
-    let lines = vec![plan_line, cost_line];
-    Paragraph::new(lines)
-        .style(Style::default().bg(config.theme.get("table_header_bg")))
+/// The pages, with the one shown carrying the accent. `←→` walk them.
+fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
+    let shown = config.page.tab();
+    Tabs::new(QualityPage::TABS.iter().map(|page| page.title()))
+        .style(Style::default().fg(config.theme.get("dimmed")))
+        .highlight_style(
+            Style::default()
+                .fg(config.theme.get("accent"))
+                .add_modifier(Modifier::BOLD),
+        )
+        .select(QualityPage::TABS.iter().position(|page| *page == shown))
+        .divider(" ")
         .render(area, buf);
 }
-
 fn render_plan(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -470,7 +362,7 @@ fn render_overview(
     let list = sections[2];
     if report.findings.is_empty() {
         let message = if report.metadata_only {
-            "No values were read, so nothing about them is known. Press e and set Compute to sample or full to check the values."
+            "No values were read, so nothing about them is known. Set the plan's Values to read (e) to check them."
         } else {
             "No columns to check."
         };
@@ -856,21 +748,23 @@ fn render_finding_detail(
             theme,
         ));
     }
-    lines.push(Line::raw(""));
-    if let Some(kind) = finding.kind {
-        lines.push(Line::styled(
-            format!("Measured as: {}", kind.definition()),
-            dimmed,
-        ));
-    }
-    lines.push(Line::styled(coverage(results, config.plan), dimmed));
     if finding.kind.is_some() {
+        // The count is known when the rows are one observation's, or the same rows
+        // in every column; "any of these columns" is a union nobody counted.
+        let counted = finding.observations.len() == 1
+            || finding.same_rows
+            || finding.kind == Some(ObservationKind::CategoryVariants);
+        let sampled = if finding.opens_sample(results) {
+            "sampled "
+        } else {
+            ""
+        };
         let rows = if finding.can_open_rows(results) {
             match finding.kind {
                 // The measurement counts rows beyond one per value; the rows that
                 // share a value are always more.
                 Some(ObservationKind::KeyLike) => {
-                    "Enter shows every row that shares a repeated value.".to_string()
+                    format!("Enter shows every {sampled}row that shares a repeated value.")
                 }
                 Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
                     let files = finding
@@ -885,17 +779,22 @@ fn render_finding_detail(
                         if files == 1 { "file" } else { "files" }
                     )
                 }
-                _ => "Enter shows the rows.".to_string(),
+                _ if counted => format!(
+                    "Enter shows the {} {sampled}{}.",
+                    numfmt::group_chrome(finding.affected_rows),
+                    if finding.affected_rows == 1 {
+                        "row"
+                    } else {
+                        "rows"
+                    }
+                ),
+                _ => format!("Enter shows the {sampled}rows."),
             }
-        } else if results.precision == crate::data_quality::QualityPrecision::Sampled
-            && finding.evidence_predicate(results).is_some()
-        {
-            "Measured on a sample: run a full profile (e, Compute) to show the exact rows."
-                .to_string()
         } else {
             String::new()
         };
         if !rows.is_empty() {
+            lines.push(Line::raw(""));
             lines.push(Line::styled(rows, dimmed));
         }
     }
@@ -1130,6 +1029,17 @@ fn render_segments(
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
         .margin(1)
         .split(area);
+    if config.plan.grain == QualityGrain::Dataset {
+        render_section_title("SEGMENTS", sections[0], config.theme, buf);
+        Paragraph::new(
+            "The rows are one segment. Set the plan's Grain to split them by file, \
+             partition, row chunk or time window, and compare the parts.",
+        )
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(config.theme.get("text_primary")))
+        .render(sections[1], buf);
+        return;
+    }
     let column = results.columns.get(config.column_index);
     let mut heading = format!(
         "SEGMENTS  /  {}  /  {}",
@@ -1295,22 +1205,28 @@ fn render_trends(
         render_run_prompt(area, config.theme, buf);
         return;
     };
-    let ordered = matches!(
-        config.plan.grain,
-        QualityGrain::RowChunks(_) | QualityGrain::TimeWindows { .. }
-    );
-    let show_trend = ordered && results.segments.len() > 1;
+    let show_trend = crate::data_quality::shows_trend(config.plan, results);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if show_trend { 2 } else { 0 }),
-            Constraint::Length(if show_trend { 4 } else { 0 }),
+            Constraint::Length(2),
+            Constraint::Length(if show_trend { 4 } else { 3 }),
             Constraint::Length(2),
             Constraint::Fill(1),
         ])
         .margin(1)
         .split(area);
-    if show_trend {
+    let text = Style::default().fg(config.theme.get("text_primary"));
+    if !show_trend {
+        render_section_title("ACROSS SEGMENTS", sections[0], config.theme, buf);
+        Paragraph::new(
+            "Set the plan's Grain to row chunks or time windows to follow a column's \
+             measure from one to the next.",
+        )
+        .wrap(Wrap { trim: true })
+        .style(text)
+        .render(sections[1], buf);
+    } else {
         let column = results
             .columns
             .get(config.column_index)
@@ -1324,11 +1240,21 @@ fn render_trends(
         );
         render_metric_trend(results, config, sections[1], buf);
     }
-    render_section_title("LIFECYCLE LATENCY", sections[2], config.theme, buf);
+    render_section_title("TIME BETWEEN DATES", sections[2], config.theme, buf);
     if results.temporal.is_empty() {
-        Paragraph::new("No lifecycle path. Assign Time roles to see latency measurements.")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(config.theme.get("text_primary")))
+        let message = if config
+            .state
+            .quality_temporal_columns(&config.plan.scope)
+            .is_empty()
+        {
+            "No date or time columns, so no delays to measure."
+        } else {
+            "Assign the plan's Time roles, such as when a row happened and when it was \
+             received, to measure the delay between them."
+        };
+        Paragraph::new(message)
+            .wrap(Wrap { trim: true })
+            .style(text)
             .render(sections[3], buf);
         return;
     }
@@ -1626,11 +1552,6 @@ fn render_detail(
             count_label(profile.datetime_parse_count),
         )));
     }
-    text.push(Line::raw(""));
-    text.push(Line::styled(
-        coverage(results, config.plan),
-        Style::default().fg(config.theme.get("dimmed")),
-    ));
     for group in results
         .category_variants
         .iter()
@@ -1671,118 +1592,14 @@ fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let parts = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Fill(1), Constraint::Length(7)])
-        .split(area);
     crate::widgets::analysis::render_sidebar(
-        parts[0],
+        area,
         buf,
         sidebar_state,
         Some(AnalysisTool::DataQuality),
         config.focus,
         config.theme,
     );
-
-    // The plan strip above already carries the planned access, so this panel
-    // reports what the finished run actually did instead of repeating it.
-    // The panel is 18 columns wide beside a medium terminal, so it says less
-    // there rather than cutting a number in half.
-    let roomy = parts[1].width >= 26;
-    let written = if roomy {
-        "0 B remote write"
-    } else {
-        "0 B written"
-    };
-    // A section heading on a rule, not another box: the sidebar already sits
-    // inside the screen's chrome, and a nested border spent two columns the
-    // 18-wide panel did not have.
-    let heading = |title: &str| {
-        let g = crate::glyphs::get();
-        let width = parts[1].width as usize;
-        let fill = width.saturating_sub(crate::glyphs::display_width(title) + 1);
-        Line::from(vec![
-            Span::styled(
-                title.to_string(),
-                Style::default().fg(config.theme.get("accent")),
-            ),
-            Span::styled(
-                format!(" {}", g.rule_h.repeat(fill)),
-                Style::default().fg(config.theme.get("modal_border")),
-            ),
-        ])
-    };
-    // Before the first run there is nothing planned or measured to report; the
-    // Sample form beside it says what will be read.
-    if config.first_run {
-        return;
-    }
-    let lines = match config.results {
-        // The verdict in counts, kept in view on the pages that do not lead with it.
-        // The strip above says what was measured.
-        Some(results) => {
-            let report = build_report(results);
-            let count = |severity: Severity, value: usize, one: &str, many: &str| {
-                // None of a kind is good news, whatever the kind.
-                let severity = if value == 0 {
-                    Severity::Clean
-                } else {
-                    severity
-                };
-                Line::from(vec![
-                    severity_mark(severity, config.theme),
-                    Span::raw(format!(
-                        " {} {}",
-                        numfmt::group_chrome(value),
-                        if value == 1 { one } else { many }
-                    )),
-                ])
-            };
-            let mut lines = vec![heading("Result")];
-            if report.metadata_only {
-                if report.problems > 0 {
-                    lines.push(count(
-                        Severity::Problem,
-                        report.problems,
-                        "problem",
-                        "problems",
-                    ));
-                }
-                lines.push(Line::raw("values not read"));
-            } else {
-                lines.push(count(
-                    Severity::Problem,
-                    report.problems,
-                    "problem",
-                    "problems",
-                ));
-                lines.push(count(Severity::Note, report.notes, "note", "notes"));
-                lines.push(count(
-                    Severity::Clean,
-                    report.clean_columns,
-                    "clean column",
-                    if roomy { "clean columns" } else { "clean" },
-                ));
-            }
-            lines
-        }
-        None => vec![
-            heading("Planned"),
-            Line::raw(format!(
-                "{} rows",
-                planned_rows(config.state, config.plan)
-                    .map(numfmt::group_chrome)
-                    .unwrap_or_else(|| "unknown".to_string())
-            )),
-            Line::raw(match (config.state.is_remote_source(), roomy) {
-                (true, true) => "remote -> this machine",
-                (true, false) => "remote read",
-                (false, _) => "local read",
-            }),
-            Line::styled(written, Style::default().fg(config.theme.get("success"))),
-        ],
-    };
-    Paragraph::new(lines).render(parts[1], buf);
 }
 
 fn render_narrow_tool_picker(

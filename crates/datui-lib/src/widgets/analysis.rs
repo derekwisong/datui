@@ -887,7 +887,7 @@ fn format_pvalue(p: f64) -> String {
 }
 
 /// Build header-style: bg+fg when bg_key is not Reset, else fg-only.
-fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
+pub(crate) fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
     let bg = theme.get(bg_key);
     let fg = theme.get(fg_key);
     if bg == Color::Reset {

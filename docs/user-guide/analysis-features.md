@@ -43,16 +43,18 @@ and how many row pairs it was computed from.
 Choose **Data Quality** to check the rows in scope and get a report: what is
 likely wrong, what depends on intent, and which columns are clean. Before the
 first run the pane is the [Sample](#sampling) form, and nothing is read until
-<kbd>Enter</kbd> runs it; then the report opens. The strip at the top says what
-was checked, and <kbd>e</kbd> edits the plan. A full value scan always asks for
-confirmation.
+<kbd>Enter</kbd> runs it; then the report opens. The header says which rows
+were checked, as every tool's does; the tabs under it are the pages, and
+<kbd>←</kbd> <kbd>→</kbd> move between them. <kbd>e</kbd> edits the plan. A full
+value scan always asks for confirmation.
 
 ### Reading the report
 
 The first line counts problems, notes and clean columns. Below it, findings
 are grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
 finding says what it is, why it matters and what to check; <kbd>Enter</kbd>
-again shows its rows when the run was exact.
+again shows its rows. On a sampled run those are the sample's rows, drawn again
+from its seed, so the count the finding gave is the count in the table.
 
 <kbd>Enter</kbd> on the **Clean** entry lists the checks the run made: the
 columns each covered, what it found, or why it did not run (Nearly unique
@@ -68,7 +70,8 @@ run finds nothing, the list is on the page under the verdict.
 | Duplicate rows | Problem | Rows identical in every column |
 | Always missing | Problem | A column with no value in any row checked |
 | Missing in files / Type mismatch | Problem | Files without the column, or holding it in a type the dataset cannot read |
-| Missing values | Note | Nulls; columns missing on exactly the same rows are one finding |
+| Mostly missing | Note | Columns with no value in more than half the rows checked, listed above other missing values |
+| Missing values | Note | Nulls, as one finding with each column's rate inside it, highest first; columns missing on exactly the same rows are a finding of their own |
 | Numbers as text / Dates as text | Note | At least 95% of a text column parses as numbers or ISO dates |
 | Codes as text | Note | Whole numbers with leading zeros or a fixed width: a code, fine as text |
 | Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
@@ -76,7 +79,7 @@ run finds nothing, the list is on the page under the verdict.
 
 A dataset-grain sample is spread across the whole scope, as Describe's is:
 one Parquet or IPC file is read as a few dozen short runs across it, anything
-else in one streamed pass that keeps a seeded sample. The strip says how many
+else in one streamed pass that keeps a seeded sample. The header says how many
 rows were sampled of how many.
 
 ### The plan
@@ -110,14 +113,19 @@ picker includes source time columns hidden by the current view.
 
 ### Keys and result tabs
 
+The control bar has one shape on every page: <kbd>Esc</kbd> Back, the page's own
+action, then <kbd>s</kbd> Sample, <kbd>←</kbd> <kbd>→</kbd> Page, <kbd>v</kbd>
+View Rows and <kbd>e</kbd> Plan.
+
 | Key | Action |
 |---|---|
-| <kbd>Enter</kbd> | Run the plan, open a finding, or show its exact rows |
+| <kbd>←</kbd> <kbd>→</kbd> | Previous or next page: Overview, Columns, Segments, Trends, Plan |
+| <kbd>Enter</kbd> | Run the plan, open a finding, or show its rows; on an empty Segments or Trends page, open the plan setting that fills it |
 | <kbd>e</kbd> | Edit a copy of the plan; <kbd>Esc</kbd> discards edits |
 | <kbd>s</kbd> | Open the shared [Sample](#sampling) form |
 | <kbd>p</kbd> | Show the detailed access plan |
-| <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends |
-| <kbd>[</kbd> <kbd>]</kbd> | Choose a column in Segments or Trends |
+| <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends, directly |
+| <kbd>[</kbd> <kbd>]</kbd> | Choose a column in Segments or Trends, once the plan's Grain splits the rows |
 | <kbd>m</kbd> | Cycle the measurement: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | Rerun with a new sample seed, for every tool |
@@ -129,20 +137,23 @@ sampled, or metadata-only.
 - **Overview** — the report. <kbd>Enter</kbd> on a finding shows its numbers,
   why it matters, what to check and its evidence: the spellings, the most
   repeated value, the files behind a missing or mistyped column and the values
-  a conflict hides. On an exact run <kbd>Enter</kbd> again opens the matching
-  rows in a temporary table (every column's rows, for a grouped finding);
-  <kbd>Esc</kbd> returns to the same finding. The row view uses the same scope
-  and may read the source again; a sampled finding says when an exact row view
-  requires a full profile.
+  a conflict hides. <kbd>Enter</kbd> again opens the matching rows in a
+  temporary table (every column's rows, for a grouped finding): from the table
+  when every row was read, from the sample when one was. <kbd>Esc</kbd> returns
+  to the report.
 - **Columns** — a mark per column (problem, note or clean), its missing
   count and its findings; <kbd>Enter</kbd> opens the column's measurements.
-- **Segments** — keeps both row denominators visible and shows the chosen
+- **Segments** — needs a Grain other than the whole dataset; until then the
+  page says so and <kbd>Enter</kbd> opens the plan on Grain. It keeps both row
+  denominators visible and shows the chosen
   column measurement, its percentage-point change against the selected
   comparison, and the largest change any column made against that comparison;
   the first segment with a material one is where a shift starts.
 - **Trends** — charts the measurement across ordered row chunks or time
-  windows, and reports lifecycle latency for accepted role pairs: missing
-  endpoints, negative durations, p50/p90/p95/p99, and maximum duration.
+  windows, and reports the time between dates for assigned role pairs: missing
+  endpoints, negative durations, p50/p90/p95/p99, and maximum duration. Each
+  part says what it needs when it has nothing, and <kbd>Enter</kbd> opens it:
+  Time roles when the data has date columns, Grain otherwise.
 
 ### Sampling and budgets
 

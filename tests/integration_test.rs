@@ -1159,7 +1159,9 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             assert!(screen.contains("Data Quality"));
             match page {
                 QualityPage::Columns => assert!(screen.contains("Findings")),
-                QualityPage::Segments => assert!(screen.contains("Null")),
+                // One segment is no comparison: the page says what makes one.
+                QualityPage::Segments => assert!(screen.contains("one segment")),
+                QualityPage::Trends => assert!(screen.contains("TIME BETWEEN DATES")),
                 _ => {}
             }
         }
@@ -1167,6 +1169,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
 
     // The largest measured move between segments is on the screen, not only in the
     // profile: #196 asks for it and nothing read it before.
+    app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::RowChunks(5);
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     let wide = Rect::new(0, 0, 160, 40);
     let mut buffer = Buffer::empty(wide);
@@ -1202,19 +1205,23 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         }
     }
 
-    // Once a run exists the sidebar keeps the verdict in counts, and the strip
-    // says in words what was measured.
+    // Once a run exists the header says what was measured on one line, as every
+    // tool's does, and the sidebar is the tool list every tool has.
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     let area = Rect::new(0, 0, 120, 32);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    assert!(screen.contains("Result"), "sidebar should report the run");
-    assert!(screen.contains("clean"));
+    let header = &screen[..area.width as usize];
     assert!(
-        screen.contains("in the current view"),
-        "the strip says what was measured"
+        header.starts_with("Data Quality") && header.contains(" rows"),
+        "the header says what was measured: {header:?}"
     );
+    assert!(
+        !screen.contains("Result"),
+        "no second verdict in the sidebar"
+    );
+    assert!(screen.contains("clean"));
 
     app.analysis_modal.set_quality_page(QualityPage::Plan);
     for (popup, expected) in [
@@ -1860,7 +1867,12 @@ fn data_quality_reads_as_a_report() {
     let screen = rendered_text(&buffer);
     for expected in [
         "1 problem  2 notes  1 of 5 columns clean",
-        "All 200 rows in the current view checked",
+        "Data Quality",
+        "all 200 rows",
+        "Overview",
+        "Columns",
+        "Segments",
+        "Trends",
         "Mixed spellings",
         "Missing values",
         "same 4 rows (2.0%)",
@@ -1881,6 +1893,66 @@ fn data_quality_reads_as_a_report() {
         !screen.contains("Measured fact"),
         "no raw observation table on the overview"
     );
+    for gone in ["Result", "checked", "seed"] {
+        assert!(!screen.contains(gone), "{gone:?} repeats the header");
+    }
+
+    // The arrows walk the tabs, and every page's bar has one shape: the way out,
+    // the page's own action, then the shared keys in one order.
+    let bar = |app: &mut App| {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let bar_row = (area.height as usize - 1) * area.width as usize;
+        buffer.content()[bar_row..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let shared = format!(
+        "s  Sample   {}  Page   v  View Rows   e  Plan",
+        datui::glyphs::get().updown_lr
+    );
+    for (page, own) in [
+        (QualityPage::Overview, "Enter  Details"),
+        (QualityPage::Columns, "Enter  Inspect"),
+        (QualityPage::Segments, "Enter  Set Grain"),
+        (QualityPage::Trends, "Enter  Set Grain"),
+    ] {
+        if page != QualityPage::Overview {
+            app.event(&AppEvent::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.analysis_modal.data_quality_page, page);
+        assert!(
+            bar(&mut app).starts_with(&format!(" Esc  Back   {own}   {shared}")),
+            "{page:?}: {:?}",
+            bar(&mut app)
+        );
+    }
+    // An empty Trends page names the setting that fills it, and Enter opens it.
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("Set Grain") && !screen.contains("Metric"));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert!(app.analysis_modal.data_quality_editing);
+    assert_eq!(app.analysis_modal.data_quality_plan_field, 1, "on Grain");
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('1'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    assert!(app.analysis_modal.data_quality_results.is_some());
 
     // The clean entry lists what was checked: the most important few, then all.
     for code in [KeyCode::End, KeyCode::Enter] {
@@ -1945,6 +2017,96 @@ fn data_quality_reads_as_a_report() {
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows, 4);
+}
+
+/// A finding measured on a sample opens the sample's matching rows, drawn again
+/// from its seed: the count the popup promises is the count in the table.
+#[test]
+fn a_sampled_finding_opens_its_sampled_rows() {
+    use datui::data_quality::{QualityPage, QualityPrecision};
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_sampled_evidence.parquet");
+    let mut df = df!(
+        "id" => (0..5_000i64).collect::<Vec<_>>(),
+        "v" => (0..5_000i64).map(|row| (row % 10 != 3).then_some(row)).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    // A table sorted on screen: the sample is drawn from the unsorted rows, as
+    // every tool draws it, so the sort changes nothing about which rows it holds.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort(vec!["id".to_string()], false);
+    pump_until_idle(&mut app, &rx, &tx);
+    app.analysis_modal.sample.rows = 1_000;
+
+    let enter = || AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    let mut next = app.event(&enter());
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.precision, QualityPrecision::Sampled);
+    let report = datui::quality_report::build_report(results);
+    let index = report
+        .findings
+        .iter()
+        .position(|finding| finding.title == "Missing values")
+        .expect("v is missing in a tenth of the rows");
+    let expected = report.findings[index].affected_rows;
+    assert!(expected > 0 && expected < 1_000);
+
+    app.analysis_modal
+        .data_quality_table_state
+        .select(Some(index));
+    app.event(&enter());
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let area = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains(&format!("Enter shows the {expected} sampled rows.")),
+        "the popup says which rows open"
+    );
+    assert!(screen.contains("Show Rows"));
+    assert!(!screen.contains("full profile"));
+
+    let mut next = app.event(&enter());
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.num_rows, expected,
+        "exactly the rows the finding counted"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.active, "Esc goes back to the report");
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 5_000);
 }
 
 /// One sample for every tool: chosen once in Describe, it is the rows Data Quality

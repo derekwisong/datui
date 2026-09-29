@@ -1,8 +1,8 @@
 Data Quality checks the rows in scope and reports what it found. It reads
 the sample every analysis tool shares: if none has been run on this
 dataset yet, its pane is the Sample form first (change the rows there or
-press Enter to run). A plan that needs confirming asks before it reads. The strip at the top says what was
-checked, and e edits the plan.
+press Enter to run). A plan that needs confirming asks before it reads. The header says which rows were
+checked, the tabs under it name the pages, and e edits the plan.
 
 Reading the report:
   First line:   problems, notes and clean columns, counted
@@ -10,36 +10,42 @@ Reading the report:
                 NaN or infinite values, empty or blank text, one value
                 spelled several ways, duplicate rows, a column always
                 missing, missing from some files, or typed differently
-  Notes:        fine or not depending on what the column is for: missing
-                values, a single value, numbers or dates stored as text,
-                a nearly unique column whose values repeat
+  Notes:        fine or not depending on what the column is for: columns
+                missing in more than half the rows, other missing values,
+                a single value, numbers or dates stored as text, a nearly
+                unique column whose values repeat
   Clean:        the columns no check found anything in
-  Columns missing on the same rows are one finding. Enter on a finding
-  says what it is, why it matters and what to check; Enter again shows
-  its rows when the run was exact.
+  Missing values are one finding, each column's rate inside it; columns
+  missing on the same rows are one finding of their own. Enter on a
+  finding says what it is, why it matters and what to check; Enter again
+  shows its rows, from the sample when the run read one.
   Enter on the clean entry lists the checks the run made: what each
   covered, what it found, or why it did not run. Enter again shows all
   of them. When nothing is found, the list is on the page.
 
 Keys:
   Enter:            Run the plan, apply the edit in progress, open a
-                    finding, show its exact rows, or close an open popup
+                    finding, show its rows, or close an open popup. On
+                    an empty Segments or Trends page, open the plan
+                    setting that fills it (Grain or Time roles)
   e:                Edit the plan's six fields: Sample, Grain, Values,
                     Compare, Time roles, Latency threshold
   s:                Choose the sample every analysis tool reads: which
                     rows, how they are picked, how many, the seed
   v:                View the rows Data Quality reads as a table; Esc
                     comes back
-  ← / →:            In the plan editor: change the focused field's value;
-                    on Time roles, cycle the column
+  ← / → (h/l):      Previous or next page: Overview, Columns, Segments,
+                    Trends, Plan. In the plan editor: change the focused
+                    field's value; on Time roles, cycle the column
   Enter on Sample:  Open the Sample form (the same as s)
   Enter on Time roles: Open the role editor: ↑/↓ pick the role, ←/→ the
                     column, Enter done
   p:                Show the detailed access plan
   1 / 2 / 3 / 4:    Overview (the report) / Columns (a mark and the
-                    findings per column) / Segments / Trends
-  [ / ]:            Choose a column in Segments or Trends
-  m:                Choose the measurement in Segments or Trends
+                    findings per column) / Segments / Trends, directly
+  [ / ]:            Choose a column in Segments or Trends, once the
+                    plan's Grain splits the rows
+  m:                Choose the measurement in Segments or Trends, likewise
   b:                Use the highlighted segment as the comparison baseline
                     without rescanning
   ↑ / ↓ (j/k):      Move through fields or results
@@ -51,14 +57,14 @@ Keys:
                     Time roles, Esc restores the whole pre-edit plan
   ?:                Toggle this help (F1 opens it)
 
-Every result says how many rows were checked and whether they were all of them or a sample. A dataset-grain sample is spread across the whole scope, as Describe's is, and the strip says how many rows of how many. Temporal meanings are used only after you assign a role to a column.
+Every result says how many rows were checked and whether they were all of them or a sample. A dataset-grain sample is spread across the whole scope, as Describe's is, and the header says how many rows of how many. Temporal meanings are used only after you assign a role to a column.
 The rows are the shared sample's, as in every analysis tool: its scope, method (random, equal per value, first rows, every row), size and seed, the same rows every tool reads. A grain splits those rows into segments: a random sample gives each segment its share, and Equal per value of the partition column gives each the same number. Only a full scan asks for confirmation.
 Time-window grain offers 1h, 1d, 1w and 1mo on each assigned time role. A window starts on the calendar boundary for its width, so weeks start on Monday, and is cut at the same place whether the run sampled or scanned it.
 The sample's scope can be the current view, loaded source, view row range, selected source files, source partition values or range, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
-Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
+Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The header labels a reused run.
 
 Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.
-For missing values, empty or blank text, NaN or infinite values, a single value, a nearly unique column, and mixed spellings, Enter from the detail opens a temporary view of exactly those rows when the run was exact; a grouped finding opens the rows of every column in it. Esc returns to the same finding. A sampled finding says a full run is needed for its rows.
+For missing values, empty or blank text, NaN or infinite values, a single value, a nearly unique column, and mixed spellings, Enter from the detail opens a temporary view of exactly the rows the finding counted: from the table when every row was read, and from the sample, drawn again from its seed, when a sample was. A grouped finding opens the rows of every column in it. Esc returns to the report.
 Nearly unique is checked on whole-number and text columns only, and only from an exact profile: a null rate measured on a sample stands for the whole, but a distinct count does not. The count is rows beyond one per value; Enter opens every row that shares one, which is always more.
 Columns missing from some files and type mismatches are read from the footers, so they are reported at every compute budget and counted over the whole loaded source rather than the profiled scope. Their detail names the files, and Enter opens the rows those files contributed. A full scan also reads the first few values each conflicting file holds; the access plan says how many extra one-column reads that costs.
 Segments names the largest change any column made against the compared segment, so the first segment with a material one is where a shift starts.

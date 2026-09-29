@@ -408,6 +408,45 @@ impl AnalysisModal {
             .select(Some(self.data_quality_column_index));
     }
 
+    /// Show a tab, keeping the column in view across Columns, Segments and Trends.
+    /// The plan acts on Enter, which only the main pane hears, so it brings the
+    /// cursor along.
+    pub fn show_quality_tab(&mut self, page: QualityPage) {
+        if matches!(
+            self.data_quality_page,
+            QualityPage::Columns | QualityPage::Detail
+        ) {
+            self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
+        }
+        self.set_quality_page(page);
+        match page {
+            QualityPage::Columns => self
+                .data_quality_table_state
+                .select(Some(self.data_quality_column_index)),
+            QualityPage::Plan => self.focus = AnalysisFocus::Main,
+            _ => {}
+        }
+    }
+
+    /// The next or previous tab, stopping at either end.
+    pub fn step_quality_tab(&mut self, forward: bool) {
+        let tabs = QualityPage::TABS;
+        let Some(at) = tabs
+            .iter()
+            .position(|page| *page == self.data_quality_page.tab())
+        else {
+            return;
+        };
+        let next = if forward {
+            (at + 1).min(tabs.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        if next != at {
+            self.show_quality_tab(tabs[next]);
+        }
+    }
+
     pub fn cycle_quality_metric(&mut self) {
         let current = QualityMetric::ALL
             .iter()

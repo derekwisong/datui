@@ -6,9 +6,9 @@ Navigation:
   ←→ / h/l:      Scroll statistics columns horizontally
   Home/End:      Jump to first/last row
   PageUp/PageDown: Navigate by page
-  Enter:         Select tool from sidebar (when sidebar focused); before
-                 a tool's first run the cursor goes into its Sample
-                 form, where Enter runs it (Esc goes back to the list)
+  Enter:         Select tool from sidebar (when sidebar focused). The
+                 first run on a dataset starts in the Sample form,
+                 where Enter runs it; later tools reuse that sample
 
 Actions:
   s:             Choose the sample every tool reads: which rows, how

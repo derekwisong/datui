@@ -7099,6 +7099,7 @@ impl App {
         }
         self.analysis_modal.sample = sample;
         self.analysis_modal.sample_dataset = Some(self.dataset_generation);
+        self.analysis_modal.sample_run_for = Some(self.dataset_generation);
         self.sync_quality_plan();
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             return self.run_quality_plan();
@@ -14627,7 +14628,20 @@ impl App {
                             }
                             None => true,
                         };
-                        // The form is what the pane is for until the first run, so the
+                        // Once a sample has been run on this dataset, every tool reads
+                        // it: a tool with no result runs at once, and s changes the
+                        // sample for all of them.
+                        let sample_run = self.analysis_modal.sample_run_for
+                            == Some(self.dataset_generation);
+                        if !has_result && sample_run {
+                            return match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::DataQuality) => {
+                                    self.run_quality_plan()
+                                }
+                                _ => self.start_analysis_run(),
+                            };
+                        }
+                        // Before the first, the form is what the pane is for, so the
                         // cursor goes with it: Enter runs, the arrows change a setting,
                         // Esc hands the cursor back to the list. A tool with a result
                         // leaves the cursor on the list.

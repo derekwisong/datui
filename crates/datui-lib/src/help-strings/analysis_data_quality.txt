@@ -1,7 +1,7 @@
-Data Quality checks the rows in scope and reports what it found. Before
-the first run its pane is the Sample form, and the cursor goes into it:
-change the rows there or press Enter to run, and a plan that needs
-confirming asks before it reads. The strip at the top says what was
+Data Quality checks the rows in scope and reports what it found. It reads
+the sample every analysis tool shares: if none has been run on this
+dataset yet, its pane is the Sample form first (change the rows there or
+press Enter to run). A plan that needs confirming asks before it reads. The strip at the top says what was
 checked, and e edits the plan.
 
 Reading the report:

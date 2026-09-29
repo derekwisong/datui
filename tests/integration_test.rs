@@ -2028,11 +2028,16 @@ fn one_sample_serves_every_analysis_tool() {
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 1_000);
     assert!(app.analysis_modal.describe_results.is_some());
 
-    // Data Quality reads the same rows without being told again.
+    // Data Quality reads the same rows without being told again: once a sample
+    // has been run, picking another tool runs it on that sample, no form.
     app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(3));
-    show_sample_form(&mut app);
     let next = key(&mut app, KeyCode::Enter);
+    assert!(
+        app.analysis_modal.sample_form.is_none(),
+        "the sample already chosen is not asked for again"
+    );
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     run(&mut app, next);
     assert_eq!(
         app.analysis_modal.selected_tool,

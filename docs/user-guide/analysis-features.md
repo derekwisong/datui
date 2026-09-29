@@ -212,9 +212,10 @@ and offer to read a conflicting column as text.
 ## Sampling
 
 Every analysis tool reads the same sample: which rows, how they are picked,
-how many, and the seed. A tool with no result yet shows the **Sample** form in
-its pane with the cursor in it: change a setting or press <kbd>Enter</kbd> to
-run with the form as it stands; <kbd>Esc</kbd> goes back to the tool list. A
+how many, and the seed. The first tool you run on a dataset shows the
+**Sample** form in its pane with the cursor in it: change a setting or press
+<kbd>Enter</kbd> to run with the form as it stands; <kbd>Esc</kbd> goes back to
+the tool list. After that, every tool you pick runs at once on the same sample. A
 value the data does not hold, or rows that match nothing, is refused with what
 the data does hold. After that,
 <kbd>s</kbd> opens the form from any tool; <kbd>Enter</kbd> applies it and runs

@@ -62,6 +62,9 @@ pub struct AnalysisModal {
     /// The dataset the sample's scope was chosen for. A scope naming a partition or a
     /// file of one dataset means nothing on the next.
     pub sample_dataset: Option<u64>,
+    /// The dataset a sample was last run on. Once one has been, a tool picked with
+    /// no result runs on it at once; before, the Sample form asks first.
+    pub sample_run_for: Option<u64>,
     /// The Sample form, while it is open.
     pub sample_form: Option<crate::sample_modal::SampleForm>,
     pub table_state: TableState,              // For describe table

@@ -41,11 +41,11 @@ and how many row pairs it was computed from.
 ## Data quality
 
 Choose **Data Quality** to check the rows in scope and get a report: what is
-likely wrong, what depends on intent, and which columns are clean. On a local
-file the default plan runs at once and the report opens first; the strip at
-the top says what was checked, and <kbd>e</kbd> edits the plan. On a remote
-source the first screen is an inert plan: no values are read until you press
-<kbd>Enter</kbd>. A full value scan always asks for confirmation.
+likely wrong, what depends on intent, and which columns are clean. Before the
+first run the pane is the [Sample](#sampling) form, and nothing is read until
+<kbd>Enter</kbd> runs it; then the report opens. The strip at the top says what
+was checked, and <kbd>e</kbd> edits the plan. A full value scan always asks for
+confirmation.
 
 ### Reading the report
 
@@ -212,11 +212,13 @@ and offer to read a conflicting column as text.
 ## Sampling
 
 Every analysis tool reads the same sample: which rows, how they are picked,
-how many, and the seed. <kbd>s</kbd> opens the **Sample** form from any tool;
-<kbd>Enter</kbd> applies it and runs the tool on screen again, and
-<kbd>Esc</kbd> discards the edit. The other tools' results go with the old
+how many, and the seed. A tool with no result yet shows the **Sample** form in
+its pane: <kbd>Enter</kbd> again in the tool list runs it with the form as it
+stands, and <kbd>Tab</kbd> moves into the form to change it first. After that,
+<kbd>s</kbd> opens the form from any tool; <kbd>Enter</kbd> applies it and runs
+the tool on screen again, and <kbd>Esc</kbd> discards the edit. The other tools' results go with the old
 sample, so switching tools compares like with like. The header says what was
-read: `Describe · sample of 100,000 of 17,559,636 rows · source year=2020..2022`.
+read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..2022`.
 
 | Field | Choices |
 |---|---|

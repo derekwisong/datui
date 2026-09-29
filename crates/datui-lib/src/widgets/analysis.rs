@@ -109,7 +109,7 @@ impl<'a> AnalysisWidget<'a> {
     fn render_main_view(self, area: Rect, buf: &mut Buffer) {
         // The tool list never takes more than a third of the screen: the
         // results are what the screen is for.
-        let sidebar_width = 32u16.min(area.width / 3);
+        let sidebar_width = sidebar_width(area.width);
 
         // Full-screen layout: breadcrumb, main area (no separate keybind hints line)
         let layout = Layout::default()
@@ -214,11 +214,9 @@ impl<'a> AnalysisWidget<'a> {
                                 .render(main_layout[0], buf);
                         }
                     }
-                } else {
-                    Paragraph::new("Computing statistics...")
-                        .centered()
-                        .render(main_layout[0], buf);
                 }
+                // No result yet: the Sample form fills this pane until the first run,
+                // and the progress overlay covers it during one.
             }
         }
 
@@ -1564,7 +1562,25 @@ fn render_distribution_settings(
     block.render(area, buf);
 }
 
-fn render_sidebar(
+/// The tool list's width beside a result: a third of the screen, at most 32.
+pub(crate) fn sidebar_width(width: u16) -> u16 {
+    32u16.min(width / 3)
+}
+
+/// Where a tool's result goes: under the one-line header, left of the tool list.
+/// The Sample form fills it before a tool's first run.
+pub(crate) fn main_pane(area: Rect) -> Rect {
+    Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        width: area.width.saturating_sub(sidebar_width(area.width)),
+        ..area
+    }
+}
+
+/// The Analysis Tools list, the same beside every tool: the cursor carries the
+/// rail and the tint, the tool on screen carries the accent.
+pub(crate) fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
     sidebar_state: &mut TableState,

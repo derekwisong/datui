@@ -220,6 +220,17 @@ impl AnalysisModal {
         }
     }
 
+    /// The tool under the sidebar cursor.
+    pub fn highlighted_tool(&self) -> Option<AnalysisTool> {
+        Some(match self.sidebar_state.selected()? {
+            0 => AnalysisTool::Describe,
+            1 => AnalysisTool::DistributionAnalysis,
+            2 => AnalysisTool::CorrelationMatrix,
+            3 => AnalysisTool::DataQuality,
+            _ => return None,
+        })
+    }
+
     /// Select the tool under the sidebar cursor. Focus stays on the sidebar:
     /// it moves only when the user presses Tab, never as a side effect.
     pub fn select_tool(&mut self) {
@@ -360,16 +371,17 @@ impl AnalysisModal {
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
+            && self.sample_form.is_none()
     }
 
     /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
     /// are text there as in any field.
     pub fn sample_scope_typing(&self) -> bool {
         self.active
-            && self
-                .sample_form
-                .as_ref()
-                .is_some_and(|form| form.field == crate::sample_modal::SampleField::Scope)
+            && self.sample_form.as_ref().is_some_and(|form| {
+                form.field == crate::sample_modal::SampleField::Scope
+                    && (!form.inline || self.focus == AnalysisFocus::Main)
+            })
     }
 
     pub fn set_quality_page(&mut self, page: QualityPage) {

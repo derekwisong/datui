@@ -152,8 +152,20 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         AnalysisView::Main => {}
     }
     // The Sample form owns the keys over whichever tool; its footer names the rest.
-    if modal.sample_form.is_some() {
-        return vec![("Enter", "Apply"), ("Esc", "Cancel")];
+    if let Some(form) = &modal.sample_form {
+        let listing = modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar;
+        return match (form.inline, listing) {
+            // A tool's first run, from the list: Enter takes the form as it stands.
+            (true, true) => vec![
+                ("Enter", "Run"),
+                ("Tab", "Sample"),
+                (crate::glyphs::get().updown, "Tools"),
+                ("?", "Help"),
+                ("Esc", "Back"),
+            ],
+            (true, false) => vec![("Enter", "Run"), ("Esc", "Back")],
+            (false, _) => vec![("Enter", "Apply"), ("Esc", "Cancel")],
+        };
     }
     if modal.selected_tool == Some(AnalysisTool::DataQuality) {
         return data_quality_control_keys(app);

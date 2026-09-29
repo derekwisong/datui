@@ -24,11 +24,19 @@ pub fn render(
             .as_ref()
             .map(|state| state.quality_source_file_names())
             .unwrap_or_default();
+        let quality =
+            app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
         // Data Quality's row-by-row checks keep at most 50,000 rows a run.
-        let cap = (app.analysis_modal.selected_tool
-            == Some(analysis_modal::AnalysisTool::DataQuality))
-        .then_some(50_000);
-        crate::widgets::sample_form::render(form, files, cap, area, buf, ctx);
+        let cap = quality.then_some(50_000);
+        // Before a first run the form is the tool's pane; after, it floats over it.
+        let target = match (form.inline, quality) {
+            (false, _) => area,
+            (true, true) => crate::widgets::data_quality::main_pane(area),
+            (true, false) => crate::widgets::analysis::main_pane(area),
+        };
+        let focused =
+            !form.inline || app.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
+        crate::widgets::sample_form::render(form, focused, files, cap, target, buf, ctx);
     }
 }
 

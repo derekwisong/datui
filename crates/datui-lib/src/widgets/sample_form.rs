@@ -15,8 +15,11 @@ const FILES_SHOWN: usize = 5;
 
 /// `cap` is the most rows the current tool keeps whatever the form asks for, so the
 /// form can say so rather than let a larger number stand unexplained.
+/// `focused` is whether the form has the cursor; an inline form waiting beside a
+/// focused tool list is drawn without the rail, so one thing looks focused.
 pub fn render(
     form: &SampleForm,
+    focused: bool,
     files: &[String],
     cap: Option<usize>,
     area: Rect,
@@ -27,14 +30,17 @@ pub fn render(
     let fields = form.fields();
     let on_scope = form.field == SampleField::Scope;
     let show_files = on_scope && !files.is_empty();
-    let mut hints: Vec<(&str, &str)> = vec![("Enter", "Apply"), (g.updown, "Row")];
+    let mut hints: Vec<(&str, &str)> = vec![
+        ("Enter", if form.inline { "Run" } else { "Apply" }),
+        (g.updown, "Row"),
+    ];
     if !on_scope {
         hints.push((g.updown_lr, "Change"));
     }
     if show_files && files.len() > FILES_SHOWN {
         hints.push(("PgUp/PgDn", "Files"));
     }
-    hints.push(("Esc", "Cancel"));
+    hints.push(("Esc", if form.inline { "Back" } else { "Cancel" }));
     let footer = HintBar::from_ctx(ctx).hints(&hints);
 
     let files_height = if show_files {
@@ -44,19 +50,36 @@ pub fn render(
     };
     // Rows, a gap, the note (up to two lines), the error, the file inventory, the
     // footer, the frame.
-    let height = fields.len() as u16 + 1 + 2 + 1 + files_height + 1 + 2;
-    let width = area.width.saturating_sub(4).clamp(40, 76);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width: width.min(area.width),
-        height: height.min(area.height),
+    let lead = u16::from(form.inline) * 2;
+    let height = lead + fields.len() as u16 + 1 + 2 + 1 + files_height + 1 + 2;
+    // Inline, the form is the pane: it takes the pane's width, capped at a reading
+    // measure, from the pane's top. Floating, it is a compact dialog in the middle.
+    let frame = if form.inline {
+        Rect {
+            width: area.width.min(78),
+            height: height.min(area.height),
+            ..area
+        }
+    } else {
+        let width = area.width.saturating_sub(4).clamp(40, 76);
+        Rect {
+            x: area.x + area.width.saturating_sub(width) / 2,
+            y: area.y + area.height.saturating_sub(height) / 2,
+            width: width.min(area.width),
+            height: height.min(area.height),
+        }
     };
     let inner = Surface::new("Sample")
         .footer(&footer)
-        .render(popup, buf, ctx);
+        .render(frame, buf, ctx);
 
     let mut y = inner.y;
+    if form.inline && inner.height > 0 {
+        Paragraph::new("Which rows this tool reads. Enter runs it; s changes them later.")
+            .style(Style::default().fg(ctx.text_primary))
+            .render(Rect { height: 1, ..inner }, buf);
+        y += 2;
+    }
     let bottom = inner.y + inner.height;
     let line = |y: u16| Rect {
         y,
@@ -92,7 +115,7 @@ pub fn render(
         FormRow {
             label: field.label(),
             value,
-            focused: form.field == *field,
+            focused: focused && form.field == *field,
             label_width: 12,
         }
         .render(line(y), buf, ctx);

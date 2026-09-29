@@ -41,6 +41,29 @@ pub struct DataQualityWidgetConfig<'a> {
     pub theme: &'a Theme,
 }
 
+/// The tool list's width: the width every analysis tool gives it, and none on a
+/// terminal too narrow to hold it beside the result (a picker pops up instead).
+fn data_quality_sidebar_width(width: u16) -> u16 {
+    if width >= 76 {
+        crate::widgets::analysis::sidebar_width(width)
+    } else {
+        0
+    }
+}
+
+/// Where the result goes: under the breadcrumb and the strip, left of the tool list.
+/// The Sample form fills it before the first run.
+pub(crate) fn main_pane(area: Rect) -> Rect {
+    Rect {
+        y: area.y + 3,
+        height: area.height.saturating_sub(3),
+        width: area
+            .width
+            .saturating_sub(data_quality_sidebar_width(area.width)),
+        ..area
+    }
+}
+
 pub fn render(
     config: DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -48,13 +71,7 @@ pub fn render(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let sidebar_width = if area.width >= 108 {
-        30
-    } else if area.width >= 76 {
-        20
-    } else {
-        0
-    };
+    let sidebar_width = data_quality_sidebar_width(area.width);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1657,40 +1674,13 @@ fn render_sidebar(
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1), Constraint::Length(7)])
         .split(area);
-    let tools = [
-        ("Describe", AnalysisTool::Describe),
-        ("Distribution Analysis", AnalysisTool::DistributionAnalysis),
-        ("Correlation Matrix", AnalysisTool::CorrelationMatrix),
-        ("Data Quality", AnalysisTool::DataQuality),
-    ];
-    let items = tools.iter().enumerate().map(|(index, (name, tool))| {
-        let focused =
-            config.focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(index);
-        let selected = *tool == AnalysisTool::DataQuality;
-        let g = crate::glyphs::get();
-        // The middot marks the applied choice, as in every Picker; the rail
-        // and tint stay with focus.
-        let prefix = if selected {
-            format!("{} ", g.middot)
-        } else {
-            "  ".to_string()
-        };
-        ListItem::new(format!("{prefix}{name}")).style(if focused {
-            config.theme.highlight_style()
-        } else {
-            Style::default().fg(config.theme.get("text_primary"))
-        })
-    });
-    Widget::render(
-        List::new(items).block(
-            Block::default()
-                .title("Analysis Tools")
-                .borders(Borders::ALL)
-                .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(config.theme.get("modal_border"))),
-        ),
+    crate::widgets::analysis::render_sidebar(
         parts[0],
         buf,
+        sidebar_state,
+        Some(AnalysisTool::DataQuality),
+        config.focus,
+        config.theme,
     );
 
     // The plan strip above already carries the planned access, so this panel

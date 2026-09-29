@@ -28,6 +28,9 @@ impl SampleField {
 }
 
 pub struct SampleForm {
+    /// Before a tool's first run the form fills its empty pane, and Enter is what
+    /// runs it; otherwise it floats over a result, and Enter applies a change.
+    pub inline: bool,
     pub draft: Sample,
     pub field: SampleField,
     pub scope_input: TextInput,
@@ -44,6 +47,7 @@ impl SampleForm {
         scope_input.set_value(sample.scope.command());
         scope_input.set_focused(true);
         Self {
+            inline: false,
             draft: sample.clone(),
             field: SampleField::Scope,
             scope_input,

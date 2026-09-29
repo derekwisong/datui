@@ -6848,6 +6848,57 @@ impl App {
     /// splits by a column; partition columns lead the choices, then the columns a
     /// partition is usually made of (text, integers, dates), never floats.
     fn open_sample_form(&mut self) {
+        self.open_sample_form_as(false);
+    }
+
+    /// A tool picked with nothing to show yet: the Sample form is its pane. The
+    /// cursor stays on the tool list, as it does whenever a tool is picked; Enter
+    /// again runs the tool with the form as it stands, and Tab moves in to change it.
+    fn open_first_run_form(&mut self) {
+        self.open_sample_form_as(true);
+        self.sync_sample_form_focus();
+    }
+
+    /// The scope field shows its cursor only while the form has the cursor.
+    fn sync_sample_form_focus(&mut self) {
+        let focused = self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
+        if let Some(form) = self.analysis_modal.sample_form.as_mut() {
+            let on_scope = form.field == sample_modal::SampleField::Scope;
+            form.scope_input
+                .set_focused(on_scope && (focused || !form.inline));
+        }
+    }
+
+    /// Run the tool on screen with the Sample form's sample, or say on the form why
+    /// its scope does not parse.
+    fn run_sample_form(&mut self) -> Option<AppEvent> {
+        let file_count = self
+            .data_table_state
+            .as_ref()
+            .map(|state| state.quality_source_file_count())
+            .unwrap_or(0);
+        let form = self.analysis_modal.sample_form.as_mut()?;
+        match form.finish() {
+            Ok(sample) => {
+                if let data_quality::QualityScope::SourceFiles(files) = &sample.scope
+                    && files.iter().any(|file| *file > file_count)
+                {
+                    form.error = Some(format!(
+                        "File number exceeds the source's {file_count} files"
+                    ));
+                    return None;
+                }
+                self.analysis_modal.sample_form = None;
+                self.apply_sample(sample)
+            }
+            Err(error) => {
+                form.error = Some(error);
+                None
+            }
+        }
+    }
+
+    fn open_sample_form_as(&mut self, inline: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -6867,11 +6918,10 @@ impl App {
                 }
             }
         }
-        self.analysis_modal.sample_form = Some(sample_modal::SampleForm::new(
-            &self.analysis_modal.sample,
-            columns,
-            &self.theme,
-        ));
+        let mut form =
+            sample_modal::SampleForm::new(&self.analysis_modal.sample, columns, &self.theme);
+        form.inline = inline;
+        self.analysis_modal.sample_form = Some(form);
     }
 
     fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
@@ -6884,22 +6934,14 @@ impl App {
         let form = self.analysis_modal.sample_form.as_mut()?;
         let on_scope = form.field == SampleField::Scope;
         match event.code {
+            // In a tool's empty pane the form stays, as it was: Esc discards the
+            // edit and hands the cursor back to the tool list.
+            KeyCode::Esc if form.inline => {
+                self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+                self.open_first_run_form();
+            }
             KeyCode::Esc => self.analysis_modal.sample_form = None,
-            KeyCode::Enter => match form.finish() {
-                Ok(sample) => {
-                    if let data_quality::QualityScope::SourceFiles(files) = &sample.scope
-                        && files.iter().any(|file| *file > file_count)
-                    {
-                        form.error = Some(format!(
-                            "File number exceeds the source's {file_count} files"
-                        ));
-                        return None;
-                    }
-                    self.analysis_modal.sample_form = None;
-                    return self.apply_sample(sample);
-                }
-                Err(error) => form.error = Some(error),
-            },
+            KeyCode::Enter => return self.run_sample_form(),
             KeyCode::Down | KeyCode::Tab => form.move_field(true),
             KeyCode::Up | KeyCode::BackTab => form.move_field(false),
             KeyCode::Char('j') if !on_scope => form.move_field(true),
@@ -6943,14 +6985,17 @@ impl App {
     /// Adopt a new shared sample: every tool's results were of the old one, so all of
     /// them go, and the tool on screen runs again.
     fn apply_sample(&mut self, sample: sampling::Sample) -> Option<AppEvent> {
+        // A first run on the sample as it stands takes nothing from the other tools.
+        if sample != self.analysis_modal.sample {
+            self.analysis_modal.describe_results = None;
+            self.analysis_modal.distribution_results = None;
+            self.analysis_modal.correlation_results = None;
+            self.analysis_modal.data_quality_results = None;
+            self.analysis_modal.data_quality_last_plan = None;
+            self.analysis_modal.data_quality_from_cache = false;
+        }
         self.analysis_modal.sample = sample;
         self.analysis_modal.sample_dataset = Some(self.dataset_generation);
-        self.analysis_modal.describe_results = None;
-        self.analysis_modal.distribution_results = None;
-        self.analysis_modal.correlation_results = None;
-        self.analysis_modal.data_quality_results = None;
-        self.analysis_modal.data_quality_last_plan = None;
-        self.analysis_modal.data_quality_from_cache = false;
         self.sync_quality_plan();
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             return self.run_quality_plan();
@@ -6963,7 +7008,6 @@ impl App {
     fn run_quality_plan(&mut self) -> Option<AppEvent> {
         use data_quality::QualityPage;
         self.sync_quality_plan();
-        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
         if self.restore_cached_quality() {
             return None;
         }
@@ -6973,7 +7017,9 @@ impl App {
             .data_quality_plan
             .requires_confirmation()
         {
+            // The prompt is answered with Enter, which only the main pane hears.
             self.analysis_modal.data_quality_confirm_run = true;
+            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
             return None;
         }
         self.analysis_modal.data_quality_results = None;
@@ -13974,8 +14020,16 @@ impl App {
                 self.cancel_analysis();
                 return None;
             }
-            // The Sample form owns the keys while it is open, over whichever tool.
-            if self.analysis_modal.sample_form.is_some() {
+            // The Sample form owns the keys while it has the cursor: always when it
+            // floats over a result, and in a tool's empty pane once Tab moves in.
+            if self
+                .analysis_modal
+                .sample_form
+                .as_ref()
+                .is_some_and(|form| {
+                    !form.inline || self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                })
+            {
                 return self.sample_form_key(event);
             }
             if event.code == KeyCode::Char('s') && self.analysis_modal.sample_key_opens_form() {
@@ -13984,6 +14038,8 @@ impl App {
             }
             if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
                 && self.analysis_modal.view == analysis_modal::AnalysisView::Main
+                // Before the first run the pane is the Sample form, not the plan.
+                && self.analysis_modal.sample_form.is_none()
             {
                 use crate::data_quality::QualityPage;
 
@@ -14417,80 +14473,50 @@ impl App {
                     // The detail views have a single focusable thing, so it stays.
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
                         self.analysis_modal.switch_focus();
+                        self.sync_sample_form_focus();
                     }
                 }
                 KeyCode::Enter
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
+                        // Enter again on the tool whose Sample form is showing runs it
+                        // with the form as it stands: two Enters from the list take the
+                        // defaults, and the cursor never leaves it.
+                        if self.analysis_modal.sample_form.as_ref().is_some_and(|f| f.inline)
+                            && self.analysis_modal.highlighted_tool()
+                                == self.analysis_modal.selected_tool
+                        {
+                            return self.run_sample_form();
+                        }
                         // Select tool from sidebar
                         self.analysis_modal.select_tool();
-                        // Trigger computation for the selected tool when that tool has no cached results
-                        match self.analysis_modal.selected_tool {
-                            Some(analysis_modal::AnalysisTool::Describe)
-                                if self.analysis_modal.describe_results.is_none() =>
-                            {
-                                self.analysis_modal.computing = Some(AnalysisProgress::new("Describing data"));
-                                self.analysis_computation = Some(AnalysisComputationState {
-                                    df: None,
-                                    schema: None,
-                                    partial_stats: Vec::new(),
-                                    current: 0,
-                                    total: 0,
-                                    total_rows: 0,
-                                    sample_seed: self.analysis_modal.sample.seed,
-                                    sample_size: None,
-                                });
-                                self.busy = true;
-                                return Some(AppEvent::AnalysisChunk);
+                        self.analysis_modal.sample_form = None;
+                        // A tool with a result shows it. One without shows the Sample
+                        // form in its pane, so the first run reads the rows asked for;
+                        // Enter runs it with the defaults as they stand.
+                        let has_result = match self.analysis_modal.selected_tool {
+                            Some(analysis_modal::AnalysisTool::Describe) => {
+                                self.analysis_modal.describe_results.is_some()
                             }
-                            Some(analysis_modal::AnalysisTool::DistributionAnalysis)
-                                if self.analysis_modal.distribution_results.is_none() =>
-                            {
-                                self.analysis_modal.computing = Some(AnalysisProgress::new("Analyzing distributions"));
-                                self.busy = true;
-                                return Some(AppEvent::AnalysisDistributionCompute);
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                self.analysis_modal.distribution_results.is_some()
                             }
-                            Some(analysis_modal::AnalysisTool::CorrelationMatrix)
-                                if self.analysis_modal.correlation_results.is_none() =>
-                            {
-                                self.analysis_modal.computing = Some(AnalysisProgress::new("Computing correlations"));
-                                self.busy = true;
-                                return Some(AppEvent::AnalysisCorrelationCompute);
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                self.analysis_modal.correlation_results.is_some()
                             }
                             Some(analysis_modal::AnalysisTool::DataQuality) => {
                                 self.restore_recent_quality_plan();
                                 // The plan's rows are the shared sample's, whatever
                                 // the last plan here read.
                                 self.sync_quality_plan();
-                                if !self.restore_cached_quality()
-                                    && self.analysis_modal.data_quality_results.is_none()
-                                {
-                                    if !self
-                                        .analysis_modal
-                                        .data_quality_plan
-                                        .requires_confirmation()
-                                        && self
-                                            .data_table_state
-                                            .as_ref()
-                                            .is_some_and(|state| !state.is_remote_source())
-                                    {
-                                        // A local read costs nothing worth confirming:
-                                        // lead with the result. The plan stays one Esc
-                                        // (or e) away, echoed in the strip up top.
-                                        self.analysis_modal.computing = Some(AnalysisProgress::new("Profiling data quality"));
-                                        self.busy = true;
-                                        return Some(AppEvent::AnalysisDataQualityCompute);
-                                    }
-                                    // The plan ceremony: the pane is a form waiting
-                                    // for Enter, which only the main pane hears, so
-                                    // the cursor moves into it — from the sidebar,
-                                    // Enter would only reselect the tool.
-                                    self.analysis_modal.focus =
-                                        analysis_modal::AnalysisFocus::Main;
-                                }
+                                self.restore_cached_quality()
+                                    || self.analysis_modal.data_quality_results.is_some()
                             }
-                            _ => {}
+                            None => true,
+                        };
+                        if !has_result {
+                            self.open_first_run_form();
                         }
                     } else {
                         // Enter in main area opens detail view if applicable

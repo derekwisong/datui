@@ -1,7 +1,8 @@
-Data Quality checks the rows in scope and reports what it found. On a
-local file choosing the tool runs the default plan at once; on a remote
-source, and for any plan that needs confirming, nothing is read until you
-run the plan. The strip at the top says what was checked, and e edits it.
+Data Quality checks the rows in scope and reports what it found. Before
+the first run its pane is the Sample form: Enter in the tool list runs it
+(Tab moves into the form first to change the rows), and a plan that needs
+confirming asks before it reads. The strip at the top says what was
+checked, and e edits the plan.
 
 Reading the report:
   First line:   problems, notes and clean columns, counted

@@ -101,7 +101,7 @@ impl Sample {
         }
     }
 
-    /// What was read, once it was: `sample of 100,000 of 17,559,636 rows`, then the
+    /// What was read, once it was: `sample of 100,000 of 36,839,175 rows`, then the
     /// scope when it is not simply the table as shown.
     pub fn outcome(&self, total_rows: usize, sample_size: Option<usize>) -> String {
         let count = numfmt::group_chrome;

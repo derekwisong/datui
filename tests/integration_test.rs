@@ -11,6 +11,15 @@ use std::sync::mpsc;
 
 mod common;
 
+/// Enter on a tool in the Analysis sidebar. A tool with no result yet shows its
+/// Sample form in the pane rather than running; the next Enter runs it.
+fn show_sample_form(app: &mut App) {
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+}
+
 /// Drains all pending events from the channel and processes them (for async operations).
 fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
     while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
@@ -990,6 +999,7 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
 
     app.event(&key(KeyCode::Char('a')));
     app.analysis_modal.sidebar_state.select(Some(1));
+    show_sample_form(&mut app);
     let next = app.event(&key(KeyCode::Enter));
     assert!(matches!(next, Some(AppEvent::AnalysisDistributionCompute)));
     assert_eq!(
@@ -1041,6 +1051,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     // Choosing Data Quality on a local source auto-runs the default plan and
     // leads with the result.
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
@@ -1301,6 +1312,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1426,6 +1438,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1458,6 +1471,7 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1639,7 +1653,26 @@ fn selecting_a_tool_keeps_the_sidebar_focus() {
     )));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
 
-    // Enter on Describe: the tool runs, the cursor stays on the sidebar.
+    // Enter on Describe shows its Sample form in the pane; the cursor stays on
+    // the sidebar, and Enter again runs it with the defaults.
+    show_sample_form(&mut app);
+    assert!(app.analysis_modal.sample_form.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    assert!(app.analysis_modal.describe_results.is_none());
+    // Tab moves into the form to change it; Esc hands the cursor back and leaves
+    // the form where it was, waiting.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    assert!(app.text_field_focused(), "the scope row types");
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    assert!(app.analysis_modal.sample_form.is_some());
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1683,6 +1716,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1769,6 +1803,7 @@ fn data_quality_reads_as_a_report() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1915,6 +1950,7 @@ fn one_sample_serves_every_analysis_tool() {
 
     key(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(0));
+    show_sample_form(&mut app);
     let next = key(&mut app, KeyCode::Enter);
     run(&mut app, next);
     key(&mut app, KeyCode::Tab);
@@ -1966,6 +2002,7 @@ fn one_sample_serves_every_analysis_tool() {
     // Data Quality reads the same rows without being told again.
     app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let next = key(&mut app, KeyCode::Enter);
     run(&mut app, next);
     assert_eq!(
@@ -1990,6 +2027,10 @@ fn one_sample_serves_every_analysis_tool() {
         bar.contains("Sample"),
         "s Sample on the Data Quality bar at 80 columns: {bar}"
     );
+    // The tool list is the same beside every tool: the active one carries the
+    // accent, not a dot only Data Quality drew.
+    let screen = rendered_text(&buffer);
+    assert!(!screen.contains(&format!("{} Data Quality", datui::glyphs::get().middot)));
 }
 
 /// A plan that needs a run is a form the user answers with Enter, which only the
@@ -2007,10 +2048,11 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
-    app.analysis_modal.sidebar_state.select(Some(3));
-    // A full-scan plan requires confirmation, so selecting the tool opens the
-    // ceremony instead of running at once.
+    // A full-scan plan requires confirmation, so running the tool opens the
+    // ceremony instead of reading at once.
     app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -2030,12 +2072,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
         "the ceremony owns the keys"
     );
 
-    // Enter asks for confirmation, and Enter again runs — no Tab required.
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    assert!(next.is_none());
+    // The run asked for confirmation, and Enter confirms — no Tab required.
     assert!(app.analysis_modal.data_quality_confirm_run);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -2058,6 +2095,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -2114,6 +2152,7 @@ fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -2158,6 +2197,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     // The local auto-run of the default plan settles before the scope edit.
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -2257,6 +2297,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     // The local auto-run of the default plan settles first.
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -5619,6 +5660,8 @@ fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
     };
     press(&mut pump, KeyCode::Char('a'));
     pump.app.analysis_modal.sidebar_state.select(Some(1));
+    // The first Enter shows the tool's Sample form; the second runs it.
+    press(&mut pump, KeyCode::Enter);
     press(&mut pump, KeyCode::Enter);
     pump.drain().unwrap();
     assert!(
@@ -7107,10 +7150,12 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
     let area = Rect::new(0, 0, 120, 30);
     let _ = painted(&mut app, &rx, &tx, area);
 
-    // `a` opens the analysis modal, Enter runs the tool the sidebar starts on, Describe.
+    // `a` opens the analysis modal; Enter on Describe, where the sidebar starts,
+    // shows its Sample form, and Enter again runs it.
     if let Some(next) = app.event(&key(KeyCode::Char('a'))) {
         let _ = tx.send(next);
     }
+    app.event(&key(KeyCode::Enter));
     if let Some(next) = app.event(&key(KeyCode::Enter)) {
         let _ = tx.send(next);
     }

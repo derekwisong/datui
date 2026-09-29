@@ -190,10 +190,10 @@ In the Sample form:
 | Key | Action |
 |---|---|
 | <kbd>Enter</kbd> | Apply the sample and run the tool on screen again |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> | Move between Rows from, Method, Per, Rows and Seed |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> | Move between the settings |
 | <kbd>←</kbd> <kbd>→</kbd> | Change the focused value; on Seed, draw a new one |
-| typing | On Rows from, the scope: `view`, `source`, `rows 1..5000`, `files 1,3`, `partition year=2019,2021`, `partition year=2020..2022`, `time date=A..B` |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | On Rows from, scroll the numbered source files |
+| typing | On Values, Files, From row, To row, From and Before: the value |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | On Files, scroll the numbered source files |
 | <kbd>Esc</kbd> | Discard the edit |
 
 In Data Quality:

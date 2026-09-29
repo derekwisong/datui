@@ -379,8 +379,7 @@ impl AnalysisModal {
     pub fn sample_scope_typing(&self) -> bool {
         self.active
             && self.sample_form.as_ref().is_some_and(|form| {
-                form.field == crate::sample_modal::SampleField::Scope
-                    && (!form.inline || self.focus == AnalysisFocus::Main)
+                form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
             })
     }
 

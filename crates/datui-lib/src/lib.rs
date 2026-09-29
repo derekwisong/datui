@@ -6874,31 +6874,17 @@ impl App {
     fn sync_sample_form_focus(&mut self) {
         let focused = self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
         if let Some(form) = self.analysis_modal.sample_form.as_mut() {
-            let on_scope = form.field == sample_modal::SampleField::Scope;
-            form.scope_input
-                .set_focused(on_scope && (focused || !form.inline));
+            let has_cursor = focused || !form.inline;
+            form.sync_focus(has_cursor);
         }
     }
 
     /// Run the tool on screen with the Sample form's sample, or say on the form why
     /// its scope does not parse.
     fn run_sample_form(&mut self) -> Option<AppEvent> {
-        let file_count = self
-            .data_table_state
-            .as_ref()
-            .map(|state| state.quality_source_file_count())
-            .unwrap_or(0);
         let form = self.analysis_modal.sample_form.as_mut()?;
         match form.finish() {
             Ok(sample) => {
-                if let data_quality::QualityScope::SourceFiles(files) = &sample.scope
-                    && files.iter().any(|file| *file > file_count)
-                {
-                    form.error = Some(format!(
-                        "File number exceeds the source's {file_count} files"
-                    ));
-                    return None;
-                }
                 self.analysis_modal.sample_form = None;
                 self.apply_sample(sample)
             }
@@ -6913,9 +6899,40 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let mut columns = state.partition_columns.clone().unwrap_or_default();
-        // Text first, the usual stuff of a partition (a ticker, a region), then
-        // dates, then integers.
+        let mut partition_columns = state.partition_columns.clone().unwrap_or_default();
+        let mut partition_values = Vec::new();
+        // A directory whose files agree opens as one scan and names no partition
+        // columns; its directory names still do. One branch of the tree is walked for
+        // the columns and one listing read for the first column's values: local,
+        // and small next to opening the dataset.
+        if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
+            if partition_columns.is_empty() {
+                partition_columns = DataTableState::discover_hive_partition_columns(dir)
+                    .into_iter()
+                    .filter(|column| state.schema.get(column).is_some())
+                    .collect();
+            }
+            if let Some(first) = partition_columns.first() {
+                let prefix = format!("{first}=");
+                let mut values: Vec<String> = std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        name.strip_prefix(&prefix).map(str::to_string)
+                    })
+                    .collect();
+                values.sort();
+                if !values.is_empty() {
+                    partition_values.push((first.clone(), values));
+                }
+            }
+        }
+        // An equal-per-value sample splits by a column: partition columns first, then
+        // text, the usual stuff of a group (a ticker, a region), then dates and
+        // integers. Never floats.
+        let mut value_columns = partition_columns.clone();
         for kind in 0..3 {
             for (name, dtype) in state.schema.iter() {
                 let rank = match dtype {
@@ -6924,26 +6941,32 @@ impl App {
                     dtype if dtype.is_integer() => 2,
                     _ => continue,
                 };
-                if rank == kind && !columns.iter().any(|column| column == name.as_str()) {
-                    columns.push(name.to_string());
+                if rank == kind && !value_columns.iter().any(|column| column == name.as_str()) {
+                    value_columns.push(name.to_string());
                 }
             }
         }
+        let context = sample_modal::SampleContext {
+            view_rows: state.num_rows_if_valid(),
+            filtered: state.changes_rows(),
+            files: state.quality_source_file_names().to_vec(),
+            partition_columns,
+            partition_values,
+            time_columns: state.quality_temporal_columns(&data_quality::QualityScope::WholeSource),
+            value_columns,
+        };
         let mut form =
-            sample_modal::SampleForm::new(&self.analysis_modal.sample, columns, &self.theme);
+            sample_modal::SampleForm::new(&self.analysis_modal.sample, context, &self.theme);
         form.inline = inline;
         self.analysis_modal.sample_form = Some(form);
+        self.sync_sample_form_focus();
     }
 
     fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        use sample_modal::SampleField;
-        let file_count = self
-            .data_table_state
-            .as_ref()
-            .map(|state| state.quality_source_file_count())
-            .unwrap_or(0);
         let form = self.analysis_modal.sample_form.as_mut()?;
-        let on_scope = form.field == SampleField::Scope;
+        let typing = form.field.is_text();
+        let on_files = form.field == sample_modal::SampleField::Files;
+        let file_count = form.context.files.len();
         match event.code {
             // In a tool's empty pane the form stays, as it was: Esc discards the
             // edit and hands the cursor back to the tool list.
@@ -6955,16 +6978,23 @@ impl App {
             KeyCode::Enter => return self.run_sample_form(),
             KeyCode::Down | KeyCode::Tab => form.move_field(true),
             KeyCode::Up | KeyCode::BackTab => form.move_field(false),
-            KeyCode::Char('j') if !on_scope => form.move_field(true),
-            KeyCode::Char('k') if !on_scope => form.move_field(false),
-            KeyCode::Left | KeyCode::Char('h') if !on_scope => form.adjust(false),
-            KeyCode::Right | KeyCode::Char('l') if !on_scope => form.adjust(true),
-            KeyCode::PageDown if on_scope => {
-                form.file_offset = (form.file_offset + 5).min(file_count.saturating_sub(1));
+            KeyCode::Char('j') if !typing => form.move_field(true),
+            KeyCode::Char('k') if !typing => form.move_field(false),
+            KeyCode::Left | KeyCode::Char('h') if !typing => form.adjust(false),
+            KeyCode::Right | KeyCode::Char('l') if !typing => form.adjust(true),
+            KeyCode::PageDown if on_files => {
+                form.file_offset = (form.file_offset + crate::widgets::sample_form::FILES_SHOWN)
+                    .min(file_count.saturating_sub(1));
             }
-            KeyCode::PageUp if on_scope => form.file_offset = form.file_offset.saturating_sub(5),
-            _ if on_scope => {
-                let _ = form.scope_input.handle_key(event, None);
+            KeyCode::PageUp if on_files => {
+                form.file_offset = form
+                    .file_offset
+                    .saturating_sub(crate::widgets::sample_form::FILES_SHOWN);
+            }
+            _ if typing => {
+                if let Some(input) = form.input_mut(form.field) {
+                    let _ = input.handle_key(event, None);
+                }
                 form.error = None;
             }
             _ => {}

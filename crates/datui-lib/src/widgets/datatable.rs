@@ -4216,6 +4216,18 @@ impl DataTableState {
     /// True while `lf` is the data as loaded: no sidebar filter or sort, no query in
     /// any bar, no pivot or melt, no drill-down. Derived rather than kept, so clearing
     /// the filters or un-sorting makes the frame pristine again by itself.
+    /// Whether the table shows other rows than its source holds: a filter, a query, a
+    /// reshape or a drill. A sort alone reorders the same rows.
+    pub(crate) fn changes_rows(&self) -> bool {
+        !self.filters.is_empty()
+            || !self.active_query.is_empty()
+            || !self.active_sql_query.is_empty()
+            || !self.active_fuzzy_query.is_empty()
+            || self.reshaped_lf.is_some()
+            || self.grouped.is_some()
+            || self.drilled_down_group_index.is_some()
+    }
+
     fn is_pristine(&self) -> bool {
         self.filters.is_empty()
             && self.sort_columns.is_empty()

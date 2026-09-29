@@ -153,7 +153,7 @@ Sampling is the shared sample's, not a grain.
 
 | | |
 |---|---|
-| Dataset grain | The shared [sample](#sampling), up to 50,000 rows: spread, per partition, the first rows, or every row |
+| Dataset grain | The shared [sample](#sampling), up to 50,000 rows: random, equal per value, the first rows, or every row |
 | File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Rows per segment of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
 | Budgets | Rows per segment multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower Rows per segment |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
@@ -220,31 +220,31 @@ the tool on screen again, and <kbd>Esc</kbd> discards the edit. The other tools'
 sample, so switching tools compares like with like. The header says what was
 read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..2022`.
 
-| Field | Choices |
+| Setting | Choices |
 |---|---|
-| Rows from | The scope, typed; see below |
-| Method | **Spread** (default), **Per partition**, **First rows**, **Every row** |
-| Per | For Per partition: the column to split by; partition columns come first |
-| Rows | 1,000 to 1,000,000 in all, or per value for Per partition; the default is `[performance] analysis_sample_rows` |
-| Seed | For Spread and Per partition; <kbd>←</kbd> <kbd>→</kbd> or <kbd>r</kbd> draws a new one |
+| Rows from | **All rows** (the table as shown, with its count), **The source, unfiltered** (only when a filter or query changes the rows), **Partitions**, **Files**, **Row range**, **Time range**; a choice appears only when the table has it |
+| Method | **Random** (default), **Equal per value**, **First rows**, **Every row** |
+| Per value of | For Equal per value: the column to split by; partition columns come first |
+| Sample size | 1,000 to 1,000,000 rows, or rows per value for Equal per value; the default is `[performance] analysis_sample_rows` |
+| Random seed | For Random and Equal per value; <kbd>←</kbd> <kbd>→</kbd> or <kbd>r</kbd> draws a new one |
+
+Each kind of rows brings its own settings, with what it needs to know:
+
+| Rows from | Settings |
+|---|---|
+| Partitions | **Partition**: the column. **Values**: one value, a list (`2019,2021`) or an inclusive range (`2020..2022`) compared in the column's own type; the values the source holds are listed under it |
+| Files | **Files**: their numbers, like `1,3`; the numbered files are listed under it and ticked as they are typed, <kbd>PgUp</kbd> <kbd>PgDn</kbd> scrolls |
+| Row range | **From row** and **To row**, inclusive and 1-based, in the order the table shows; it starts as the whole table |
+| Time range | **Column**, **From** and **Before**: dates or RFC 3339 timestamps, the Before date not included |
+
+Partitions, files and time ranges read the source, ignoring the query and filters.
 
 | Method | What it reads |
 |---|---|
-| Spread | A seeded random sample across the whole scope |
-| Per partition | Up to the row count from each value of a column, so a small partition is represented beside a large one; refused past 10,000 values or 2,000,000 rows kept |
-| First rows | The first rows of the scope in order: the fastest read, and only the head |
+| Random | A seeded random sample across all the rows chosen |
+| Equal per value | Up to the sample size from each value of a column, so a small partition is represented beside a large one; refused past 10,000 values or 2,000,000 rows kept |
+| First rows | The first rows in order: the fastest read, and only the head |
 | Every row | No sampling |
-
-| Scope | Meaning |
-|---|---|
-| `view` | The table as shown: query and filters applied |
-| `source` | The loaded source, ignoring the query, filters and sort |
-| `rows 100..200` | An inclusive 1-based row range in the order the table shows |
-| `files 1,3` | Source files by number; the form lists them under the scope row, <kbd>PgUp</kbd> <kbd>PgDn</kbd> scrolls |
-| `partition year=2021` | Source rows with that value; `∅` selects null |
-| `partition year=2019,2021` | Any of the listed values |
-| `partition year=2020..2022` | An inclusive range, compared in the column's own type |
-| `time date=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 interval; the end is exclusive |
 
 | Key | Action |
 |---|---|

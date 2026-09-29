@@ -1502,6 +1502,15 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     assert!(app.analysis_modal.sample_form.is_some());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    // Rows from is a choice; a row range brings rows that are typed into.
+    assert!(!app.text_field_focused());
+    for code in [KeyCode::Right, KeyCode::Down] {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+    assert_eq!(
+        app.analysis_modal.sample_form.as_ref().unwrap().field,
+        datui::sample_modal::SampleField::RangeFrom
+    );
     assert!(app.text_field_focused());
 
     let quit = app.event(&AppEvent::Key(KeyEvent::new(
@@ -1510,7 +1519,7 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     )));
     assert!(
         !matches!(quit, Some(AppEvent::Exit)),
-        "Ctrl-C in the scope input must not quit"
+        "Ctrl-C in a sample text row must not quit"
     );
 
     let scope = |app: &App| {
@@ -1518,7 +1527,7 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
             .sample_form
             .as_ref()
             .unwrap()
-            .scope_input
+            .range_from
             .value()
             .to_string()
     };
@@ -1530,7 +1539,7 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     assert_eq!(
         scope(&app),
         format!("{before}?"),
-        "? in the scope input must type, not open help"
+        "? in a sample text row must type, not open help"
     );
 }
 
@@ -1666,7 +1675,11 @@ fn selecting_a_tool_keeps_the_sidebar_focus() {
         KeyModifiers::NONE,
     )));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
-    assert!(app.text_field_focused(), "the scope row types");
+    assert_eq!(
+        app.analysis_modal.sample_form.as_ref().unwrap().field,
+        datui::sample_modal::SampleField::Rows,
+        "the cursor lands on the first setting"
+    );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
@@ -1984,8 +1997,7 @@ fn one_sample_serves_every_analysis_tool() {
         .sample_form
         .as_mut()
         .unwrap()
-        .scope_input
-        .set_value("partition part=b,c");
+        .set_scope(&QualityScope::parse_command("partition part=b,c").unwrap());
     let next = key(&mut app, KeyCode::Enter);
     run(&mut app, next);
     let describe = app.analysis_modal.describe_results.as_ref().unwrap();
@@ -2238,15 +2250,19 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
         let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-        assert!(screen.contains("Rows from:") && screen.contains("Method:"));
+        assert!(
+            screen.contains("Rows from:")
+                && screen.contains("All rows")
+                && screen.contains("Random"),
+            "the form's values name themselves"
+        );
     }
     let set_scope = |app: &mut App, text: &str| {
-        app.analysis_modal
-            .sample_form
-            .as_mut()
-            .unwrap()
-            .scope_input
-            .set_value(text);
+        let (from, to) = text.trim_start_matches("rows ").split_once("..").unwrap();
+        let form = app.analysis_modal.sample_form.as_mut().unwrap();
+        form.kind = datui::sample_modal::RowsKind::Range;
+        form.range_from.set_value(from);
+        form.range_to.set_value(to);
     };
     set_scope(&mut app, "rows 0..3");
     key(&mut app, KeyCode::Enter);

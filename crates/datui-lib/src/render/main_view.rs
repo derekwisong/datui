@@ -163,8 +163,27 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
                 ("?", "Help"),
                 ("Esc", "Back"),
             ],
-            (true, false) => vec![("Enter", "Run"), ("Esc", "Back")],
-            (false, _) => vec![("Enter", "Apply"), ("Esc", "Cancel")],
+            // The form has the cursor: the bar is its only hint surface, so it names
+            // what the focused row takes.
+            (inline, false) | (inline @ false, _) => {
+                let g = crate::glyphs::get();
+                let mut keys = vec![
+                    ("Enter", if inline { "Run" } else { "Apply" }),
+                    (g.updown, "Row"),
+                ];
+                if form.field.is_text() {
+                    keys.push(("type", "Edit"));
+                } else {
+                    keys.push((g.updown_lr, "Change"));
+                }
+                if form.field == crate::sample_modal::SampleField::Files
+                    && form.context.files.len() > crate::widgets::sample_form::FILES_SHOWN
+                {
+                    keys.push(("PgUp/PgDn", "Files"));
+                }
+                keys.push(("Esc", if inline { "Back" } else { "Cancel" }));
+                keys
+            }
         };
     }
     if modal.selected_tool == Some(AnalysisTool::DataQuality) {

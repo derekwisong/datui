@@ -19,11 +19,6 @@ pub fn render(
 ) {
     render_body(area, buf, app, ctx);
     if let Some(form) = &app.analysis_modal.sample_form {
-        let files = app
-            .data_table_state
-            .as_ref()
-            .map(|state| state.quality_source_file_names())
-            .unwrap_or_default();
         let quality =
             app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
         // Data Quality's row-by-row checks keep at most 50,000 rows a run.
@@ -36,7 +31,7 @@ pub fn render(
         };
         let focused =
             !form.inline || app.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
-        crate::widgets::sample_form::render(form, focused, files, cap, target, buf, ctx);
+        crate::widgets::sample_form::render(form, focused, cap, target, buf, ctx);
     }
 }
 

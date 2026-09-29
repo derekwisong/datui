@@ -153,7 +153,7 @@ Sampling is the shared sample's, not a grain.
 
 | | |
 |---|---|
-| Dataset grain | The shared [sample](#sampling), up to 50,000 rows: random, equal per value, the first rows, or every row |
+| Dataset grain | The shared [sample](#sampling), the same rows every tool reads: random, equal per value, the first rows, or every row |
 | File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Rows per segment of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
 | Budgets | Rows per segment multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower Rows per segment |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
@@ -275,6 +275,5 @@ cancelled full read is still finishing.
 analysis_sample_rows = 100000   # the sample's starting size; 0 starts at Every row
 ```
 
-or `--sample-rows N` for one run. Data Quality keeps at most 50,000 rows of the
-sample, since its checks look at each row; the form says so when the size is
-larger.
+or `--sample-rows N` for one run. Data Quality reads the same sample, at the
+same size, as every other tool.

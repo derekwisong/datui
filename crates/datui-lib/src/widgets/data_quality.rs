@@ -2093,9 +2093,9 @@ fn approximate_bytes_option(bytes: Option<usize>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Rows a dataset-grain run keeps: the shared sample's size, to the engine's cap.
+/// Rows a dataset-grain run keeps: the shared sample's size.
 fn dataset_rows(plan: &DataQualityPlan) -> usize {
-    plan.dataset_rows.min(50_000)
+    plan.dataset_rows
 }
 
 fn compute_label(plan: &DataQualityPlan) -> String {

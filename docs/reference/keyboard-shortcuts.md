@@ -204,7 +204,7 @@ In Data Quality:
 | <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, show all checks on the clean entry, or close an open popup |
 | <kbd>e</kbd> | Edit the plan's seven fields — Sample, Grain, Values, Compare, Time roles, Latency threshold, Rows per segment — in a copy of the plan |
 | <kbd>s</kbd> | Open the shared Sample form |
-| <kbd>v</kbd> | Show the rows Data Quality reads (up to 50,000 of the sample) in the table viewer |
+| <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
 | <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Sample | Open the Sample form |
 | <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |

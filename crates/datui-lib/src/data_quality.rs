@@ -552,8 +552,7 @@ pub struct DataQualityPlan {
     pub compute: QualityCompute,
     /// How a dataset-grain sample picks its rows, from the shared analysis sample.
     pub method: crate::sampling::SampleMethod,
-    /// Rows a dataset-grain sample keeps, from the shared analysis sample; the
-    /// engine keeps at most 50,000 of them.
+    /// Rows a dataset-grain sample keeps: the shared analysis sample's size.
     pub dataset_rows: usize,
     /// Rows kept per segment when a grain other than the dataset samples each one.
     pub sample_rows: usize,
@@ -628,7 +627,7 @@ impl DataQualityPlan {
                 }
                 QualityCompute::Sample => format!(
                     "{} rows {}",
-                    self.dataset_rows.min(50_000),
+                    self.dataset_rows,
                     self.method.label().to_lowercase()
                 ),
                 other => other.label().to_string(),
@@ -1127,7 +1126,7 @@ pub fn compute_data_quality(
                 let sample = crate::sampling::Sample {
                     scope: QualityScope::CurrentView,
                     method: plan.method.clone(),
-                    rows: plan.dataset_rows.min(50_000),
+                    rows: plan.dataset_rows,
                     seed: plan.sample_seed,
                 };
                 let sampled =
@@ -1157,9 +1156,19 @@ pub fn compute_data_quality(
     }
     let profile_df = attach_source_file(profile_df, source)?;
     let mut columns = profile_columns(&profile_df, &schema, polars_streaming)?;
-    add_value_details(&profile_df, &mut columns)?;
-    let identity = profile_identity(&profile_df, &schema, precision)?;
-    let category_variants = profile_category_variants(&profile_df, &schema)?;
+    // The same Polars aggregations a full scan uses, over the rows the sample kept:
+    // they scale to any sample the shared form asks for, where a walk over rows did
+    // not, and a sample and a scan are measured the same way.
+    let profile_lf = profile_df.clone().lazy();
+    add_dominance_lazy(&profile_lf, &mut columns, polars_streaming)?;
+    let identity = profile_identity_lazy(
+        &profile_lf,
+        &schema,
+        evaluated_rows,
+        precision,
+        polars_streaming,
+    )?;
+    let category_variants = profile_category_variants_lazy(&profile_lf, &schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns, precision);
     observations.extend(identity_observations(&identity, &category_variants));
     // A sampled run does not promise the extra reads, so the counts come without the
@@ -1393,7 +1402,13 @@ fn compute_full_quality(
     .map_err(Report::from)?;
     let mut columns = parse_profiles(&aggregate, schema, total_rows);
     add_dominance_lazy(lf, &mut columns, polars_streaming)?;
-    let identity = profile_identity_lazy(lf, schema, total_rows, polars_streaming)?;
+    let identity = profile_identity_lazy(
+        lf,
+        schema,
+        total_rows,
+        QualityPrecision::Exact,
+        polars_streaming,
+    )?;
     let category_variants = profile_category_variants_lazy(lf, schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns, QualityPrecision::Exact);
     observations.extend(identity_observations(&identity, &category_variants));
@@ -1602,6 +1617,7 @@ fn profile_identity_lazy(
     lf: &LazyFrame,
     schema: &Schema,
     total_rows: usize,
+    precision: QualityPrecision,
     polars_streaming: bool,
 ) -> Result<IdentityProfile> {
     let keys = schema
@@ -1625,7 +1641,7 @@ fn profile_identity_lazy(
         extra_rows: usize_value(&summary, "extra_rows"),
         rows_involved: usize_value(&summary, "rows_involved"),
         evaluated_rows: total_rows,
-        precision: QualityPrecision::Exact,
+        precision,
     })
 }
 
@@ -1675,106 +1691,6 @@ fn profile_columns(
     )
     .map_err(Report::from)?;
     Ok(parse_profiles(&aggregate, schema, df.height()))
-}
-
-/// Fills in the one measurement the shared expression set does not produce: the
-/// most common value and its count.
-fn add_value_details(df: &DataFrame, profiles: &mut [ColumnQualityProfile]) -> Result<()> {
-    for profile in profiles {
-        let values = df.column(&profile.name)?;
-        let mut counts = BTreeMap::<String, usize>::new();
-        for row in 0..df.height() {
-            let value = values.get(row)?;
-            if !value.is_null() {
-                *counts.entry(value.str_value().to_string()).or_default() += 1;
-            }
-        }
-        if let Some((value, count)) = counts
-            .into_iter()
-            .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
-        {
-            profile.dominant_value = Some(value);
-            profile.dominant_count = Some(count);
-        }
-    }
-    Ok(())
-}
-
-fn profile_identity(
-    df: &DataFrame,
-    schema: &Schema,
-    precision: QualityPrecision,
-) -> Result<IdentityProfile> {
-    let columns = schema
-        .iter_names()
-        .map(|name| df.column(name))
-        .collect::<PolarsResult<Vec<_>>>()?;
-    let mut groups = BTreeMap::<Vec<Option<String>>, usize>::new();
-    for row in 0..df.height() {
-        let mut key = Vec::with_capacity(columns.len());
-        for column in &columns {
-            let value = column.get(row)?;
-            key.push((!value.is_null()).then(|| value.str_value().to_string()));
-        }
-        *groups.entry(key).or_default() += 1;
-    }
-    let duplicates = groups.into_values().filter(|count| *count > 1);
-    let mut duplicate_groups = 0;
-    let mut extra_rows = 0;
-    let mut rows_involved = 0;
-    for count in duplicates {
-        duplicate_groups += 1;
-        extra_rows += count - 1;
-        rows_involved += count;
-    }
-    Ok(IdentityProfile {
-        duplicate_groups,
-        extra_rows,
-        rows_involved,
-        evaluated_rows: df.height(),
-        precision,
-    })
-}
-
-fn profile_category_variants(df: &DataFrame, schema: &Schema) -> Result<Vec<CategoryVariantGroup>> {
-    let mut result = Vec::new();
-    for (name, dtype) in schema.iter() {
-        if !matches!(dtype, DataType::String | DataType::Categorical(..)) {
-            continue;
-        }
-        let column = df.column(name)?;
-        let mut normalized = BTreeMap::<String, BTreeMap<String, usize>>::new();
-        for row in 0..df.height() {
-            let value = column.get(row)?;
-            if value.is_null() {
-                continue;
-            }
-            let original = value.str_value().to_string();
-            *normalized
-                .entry(original.trim().to_lowercase())
-                .or_default()
-                .entry(original)
-                .or_default() += 1;
-        }
-        for (normalized, variants) in normalized {
-            if variants.len() <= 1 {
-                continue;
-            }
-            let variants = variants.into_iter().collect::<Vec<_>>();
-            let rows_involved = variants.iter().map(|(_, count)| count).sum();
-            result.push(CategoryVariantGroup {
-                column: name.to_string(),
-                normalized,
-                variants,
-                rows_involved,
-                complete: true,
-            });
-            if result.len() >= 100 {
-                return Ok(result);
-            }
-        }
-    }
-    Ok(result)
 }
 
 fn identity_observations(
@@ -3987,6 +3903,42 @@ mod tests {
                 .iter()
                 .any(|observation| observation.kind == ObservationKind::KeyLike),
             "a sampled distinct share cannot say a column is nearly a key"
+        );
+    }
+
+    /// Data Quality reads the sample every tool reads, at its full size: past 50,000
+    /// rows too, where it used to stop, so it and Describe measure the same rows.
+    #[test]
+    fn a_sample_is_read_at_its_full_size() {
+        let rows = 80_000;
+        let frame = df!(
+            "id" => (0..rows as i64).collect::<Vec<_>>(),
+            "tag" => (0..rows).map(|row| ["a", "b", "c"][row % 3]).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            dataset_rows: 60_000,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(rows), &plan, None, false).unwrap();
+        assert_eq!(results.evaluated_rows, 60_000);
+        assert_eq!(results.precision, QualityPrecision::Sampled);
+        let tag = results
+            .columns
+            .iter()
+            .find(|profile| profile.name == "tag")
+            .unwrap();
+        assert!(
+            tag.dominant_value.is_some(),
+            "the most common value is measured"
+        );
+        assert_eq!(
+            results
+                .identity
+                .as_ref()
+                .map(|identity| identity.evaluated_rows),
+            Some(60_000)
         );
     }
 

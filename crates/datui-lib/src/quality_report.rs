@@ -1002,7 +1002,7 @@ pub fn coverage(results: &DataQualityResults, plan: &DataQualityPlan) -> String 
                 .total_rows
                 .map(numfmt::group_chrome)
                 .unwrap_or_else(|| "?".to_string()),
-            numfmt::group_chrome(plan.dataset_rows.min(50_000))
+            numfmt::group_chrome(plan.dataset_rows)
         );
     }
     // Spread across the whole scope, which the sampler counts as it goes.

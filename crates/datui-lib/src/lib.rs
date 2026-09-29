@@ -7009,11 +7009,7 @@ impl App {
     fn read_sample_view(&mut self) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let (source, known_total) = self.sample_source(state);
-        let mut sample = self.analysis_modal.sample.clone();
-        if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
-            // The rows Data Quality keeps, not the size it was offered.
-            sample.rows = sample.rows.min(50_000);
-        }
+        let sample = self.analysis_modal.sample.clone();
         let streaming = self.app_config.performance.polars_streaming;
         self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the sample"));

@@ -21,16 +21,8 @@ pub const FILES_SHOWN: usize = 6;
 const LABEL_WIDTH: u16 = 15;
 
 /// `focused` is whether the form has the cursor; a form waiting beside a focused
-/// tool list is drawn without the rail, so one thing looks focused. `cap` is the
-/// most rows the current tool keeps whatever the form asks for.
-pub fn render(
-    form: &SampleForm,
-    focused: bool,
-    cap: Option<usize>,
-    area: Rect,
-    buf: &mut Buffer,
-    ctx: &RenderContext,
-) {
+/// tool list is drawn without the rail, so one thing looks focused.
+pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
     let dimmed = Style::default().fg(ctx.dimmed);
     let g = crate::glyphs::get();
     // The form, top to bottom: a row per setting, and the context lines a setting
@@ -114,17 +106,6 @@ pub fn render(
                     "Dates like 2024-01-31; Before is not included",
                     dimmed,
                 )));
-            }
-            SampleField::Size => {
-                if let Some(cap) = cap.filter(|cap| form.draft.rows > *cap) {
-                    items.push(Item::Context(Line::styled(
-                        format!(
-                            "This tool keeps at most {}",
-                            crate::numfmt::group_chrome(cap)
-                        ),
-                        dimmed,
-                    )));
-                }
             }
             _ => {}
         }

@@ -21,8 +21,6 @@ pub fn render(
     if let Some(form) = &app.analysis_modal.sample_form {
         let quality =
             app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
-        // Data Quality's row-by-row checks keep at most 50,000 rows a run.
-        let cap = quality.then_some(50_000);
         // Before a first run the form is the tool's pane; after, it floats over it.
         let target = match (form.inline, quality) {
             (false, _) => area,
@@ -31,7 +29,7 @@ pub fn render(
         };
         let focused =
             !form.inline || app.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
-        crate::widgets::sample_form::render(form, focused, cap, target, buf, ctx);
+        crate::widgets::sample_form::render(form, focused, target, buf, ctx);
     }
 }
 

@@ -212,6 +212,33 @@ pub fn read(
     known_total: Option<usize>,
     polars_streaming: bool,
 ) -> Result<AnalysisRows> {
+    let rows = read_rows(lf, sample, known_total, polars_streaming)?;
+    if rows.total_rows == 0 {
+        return Err(no_rows_error(&sample.scope));
+    }
+    Ok(rows)
+}
+
+/// A chosen set of rows that matches nothing is a mistake to say, not an empty
+/// sample to analyze: a typed value that is not in the data, a range past its end.
+/// The table as shown may simply be empty, and says so itself.
+pub fn no_rows_error(scope: &QualityScope) -> Report {
+    if *scope == QualityScope::CurrentView {
+        Report::msg("The table has no rows to sample")
+    } else {
+        Report::msg(format!(
+            "No rows match {}; change Rows from in the Sample form (s)",
+            scope.label()
+        ))
+    }
+}
+
+pub(crate) fn read_rows(
+    lf: &LazyFrame,
+    sample: &Sample,
+    known_total: Option<usize>,
+    polars_streaming: bool,
+) -> Result<AnalysisRows> {
     let n = sample.rows.max(1);
     match &sample.method {
         SampleMethod::EveryRow => {
@@ -494,6 +521,26 @@ mod tests {
         )
         .unwrap();
         assert!(!one.df.equals(&other.df));
+    }
+
+    /// Rows chosen that match nothing are an error that names them, not an empty
+    /// sample every tool would analyze as if it were the data.
+    #[test]
+    fn a_scope_that_matches_nothing_is_an_error() {
+        let scope = QualityScope::parse_command("partition part=zzz").unwrap();
+        let lf = SampleSource::view(table()).cut(&scope).unwrap();
+        let Err(error) = read(
+            &lf,
+            &Sample {
+                scope,
+                ..Sample::default()
+            },
+            None,
+            false,
+        ) else {
+            panic!("a scope that matches nothing must not sample");
+        };
+        assert!(error.to_string().contains("No rows match"), "{error}");
     }
 
     #[test]

@@ -1662,24 +1662,19 @@ fn selecting_a_tool_keeps_the_sidebar_focus() {
     )));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
 
-    // Enter on Describe shows its Sample form in the pane; the cursor stays on
-    // the sidebar, and Enter again runs it with the defaults.
+    // Enter on Describe shows its Sample form in the pane, and the cursor goes
+    // into it: the form is what the pane is for until the first run.
     show_sample_form(&mut app);
     assert!(app.analysis_modal.sample_form.is_some());
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
     assert!(app.analysis_modal.describe_results.is_none());
-    // Tab moves into the form to change it; Esc hands the cursor back and leaves
-    // the form where it was, waiting.
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
     assert_eq!(
         app.analysis_modal.sample_form.as_ref().unwrap().field,
         datui::sample_modal::SampleField::Rows,
         "the cursor lands on the first setting"
     );
+    // Esc hands the cursor back to the list and leaves the form waiting; Enter
+    // there runs it as it stands.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
@@ -1753,13 +1748,15 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         QualityPage::Overview,
         "the result leads; the plan stays an Esc away"
     );
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
-
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+    // The run started from the form, so the cursor is on the result it made.
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    for expected in [AnalysisFocus::Sidebar, AnalysisFocus::Main] {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.analysis_modal.focus, expected, "Tab crosses both ways");
+    }
 
     // Esc from the result opens the plan, unchanged in meaning.
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -1826,10 +1823,11 @@ fn data_quality_reads_as_a_report() {
     }
     drain_events(&mut app, &rx);
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+    // The run started from the form, so the cursor is already on the report.
+    assert_eq!(
+        app.analysis_modal.focus,
+        datui::analysis_modal::AnalysisFocus::Main
+    );
 
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
@@ -2136,7 +2134,8 @@ fn e_moves_the_cursor_into_the_plan_editor() {
     }
     drain_events(&mut app, &rx);
     assert!(app.analysis_modal.data_quality_results.is_some());
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    // From the tool list: the case where e has to bring the cursor along.
+    app.analysis_modal.focus = AnalysisFocus::Sidebar;
 
     let tool_row = app.analysis_modal.sidebar_state.selected();
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2192,7 +2191,8 @@ fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
         next = app.event(&ev);
     }
     drain_events(&mut app, &rx);
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    // From the tool list, which is where r has to bring the cursor along from.
+    app.analysis_modal.focus = AnalysisFocus::Sidebar;
 
     app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
     let next = app.event(&AppEvent::Key(KeyEvent::new(

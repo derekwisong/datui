@@ -1095,6 +1095,9 @@ pub fn compute_data_quality(
                 *rows as usize
             }
         };
+        if total_rows == 0 && plan.scope != QualityScope::CurrentView {
+            return Err(crate::sampling::no_rows_error(&plan.scope));
+        }
         return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming);
     }
 
@@ -1127,7 +1130,8 @@ pub fn compute_data_quality(
                     rows: plan.dataset_rows.min(50_000),
                     seed: plan.sample_seed,
                 };
-                let sampled = crate::sampling::read(lf, &sample, total_rows, polars_streaming)?;
+                let sampled =
+                    crate::sampling::read_rows(lf, &sample, total_rows, polars_streaming)?;
                 let height = sampled.df.height();
                 let precision = if sampled.sample_size.is_some() {
                     QualityPrecision::Sampled
@@ -1146,6 +1150,11 @@ pub fn compute_data_quality(
             QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
         };
 
+    // Rows chosen by the sample that match nothing are a mistake to name, not an
+    // empty report that reads as clean.
+    if total_rows == Some(0) && plan.scope != QualityScope::CurrentView {
+        return Err(crate::sampling::no_rows_error(&plan.scope));
+    }
     let profile_df = attach_source_file(profile_df, source)?;
     let mut columns = profile_columns(&profile_df, &schema, polars_streaming)?;
     add_value_details(&profile_df, &mut columns)?;

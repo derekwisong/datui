@@ -478,6 +478,50 @@ impl SampleForm {
         values
     }
 
+    /// Refuse partition values the source does not hold, when it is known what it
+    /// holds: a typo would otherwise match no rows and sample nothing, silently. A
+    /// range's ends need only be the same kind of value (2015..2030 is fine for
+    /// years), since a range is compared, not matched.
+    fn check_partition_values(&self, column: &str, values: &str) -> Result<(), String> {
+        let known = self.partition_values_known();
+        if known.is_empty() {
+            return Ok(());
+        }
+        let holds = match known.as_slice() {
+            [only] => only.clone(),
+            [first, .., last] => format!("{first} {} {last}", crate::glyphs::get().ellipsis),
+            [] => String::new(),
+        };
+        if let Some((start, end)) = values.split_once("..") {
+            let numeric = known.iter().all(|value| value.parse::<f64>().is_ok());
+            let dated = known
+                .iter()
+                .all(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok());
+            let fits = |end: &str| {
+                let end = end.trim();
+                !end.is_empty()
+                    && (!numeric || end.parse::<f64>().is_ok())
+                    && (!dated || chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").is_ok())
+            };
+            if !fits(start) || !fits(end) {
+                return Err(format!(
+                    "A {column} range runs between two of its values, like {}..{}; it holds {holds}",
+                    known[0],
+                    known[known.len() - 1]
+                ));
+            }
+            return Ok(());
+        }
+        for value in values.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+            if value != "∅" && !known.iter().any(|known| known == value) {
+                return Err(format!(
+                    "{column} has no partition {value:?}; it holds {holds}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The file numbers typed so far, for marking the list under the Files row.
     pub fn files_chosen(&self) -> Vec<usize> {
         self.files
@@ -540,6 +584,7 @@ impl SampleForm {
                 if values.is_empty() {
                     return Err(format!("Type the {column} values to read"));
                 }
+                self.check_partition_values(&column, values)?;
                 QualityScope::parse_command(&format!("partition {column}={values}"))
                     .map_err(|e| e.to_string())?
             }
@@ -681,5 +726,21 @@ mod tests {
         form.kind = RowsKind::Files;
         form.files.set_value("1, 4");
         assert!(form.finish().unwrap_err().contains("no file 4"));
+    }
+
+    /// A value the source does not hold is a typo, not an empty sample.
+    #[test]
+    fn partition_values_the_source_does_not_hold_are_refused() {
+        let mut form = form();
+        form.kind = RowsKind::Partitions;
+        for garbage in ["asdf", "2016,20x7", "a..b", "2016.."] {
+            form.partition_values.set_value(garbage);
+            let error = form.finish().unwrap_err();
+            assert!(error.contains("2016"), "{garbage}: {error}");
+        }
+        for fine in ["2017", "2016,2018", "2015..2030"] {
+            form.partition_values.set_value(fine);
+            assert!(form.finish().is_ok(), "{fine}");
+        }
     }
 }

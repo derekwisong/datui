@@ -7,8 +7,8 @@ Navigation:
   Home/End:      Jump to first/last row
   PageUp/PageDown: Navigate by page
   Enter:         Select tool from sidebar (when sidebar focused); before
-                 a tool's first run its Sample form shows, and Enter
-                 again runs it (Tab moves into the form to change it)
+                 a tool's first run the cursor goes into its Sample
+                 form, where Enter runs it (Esc goes back to the list)
 
 Actions:
   s:             Choose the sample every tool reads: which rows, how

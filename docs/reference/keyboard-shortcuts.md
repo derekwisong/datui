@@ -178,7 +178,7 @@ In the chart export dialog:
 | <kbd>Tab</kbd> | Switch focus between the tool list and the result |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
-| <kbd>Enter</kbd> | Pick the highlighted tool: its result, or before its first run its Sample form, where Enter again runs it; or open the detail of a column or a correlation pair |
+| <kbd>Enter</kbd> | Pick the highlighted tool: its result, or before its first run its Sample form with the cursor in it, where Enter runs it; or open the detail of a column or a correlation pair |
 | <kbd>s</kbd> | On a tool's main view, open the Sample form: the rows every tool reads. In the distribution detail, toggle the histogram between linear and log |
 | <kbd>v</kbd> | On a tool's main view, show the sample's rows in the table viewer; <kbd>Esc</kbd> returns to the tool |
 | <kbd>r</kbd> | On a sampled result, draw another sample for every tool (from the main analysis view, not inside a detail) |

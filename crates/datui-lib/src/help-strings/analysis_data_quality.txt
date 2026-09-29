@@ -1,6 +1,6 @@
 Data Quality checks the rows in scope and reports what it found. Before
-the first run its pane is the Sample form: Enter in the tool list runs it
-(Tab moves into the form first to change the rows), and a plan that needs
+the first run its pane is the Sample form, and the cursor goes into it:
+change the rows there or press Enter to run, and a plan that needs
 confirming asks before it reads. The strip at the top says what was
 checked, and e edits the plan.
 

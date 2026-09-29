@@ -213,8 +213,10 @@ and offer to read a conflicting column as text.
 
 Every analysis tool reads the same sample: which rows, how they are picked,
 how many, and the seed. A tool with no result yet shows the **Sample** form in
-its pane: <kbd>Enter</kbd> again in the tool list runs it with the form as it
-stands, and <kbd>Tab</kbd> moves into the form to change it first. After that,
+its pane with the cursor in it: change a setting or press <kbd>Enter</kbd> to
+run with the form as it stands; <kbd>Esc</kbd> goes back to the tool list. A
+value the data does not hold, or rows that match nothing, is refused with what
+the data does hold. After that,
 <kbd>s</kbd> opens the form from any tool; <kbd>Enter</kbd> applies it and runs
 the tool on screen again, and <kbd>Esc</kbd> discards the edit. The other tools' results go with the old
 sample, so switching tools compares like with like. The header says what was

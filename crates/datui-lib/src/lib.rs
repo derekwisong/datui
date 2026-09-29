@@ -6862,9 +6862,9 @@ impl App {
         self.open_sample_form_as(false);
     }
 
-    /// A tool picked with nothing to show yet: the Sample form is its pane. The
-    /// cursor stays on the tool list, as it does whenever a tool is picked; Enter
-    /// again runs the tool with the form as it stands, and Tab moves in to change it.
+    /// A tool with nothing to show yet: the Sample form is its pane, as it stands.
+    /// Where the cursor goes is the caller's: into the form when the tool is picked,
+    /// back to the tool list when Esc leaves it.
     fn open_first_run_form(&mut self) {
         self.open_sample_form_as(true);
         self.sync_sample_form_focus();
@@ -14627,7 +14627,12 @@ impl App {
                             }
                             None => true,
                         };
+                        // The form is what the pane is for until the first run, so the
+                        // cursor goes with it: Enter runs, the arrows change a setting,
+                        // Esc hands the cursor back to the list. A tool with a result
+                        // leaves the cursor on the list.
                         if !has_result {
+                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             self.open_first_run_form();
                         }
                     } else {

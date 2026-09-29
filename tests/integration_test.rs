@@ -1184,7 +1184,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // clipped label or a screen that renders nothing at all fails here.
     for (page, expected) in [
         (QualityPage::Plan, "Latency threshold"),
-        (QualityPage::TimeRoles, "Semantic role"),
+        (QualityPage::TimeRoles, "Date and time columns"),
         (QualityPage::Detail, "Missing:"),
     ] {
         app.analysis_modal.set_quality_page(page);

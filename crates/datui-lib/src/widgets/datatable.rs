@@ -6033,6 +6033,35 @@ impl DataTableState {
             .saturating_sub(self.buffered_start_row)
     }
 
+    /// The first `limit` distinct non-null values of `column` among the rows already
+    /// buffered for display, as text. Reads nothing: a column the buffer lacks gives
+    /// none.
+    pub(crate) fn buffered_values(&self, column: &str, limit: usize) -> Vec<String> {
+        let Some(series) = [self.df.as_ref(), self.locked_df.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|df| df.column(column).ok())
+        else {
+            return Vec::new();
+        };
+        let series = series.as_materialized_series();
+        let mut values = Vec::new();
+        for value in (0..series.len()).filter_map(|index| series.get(index).ok()) {
+            if values.len() == limit {
+                break;
+            }
+            let text = match value {
+                AnyValue::Null => continue,
+                AnyValue::String(text) => text.to_string(),
+                value => value.to_string(),
+            };
+            if !values.contains(&text) {
+                values.push(text);
+            }
+        }
+        values
+    }
+
     /// Current scrollable display buffer. None until first collect().
     pub fn display_df(&self) -> Option<&DataFrame> {
         self.df.as_ref()

@@ -528,12 +528,18 @@ fn render_findings(
     }
     *table_state.offset_mut() = offset;
 
-    // Mark, title, columns, summary. The title column fits the longest title; the
-    // columns take a share of what is left, so the summary keeps the rest.
-    const TITLE: usize = 17;
+    // Mark, title, columns, summary. The title column fits the longest title and a
+    // gap; the columns take a share of what is left, so the summary keeps the rest.
+    let title_width = report
+        .findings
+        .iter()
+        .map(|finding| glyphs::display_width(finding.title))
+        .max()
+        .unwrap_or(0)
+        + 2;
     let width = area.width as usize;
     let lead = 4; // rail + space + mark + space
-    let rest = width.saturating_sub(lead + TITLE);
+    let rest = width.saturating_sub(lead + title_width);
     let columns_width = (rest * 2 / 5).clamp(10.min(rest), 32);
     let summary_width = rest.saturating_sub(columns_width + 1);
     let g = glyphs::get();
@@ -567,7 +573,7 @@ fn render_findings(
                     severity_mark(finding.severity, theme),
                     Span::raw(" "),
                     Span::styled(
-                        format!("{:<TITLE$}", finding.title),
+                        format!("{:<title_width$}", finding.title),
                         Style::default().fg(theme.get("text_primary")),
                     ),
                     Span::styled(
@@ -599,13 +605,36 @@ fn check_lines(
     limit: Option<usize>,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    const NAME: usize = 18;
-    const REACH: usize = 24;
-    const OUTCOME: usize = 33;
     let width = width as usize;
     let dimmed = Style::default().fg(theme.get("dimmed"));
     let g = glyphs::get();
     let shown = limit.unwrap_or(checks.len()).min(checks.len());
+    let outcome = |check: &Check| match &check.outcome {
+        Outcome::Passed => "passed".to_string(),
+        Outcome::Found { detail, .. } => format!("{detail} flagged"),
+        Outcome::NotRun(reason) => format!("not run: {reason}"),
+    };
+    // Each column as wide as its widest entry across every check, so showing all
+    // of them moves nothing; what a check looks for takes the rest, and wraps under
+    // itself rather than being cut.
+    let column = |text: &dyn Fn(&Check) -> String| {
+        checks
+            .iter()
+            .map(|check| glyphs::display_width(&text(check)))
+            .max()
+            .unwrap_or(0)
+            + 2
+    };
+    let name_width = column(&|check| check.name.to_string());
+    let reach_width = column(&|check| check.applies_to.clone());
+    let outcome_width = column(&outcome);
+    let lead = 2 + name_width + reach_width + outcome_width;
+    // Too narrow for a readable fourth column: it goes on the lines below instead.
+    let (looks_indent, looks_width) = if width >= lead + 24 {
+        (lead, width - lead)
+    } else {
+        (2, width.saturating_sub(2).max(1))
+    };
     let mut lines = vec![rule_line(
         "Checks",
         Some(&numfmt::group_chrome(checks.len())),
@@ -613,48 +642,42 @@ fn check_lines(
         theme,
     )];
     for check in &checks[..shown] {
-        let (mark, outcome, style) = match &check.outcome {
+        let (mark, style) = match &check.outcome {
             Outcome::Passed => (
                 Span::styled(g.check, Style::default().fg(theme.get("success"))),
-                "passed".to_string(),
                 Style::default().fg(theme.get("text_primary")),
             ),
-            Outcome::Found { tier, detail } => (
+            Outcome::Found { tier, .. } => (
                 severity_mark(*tier, theme),
-                format!("{detail} flagged"),
                 Style::default().fg(theme.get("text_primary")),
             ),
-            Outcome::NotRun(reason) => (
-                Span::styled(g.dash, dimmed),
-                format!("not run: {reason}"),
-                dimmed,
-            ),
+            Outcome::NotRun(_) => (Span::styled(g.dash, dimmed), dimmed),
         };
-        let rest = width.saturating_sub(2 + NAME + REACH);
-        let outcome_width = if rest > OUTCOME + 20 { OUTCOME } else { rest };
+        let beside = looks_indent == lead;
         let mut spans = vec![
             mark,
             Span::raw(" "),
-            Span::styled(format!("{:<NAME$}", check.name), style),
+            Span::styled(format!("{:<name_width$}", check.name), style),
+            Span::styled(format!("{:<reach_width$}", check.applies_to), dimmed),
+            // Padded only when something follows it on the line: trailing spaces
+            // past the frame would wrap into a blank line.
             Span::styled(
-                format!("{:<REACH$}", fit(&check.applies_to, REACH - 1)),
-                dimmed,
-            ),
-            Span::styled(
-                format!(
-                    "{:<outcome_width$}",
-                    fit(&outcome, outcome_width.saturating_sub(1))
-                ),
+                if beside {
+                    format!("{:<outcome_width$}", outcome(check))
+                } else {
+                    outcome(check)
+                },
                 style,
             ),
         ];
-        // What the check looks for, where the table has the width; the names say
-        // most of it, and the user guide says the rest.
-        let looks = rest.saturating_sub(outcome_width);
-        if looks >= 16 {
-            spans.push(Span::styled(fit(check.looks_for, looks), dimmed));
+        let mut looks = crate::widgets::info::wrap_to(check.looks_for, looks_width).into_iter();
+        if beside {
+            spans.extend(looks.next().map(|text| Span::styled(text, dimmed)));
         }
         lines.push(Line::from(spans));
+        lines.extend(
+            looks.map(|text| Line::styled(format!("{}{text}", " ".repeat(looks_indent)), dimmed)),
+        );
     }
     if shown < checks.len() {
         lines.push(Line::styled(
@@ -847,59 +870,116 @@ fn render_time_roles(
     area: Rect,
     buf: &mut Buffer,
 ) {
+    let theme = config.theme;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let accent = Style::default().fg(theme.get("accent"));
+    let columns = config.state.quality_temporal_columns(&config.plan.scope);
+    let roles = TemporalRole::ALL.len() as u16;
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(roles + 1),
+            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Fill(1),
-            Constraint::Length(3),
         ])
         .margin(1)
         .split(area);
-    Paragraph::new(
-        "Assign meaning explicitly. Datui never infers event, publication, receipt, or processing semantics from a column name.",
-    )
-    .style(Style::default().fg(config.theme.get("text_primary")))
-    .render(sections[0], buf);
+    Paragraph::new(rule_line("Time roles", None, sections[0].width, theme))
+        .render(sections[0], buf);
 
-    let rows = TemporalRole::ALL.iter().map(|role| {
-        let assignment = config
+    let focused_role = TemporalRole::ALL[config.plan_field.min(TemporalRole::ALL.len() - 1)];
+    let assigned = |role: TemporalRole| {
+        config
             .plan
             .temporal_roles
             .iter()
-            .find(|assignment| assignment.role == *role);
+            .find(|assignment| assignment.role == role)
+            .map(|assignment| assignment.column.clone())
+    };
+    let rows = TemporalRole::ALL.iter().map(|role| {
         Row::new(vec![
-            role.label().to_string(),
-            assignment
-                .map(|item| item.column.clone())
-                .unwrap_or_else(|| "unassigned".to_string()),
-            assignment
-                .and_then(|item| item.timezone.clone())
-                .unwrap_or_else(|| "source value".to_string()),
+            Cell::from(role.label()),
+            match assigned(*role) {
+                Some(column) => Cell::from(column),
+                None => Cell::from(Span::styled("unassigned", dimmed)),
+            },
         ])
     });
     table_state.select(Some(config.plan_field.min(TemporalRole::ALL.len() - 1)));
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(22),
-            Constraint::Length(28),
-            Constraint::Fill(1),
-        ],
-    )
-    .header(
-        Row::new(["Semantic role", "Accepted column", "Interpretation"])
-            .style(Style::default().fg(config.theme.get("dimmed"))),
-    )
-    .row_highlight_style(config.theme.highlight_style())
-    .highlight_symbol(glyphs::get().selector);
+    let table = Table::new(rows, [Constraint::Length(20), Constraint::Fill(1)])
+        .header(Row::new(["Role", "Column"]).style(dimmed))
+        .row_highlight_style(theme.highlight_style())
+        .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
-    Paragraph::new(format!(
-        "{} cycles only date and datetime columns. Unassigned roles produce no lifecycle claims.",
-        glyphs::get().updown_lr
+
+    // The candidates, with a few of their values from the rows already on screen,
+    // so choosing which column is "received" is choosing among things seen.
+    Paragraph::new(rule_line(
+        "Date and time columns",
+        Some(&numfmt::group_chrome(columns.len())),
+        sections[3].width,
+        theme,
     ))
-    .style(Style::default().fg(config.theme.get("dimmed")))
-    .render(sections[2], buf);
+    .render(sections[3], buf);
+    if columns.is_empty() {
+        Paragraph::new(Span::styled("None in this data", dimmed)).render(sections[4], buf);
+        return;
+    }
+    let name_width = columns
+        .iter()
+        .map(|column| glyphs::display_width(column))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let types = columns
+        .iter()
+        .map(|column| {
+            config
+                .state
+                .schema
+                .get(column)
+                .map(|dtype| dtype.to_string())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let type_width = types
+        .iter()
+        .map(|dtype| glyphs::display_width(dtype))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let chosen = assigned(focused_role);
+    let values_width = (sections[4].width as usize).saturating_sub(2 + name_width + type_width);
+    let lines = columns
+        .iter()
+        .zip(&types)
+        .map(|(column, dtype)| {
+            let is_chosen = chosen.as_deref() == Some(column.as_str());
+            let values = config.state.buffered_values(column, 3);
+            let values = if values.is_empty() {
+                "not in the rows on screen".to_string()
+            } else {
+                values.join("   ")
+            };
+            Line::from(vec![
+                Span::styled(if is_chosen { glyphs::get().rail } else { " " }, accent),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{column:<name_width$}"),
+                    if is_chosen {
+                        accent
+                    } else {
+                        Style::default().fg(theme.get("text_primary"))
+                    },
+                ),
+                Span::styled(format!("{dtype:<type_width$}"), dimmed),
+                Span::raw(fit(&values, values_width)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    Paragraph::new(lines).render(sections[4], buf);
 }
 
 fn render_columns(

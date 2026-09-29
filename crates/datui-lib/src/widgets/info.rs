@@ -106,7 +106,7 @@ fn note_rows(note: &crate::notes::Note, selected: bool, width: usize) -> Vec<Not
 /// the terminal after this said it fitted. A single word longer than the panel is left
 /// whole rather than split mid-word, though the terminal still clips what runs past
 /// the edge — the wrapping protects the note's height, not a single long word.
-fn wrap_to(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_to(text: &str, width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     if width == 0 {
         return vec![text.to_string()];

@@ -40,7 +40,9 @@ Keys:
                     field's value; on Time roles, cycle the column
   Enter on Sample:  Open the Sample form (the same as s)
   Enter on Time roles: Open the role editor: ↑/↓ pick the role, ←/→ the
-                    column, Enter done. Needs a date or time column
+                    column, Enter done. The date and time columns are
+                    listed below with a few of their values. Needs a
+                    date or time column
   The bar in the plan editor names what the focused field takes.
   p:                Show the detailed access plan
   1 / 2 / 3 / 4:    Overview (the report) / Columns (a mark and the

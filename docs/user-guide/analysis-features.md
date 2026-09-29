@@ -108,7 +108,9 @@ exact eligible count. The scope is applied before sampling, so sampling never
 reaches beyond its bounds.
 
 The Time roles row opens an explicit mapping table; every role starts
-unassigned. Datui recognizes physical date and datetime types but never
+unassigned. Under it, each date and time column is listed with its type and a
+few of its values from the rows on screen, and the column the focused role holds
+is marked. Datui recognizes physical date and datetime types but never
 guesses their business meaning from column names. With a source scope, the
 picker includes source time columns hidden by the current view.
 

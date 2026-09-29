@@ -1922,15 +1922,45 @@ fn profile_segments(
     polars_streaming: bool,
 ) -> Result<Vec<SegmentQualityProfile>> {
     let groups = segment_rows(df, plan, sample.positions)?;
+    // Every segment in one grouped query, keyed by the segment each row fell in.
+    // A query per segment is thousands of them for a daily grain over years, and
+    // each pays Polars' planning cost for a few dozen rows.
+    let mut segment_of = vec![0u32; df.height()];
+    for (index, group) in groups.iter().enumerate() {
+        for row in &group.indices {
+            segment_of[*row as usize] = index as u32;
+        }
+    }
+    const SEGMENT: &str = "__quality_segment_index";
+    let mut keyed = df.clone();
+    keyed.with_column(Column::new(SEGMENT.into(), segment_of))?;
+    let grouped = collect_lazy(
+        keyed
+            .lazy()
+            .group_by([col(SEGMENT)])
+            .agg(build_profile_exprs(schema)),
+        polars_streaming,
+    )
+    .map_err(Report::from)?;
+    let mut by_segment = vec![None; groups.len()];
+    for row in 0..grouped.height() {
+        let index = usize_value_at(&grouped, SEGMENT, row);
+        if let Some(slot) = by_segment.get_mut(index) {
+            *slot = Some(row);
+        }
+    }
     let mut profiles = Vec::with_capacity(groups.len());
-    for group in groups {
-        let segment = take_rows(df, &group.indices)?;
-        let columns = profile_columns(&segment, schema, polars_streaming)?;
+    for (group, row) in groups.into_iter().zip(by_segment) {
+        let evaluated_rows = group.indices.len();
+        let Some(row) = row else {
+            continue;
+        };
+        let columns = parse_profiles_at(&grouped, schema, evaluated_rows, row);
         let null_cells = columns
             .iter()
             .map(|column| column.null_count)
             .sum::<usize>();
-        let denominator = segment.height().saturating_mul(columns.len());
+        let denominator = evaluated_rows.saturating_mul(columns.len());
         let known_segment_rows = sample.totals.get(&group.label);
         profiles.push(SegmentQualityProfile {
             label: group.label,
@@ -1939,11 +1969,11 @@ fn profile_segments(
             } else if matches!(plan.grain, QualityGrain::Dataset) {
                 total_rows
             } else if precision == QualityPrecision::Exact {
-                Some(segment.height())
+                Some(evaluated_rows)
             } else {
                 None
             },
-            evaluated_rows: segment.height(),
+            evaluated_rows,
             columns,
             null_cells,
             null_rate: rate(null_cells, denominator),
@@ -3469,6 +3499,42 @@ mod tests {
         assert!((changes[0].change().unwrap() - 10.0).abs() < 1e-9);
         assert!(natural_cmp("part-2", "part-10").is_lt());
         assert!(natural_cmp("year=2024", "year=2025").is_lt());
+    }
+
+    /// Hundreds of segments are profiled in one grouped query, and each keeps its
+    /// own counts: every other day here has one missing price.
+    #[test]
+    fn every_segment_keeps_its_own_counts() {
+        let days = 400i32;
+        let day = (0..days * 3).map(|row| row / 3).collect::<Vec<_>>();
+        let price = (0..days * 3)
+            .map(|row| (!(row % 3 == 0 && (row / 3) % 2 == 0)).then_some(f64::from(row)))
+            .collect::<Vec<_>>();
+        let frame = df!("day" => day, "price" => price)
+            .unwrap()
+            .lazy()
+            .with_column(col("day").cast(DataType::Date));
+        let plan = DataQualityPlan {
+            dataset_rows: 10_000,
+            grain: QualityGrain::TimeWindows {
+                column: "day".to_string(),
+                every: "1d".to_string(),
+            },
+            ..DataQualityPlan::default()
+        };
+        let results =
+            compute_data_quality(&frame, Some(days as usize * 3), &plan, None, false).unwrap();
+        assert_eq!(results.segments.len(), days as usize);
+        for (index, segment) in results.segments.iter().enumerate() {
+            assert_eq!(segment.evaluated_rows, 3, "{}", segment.label);
+            let price = segment.columns.iter().find(|c| c.name == "price").unwrap();
+            assert_eq!(
+                price.null_count,
+                usize::from(index % 2 == 0),
+                "{}",
+                segment.label
+            );
+        }
     }
 
     /// Row chunks are cut from the shared sample by where each sampled row sat, and

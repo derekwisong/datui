@@ -1188,7 +1188,11 @@ impl SegmentSampleState {
                 .iter()
                 .map(|index| {
                     let position = positions[*index as usize];
-                    (sample_rank(plan.sample_seed, position), position, *index)
+                    (
+                        crate::statistics::sample_rank(plan.sample_seed, u64::from(position)),
+                        position,
+                        *index,
+                    )
                 })
                 .collect::<Vec<_>>();
             candidates.sort_unstable();
@@ -1250,13 +1254,6 @@ impl SegmentSampleState {
         }
         Ok(())
     }
-}
-
-fn sample_rank(seed: u64, position: u32) -> u64 {
-    let mut value = seed ^ u64::from(position).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
 }
 
 fn sample_quality_segments(

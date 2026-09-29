@@ -3432,12 +3432,45 @@ pub mod tests {
         let finished = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the lease reports back");
-        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
         let _ = app.handle(&finished);
         assert!(
             !app.work_a_bump_would_strand(),
             "and the generation is free again"
         );
+    }
+
+    /// Work a cancel passed holds nothing up. Polars cannot stop the query, so the worker
+    /// runs on with its lease; the bump made its answer stale, and the table must not
+    /// wait on it. A lease on the new generation still counts.
+    #[test]
+    fn a_cancelled_lease_does_not_hold_the_generation() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let old = app.lease_for_tests();
+        let leased_on = app.task_generation;
+        app.task_generation = app.task_generation.wrapping_add(1);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "the abandoned worker is not waited on"
+        );
+
+        let current = app.lease_for_tests();
+        assert!(app.work_a_bump_would_strand());
+
+        // The abandoned worker finishing does not release the current one.
+        std::mem::forget(old);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: leased_on,
+        });
+        assert!(app.work_a_bump_would_strand());
+        std::mem::forget(current);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation,
+        });
+        assert!(!app.work_a_bump_would_strand());
     }
 
     /// A worker that panics still returns its lease.
@@ -3457,7 +3490,7 @@ pub mod tests {
         let finished = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the lease reports back even from a panic");
-        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
         let _ = app.handle(&finished);
         assert!(
             !app.work_a_bump_would_strand(),
@@ -3612,7 +3645,9 @@ pub mod tests {
 
         // Declining puts the errand down, and the generation with it.
         let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation(),
+        });
         assert!(
             !app.work_a_bump_would_strand(),
             "nothing waits on it once the download is declined"
@@ -3728,7 +3763,9 @@ pub mod tests {
 
         // The open finishes, and the jump gets its turn.
         drop(lease);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation(),
+        });
         assert!(
             app.collect_owed.is_none(),
             "the collect the jump asked for runs once nothing is waiting"
@@ -4027,7 +4064,9 @@ pub mod tests {
         // The export finishes, and the errand gets its turn on the next event.
         app.loading_state = LoadingState::Idle;
         drop(lease);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+            generation: app.task_generation(),
+        });
         let _ = app.handle(&AppEvent::Update);
 
         assert!(
@@ -4109,7 +4148,9 @@ pub mod tests {
             // The lease is released by dropping it, which sends the event the count is
             // decremented by — behind whatever result the work had already sent.
             drop(lease);
-            let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+            let _ = app.handle(&AppEvent::BackgroundWorkFinished {
+                generation: app.task_generation(),
+            });
             app.chart_inflight = None;
         };
 
@@ -5258,7 +5299,9 @@ pub enum AppEvent {
     /// A [`GenerationLease`] was released: the work holding it has finished, however it
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
-    BackgroundWorkFinished,
+    BackgroundWorkFinished {
+        generation: u64,
+    },
     /// A directory named on the command line: look at it on a worker, then do with it
     /// whatever `Enter` on its row would do.
     ///
@@ -5354,12 +5397,17 @@ struct ClassifyRequest {
 /// app is wedged with or without this, but the count does not rescue it.
 struct GenerationLease {
     events: Sender<AppEvent>,
+    /// The generation it was taken on. Work on an older one was cancelled by the bump
+    /// that passed it, and its answer will be dropped, so it holds nothing up.
+    generation: u64,
 }
 
 impl Drop for GenerationLease {
     fn drop(&mut self) {
         // Nobody to tell means the app is gone, and so is the count.
-        let _ = self.events.send(AppEvent::BackgroundWorkFinished);
+        let _ = self.events.send(AppEvent::BackgroundWorkFinished {
+            generation: self.generation,
+        });
     }
 }
 
@@ -6450,7 +6498,10 @@ pub struct App {
     active_template_id: Option<String>, // ID of currently applied template
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
-    sampling_threshold: Option<usize>, // None = no sampling (full data); Some(n) = sample when rows >= n
+    /// Rows an analysis samples from a larger table; `None` reads every row.
+    analysis_sample_rows: Option<usize>,
+    /// `a` is waiting on the confirmation to read every row.
+    pending_read_all: bool,
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
@@ -6533,9 +6584,10 @@ pub struct App {
     /// ordinary count the pass was going to save it — hence an errand of its own, tried
     /// again after every event until the work it would cancel is done.
     reread_owed: Option<u64>,
-    /// Leases outstanding on `task_generation`: background work a bump would strand.
-    /// See [`GenerationLease`].
-    leases: usize,
+    /// Leases outstanding, by the generation each was taken on. Those on the current
+    /// `task_generation` are background work a bump would strand. See
+    /// [`GenerationLease`].
+    leases: HashMap<u64, usize>,
     /// A buffer collect that was asked for while a lease was outstanding, and the
     /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
     /// dropped when the dataset it belonged to is replaced.
@@ -6749,9 +6801,102 @@ impl App {
         self.error_modal.active || self.confirmation_modal.active
     }
 
+    /// The analysis on screen was run on a sample: what `r` and `a` act on.
+    fn analysis_results_are_sampled(&self) -> bool {
+        self.analysis_modal.view == analysis_modal::AnalysisView::Main
+            && self.analysis_modal.computing.is_none()
+            && self
+                .analysis_modal
+                .current_results()
+                .is_some_and(|r| r.sample_size.is_some())
+    }
+
+    /// Work a cancel passed that is still running: leased on a generation since left.
+    fn cancelled_work_running(&self) -> bool {
+        self.leases
+            .iter()
+            .any(|(generation, n)| *generation != self.task_generation && *n > 0)
+    }
+
+    /// How many rows the next analysis samples: none when `a` asked for every row.
+    fn analysis_sampling(&self) -> Option<usize> {
+        if self.analysis_modal.reads_all {
+            None
+        } else {
+            self.analysis_sample_rows
+        }
+    }
+
+    /// Run the selected tool again from scratch, as `r` and `a` do.
+    fn start_analysis_run(&mut self) -> Option<AppEvent> {
+        let (phase, event) = match self.analysis_modal.selected_tool? {
+            analysis_modal::AnalysisTool::Describe => {
+                self.analysis_modal.describe_results = None;
+                self.analysis_computation = Some(AnalysisComputationState {
+                    df: None,
+                    schema: None,
+                    partial_stats: Vec::new(),
+                    current: 0,
+                    total: 0,
+                    total_rows: 0,
+                    sample_seed: self.analysis_modal.random_seed,
+                    sample_size: None,
+                });
+                ("Describing data", AppEvent::AnalysisChunk)
+            }
+            analysis_modal::AnalysisTool::DistributionAnalysis => {
+                self.analysis_modal.distribution_results = None;
+                (
+                    "Analyzing distributions",
+                    AppEvent::AnalysisDistributionCompute,
+                )
+            }
+            analysis_modal::AnalysisTool::CorrelationMatrix => {
+                self.analysis_modal.correlation_results = None;
+                (
+                    "Computing correlations",
+                    AppEvent::AnalysisCorrelationCompute,
+                )
+            }
+            analysis_modal::AnalysisTool::DataQuality => return None,
+        };
+        self.analysis_modal.computing = Some(AnalysisProgress::new(phase));
+        self.busy = true;
+        Some(event)
+    }
+
+    /// Stop waiting for the analysis in flight.
+    ///
+    /// Polars cannot stop a query partway, so the worker runs to the end and its answer
+    /// is dropped: the bump makes it stale, and its lease no longer holds the table up.
+    /// The tool is put back unchosen, so its view does not sit on a spinner for a run
+    /// that is not coming; Enter on it runs it again.
+    fn cancel_analysis(&mut self) {
+        self.task_generation = self.task_generation.wrapping_add(1);
+        // Keys typed while it ran were typed at the run, which is gone: an impatient
+        // second Enter replayed now would start it again behind the Esc.
+        self.screen_generation = self.screen_generation.wrapping_add(1);
+        self.analysis_modal.computing = None;
+        self.analysis_computation = None;
+        self.busy = false;
+        self.status_message = None;
+        if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
+            self.analysis_modal.data_quality_results = None;
+        } else {
+            self.analysis_modal.selected_tool = None;
+            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        }
+        self.flash_note("Analysis cancelled".to_string());
+    }
+
     /// Show a completion flash on the control bar.
     fn flash_note(&mut self, message: String) {
         self.flash = Some(Flash::new(message));
+    }
+
+    /// The completion flash on the control bar, if one is showing.
+    pub fn flash_message(&self) -> Option<&str> {
+        self.flash.as_ref().map(|f| f.message.as_str())
     }
 
     /// Drop an expired flash. Returns true when the frame must redraw.
@@ -6779,15 +6924,14 @@ impl App {
             && (key.code == KeyCode::Char('q')
                 || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
         let home = ctrl && key.code == KeyCode::Char('o');
-        let cancel_quality = self.analysis_modal.active
-            && self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
+        let cancel_analysis = self.analysis_modal.active
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
         let leave_quality_evidence = self.quality_evidence_return.is_some()
             && self.input_mode == InputMode::Normal
             && key.code == KeyCode::Esc;
         quit || home
-            || cancel_quality
+            || cancel_analysis
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -7638,9 +7782,10 @@ impl App {
 
     /// Take a lease on the current `task_generation`. See [`GenerationLease`].
     fn lease_the_generation(&mut self) -> GenerationLease {
-        self.leases += 1;
+        *self.leases.entry(self.task_generation).or_default() += 1;
         GenerationLease {
             events: self.events.clone(),
+            generation: self.task_generation,
         }
     }
 
@@ -7655,7 +7800,14 @@ impl App {
         //  - `EventPump`, for as long as a continuation it has not dispatched is
         //    waiting, which is the gap between two phases of one errand;
         //  - an errand parked on the user, which is the download confirmation.
-        self.leases > 0
+        //
+        // Counted per generation, and only the current one asked about: work leased on an
+        // older one was cancelled by the bump that passed it — an analysis the user
+        // stopped with Esc, whose worker Polars cannot interrupt — and waiting for it
+        // would hold the table up for work nobody wants.
+        self.leases
+            .get(&self.task_generation)
+            .is_some_and(|n| *n > 0)
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -7933,7 +8085,9 @@ impl App {
             active_template_id: None,
             loading_state: LoadingState::Idle,
             theme,
-            sampling_threshold: app_config.performance.sampling_threshold,
+            analysis_sample_rows: (app_config.performance.analysis_sample_rows > 0)
+                .then_some(app_config.performance.analysis_sample_rows),
+            pending_read_all: false,
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
@@ -7966,7 +8120,7 @@ impl App {
             dataset_generation: 0,
             footers_held: None,
             reread_owed: None,
-            leases: 0,
+            leases: HashMap::new(),
             collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
@@ -9838,8 +9992,7 @@ impl App {
         .map_err(|e| color_eyre::eyre::eyre!("Object store config failed: {}", e))
     }
 
-    /// Human-readable byte size for download confirmation modal.
-    #[cfg(any(feature = "http", feature = "cloud"))]
+    /// Human-readable byte size, for the download confirmation and the load's progress.
     fn format_bytes(n: u64) -> String {
         const KB: u64 = 1024;
         const MB: u64 = KB * 1024;
@@ -12237,8 +12390,13 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
-                        // Forgetting every recent is checked first: it is the only
-                        // confirmation here that is not about overwriting a file.
+                        // The confirmations that are not about overwriting a file come
+                        // first: reading every row, and forgetting recents.
+                        if std::mem::take(&mut self.pending_read_all) {
+                            self.confirmation_modal.hide();
+                            self.analysis_modal.reads_all = true;
+                            return self.start_analysis_run();
+                        }
                         if self.pending_clear_recents {
                             self.pending_clear_recents = false;
                             self.confirmation_modal.hide();
@@ -12309,6 +12467,7 @@ impl App {
                         }
                     } else {
                         self.pending_clear_recents = false;
+                        self.pending_read_all = false;
                         self.pending_forget_place = None;
                         // Declining an overwrite returns to the filled form:
                         // the typed path, format and options survive the No.
@@ -12332,6 +12491,7 @@ impl App {
                     // Disarmed on every exit from the modal, so a declined confirmation
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
+                    self.pending_read_all = false;
                     self.pending_forget_place = None;
                     // Declining an overwrite returns to the filled form: the
                     // typed path, format and options survive the Esc.
@@ -13527,6 +13687,13 @@ impl App {
         }
 
         if self.analysis_modal.active {
+            // A run in flight, whichever tool: Esc stops waiting for it. It acts at once
+            // (see `hard_escape_while_busy`) rather than queueing behind the run it is
+            // meant to cancel.
+            if event.code == KeyCode::Esc && self.analysis_modal.computing.is_some() {
+                self.cancel_analysis();
+                return None;
+            }
             if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
                 && self.analysis_modal.view == analysis_modal::AnalysisView::Main
             {
@@ -13622,14 +13789,6 @@ impl App {
                 }
 
                 match event.code {
-                    KeyCode::Esc if self.analysis_modal.computing.is_some() => {
-                        self.task_generation = self.task_generation.wrapping_add(1);
-                        self.analysis_modal.computing = None;
-                        self.analysis_modal.data_quality_results = None;
-                        self.status_message = Some("Data-quality run cancelled".to_string());
-                        self.busy = false;
-                        return None;
-                    }
                     KeyCode::Esc if self.analysis_modal.data_quality_show_access => {
                         self.analysis_modal.data_quality_show_access = false;
                         return None;
@@ -13800,11 +13959,8 @@ impl App {
                             self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             return None;
                         }
-                        self.analysis_modal.computing = Some(AnalysisProgress {
-                            phase: "Profiling data quality".to_string(),
-                            current: 0,
-                            total: 1,
-                        });
+                        self.analysis_modal.computing =
+                            Some(AnalysisProgress::new("Profiling data quality"));
                         self.busy = true;
                         return Some(AppEvent::AnalysisDataQualityCompute);
                     }
@@ -13865,11 +14021,8 @@ impl App {
                             self.analysis_modal.data_quality_confirm_run = false;
                             self.analysis_modal.data_quality_results = None;
                             self.analysis_modal.data_quality_from_cache = false;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Profiling data quality".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
+                            self.analysis_modal.computing =
+                                Some(AnalysisProgress::new("Profiling data quality"));
                             self.busy = true;
                             return Some(AppEvent::AnalysisDataQualityCompute);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
@@ -14027,57 +14180,33 @@ impl App {
                 KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
-                KeyCode::Char('r')
-                    if self.sampling_threshold.is_some()
-                        && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
-                {
-                    // Gated to Main: inside a detail view an undocumented `r`
-                    // cleared the results out from under the detail.
+                // Another sample, or every row. Both only where the results are a
+                // sample, and only on the main view: inside a detail an undocumented
+                // `r` cleared the results out from under it.
+                KeyCode::Char('r') if self.analysis_results_are_sampled() => {
                     self.analysis_modal.recalculate();
-                    match self.analysis_modal.selected_tool {
-                        Some(analysis_modal::AnalysisTool::Describe) => {
-                            self.analysis_modal.describe_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Describing data".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
-                            self.analysis_computation = Some(AnalysisComputationState {
-                                df: None,
-                                schema: None,
-                                partial_stats: Vec::new(),
-                                current: 0,
-                                total: 0,
-                                total_rows: 0,
-                                sample_seed: self.analysis_modal.random_seed,
-                                sample_size: None,
-                            });
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisChunk);
-                        }
-                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                            self.analysis_modal.distribution_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Distribution".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisDistributionCompute);
-                        }
-                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                            self.analysis_modal.correlation_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress {
-                                phase: "Correlation".to_string(),
-                                current: 0,
-                                total: 1,
-                            });
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisCorrelationCompute);
-                        }
-                        Some(analysis_modal::AnalysisTool::DataQuality) => {}
-                        None => {}
-                    }
+                    return self.start_analysis_run();
+                }
+                // Refused while a cancelled run is still reading: Polars cannot stop it,
+                // and a second full read beside it is how memory runs out.
+                KeyCode::Char('a')
+                    if self.analysis_results_are_sampled() && self.cancelled_work_running() =>
+                {
+                    self.flash_note("A cancelled run is still finishing; try again shortly".into());
+                }
+                KeyCode::Char('a') if self.analysis_results_are_sampled() => {
+                    let total = self
+                        .analysis_modal
+                        .current_results()
+                        .map(|r| r.total_rows)
+                        .unwrap_or_default();
+                    self.pending_read_all = true;
+                    self.confirmation_modal.show(format!(
+                        "Read all {} rows? It can take much longer than the sample. \
+                         Esc stops waiting; the read finishes in the background.",
+                        crate::numfmt::group_chrome(total)
+                    ));
+                    self.confirmation_modal.yes_label = "Read all";
                 }
                 KeyCode::Tab => {
                     // One rule for the whole screen: Tab moves sidebar <-> result.
@@ -14097,11 +14226,7 @@ impl App {
                             Some(analysis_modal::AnalysisTool::Describe)
                                 if self.analysis_modal.describe_results.is_none() =>
                             {
-                                self.analysis_modal.computing = Some(AnalysisProgress {
-                                    phase: "Describing data".to_string(),
-                                    current: 0,
-                                    total: 1,
-                                });
+                                self.analysis_modal.computing = Some(AnalysisProgress::new("Describing data"));
                                 self.analysis_computation = Some(AnalysisComputationState {
                                     df: None,
                                     schema: None,
@@ -14118,22 +14243,14 @@ impl App {
                             Some(analysis_modal::AnalysisTool::DistributionAnalysis)
                                 if self.analysis_modal.distribution_results.is_none() =>
                             {
-                                self.analysis_modal.computing = Some(AnalysisProgress {
-                                    phase: "Distribution".to_string(),
-                                    current: 0,
-                                    total: 1,
-                                });
+                                self.analysis_modal.computing = Some(AnalysisProgress::new("Analyzing distributions"));
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisDistributionCompute);
                             }
                             Some(analysis_modal::AnalysisTool::CorrelationMatrix)
                                 if self.analysis_modal.correlation_results.is_none() =>
                             {
-                                self.analysis_modal.computing = Some(AnalysisProgress {
-                                    phase: "Correlation".to_string(),
-                                    current: 0,
-                                    total: 1,
-                                });
+                                self.analysis_modal.computing = Some(AnalysisProgress::new("Computing correlations"));
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisCorrelationCompute);
                             }
@@ -14154,11 +14271,7 @@ impl App {
                                         // A local read costs nothing worth confirming:
                                         // lead with the result. The plan stays one Esc
                                         // (or e) away, echoed in the strip up top.
-                                        self.analysis_modal.computing = Some(AnalysisProgress {
-                                            phase: "Profiling data quality".to_string(),
-                                            current: 0,
-                                            total: 1,
-                                        });
+                                        self.analysis_modal.computing = Some(AnalysisProgress::new("Profiling data quality"));
                                         self.busy = true;
                                         return Some(AppEvent::AnalysisDataQualityCompute);
                                     }
@@ -16512,7 +16625,7 @@ impl App {
                 // Stub out binary columns: their blobs are never read for analysis (reading
                 // multi-GB blobs across partitions can exhaust memory and freeze the process).
                 let lf = match &self.data_table_state {
-                    Some(state) => state.lf.clone().select(state.binary_stub_exprs()),
+                    Some(state) => state.analysis_lf().select(state.binary_stub_exprs()),
                     None => {
                         self.analysis_computation = None;
                         self.analysis_modal.computing = None;
@@ -16526,34 +16639,16 @@ impl App {
                         .data_table_state
                         .as_ref()
                         .and_then(|s| s.num_rows_if_valid());
-                    let sampling = self.sampling_threshold;
+                    let sampling = self.analysis_sampling();
                     let seed = comp.sample_seed;
                     let streaming = self.app_config.performance.polars_streaming;
                     self.spawn_bg("Computing statistics...", move |task_gen, tx| {
-                        let total_rows = match cached_rows {
-                            Some(n) => n,
-                            None => match crate::statistics::collect_lazy(
-                                crate::widgets::datatable::row_count_lf(&lf),
-                                streaming,
-                            ) {
-                                Ok(count_df) => match count_df.get(0) {
-                                    Some(col) => match col.first() {
-                                        Some(AnyValue::UInt64(n)) => *n as usize,
-                                        _ => 0,
-                                    },
-                                    None => 0,
-                                },
-                                Err(e) => {
-                                    let _ = tx.send(AppEvent::BackgroundError {
-                                        generation: task_gen,
-                                        message: format!("{e}"),
-                                    });
-                                    return;
-                                }
-                            },
-                        };
                         match crate::statistics::compute_describe_from_lazy(
-                            &lf, total_rows, sampling, seed, streaming,
+                            &lf,
+                            cached_rows,
+                            sampling,
+                            seed,
+                            streaming,
                         ) {
                             Ok(results) => {
                                 let _ = tx.send(AppEvent::BackgroundDescribeReady {
@@ -16575,8 +16670,8 @@ impl App {
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
                     // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
-                    let lf = state.lf.clone().select(state.binary_stub_exprs());
-                    let sampling = self.sampling_threshold;
+                    let lf = state.analysis_lf().select(state.binary_stub_exprs());
+                    let sampling = self.analysis_sampling();
                     let seed = self.analysis_modal.random_seed;
                     let streaming = self.app_config.performance.polars_streaming;
                     self.spawn_bg("Analyzing distributions...", move |task_gen, tx| {
@@ -16612,18 +16707,34 @@ impl App {
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
-                    let lf = state.lf.clone().select(state.binary_stub_exprs());
+                    // Only the numeric columns: nothing else is correlated, and on a wide
+                    // table the rest is most of what a full read would hold.
+                    let numeric: Vec<polars::prelude::Expr> = state
+                        .schema
+                        .iter()
+                        .filter(|(_, dtype)| dtype.is_numeric())
+                        .map(|(name, _)| col(name.clone()))
+                        .collect();
+                    let lf = state.analysis_lf().select(numeric);
                     let streaming = state.polars_streaming;
+                    let known_total = state.num_rows_if_valid();
                     let seed = self.analysis_modal.random_seed;
+                    let sampling = self.analysis_sampling();
                     self.spawn_bg("Computing correlation matrix...", move |task_gen, tx| {
-                        let result = crate::statistics::collect_lazy(lf, streaming).map(|df| {
-                            let matrix = crate::statistics::compute_correlation_matrix(&df).ok();
-                            let height = df.height();
+                        let result = crate::statistics::analysis_rows(
+                            &lf,
+                            sampling,
+                            known_total,
+                            seed,
+                            streaming,
+                        )
+                        .map(|rows| {
+                            let matrix =
+                                crate::statistics::compute_correlation_matrix(&rows.df).ok();
                             crate::statistics::AnalysisResults {
                                 column_statistics: vec![],
-                                total_rows: height,
-                                sample_size: None,
+                                total_rows: rows.total_rows,
+                                sample_size: rows.sample_size,
                                 sample_seed: seed,
                                 correlation_matrix: matrix,
                                 distribution_analyses: vec![],
@@ -17304,11 +17415,16 @@ impl App {
                 };
                 self.open_what_it_is(path.clone(), kind, *jump)
             }
-            AppEvent::BackgroundWorkFinished => {
+            AppEvent::BackgroundWorkFinished { generation } => {
                 // Behind the result its work sent, so the handler that consumed that
                 // result has already run. Saturating because a lease released twice
                 // would otherwise wrap into "nothing is ever safe to bump".
-                self.leases = self.leases.saturating_sub(1);
+                if let Some(n) = self.leases.get_mut(generation) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.leases.remove(generation);
+                    }
+                }
                 None
             }
             AppEvent::BackgroundError {

@@ -25,7 +25,7 @@ fn test_config_used_for_row_numbers() {
         clear_recents: false,
         template: None,
         remove_templates: false,
-        sampling_threshold: None,
+        sample_rows: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false, // Not set via CLI
@@ -83,7 +83,7 @@ fn test_cli_args_override_config() {
         clear_recents: false,
         template: None,
         remove_templates: false,
-        sampling_threshold: None,
+        sample_rows: None,
         pages_lookahead: Some(5), // Override config
         pages_lookback: None,
         row_numbers: false,
@@ -141,7 +141,7 @@ fn test_config_display_settings() {
         clear_recents: false,
         template: None,
         remove_templates: false,
-        sampling_threshold: None,
+        sample_rows: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false,
@@ -199,7 +199,7 @@ fn test_config_file_loading_settings() {
         clear_recents: false,
         template: None,
         remove_templates: false,
-        sampling_threshold: None,
+        sample_rows: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false,
@@ -255,7 +255,7 @@ fn test_config_null_values_merge() {
         clear_recents: false,
         template: None,
         remove_templates: false,
-        sampling_threshold: None,
+        sample_rows: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false,
@@ -293,21 +293,14 @@ fn test_config_null_values_merge() {
 }
 
 #[test]
-fn test_config_sampling_threshold() {
-    use datui::{App, AppConfig, AppEvent, Theme};
-    use std::sync::mpsc::channel;
+fn test_config_analysis_sample_rows() {
+    let config = AppConfig::default();
+    assert_eq!(config.performance.analysis_sample_rows, 100_000);
 
+    // 0 reads every row, and is a valid setting rather than a mistake.
     let mut config = AppConfig::default();
-    config.performance.sampling_threshold = Some(50000);
-
-    let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
-    let (tx, _rx) = channel::<AppEvent>();
-    let _app = App::new_with_config(tx, common::test_runtime(), theme, config.clone());
-
-    // Verify the app uses the config's sampling threshold
-    // Note: We can't directly access app.sampling_threshold as it's private,
-    // but we can verify the config value is correct
-    assert_eq!(config.performance.sampling_threshold, Some(50000));
+    config.performance.analysis_sample_rows = 0;
+    assert!(config.validate().is_ok());
 }
 
 #[test]
@@ -325,12 +318,6 @@ fn test_config_event_poll_interval() {
 fn test_config_performance_validation() {
     let mut config = AppConfig::default();
 
-    // Zero sampling threshold should fail validation
-    config.performance.sampling_threshold = Some(0);
-    assert!(config.validate().is_err());
-
-    // Reset and test event poll interval
-    config.performance.sampling_threshold = Some(10000);
     config.performance.event_poll_interval_ms = 0;
     assert!(config.validate().is_err());
 
@@ -360,7 +347,7 @@ fn test_parse_strings_default_and_no_parse_strings() {
         clear_recents: false,
         template: None,
         remove_templates: false,
-        sampling_threshold: None,
+        sample_rows: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false,

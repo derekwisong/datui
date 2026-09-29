@@ -154,6 +154,10 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     if modal.selected_tool == Some(AnalysisTool::DataQuality) {
         return data_quality_control_keys(app);
     }
+    // A run in flight owns Esc, and nothing else acts until it is done.
+    if modal.computing.is_some() {
+        return vec![("Esc", "Cancel")];
+    }
     // The bar is cut from the right: while the tool list owns the keys, the
     // action that advances (Enter) must outlive column scrolling.
     let mut pairs = if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
@@ -173,11 +177,15 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             ("Enter", "Select"),
         ]
     };
-    if app.sampling_threshold.is_some()
-        && let Some(results) = app.analysis_modal.current_results()
-        && results.sample_size.is_some()
+    // On a sample: another one, or every row.
+    if modal.view == crate::analysis_modal::AnalysisView::Main
+        && app
+            .analysis_modal
+            .current_results()
+            .is_some_and(|results| results.sample_size.is_some())
     {
         pairs.push(("r", "Resample"));
+        pairs.push(("a", "All rows"));
     }
     pairs.push(("?", "Help"));
     pairs

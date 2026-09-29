@@ -17,12 +17,14 @@ percentile and max. Scroll with the arrow keys.
 
 ## Distribution
 
-Fits each numeric column against fourteen distributions — Normal, Log-Normal,
+Compares each numeric column against fourteen distributions — Normal, Log-Normal,
 Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
 Poisson, Bernoulli, Binomial, Geometric and Weibull — and reports the best
 fit, along with the Shapiro-Wilk statistic and p-value, coefficient of
 variation, outlier count (IQR method), skewness and kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
-poor fit or a column with many outliers or extreme shape.
+poor fit or a column with many outliers or extreme shape. Constant columns
+are labeled **Constant**; a column can also report **No clear fit**. A best
+match is a statistical comparison, not proof of a distribution.
 
 Press <kbd>Enter</kbd> on a column for the detail view: a Q-Q plot against the
 chosen distribution and a histogram with the theoretical curve overlaid.
@@ -35,7 +37,8 @@ the table.
 Pairwise correlations between every numeric column, colored by strength.
 Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
 pair: the Pearson coefficient with a plain reading of it, R², the p-value,
-and how many row pairs it was computed from.
+and how many row pairs it was computed from. Correlation is undefined for a
+constant column.
 
 ## Data quality
 
@@ -52,18 +55,30 @@ See [Data quality](data-quality.md) for the workflow and metric definitions.
 
 ## Sampling
 
-Describe, Distribution and Correlation use every row by default. On very large datasets, set a threshold
-to analyze a sample instead. Data Quality is the exception: it does not read
-`sampling_threshold`, because its plan already chooses between metadata, a
-seeded sample of a stated size, and a full scan, and says what each will read
-before it runs.
+Describe, Distribution and Correlation read tables of up to 100,000 rows
+in full by default. Larger tables use a sample of 100,000 rows spread across
+the dataset. The result title shows the sample size and total row count.
+
+| Key | Action |
+|---|---|
+| <kbd>r</kbd> | Draw another sample |
+| <kbd>a</kbd> | Read every row after confirming the count |
+| <kbd>Esc</kbd> | Cancel a run in progress |
+
+| View | Sampling method | What gets read |
+|---|---|---|
+| One unfiltered Parquet or IPC file | 50 runs of rows at seeded positions | Row groups containing those runs |
+| A directory, filtered view, query or other format | Seeded uniform sample retained from a streaming pass | Every row once, while keeping only the sample |
+
+Analysis omits the view's sort because these statistics do not depend on row
+order. A cancelled full read may still be finishing in the background; another
+full read is unavailable until it finishes.
 
 ```toml
 [performance]
-sampling_threshold = 1000000   # sample when a table has this many rows or more
+analysis_sample_rows = 100000   # 0 reads every row of every table
 ```
 
-or `--sampling-threshold 1000000` for one run (`0` forces the full dataset).
-When a result is sampled the tool says so, and <kbd>r</kbd> draws a new sample.
-This setting applies to Describe, Distribution and Correlation. Data Quality
-uses its own compute budget instead.
+or `--sample-rows N` for one run. Data Quality does not use this setting: its
+plan chooses between metadata, a seeded sample of a stated size and a full
+scan, and says what each will read before it runs.

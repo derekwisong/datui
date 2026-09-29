@@ -34,7 +34,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--clear-cache` | Clear all cache data and exit |
 | `--template <NAME>` | Apply a saved view by name when starting the application |
 | `--remove-templates` | Remove all saved views and exit |
-| `--sampling-threshold <N>` | Sample datasets with this many or more rows for analysis — faster, less memory (default: [performance] sampling_threshold in config, else the full dataset). 0 disables sampling for this run |
+| `--sample-rows <N>` | Rows an analysis samples from a larger table, spread across all of it (default: [performance] analysis_sample_rows, 100000). 0 reads every row |
 | `--polars-streaming[=<BOOL>]` | Use the Polars streaming engine where available (default: true) |
 | `--pages-lookahead <N>` | Pages to buffer ahead of the visible area (default: 3). More is smoother scrolling, more memory |
 | `--pages-lookback <N>` | Pages to buffer behind the visible area (default: 3). More is smoother scrolling, more memory |

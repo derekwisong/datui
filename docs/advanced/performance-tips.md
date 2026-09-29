@@ -9,19 +9,24 @@ the full input. Lazy loading does not make every operation fit in memory.
 | Browse a large dataset | Prefer Parquet: types and row counts are stored in footers, and data is read in row groups |
 | Open local partitions | Pass the directory, such as `datui ./events/`, to use datui's schema union and file metadata |
 | Pivot a large table | Filter first; pivot reads all affected rows to discover the output columns |
-| Analyze many rows | Set a sampling threshold for Describe, Distribution and Correlation |
+| Analyze many rows | Use the sample-size setting for Describe, Distribution and Correlation |
 | Chart many rows | Filter or aggregate first, then check **Limit Rows**; the default is 10,000 |
 | Open compressed CSV | Put `--temp-dir` on a disk with room for the uncompressed file |
 
 ## Sample deliberately
 
+Describe, Distribution and Correlation use up to 100,000 rows by default.
+For a larger table, the sample is spread across the dataset. An unfiltered
+Parquet or IPC file uses selected ranges; other views stream the data while
+keeping a bounded sample. See [sampling](../user-guide/analysis-features.md#sampling).
+
 ```bash
-datui --sampling-threshold 1000000 events.parquet
+datui --sample-rows 50000 events.parquet
 ```
 
-This enables sampling for the three statistical tools at the threshold.
-`0` forces the full dataset. [Data Quality](../user-guide/data-quality.md)
-has its own plan, sample budget and scope.
+Use `--sample-rows 0` to analyze every row, or press <kbd>a</kbd> on a sampled
+result and confirm. <kbd>Esc</kbd> cancels a run.
+[Data Quality](../user-guide/data-quality.md) has separate scope and sample budgets.
 
 Chart **Limit Rows** caps input rows; it does not produce a representative
 random sample. For a time series, aggregate the whole period before charting

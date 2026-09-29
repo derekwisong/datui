@@ -29,7 +29,22 @@ fn test_distribution_detection(column_name: &str, expected_type: DistributionTyp
         polars_streaming: true,
     };
 
-    let results = compute_statistics_with_options(&lf, Some(10000), 42, options)?;
+    // The answer is the column's, not the sample's: three seeds, one verdict. A
+    // detector that flips between draws of the same data says more about the draw.
+    for seed in [42, 7, 99] {
+        detect_with_seed(&lf, column_name, expected_type, seed, options)?;
+    }
+    Ok(())
+}
+
+fn detect_with_seed(
+    lf: &LazyFrame,
+    column_name: &str,
+    expected_type: DistributionType,
+    seed: u64,
+    options: ComputeOptions,
+) -> Result<()> {
+    let results = compute_statistics_with_options(lf, Some(10000), seed, options)?;
 
     // Find the column statistics for our test column
     let col_stat = results
@@ -48,7 +63,7 @@ fn test_distribution_detection(column_name: &str, expected_type: DistributionTyp
     assert_eq!(
         dist_info.distribution_type,
         expected_type,
-        "Distribution detection failed for {}: expected {:?}, got {:?} (confidence: {:.3}, fit_quality: {:.3})",
+        "Distribution detection failed for {} (seed {seed}): expected {:?}, got {:?} (confidence: {:.3}, fit_quality: {:.3})",
         column_name,
         expected_type,
         dist_info.distribution_type,

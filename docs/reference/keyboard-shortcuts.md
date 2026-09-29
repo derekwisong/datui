@@ -179,8 +179,9 @@ In the chart export dialog:
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
 | <kbd>Enter</kbd> | Run the highlighted tool, or open the detail of a column or a correlation pair |
 | <kbd>s</kbd> | In the distribution detail, toggle the histogram between linear and log |
-| <kbd>r</kbd> | Redraw a sample when sampling is on (from the main analysis view, not inside a detail) |
-| <kbd>Esc</kbd> | Back one level |
+| <kbd>r</kbd> | On a sampled result, draw another sample (from the main analysis view, not inside a detail) |
+| <kbd>a</kbd> | On a sampled result, read every row instead, after confirming |
+| <kbd>Esc</kbd> | Cancel a run in progress; otherwise back one level |
 
 In Data Quality:
 

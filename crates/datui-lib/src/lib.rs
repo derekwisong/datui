@@ -6894,6 +6894,11 @@ impl App {
         self.flash = Some(Flash::new(message));
     }
 
+    /// The completion flash on the control bar, if one is showing.
+    pub fn flash_message(&self) -> Option<&str> {
+        self.flash.as_ref().map(|f| f.message.as_str())
+    }
+
     /// Drop an expired flash. Returns true when the frame must redraw.
     pub fn tick_flash(&mut self) -> bool {
         if self.flash.as_ref().is_some_and(Flash::expired) {

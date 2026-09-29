@@ -9987,8 +9987,7 @@ impl App {
         .map_err(|e| color_eyre::eyre::eyre!("Object store config failed: {}", e))
     }
 
-    /// Human-readable byte size for download confirmation modal.
-    #[cfg(any(feature = "http", feature = "cloud"))]
+    /// Human-readable byte size, for the download confirmation and the load's progress.
     fn format_bytes(n: u64) -> String {
         const KB: u64 = 1024;
         const MB: u64 = KB * 1024;

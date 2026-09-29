@@ -181,9 +181,11 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             ("Enter", "Select"),
         ]
     };
-    // Which rows: the shared sample, for any tool on its main view.
+    // Which rows: the shared sample, for any tool on its main view. Second, right
+    // after the way out: the bar keeps its leading chips, and a sample the bar
+    // never names is a feature nobody finds.
     if modal.view == crate::analysis_modal::AnalysisView::Main && modal.selected_tool.is_some() {
-        pairs.push(("s", "Sample"));
+        pairs.insert(1, ("s", "Sample"));
     }
     // On a sample: another one, or every row.
     if modal.view == crate::analysis_modal::AnalysisView::Main
@@ -271,6 +273,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("?", "Help"),
         ],
         QualityPage::Segments => vec![
+            ("s", "Sample"),
             ("[ ]", "Column"),
             ("m", "Metric"),
             ("b", "Baseline"),
@@ -279,6 +282,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Back"),
         ],
         QualityPage::Trends => vec![
+            ("s", "Sample"),
             ("[ ]", "Column"),
             ("m", "Metric"),
             ("1-4", "Page"),
@@ -288,14 +292,17 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         page => {
             // Enter leads: the bar is cut from the right, and opening a finding is
             // what these pages are for. The page already shown needs no chip.
-            let mut keys = vec![(
-                "Enter",
-                if page == QualityPage::Overview {
-                    "Details"
-                } else {
-                    "Inspect"
-                },
-            )];
+            let mut keys = vec![
+                (
+                    "Enter",
+                    if page == QualityPage::Overview {
+                        "Details"
+                    } else {
+                        "Inspect"
+                    },
+                ),
+                ("s", "Sample"),
+            ];
             keys.extend(
                 [
                     ("1", "Overview", QualityPage::Overview),
@@ -309,7 +316,6 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             );
             keys.extend([
                 ("e", "Plan"),
-                ("s", "Sample"),
                 ("Tab", "Focus"),
                 ("?", "Help"),
                 // Every other page carries it; the overview is not the one place

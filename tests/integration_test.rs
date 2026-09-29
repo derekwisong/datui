@@ -1919,6 +1919,19 @@ fn one_sample_serves_every_analysis_tool() {
     run(&mut app, next);
     key(&mut app, KeyCode::Tab);
 
+    // The bar names the key at the baseline width, or the sample is a feature
+    // nobody finds.
+    let narrow = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(narrow);
+    app.render(narrow, &mut buffer);
+    let bar: String = (0..narrow.width)
+        .map(|x| buffer[(x, narrow.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Sample"),
+        "s Sample on the bar at 80 columns: {bar}"
+    );
+
     // Esc discards the form's edits.
     key(&mut app, KeyCode::Char('s'));
     key(&mut app, KeyCode::Down);
@@ -1968,6 +1981,15 @@ fn one_sample_serves_every_analysis_tool() {
     );
     let quality = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(quality.total_rows, Some(100));
+    let mut buffer = Buffer::empty(narrow);
+    app.render(narrow, &mut buffer);
+    let bar: String = (0..narrow.width)
+        .map(|x| buffer[(x, narrow.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Sample"),
+        "s Sample on the Data Quality bar at 80 columns: {bar}"
+    );
 }
 
 /// A plan that needs a run is a form the user answers with Enter, which only the

@@ -5445,6 +5445,8 @@ pub enum WhatEnter {
     FoldsSection,
     /// Show the rest of `RECENT`.
     ShowsMore,
+    /// Show the files datui cannot open, as `Ctrl+A` does.
+    ShowsHidden,
     /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
     /// browse and says so.
     Explains,
@@ -5472,6 +5474,7 @@ impl App {
             }
             Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
+            Some(home::Row::Hidden { .. }) => return WhatEnter::ShowsHidden,
             None => return WhatEnter::Explains,
             // The door reads the directory it names whatever that directory is labelled —
             // the lake tables included, which is the one row that reads them at all.
@@ -5626,9 +5629,9 @@ impl ErrorModal {
 
 /// A completion flash (the Feedback rules' second rung): one plain sentence on
 /// the control bar, cleared by the next keypress or after two seconds,
-/// whichever comes first. The home screen's status line is the key-cleared
-/// variant of the same idea, kept separate because a home status (a load
-/// error's reason) must survive until it is read.
+/// whichever comes first. Every screen's completions go here, the home screen's
+/// included. The home screen's own status line beside the filter is for what a
+/// key could not do and why, which has to survive until it is read.
 pub struct Flash {
     pub message: String,
     expires: std::time::Instant,
@@ -8863,6 +8866,7 @@ impl App {
                 home::Row::Header { .. }
                 | home::Row::Place { .. }
                 | home::Row::More { .. }
+                | home::Row::Hidden { .. }
                 | home::Row::Door { .. } => false,
             }) {
                 self.home.selected = idx;
@@ -8988,7 +8992,7 @@ impl App {
                 _ => Some(entry.path.clone()),
             },
             home::Row::Header { section, .. } => self.home.sections.get(section)?.root.clone(),
-            home::Row::More { .. } => None,
+            home::Row::More { .. } | home::Row::Hidden { .. } => None,
         }
     }
 
@@ -9047,7 +9051,7 @@ impl App {
             self.cache.forget_place(place);
         }
         let verb = if keep { "Remembered" } else { "Forgot" };
-        self.home.status = Some(format!("{verb} {}", home::display_path(place)));
+        self.flash_note(format!("{verb} {}", home::display_path(place)));
         self.home_refresh();
     }
 
@@ -9393,6 +9397,18 @@ impl App {
             // The rest of `RECENT`, for the session.
             Some(home::Row::More { .. }) => {
                 self.home.recent_expanded = true;
+                return None;
+            }
+            // What Ctrl+A shows. The cursor goes to the first of them, where the row
+            // that stood for them was.
+            Some(home::Row::Hidden { .. }) => {
+                self.home.hide_unreadable = false;
+                if let Some(idx) = self.home.visible().iter().position(|row| {
+                    matches!(row, home::Row::Entry { entry, .. }
+                        if entry.kind == discover::EntryKind::Other)
+                }) {
+                    self.home.selected = idx;
+                }
                 return None;
             }
             _ => {}
@@ -9939,10 +9955,10 @@ impl App {
             KeyCode::Char('a') if ctrl => {
                 let on = self.home.selected_key();
                 self.home.hide_unreadable = !self.home.hide_unreadable;
-                self.home.status = Some(if self.home.hide_unreadable {
-                    "Hiding files datui cannot read".to_string()
+                self.flash_note(if self.home.hide_unreadable {
+                    "Hiding files datui can't open".to_string()
                 } else {
-                    "Showing all files".to_string()
+                    "Showing files datui can't open".to_string()
                 });
                 // The same row where it is still there; the cursor stays put otherwise.
                 self.home.reselect(on);
@@ -16196,7 +16212,10 @@ impl App {
                 if *candidates == 0 {
                     self.home.status = Some("No such path".to_string());
                 } else {
-                    self.home.status = (*candidates > 1).then(|| format!("{candidates} matches"));
+                    self.home.status = None;
+                    if *candidates > 1 {
+                        self.flash_note(format!("{candidates} matches"));
+                    }
                     self.home.path_input = completed.clone();
                 }
                 None

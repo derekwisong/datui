@@ -7403,22 +7403,15 @@ fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
     app.event(&ctrl('d'));
     assert!(kept(&cache, &here), "{:?}", cache.load_remembered_places());
     assert!(
-        app.home
-            .status
-            .as_deref()
+        app.flash_message()
             .is_some_and(|s| s.starts_with("Remembered")),
         "{:?}",
-        app.home.status
+        app.flash_message()
     );
 
     app.event(&ctrl('d'));
     assert!(!kept(&cache, &here), "a second press forgets it");
-    assert!(
-        app.home
-            .status
-            .as_deref()
-            .is_some_and(|s| s.starts_with("Forgot"))
-    );
+    assert!(app.flash_message().is_some_and(|s| s.starts_with("Forgot")));
 
     let row = app
         .home
@@ -7534,6 +7527,45 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
         "forgotten: {:?}",
         cache.load_remembered_places()
     );
+}
+
+/// Inside a directory of notes the one row says what is hidden and the bar offers to
+/// show it. Enter does, and Ctrl+A hides them again with a flash on the bar rather than
+/// a line beside the filter that outlives it.
+#[test]
+fn test_enter_on_the_hidden_row_shows_the_files() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for i in 0..3 {
+        std::fs::write(tmp.path().join(format!("note{i}.md")), b"x").unwrap();
+    }
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    app.home.select_first_entry();
+
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(screen.contains("3 files datui can't open"), "{screen:?}");
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("Show"), "{bar:?}");
+
+    app.event(&key(KeyCode::Enter));
+    assert!(!app.home.hide_unreadable);
+    assert!(matches!(
+        app.home.selected_row(),
+        Some(datui::home::Row::Entry { entry, .. }) if entry.name == "note0.md"
+    ));
+
+    app.event(&ctrl('a'));
+    assert!(app.home.hide_unreadable);
+    assert_eq!(app.home.status, None);
+    assert_eq!(app.flash_message(), Some("Hiding files datui can't open"));
 }
 
 /// `Enter` and `→` on the place of a recent opened over HTTP say why they do nothing,
@@ -9544,8 +9576,8 @@ fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
 /// Spark and GBIF both write part files with no extension. `occurrence.parquet/000001` is
 /// read by its directory's name; the same files under a directory named anything else
 /// were not data at all as far as datui was concerned — nothing listed them and nothing
-/// opened them. The bytes say what the names do not, and they are asked once, of the
-/// directory somebody is opening, never of a directory somebody is looking at.
+/// opened them. The bytes say what the names do not. On a local disk a listing asks them
+/// too, a few bytes a file, so the row agrees with the open.
 #[test]
 fn test_a_directory_of_files_written_without_extensions_still_opens() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -9558,11 +9590,11 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
             .unwrap();
     }
 
-    // The names settle nothing, so the directory is a place to look inside.
+    // No name in there says data, and the signatures do.
     assert_eq!(
         datui::discover::classify_directory(&parts),
-        datui::discover::EntryKind::Directory,
-        "no name in there says data"
+        datui::discover::EntryKind::MultiFile,
+        "the bytes say one Parquet table"
     );
 
     // And the read finds them anyway.

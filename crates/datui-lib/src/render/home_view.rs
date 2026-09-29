@@ -598,6 +598,9 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     *hidden, *places, selected, name_width, show_meta, ctx,
                 ));
             }
+            crate::home::Row::Hidden { count, .. } => {
+                lines.push(hidden_line(*count, selected, name_width, show_meta, ctx));
+            }
         }
     }
 
@@ -717,6 +720,38 @@ fn more_line(
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
+    let text = format!(
+        "{} {hidden} more in {places} {}",
+        glyphs::get().ellipsis,
+        if places == 1 { "place" } else { "places" }
+    );
+    note_row(text, selected, name_width, show_meta, ctx)
+}
+
+/// The row that stands for files datui cannot open, hidden inside a browsed directory.
+fn hidden_line(
+    count: usize,
+    selected: bool,
+    name_width: usize,
+    show_meta: bool,
+    ctx: &RenderContext,
+) -> Line<'static> {
+    let text = format!(
+        "{} {count} {} datui can't open",
+        glyphs::get().ellipsis,
+        if count == 1 { "file" } else { "files" }
+    );
+    note_row(text, selected, name_width, show_meta, ctx)
+}
+
+/// A dimmed row that stands for rows not drawn, to the same edge as the entries.
+fn note_row(
+    text: String,
+    selected: bool,
+    name_width: usize,
+    show_meta: bool,
+    ctx: &RenderContext,
+) -> Line<'static> {
     let g = glyphs::get();
     let width = row_width(name_width, show_meta);
     let marker = if selected {
@@ -729,11 +764,6 @@ fn more_line(
     } else {
         Style::default()
     };
-    let text = format!(
-        "{} {hidden} more in {places} {}",
-        g.ellipsis,
-        if places == 1 { "place" } else { "places" }
-    );
     let pad = width.saturating_sub(marker.chars().count() + text.chars().count() + 1);
     Line::from(vec![
         Span::styled(
@@ -1536,6 +1566,46 @@ fn looking_glyph(app: &crate::App, entry: &Entry) -> Option<&'static str> {
     })
 }
 
+/// What a row is, in words, for the pane's `kind` line. The list's labels are terse
+/// because they share a row with the name (`dir`, `mixed`, `12 parquet`); the pane has
+/// the room to say it, and what is inside goes on the `contains` line.
+fn kind_words(
+    entry: &Entry,
+    place_kind: Option<&'static str>,
+    looking: Option<crate::home::CloudLook>,
+) -> String {
+    // The door into this directory is an action, not a thing: see
+    // `Entry::opens_whole_directory`. Its name and the line under the facts say it.
+    if entry.opens_whole_directory {
+        return String::new();
+    }
+    match entry.kind {
+        EntryKind::File => match crate::FileFormat::from_path(&entry.path) {
+            Some(format) => format!("{} file", format.name()),
+            // Named nothing, and found by its bytes to be data.
+            None => "data file".to_string(),
+        },
+        EntryKind::Other => "file datui can't open".to_string(),
+        EntryKind::Hive => "hive table".to_string(),
+        EntryKind::MultiFile => "multi-file table".to_string(),
+        k if k.is_lake_table() => {
+            format!("{} table", k.lake_name().unwrap_or_default().to_lowercase())
+        }
+        EntryKind::Directory => match place_kind {
+            Some(curated) => curated.to_string(),
+            None if looking == Some(crate::home::CloudLook::Failed) => {
+                "? (could not look inside; Ctrl+R tries again)".to_string()
+            }
+            // Nothing to say yet; the row's spinner says it is being found out.
+            None if looking.is_some() => String::new(),
+            None => crate::home::object_place_label(&entry.path)
+                .unwrap_or("directory")
+                .to_string(),
+        },
+        _ => String::new(),
+    }
+}
+
 /// The name, the path, and everything known about the dataset.
 ///
 /// Split out from the pane so it can be checked without an application behind it.
@@ -1562,15 +1632,15 @@ fn preview_head(
         )),
     ];
 
-    // One list. The split into "what it costs" and "what it is" was a distinction
-    // the reader has to be told about; these are all just details of the same thing,
-    // and a person scanning them does not need them sorted into camps.
-    //
-    // Ordered by what decides whether to press Enter: where it lives, what it holds,
-    // what reading it will take, and when it last changed.
+    // One list, in the order a sidebar reads: what it is, where it lives, what is in
+    // it, what reading it will take, and when it last changed.
     let mut facts: Vec<(&str, String, Style)> = Vec::new();
     let plain = Style::default().fg(ctx.text_secondary);
 
+    let kind = kind_words(entry, place_kind, looking);
+    if !kind.is_empty() {
+        facts.push(("kind", kind, plain));
+    }
     if let Some(source) = entry
         .cost
         .source
@@ -1587,43 +1657,31 @@ fn preview_head(
             crate::locality::Locality::Memory => Style::default().fg(ctx.success),
             _ => plain,
         };
-        facts.push(("source", source.label().to_string(), style));
+        facts.push(("storage", source.label().to_string(), style));
     }
-    let described = entry.label();
-    let kind = match entry.kind {
-        // The door into this directory carries no label, and none of the words that stand
-        // in for one: see `Entry::opens_whole_directory`. Ahead of the arm below, which
-        // reaches for the place word before it ever consults the label.
-        _ if entry.opens_whole_directory => "",
-        // The same order the row takes: the curated word, a count, then what stands
-        // in while a directory in a bucket is looked into, then the bucket's word.
-        EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
-            (Some(curated), _) => curated,
-            (None, false) => described.as_ref(),
-            // Nothing to say yet; the row's spinner says it is being found out.
-            (None, true) if looking == Some(crate::home::CloudLook::Failed) => {
-                "? (could not look inside; Ctrl+R tries again)"
+    // What there is to open inside. Without the partition count when the `partitions`
+    // fact below carries one: they count the same thing under different caps, and two
+    // adjacent numbers that ought to agree and do not are worse than one.
+    //
+    // A directory that was looked into and holds nothing to open says so, rather than
+    // leaving the reader to wonder whether anything was looked at.
+    match entry.holds.line(entry.cost.partitions.is_none()) {
+        // One part to a line, under the one label: joined, `1 parquet · 1 csv · 1
+        // directory` broke in the middle of a count at the pane's width.
+        Some(line) => {
+            for (i, part) in line.split(" · ").enumerate() {
+                let key = if i == 0 { "contains" } else { "" };
+                facts.push((key, part.to_string(), plain));
             }
-            (None, true) if looking.is_some() => "",
-            (None, true) => {
-                crate::home::object_place_label(&entry.path).unwrap_or(described.as_ref())
-            }
-        },
-        _ => described.as_ref(),
-    };
-    if !kind.is_empty() {
-        facts.push(("kind", kind.to_string(), plain));
-    }
-    // What one listing of it found, when that is more than the label already said. A
-    // directory of one format with nothing else in it boils down to itself, and printing
-    // `kind  12 parquet` above `holds  12 parquet` says it twice.
-    // Without the partition count when the `partitions` fact below carries one: they
-    // count the same thing under different caps — five thousand entries here against
-    // five hundred and twelve there — and two adjacent numbers that ought to agree and
-    // do not are worse than one.
-    let line = entry.holds.line(entry.cost.partitions.is_none());
-    if let Some(line) = line.filter(|line| line != kind) {
-        facts.push(("holds", line, plain));
+        }
+        None if entry.kind == EntryKind::Directory
+            && place_kind.is_none()
+            && looking.is_none()
+            && !entry.opens_whole_directory =>
+        {
+            facts.push(("contains", "no data files".to_string(), plain));
+        }
+        None => {}
     }
     if let Some(rows) = entry.rows {
         facts.push(("rows", discover::format_rows(rows), plain));
@@ -1638,16 +1696,18 @@ fn preview_head(
     if let Some(uncompressed) = entry.cost.uncompressed {
         // The one number nothing else here implies: 200 MB of zstd Parquet is two
         // gigabytes once it is open.
-        let mut text = discover::format_size(uncompressed);
-        match (ratio_of(entry.size, Some(uncompressed)), &entry.cost.codec) {
-            (Some(r), Some(codec)) => text.push_str(&format!("  {codec} {r:.1}{}", g.times)),
-            (None, Some(codec)) => text.push_str(&format!("  {codec}")),
-            (Some(r), None) => text.push_str(&format!("  {r:.1}{}", g.times)),
-            (None, None) => {}
-        }
-        facts.push(("in memory", text, Style::default().fg(ctx.float_col)));
-    } else if let Some(codec) = &entry.cost.codec {
-        facts.push(("codec", codec.clone(), plain));
+        facts.push((
+            "in memory",
+            discover::format_size(uncompressed),
+            Style::default().fg(ctx.float_col),
+        ));
+    }
+    let ratio = ratio_of(entry.size, entry.cost.uncompressed).map(|r| format!("{r:.1}{}", g.times));
+    match (&entry.cost.codec, ratio) {
+        (Some(codec), Some(r)) => facts.push(("compression", format!("{codec}, {r}"), plain)),
+        (Some(codec), None) => facts.push(("compression", codec.clone(), plain)),
+        (None, Some(r)) => facts.push(("compression", r, plain)),
+        (None, None) => {}
     }
     if let Some(groups) = entry.cost.row_groups {
         // One enormous row group cannot be read in parallel or skipped through; a
@@ -1677,7 +1737,7 @@ fn preview_head(
             } else {
                 format!("{first} to {last}")
             };
-            facts.push(("", format!("{key} {range}"), plain));
+            facts.push(("range", format!("{key} {range}"), plain));
         }
     }
     if let Some(modified) = entry.modified {
@@ -1775,6 +1835,16 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             .render(area, buf);
         return;
     }
+    if let Some(crate::home::Row::Hidden { section, count }) = app.home.selected_row() {
+        let names: Vec<&str> = app.home.sections[section]
+            .rows
+            .iter()
+            .filter(|row| row.kind == EntryKind::Other)
+            .map(|row| row.name.as_str())
+            .collect();
+        Paragraph::new(hidden_details(&names, count, area.height as usize, ctx)).render(area, buf);
+        return;
+    }
     let Some(entry) = app.home.selected_entry() else {
         return;
     };
@@ -1866,6 +1936,11 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // to be lost.
             let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
             let note = match entry.kind {
+                // The door itself. It is the row the other notes point at, so it says
+                // what it does rather than where to find it.
+                k if entry.opens_whole_directory && k.is_lake_table() => DOOR_OF_A_LAKE_TABLE,
+                EntryKind::Hive if entry.opens_whole_directory => DOOR_OF_A_HIVE_TABLE,
+                _ if entry.opens_whole_directory => THE_DOOR,
                 // Where the other door is. A directory datui will not read as one table
                 // is the row a new user is most likely to be stuck on — the label says
                 // what is in there, Enter steps into it, and nothing until now said that
@@ -1877,9 +1952,10 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
-                _ if crate::home::is_object_store_url(&entry.path) => "Read when opened.",
                 _ if reading => "Reading...",
-                _ => "Schema needs a full read.",
+                // Only Parquet says its columns without being read; everything else is
+                // read when it is opened, which is nothing to warn about.
+                _ => "Columns are read when opened.",
             };
             if !note.is_empty() {
                 lines.push(Line::from(Span::styled(
@@ -1906,10 +1982,72 @@ const INSIDE_AND_THE_DOOR: &str = "Enter steps in; the first row inside opens al
 /// The same, for a lake table, whose files are not its rows.
 const INSIDE_A_LAKE_TABLE: &str = "Enter steps in; the first row reads its files, not the table.";
 
+/// What the pane says on the `(all files)` row itself.
+const THE_DOOR: &str = "Enter reads every file here as one table.";
+
+/// The same, in a hive directory.
+const DOOR_OF_A_HIVE_TABLE: &str = "Enter reads every partition as one table.";
+
+/// The same, in a lake table, whose log decides which files are live.
+const DOOR_OF_A_LAKE_TABLE: &str = "Enter reads the files, ignoring the table's log.";
+
 /// Every sentence the pane offers as guidance, for the test that reads them.
 #[cfg(test)]
-fn guidance_notes() -> [&'static str; 2] {
-    [INSIDE_AND_THE_DOOR, INSIDE_A_LAKE_TABLE]
+fn guidance_notes() -> [&'static str; 5] {
+    [
+        INSIDE_AND_THE_DOOR,
+        INSIDE_A_LAKE_TABLE,
+        THE_DOOR,
+        DOOR_OF_A_HIVE_TABLE,
+        DOOR_OF_A_LAKE_TABLE,
+    ]
+}
+
+/// The pane for the row standing in for hidden files: which files they are, as many
+/// as fit, so the count is never all there is to go on.
+fn hidden_details(
+    names: &[&str],
+    count: usize,
+    height: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let g = glyphs::get();
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "Hidden files".to_string(),
+            Style::default()
+                .fg(ctx.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "{count} {} datui has no reader for",
+                if count == 1 { "file" } else { "files" }
+            ),
+            Style::default().fg(ctx.dimmed),
+        )),
+        Line::from(""),
+    ];
+    // The rows left, less one for the `… N more` line when not all of them fit.
+    let room = height.saturating_sub(lines.len());
+    let shown = if names.len() > room {
+        room.saturating_sub(1)
+    } else {
+        names.len()
+    };
+    for name in &names[..shown] {
+        lines.push(Line::from(Span::styled(
+            name.to_string(),
+            Style::default().fg(ctx.text_secondary),
+        )));
+    }
+    if shown < names.len() {
+        lines.push(Line::from(Span::styled(
+            format!("{} {} more", g.ellipsis, names.len() - shown),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    lines
 }
 
 /// The pane for a place under `RECENT`: what it is, where, and how many recents it
@@ -1922,9 +2060,15 @@ fn place_details(
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
     let plain = Style::default().fg(ctx.text_secondary);
+    // Named like any row: its last component, or the whole of it at a root or a
+    // bucket, which have none.
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| crate::home::display_path(path));
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            "place".to_string(),
+            name,
             Style::default()
                 .fg(ctx.text_primary)
                 .add_modifier(Modifier::BOLD),
@@ -1943,9 +2087,9 @@ fn place_details(
             crate::locality::Locality::Memory => Style::default().fg(ctx.success),
             _ => plain,
         };
-        facts.push(("source", source.label().to_string(), style));
+        facts.push(("storage", source.label().to_string(), style));
     }
-    facts.push(("recents", held.to_string(), plain));
+    facts.push(("opened here", held.to_string(), plain));
     let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
     for (key, value, style) in facts {
         lines.push(fact_line(key, value, key_w, style, ctx));
@@ -2216,8 +2360,8 @@ mod tests {
     }
 
     /// And the pane beside it agrees: no kind while it is being looked into, `?` with
-    /// why when looking failed, `dir` once nothing was counted, the count when there is
-    /// one.
+    /// why when looking failed, `directory` once it has been, and the count on the
+    /// `contains` line when there is one.
     #[test]
     fn the_pane_calls_a_cloud_directory_what_the_row_calls_it() {
         use crate::home::CloudLook;
@@ -2246,14 +2390,18 @@ mod tests {
         let failed = kind_line(&pane(&directory, Some(CloudLook::Failed))).expect("a kind");
         assert!(failed.contains("could not look inside"), "{failed}");
         let looked = kind_line(&pane(&directory, None)).expect("a kind");
-        assert!(looked.trim_end().ends_with("dir"), "{looked}");
+        assert!(looked.trim_end().ends_with("directory"), "{looked}");
 
         directory.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 12)],
             ..Default::default()
         };
-        let counted = kind_line(&pane(&directory, None)).expect("a kind");
-        assert!(counted.contains("12 parquet"), "{counted}");
+        let lines = pane(&directory, None);
+        let contains = lines
+            .iter()
+            .find(|l| l.trim_start().starts_with("contains"))
+            .expect("a contains line");
+        assert!(contains.contains("12 parquet"), "{contains}");
     }
 
     /// A row count that is out of reach says `?`. A directory that is not one table has
@@ -2993,12 +3141,20 @@ mod tests {
             "the label and the line are the same words: {text}"
         );
 
-        // With anything else beside them the line says more than the label, and both
-        // belong.
+        // With anything else beside them the line carries that too.
         entry.holds.directories = 3;
         let text = preview_text(&entry, 60);
-        assert!(text.contains("holds"), "{text}");
+        assert!(text.contains("contains"), "{text}");
         assert!(text.contains("3 directories"), "{text}");
+
+        // Files datui cannot open are not counted here: inside, a row says so.
+        entry.holds = crate::discover::Holds {
+            not_read: 10,
+            ..Default::default()
+        };
+        let text = preview_text(&entry, 60);
+        assert!(!text.contains("10"), "{text}");
+        assert!(text.contains("no data files"), "{text}");
     }
 
     #[test]

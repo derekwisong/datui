@@ -11,7 +11,8 @@ Navigation:
   Enter:            What the control bar says on this row: "Open all" reads a
                     whole directory as one table, "Inside" steps into it,
                     "Open" loads a file, "Look" finds out first. On a section
-                    header, fold or unfold it; on the More row, show the rest
+                    header, fold or unfold it; on the More row, show the rest;
+                    on the hidden-files row, show them
   Backspace:        Delete a filter character; on an empty filter, up a
                     level (from a bucket, back to its cloud source)
   Tab:              Cycle the sort; the control bar names the order in effect
@@ -54,9 +55,9 @@ Reading a row:
   directory with something openable, the first row is "(all files)" — or
   "(all partitions)" in a hive directory — and Enter there reads the whole
   directory as one table whatever the label says. The row hides while a
-  filter is typed, and is absent when nothing inside is openable. The
-  details pane carries the full tally, and the Notes tab says what a read
-  had to decide.
+  filter is typed, and is absent when nothing inside is openable. Inside a
+  directory, the last row counts the files datui can't open; Enter on it
+  shows them. The Notes tab says what a read had to decide.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)

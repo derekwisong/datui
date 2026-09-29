@@ -302,10 +302,12 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     // the two differ on the directory that most needs the door: Spark and GBIF write part
     // files with no extension, no name in there says data, so nothing is listed — and a
     // guard on the rows alone made that directory a dead end, nothing listed and no way
-    // to read it, though the open reads it by its bytes perfectly well. Files nothing
-    // could name count here for that reason, and so do subdirectories, whose data is a
-    // level down.
-    if rows.is_empty() && holds_nothing_to_open(&holds) {
+    // to read it, though the open reads it by its bytes perfectly well. Files with no
+    // extension count here for that reason, and so do subdirectories, whose data is a
+    // level down. A file whose extension no reader takes does not: a directory of notes
+    // has nothing for the door to read.
+    let openable_row = rows.iter().any(|r| r.kind != EntryKind::Other);
+    if !openable_row && holds_nothing_to_open(&holds) {
         return None;
     }
     // What the row says it opens, not whether it opens: a hive directory is read through
@@ -357,7 +359,7 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
 /// promise nothing keeps. One function, or the two drift and the sentence outlives the
 /// row it points at.
 pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
-    holds.formats.is_empty() && holds.directories == 0 && holds.not_read == 0
+    holds.formats.is_empty() && holds.directories == 0 && holds.unnamed == 0
 }
 
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.
@@ -749,6 +751,10 @@ pub enum Row<'a> {
         hidden: usize,
         places: usize,
     },
+    /// The last row inside a browsed directory whose files datui cannot read are
+    /// hidden: `… 10 files datui can't open`. Without it a directory of notes looks
+    /// empty, or broken. `Enter` shows them, as `Ctrl+A` does.
+    Hidden { section: usize, count: usize },
 }
 
 impl Row<'_> {
@@ -758,7 +764,8 @@ impl Row<'_> {
             | Row::Entry { section, .. }
             | Row::Door { section, .. }
             | Row::Place { section, .. }
-            | Row::More { section, .. } => *section,
+            | Row::More { section, .. }
+            | Row::Hidden { section, .. } => *section,
         }
     }
 }
@@ -802,6 +809,7 @@ pub enum RowKey {
     Door(PathBuf),
     Place(PathBuf),
     More(String),
+    Hidden(String),
 }
 
 /// Home screen state.
@@ -1961,6 +1969,7 @@ impl HomeState {
         Some(match self.selected_row()? {
             Row::Header { section, .. } => RowKey::Header(title(section)?),
             Row::More { section, .. } => RowKey::More(title(section)?),
+            Row::Hidden { section, .. } => RowKey::Hidden(title(section)?),
             Row::Entry { entry, .. } => RowKey::Entry(entry.path.clone()),
             Row::Door { entry, .. } => RowKey::Door(entry.path.clone()),
             Row::Place { path, .. } => RowKey::Place(path),
@@ -1985,7 +1994,8 @@ impl HomeState {
             (Row::Door { entry, .. }, RowKey::Door(path)) => entry.path == *path,
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
             (Row::Header { section, .. }, RowKey::Header(title))
-            | (Row::More { section, .. }, RowKey::More(title)) => self
+            | (Row::More { section, .. }, RowKey::More(title))
+            | (Row::Hidden { section, .. }, RowKey::Hidden(title)) => self
                 .sections
                 .get(*section)
                 .is_some_and(|s| s.title == *title),
@@ -2570,7 +2580,24 @@ impl HomeState {
             // directory was a dead end that the open could have read.
             let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
             let has_door = section.door.is_some() && self.filter.is_empty();
-            if matched.is_empty() && !has_door && !(keep_empty && self.filter.is_empty()) {
+            // Only inside a directory, where the listing is the whole screen and an
+            // empty one needs saying why. The root listing's sections leave them out
+            // quietly, as they always have.
+            let hidden =
+                if self.browsing.is_some() && self.hide_unreadable && self.filter.is_empty() {
+                    section
+                        .rows
+                        .iter()
+                        .filter(|row| row.kind == EntryKind::Other)
+                        .count()
+                } else {
+                    0
+                };
+            if matched.is_empty()
+                && !has_door
+                && hidden == 0
+                && !(keep_empty && self.filter.is_empty())
+            {
                 continue;
             }
 
@@ -2643,6 +2670,12 @@ impl HomeState {
                     entry,
                     nested: false,
                 }));
+            }
+            if hidden > 0 {
+                out.push(Row::Hidden {
+                    section: si,
+                    count: hidden,
+                });
             }
         }
         out
@@ -3141,6 +3174,8 @@ impl HomeState {
         self.selected = rows
             .iter()
             .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }))
+            // A directory of files datui cannot open: the row that says so.
+            .or_else(|| rows.iter().position(|r| matches!(r, Row::Hidden { .. })))
             .unwrap_or(0);
     }
 

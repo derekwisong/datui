@@ -960,6 +960,13 @@ pub fn look_at_listing(
     skipped_names.dedup();
     let skipped = skipped_names.len();
     skipped_names.truncate(crate::discover::SKIPPED_NAMES_SHOWN);
+    // Present, not data by name, and with no extension to say otherwise: the local
+    // route's `unnamed`, counted apart so the door still reads a Spark prefix.
+    let unnamed = present
+        .iter()
+        .filter(|key| !files.contains(key))
+        .filter(|key| crate::discover::has_no_extension(std::path::Path::new(&last(key))))
+        .count();
     let holds = crate::discover::Holds {
         formats: counts
             .into_iter()
@@ -969,7 +976,8 @@ pub fn look_at_listing(
         partitions,
         // Present, not a writer's own, and not named as anything datui reads — plus
         // the empty placeholders standing for no folder, which `present` dropped.
-        not_read: present.len() - files.len() + orphan_markers.len(),
+        not_read: present.len() - files.len() - unnamed + orphan_markers.len(),
+        unnamed,
         skipped,
         skipped_names,
         truncated: false,
@@ -2386,10 +2394,7 @@ mod tests {
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
         let holds = look_at_listing("out", &directories, &objects).1;
-        assert_eq!(
-            holds.line(true).as_deref(),
-            Some("2 parquet · 1 not read · 1 skipped (_temporary)")
-        );
+        assert_eq!(holds.line(true).as_deref(), Some("2 parquet"));
 
         // The folder's own marker stands for the prefix being listed, not for
         // anything in it: a console makes a folder by writing a zero-byte object at

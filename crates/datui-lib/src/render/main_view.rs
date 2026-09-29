@@ -361,6 +361,7 @@ pub fn home_control_keys(
         crate::WhatEnter::LooksFirst => "Look",
         crate::WhatEnter::FoldsSection => "Fold",
         crate::WhatEnter::ShowsMore => "Show all",
+        crate::WhatEnter::ShowsHidden => "Show",
         crate::WhatEnter::OpensFile => "Open",
         // The row only explains itself — an HTTP place has no listing to
         // browse — so the chip must not promise an Open it cannot do.

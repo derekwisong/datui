@@ -5324,6 +5324,50 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
     );
 }
 
+/// A key typed while an analysis runs is held, and Esc cancelling the run drops it: an
+/// impatient second Enter replayed after the cancel started the run again behind it.
+#[test]
+fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
+    common::ensure_sample_data();
+    let path = PathBuf::from("tests/sample-data/large_dataset.parquet");
+    let (tx, rx) = mpsc::channel();
+    let app = App::new(tx.clone(), common::test_runtime());
+    let mut pump = EventPump::new(app, tx, rx);
+    pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while (pump.app.is_busy() || pump.app.data_table_state.is_none())
+        && std::time::Instant::now() < deadline
+    {
+        pump.wait_and_drain(std::time::Duration::from_millis(100))
+            .unwrap();
+    }
+
+    let press = |pump: &mut EventPump, code| {
+        pump.terminal_key(KeyEvent::new(code, KeyModifiers::NONE))
+            .unwrap();
+    };
+    press(&mut pump, KeyCode::Char('a'));
+    pump.app.analysis_modal.sidebar_state.select(Some(1));
+    press(&mut pump, KeyCode::Enter);
+    pump.drain().unwrap();
+    assert!(
+        pump.app.analysis_modal.computing.is_some(),
+        "the run started"
+    );
+    press(&mut pump, KeyCode::Enter);
+    assert_eq!(pump.held_keys().count(), 1, "typed while busy: held");
+
+    press(&mut pump, KeyCode::Esc);
+    while pump.replay_one().unwrap() {}
+    assert_eq!(pump.held_keys().count(), 0);
+    assert!(
+        pump.app.analysis_modal.computing.is_none(),
+        "the held Enter did not start it again"
+    );
+    assert_eq!(pump.app.analysis_modal.selected_tool, None);
+}
+
 /// Going home clears the *load's* busy state, and leaves `task_generation` alone —
 /// that counter also gates analysis and export results, which keep running. The
 /// loading screen has nothing to type ahead into, so keys typed there are dropped

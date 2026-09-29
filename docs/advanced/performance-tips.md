@@ -16,10 +16,10 @@ the new column names. Filter or query down first.
 
 **Let the analysis sample.** Describe, distribution fitting and the
 correlation matrix analyze a 100,000-row sample of a larger table, spread
-across all of it; on an unfiltered Parquet table that reads a few dozen row
-groups, however large the table is. Filtering first makes the sample read the
-whole table once. `a` reads every row when the sample is not enough. See
-[Analysis](../user-guide/analysis-features.md#sampling).
+across all of it. On one unfiltered Parquet file that reads a few dozen row
+groups however large the file is; anything else is read once as a stream,
+holding only the sample. `a` reads every row when the sample is not enough.
+See [Analysis](../user-guide/analysis-features.md#sampling).
 
 **Cap chart rows.** Charts use at most `row_limit` rows (default 10,000), set
 in [`[chart]`](../user-guide/configuration.md#charts) or with **Limit Rows** in

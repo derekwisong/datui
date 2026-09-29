@@ -889,23 +889,33 @@ pub fn analysis_rows(
     })
 }
 
-/// Whether a slice of this plan is read by the scan itself, skipping what comes before
-/// it: true of one Parquet or IPC scan, which seek by row group. A slice of a union,
-/// of a filter or of a CSV reads everything ahead of it, which fifty times over is
-/// worse than reading the table once.
+/// Whether a slice of this plan is read by the scan of one file, skipping what comes
+/// before it: true of a single Parquet or IPC file, which seeks by row group, with or
+/// without columns stubbed above it. Not of a filter or a CSV, whose slice reads
+/// everything ahead of it, nor of a scan of many files, where each slice opens the
+/// footer of every file before it — measured on 135 files in S3, fifty slices took
+/// longer than streaming all 37 million rows once.
 ///
 /// Asked of the optimized plan because that is where the answer is, for every route a
-/// frame can have been built by. Should a Polars upgrade change how the plan is
-/// described, this says no and the streaming sampler takes over: slower, never wrong.
+/// frame can have been built by: pushed into the scan, the slice is a property of the
+/// `SCAN` (`SLICE: Positive`); left above it, a node of its own (`SLICE[`). Should a
+/// Polars upgrade change how the plan is described, this says no and the streaming
+/// sampler takes over: slower, never wrong.
 pub fn slices_reach_into_the_scan(lf: &LazyFrame) -> bool {
     let Ok(plan) = lf.clone().slice(1, 1).describe_optimized_plan() else {
         return false;
     };
-    let mut lines = plan.lines().map(str::trim);
-    let scans_first = lines
-        .next()
-        .is_some_and(|l| l.starts_with("Parquet SCAN") || l.starts_with("IPC SCAN"));
-    scans_first && plan.contains("SLICE: Positive")
+    let scans: Vec<&str> = plan
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("Parquet SCAN") || l.starts_with("IPC SCAN"))
+        .collect();
+    let [scan] = scans.as_slice() else {
+        return false;
+    };
+    let one_source = !scan.contains("other sources") && !scan.contains(", ");
+    let total_scans = plan.matches(" SCAN").count();
+    one_source && total_scans == 1 && plan.contains("SLICE: Positive") && !plan.contains("SLICE[")
 }
 
 /// `n` rows as [`SAMPLE_BLOCKS`] runs at seeded places across `total_rows`, in table
@@ -920,27 +930,44 @@ fn block_sample(
     seed: u64,
     polars_streaming: bool,
 ) -> Result<DataFrame> {
+    // Under twice the sample, reading the table is about as cheap as reading runs of
+    // it, and runs that must fit side by side would crowd or overlap. Read it and keep
+    // a seeded uniform `n` of it instead.
+    if total_rows < 2 * n {
+        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
+        let mut ranked: Vec<(u64, IdxSize)> = (0..df.height())
+            .map(|i| (sample_rank(seed, i as u64), i as IdxSize))
+            .collect();
+        ranked.sort_unstable();
+        let mut keep: Vec<IdxSize> = ranked.into_iter().take(n).map(|(_, i)| i).collect();
+        keep.sort_unstable();
+        return Ok(df.take(&IdxCa::from_vec("sample".into(), keep))?);
+    }
     let blocks = SAMPLE_BLOCKS.min(n).max(1);
-    let run = n.div_ceil(blocks);
+    // Exactly `n` rows between the runs, so none is cut off the end, and each fits in
+    // its own stretch of the table: a stretch is at least `2n / blocks` rows long.
     let stride = total_rows / blocks;
-    // Anywhere in its stretch that the whole run fits.
-    let room = stride.saturating_sub(run) as u64;
-    let offsets: Vec<usize> = (0..blocks)
-        .map(|block| block * stride + (sample_rank(seed, block as u64) % (room + 1)) as usize)
+    let runs: Vec<(usize, usize)> = (0..blocks)
+        .map(|block| {
+            let run = (block + 1) * n / blocks - block * n / blocks;
+            let room = stride.saturating_sub(run) as u64;
+            let offset = block * stride + (sample_rank(seed, block as u64) % (room + 1)) as usize;
+            (offset, run)
+        })
         .collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let runs: Vec<Result<(usize, DataFrame)>> = std::thread::scope(|scope| {
+    let read: Vec<Result<(usize, DataFrame)>> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..SAMPLE_READERS.min(blocks))
             .map(|_| {
                 scope.spawn(|| {
                     let mut read = Vec::new();
                     loop {
                         let block = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(offset) = offsets.get(block) else {
+                        let Some((offset, run)) = runs.get(block) else {
                             break;
                         };
                         let rows = collect_lazy(
-                            lf.clone().slice(*offset as i64, run as IdxSize),
+                            lf.clone().slice(*offset as i64, *run as IdxSize),
                             polars_streaming,
                         )
                         .map(|df| (block, df))
@@ -953,20 +980,23 @@ fn block_sample(
             .collect();
         workers
             .into_iter()
-            .flat_map(|worker| worker.join().unwrap_or_default())
+            .flat_map(|worker| match worker.join() {
+                Ok(read) => read,
+                // A reader that died is an error, not a smaller sample.
+                Err(_) => vec![Err(Report::msg("a sample reader failed"))],
+            })
             .collect()
     });
-    let mut runs = runs.into_iter().collect::<Result<Vec<_>>>()?;
-    runs.sort_by_key(|(block, _)| *block);
+    let mut read = read.into_iter().collect::<Result<Vec<_>>>()?;
+    read.sort_by_key(|(block, _)| *block);
     let mut out: Option<DataFrame> = None;
-    for (_, rows) in runs {
+    for (_, rows) in read {
         out = Some(match out {
             Some(frame) => frame.vstack(&rows)?,
             None => rows,
         });
     }
-    let df = out.unwrap_or_default();
-    Ok(if df.height() > n { df.slice(0, n) } else { df })
+    Ok(out.unwrap_or_default())
 }
 
 /// A uniform sample of `n` rows from one streamed pass, and how many rows there were.
@@ -1646,6 +1676,12 @@ fn infer_distribution(
                 .copied()
                 .unwrap_or(best.0)
         };
+        // The figures shown beside the name are that distribution's own, not those of
+        // the family it was picked over.
+        let best = candidates
+            .iter()
+            .find(|(t, _, _)| *t == distribution_type)
+            .unwrap_or(best);
         DistributionInfo {
             distribution_type,
             confidence: best.2,
@@ -4245,7 +4281,7 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
             correlations[j][i] = correlation; // Symmetric
 
             // Compute p-value (statistical significance)
-            if sample_size >= 3 {
+            if sample_size >= 3 && !correlation.is_nan() {
                 let p_value = compute_correlation_p_value(correlation, sample_size);
                 p_values[i][j] = p_value;
                 p_values[j][i] = p_value;
@@ -4282,8 +4318,10 @@ fn compute_pearson_correlation(col1: &Series, col2: &Series) -> Result<f64> {
     let var1: f64 = values1.iter().map(|v| (v - mean1).powi(2)).sum();
     let var2: f64 = values2.iter().map(|v| (v - mean2).powi(2)).sum();
 
+    // A column with one value has no correlation with anything: undefined, not 0,
+    // which reads as a finding.
     if var1 == 0.0 || var2 == 0.0 {
-        return Ok(0.0);
+        return Ok(f64::NAN);
     }
 
     let correlation = numerator / (var1.sqrt() * var2.sqrt());
@@ -4460,6 +4498,69 @@ mod sampling_tests {
         assert!(!rows.df.equals(&other.df));
     }
 
+    /// Odd and small sizes: exactly `n` distinct rows, reaching the end of the table.
+    /// Runs rounded up and then cut to `n` once dropped the last blocks; runs wider
+    /// than their stretch overlapped.
+    #[test]
+    fn a_block_sample_of_any_size_is_n_distinct_rows_across_the_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let lf = climbing(dir.path(), 10_000);
+        for (n, seed) in [
+            (60, 1),
+            (101, 2),
+            (1_234, 3),
+            (4_999, 4),
+            (5_001, 5),
+            (9_999, 6),
+        ] {
+            let rows = analysis_rows(&lf, Some(n), None, seed, false).unwrap();
+            let ids: Vec<i64> = rows
+                .df
+                .column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect();
+            assert_eq!(ids.len(), n, "n={n}");
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(unique.len(), n, "no duplicates at n={n}");
+            assert!(ids.is_sorted(), "table order at n={n}");
+            assert!(
+                *ids.last().unwrap() > 9_000,
+                "reaches the end at n={n}: {ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_single_file_scan_is_sampled_in_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = climbing(dir.path(), 1_000);
+        // A column stubbed above the scan, as binary columns are: still seekable.
+        let stubbed = one
+            .clone()
+            .select([col("id"), lit(NULL).cast(DataType::Binary).alias("blob")]);
+        assert!(slices_reach_into_the_scan(&stubbed));
+        // Two files: each slice would open the footers of those before it.
+        let two = concat([one.clone(), one.clone()], UnionArgs::default()).unwrap();
+        assert!(!slices_reach_into_the_scan(&two));
+        let glob = LazyFrame::scan_parquet(
+            PlRefPath::try_from_path(&dir.path().join("*.parquet")).unwrap(),
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::copy(
+            dir.path().join("climbing.parquet"),
+            dir.path().join("again.parquet"),
+        )
+        .unwrap();
+        assert!(!slices_reach_into_the_scan(&glob), "two files in one scan");
+        assert!(!slices_reach_into_the_scan(
+            &one.clone().sort(["id"], Default::default())
+        ));
+    }
+
     #[test]
     fn a_filtered_view_is_sampled_in_one_uniform_pass() {
         let dir = tempfile::tempdir().unwrap();
@@ -4490,6 +4591,19 @@ mod sampling_tests {
         let rows = analysis_rows(&climbing(dir.path(), 20_000), None, None, 1, false).unwrap();
         assert_eq!(rows.df.height(), 20_000);
         assert_eq!(rows.sample_size, None);
+    }
+
+    #[test]
+    fn a_constant_column_correlates_with_nothing() {
+        let df = df!(
+            "year" => vec![2020.0f64; 50],
+            "value" => (0..50).map(|i| i as f64).collect::<Vec<_>>(),
+            "double" => (0..50).map(|i| 2.0 * i as f64).collect::<Vec<_>>()
+        )
+        .unwrap();
+        let matrix = compute_correlation_matrix(&df).unwrap();
+        assert!(matrix.correlations[0][1].is_nan(), "undefined, not 0");
+        assert!((matrix.correlations[1][2] - 1.0).abs() < 1e-9);
     }
 
     #[test]

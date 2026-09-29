@@ -198,8 +198,8 @@ Comments in the comment constants should:
 ```rust
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
-        "sampling_threshold",
-        "Optional: when set, datasets with >= this many rows are sampled for analysis.\nWhen unset, full dataset is used. Example: sampling_threshold = 10000",
+        "analysis_sample_rows",
+        "Rows Describe, Distribution and Correlation read from a larger table (default 100000),\nas a sample spread across the whole of it. A smaller table is read whole.\n0 reads every row of every table; `a` on the analysis screen does it for one run.",
     ),
 ];
 ```
@@ -207,7 +207,7 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
 **Poor example:**
 ```rust
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
-    ("sampling_threshold", "Sampling threshold"),
+    ("analysis_sample_rows", "Sample rows"),
 ];
 ```
 
@@ -219,11 +219,11 @@ Add validation in `AppConfig::validate()` for constraints:
 fn validate(&self) -> Result<()> {
     // ... existing validation ...
 
-    // Validate new field (when Option, validate only when set)
-    if let Some(t) = self.performance.sampling_threshold {
-        if t == 0 {
-            return Err(eyre!("sampling_threshold must be greater than 0 when set"));
-        }
+    // Validate the new field's range
+    if self.performance.quality_sample_rows == 0
+        || self.performance.quality_sample_rows > 50_000
+    {
+        return Err(eyre!("quality_sample_rows must be between 1 and 50000"));
     }
 
     Ok(())

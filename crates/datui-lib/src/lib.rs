@@ -6811,6 +6811,13 @@ impl App {
                 .is_some_and(|r| r.sample_size.is_some())
     }
 
+    /// Work a cancel passed that is still running: leased on a generation since left.
+    fn cancelled_work_running(&self) -> bool {
+        self.leases
+            .iter()
+            .any(|(generation, n)| *generation != self.task_generation && *n > 0)
+    }
+
     /// How many rows the next analysis samples: none when `a` asked for every row.
     fn analysis_sampling(&self) -> Option<usize> {
         if self.analysis_modal.reads_all {
@@ -6866,6 +6873,9 @@ impl App {
     /// that is not coming; Enter on it runs it again.
     fn cancel_analysis(&mut self) {
         self.task_generation = self.task_generation.wrapping_add(1);
+        // Keys typed while it ran were typed at the run, which is gone: an impatient
+        // second Enter replayed now would start it again behind the Esc.
+        self.screen_generation = self.screen_generation.wrapping_add(1);
         self.analysis_modal.computing = None;
         self.analysis_computation = None;
         self.busy = false;
@@ -12376,8 +12386,8 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
-                        // Forgetting every recent is checked first: it is the only
-                        // confirmation here that is not about overwriting a file.
+                        // The confirmations that are not about overwriting a file come
+                        // first: reading every row, and forgetting recents.
                         if std::mem::take(&mut self.pending_read_all) {
                             self.confirmation_modal.hide();
                             self.analysis_modal.reads_all = true;
@@ -14173,6 +14183,13 @@ impl App {
                     self.analysis_modal.recalculate();
                     return self.start_analysis_run();
                 }
+                // Refused while a cancelled run is still reading: Polars cannot stop it,
+                // and a second full read beside it is how memory runs out.
+                KeyCode::Char('a')
+                    if self.analysis_results_are_sampled() && self.cancelled_work_running() =>
+                {
+                    self.flash_note("A cancelled run is still finishing; try again shortly".into());
+                }
                 KeyCode::Char('a') if self.analysis_results_are_sampled() => {
                     let total = self
                         .analysis_modal
@@ -14182,7 +14199,7 @@ impl App {
                     self.pending_read_all = true;
                     self.confirmation_modal.show(format!(
                         "Read all {} rows? It can take much longer than the sample. \
-                         Esc stops it.",
+                         Esc stops waiting; the read finishes in the background.",
                         crate::numfmt::group_chrome(total)
                     ));
                     self.confirmation_modal.yes_label = "Read all";
@@ -16686,8 +16703,15 @@ impl App {
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
-                    let lf = state.analysis_lf().select(state.binary_stub_exprs());
+                    // Only the numeric columns: nothing else is correlated, and on a wide
+                    // table the rest is most of what a full read would hold.
+                    let numeric: Vec<polars::prelude::Expr> = state
+                        .schema
+                        .iter()
+                        .filter(|(_, dtype)| dtype.is_numeric())
+                        .map(|(name, _)| col(name.clone()))
+                        .collect();
+                    let lf = state.analysis_lf().select(numeric);
                     let streaming = state.polars_streaming;
                     let known_total = state.num_rows_if_valid();
                     let seed = self.analysis_modal.random_seed;

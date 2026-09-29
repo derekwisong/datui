@@ -535,10 +535,12 @@ fn render_correlation_pair_summary(
 
     let mut lines: Vec<Line> = Vec::new();
     if r.is_nan() {
-        lines.push(Line::from(vec![Span::styled(
-            "Not enough overlapping values to correlate (needs 3 pairs).",
-            value_style,
-        )]));
+        let why = if pairs < 3 {
+            "Not enough overlapping values to correlate (needs 3 pairs)."
+        } else {
+            "One of the columns has a single value, so there is nothing to correlate."
+        };
+        lines.push(Line::from(vec![Span::styled(why, value_style)]));
     } else {
         lines.push(Line::from(vec![
             Span::styled("Pearson r: ", label_style),
@@ -1288,6 +1290,8 @@ fn render_correlation_matrix(
 
             let cell_text = if i == col_idx {
                 "1.00".to_string()
+            } else if correlation.is_nan() {
+                "-".to_string()
             } else {
                 format!("{:.2}", correlation)
             };

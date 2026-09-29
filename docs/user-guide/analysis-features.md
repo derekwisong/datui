@@ -195,10 +195,14 @@ How the sample is drawn depends on what the view is:
 
 | View | Sample | Reads |
 |---|---|---|
-| A Parquet or IPC file or hive directory, unfiltered | 50 runs of rows at seeded places across the table | The row groups those runs fall in |
-| Anything else: a filter, a query, CSV, several files | A seeded uniform sample, kept while the rows stream past | Every row once, holding only the sample |
+| One Parquet or IPC file, unfiltered | 50 runs of rows at seeded places across it | The row groups those runs fall in |
+| Anything else: a directory or hive table, a filter, a query, CSV | A seeded uniform sample, kept while the rows stream past | Every row once, holding only the sample |
 
-The sort is never part of an analysis: no statistic depends on it.
+A directory of many files is streamed because a run in it opens the footer of
+every file before it; on a 135-file table in S3, one streamed pass over 37
+million rows took 3 seconds against 6 for fifty runs. The sort is left out of
+an analysis read: no statistic depends on it. <kbd>a</kbd> refuses while a
+cancelled full read is still finishing.
 
 ```toml
 [performance]

@@ -48,7 +48,8 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
-| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or hide a cloud source |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor, or forget it if remembered. A file stands for its directory, a heading for the directory it lists |
+| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, then directory, then to the data you had open |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
@@ -69,6 +70,7 @@ Datasets are grouped by where they came from, in this order:
 | current directory | Where you launched datui | `current directory` | open |
 | `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
 | configured directories | `[data] directories`, in the order listed | `configured` | open |
+| remembered directories | Directories kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>, in the order kept | `remembered` | open |
 | `ELSEWHERE` | Directories from your desktop's recent-files list | | folded |
 | `Found` | Datasets below the current directory, while you are typing | | |
 
@@ -104,7 +106,12 @@ has to be found by hand once (<kbd>~</kbd>, type the path, open something).
 <kbd>Enter</kbd> on the place row takes you back there.
 
 To keep a place listed as a section of its own, even when empty or unmounted,
-name it in the config:
+press <kbd>Ctrl</kbd>+<kbd>D</kbd> on it. It is listed after the configured
+directories with a `remembered` chip until you press <kbd>Ctrl</kbd>+<kbd>D</kbd>
+again or <kbd>Delete</kbd> on its heading. It is kept in the cache, so
+`datui --clear-cache` forgets it too.
+
+For a place that should survive that, name it in the config:
 
 ```toml
 [data]
@@ -478,9 +485,10 @@ back. A dataset that will not open returns you here with the reason:
 
 ## What datui remembers
 
-Two things, both in the cache directory:
+Three things, all in the cache directory:
 
 - The paths you have opened, at most 50.
+- The directories you kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>.
 - What it measured: row and column counts and column names, each stamped with
   the size and modification time it was taken from.
 

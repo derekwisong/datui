@@ -521,6 +521,7 @@ mod classify_batch_tests {
                 waiting: false,
                 grouped_by_place: false,
                 place_labels: Default::default(),
+                root: None,
             }],
         }
     }
@@ -8652,6 +8653,7 @@ impl App {
         self.home.known = self.cache.load_dataset_facts();
         let request = home::ListingRequest {
             config_dirs: self.app_config.data.resolved_directories(),
+            remembered_dirs: self.cache.load_remembered_places(),
             recents,
             desktop_dirs: if self.app_config.data.use_desktop_recents {
                 home::desktop_recent_dirs()
@@ -8914,6 +8916,32 @@ impl App {
             ));
             return;
         }
+        // The heading of a remembered place stands for the place. No question first:
+        // Ctrl+D puts it back. A row under it is a file on disk, as anywhere else.
+        if self.home.browsing.is_none()
+            && let Some(section) = self.home.selected_section().map(|i| &self.home.sections[i])
+            && let Some(root) = section.root.clone()
+        {
+            let header = self.home.selection_is_header();
+            match section.origin {
+                Some(o) if o == home::RootOrigin::Remembered.note() => {
+                    if header {
+                        self.home_set_remembered(&root, false);
+                    } else {
+                        self.home.status = Some(format!(
+                            "Delete on the heading forgets {}",
+                            home::display_path(&root)
+                        ));
+                    }
+                    return;
+                }
+                Some(o) if o == home::RootOrigin::Configured.note() && header => {
+                    self.home.status = Some(Self::configured_place_note(&root));
+                    return;
+                }
+                _ => {}
+            }
+        }
         let section_title = self
             .home
             .selected_section()
@@ -8934,7 +8962,7 @@ impl App {
         }
         let in_recents = section_title == "Recent";
         if !in_recents {
-            self.home.status = Some("Only entries under Recent can be forgotten".into());
+            self.home.status = Some("Only recents and remembered places can be forgotten".into());
             return;
         }
         let Some(entry) = self.home.selected_entry() else {
@@ -8943,6 +8971,83 @@ impl App {
         self.cache.forget_recent(&entry.path);
         // Nothing to say: the row going is the answer.
         self.home.status = None;
+        self.home_refresh();
+    }
+
+    /// The directory the highlighted row stands for, as Ctrl+D sees it: a directory
+    /// row is itself, a file is the directory it is in, and a heading is the directory
+    /// its section lists.
+    fn home_place_under_cursor(&self) -> Option<PathBuf> {
+        match self.home.selected_row()? {
+            home::Row::Place { path, .. } => Some(path),
+            home::Row::Door { entry, .. } => Some(entry.path.clone()),
+            home::Row::Entry { entry, .. } => match entry.kind {
+                discover::EntryKind::File | discover::EntryKind::Other => {
+                    entry.path.parent().map(Path::to_path_buf)
+                }
+                _ => Some(entry.path.clone()),
+            },
+            home::Row::Header { section, .. } => self.home.sections.get(section)?.root.clone(),
+            home::Row::More { .. } => None,
+        }
+    }
+
+    /// How a place is compared and stored: resolved when it is local, as spelled when
+    /// it is remote, since resolving a path on a share that has stopped answering is
+    /// the stat that hangs. The door's trailing slash goes either way.
+    fn place_key(&self, path: &Path) -> PathBuf {
+        if (self.home.network_check)(path) {
+            path.components().collect()
+        } else {
+            canonical::canonicalize(path).unwrap_or_else(|_| path.components().collect())
+        }
+    }
+
+    fn configured_place_note(path: &Path) -> String {
+        format!(
+            "{} is in [data] directories; edit the config to remove it",
+            home::display_path(path)
+        )
+    }
+
+    /// Ctrl+D: keep the place under the cursor on the home screen, or stop keeping it.
+    fn home_toggle_remembered(&mut self) {
+        let Some(path) = self.home_place_under_cursor() else {
+            self.home.status = Some("Move to a directory to remember it".into());
+            return;
+        };
+        // Roots are directories on a filesystem. A bucket already has its source's
+        // row, and an HTTP place has nothing to list.
+        if home::is_object_store_url(&path)
+            || home::is_cloud_place(&path)
+            || !matches!(source::input_source(&path), source::InputSource::Local(_))
+        {
+            self.home.status = Some("Only directories on a filesystem can be remembered".into());
+            return;
+        }
+        let key = self.place_key(&path);
+        let configured = self
+            .app_config
+            .data
+            .resolved_directories()
+            .iter()
+            .any(|dir| self.place_key(dir) == key);
+        if configured {
+            self.home.status = Some(Self::configured_place_note(&key));
+            return;
+        }
+        let remembered = self.cache.load_remembered_places().contains(&key);
+        self.home_set_remembered(&key, !remembered);
+    }
+
+    fn home_set_remembered(&mut self, place: &Path, keep: bool) {
+        if keep {
+            self.cache.remember_place(place);
+        } else {
+            self.cache.forget_place(place);
+        }
+        let verb = if keep { "Remembered" } else { "Forgot" };
+        self.home.status = Some(format!("{verb} {}", home::display_path(place)));
         self.home_refresh();
     }
 
@@ -9829,6 +9934,8 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Char('r') if ctrl => self.home_reload(),
+            // A browser's bookmark key: keep this place on the home screen, or stop.
+            KeyCode::Char('d') if ctrl => self.home_toggle_remembered(),
             KeyCode::Char('a') if ctrl => {
                 let on = self.home.selected_key();
                 self.home.hide_unreadable = !self.home.hide_unreadable;

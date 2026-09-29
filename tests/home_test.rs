@@ -1188,6 +1188,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
             waiting: true,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         }],
     });
 
@@ -1504,6 +1505,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
 
     let request = ListingRequest {
         config_dirs: vec![tmp.path().to_path_buf()],
+        remembered_dirs: Vec::new(),
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1733,6 +1735,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1822,6 +1825,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
     ];
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: typed.clone(),
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1888,6 +1892,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
     let label_for = |cache: &CacheManager| -> Option<String> {
         let listing = build_listing(&ListingRequest {
             config_dirs: Vec::new(),
+            remembered_dirs: Vec::new(),
             recents: vec![dataset.clone()],
             desktop_dirs: Vec::new(),
             browsing: None,
@@ -1942,6 +1947,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
     )]);
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: vec![dataset],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -2038,6 +2044,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -2110,6 +2117,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: Some(tmp.path().to_path_buf()),
@@ -2176,6 +2184,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         }],
     });
     home
@@ -3316,6 +3325,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         }],
     });
 
@@ -3944,6 +3954,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: vec![configured.clone()],
+        remembered_dirs: Vec::new(),
         recents: vec![recent],
         desktop_dirs: vec![elsewhere_dir],
         browsing: None,
@@ -4520,6 +4531,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
     let listed = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
         let request = ListingRequest {
             config_dirs: Vec::new(),
+            remembered_dirs: Vec::new(),
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: Some(tmp.path().to_path_buf()),

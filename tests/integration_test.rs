@@ -7382,6 +7382,160 @@ fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     );
 }
 
+fn ctrl(c: char) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+/// Ctrl+D keeps the place under the cursor on the home screen, and pressed again stops
+/// keeping it. A file row stands for the directory it is in. What is checked is the
+/// store, which is what the next listing reads.
+#[test]
+fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let here = recents[0].parent().unwrap().to_path_buf();
+    let there = recents[2].parent().unwrap().to_path_buf();
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    let kept = |cache: &datui::CacheManager, path: &Path| {
+        cache.load_remembered_places().iter().any(|p| p == path)
+    };
+
+    app.event(&ctrl('d'));
+    assert!(kept(&cache, &here), "{:?}", cache.load_remembered_places());
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.starts_with("Remembered")),
+        "{:?}",
+        app.home.status
+    );
+
+    app.event(&ctrl('d'));
+    assert!(!kept(&cache, &here), "a second press forgets it");
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.starts_with("Forgot"))
+    );
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == recents[2]),
+        )
+        .expect("the recent in the other place is listed");
+    app.home.selected = row;
+    app.event(&ctrl('d'));
+    assert!(kept(&cache, &there), "a file row remembers its directory");
+    cache.forget_place(&there);
+}
+
+/// A remembered directory is listed like a configured one, marked `remembered`, and
+/// `Delete` on its heading forgets it. One that is also configured is listed once,
+/// as configured, and Ctrl+D on it points at the config rather than doing nothing.
+#[test]
+fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = datui::canonical::canonicalize(tmp.path()).unwrap();
+    let kept = root.join("kept");
+    let configured = root.join("configured");
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::create_dir_all(&configured).unwrap();
+    std::fs::write(kept.join("a.parquet"), b"x").unwrap();
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    cache.remember_place(&kept);
+
+    let mut config = datui::AppConfig::default();
+    config.data.directories = vec![configured.to_string_lossy().into_owned()];
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    app.home
+        .apply_listing(datui::home::build_listing(&datui::home::ListingRequest {
+            config_dirs: vec![configured.clone()],
+            remembered_dirs: vec![kept.clone(), configured.clone()],
+            recents: Vec::new(),
+            desktop_dirs: Vec::new(),
+            browsing: None,
+            probed: Default::default(),
+            unreachable: Default::default(),
+            probe_errors: Default::default(),
+            network_check: app.home.network_check,
+            cloud: Vec::new(),
+            known: Default::default(),
+        }));
+
+    let heading = |app: &App, dir: &Path| {
+        app.home
+            .visible()
+            .iter()
+            .position(|r| {
+                matches!(r, datui::home::Row::Header { section, .. }
+                    if app.home.sections[*section].root.as_deref() == Some(dir))
+            })
+            .expect("the directory has a section")
+    };
+    let origin = |app: &App, dir: &Path| {
+        app.home
+            .sections
+            .iter()
+            .filter(|s| s.root.as_deref() == Some(dir))
+            .map(|s| s.origin)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(origin(&app, &kept), vec![Some("remembered")]);
+    assert_eq!(
+        origin(&app, &configured),
+        vec![Some("configured")],
+        "listed once, as configured"
+    );
+
+    app.home.selected = heading(&app, &configured);
+    app.event(&ctrl('d'));
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("[data] directories")),
+        "{:?}",
+        app.home.status
+    );
+    assert!(!cache.load_remembered_places().contains(&configured));
+
+    // A file under the place is a file on disk: Delete points at the heading.
+    app.home.selected = heading(&app, &kept) + 1;
+    app.event(&key(KeyCode::Delete));
+    assert!(cache.load_remembered_places().contains(&kept));
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.starts_with("Delete on the heading")),
+        "{:?}",
+        app.home.status
+    );
+
+    app.home.selected = heading(&app, &kept);
+    app.event(&key(KeyCode::Delete));
+    assert!(
+        !cache.load_remembered_places().contains(&kept),
+        "forgotten: {:?}",
+        cache.load_remembered_places()
+    );
+}
+
 /// `Enter` and `→` on the place of a recent opened over HTTP say why they do nothing,
 /// rather than listing a URL and reporting it unreachable.
 #[test]

@@ -2609,6 +2609,7 @@ mod tests {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         };
         let text = |width: usize| -> String {
             section_header(&section, 12, false, false, width, 0, &ctx)
@@ -2927,6 +2928,7 @@ mod tests {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -3397,6 +3399,7 @@ mod tests {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, 0, &ctx);

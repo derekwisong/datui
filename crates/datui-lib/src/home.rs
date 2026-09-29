@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 pub enum RootOrigin {
     Cwd,
     Configured,
+    /// Kept with Ctrl+D on the home screen: `[data] directories` without editing it.
+    Remembered,
     /// Derived from the desktop's own recently-used list.
     Desktop,
 }
@@ -34,6 +36,7 @@ impl RootOrigin {
         match self {
             RootOrigin::Cwd => "current directory",
             RootOrigin::Configured => "configured",
+            RootOrigin::Remembered => "remembered",
             RootOrigin::Desktop => "opened elsewhere",
         }
     }
@@ -459,6 +462,9 @@ pub struct Section {
     /// far right with the state, and a directory derived from a recent was drawn
     /// exactly like a configured one with only that word to tell them apart.
     pub origin: Option<&'static str>,
+    /// The directory a path-titled section lists: a root, or the directory browsed.
+    /// The title is abbreviated for display and cannot be turned back into a path.
+    pub root: Option<PathBuf>,
     pub rows: Vec<Entry>,
     /// The row that opens the directory this section lists, as one table. Its own row,
     /// not one of `rows`.
@@ -972,6 +978,8 @@ impl Default for HomeState {
 #[derive(Debug, Clone)]
 pub struct ListingRequest {
     pub config_dirs: Vec<PathBuf>,
+    /// Directories kept with Ctrl+D, listed after the configured ones.
+    pub remembered_dirs: Vec<PathBuf>,
     pub recents: Vec<PathBuf>,
     pub desktop_dirs: Vec<PathBuf>,
     pub browsing: Option<PathBuf>,
@@ -1088,6 +1096,7 @@ fn probed_entry(
 pub fn build_listing(request: &ListingRequest) -> Listing {
     let ListingRequest {
         config_dirs,
+        remembered_dirs,
         recents,
         desktop_dirs,
         browsing,
@@ -1132,6 +1141,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing { sections };
@@ -1178,6 +1188,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             },
             subtitle: None,
             origin: None,
+            root: Some(dir.clone()),
             rows,
             unavailable,
             // A browsed remote place that did not answer has nothing to add; one whose
@@ -1218,7 +1229,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // Desktop-derived places are collected rather than expanded — see below.
     let mut elsewhere: Vec<Entry> = Vec::new();
 
-    let roots = HomeState::roots_with(config_dirs, desktop_dirs, network_check);
+    let roots = HomeState::roots_from(config_dirs, remembered_dirs, desktop_dirs, network_check);
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
     // What the current-directory section is about to show, for the RECENT dedupe
     // below: where it is, and the names it lists.
@@ -1306,6 +1317,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 title: display_path(&root.path),
                 subtitle: (!state.is_empty()).then(|| state.join(" · ")),
                 origin: Some(root.origin.note()),
+                root: Some(root.path.clone()),
                 rows,
                 unavailable: !root.available || unreachable,
                 unavailable_note: None,
@@ -1355,6 +1367,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             title: HomeState::RECENT_SECTION.to_string(),
             subtitle: None,
             origin: None,
+            root: None,
             rows: recent_rows,
             unavailable: false,
             unavailable_note: None,
@@ -1399,10 +1412,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
     }
 
-    // Configured places, in the order configured.
+    // Configured places in the order configured, then remembered ones in the order kept.
     sections.extend(rest.into_iter().map(|(_, s)| s));
 
     if !elsewhere.is_empty() {
@@ -1421,6 +1435,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
     }
 
@@ -1800,6 +1815,18 @@ impl HomeState {
         desktop_dirs: &[PathBuf],
         is_network: fn(&Path) -> bool,
     ) -> Vec<Root> {
+        Self::roots_from(config_dirs, &[], desktop_dirs, is_network)
+    }
+
+    /// As [`HomeState::roots_with`], plus the directories kept with Ctrl+D. They come
+    /// after the configured ones: a place written into the config is the more
+    /// deliberate choice, and a directory in both is listed as configured.
+    pub fn roots_from(
+        config_dirs: &[PathBuf],
+        remembered_dirs: &[PathBuf],
+        desktop_dirs: &[PathBuf],
+        is_network: fn(&Path) -> bool,
+    ) -> Vec<Root> {
         let mut roots: Vec<Root> = Vec::new();
         let mut seen: Vec<PathBuf> = Vec::new();
 
@@ -1848,6 +1875,10 @@ impl HomeState {
             push(dir.clone(), RootOrigin::Configured, &mut roots, &mut seen);
         }
 
+        for dir in remembered_dirs {
+            push(dir.clone(), RootOrigin::Remembered, &mut roots, &mut seen);
+        }
+
         // Last, and weakest: places the desktop says you have opened data from. Only
         // useful before datui has recents of its own.
         for dir in desktop_dirs {
@@ -1875,6 +1906,7 @@ impl HomeState {
     ) {
         let request = ListingRequest {
             config_dirs: config_dirs.to_vec(),
+            remembered_dirs: Vec::new(),
             recents: recents.to_vec(),
             desktop_dirs: desktop_dirs.to_vec(),
             browsing: self.browsing.clone(),
@@ -2419,6 +2451,7 @@ impl HomeState {
                     grouped_by_place: false,
                     door: None,
                     place_labels: Default::default(),
+                    root: None,
                 });
             }
             return;
@@ -2469,6 +2502,7 @@ impl HomeState {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
     }
 
@@ -3584,6 +3618,7 @@ mod holds_flow_tests {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
         // A measurement of a file carries no `holds`, and the same struct measures both.
         home.enriched.insert(

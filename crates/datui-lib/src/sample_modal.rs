@@ -71,6 +71,7 @@ impl SampleField {
                 | Self::RangeTo
                 | Self::TimeFrom
                 | Self::TimeBefore
+                | Self::Seed
         )
     }
 }
@@ -109,6 +110,9 @@ pub struct SampleForm {
     pub time_column: usize,
     pub time_from: TextInput,
     pub time_before: TextInput,
+    /// Any number: the same seed draws the same rows, so 0 or 1 is a sample anyone
+    /// can repeat.
+    pub seed: TextInput,
     pub error: Option<String>,
     /// First source file shown in the numbered list under the Files row.
     pub file_offset: usize,
@@ -131,10 +135,12 @@ impl SampleForm {
             time_column: 0,
             time_from: input(),
             time_before: input(),
+            seed: input(),
             error: None,
             file_offset: 0,
         };
         form.set_scope(&sample.scope);
+        form.seed.set_value(sample.seed.to_string());
         form.sync_focus(true);
         form
     }
@@ -256,6 +262,7 @@ impl SampleForm {
             SampleField::RangeTo => &self.range_to,
             SampleField::TimeFrom => &self.time_from,
             SampleField::TimeBefore => &self.time_before,
+            SampleField::Seed => &self.seed,
             _ => return None,
         })
     }
@@ -268,6 +275,7 @@ impl SampleForm {
             SampleField::RangeTo => &mut self.range_to,
             SampleField::TimeFrom => &mut self.time_from,
             SampleField::TimeBefore => &mut self.time_before,
+            SampleField::Seed => &mut self.seed,
             _ => return None,
         })
     }
@@ -283,6 +291,7 @@ impl SampleForm {
             SampleField::RangeTo,
             SampleField::TimeFrom,
             SampleField::TimeBefore,
+            SampleField::Seed,
         ] {
             if let Some(input) = self.input_mut(candidate) {
                 input.set_focused(form_focused && candidate == field);
@@ -302,6 +311,11 @@ impl SampleForm {
             at.saturating_sub(1)
         };
         self.field = fields[next];
+        // Arriving on the seed selects it, so typing 1 makes it 1 rather than
+        // appending to the number already there.
+        if self.field == SampleField::Seed {
+            self.seed.select_all();
+        }
         self.sync_focus(true);
     }
 
@@ -388,7 +402,6 @@ impl SampleForm {
                     .unwrap_or(0);
                 self.draft.rows = sizes[step(sizes.len(), at)];
             }
-            SampleField::Seed => self.draft.seed = new_seed(),
             _ => {}
         }
     }
@@ -602,10 +615,19 @@ impl SampleForm {
                 )?
             }
         };
-        Ok(Sample {
+        let mut sample = Sample {
             scope,
             ..self.draft.clone()
-        })
+        };
+        if self.fields().contains(&SampleField::Seed) {
+            sample.seed = self
+                .seed
+                .value()
+                .replace([',', '_', ' '], "")
+                .parse()
+                .map_err(|_| "Random seed is a whole number, like 0 or 42".to_string())?;
+        }
+        Ok(sample)
     }
 }
 
@@ -699,6 +721,21 @@ mod tests {
         assert!(!form.fields().contains(&SampleField::Size));
         form.adjust(false);
         assert_eq!(form.draft.method, SampleMethod::FirstRows);
+    }
+
+    /// Any number is a seed, typed over the one there; the same seed is the same
+    /// sample, so 0 is one anyone can repeat.
+    #[test]
+    fn the_seed_is_typed() {
+        let mut form = form();
+        while form.field != SampleField::Seed {
+            form.move_field(true);
+        }
+        assert!(form.field.is_text());
+        form.seed.set_value("0");
+        assert_eq!(form.finish().unwrap().seed, 0);
+        form.seed.set_value("seven");
+        assert!(form.finish().unwrap_err().contains("whole number"));
     }
 
     #[test]

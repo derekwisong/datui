@@ -2056,6 +2056,25 @@ fn one_sample_serves_every_analysis_tool() {
         bar.contains("Sample"),
         "s Sample on the Data Quality bar at 80 columns: {bar}"
     );
+    // The seed is typed: arriving on it selects it, so one key makes it that key.
+    key(&mut app, KeyCode::Char('s'));
+    for _ in 0..8 {
+        if app.analysis_modal.sample_form.as_ref().unwrap().field
+            == datui::sample_modal::SampleField::Seed
+        {
+            break;
+        }
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(
+        app.analysis_modal.sample_form.as_ref().unwrap().field,
+        datui::sample_modal::SampleField::Seed
+    );
+    key(&mut app, KeyCode::Char('7'));
+    let next = key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.sample.seed, 7);
+    run(&mut app, next);
+
     // The tool list is the same beside every tool: the active one carries the
     // accent, not a dot only Data Quality drew.
     let screen = rendered_text(&buffer);

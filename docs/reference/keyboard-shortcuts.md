@@ -191,8 +191,8 @@ In the Sample form:
 |---|---|
 | <kbd>Enter</kbd> | Apply the sample and run the tool on screen again |
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> | Move between the settings |
-| <kbd>←</kbd> <kbd>→</kbd> | Change the focused value; on Seed, draw a new one |
-| typing | On Values, Files, From row, To row, From and Before: the value |
+| <kbd>←</kbd> <kbd>→</kbd> | Change the focused choice |
+| typing | On Values, Files, From row, To row, From, Before and Random seed: the value |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | On Files, scroll the numbered source files |
 | <kbd>Esc</kbd> | Discard the edit |
 

@@ -78,6 +78,9 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
+In Public datasets, Enter opens an HTTP(S) data file or browses an object-store
+location. Right browses directories; it does not open a web file.
+
 ## Query prompt
 
 | Key | Action |

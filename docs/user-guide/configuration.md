@@ -245,7 +245,7 @@ homepage = "https://registry.opendata.aws/noaa-ghcn/"
 | Dataset field | Meaning |
 |---|---|
 | `name` | Required, nonempty name shown on the home screen; unique in this source |
-| `url` | Required `s3://`, `gs://` or Azure URL; unique in this source |
+| `url` | Required `s3://`, `gs://`, Azure URL or HTTP(S) data-file URL; unique in this source |
 | `description` | Optional summary shown in the details pane |
 | `publisher` | Optional publisher |
 | `license` | Optional license name |
@@ -261,6 +261,16 @@ metadata, or add another table. The generated catalog is a snapshot: a retained
 config does not automatically receive datasets or metadata added by later datui
 releases. Run `datui --generate-config --force` to take a new snapshot, after saving
 any local changes you want to keep.
+
+The default catalog links to flights, food, names, weather, football, taxis,
+earthquakes, launches, penguins, blockchain data and Overture Maps. No dataset
+files ship with datui. HTTP(S) entries must point to supported data files, such as
+CSV or Parquet; web directories, download pages and ZIP archives cannot be browsed.
+
+Older snapshots may still contain OpenAlex, Google Open Buildings and BigQuery
+sample data; datui preserves those configured entries. Remove the configured
+`public` source and its dataset tables to use the current built-in catalog, or
+edit those tables to keep a personal selection. Other cloud sources are unchanged.
 
 #### Secrets that live elsewhere
 

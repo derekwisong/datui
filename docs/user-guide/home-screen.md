@@ -331,7 +331,7 @@ objects open like files, and opened objects go into `RECENT` like any other path
   ≈ Google Cloud      gcs     4 projects    project: example-project · gcloud
   ≈ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
   ≈ onprem            s3      403           minio.corp.example:9000 · datui config
-  ≈ Public datasets   public  6 datasets    built in
+  ≈ Public datasets   public  11 datasets    built in
 ```
 
 | Column | Shows |
@@ -437,16 +437,23 @@ VM's identity is not discovered unless `[cloud] instance_identity = true`; see
 ### Public datasets
 
 `Public datasets` lists data its publishers host and keep up to date, readable with
-no login. Nothing is requested until you open one.
+no login. Nothing is requested until you open one. HTTP(S) files open as tables; object-store
+roots open for browsing. Datui bundles no dataset files. Hosted CSV extracts have
+the coverage shown below; they are not the separately prepared demo tables.
 
 | Dataset | Data | License |
 |---|---|---|
-| NOAA daily weather (GHCN-D) | Weather station observations worldwide, as Parquet by year and by station | CC0 |
-| Bitcoin and Ethereum | Blocks and transactions, as Parquet by date | AWS sample-code license |
-| OpenAlex | Scholarly works, authors, institutions and topics, as Parquet | CC0 |
-| Overture Maps | Places, buildings, addresses, roads and boundaries, as GeoParquet by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
-| Google Open Buildings | 1.8 billion building footprints, as CSV | CC BY 4.0 or ODbL |
-| BigQuery sample data | The small samples Google's documentation uses | Not stated |
+| NYC flights (2013) | Departures from JFK, LaGuardia and Newark; delays in minutes | CC0 (nycflights13) |
+| Food nutrition (fast food) | 515 menu items; nutrients per item, not per 100 g | GPL-3 (OpenIntro package) |
+| US baby names (1880-2017) | Published name counts by year and sex; counts below five are suppressed | CC0 / public domain |
+| NOAA daily weather (GHCN-D) | Worldwide weather station observations, by year and by station | CC0 |
+| Premier League (2020-21) | Match rounds, dates, teams and full-time scores | CC0 |
+| NYC yellow taxis (January 2025) | One original monthly trip file; fares, distances and congestion fees | NYC Open Data terms |
+| Earthquakes (past month) | Rolling month of worldwide earthquakes; magnitudes, depth and location | Public domain |
+| Space launches (1957-2018) | Historical launch records and agencies; includes failed attempts | MIT (The Economist extract); credit Jonathan McDowell |
+| Palmer penguins | 344 penguins: species, island, bill, flipper length and body mass | CC0; credit Horst, Hill and Gorman (2020) |
+| Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
+| Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
 The details pane gives each one's publisher, license and homepage. The license is
 the publisher's: check it before you use the data. <kbd>Backspace</kbd> at a

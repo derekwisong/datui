@@ -568,6 +568,14 @@ impl CloudSource {
     /// The row for one of this source's places.
     fn entry(&self, place: &Path) -> Entry {
         let mut entry = bucket_entry(place);
+        if self.is_public()
+            && matches!(
+                crate::source::input_source(place),
+                crate::source::InputSource::Http(_)
+            )
+        {
+            entry.kind = EntryKind::File;
+        }
         if let Some(name) = self.names.get(place) {
             entry.name = name.clone();
         }

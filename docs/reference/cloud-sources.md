@@ -24,6 +24,9 @@ See [Loading Data](../user-guide/loading-data.md#remote-data).
 
 ## Named sources
 
+To keep a local folder on the home screen, see
+[Adding a directory](../user-guide/home-screen.md#adding-a-directory).
+
 Add one `[[cloud.sources]]` table per account or endpoint:
 
 ```toml
@@ -202,4 +205,3 @@ searching for projects is refused. A profile that needs the AWS CLI shows
 the CLI's message; see [Loading Data](../user-guide/remote-data.md#aws-profiles). A cloud
 VM's identity is not discovered unless `[cloud] instance_identity = true`; see
 [Configuration](cloud-sources.md).
-

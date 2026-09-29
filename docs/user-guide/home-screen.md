@@ -59,6 +59,9 @@ directories = ["/mnt/data", "~/datasets", "$WORK/warehouse"]
 `~` and `$VAR` expand. Unreachable configured directories stay listed as
 `unavailable`.
 
+To add a cloud account or storage endpoint to the home screen, see
+[Named cloud sources](../reference/cloud-sources.md#named-sources).
+
 ### Desktop places
 
 `ELSEWHERE` reads directories from freedesktop's `recently-used.xbel`, used by

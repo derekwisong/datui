@@ -64,6 +64,10 @@ pub enum EntryKind {
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
 ///
+/// 6: on a local disk, a file with no extension is data when its first bytes carry a
+/// Parquet, Arrow, Avro or ORC signature, so a directory of Spark part files a 5 called
+/// `dir` is one dataset. Unidentified ones are `unnamed` rather than `not_read`.
+///
 /// 5: a directory of CSV or NDJSON is judged by the names at the front of its files, the
 /// way a directory of Parquet is judged by its footers — so one a 4 called `multi` on its
 /// filenames alone may be a place to look inside. A cached kind is restored without
@@ -78,7 +82,7 @@ pub enum EntryKind {
 /// extension strings, and one bookkeeping predicate. A directory of `.arrow` beside
 /// `.ipc` was `dir` and is now one dataset; a directory whose ninth entry decided it was
 /// answered by whatever the filesystem returned first (#275, phase 1).
-pub const CLASSIFIER_VERSION: u32 = 5;
+pub const CLASSIFIER_VERSION: u32 = 6;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -159,6 +163,11 @@ pub struct Holds {
     /// of twenty of them read `dir` with no line at all, the same as an empty one.
     #[serde(default)]
     pub not_read: usize,
+    /// Files with no extension. No name says what they are, so they are neither data
+    /// nor `not_read`: Spark and GBIF write their part files this way, and the open
+    /// reads them by their bytes.
+    #[serde(default)]
+    pub unnamed: usize,
     /// Entries skipped as a writer's own, and the first few by name for the pane.
     #[serde(default)]
     pub skipped: usize,
@@ -172,13 +181,6 @@ pub struct Holds {
 
 /// How many skipped names are kept for the pane. Enough to recognise the convention.
 pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
-
-/// How much of one of those names. A Hadoop output directory's `.crc` files sort first
-/// and are named for the file they check — `.part-00000-<uuid>-c000.snappy.parquet.crc`,
-/// some seventy characters — so four of them are a paragraph of UUID in a pane whose
-/// other facts are one line each. Both ends are kept, because both say what it is and the
-/// middle is the part that is nobody's business.
-const SKIPPED_NAME_WIDTH: usize = 24;
 
 /// A name cut to `width`, keeping both ends and marking the middle.
 pub(crate) fn shorten(name: &str, width: usize) -> String {
@@ -240,6 +242,7 @@ impl Holds {
             && self.directories == 0
             && self.skipped == 0
             && self.not_read == 0
+            && self.unnamed == 0
             // Every field, including the two that are counted elsewhere as well: a
             // partition is a directory and a skipped name is one of `skipped`, so on both
             // routes today these are implied. This is a `skip_serializing_if` and the
@@ -253,8 +256,12 @@ impl Holds {
             && !self.truncated
     }
 
-    /// The `holds` line in the details pane: every format, the directories, and what was
-    /// skipped, with a few of the skipped names so the convention is recognisable.
+    /// The `contains` line in the details pane: the data files by format, the
+    /// directories, and the partitions — what there is to open, and nothing else.
+    ///
+    /// Files datui cannot read and a writer's markers are left out. Counted here they
+    /// read as a warning ("10 not read") about a directory with nothing wrong in it;
+    /// inside the directory, a row of its own says what is not shown.
     pub fn line(&self, with_partitions: bool) -> Option<String> {
         let more = if self.truncated { "+" } else { "" };
         let mut parts: Vec<String> = self
@@ -273,9 +280,6 @@ impl Holds {
             };
             parts.push(format!("{plain}{more} {word}"));
         }
-        if self.not_read > 0 {
-            parts.push(format!("{}{more} not read", self.not_read));
-        }
         if with_partitions && self.partitions > 0 {
             let word = if self.partitions == 1 {
                 "partition"
@@ -283,24 +287,6 @@ impl Holds {
                 "partitions"
             };
             parts.push(format!("{}{more} {word}", self.partitions));
-        }
-        if self.skipped > 0 {
-            // The names are the first few, so a list shorter than the count ends in an
-            // ellipsis rather than reading as all of them.
-            let mut names = self
-                .skipped_names
-                .iter()
-                .map(|n| shorten(n, SKIPPED_NAME_WIDTH))
-                .collect::<Vec<_>>()
-                .join(", ");
-            if self.skipped > self.skipped_names.len() && !names.is_empty() {
-                names.push_str(&format!(", {}", crate::glyphs::get().ellipsis));
-            }
-            parts.push(if names.is_empty() {
-                format!("{}{more} skipped", self.skipped)
-            } else {
-                format!("{}{more} skipped ({names})", self.skipped)
-            });
         }
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
@@ -544,6 +530,15 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
         return Some(crate::FileFormat::Orc);
     }
     None
+}
+
+/// How many extension-less files one listing looks inside. A directory of Spark output
+/// is a few hundred part files; past this the rest are listed by name alone.
+const MAX_SNIFFS_PER_DIR: usize = 256;
+
+/// Whether a file's name has no extension at all: `part-00000`, `LICENSE`.
+pub fn has_no_extension(path: &Path) -> bool {
+    path.extension().is_none()
 }
 
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.
@@ -970,6 +965,12 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     let mut partitions = 0usize;
     let mut data_files = 0usize;
     let mut seen = 0usize;
+    // As `scan_dir_bounded` does, so the tally agrees with the rows inside.
+    let mut sniffs_left = if crate::home::is_remote_path(path) {
+        0
+    } else {
+        MAX_SNIFFS_PER_DIR
+    };
     let mut counts: Vec<(crate::FileFormat, usize)> = Vec::new();
     // A multi-file dataset is homogeneous by definition; a directory that merely
     // contains two different spreadsheets is not one. Compared as formats rather than
@@ -1041,6 +1042,12 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 is_parquet_key(&directory_and_name(&entry_path))
                     .then_some(crate::FileFormat::Parquet)
             })
+            .or_else(|| {
+                (is_file && sniffs_left > 0 && has_no_extension(&entry_path)).then(|| {
+                    sniffs_left -= 1;
+                    sniff_format(&entry_path)
+                })?
+            })
             .filter(|_| is_file)
         {
             data_files += 1;
@@ -1053,11 +1060,12 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 Some(first) if first != found => mixed_formats = true,
                 Some(_) => {}
             }
+        } else if is_file && has_no_extension(&entry_path) {
+            holds.unnamed += 1;
         } else {
             // Everything else in the listing: a file with no reader, and a name with
             // nothing behind it — a FIFO, a socket, a broken symlink. Named like data
-            // or not, none of them can be read, and the pane says every entry is in
-            // one of these counts.
+            // or not, none of them can be read.
             holds.not_read += 1;
         }
         seen += 1;
@@ -1190,6 +1198,14 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
     let mut entries = Vec::new();
     let mut seen = 0usize;
     let mut truncated = false;
+    // Files with no extension are looked at, a few bytes each, so a Spark part file
+    // is listed as the data it is while a LICENSE stays out of the way. Never on a
+    // share, where each open is a round trip and one that may not come back.
+    let mut sniffs_left = if crate::home::is_remote_path(dir) {
+        0
+    } else {
+        MAX_SNIFFS_PER_DIR
+    };
 
     // One past the cap: enough to know more exists without paying to process it.
     for dir_entry in iter.flatten().take(MAX_ENTRIES_PER_DIR + 1) {
@@ -1213,6 +1229,13 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
             EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
+        } else if meta.is_file() && sniffs_left > 0 && has_no_extension(&path) {
+            sniffs_left -= 1;
+            if sniff_format(&path).is_some() {
+                EntryKind::File
+            } else {
+                EntryKind::Other
+            }
         } else if meta.is_file() {
             EntryKind::Other
         } else {
@@ -2145,7 +2168,7 @@ mod classification_tests {
         assert_eq!(entry.label(), "mixed", "two formats is two formats");
         assert_eq!(
             entry.holds.line(true).as_deref(),
-            Some("3 parquet · 1 csv · 1 directory · 2 skipped (.part.crc, _SUCCESS)"),
+            Some("3 parquet · 1 csv · 1 directory"),
             "and the pane says what the label boiled down"
         );
         assert_eq!(entry.holds.data_files(), 4);
@@ -2163,16 +2186,17 @@ mod classification_tests {
         assert_eq!(entry.label(), "12 parquet");
         assert_eq!(entry.holds.line(true).as_deref(), Some("12 parquet"));
 
-        // A directory with nothing in it datui reads is a place to look inside — and the
-        // pane still says how many files are in there. Without a count of their own
-        // they were in nothing, and twenty of them read like an empty directory.
+        // A directory with nothing in it datui reads is a place to look inside. The
+        // files are counted, but the pane's line is about what can be opened, and
+        // "20 not read" read as a fault in a directory with nothing wrong in it.
         let plain = tempfile::tempdir().unwrap();
         for i in 0..20 {
             std::fs::write(plain.path().join(format!("note{i}.md")), b"x").unwrap();
         }
         let plain = measured(plain.path());
         assert_eq!(plain.label(), "dir");
-        assert_eq!(plain.holds.line(true).as_deref(), Some("20 not read"));
+        assert_eq!(plain.holds.not_read, 20);
+        assert_eq!(plain.holds.line(true), None);
     }
 
     /// A row nothing has looked into has only its kind to go on, and a hive root or a
@@ -2264,84 +2288,18 @@ mod classification_tests {
         assert_eq!(mixed.label(), "mixed", "more files cannot unmake it");
     }
 
-    /// A name too long for the pane keeps both ends. A Hadoop output directory's `.crc`
-    /// files sort first and are named for the file they check, so four of them
-    /// unabridged are a paragraph of UUID beside facts that are one line each.
+    /// A name cut to fit keeps both ends. A Hadoop output directory's `.crc` files are
+    /// named for the file they check, and the head and the tail are what say so.
     #[test]
-    fn a_long_skipped_name_keeps_both_ends() {
-        let holds = Holds {
-            formats: vec![("parquet".to_string(), 2)],
-            skipped: 2,
-            skipped_names: vec![
-                ".part-00000-8f3a91c2-7b4d-4e19-a6f0-c1d2e3f4a5b6-c000.snappy.parquet.crc"
-                    .to_string(),
-                "_SUCCESS".to_string(),
-            ],
-            ..Default::default()
-        };
-        let line = holds.line(true).expect("a line");
-        assert!(line.contains("_SUCCESS"), "{line}");
-        assert!(
-            line.contains(".part-00000"),
-            "the head says what it is: {line}"
-        );
+    fn a_long_name_keeps_both_ends() {
+        let name = ".part-00000-8f3a91c2-7b4d-4e19-a6f0-c1d2e3f4a5b6-c000.snappy.parquet.crc";
+        let line = shorten(name, 24);
+        assert!(line.starts_with(".part-00000"), "the head: {line}");
         // The tail, as much of it as the ellipsis leaves: it takes three characters of
         // the twenty-four in the ASCII glyph set and one in the Unicode one.
-        assert!(line.contains(".crc"), "and the tail: {line}");
-        assert!(
-            !line.contains("8f3a91c2"),
-            "the middle is nobody's business: {line}"
-        );
-        assert!(
-            line.chars().count() < 80,
-            "{} chars: {line}",
-            line.chars().count()
-        );
-    }
-
-    /// The pane never presents the first few skipped names as all of them, and a count
-    /// that is a floor says so wherever it appears.
-    #[test]
-    fn a_tally_does_not_claim_more_than_it_counted() {
-        let holds = Holds {
-            formats: vec![("parquet".to_string(), 12)],
-            // Five subdirectories, three of them partitions: naming both would count
-            // the three twice.
-            directories: 5,
-            partitions: 3,
-            not_read: 7,
-            skipped: 10,
-            skipped_names: vec![".crc".into(), "_SUCCESS".into()],
-            truncated: false,
-        };
-        // The ellipsis is the glyph set's: one character, or three where the terminal
-        // cannot draw it.
-        let e = crate::glyphs::get().ellipsis;
-        assert_eq!(
-            holds.line(true),
-            Some(format!(
-                "12 parquet · 2 directories · 7 not read · 3 partitions · 10 skipped (.crc, _SUCCESS, {e})"
-            ))
-        );
-
-        assert_eq!(
-            holds.line(false),
-            Some(format!(
-                "12 parquet · 2 directories · 7 not read · 10 skipped (.crc, _SUCCESS, {e})"
-            )),
-            "and without the partitions when the layout line below will carry them"
-        );
-
-        let floor = Holds {
-            truncated: true,
-            ..holds
-        };
-        assert_eq!(
-            floor.line(true),
-            Some(format!(
-                "12+ parquet · 2+ directories · 7+ not read · 3+ partitions · 10+ skipped (.crc, _SUCCESS, {e})"
-            ))
-        );
+        assert!(line.ends_with(".crc"), "and the tail: {line}");
+        assert!(!line.contains("8f3a91c2"), "the middle goes: {line}");
+        assert!(line.chars().count() <= 24, "{line}");
     }
 
     /// The same directory read twice reads the same. Skipped names come back in whatever
@@ -2996,10 +2954,7 @@ mod classification_tests {
         assert_eq!(holds.data_files(), 1);
         assert_eq!(holds.not_read, 2, "the note and the broken link");
         assert_eq!(holds.skipped, 1);
-        assert_eq!(
-            holds.line(true).as_deref(),
-            Some("1 csv · 2 not read · 1 skipped (_SUCCESS)")
-        );
+        assert_eq!(holds.line(true).as_deref(), Some("1 csv"));
     }
 
     /// Named like data and impossible to read: a FIFO blocks whoever opens it until a

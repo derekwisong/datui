@@ -724,6 +724,37 @@ impl CacheManager {
             }
         });
     }
+
+    /// Directories kept on the home screen with Ctrl+D, in the order they were added.
+    ///
+    /// The one-keystroke twin of `[data] directories`. Kept here rather than written
+    /// into the config: that file is the user's, comments and all, and may be one of
+    /// several merged together.
+    pub fn load_remembered_places(&self) -> Vec<PathBuf> {
+        self.load_history_file("home_remembered")
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    /// Keep a directory on the home screen until it is forgotten or the cache cleared.
+    pub fn remember_place(&self, path: &std::path::Path) {
+        let target = path.to_string_lossy().into_owned();
+        let _ = self.update_history_file("home_remembered", |places| {
+            if !places.contains(&target) {
+                places.push(target.clone());
+            }
+        });
+    }
+
+    /// Stop keeping a directory on the home screen.
+    pub fn forget_place(&self, path: &std::path::Path) {
+        let target = path.to_string_lossy().into_owned();
+        let _ = self.update_history_file("home_remembered", |places| {
+            places.retain(|p| p != &target);
+        });
+    }
 }
 
 impl CacheManager {

@@ -1188,6 +1188,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
             waiting: true,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         }],
     });
 
@@ -1504,6 +1505,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
 
     let request = ListingRequest {
         config_dirs: vec![tmp.path().to_path_buf()],
+        remembered_dirs: Vec::new(),
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1733,6 +1735,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1822,6 +1825,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
     ];
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: typed.clone(),
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1888,6 +1892,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
     let label_for = |cache: &CacheManager| -> Option<String> {
         let listing = build_listing(&ListingRequest {
             config_dirs: Vec::new(),
+            remembered_dirs: Vec::new(),
             recents: vec![dataset.clone()],
             desktop_dirs: Vec::new(),
             browsing: None,
@@ -1942,6 +1947,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
     )]);
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: vec![dataset],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -2038,6 +2044,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -2110,6 +2117,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: Vec::new(),
+        remembered_dirs: Vec::new(),
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: Some(tmp.path().to_path_buf()),
@@ -2176,6 +2184,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         }],
     });
     home
@@ -3316,6 +3325,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
             waiting: false,
             grouped_by_place: false,
             place_labels: Default::default(),
+            root: None,
         }],
     });
 
@@ -3875,10 +3885,11 @@ fn test_a_directory_row_is_labelled_by_what_the_pass_counted() {
         .find(|r| r.path == directory)
         .expect("the row is still listed");
     assert_eq!(row.label(), "3 csv", "the label is what the pass counted");
+    assert_eq!(row.holds.skipped, 1, "the marker is counted");
     assert_eq!(
         row.holds.line(true).as_deref(),
-        Some("3 csv · 1 skipped (_SUCCESS)"),
-        "and the pane has the whole tally"
+        Some("3 csv"),
+        "and the pane names what there is to open"
     );
 }
 
@@ -3944,6 +3955,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
 
     let listing = build_listing(&ListingRequest {
         config_dirs: vec![configured.clone()],
+        remembered_dirs: Vec::new(),
         recents: vec![recent],
         desktop_dirs: vec![elsewhere_dir],
         browsing: None,
@@ -4520,6 +4532,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
     let listed = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
         let request = ListingRequest {
             config_dirs: Vec::new(),
+            remembered_dirs: Vec::new(),
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: Some(tmp.path().to_path_buf()),
@@ -5248,4 +5261,92 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
         .find(|s| s.title == HomeState::SEARCH_SECTION)
         .expect("the found section is on screen");
     assert_eq!(section.rows.len(), 1, "and the row matched by column name");
+}
+
+/// Inside a directory of notes: no `(all files)` row, since there is nothing for it to
+/// read, and one row saying how many files are hidden, so the directory does not look
+/// empty or broken. Ctrl+A shows them and the row goes.
+#[test]
+fn test_inside_a_directory_of_notes_a_row_says_what_is_hidden() {
+    let tmp = TempDir::new().unwrap();
+    for i in 0..10 {
+        touch(tmp.path(), &format!("note{i}.md"));
+    }
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let rows = home.visible();
+    assert!(
+        !rows.iter().any(|r| matches!(r, Row::Door { .. })),
+        "nothing for the door to read"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| matches!(r, Row::Hidden { count: 10, .. })),
+        "{rows:?}"
+    );
+    home.select_first_entry();
+    assert!(
+        matches!(home.selected_row(), Some(Row::Hidden { .. })),
+        "the cursor lands on the only row there is"
+    );
+
+    home.hide_unreadable = false;
+    let rows = home.visible();
+    assert!(!rows.iter().any(|r| matches!(r, Row::Hidden { .. })));
+    assert_eq!(
+        rows.iter()
+            .filter(|r| matches!(r, Row::Entry { .. }))
+            .count(),
+        10
+    );
+}
+
+/// A part file with no extension is listed when its bytes say it is data, and the
+/// door stays; a `LICENSE` beside it is hidden like any file datui cannot open.
+#[test]
+fn test_an_extensionless_part_file_is_listed_by_its_bytes() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("part-00000"), b"PAR1 footer here PAR1").unwrap();
+    fs::write(tmp.path().join("LICENSE"), b"MIT").unwrap();
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let rows = home.visible();
+    let listed: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry { entry, .. } => Some(entry.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(listed, vec!["part-00000"], "{rows:?}");
+    assert!(rows.iter().any(|r| matches!(r, Row::Door { .. })));
+    assert!(
+        rows.iter()
+            .any(|r| matches!(r, Row::Hidden { count: 1, .. }))
+    );
+}
+
+/// Part files a signature cannot identify — Spark's text output — still earn the door:
+/// the open reads a directory of them by their bytes.
+#[test]
+fn test_unidentified_extensionless_files_keep_the_door() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("part-00000"), b"id,name\n1,a\n").unwrap();
+    let (_, holds) = discover::look_at_directory(tmp.path());
+    assert_eq!(holds.unnamed, 1);
+    assert_eq!(holds.not_read, 0);
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    assert!(home.visible().iter().any(|r| matches!(r, Row::Door { .. })));
 }

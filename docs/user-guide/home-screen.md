@@ -40,7 +40,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A screenful, stopping at the first and last |
 | <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section |
+| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL (with a filter typed, <kbd>~</kbd> types into it). <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
 | <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows |
@@ -48,7 +48,8 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
-| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or hide a cloud source |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor, or forget it if remembered. A file stands for its directory, a heading for the directory it lists |
+| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, then directory, then to the data you had open |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
@@ -69,6 +70,7 @@ Datasets are grouped by where they came from, in this order:
 | current directory | Where you launched datui | `current directory` | open |
 | `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
 | configured directories | `[data] directories`, in the order listed | `configured` | open |
+| remembered directories | Directories kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>, in the order kept | `remembered` | open |
 | `ELSEWHERE` | Directories from your desktop's recent-files list | | folded |
 | `Found` | Datasets below the current directory, while you are typing | | |
 
@@ -104,7 +106,12 @@ has to be found by hand once (<kbd>~</kbd>, type the path, open something).
 <kbd>Enter</kbd> on the place row takes you back there.
 
 To keep a place listed as a section of its own, even when empty or unmounted,
-name it in the config:
+press <kbd>Ctrl</kbd>+<kbd>D</kbd> on it. It is listed after the configured
+directories with a `remembered` chip until you press <kbd>Ctrl</kbd>+<kbd>D</kbd>
+again or <kbd>Delete</kbd> on its heading. It is kept in the cache, so
+`datui --clear-cache` forgets it too.
+
+For a place that should survive that, name it in the config:
 
 ```toml
 [data]
@@ -178,22 +185,26 @@ it.
 
 ```
  DETAILS
-source      nfs4
-kind        hive
-rows        412M
-columns     38
-on disk     184 MB
-in memory   1.4 GB  zstd 7.6×
-row groups  12
-partitions  1,460 by date, region
-            date 2021-01-01 to 2024-12-31
-modified    3 days ago
+kind         hive table
+storage      nfs4
+rows         412M
+columns      38
+on disk      184 MB
+in memory    1.4 GB
+compression  zstd, 7.6×
+row groups   12
+partitions   1,460 by date, region
+range        date 2021-01-01 to 2024-12-31
+modified     3 days ago
 ```
 
 | Line | From | Why it matters |
 |---|---|---|
-| `source` | the mount table | `nfs4`, `cifs` and `fuse.sshfs` all behave differently from a local disk. Remote sources are colored |
+| `kind` | the listing | what the row is, in words: `parquet file`, `directory`, `hive table`, `delta table` |
+| `storage` | the mount table | `nfs4`, `cifs` and `fuse.sshfs` all behave differently from a local disk. Remote storage is colored |
+| `contains` | one listing of a directory | the data files by format, the directories and the partitions inside it, one to a line; `no data files` when there is nothing to open |
 | `in memory` | the Parquet footer | what the data occupies once decompressed, against what it occupies on disk |
+| `compression` | the Parquet footer | the codec, and how many times smaller the file is than the data |
 | `row groups` | the Parquet footer | one huge group cannot be read in parallel; thousands of tiny ones cost overhead |
 | `partitions` | directory names | the layout of a partitioned dataset, without opening a file |
 
@@ -222,21 +233,25 @@ A directory's label says what is directly inside it, from one listing:
 | `?` | Looking into a directory in a bucket failed; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again |
 
 A directory larger than the listing cap counts what it read and says so: `5000+
-parquet`. The details pane carries the whole tally on a `holds` line — `12
-parquet · 2 csv · 3 directories · 5 not read · 7 skipped (.crc, _SUCCESS,
-_committed_1727, _started_1727, …)` — every file in the directory is in one of
-those counts. `skipped` is a name beginning with `_` or `.`, or ending
-`_$folder$` — the names engines and repositories use for their own files. A
-`key=value` name is a partition whatever it begins with, so a dataset
-partitioned on `_date` is not skipped; a marker named after one,
-`year=2024_$folder$`, still is. The first four skipped are named.
+parquet`. The details pane's `contains` lines list what there is to open inside.
+Names engines and repositories use for their own files are not counted: a name
+beginning with `_` or `.`, or ending `_$folder$`. A `key=value` name is a
+partition whatever it begins with, so a dataset partitioned on `_date` is still
+counted; a marker named after one, `year=2024_$folder$`, is not.
 
-A listing shows the files datui can read. <kbd>Ctrl</kbd>+<kbd>A</kbd> shows the
-rest too, such as `README.md` or `model.onnx`, dimmed and after the directories,
-and hides them again. <kbd>Enter</kbd> does nothing on one; its details pane
-says datui has no reader for it. A path to one typed at <kbd>~</kbd> says so
-beside the prompt instead of opening or downloading it. To list them from the
-start, set `show_unreadable_files = true` under `[data]`.
+A file with no extension, such as Spark's `part-00000`, is data when its first
+bytes carry a Parquet, Arrow, Avro or ORC signature. datui looks on a local disk
+only; on a network share such a file is left to the `(all files)` row, which
+reads it by its contents.
+
+A listing shows the files datui can read. Inside a directory, the last row says
+how many others are hidden, `… 10 files datui can't open`, and its details pane
+names them. <kbd>Enter</kbd> on that row or <kbd>Ctrl</kbd>+<kbd>A</kbd> shows
+them, dimmed and after the directories; <kbd>Ctrl</kbd>+<kbd>A</kbd> hides them
+again. <kbd>Enter</kbd> does nothing on one; its details pane says datui has no
+reader for it. A path to one typed at <kbd>~</kbd> says so beside the prompt
+instead of opening or downloading it. To list them from the start, set
+`show_unreadable_files = true` under `[data]`.
 
 A file that fails to load is reported on the home screen, where it was chosen;
 <kbd>Esc</kbd> still returns to the dataset open before.
@@ -478,9 +493,10 @@ back. A dataset that will not open returns you here with the reason:
 
 ## What datui remembers
 
-Two things, both in the cache directory:
+Three things, all in the cache directory:
 
 - The paths you have opened, at most 50.
+- The directories you kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>.
 - What it measured: row and column counts and column names, each stamped with
   the size and modification time it was taken from.
 

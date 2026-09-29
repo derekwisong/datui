@@ -1,10 +1,10 @@
 # datui
 
-**Explore tabular data without leaving your terminal.**
+**A terminal UI for tabular data.**
 
-Open a file, ask a question, and take the result with you. datui reads Parquet,
-CSV, JSON, Excel and more, from your disk or cloud storage. Query with SQL or
-its short query language; sort, chart, reshape and export with the keyboard.
+datui opens Parquet, CSV, JSON, Excel and other tabular files from local disk
+or cloud storage. You can browse and filter rows, run SQL, plot columns, and
+export the result. It also works with Polars DataFrames in Python.
 
 [![Release](https://img.shields.io/github/v/release/derekwisong/datui?style=flat-square)](https://github.com/derekwisong/datui/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square)](https://github.com/derekwisong/datui/actions)
@@ -15,8 +15,8 @@ its short query language; sort, chart, reshape and export with the keyboard.
 ```bash
 datui flights.parquet              # open a file
 datui ./exports/                   # open a dataset or browse its files
-datui s3://bucket/events/           # S3, GCS and Azure work too
-datui                              # find a dataset from the home screen
+datui s3://bucket/events/           # open a dataset in S3
+datui                              # open the file browser
 ```
 
 ![Filtering public US baby-name data to see one name's history](demos/02-querying.gif)
@@ -29,20 +29,20 @@ On Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
 
-| Prefer a package manager? | Command |
+| Package manager | Command |
 |---|---|
-| macOS | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
-| Windows | `winget install derekwisong.datui` |
-| Python | `pip install datui` |
-| Rust | `cargo install datui --locked` |
-| Arch Linux | `paru -S datui-bin` |
+| Homebrew (macOS) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
+| WinGet (Windows) | `winget install derekwisong.datui` |
+| pip | `pip install datui` |
+| Cargo | `cargo install datui --locked` |
+| AUR (Arch Linux) | `paru -S datui-bin` |
 
 The [installation guide][install-guide] covers apt, RPMs, user-only installs
 and building from source. [Prebuilt binaries][latest-release] are also available.
 
-## From rows to an answer
+## Keyboard controls
 
-| Do this | Press | Read more |
+| Action | Key | Guide |
 |---|---|---|
 | Query, run SQL, or search text | `/` | [Queries][query-guide] |
 | Sort, filter, hide or freeze columns | `s` | [Table controls][filter-guide] |
@@ -53,14 +53,14 @@ and building from source. [Prebuilt binaries][latest-release] are also available
 | Save a view to reuse on another file | `v` | [Views][views-guide] |
 
 Press `?` for help on any screen. `Esc` backs out; `Ctrl+Q` quits.
-The [quick start][quick-start] walks through a real public dataset, from opening
-it to saving a chart and a table.
+The [quick start][quick-start] uses public penguin measurements to demonstrate
+queries, charts and export.
 
 Parquet and other scan-based formats use [Polars](https://pola.rs) to load rows
 as needed. Queries, sorting and analysis can read much more than the visible
 page; see [performance tips][performance] for large datasets.
 
-## Use it from Python
+## Python
 
 `pip install datui` includes both the command and the Python module:
 
@@ -70,7 +70,7 @@ import polars as pl
 
 datui.view(pl.scan_parquet("flights.parquet"))
 
-# Bring the view you built in the UI back to Python.
+# Return the current query, filters and sort as a LazyFrame.
 result = datui.view("flights.parquet", capture=True)
 if result is not None:
     result.collect()
@@ -78,17 +78,17 @@ if result is not None:
 
 [Python guide][python-module] · [Supported formats and cloud access][loading-guide]
 
-## Make it yours
+## Configuration
 
-Run `datui --generate-config` to create a TOML config. Set your data directories,
-cloud sources, number formatting, and light or dark colors in the
-[configuration guide][config-guide].
+Run `datui --generate-config` to create a TOML config. It controls data
+directories, cloud connections, number formatting and colors. See the
+[configuration guide][config-guide] for the available settings.
 
 ## Contribute
 
-Found a bug or have an idea? [Open an issue][issues]. For code and documentation
-changes, start with the [developer guide][for-developers]. Report security
-issues using [SECURITY.md](SECURITY.md).
+[Open an issue][issues] for bugs and feature requests. The
+[developer guide][for-developers] covers building, testing and contributing.
+Report security issues using [SECURITY.md](SECURITY.md).
 
 Built with [Polars](https://pola.rs) and [Ratatui](https://ratatui.rs).
 Released under the [MIT license](LICENSE).

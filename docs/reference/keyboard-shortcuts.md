@@ -61,7 +61,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A screenful, stopping at the first and last |
 | <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, or on a place row under `RECENT`, goes inside it |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT`, or fold the section. The control bar names which, for the row you are on |
+| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section. The control bar names which, for the row you are on |
 | <kbd>Enter</kbd> on `(all files)` | Read the whole directory as one table, whatever its label. The first row inside a directory with something openable — `(all partitions)` in a hive directory; hidden while a filter is typed |
 | type | Filter by name or column name, and search below the directory you are inside |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes, <kbd>Enter</kbd> opens, <kbd>Esc</kbd> closes |
@@ -70,7 +70,8 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
-| <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or hide a cloud source |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor so it stays listed, or forget it if remembered |
+| <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: path prompt, filter, directory, then to the open data |
 | <kbd>?</kbd> or <kbd>F1</kbd> | Help (<kbd>?</kbd> until you start typing; <kbd>F1</kbd> always) |

@@ -22,7 +22,8 @@ selected row. The details pane previews its schema when available.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
-| <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a cloud source, hide it |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
+| <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a remembered heading, forget it; on a cloud source, hide it |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Confirm forgetting all recent entries |
 | <kbd>Esc</kbd> | Clear the filter, leave a directory, or return to the open table |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
@@ -40,6 +41,7 @@ The bottom bar shows the available action for the selected row.
 | Current directory | Files where you launched datui |
 | `CLOUD` | Detected and configured cloud sources; open one to list its contents |
 | Configured directories | Paths from `[data] directories`, in configured order |
+| Remembered directories | Paths saved with <kbd>Ctrl</kbd>+<kbd>D</kbd> |
 | `ELSEWHERE` | Directories from the desktop's recent-files list; folded initially |
 | `Found` | Recursive search results while you type |
 
@@ -61,8 +63,10 @@ The section count and filter include entries beyond that visible limit.
 
 ### Adding a directory
 
-Opening a dataset remembers its parent as a recent place. To keep a directory
-in its own section, add it to your [config](configuration.md#data):
+Opening a dataset adds its parent to Recent. Press <kbd>Ctrl</kbd>+<kbd>D</kbd>
+to keep a directory in its own section; press it again to forget the directory.
+Remembered directories are stored in the cache. To keep one after clearing the
+cache, add it to your [config](configuration.md#data):
 
 ```toml
 [data]
@@ -121,7 +125,8 @@ crossing onto network shares or triggering automounts during a search.
 
 | Field | Meaning |
 |---|---|
-| Source | Local disk, memory, network filesystem or object store |
+| Kind / storage | File or dataset format, and the filesystem or object store |
+| Contains | Files by format, directories and partitions |
 | Rows × columns | Known counts; blank when they would require scanning data |
 | On disk | Stored size |
 | In memory | Parquet's uncompressed size, not current process memory |
@@ -145,12 +150,13 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 | `bucket`, `container` | The top of an object store |
 | `…`, spinner, `?` | Not inspected yet, inspecting, or inspection failed |
 
-The details pane's `holds` line gives file, directory and skipped-file counts.
+The details pane's `contains` lines list the directory's contents.
 Job markers and names beginning with `_` or `.` are skipped, except partition
 names such as `_date=2025-01-01`. Folder markers ending in `_$folder$` are
 also skipped. A capped listing says so, for example `5000+ parquet`.
 
-<kbd>Ctrl</kbd>+<kbd>A</kbd> reveals unreadable files such as `README.md`.
+Select the `… files datui can't open` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
+to reveal unreadable files such as `README.md`.
 They are dimmed and cannot be opened. Set `[data] show_unreadable_files = true`
 to show them by default.
 
@@ -236,7 +242,7 @@ and modification time. Clear them with:
 | Command | Removes |
 |---|---|
 | `datui --clear-recents` | Recent paths only |
-| `datui --clear-cache` | Cached metadata, recents and query history |
+| `datui --clear-cache` | Cached metadata, recents, remembered directories and query history |
 
 These commands do not delete data files.
 

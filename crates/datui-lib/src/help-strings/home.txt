@@ -11,7 +11,8 @@ Navigation:
   Enter:            What the control bar says on this row: "Open all" reads a
                     whole directory as one table, "Inside" steps into it,
                     "Open" loads a file, "Look" finds out first. On a section
-                    header, fold or unfold it; on the More row, show the rest
+                    header, fold or unfold it; on the More row, show the rest;
+                    on the hidden-files row, show them
   Backspace:        Delete a filter character; on an empty filter, up a
                     level (from a bucket, back to its cloud source)
   Tab:              Cycle the sort; the control bar names the order in effect
@@ -29,8 +30,12 @@ Finding:
   Ctrl+U:           Clear the filter or path input
   Ctrl+R:           List again what is on screen
   Ctrl+A:           Show or hide files datui cannot read
+  Ctrl+D:           Remember the directory under the cursor, so it stays
+                    listed; again to forget it. A file stands for the
+                    directory it is in, a heading for the one it lists
   Delete:           Forget the highlighted recent entry, or a whole place
-                    after confirming, or hide a cloud source
+                    after confirming, or a remembered place on its heading,
+                    or hide a cloud source
   Shift+Delete:     Forget every recent entry, after confirming
 
 Sections, in order:
@@ -38,7 +43,8 @@ Sections, in order:
                     lives in, newest place first
   Current directory: Where datui was launched
   Cloud:            One row per cloud source; Enter lists its buckets
-  Configured:       Directories from [data] directories in the config
+  Configured:       Directories from [data] directories in the config,
+                    then those remembered with Ctrl+D
   Elsewhere:        Directories your desktop recorded; starts folded
   Found:            Search results, shown while typing
 
@@ -49,9 +55,9 @@ Reading a row:
   directory with something openable, the first row is "(all files)" — or
   "(all partitions)" in a hive directory — and Enter there reads the whole
   directory as one table whatever the label says. The row hides while a
-  filter is typed, and is absent when nothing inside is openable. The
-  details pane carries the full tally, and the Notes tab says what a read
-  had to decide.
+  filter is typed, and is absent when nothing inside is openable. Inside a
+  directory, the last row counts the files datui can't open; Enter on it
+  shows them. The Notes tab says what a read had to decide.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)
@@ -60,5 +66,6 @@ Help and leaving:
 What datui remembers, all under its cache directory and never the data
 itself: recent paths, the shapes and column names it measured (so this
 screen can say 1,000 × 11 without reading anything), query history, section
-folds, bucket listings, hidden cloud sources and public places.
+folds, remembered directories, bucket listings, hidden cloud sources and
+public places.
 datui --clear-cache removes all of it.

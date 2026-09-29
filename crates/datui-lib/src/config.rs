@@ -1963,7 +1963,8 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
      Think of this like PATH: a list of places, not a catalog. datui stores nothing\n\
      about what it finds. Supports ~ and $VAR.\n\
      Directories of datasets you opened recently are offered automatically, so this is\n\
-     only needed for places you have not visited yet.\n\
+     only needed for places you have not visited yet. Ctrl+D on the home screen keeps\n\
+     a directory listed without editing this file.\n\
      Example: directories = [\"/mnt/data\", \"~/datasets\"]",
     ),
     (

@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 pub enum RootOrigin {
     Cwd,
     Configured,
+    /// Kept with Ctrl+D on the home screen: `[data] directories` without editing it.
+    Remembered,
     /// Derived from the desktop's own recently-used list.
     Desktop,
 }
@@ -34,6 +36,7 @@ impl RootOrigin {
         match self {
             RootOrigin::Cwd => "current directory",
             RootOrigin::Configured => "configured",
+            RootOrigin::Remembered => "remembered",
             RootOrigin::Desktop => "opened elsewhere",
         }
     }
@@ -299,10 +302,12 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     // the two differ on the directory that most needs the door: Spark and GBIF write part
     // files with no extension, no name in there says data, so nothing is listed — and a
     // guard on the rows alone made that directory a dead end, nothing listed and no way
-    // to read it, though the open reads it by its bytes perfectly well. Files nothing
-    // could name count here for that reason, and so do subdirectories, whose data is a
-    // level down.
-    if rows.is_empty() && holds_nothing_to_open(&holds) {
+    // to read it, though the open reads it by its bytes perfectly well. Files with no
+    // extension count here for that reason, and so do subdirectories, whose data is a
+    // level down. A file whose extension no reader takes does not: a directory of notes
+    // has nothing for the door to read.
+    let openable_row = rows.iter().any(|r| r.kind != EntryKind::Other);
+    if !openable_row && holds_nothing_to_open(&holds) {
         return None;
     }
     // What the row says it opens, not whether it opens: a hive directory is read through
@@ -354,7 +359,7 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
 /// promise nothing keeps. One function, or the two drift and the sentence outlives the
 /// row it points at.
 pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
-    holds.formats.is_empty() && holds.directories == 0 && holds.not_read == 0
+    holds.formats.is_empty() && holds.directories == 0 && holds.unnamed == 0
 }
 
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.
@@ -459,6 +464,9 @@ pub struct Section {
     /// far right with the state, and a directory derived from a recent was drawn
     /// exactly like a configured one with only that word to tell them apart.
     pub origin: Option<&'static str>,
+    /// The directory a path-titled section lists: a root, or the directory browsed.
+    /// The title is abbreviated for display and cannot be turned back into a path.
+    pub root: Option<PathBuf>,
     pub rows: Vec<Entry>,
     /// The row that opens the directory this section lists, as one table. Its own row,
     /// not one of `rows`.
@@ -743,6 +751,10 @@ pub enum Row<'a> {
         hidden: usize,
         places: usize,
     },
+    /// The last row inside a browsed directory whose files datui cannot read are
+    /// hidden: `… 10 files datui can't open`. Without it a directory of notes looks
+    /// empty, or broken. `Enter` shows them, as `Ctrl+A` does.
+    Hidden { section: usize, count: usize },
 }
 
 impl Row<'_> {
@@ -752,7 +764,8 @@ impl Row<'_> {
             | Row::Entry { section, .. }
             | Row::Door { section, .. }
             | Row::Place { section, .. }
-            | Row::More { section, .. } => *section,
+            | Row::More { section, .. }
+            | Row::Hidden { section, .. } => *section,
         }
     }
 }
@@ -796,6 +809,7 @@ pub enum RowKey {
     Door(PathBuf),
     Place(PathBuf),
     More(String),
+    Hidden(String),
 }
 
 /// Home screen state.
@@ -972,6 +986,8 @@ impl Default for HomeState {
 #[derive(Debug, Clone)]
 pub struct ListingRequest {
     pub config_dirs: Vec<PathBuf>,
+    /// Directories kept with Ctrl+D, listed after the configured ones.
+    pub remembered_dirs: Vec<PathBuf>,
     pub recents: Vec<PathBuf>,
     pub desktop_dirs: Vec<PathBuf>,
     pub browsing: Option<PathBuf>,
@@ -1088,6 +1104,7 @@ fn probed_entry(
 pub fn build_listing(request: &ListingRequest) -> Listing {
     let ListingRequest {
         config_dirs,
+        remembered_dirs,
         recents,
         desktop_dirs,
         browsing,
@@ -1132,6 +1149,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing { sections };
@@ -1178,6 +1196,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             },
             subtitle: None,
             origin: None,
+            root: Some(dir.clone()),
             rows,
             unavailable,
             // A browsed remote place that did not answer has nothing to add; one whose
@@ -1218,7 +1237,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // Desktop-derived places are collected rather than expanded — see below.
     let mut elsewhere: Vec<Entry> = Vec::new();
 
-    let roots = HomeState::roots_with(config_dirs, desktop_dirs, network_check);
+    let roots = HomeState::roots_from(config_dirs, remembered_dirs, desktop_dirs, network_check);
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
     // What the current-directory section is about to show, for the RECENT dedupe
     // below: where it is, and the names it lists.
@@ -1306,6 +1325,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 title: display_path(&root.path),
                 subtitle: (!state.is_empty()).then(|| state.join(" · ")),
                 origin: Some(root.origin.note()),
+                root: Some(root.path.clone()),
                 rows,
                 unavailable: !root.available || unreachable,
                 unavailable_note: None,
@@ -1355,6 +1375,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             title: HomeState::RECENT_SECTION.to_string(),
             subtitle: None,
             origin: None,
+            root: None,
             rows: recent_rows,
             unavailable: false,
             unavailable_note: None,
@@ -1399,10 +1420,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
     }
 
-    // Configured places, in the order configured.
+    // Configured places in the order configured, then remembered ones in the order kept.
     sections.extend(rest.into_iter().map(|(_, s)| s));
 
     if !elsewhere.is_empty() {
@@ -1421,6 +1443,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
     }
 
@@ -1800,6 +1823,18 @@ impl HomeState {
         desktop_dirs: &[PathBuf],
         is_network: fn(&Path) -> bool,
     ) -> Vec<Root> {
+        Self::roots_from(config_dirs, &[], desktop_dirs, is_network)
+    }
+
+    /// As [`HomeState::roots_with`], plus the directories kept with Ctrl+D. They come
+    /// after the configured ones: a place written into the config is the more
+    /// deliberate choice, and a directory in both is listed as configured.
+    pub fn roots_from(
+        config_dirs: &[PathBuf],
+        remembered_dirs: &[PathBuf],
+        desktop_dirs: &[PathBuf],
+        is_network: fn(&Path) -> bool,
+    ) -> Vec<Root> {
         let mut roots: Vec<Root> = Vec::new();
         let mut seen: Vec<PathBuf> = Vec::new();
 
@@ -1848,6 +1883,10 @@ impl HomeState {
             push(dir.clone(), RootOrigin::Configured, &mut roots, &mut seen);
         }
 
+        for dir in remembered_dirs {
+            push(dir.clone(), RootOrigin::Remembered, &mut roots, &mut seen);
+        }
+
         // Last, and weakest: places the desktop says you have opened data from. Only
         // useful before datui has recents of its own.
         for dir in desktop_dirs {
@@ -1875,6 +1914,7 @@ impl HomeState {
     ) {
         let request = ListingRequest {
             config_dirs: config_dirs.to_vec(),
+            remembered_dirs: Vec::new(),
             recents: recents.to_vec(),
             desktop_dirs: desktop_dirs.to_vec(),
             browsing: self.browsing.clone(),
@@ -1929,6 +1969,7 @@ impl HomeState {
         Some(match self.selected_row()? {
             Row::Header { section, .. } => RowKey::Header(title(section)?),
             Row::More { section, .. } => RowKey::More(title(section)?),
+            Row::Hidden { section, .. } => RowKey::Hidden(title(section)?),
             Row::Entry { entry, .. } => RowKey::Entry(entry.path.clone()),
             Row::Door { entry, .. } => RowKey::Door(entry.path.clone()),
             Row::Place { path, .. } => RowKey::Place(path),
@@ -1953,7 +1994,8 @@ impl HomeState {
             (Row::Door { entry, .. }, RowKey::Door(path)) => entry.path == *path,
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
             (Row::Header { section, .. }, RowKey::Header(title))
-            | (Row::More { section, .. }, RowKey::More(title)) => self
+            | (Row::More { section, .. }, RowKey::More(title))
+            | (Row::Hidden { section, .. }, RowKey::Hidden(title)) => self
                 .sections
                 .get(*section)
                 .is_some_and(|s| s.title == *title),
@@ -2419,6 +2461,7 @@ impl HomeState {
                     grouped_by_place: false,
                     door: None,
                     place_labels: Default::default(),
+                    root: None,
                 });
             }
             return;
@@ -2469,6 +2512,7 @@ impl HomeState {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
     }
 
@@ -2536,7 +2580,24 @@ impl HomeState {
             // directory was a dead end that the open could have read.
             let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
             let has_door = section.door.is_some() && self.filter.is_empty();
-            if matched.is_empty() && !has_door && !(keep_empty && self.filter.is_empty()) {
+            // Only inside a directory, where the listing is the whole screen and an
+            // empty one needs saying why. The root listing's sections leave them out
+            // quietly, as they always have.
+            let hidden =
+                if self.browsing.is_some() && self.hide_unreadable && self.filter.is_empty() {
+                    section
+                        .rows
+                        .iter()
+                        .filter(|row| row.kind == EntryKind::Other)
+                        .count()
+                } else {
+                    0
+                };
+            if matched.is_empty()
+                && !has_door
+                && hidden == 0
+                && !(keep_empty && self.filter.is_empty())
+            {
                 continue;
             }
 
@@ -2609,6 +2670,12 @@ impl HomeState {
                     entry,
                     nested: false,
                 }));
+            }
+            if hidden > 0 {
+                out.push(Row::Hidden {
+                    section: si,
+                    count: hidden,
+                });
             }
         }
         out
@@ -3107,6 +3174,8 @@ impl HomeState {
         self.selected = rows
             .iter()
             .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }))
+            // A directory of files datui cannot open: the row that says so.
+            .or_else(|| rows.iter().position(|r| matches!(r, Row::Hidden { .. })))
             .unwrap_or(0);
     }
 
@@ -3584,6 +3653,7 @@ mod holds_flow_tests {
             grouped_by_place: false,
             door: None,
             place_labels: Default::default(),
+            root: None,
         });
         // A measurement of a file carries no `holds`, and the same struct measures both.
         home.enriched.insert(

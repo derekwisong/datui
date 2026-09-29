@@ -7382,6 +7382,192 @@ fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     );
 }
 
+fn ctrl(c: char) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+/// Ctrl+D keeps the place under the cursor on the home screen, and pressed again stops
+/// keeping it. A file row stands for the directory it is in. What is checked is the
+/// store, which is what the next listing reads.
+#[test]
+fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let here = recents[0].parent().unwrap().to_path_buf();
+    let there = recents[2].parent().unwrap().to_path_buf();
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    let kept = |cache: &datui::CacheManager, path: &Path| {
+        cache.load_remembered_places().iter().any(|p| p == path)
+    };
+
+    app.event(&ctrl('d'));
+    assert!(kept(&cache, &here), "{:?}", cache.load_remembered_places());
+    assert!(
+        app.flash_message()
+            .is_some_and(|s| s.starts_with("Remembered")),
+        "{:?}",
+        app.flash_message()
+    );
+
+    app.event(&ctrl('d'));
+    assert!(!kept(&cache, &here), "a second press forgets it");
+    assert!(app.flash_message().is_some_and(|s| s.starts_with("Forgot")));
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == recents[2]),
+        )
+        .expect("the recent in the other place is listed");
+    app.home.selected = row;
+    app.event(&ctrl('d'));
+    assert!(kept(&cache, &there), "a file row remembers its directory");
+    cache.forget_place(&there);
+}
+
+/// A remembered directory is listed like a configured one, marked `remembered`, and
+/// `Delete` on its heading forgets it. One that is also configured is listed once,
+/// as configured, and Ctrl+D on it points at the config rather than doing nothing.
+#[test]
+fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = datui::canonical::canonicalize(tmp.path()).unwrap();
+    let kept = root.join("kept");
+    let configured = root.join("configured");
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::create_dir_all(&configured).unwrap();
+    std::fs::write(kept.join("a.parquet"), b"x").unwrap();
+    let cache = datui::CacheManager::new("datui").expect("cache");
+    cache.remember_place(&kept);
+
+    let mut config = datui::AppConfig::default();
+    config.data.directories = vec![configured.to_string_lossy().into_owned()];
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    app.home
+        .apply_listing(datui::home::build_listing(&datui::home::ListingRequest {
+            config_dirs: vec![configured.clone()],
+            remembered_dirs: vec![kept.clone(), configured.clone()],
+            recents: Vec::new(),
+            desktop_dirs: Vec::new(),
+            browsing: None,
+            probed: Default::default(),
+            unreachable: Default::default(),
+            probe_errors: Default::default(),
+            network_check: app.home.network_check,
+            cloud: Vec::new(),
+            known: Default::default(),
+        }));
+
+    let heading = |app: &App, dir: &Path| {
+        app.home
+            .visible()
+            .iter()
+            .position(|r| {
+                matches!(r, datui::home::Row::Header { section, .. }
+                    if app.home.sections[*section].root.as_deref() == Some(dir))
+            })
+            .expect("the directory has a section")
+    };
+    let origin = |app: &App, dir: &Path| {
+        app.home
+            .sections
+            .iter()
+            .filter(|s| s.root.as_deref() == Some(dir))
+            .map(|s| s.origin)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(origin(&app, &kept), vec![Some("remembered")]);
+    assert_eq!(
+        origin(&app, &configured),
+        vec![Some("configured")],
+        "listed once, as configured"
+    );
+
+    app.home.selected = heading(&app, &configured);
+    app.event(&ctrl('d'));
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("[data] directories")),
+        "{:?}",
+        app.home.status
+    );
+    assert!(!cache.load_remembered_places().contains(&configured));
+
+    // A file under the place is a file on disk: Delete points at the heading.
+    app.home.selected = heading(&app, &kept) + 1;
+    app.event(&key(KeyCode::Delete));
+    assert!(cache.load_remembered_places().contains(&kept));
+    assert!(
+        app.home
+            .status
+            .as_deref()
+            .is_some_and(|s| s.starts_with("Delete on the heading")),
+        "{:?}",
+        app.home.status
+    );
+
+    app.home.selected = heading(&app, &kept);
+    app.event(&key(KeyCode::Delete));
+    assert!(
+        !cache.load_remembered_places().contains(&kept),
+        "forgotten: {:?}",
+        cache.load_remembered_places()
+    );
+}
+
+/// Inside a directory of notes the one row says what is hidden and the bar offers to
+/// show it. Enter does, and Ctrl+A hides them again with a flash on the bar rather than
+/// a line beside the filter that outlives it.
+#[test]
+fn test_enter_on_the_hidden_row_shows_the_files() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for i in 0..3 {
+        std::fs::write(tmp.path().join(format!("note{i}.md")), b"x").unwrap();
+    }
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    app.home.select_first_entry();
+
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(screen.contains("3 files datui can't open"), "{screen:?}");
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("Show"), "{bar:?}");
+
+    app.event(&key(KeyCode::Enter));
+    assert!(!app.home.hide_unreadable);
+    assert!(matches!(
+        app.home.selected_row(),
+        Some(datui::home::Row::Entry { entry, .. }) if entry.name == "note0.md"
+    ));
+
+    app.event(&ctrl('a'));
+    assert!(app.home.hide_unreadable);
+    assert_eq!(app.home.status, None);
+    assert_eq!(app.flash_message(), Some("Hiding files datui can't open"));
+}
+
 /// `Enter` and `→` on the place of a recent opened over HTTP say why they do nothing,
 /// rather than listing a URL and reporting it unreachable.
 #[test]
@@ -9390,8 +9576,8 @@ fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
 /// Spark and GBIF both write part files with no extension. `occurrence.parquet/000001` is
 /// read by its directory's name; the same files under a directory named anything else
 /// were not data at all as far as datui was concerned — nothing listed them and nothing
-/// opened them. The bytes say what the names do not, and they are asked once, of the
-/// directory somebody is opening, never of a directory somebody is looking at.
+/// opened them. The bytes say what the names do not. On a local disk a listing asks them
+/// too, a few bytes a file, so the row agrees with the open.
 #[test]
 fn test_a_directory_of_files_written_without_extensions_still_opens() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -9404,11 +9590,11 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
             .unwrap();
     }
 
-    // The names settle nothing, so the directory is a place to look inside.
+    // No name in there says data, and the signatures do.
     assert_eq!(
         datui::discover::classify_directory(&parts),
-        datui::discover::EntryKind::Directory,
-        "no name in there says data"
+        datui::discover::EntryKind::MultiFile,
+        "the bytes say one Parquet table"
     );
 
     // And the read finds them anyway.

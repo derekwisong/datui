@@ -116,13 +116,12 @@ file has no locale, and `LC_NUMERIC` is unset on most servers.
 
 ```toml
 [performance]
-# sampling_threshold = 1000000   # Analyze a sample when a table has this many rows or more
+analysis_sample_rows = 100000    # Rows analyzed from a larger table; 0 reads every row
 event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
 quality_sample_rows = 10000      # Data Quality rows kept per segment, 1 to 50_000
 ```
 
-Sampling is off unless `sampling_threshold` is set. `--sampling-threshold N`
-overrides it for a run and `0` forces the full dataset. See
+`--sample-rows N` overrides `analysis_sample_rows` for a run. See
 [Analysis](analysis-features.md#sampling).
 
 `quality_sample_rows` is the default for the Data Quality plan's
@@ -503,7 +502,7 @@ Any flag beats the file for that run:
 datui data.csv --row-numbers
 datui data.csv --number-format thousands
 datui data.csv --infer-schema-length 10000
-datui data.csv --sampling-threshold 0 # no sampling, whatever the file says
+datui data.csv --sample-rows 0       # analyze every row, whatever the file says
 ```
 
 ## Troubleshooting

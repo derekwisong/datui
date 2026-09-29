@@ -969,6 +969,56 @@ fn test_stale_background_events_are_ignored() {
     );
 }
 
+/// Esc cancels an analysis while it runs, for every tool: it acts at once rather than
+/// queueing behind the run, the bar says so first, and the answer that arrives later
+/// is dropped rather than installed.
+#[test]
+fn test_esc_cancels_a_distribution_analysis_in_flight() {
+    use datui::analysis_modal::AnalysisTool;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&key(KeyCode::Char('a')));
+    app.analysis_modal.sidebar_state.select(Some(1));
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(matches!(next, Some(AppEvent::AnalysisDistributionCompute)));
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DistributionAnalysis)
+    );
+    // The run starts on a worker.
+    app.event(&next.unwrap());
+    assert!(app.analysis_modal.computing.is_some());
+
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen = rendered_text(&buf);
+    assert!(screen.contains("Cancel"), "{screen:?}");
+    assert!(!screen.contains("0 / 1"), "no gauge that cannot move");
+
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.hard_escape_while_busy(&esc), "Esc jumps the queue");
+    app.event(&AppEvent::Key(esc));
+    assert!(app.analysis_modal.computing.is_none());
+    assert_eq!(app.analysis_modal.selected_tool, None);
+    assert!(app.analysis_modal.active, "still on the analysis screen");
+    assert_eq!(app.flash_message(), Some("Analysis cancelled"));
+
+    // The worker finishes anyway; what it sends is stale.
+    drain_events(&mut app, &rx);
+    assert!(app.analysis_modal.computing.is_none());
+    assert_eq!(app.analysis_modal.selected_tool, None);
+}
+
 #[test]
 fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
@@ -5272,6 +5322,50 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
             .is_some_and(|s| s.display_slice_df().is_some()),
         "the dataset we returned to should still have its buffer"
     );
+}
+
+/// A key typed while an analysis runs is held, and Esc cancelling the run drops it: an
+/// impatient second Enter replayed after the cancel started the run again behind it.
+#[test]
+fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
+    common::ensure_sample_data();
+    let path = PathBuf::from("tests/sample-data/large_dataset.parquet");
+    let (tx, rx) = mpsc::channel();
+    let app = App::new(tx.clone(), common::test_runtime());
+    let mut pump = EventPump::new(app, tx, rx);
+    pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while (pump.app.is_busy() || pump.app.data_table_state.is_none())
+        && std::time::Instant::now() < deadline
+    {
+        pump.wait_and_drain(std::time::Duration::from_millis(100))
+            .unwrap();
+    }
+
+    let press = |pump: &mut EventPump, code| {
+        pump.terminal_key(KeyEvent::new(code, KeyModifiers::NONE))
+            .unwrap();
+    };
+    press(&mut pump, KeyCode::Char('a'));
+    pump.app.analysis_modal.sidebar_state.select(Some(1));
+    press(&mut pump, KeyCode::Enter);
+    pump.drain().unwrap();
+    assert!(
+        pump.app.analysis_modal.computing.is_some(),
+        "the run started"
+    );
+    press(&mut pump, KeyCode::Enter);
+    assert_eq!(pump.held_keys().count(), 1, "typed while busy: held");
+
+    press(&mut pump, KeyCode::Esc);
+    while pump.replay_one().unwrap() {}
+    assert_eq!(pump.held_keys().count(), 0);
+    assert!(
+        pump.app.analysis_modal.computing.is_none(),
+        "the held Enter did not start it again"
+    );
+    assert_eq!(pump.app.analysis_modal.selected_tool, None);
 }
 
 /// Going home clears the *load's* busy state, and leaves `task_generation` alone —

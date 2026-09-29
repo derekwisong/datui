@@ -27,8 +27,18 @@ pub enum AnalysisTool {
 #[derive(Debug, Clone)]
 pub struct AnalysisProgress {
     pub phase: String,
-    pub current: usize,
-    pub total: usize,
+    /// When the run began, for the elapsed time on screen. A run is one Polars query
+    /// with no steps to count, so time is the only progress there is to show.
+    pub started: std::time::Instant,
+}
+
+impl AnalysisProgress {
+    pub fn new(phase: &str) -> Self {
+        Self {
+            phase: phase.to_string(),
+            started: std::time::Instant::now(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +58,9 @@ pub struct AnalysisModal {
     pub distribution_column_offset: usize, // For horizontal scrolling in distribution table
     pub correlation_column_offset: usize, // For horizontal scrolling in correlation matrix
     pub random_seed: u64,
+    /// The run in flight, or the last one, reads every row rather than a sample: `a`
+    /// asked for it. Any other run clears it.
+    pub reads_all: bool,
     pub table_state: TableState,              // For describe table
     pub distribution_table_state: TableState, // For distribution table
     pub correlation_table_state: TableState,  // For correlation matrix
@@ -205,6 +218,7 @@ impl AnalysisModal {
     /// Select the tool under the sidebar cursor. Focus stays on the sidebar:
     /// it moves only when the user presses Tab, never as a side effect.
     pub fn select_tool(&mut self) {
+        self.reads_all = false;
         if let Some(idx) = self.sidebar_state.selected() {
             self.selected_tool = Some(match idx {
                 0 => AnalysisTool::Describe,
@@ -300,6 +314,7 @@ impl AnalysisModal {
     }
 
     pub fn recalculate(&mut self) {
+        self.reads_all = false;
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

@@ -59,6 +59,8 @@ fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
 
 pub struct DataTableState {
     pub lf: LazyFrame,
+    /// `lf` before its sort, when it has one. See [`DataTableState::analysis_lf`].
+    unsorted_lf: Option<LazyFrame>,
     original_lf: LazyFrame,
     original_schema: Arc<Schema>,
     /// What the sidebar filters and sort are applied to: the active query's result (DSL,
@@ -587,6 +589,7 @@ impl DataTableState {
         let schema = lf.clone().collect_schema()?;
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
+            unsorted_lf: None,
             original_lf: lf.clone(),
             original_schema: schema.clone(),
             base_lf: lf.clone(),
@@ -701,6 +704,7 @@ impl DataTableState {
             schema.iter_names().map(|s| s.to_string()).collect()
         };
         Ok(Self {
+            unsorted_lf: None,
             original_lf: lf.clone(),
             original_schema: schema.clone(),
             base_lf: lf.clone(),
@@ -794,6 +798,7 @@ impl DataTableState {
         self.schema = lf.clone().collect_schema()?;
         self.original_schema = self.schema.clone();
         self.lf = lf.clone();
+        self.unsorted_lf = None;
         Ok(())
     }
 
@@ -814,6 +819,7 @@ impl DataTableState {
         self.observed_bytes_per_row = None;
         self.base_lf = lf.clone();
         self.lf = lf;
+        self.unsorted_lf = None;
         self.schema = schema;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
     }
@@ -4213,6 +4219,13 @@ impl DataTableState {
     /// `grouped` and `drilled_down_group_index` are set together by a drill down and
     /// cleared together by a drill up, so asking both is belt and braces — kept because
     /// what they guard is the frame being rebuilt under a view of one group of it.
+    /// The frame an analysis reads: the view as filtered and queried, without its
+    /// order. No statistic depends on the order, and a sort is the one step that makes
+    /// a sampled read of a huge table read all of it.
+    pub fn analysis_lf(&self) -> LazyFrame {
+        self.unsorted_lf.clone().unwrap_or_else(|| self.lf.clone())
+    }
+
     pub fn scan_is_the_root(&self) -> bool {
         self.active_query.is_empty()
             && self.active_sql_query.is_empty()
@@ -4588,6 +4601,7 @@ impl DataTableState {
         self.pristine_rows = None;
         self.base_lf = lf.clone();
         self.lf = lf;
+        self.unsorted_lf = None;
         // The rows on screen were read through the old frame. Dropping the buffer has
         // the next collect read them through the new one, at the row the user is still
         // sitting on — `start_row` and the column scroll are left exactly as they are.
@@ -4990,6 +5004,7 @@ impl DataTableState {
         self.original_lf = lf.clone();
         self.base_lf = lf.clone();
         self.lf = lf;
+        self.unsorted_lf = None;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
@@ -6227,6 +6242,7 @@ impl DataTableState {
             Some(view) => {
                 self.invalidate_num_rows();
                 self.lf = view.lf;
+                self.unsorted_lf = None;
                 self.base_lf = view.base_lf;
                 self.filters = view.filters;
                 self.sort_columns = view.sort_columns;
@@ -6422,6 +6438,10 @@ impl DataTableState {
         }
         self.view_notes = view_notes;
 
+        // What an analysis reads: the view before its order, which no statistic
+        // depends on and every sampled read of a sorted frame would pay for.
+        self.unsorted_lf =
+            (!self.sort_columns.is_empty() || !self.sort_ascending).then(|| lf.clone());
         if !self.sort_columns.is_empty() {
             lf = lf.sort_by_exprs(
                 self.sort_columns.iter().map(col).collect::<Vec<_>>(),
@@ -6463,6 +6483,11 @@ impl DataTableState {
     }
 
     pub fn reverse(&mut self) {
+        // The order is laid on top of what is there, so what is there is the frame
+        // before it — unless an order was already laid, whose own frame is kept.
+        if self.unsorted_lf.is_none() {
+            self.unsorted_lf = Some(self.lf.clone());
+        }
         self.sort_ascending = !self.sort_ascending;
         // Reversing a sorted view flips every column's direction, so `r` twice is
         // always the identity whatever mix of directions was applied.
@@ -11383,7 +11408,7 @@ mod tests {
 
         let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
         let results =
-            crate::statistics::compute_describe_from_lazy(&analysis_lf, 3, None, 0, false)
+            crate::statistics::compute_describe_from_lazy(&analysis_lf, Some(3), None, 0, false)
                 .expect("describe should not fail on binary columns");
 
         let blob_stat = results

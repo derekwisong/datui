@@ -4,7 +4,11 @@ Columns:
   Column:        Name of the numeric column
   Distribution:  Inferred distribution type, one of 14: Normal, Log-Normal,
                  Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared,
-                 Student's t, Poisson, Bernoulli, Binomial, Geometric, Weibull
+                 Student's t, Poisson, Bernoulli, Binomial, Geometric, Weibull.
+                 "Constant" when the column has one value; "No clear fit"
+                 when every candidate is rejected (p below 0.01). Where a
+                 simpler family fits as well, it is named: Uniform rather
+                 than Beta, Exponential rather than Gamma
   P-value:       Probability of the data under the inferred distribution;
                  higher means the fit is more credible
   Shapiro-Wilk:  W statistic from Shapiro-Wilk normality test (0-1, higher = more normal)
@@ -31,8 +35,10 @@ Navigation:
   Tab:           Switch focus between main area and sidebar
   Enter:         Open detail view for selected column (shows Q-Q plot and
                  histogram); with the sidebar focused, select a tool
-  Esc:           Close analysis view
-  r:             Resample data (only shown if data was sampled)
+  Esc:           Cancel a run in progress; otherwise close the analysis
+                 view or this help
+  r:             Draw another sample (when the result is a sample)
+  a:             Read every row instead, after confirming
 
 Detail View:
   Press Enter on a row to see detailed analysis with Q-Q plots and histograms comparing your data to theoretical distributions.

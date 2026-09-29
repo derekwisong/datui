@@ -361,7 +361,7 @@ impl ConfigManager {
             return None;
         }
 
-        // Extract field name from line (e.g., "sampling_threshold = 10000")
+        // Extract field name from line (e.g., "analysis_sample_rows = 10000")
         if let Some(eq_pos) = trimmed.find('=') {
             let field_name = trimmed[..eq_pos].trim();
             if current_section.is_empty() {
@@ -1660,11 +1660,16 @@ panel has not been opened since. The Notes tab is there either way",
     ),
 ];
 
+/// Rows an analysis samples by default. Enough that a distribution's shape and a
+/// correlation are stable to two decimals; few enough to read in seconds.
+pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    /// When None, analysis uses full dataset (no sampling). When Some(n), datasets with >= n rows are sampled.
-    pub sampling_threshold: Option<usize>,
+    /// Rows Describe, Distribution and Correlation read from a table with more: a
+    /// sample spread across all of it. 0 reads every row of every table.
+    pub analysis_sample_rows: usize,
     /// Rows per segment a Data Quality sample reads. The plan editor can
     /// change it per run; this is where the default comes from.
     pub quality_sample_rows: usize,
@@ -1680,8 +1685,8 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
         "Rows per segment a Data Quality sample reads (default 10000, at most 50000).\nThe plan editor's Sample rows field changes it per run.",
     ),
     (
-        "sampling_threshold",
-        "Optional: when set, datasets with >= this many rows are sampled for analysis (faster, less memory).\nWhen unset or omitted, full dataset is used. Example: sampling_threshold = 10000",
+        "analysis_sample_rows",
+        "Rows Describe, Distribution and Correlation read from a larger table (default 100000),\nas a sample spread across the whole of it. A smaller table is read whole.\n0 reads every row of every table; `a` on the analysis screen does it for one run.",
     ),
     (
         "event_poll_interval_ms",
@@ -2418,7 +2423,7 @@ impl Default for DisplayConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            sampling_threshold: None,
+            analysis_sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
             quality_sample_rows: 10_000,
             event_poll_interval_ms: 25,
             polars_streaming: true,
@@ -2871,11 +2876,6 @@ impl AppConfig {
         {
             return Err(eyre!("quality_sample_rows must be between 1 and 50000"));
         }
-        if let Some(t) = self.performance.sampling_threshold
-            && t == 0
-        {
-            return Err(eyre!("sampling_threshold must be greater than 0 when set"));
-        }
 
         if self.performance.event_poll_interval_ms == 0 {
             return Err(eyre!("event_poll_interval_ms must be greater than 0"));
@@ -3004,8 +3004,8 @@ impl DisplayConfig {
 impl PerformanceConfig {
     pub fn merge(&mut self, other: Self) {
         let default = PerformanceConfig::default();
-        if other.sampling_threshold != default.sampling_threshold {
-            self.sampling_threshold = other.sampling_threshold;
+        if other.analysis_sample_rows != default.analysis_sample_rows {
+            self.analysis_sample_rows = other.analysis_sample_rows;
         }
         if other.quality_sample_rows != default.quality_sample_rows {
             self.quality_sample_rows = other.quality_sample_rows;

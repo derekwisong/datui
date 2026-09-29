@@ -155,4 +155,3 @@ billed for, so they are not fetched until you open one. A directory of
 `key=value` partitions is labelled `hive`, and every other directory by what
 it holds — `12 parquet`, `3 csv`, or `dir` — like a local one. How a remote
 dataset then opens is in [Loading Data](loading-data.md#remote-data).
-

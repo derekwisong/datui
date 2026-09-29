@@ -138,4 +138,3 @@ values each conflicting file holds at the type it wrote; the access plan's
 Conflict values row states how many extra reads that costs. The
 [Dataset Info](dataset-info.md#notes) notes report the same facts at open time
 and offer to read a conflicting column as text.
-

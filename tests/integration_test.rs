@@ -1169,9 +1169,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
 
     // The largest measured move between segments is on the screen, not only in the
     // profile: #196 asks for it and nothing read it before.
-    app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::RowChunks(5);
-    app.analysis_modal.data_quality_plan.comparison =
-        datui::data_quality::QualityComparison::Previous;
+    // Result pages read the plan the result was measured with.
+    let measured = app.analysis_modal.data_quality_last_plan.as_mut().unwrap();
+    measured.grain = datui::data_quality::QualityGrain::RowChunks(5);
+    measured.comparison = datui::data_quality::QualityComparison::Previous;
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     let wide = Rect::new(0, 0, 160, 40);
     let mut buffer = Buffer::empty(wide);
@@ -1203,7 +1204,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // Every remaining page and popup must say its own piece at each width, so a
     // clipped label or a screen that renders nothing at all fails here.
     for (page, expected) in [
-        (QualityPage::Plan, "Latency threshold"),
+        (QualityPage::Plan, "Time roles"),
         (QualityPage::TimeRoles, "Date and time columns"),
         (QualityPage::Detail, "Missing:"),
     ] {
@@ -1512,8 +1513,8 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
         Some(AnalysisTool::DataQuality)
     );
 
-    // Esc to the plan, e to edit, Enter on the Sample row opens the Sample form,
-    // whose first row is the scope typed as text.
+    // Esc to the plan, Space on the Sample row opens the Sample form, whose
+    // first row is the scope typed as text.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
@@ -1523,7 +1524,7 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
         KeyModifiers::NONE,
     )));
     app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
+        KeyCode::Char(' '),
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.sample_form.is_some());
@@ -1803,7 +1804,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         "the dimmed prose line is gone"
     );
     assert!(
-        screen.contains("Run") && screen.contains("Edit"),
+        screen.contains("Run") && screen.contains("Space"),
         "the global bar names the plan page's keys"
     );
 }
@@ -1960,10 +1961,10 @@ fn data_quality_reads_as_a_report() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    // Straight to the Grain choices, on the plan, in the words the header uses.
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
-    assert!(app.analysis_modal.data_quality_editing);
     assert_eq!(app.analysis_modal.data_quality_plan_field, 1, "on Grain");
-    // The editor's bar names what the focused row takes.
+    assert!(app.analysis_modal.data_quality_picker.is_some());
     let bar_now = |app: &mut App| {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
@@ -1973,17 +1974,46 @@ fn data_quality_reads_as_a_report() {
             .map(|cell| cell.symbol())
             .collect::<String>()
     };
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("whole dataset") && screen.contains("in chunks of"));
+    assert!(bar_now(&mut app).contains("Choose"));
+    // Choosing edits the plan; the report keeps the plan it was measured with.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_picker.is_none());
+    assert_ne!(
+        app.analysis_modal.data_quality_plan.grain,
+        datui::data_quality::QualityGrain::Dataset
+    );
+    assert!(app.analysis_modal.quality_plan_pending());
     let bar = bar_now(&mut app);
-    assert!(bar.contains("Change") && bar.contains("Apply"), "{bar}");
+    assert!(
+        bar.contains("Discard") && bar.contains("Run") && bar.contains("Space  Choose"),
+        "{bar}"
+    );
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    assert!(rendered_text(&buffer).contains("Changed since the last run"));
+    // Esc puts back what the last run used.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.quality_plan_pending());
+    // Each field names what Space does with it.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Up,
         KeyModifiers::NONE,
     )));
-    let bar = bar_now(&mut app);
-    assert!(
-        bar.contains("Sample Form") && !bar.contains("Change"),
-        "{bar}"
-    );
+    assert!(bar_now(&mut app).contains("Sample Form"));
     for _ in 0..4 {
         app.event(&AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
@@ -1992,24 +2022,21 @@ fn data_quality_reads_as_a_report() {
     }
     assert_eq!(
         app.analysis_modal.data_quality_plan_field, 4,
-        "on Time roles"
+        "on Time roles; no latency row without roles"
     );
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen = rendered_text(&buffer);
     assert!(screen.contains("no date or time columns"));
+    assert!(!screen.contains("Latency threshold"));
     let bar = bar_now(&mut app);
     assert!(
-        !bar.contains("Time Roles") && !bar.contains("Change") && !bar.contains("Apply"),
+        !bar.contains("Time Roles") && !bar.contains("Space"),
         "nothing to assign without a date column: {bar}"
     );
+    // Enter runs from any field; the plan is the one measured, so the report opens.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2494,11 +2521,14 @@ fn e_moves_the_cursor_into_the_plan_editor() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.analysis_modal.data_quality_editing);
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        datui::data_quality::QualityPage::Plan
+    );
     assert_eq!(
         app.analysis_modal.focus,
         AnalysisFocus::Main,
-        "e moves the cursor into the editor"
+        "e moves the cursor onto the plan"
     );
 
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2639,15 +2669,18 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
             .total_rows,
         Some(2)
     );
+    // An edit waits for Enter; Esc puts back the plan the result was measured with.
     key(&mut app, KeyCode::Char('e'));
     key(&mut app, KeyCode::Down);
-    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Enter);
     assert_ne!(
         app.analysis_modal.data_quality_plan.grain,
         datui::data_quality::QualityGrain::Dataset
     );
-    key(&mut app, KeyCode::Char('1'));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert!(app.analysis_modal.quality_plan_pending());
     key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.data_quality_plan.grain,

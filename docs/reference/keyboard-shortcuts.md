@@ -202,13 +202,12 @@ In Data Quality:
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends, Plan |
 | <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends directly |
-| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the plan setting that fills it |
-| <kbd>e</kbd> | Edit the plan's six fields — Sample, Grain, Values, Compare, Time roles, Latency threshold — in a copy of the plan |
+| <kbd>Enter</kbd> | On the Plan, run it, from any field. Elsewhere, open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the plan setting that fills it |
+| <kbd>e</kbd> | Go to the Plan |
+| <kbd>Space</kbd> on the Plan | Open the field under the cursor: the Sample form, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
 | <kbd>s</kbd> | Open the shared Sample form |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
-| <kbd>←</kbd> <kbd>→</kbd> in the plan editor | Change the focused field's value; on Time roles, cycle the column |
-| <kbd>Enter</kbd> on Sample | Open the Sample form |
-| <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done. With no date or time column there is nothing to assign, and the row says so |
+| In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date or time column there is nothing to assign, and the row says so |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its frame counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
@@ -217,7 +216,7 @@ In Data Quality:
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | Rerun with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself |
+| <kbd>Esc</kbd> | Back out one layer: a popup or a list of choices, the plan's edits (back to the plan the report was measured with), the Time roles editor, a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself |
 
 ## Pivot and melt
 

@@ -45,7 +45,7 @@ likely wrong, what depends on intent, and which columns are clean. Before the
 first run the pane is the [Sample](#sampling) form, and nothing is read until
 <kbd>Enter</kbd> runs it; then the report opens. The header says which rows
 were checked, as every tool's does; the tabs under it are the pages, and
-<kbd>←</kbd> <kbd>→</kbd> move between them. <kbd>e</kbd> edits the plan. A full
+<kbd>←</kbd> <kbd>→</kbd> move between them. <kbd>e</kbd> goes to the plan. A full
 value scan always asks for confirmation.
 
 ### Reading the report
@@ -87,18 +87,26 @@ rows were sampled of how many.
 
 The plan shows the sample, profile grain, what is read, comparison, estimated
 rows and transfer direction; <kbd>p</kbd> shows the estimate basis. The rows
-are the shared [sample](#sampling): <kbd>s</kbd>, or <kbd>Enter</kbd> on the
+are the shared [sample](#sampling): <kbd>s</kbd>, or <kbd>Space</kbd> on the
 Sample row, opens its form.
+
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move between the fields |
+| <kbd>Space</kbd> | Open the field: the Sample form, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
+| <kbd>Enter</kbd> | Run the plan, from any field |
+| <kbd>Esc</kbd> | Put back the plan the report was measured with; again, leave |
+
+An edited plan waits for <kbd>Enter</kbd>: until then the report and its header
+keep the plan they were measured with, and the page says the plan changed.
 
 | Setting | Choices |
 |---|---|
 | Sample | The shared sample: scope, method, rows and seed |
-| Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or hourly, daily, weekly, or monthly windows on an assigned time role |
+| Grain | Whole dataset; by file, when the dataset has several; by each partition column; by hour, day, week or month of any date or time column (hours only where there are times); or in chunks of 100,000 or 1,000,000 rows |
 | Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
 | Comparison | None, the segment before (partitions and files in the order their names count), or a baseline segment |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
-
-<kbd>e</kbd> edits a copy of the plan; <kbd>Esc</kbd> discards it.
 
 Before a run, source-scoped plans report unknown row counts and read sizes,
 and metadata-only runs do not count rows. A local dataset-grain sample
@@ -124,7 +132,7 @@ View Rows and <kbd>e</kbd> Plan.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | Previous or next page: Overview, Columns, Segments, Trends, Plan |
 | <kbd>Enter</kbd> | Run the plan, open a finding, or show its rows; on an empty Segments or Trends page, open the plan setting that fills it |
-| <kbd>e</kbd> | Edit a copy of the plan; <kbd>Esc</kbd> discards edits |
+| <kbd>e</kbd> | Go to the plan |
 | <kbd>s</kbd> | Open the shared [Sample](#sampling) form |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends, directly |
@@ -172,7 +180,7 @@ to Every row) asks for confirmation.
 | Dataset grain | The whole sample is one segment |
 | File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. A segment's total is shown when it is known without reading it (a file's rows from its footer when whole files are in scope, a row chunk's size) and is otherwise unknown on a sample |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
-| Time windows | `1h`, `1d`, `1w`, `1mo` on each assigned time role, starting on the calendar boundary for their width (weeks start on Monday); a window is cut at the same place whether sampled or scanned |
+| Time windows | By hour, day, week or month of a date or time column, starting on the calendar boundary for their width (weeks start on Monday) and named by where they start (`2024-01-31`, `week of 2024-01-29`, `2024-01`); a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
 | Remote sources | Read-only; the access plan always reports zero remote writes |
 

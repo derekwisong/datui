@@ -2,7 +2,7 @@ Data Quality checks the rows in scope and reports what it found. It reads
 the sample every analysis tool shares: if none has been run on this
 dataset yet, its pane is the Sample form first (change the rows there or
 press Enter to run). A plan that needs confirming asks before it reads. The header says which rows were
-checked, the tabs under it name the pages, and e edits the plan.
+checked, the tabs under it name the pages, and e goes to the plan.
 
 Reading the report:
   First line:   problems, notes and clean columns, counted
@@ -25,25 +25,26 @@ Reading the report:
   of them. When nothing is found, the list is on the page.
 
 Keys:
-  Enter:            Run the plan, apply the edit in progress, open a
-                    finding, show its rows, or close an open popup. On
+  Enter:            On the Plan, run it, from any field. Elsewhere, open
+                    a finding, show its rows, or close an open popup. On
                     an empty Segments or Trends page, open the plan
                     setting that fills it (Grain or Time roles)
-  e:                Edit the plan's six fields: Sample, Grain, Values,
-                    Compare, Time roles, Latency threshold
+  e:                Go to the Plan
+  Space:            On the Plan, open the field under the cursor: the
+                    Sample form, the Time roles editor, or a list of
+                    choices (type to narrow, Enter chooses)
   s:                Choose the sample every analysis tool reads: which
                     rows, how they are picked, how many, the seed
   v:                View the rows Data Quality reads as a table; Esc
                     comes back
   ← / → (h/l):      Previous or next page: Overview, Columns, Segments,
-                    Trends, Plan. In the plan editor: change the focused
-                    field's value; on Time roles, cycle the column
-  Enter on Sample:  Open the Sample form (the same as s)
-  Enter on Time roles: Open the role editor: ↑/↓ pick the role, ←/→ the
-                    column, Enter done. The date and time columns are
-                    listed below with a few of their values. Needs a
-                    date or time column
-  The bar in the plan editor names what the focused field takes.
+                    Trends, Plan
+  Time roles editor: ↑/↓ pick the role, ←/→ its column, Enter done, Esc
+                    cancel. The date and time columns are listed below
+                    with a few of their values. Needs a date or time
+                    column
+  An edited plan waits for Enter; until then the report keeps the plan it
+  was measured with, and Esc on the Plan puts that one back.
   p:                Show the detailed access plan
   1 / 2 / 3 / 4:    Overview (the report) / Columns (a mark and the
                     findings per column) / Segments / Trends, directly
@@ -58,7 +59,7 @@ Keys:
   Home/End:         Jump to the first or last result (PgUp/PgDn page)
   r:                Rerun with a new sample seed, for every tool
   Tab:              Move between the result and Analysis tools
-  Esc:              Cancel editing, return one level, or close Analysis.
+  Esc:              Discard plan edits, return one level, or close Analysis.
                     From a column's or a segment's detail, Esc returns to
                     its list; on Time roles, Esc restores the whole
                     pre-edit plan
@@ -66,7 +67,7 @@ Keys:
 
 Every result says how many rows were checked and whether they were all of them or a sample. A dataset-grain sample is spread across the whole scope, as Describe's is, and the header says how many rows of how many. Temporal meanings are used only after you assign a role to a column.
 The rows are the shared sample's, as in every analysis tool: its scope, method (random, equal per value, first rows, every row), size and seed, the same rows every tool reads. A grain splits those rows into segments: a random sample gives each segment its share, and Equal per value of the partition column gives each the same number. Only a full scan asks for confirmation.
-Time-window grain offers 1h, 1d, 1w and 1mo on each assigned time role. A window starts on the calendar boundary for its width, so weeks start on Monday, and is cut at the same place whether the run sampled or scanned it.
+A grain can split by hour (where there are times), day, week or month of any date or time column; no time role is needed. A window starts on the calendar boundary for its width, so weeks start on Monday, and is cut at the same place whether the run sampled or scanned it.
 The sample's scope can be the current view, loaded source, view row range, selected source files, source partition values or range, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The header labels a reused run.
 

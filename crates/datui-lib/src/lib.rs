@@ -6730,13 +6730,69 @@ impl App {
         }
     }
 
+    /// What the data offers the plan's choices.
+    fn quality_plan_context(&self) -> analysis_modal::PlanContext {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return analysis_modal::PlanContext::default();
+        };
+        let scope = &self.analysis_modal.data_quality_plan.scope;
+        let schema = &state.schema;
+        let mut partitions = state.partition_columns.clone().unwrap_or_default();
+        // A directory whose files agree opens as one scan and names no partition
+        // columns; its directory names still do.
+        if partitions.is_empty()
+            && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
+        {
+            partitions = DataTableState::discover_hive_partition_columns(dir)
+                .into_iter()
+                .filter(|column| schema.get(column).is_some())
+                .collect();
+        }
+        analysis_modal::PlanContext {
+            partitions,
+            time_columns: state
+                .quality_temporal_columns(scope)
+                .into_iter()
+                .map(|column| {
+                    let has_time =
+                        !matches!(schema.get(&column), Some(polars::prelude::DataType::Date));
+                    (column, has_time)
+                })
+                .collect(),
+            files: state.quality_source_file_count() > 1,
+        }
+    }
+
+    /// Space on a plan field: the Sample form, the role editor, or the field's
+    /// choices.
+    fn open_plan_field(&mut self) -> Option<AppEvent> {
+        match self.analysis_modal.data_quality_plan_field {
+            0 => self.open_sample_form(),
+            4 => {
+                // With no date or time column there is no role to assign.
+                if self.has_quality_time_columns() {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::TimeRoles);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            field => {
+                let context = self.quality_plan_context();
+                self.analysis_modal.open_plan_picker(field, &context);
+            }
+        }
+        None
+    }
+
     /// The plan setting the Data Quality page on screen lacks before it can show
     /// anything; Enter opens it, and the control bar says so.
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
         data_quality::page_setup(
             modal.data_quality_page,
-            &modal.data_quality_plan,
+            modal.quality_result_plan(),
             modal.data_quality_results.as_ref(),
             self.has_quality_time_columns(),
         )
@@ -6749,17 +6805,6 @@ impl App {
                 .quality_temporal_columns(&self.analysis_modal.data_quality_plan.scope)
                 .is_empty()
         })
-    }
-
-    fn clear_quality_result_if_plan_changed(&mut self) {
-        if self.analysis_modal.data_quality_results.is_some()
-            && self.analysis_modal.data_quality_last_plan.as_ref()
-                != Some(&self.analysis_modal.data_quality_plan)
-        {
-            self.analysis_modal.data_quality_results = None;
-            self.analysis_modal.data_quality_last_plan = None;
-            self.analysis_modal.data_quality_from_cache = false;
-        }
     }
 
     fn restore_cached_quality(&mut self) -> bool {
@@ -6786,7 +6831,11 @@ impl App {
         true
     }
 
-    fn cache_quality_result(&mut self, results: &data_quality::DataQualityResults) {
+    fn cache_quality_result(
+        &mut self,
+        results: &data_quality::DataQualityResults,
+        plan: data_quality::DataQualityPlan,
+    ) {
         let Some(view_generation) = self
             .data_table_state
             .as_ref()
@@ -6794,7 +6843,6 @@ impl App {
         else {
             return;
         };
-        let plan = self.analysis_modal.data_quality_plan.clone();
         self.quality_cache.retain(|entry| {
             !(entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
@@ -14232,14 +14280,100 @@ impl App {
                     return None;
                 }
 
-                if self.analysis_modal.data_quality_editing
-                    && matches!(
-                        event.code,
-                        KeyCode::Char('e' | '1' | '2' | '3' | '4' | 'r' | 'b' | 'm' | '[' | ']')
-                            | KeyCode::Tab
-                    )
-                {
+                // A plan field's choices own the keys while they are open.
+                if self.analysis_modal.data_quality_picker.is_some() {
+                    match event.code {
+                        KeyCode::Esc => self.analysis_modal.data_quality_picker = None,
+                        KeyCode::Enter => self.analysis_modal.choose_plan_picker(),
+                        code => {
+                            if let Some(picker) = self.analysis_modal.data_quality_picker.as_mut() {
+                                match code {
+                                    KeyCode::Up => picker.state.move_up(),
+                                    KeyCode::Down => picker.state.move_down(),
+                                    KeyCode::Backspace => picker.state.backspace(),
+                                    KeyCode::Char(c) => picker.state.filter_key(c, event.modifiers),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                     return None;
+                }
+                // The role editor owns the keys: the role, and its column.
+                if self.analysis_modal.data_quality_page == QualityPage::TimeRoles
+                    && event.code != KeyCode::Char('?')
+                {
+                    let field = self.analysis_modal.data_quality_plan_field;
+                    match event.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            if event.code == KeyCode::Esc
+                                && let Some(plan) =
+                                    self.analysis_modal.data_quality_plan_before_edit.take()
+                            {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.analysis_modal.set_quality_page(QualityPage::Plan);
+                            self.analysis_modal.data_quality_plan_field = 4;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 1).min(crate::data_quality::TemporalRole::ALL.len() - 1);
+                        }
+                        KeyCode::Left
+                        | KeyCode::Char('h')
+                        | KeyCode::Right
+                        | KeyCode::Char('l') => {
+                            let columns = self
+                                .data_table_state
+                                .as_ref()
+                                .map(|state| {
+                                    state.quality_temporal_columns(
+                                        &self.analysis_modal.data_quality_plan.scope,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            self.analysis_modal.cycle_quality_time_role(
+                                field,
+                                &columns,
+                                matches!(event.code, KeyCode::Right | KeyCode::Char('l')),
+                            );
+                        }
+                        _ => {}
+                    }
+                    return None;
+                }
+                // The plan is edited where it stands: ↑↓ the field, Space its choices,
+                // Enter runs from any field, Esc puts back what the last run used.
+                if self.analysis_modal.data_quality_page == QualityPage::Plan
+                    && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                {
+                    let rows = self.analysis_modal.quality_plan_rows();
+                    let field = self.analysis_modal.data_quality_plan_field.min(rows - 1);
+                    match event.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                            return None;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field = (field + 1).min(rows - 1);
+                            return None;
+                        }
+                        KeyCode::Char(' ') => {
+                            self.analysis_modal.data_quality_plan_field = field;
+                            return self.open_plan_field();
+                        }
+                        KeyCode::Esc if self.analysis_modal.quality_plan_pending() => {
+                            if let Some(plan) = self.analysis_modal.data_quality_last_plan.clone() {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            return None;
+                        }
+                        _ => {}
+                    }
                 }
 
                 match event.code {
@@ -14274,26 +14408,6 @@ impl App {
                         self.analysis_modal.data_quality_confirm_run = false;
                         return None;
                     }
-                    KeyCode::Esc
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles =>
-                    {
-                        if let Some(plan) = self.analysis_modal.data_quality_plan_before_edit.take()
-                        {
-                            self.analysis_modal.data_quality_plan = plan;
-                        }
-                        self.analysis_modal.set_quality_page(QualityPage::Plan);
-                        self.analysis_modal.data_quality_editing = false;
-                        self.analysis_modal.data_quality_plan_field = 4;
-                        return None;
-                    }
-                    KeyCode::Esc if self.analysis_modal.data_quality_editing => {
-                        if let Some(plan) = self.analysis_modal.data_quality_plan_before_edit.take()
-                        {
-                            self.analysis_modal.data_quality_plan = plan;
-                        }
-                        self.analysis_modal.data_quality_editing = false;
-                        return None;
-                    }
                     // A drill-in backs out to the list it came from.
                     KeyCode::Esc
                         if self.analysis_modal.data_quality_page == QualityPage::SegmentDetail =>
@@ -14322,16 +14436,9 @@ impl App {
                             !self.analysis_modal.data_quality_show_access;
                         return None;
                     }
+                    // The plan is a tab like the others; e goes there from anywhere.
                     KeyCode::Char('e') => {
-                        self.analysis_modal.data_quality_plan_before_edit =
-                            Some(self.analysis_modal.data_quality_plan.clone());
-                        self.analysis_modal.set_quality_page(QualityPage::Plan);
-                        self.analysis_modal.data_quality_editing = true;
-                        self.analysis_modal.data_quality_plan_field = 0;
-                        // The editor owns the keyboard, and Tab is swallowed while
-                        // it is open, so the cursor has to be moved into it here —
-                        // from the sidebar, ↑↓ would go on moving the tool selector.
-                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+                        self.analysis_modal.show_quality_tab(QualityPage::Plan);
                         return None;
                     }
                     KeyCode::Char(digit @ '1'..='4') => {
@@ -14357,14 +14464,16 @@ impl App {
                                 .and_then(|index| results.segments.get(index))
                                 .map(|segment| segment.label.clone())
                             {
-                                self.analysis_modal.data_quality_plan.comparison =
+                                let mut plan = self.analysis_modal.quality_result_plan().clone();
+                                plan.comparison = crate::data_quality::QualityComparison::Baseline;
+                                plan.baseline_segment = Some(label.clone());
+                                results.compare_segments(&plan);
+                                self.cache_quality_result(&results, plan.clone());
+                                self.analysis_modal.data_quality_last_plan = Some(plan);
+                                let working = &mut self.analysis_modal.data_quality_plan;
+                                working.comparison =
                                     crate::data_quality::QualityComparison::Baseline;
-                                self.analysis_modal.data_quality_plan.baseline_segment =
-                                    Some(label);
-                                results.compare_segments(&self.analysis_modal.data_quality_plan);
-                                self.cache_quality_result(&results);
-                                self.analysis_modal.data_quality_last_plan =
-                                    Some(self.analysis_modal.data_quality_plan.clone());
+                                working.baseline_segment = Some(label);
                             }
                             self.analysis_modal.data_quality_results = Some(results);
                         }
@@ -14394,36 +14503,7 @@ impl App {
                     KeyCode::Enter
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
-                            self.analysis_modal.set_quality_page(QualityPage::Plan);
-                            self.analysis_modal.data_quality_editing = false;
-                            self.analysis_modal.data_quality_plan_field = 4;
-                            self.analysis_modal.data_quality_plan_before_edit = None;
-                            self.clear_quality_result_if_plan_changed();
-                        } else if self.analysis_modal.data_quality_editing
-                            && self.analysis_modal.data_quality_plan_field == 0
-                        {
-                            // The Sample row is every tool's sample: keep this plan's
-                            // edits so far, and choose the rows in the Sample form.
-                            self.analysis_modal.data_quality_editing = false;
-                            self.analysis_modal.data_quality_plan_before_edit = None;
-                            self.clear_quality_result_if_plan_changed();
-                            self.open_sample_form();
-                        } else if self.analysis_modal.data_quality_editing
-                            && self.analysis_modal.data_quality_plan_field == 4
-                        {
-                            // With no date or time column there is no role to assign.
-                            if !self.has_quality_time_columns() {
-                                return None;
-                            }
-                            self.analysis_modal.set_quality_page(QualityPage::TimeRoles);
-                            self.analysis_modal.data_quality_editing = true;
-                            self.analysis_modal.data_quality_plan_field = 0;
-                        } else if self.analysis_modal.data_quality_editing {
-                            self.analysis_modal.data_quality_editing = false;
-                            self.analysis_modal.data_quality_plan_before_edit = None;
-                            self.clear_quality_result_if_plan_changed();
-                        } else if self.analysis_modal.data_quality_page == QualityPage::Plan {
+                        if self.analysis_modal.data_quality_page == QualityPage::Plan {
                             self.sync_quality_plan();
                             if self.analysis_modal.data_quality_results.is_some()
                                 && self.analysis_modal.data_quality_last_plan.as_ref()
@@ -14452,19 +14532,13 @@ impl App {
                             self.busy = true;
                             return Some(AppEvent::AnalysisDataQualityCompute);
                         } else if let Some(setup) = self.quality_page_setup() {
-                            self.analysis_modal.data_quality_plan_before_edit =
-                                Some(self.analysis_modal.data_quality_plan.clone());
-                            self.analysis_modal.data_quality_editing = true;
-                            match setup {
-                                data_quality::QualitySetup::Grain => {
-                                    self.analysis_modal.set_quality_page(QualityPage::Plan);
-                                    self.analysis_modal.data_quality_plan_field = 1;
-                                }
-                                data_quality::QualitySetup::TimeRoles => {
-                                    self.analysis_modal.set_quality_page(QualityPage::TimeRoles);
-                                    self.analysis_modal.data_quality_plan_field = 0;
-                                }
-                            }
+                            // Straight to the setting that fills the page, on the plan.
+                            self.analysis_modal.show_quality_tab(QualityPage::Plan);
+                            self.analysis_modal.data_quality_plan_field = match setup {
+                                data_quality::QualitySetup::Grain => 1,
+                                data_quality::QualitySetup::TimeRoles => 4,
+                            };
+                            return self.open_plan_field();
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
                             let findings = self.analysis_modal.quality_row_count();
                             self.analysis_modal.data_quality_checks_expanded = false;
@@ -14495,89 +14569,14 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j')
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_editing {
-                            let max_field = if self.analysis_modal.data_quality_page
-                                == QualityPage::TimeRoles
-                            {
-                                crate::data_quality::TemporalRole::ALL.len() - 1
-                            } else {
-                                5
-                            };
-                            self.analysis_modal.data_quality_plan_field =
-                                (self.analysis_modal.data_quality_plan_field + 1).min(max_field);
-                        } else {
-                            let rows = self.analysis_modal.quality_row_count();
-                            self.analysis_modal.next_row(rows);
-                        }
+                        let rows = self.analysis_modal.quality_row_count();
+                        self.analysis_modal.next_row(rows);
                         return None;
                     }
                     KeyCode::Up | KeyCode::Char('k')
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_editing {
-                            self.analysis_modal.data_quality_plan_field = self
-                                .analysis_modal
-                                .data_quality_plan_field
-                                .saturating_sub(1);
-                        } else {
-                            self.analysis_modal.previous_row();
-                        }
-                        return None;
-                    }
-                    KeyCode::Left | KeyCode::Char('h')
-                        if self.analysis_modal.data_quality_editing =>
-                    {
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
-                            let columns = self
-                                .data_table_state
-                                .as_ref()
-                                .map(|state| {
-                                    state.quality_temporal_columns(
-                                        &self.analysis_modal.data_quality_plan.scope,
-                                    )
-                                })
-                                .unwrap_or_default();
-                            self.analysis_modal.cycle_quality_time_role(
-                                self.analysis_modal.data_quality_plan_field,
-                                &columns,
-                                false,
-                            );
-                        } else {
-                            let partitions = self
-                                .data_table_state
-                                .as_ref()
-                                .and_then(|state| state.partition_columns.clone())
-                                .unwrap_or_default();
-                            self.analysis_modal.adjust_quality_plan(false, &partitions);
-                        }
-                        return None;
-                    }
-                    KeyCode::Right | KeyCode::Char('l')
-                        if self.analysis_modal.data_quality_editing =>
-                    {
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
-                            let columns = self
-                                .data_table_state
-                                .as_ref()
-                                .map(|state| {
-                                    state.quality_temporal_columns(
-                                        &self.analysis_modal.data_quality_plan.scope,
-                                    )
-                                })
-                                .unwrap_or_default();
-                            self.analysis_modal.cycle_quality_time_role(
-                                self.analysis_modal.data_quality_plan_field,
-                                &columns,
-                                true,
-                            );
-                        } else {
-                            let partitions = self
-                                .data_table_state
-                                .as_ref()
-                                .and_then(|state| state.partition_columns.clone())
-                                .unwrap_or_default();
-                            self.analysis_modal.adjust_quality_plan(true, &partitions);
-                        }
+                        self.analysis_modal.previous_row();
                         return None;
                     }
                     KeyCode::Left | KeyCode::Char('h') => {
@@ -17597,7 +17596,10 @@ impl App {
                     && self.analysis_modal.selected_tool
                         == Some(analysis_modal::AnalysisTool::DataQuality)
                 {
-                    self.cache_quality_result(results);
+                    self.cache_quality_result(
+                        results,
+                        self.analysis_modal.data_quality_plan.clone(),
+                    );
                     self.analysis_modal.data_quality_last_plan =
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal.data_quality_results = Some(results.clone());

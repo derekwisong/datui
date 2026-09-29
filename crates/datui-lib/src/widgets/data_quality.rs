@@ -28,13 +28,17 @@ pub struct DataQualityWidgetConfig<'a> {
     pub checks_expanded: bool,
     pub state: &'a DataTableState,
     pub plan: &'a DataQualityPlan,
+    /// The plan the result on screen was measured with; the header says this one
+    /// even while the Plan page edits another.
+    pub measured: &'a DataQualityPlan,
     pub results: Option<&'a DataQualityResults>,
     pub from_cache: bool,
     pub metric: QualityMetric,
     pub column_index: usize,
     pub segment_index: usize,
     pub page: QualityPage,
-    pub editing: bool,
+    /// The plan has been edited since the result on screen was measured.
+    pub pending: bool,
     pub plan_field: usize,
     pub show_access: bool,
     pub observation_detail: bool,
@@ -137,14 +141,15 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
     let middot = glyphs::get().middot;
     let mut text = "Data Quality".to_string();
     if let Some(results) = config.results.filter(|_| !config.first_run) {
-        text.push_str(&format!(" {middot} {}", measured_on(config.plan, results)));
-        if config.plan.grain != QualityGrain::Dataset {
-            text.push_str(&format!(" {middot} by {}", config.plan.grain.label()));
+        let plan = config.measured;
+        text.push_str(&format!(" {middot} {}", measured_on(plan, results)));
+        if plan.grain != QualityGrain::Dataset {
+            text.push_str(&format!(" {middot} {}", plan.grain.label()));
         }
-        if config.plan.comparison != QualityComparison::None {
+        if plan.comparison != QualityComparison::None {
             text.push_str(&format!(
                 " {middot} compared with {}",
-                config.plan.comparison_label()
+                plan.comparison_label()
             ));
         }
     }
@@ -205,123 +210,131 @@ fn render_plan(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    // The plan table is the page; when the terminal cannot hold everything, drop
-    // the access summary — the plan strip and `p` both still carry it — rather
-    // than let the solver shave a row off the plan and hide a field.
-    const PLAN_ROWS: u16 = 8;
-    const ACCESS_ROWS: u16 = 7;
-    let compact = area.height.saturating_sub(2) < 2 + PLAN_ROWS + ACCESS_ROWS;
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if compact {
-            vec![
-                Constraint::Length(2),
-                Constraint::Length(PLAN_ROWS),
-                Constraint::Length(0),
-                Constraint::Length(0),
-                Constraint::Min(0),
-            ]
-        } else {
-            vec![
-                Constraint::Length(2),
-                Constraint::Length(PLAN_ROWS),
-                Constraint::Length(2),
-                Constraint::Length(5),
-                Constraint::Min(0),
-            ]
-        })
-        .margin(1)
-        .split(area);
-    render_section_title("PROFILE PLAN", sections[0], config.theme, buf);
-
-    let temporal = if config
+    let theme = config.theme;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let plan = config.plan;
+    let has_time_columns = !config
         .state
-        .quality_temporal_columns(&config.plan.scope)
-        .is_empty()
-    {
+        .quality_temporal_columns(&plan.scope)
+        .is_empty();
+    let temporal = if !has_time_columns {
         "none: no date or time columns".to_string()
-    } else if config.plan.temporal_roles.is_empty() {
+    } else if plan.temporal_roles.is_empty() {
         "none".to_string()
     } else {
-        config
-            .plan
-            .temporal_roles
-            .iter()
-            .map(|item| format!("{}={}", item.role.label(), item.column))
-            .collect::<Vec<_>>()
-            .join(" -> ")
+        format!(
+            "{}: {}",
+            plan.temporal_roles.len(),
+            plan.temporal_roles
+                .iter()
+                .map(|item| format!("{}={}", item.role.label(), item.column))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     };
-    let rows = vec![
-        Row::new(vec![
-            Cell::from("Sample"),
-            Cell::from(config.plan.sample().summary()),
-        ]),
-        Row::new(vec![
-            Cell::from("Grain"),
-            Cell::from(config.plan.grain.label()),
-        ]),
-        Row::new(vec![
-            Cell::from("Values"),
-            Cell::from(if config.plan.compute == QualityCompute::Metadata {
-                "metadata only"
+    let comparison = match (plan.comparison, plan.baseline_segment.as_deref()) {
+        (QualityComparison::Baseline, Some(segment)) => format!("baseline {segment}"),
+        (comparison, _) => comparison.choice_label().to_string(),
+    };
+    let mut rows = vec![
+        ("Sample", plan.sample().summary()),
+        ("Grain", plan.grain.label()),
+        (
+            "Values",
+            if plan.compute == QualityCompute::Metadata {
+                "file metadata only".to_string()
             } else {
-                "read"
-            }),
-        ]),
-        Row::new(vec![
-            Cell::from("Compare"),
-            Cell::from(config.plan.comparison_label()),
-        ]),
-        Row::new(vec![Cell::from("Time roles"), Cell::from(temporal)]),
-        Row::new(vec![
-            Cell::from("Latency threshold"),
-            Cell::from(
-                config
-                    .plan
-                    .latency_threshold_seconds
-                    .map(|seconds| duration_label(Some(seconds)))
-                    .unwrap_or_else(|| "none".to_string()),
-            ),
-        ]),
+                "read".to_string()
+            },
+        ),
+        ("Compare", comparison),
+        ("Time roles", temporal),
     ];
-    if config.editing {
-        table_state.select(Some(config.plan_field));
+    // An interval needs two roles; until then the threshold has nothing to apply to.
+    if plan.temporal_roles.len() >= 2 {
+        rows.push((
+            "Latency threshold",
+            plan.latency_threshold_seconds
+                .map(|seconds| duration_label(Some(seconds)))
+                .unwrap_or_else(|| "none".to_string()),
+        ));
+    }
+    let plan_rows = rows.len() as u16;
+    // The plan is the page; the access summary takes what is left, and `p` has it
+    // in full on a terminal too short for both.
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(plan_rows),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+        ])
+        .margin(1)
+        .split(area);
+    Paragraph::new(rule_line("Plan", None, sections[0].width, theme)).render(sections[0], buf);
+    // The field under the cursor carries the rail while the page has the keys.
+    if config.focus == AnalysisFocus::Main {
+        table_state.select(Some(config.plan_field.min(rows.len() - 1)));
     } else {
         table_state.select(None);
     }
-    let table = Table::new(rows, [Constraint::Length(18), Constraint::Fill(1)])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(config.theme.get("modal_border"))),
-        )
-        .row_highlight_style(config.theme.highlight_style())
-        .highlight_symbol(glyphs::get().selector);
+    let table = Table::new(
+        rows.into_iter()
+            .map(|(label, value)| Row::new(vec![Cell::from(label), Cell::from(value)])),
+        [Constraint::Length(19), Constraint::Fill(1)],
+    )
+    .row_highlight_style(theme.highlight_style())
+    .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
+    if config.pending {
+        Paragraph::new(Line::styled(
+            "  Changed since the last run: Enter runs it, Esc puts it back",
+            Style::default().fg(theme.get("warning")),
+        ))
+        .render(
+            Rect {
+                y: sections[2].y + 1,
+                height: 1,
+                ..sections[2]
+            },
+            buf,
+        );
+    }
 
-    render_section_title("ACCESS", sections[2], config.theme, buf);
-    let planned = planned_rows(config.state, config.plan);
-    let planned_label = planned
+    let planned = planned_rows(config.state, plan)
         .map(numfmt::group_chrome)
         .unwrap_or_else(|| "unknown".to_string());
-    let bytes_label = planned_read_label(config.state, config.plan);
+    let bytes_label = planned_read_label(config.state, plan);
     let access_rows = vec![
-        Row::new(vec!["Rows evaluated", planned_label.as_str()]),
+        Row::new(vec!["Rows evaluated".to_string(), planned]),
         Row::new(vec![
             if config.state.is_remote_source() {
-                "Remote transfer"
+                "Remote transfer".to_string()
             } else {
-                "Local read"
+                "Local read".to_string()
             },
-            bytes_label.as_str(),
+            bytes_label,
         ]),
-        Row::new(vec!["Remote writes", "none"]),
-        Row::new(vec!["Session memory", "profile; size unknown"]),
+        Row::new(vec!["Remote writes".to_string(), "none".to_string()]),
+        Row::new(vec![
+            "Session memory".to_string(),
+            "profile; size unknown".to_string(),
+        ]),
     ];
-    let access = Table::new(access_rows, [Constraint::Length(22), Constraint::Fill(1)])
-        .block(Block::default().borders(Borders::NONE));
-    Widget::render(access, sections[3], buf);
+    let access_area = sections[3];
+    Paragraph::new(rule_line("Access", None, access_area.width, theme)).render(access_area, buf);
+    let access =
+        Table::new(access_rows, [Constraint::Length(21), Constraint::Fill(1)]).style(dimmed);
+    Widget::render(
+        access,
+        Rect {
+            y: access_area.y + 2,
+            height: access_area.height.saturating_sub(2),
+            ..access_area
+        },
+        buf,
+    );
 }
 
 fn render_overview(
@@ -1362,8 +1375,8 @@ fn render_trends(
     if !show_trend {
         render_section_title("ACROSS SEGMENTS", sections[0], config.theme, buf);
         Paragraph::new(
-            "Set the plan's Grain to row chunks or time windows to follow a column's \
-             measure from one to the next.",
+            "Set the plan's Grain to chunks of rows, or to days, weeks or months of a \
+             date, to follow a column's measure from one to the next.",
         )
         .wrap(Wrap { trim: true })
         .style(text)

@@ -18,6 +18,14 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     render_body(area, buf, app, ctx);
+    if let Some(picker) = &app.analysis_modal.data_quality_picker {
+        render_plan_picker(
+            picker,
+            crate::widgets::data_quality::main_pane(area),
+            buf,
+            ctx,
+        );
+    }
     if let Some(form) = &app.analysis_modal.sample_form {
         let quality =
             app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
@@ -31,6 +39,57 @@ pub fn render(
             !form.inline || app.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
         crate::widgets::sample_form::render(form, focused, target, buf, ctx);
     }
+}
+
+/// A plan field's choices, a short list over the plan it sets.
+fn render_plan_picker(
+    picker: &analysis_modal::PlanPicker,
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    ctx: &RenderContext,
+) {
+    let title = match picker.field {
+        1 => "Grain",
+        2 => "Values",
+        3 => "Compare",
+        _ => "Latency threshold",
+    };
+    let items = picker.state.filtered();
+    let widest = items
+        .iter()
+        .map(|(_, item)| crate::glyphs::display_width(item))
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (widest + 8).clamp(28, area.width.saturating_sub(4).max(28));
+    let height = (items.len() as u16 + 3)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 3,
+        width: width.min(area.width),
+        height,
+    };
+    Clear.render(popup, buf);
+    let inner = crate::widgets::ui::Surface::new(title).render(popup, buf, ctx);
+    let filter = if picker.state.filter.is_empty() {
+        Line::from(Span::styled(
+            "type to narrow",
+            Style::default().fg(ctx.dimmed),
+        ))
+    } else {
+        Line::from(Span::raw(picker.state.filter.clone()))
+    };
+    Paragraph::new(filter).render(Rect { height: 1, ..inner }, buf);
+    crate::widgets::ui::Picker::from_state(&picker.state, true).render(
+        Rect {
+            y: inner.y + 1,
+            height: inner.height.saturating_sub(1),
+            ..inner
+        },
+        buf,
+        ctx,
+    );
 }
 
 fn render_body(
@@ -85,14 +144,31 @@ fn render_body(
                 first_run: modal.sample_form.as_ref().is_some_and(|form| form.inline),
                 checks_expanded: modal.data_quality_checks_expanded,
                 state,
-                plan: &modal.data_quality_plan,
+                // The Plan page edits the working plan; the result pages show the
+                // plan they were measured with, whatever is being edited.
+                plan: if matches!(
+                    modal.data_quality_page,
+                    crate::data_quality::QualityPage::Plan
+                        | crate::data_quality::QualityPage::TimeRoles
+                ) {
+                    &modal.data_quality_plan
+                } else {
+                    modal
+                        .data_quality_last_plan
+                        .as_ref()
+                        .unwrap_or(&modal.data_quality_plan)
+                },
+                measured: modal
+                    .data_quality_last_plan
+                    .as_ref()
+                    .unwrap_or(&modal.data_quality_plan),
                 results: modal.data_quality_results.as_ref(),
                 from_cache: modal.data_quality_from_cache,
                 metric: modal.data_quality_metric,
                 column_index: modal.data_quality_column_index,
                 segment_index: modal.data_quality_segment_index,
                 page: modal.data_quality_page,
-                editing: modal.data_quality_editing,
+                pending: modal.quality_plan_pending(),
                 plan_field: modal.data_quality_plan_field,
                 show_access: modal.data_quality_show_access,
                 observation_detail: modal.data_quality_observation_detail,

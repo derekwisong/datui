@@ -540,13 +540,25 @@ pub enum QualityGrain {
 }
 
 impl QualityGrain {
+    /// How the rows are split, in words: "by day of date", "by year".
     pub fn label(&self) -> String {
         match self {
-            Self::Dataset => "dataset".to_string(),
-            Self::File => "file".to_string(),
-            Self::Partition(column) => format!("partition:{column}"),
-            Self::RowChunks(rows) => format!("{rows} rows (physical order)"),
-            Self::TimeWindows { column, every } => format!("{every} on {column}"),
+            Self::Dataset => "whole dataset".to_string(),
+            Self::File => "by file".to_string(),
+            Self::Partition(column) => format!("by {column}"),
+            Self::RowChunks(rows) => {
+                format!("in chunks of {} rows", crate::numfmt::group_chrome(*rows))
+            }
+            Self::TimeWindows { column, every } => {
+                let unit = match every.as_str() {
+                    "1h" => "hour",
+                    "1d" => "day",
+                    "1w" => "week",
+                    "1mo" => "month",
+                    other => other,
+                };
+                format!("by {unit} of {column}")
+            }
         }
     }
 }
@@ -560,6 +572,15 @@ pub enum QualityComparison {
 }
 
 impl QualityComparison {
+    /// The comparison as a plan choice says it.
+    pub fn choice_label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Previous => "the segment before",
+            Self::Baseline => "a baseline segment (the first, or b on Segments)",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -1817,10 +1838,19 @@ fn group_by_time_window(df: &DataFrame, column: &str, every: &str) -> Result<Vec
     Ok(result)
 }
 
+/// A window by where it starts, to the precision its width needs: an hour to the
+/// minute, a day as its date, a week as the date it starts, a month as the month.
 fn time_window_label(column: &str, every: &str, start: Option<&str>) -> String {
-    match start {
-        Some(start) => format!("{start} / {every}"),
-        None => format!("{column} ∅"),
+    let Some(start) = start else {
+        return format!("{column} ∅");
+    };
+    let prefix = |length: usize| start.get(..length).unwrap_or(start).to_string();
+    match every {
+        "1h" => prefix(16),
+        "1d" => prefix(10),
+        "1w" => format!("week of {}", prefix(10)),
+        "1mo" => prefix(7),
+        _ => format!("{start} / {every}"),
     }
 }
 
@@ -3573,7 +3603,7 @@ mod tests {
         plan.comparison = QualityComparison::Previous;
         assert_eq!(
             plan.compact_summary(),
-            "scope current view -> grain 1000000 rows (physical order) -> compute 10000 rows random -> compare previous"
+            "scope current view -> grain in chunks of 1,000,000 rows -> compute 10000 rows random -> compare previous"
         );
     }
 
@@ -4411,7 +4441,7 @@ mod tests {
         };
         let windowed = compute_data_quality(&frame, Some(3), &window_plan, None, false).unwrap();
         assert_eq!(windowed.segments.len(), 2);
-        assert!(windowed.segments[0].label.contains("1w"));
+        assert!(windowed.segments[0].label.starts_with("week of "));
     }
 
     #[test]
@@ -4734,7 +4764,14 @@ mod tests {
                 days as usize,
                 "{every} windows must account for every row"
             );
-            assert!(results.segments[0].label.ends_with(&format!(" / {every}")));
+            // Named by where the window starts, to the precision its width needs.
+            let label = &results.segments[0].label;
+            match every {
+                "1h" => assert_eq!(label.len(), "2024-01-01 00:00".len(), "{label}"),
+                "1d" => assert_eq!(label.len(), "2024-01-01".len(), "{label}"),
+                "1w" => assert!(label.starts_with("week of "), "{label}"),
+                _ => assert_eq!(label.len(), "2024-01".len(), "{label}"),
+            }
         }
     }
 
@@ -4787,6 +4824,6 @@ mod tests {
         // Two dated weeks, then the rows the clock could not place.
         assert_eq!(labels(&full).len(), 3);
         assert_eq!(labels(&full)[2], "event_at ∅");
-        assert!(labels(&full)[0].ends_with(" / 1w"));
+        assert!(labels(&full)[0].starts_with("week of "));
     }
 }

@@ -285,26 +285,21 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         }
         return keys;
     }
+    if modal.data_quality_picker.is_some() {
+        return vec![
+            ("Enter", "Choose"),
+            (g.updown, "Move"),
+            ("type", "Narrow"),
+            ("Esc", "Cancel"),
+        ];
+    }
     if modal.data_quality_page == QualityPage::TimeRoles {
         return vec![
             (g.updown, "Role"),
             (g.updown_lr, "Column"),
             ("Enter", "Done"),
-            ("Esc", "Back"),
+            ("Esc", "Cancel"),
         ];
-    }
-    // The plan editor names what the focused row takes: Sample and Time roles
-    // open editors of their own, the rest change in place.
-    if modal.data_quality_editing {
-        let mut keys = vec![(g.updown, "Field")];
-        match modal.data_quality_plan_field {
-            0 => keys.push(("Enter", "Sample Form")),
-            4 if app.has_quality_time_columns() => keys.push(("Enter", "Time Roles")),
-            4 => {}
-            _ => keys.extend([(g.updown_lr, "Change"), ("Enter", "Apply")]),
-        }
-        keys.push(("Esc", "Cancel"));
-        return keys;
     }
     // One shape on every page: the way out, then what this page is for, then the
     // keys every page shares in one order, then the rest of this page's. The bar is
@@ -314,17 +309,30 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     let results = modal.data_quality_results.as_ref();
     // Column and metric pick what the segments show; with nothing split they would
     // change nothing, so they are not offered.
-    let segmented = results.is_some()
-        && modal.data_quality_plan.grain != crate::data_quality::QualityGrain::Dataset;
-    let trend = results
-        .is_some_and(|results| crate::data_quality::shows_trend(&modal.data_quality_plan, results));
+    let measured = modal.quality_result_plan();
+    let segmented =
+        results.is_some() && measured.grain != crate::data_quality::QualityGrain::Dataset;
+    let trend = results.is_some_and(|results| crate::data_quality::shows_trend(measured, results));
     let mut own: Vec<(&'static str, &'static str)> = Vec::new();
     // An empty page says which plan setting fills it, and Enter opens that.
     if let Some(setup) = app.quality_page_setup() {
         own.push(("Enter", setup.label()));
     }
     match page {
-        QualityPage::Plan => own.extend([("Enter", "Run"), ("p", "Access")]),
+        // Enter runs from any field; Space opens the one under the cursor.
+        QualityPage::Plan => {
+            own.push(("Enter", "Run"));
+            match modal
+                .data_quality_plan_field
+                .min(modal.quality_plan_rows() - 1)
+            {
+                0 => own.push(("Space", "Sample Form")),
+                4 if app.has_quality_time_columns() => own.push(("Space", "Time Roles")),
+                4 => {}
+                _ => own.push(("Space", "Choose")),
+            }
+            own.extend([(g.updown, "Field"), ("p", "Access")]);
+        }
         QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
         QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
         QualityPage::Detail => own.push(("Enter", "Columns")),
@@ -334,21 +342,22 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         _ => {}
     }
     let mut own = own.into_iter();
-    let mut keys = vec![("Esc", "Back")];
+    // Esc on an edited plan puts back what the last run used.
+    let back = if page == QualityPage::Plan && modal.quality_plan_pending() {
+        "Discard"
+    } else {
+        "Back"
+    };
+    let mut keys = vec![("Esc", back)];
     keys.extend(own.next());
-    keys.extend([
-        ("s", "Sample"),
-        (g.updown_lr, "Page"),
-        ("v", "View Rows"),
-        (
-            "e",
-            if page == QualityPage::Plan {
-                "Edit"
-            } else {
-                "Plan"
-            },
-        ),
-    ]);
+    // The plan is an editor: what the field under the cursor takes leads too.
+    if page == QualityPage::Plan {
+        keys.extend(own.next());
+    }
+    keys.extend([("s", "Sample"), (g.updown_lr, "Page"), ("v", "View Rows")]);
+    if page != QualityPage::Plan {
+        keys.push(("e", "Plan"));
+    }
     keys.extend(own);
     keys.extend([("Tab", "Focus"), ("?", "Help")]);
     keys

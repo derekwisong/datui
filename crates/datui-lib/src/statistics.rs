@@ -200,6 +200,9 @@ pub enum DistributionType {
     Binomial,
     Geometric,
     Weibull,
+    /// One value throughout: nothing to fit.
+    Constant,
+    /// Every candidate was rejected: shown as "No clear fit".
     Unknown,
 }
 
@@ -220,7 +223,8 @@ impl std::fmt::Display for DistributionType {
             DistributionType::Binomial => write!(f, "Binomial"),
             DistributionType::Geometric => write!(f, "Geometric"),
             DistributionType::Weibull => write!(f, "Weibull"),
-            DistributionType::Unknown => write!(f, "Unknown"),
+            DistributionType::Constant => write!(f, "Constant"),
+            DistributionType::Unknown => write!(f, "No clear fit"),
         }
     }
 }
@@ -287,7 +291,8 @@ pub fn compute_statistics(
 /// - Distribution detection and analysis for numeric columns (if enabled)
 /// - Correlation matrix for numeric columns (if enabled)
 ///
-/// Large datasets are automatically sampled when exceeding the sampling threshold.
+/// A table with more than `sample_size` rows is analyzed from a sample of that many;
+/// see [`analysis_rows`]. `None` reads every row.
 pub fn compute_statistics_with_options(
     lf: &LazyFrame,
     sample_size: Option<usize>,
@@ -296,33 +301,11 @@ pub fn compute_statistics_with_options(
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let use_streaming = options.polars_streaming;
-    // Always count actual rows, regardless of sample_size parameter
-    let total_rows = {
-        let count_df = collect_lazy(crate::widgets::datatable::row_count_lf(lf), use_streaming)
-            .map_err(Report::from)?;
-        match count_df.get(0) {
-            Some(col) => match col.first() {
-                Some(AnyValue::UInt64(n)) => *n as usize,
-                _ => 0,
-            },
-            _ => 0,
-        }
-    };
-
-    // sample_size: None = never sample (full data); Some(threshold) = sample when total_rows >= threshold
-    let should_sample = sample_size.is_some_and(|t| total_rows >= t);
-    let (sampling_threshold, actual_sample_size) = if should_sample {
-        let t = sample_size.unwrap();
-        (t, Some(t))
-    } else {
-        (0, None)
-    };
-
-    let df = if should_sample {
-        sample_dataframe(lf, sampling_threshold, seed, use_streaming)?
-    } else {
-        collect_lazy(lf.clone(), use_streaming).map_err(Report::from)?
-    };
+    let rows = analysis_rows(lf, sample_size, None, seed, use_streaming)?;
+    let total_rows = rows.total_rows;
+    let actual_sample_size = rows.sample_size;
+    let should_sample = actual_sample_size.is_some();
+    let df = rows.df;
 
     let mut column_statistics = Vec::new();
 
@@ -617,27 +600,32 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
 /// Computes describe statistics from a LazyFrame without materializing all rows.
 /// When sampling is disabled, runs a single aggregation collect (like Polars describe) for similar performance.
 /// When sampling is enabled, samples then runs describe on the sample.
+/// Describe statistics for a frame. With `sample_size`, a table with more rows than
+/// that is described from a sample (see [`analysis_rows`]); without it, every row is
+/// aggregated in one streaming pass, never held. `known_total` saves a count.
 pub fn compute_describe_from_lazy(
     lf: &LazyFrame,
-    total_rows: usize,
+    known_total: Option<usize>,
     sample_size: Option<usize>,
     seed: u64,
     polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
-    let should_sample = sample_size.is_some_and(|t| total_rows >= t);
-    if should_sample {
-        let threshold = sample_size.unwrap();
-        let df = sample_dataframe(lf, threshold, seed, polars_streaming)?;
+    if sample_size.is_some() {
+        let rows = analysis_rows(lf, sample_size, known_total, seed, polars_streaming)?;
         return compute_describe_single_aggregation(
-            &df,
+            &rows.df,
             &schema,
-            total_rows,
-            Some(threshold),
+            rows.total_rows,
+            rows.sample_size,
             seed,
             polars_streaming,
         );
     }
+    let total_rows = match known_total {
+        Some(total) => total,
+        None => count_rows(lf, polars_streaming)?,
+    };
     let exprs = build_describe_aggregation_exprs(&schema);
     let agg_df = collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
     let column_statistics = parse_describe_agg_row(&agg_df, &schema);
@@ -707,20 +695,16 @@ pub fn compute_distribution_statistics(
     seed: u64,
     polars_streaming: bool,
 ) -> Result<()> {
-    // sample_size: None = never sample; Some(threshold) = sample when total_rows >= threshold
-    let should_sample = sample_size.is_some_and(|t| results.total_rows >= t);
-    let sampling_threshold = sample_size.unwrap_or(0);
-    let actual_sample_size = if should_sample {
-        Some(sampling_threshold)
-    } else {
-        None
-    };
-
-    let df = if should_sample {
-        sample_dataframe(lf, sampling_threshold, seed, polars_streaming)?
-    } else {
-        collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?
-    };
+    let rows = analysis_rows(
+        lf,
+        sample_size,
+        Some(results.total_rows),
+        seed,
+        polars_streaming,
+    )?;
+    let actual_sample_size = rows.sample_size;
+    let should_sample = actual_sample_size.is_some();
+    let df = rows.df;
 
     for col_stat in &mut results.column_statistics {
         if col_stat.distribution_info.is_none()
@@ -813,49 +797,308 @@ fn is_categorical_type(dtype: &DataType) -> bool {
     matches!(dtype, DataType::String | DataType::Categorical(..))
 }
 
-/// Samples a LazyFrame for analysis when row count exceeds threshold. Used by chunked describe.
-pub fn sample_dataframe(
+/// The rows an analysis reads, and how many the table has.
+pub struct AnalysisRows {
+    pub df: DataFrame,
+    pub total_rows: usize,
+    /// How many rows were sampled, when the table had more than the analysis reads.
+    pub sample_size: Option<usize>,
+}
+
+/// How many places across the table a block sample reads from. Enough that no one
+/// stretch of it decides the answer, few enough that each is a row group or two.
+const SAMPLE_BLOCKS: usize = 50;
+
+/// How many runs of a block sample are read at once.
+const SAMPLE_READERS: usize = 8;
+
+/// The row index the streaming sampler ranks rows by, dropped before anyone sees it.
+const SAMPLE_POSITION: &str = "__datui_sample_position";
+
+/// Count a frame's rows.
+pub fn count_rows(lf: &LazyFrame, polars_streaming: bool) -> Result<usize> {
+    let count_df = collect_lazy(
+        crate::widgets::datatable::row_count_lf(lf),
+        polars_streaming,
+    )
+    .map_err(Report::from)?;
+    Ok(match count_df.get(0).and_then(|row| row.first().cloned()) {
+        Some(AnyValue::UInt64(n)) => n as usize,
+        Some(AnyValue::UInt32(n)) => n as usize,
+        _ => 0,
+    })
+}
+
+/// Read the rows an analysis works on: all of them when the table has no more than
+/// `sample_rows` (or `sample_rows` is `None`), and otherwise a seeded sample of that
+/// many, spread across the whole table rather than taken from its head.
+///
+/// Two ways to spread it, chosen by what the plan can do cheaply:
+///
+/// - A plan whose slices reach into a single Parquet or IPC scan reads
+///   [`SAMPLE_BLOCKS`] short runs at seeded places across the table. Each run is a
+///   row group or two, so a sample of a 400-million-row hive table reads a few dozen
+///   row groups, not the table. `known_total` saves the count; the footers give it
+///   cheaply otherwise.
+/// - Anything else — a filter, a query, a union of files, a CSV — is read once as a
+///   stream, keeping the rows whose seeded rank is lowest. That is a uniform sample
+///   in bounded memory, and the same pass counts the rows, so a filtered view is
+///   read once rather than counted and then read.
+pub fn analysis_rows(
     lf: &LazyFrame,
-    sample_size: usize,
+    sample_rows: Option<usize>,
+    known_total: Option<usize>,
+    seed: u64,
+    polars_streaming: bool,
+) -> Result<AnalysisRows> {
+    let Some(n) = sample_rows.filter(|n| *n > 0) else {
+        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
+        let total_rows = df.height();
+        return Ok(AnalysisRows {
+            df,
+            total_rows,
+            sample_size: None,
+        });
+    };
+    if !slices_reach_into_the_scan(lf) {
+        let (df, total_rows) = stream_sample(lf, n, seed)?;
+        let sample_size = (total_rows > n).then_some(df.height());
+        return Ok(AnalysisRows {
+            df,
+            total_rows,
+            sample_size,
+        });
+    }
+    let total_rows = match known_total {
+        Some(total) => total,
+        None => count_rows(lf, polars_streaming)?,
+    };
+    if total_rows <= n {
+        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
+        return Ok(AnalysisRows {
+            df,
+            total_rows,
+            sample_size: None,
+        });
+    }
+    let df = block_sample(lf, total_rows, n, seed, polars_streaming)?;
+    Ok(AnalysisRows {
+        sample_size: Some(df.height()),
+        df,
+        total_rows,
+    })
+}
+
+/// Whether a slice of this plan is read by the scan itself, skipping what comes before
+/// it: true of one Parquet or IPC scan, which seek by row group. A slice of a union,
+/// of a filter or of a CSV reads everything ahead of it, which fifty times over is
+/// worse than reading the table once.
+///
+/// Asked of the optimized plan because that is where the answer is, for every route a
+/// frame can have been built by. Should a Polars upgrade change how the plan is
+/// described, this says no and the streaming sampler takes over: slower, never wrong.
+pub fn slices_reach_into_the_scan(lf: &LazyFrame) -> bool {
+    let Ok(plan) = lf.clone().slice(1, 1).describe_optimized_plan() else {
+        return false;
+    };
+    let mut lines = plan.lines().map(str::trim);
+    let scans_first = lines
+        .next()
+        .is_some_and(|l| l.starts_with("Parquet SCAN") || l.starts_with("IPC SCAN"));
+    scans_first && plan.contains("SLICE: Positive")
+}
+
+/// `n` rows as [`SAMPLE_BLOCKS`] runs at seeded places across `total_rows`, in table
+/// order. Each run is collected on its own: as one union the runs share a subplan, and
+/// Polars caches a shared subplan whole. They are collected [`SAMPLE_READERS`] at a
+/// time, because on an object store each is a round trip and fifty in a row is the
+/// wait this exists to avoid.
+fn block_sample(
+    lf: &LazyFrame,
+    total_rows: usize,
+    n: usize,
     seed: u64,
     polars_streaming: bool,
 ) -> Result<DataFrame> {
-    let collect_multiplier = if sample_size <= 1000 {
-        5
-    } else if sample_size <= 5000 {
-        3
-    } else {
-        2
+    let blocks = SAMPLE_BLOCKS.min(n).max(1);
+    let run = n.div_ceil(blocks);
+    let stride = total_rows / blocks;
+    // Anywhere in its stretch that the whole run fits.
+    let room = stride.saturating_sub(run) as u64;
+    let offsets: Vec<usize> = (0..blocks)
+        .map(|block| block * stride + (sample_rank(seed, block as u64) % (room + 1)) as usize)
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let runs: Vec<Result<(usize, DataFrame)>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..SAMPLE_READERS.min(blocks))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut read = Vec::new();
+                    loop {
+                        let block = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(offset) = offsets.get(block) else {
+                            break;
+                        };
+                        let rows = collect_lazy(
+                            lf.clone().slice(*offset as i64, run as IdxSize),
+                            polars_streaming,
+                        )
+                        .map(|df| (block, df))
+                        .map_err(Report::from);
+                        read.push(rows);
+                    }
+                    read
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap_or_default())
+            .collect()
+    });
+    let mut runs = runs.into_iter().collect::<Result<Vec<_>>>()?;
+    runs.sort_by_key(|(block, _)| *block);
+    let mut out: Option<DataFrame> = None;
+    for (_, rows) in runs {
+        out = Some(match out {
+            Some(frame) => frame.vstack(&rows)?,
+            None => rows,
+        });
+    }
+    let df = out.unwrap_or_default();
+    Ok(if df.height() > n { df.slice(0, n) } else { df })
+}
+
+/// A uniform sample of `n` rows from one streamed pass, and how many rows there were.
+fn stream_sample(lf: &LazyFrame, n: usize, seed: u64) -> Result<(DataFrame, usize)> {
+    let state = std::sync::Arc::new(std::sync::Mutex::new(Reservoir::new(n, seed)));
+    let callback_state = std::sync::Arc::clone(&state);
+    let sink = lf
+        .clone()
+        .with_row_index(SAMPLE_POSITION, None)
+        .sink_batches(
+            PlanCallback::new(move |batch| {
+                callback_state
+                    .lock()
+                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?
+                    .observe(batch)?;
+                Ok(false)
+            }),
+            true,
+            None,
+        )?;
+    // Streaming whatever the setting: holding the table is what this is here to avoid.
+    collect_lazy(sink, true).map_err(Report::from)?;
+    let reservoir = std::mem::take(
+        &mut *state
+            .lock()
+            .map_err(|_| Report::msg("sampler lock failed"))?,
+    );
+    let seen = reservoir.seen;
+    let df = match reservoir.finish()? {
+        Some(df) => df,
+        // Nothing came through: an empty frame of the right shape.
+        None => collect_lazy(lf.clone().limit(0), true).map_err(Report::from)?,
     };
+    Ok((df, seen))
+}
 
-    let collect_limit = (sample_size * collect_multiplier).min(50_000);
-    let df = collect_lazy(lf.clone().limit(collect_limit as u32), polars_streaming)
-        .map_err(Report::from)?;
-    let total_collected = df.height();
+/// The `n` rows with the lowest seeded rank seen so far. Held to at most twice `n`
+/// between prunes, so memory is bounded by the sample and not by the table.
+#[derive(Default)]
+struct Reservoir {
+    n: usize,
+    seed: u64,
+    seen: usize,
+    kept: Option<DataFrame>,
+    ranks: Vec<u64>,
+    /// Rows ranked at or above this cannot make the sample: `n` lower ones are held.
+    bar: u64,
+}
 
-    if total_collected <= sample_size {
-        return Ok(df);
+impl Reservoir {
+    fn new(n: usize, seed: u64) -> Self {
+        Self {
+            n,
+            seed,
+            bar: u64::MAX,
+            ..Default::default()
+        }
     }
 
-    let step = total_collected / sample_size;
-    let start_offset = (seed as usize) % step;
+    fn observe(&mut self, batch: DataFrame) -> PolarsResult<()> {
+        self.seen += batch.height();
+        let positions = batch.column(SAMPLE_POSITION)?.idx()?;
+        let mut picked = Vec::new();
+        let mut ranks = Vec::new();
+        for (index, position) in positions.into_no_null_iter().enumerate() {
+            let rank = sample_rank(self.seed, position as u64);
+            if rank < self.bar {
+                picked.push(index as IdxSize);
+                ranks.push(rank);
+            }
+        }
+        if picked.is_empty() {
+            return Ok(());
+        }
+        let rows = batch.take(&IdxCa::from_vec("picked".into(), picked))?;
+        self.kept = Some(match self.kept.take() {
+            Some(kept) => kept.vstack(&rows)?,
+            None => rows,
+        });
+        self.ranks.extend(ranks);
+        if self.ranks.len() > 2 * self.n {
+            self.prune()?;
+        }
+        Ok(())
+    }
 
-    let indices: Vec<u32> = (0..sample_size)
-        .map(|i| {
-            let idx = start_offset + i * step;
-            (idx.min(total_collected - 1)) as u32
-        })
-        .collect();
+    /// Keep the `n` lowest-ranked rows, and raise the bar to the highest of them.
+    fn prune(&mut self) -> PolarsResult<()> {
+        let Some(kept) = self.kept.take() else {
+            return Ok(());
+        };
+        let mut order: Vec<usize> = (0..self.ranks.len()).collect();
+        order.sort_unstable_by_key(|i| self.ranks[*i]);
+        order.truncate(self.n);
+        let take: Vec<IdxSize> = order.iter().map(|i| *i as IdxSize).collect();
+        self.kept = Some(kept.take(&IdxCa::from_vec("kept".into(), take))?);
+        self.ranks = order.iter().map(|i| self.ranks[*i]).collect();
+        if self.ranks.len() == self.n {
+            self.bar = self.ranks.iter().copied().max().unwrap_or(u64::MAX);
+        }
+        Ok(())
+    }
 
-    let indices_ca = UInt32Chunked::new("indices".into(), indices);
-    df.take(&indices_ca)
-        .map_err(|e| color_eyre::eyre::eyre!("Sampling error: {}", e))
+    /// The sample, back in table order and without the position column.
+    fn finish(mut self) -> PolarsResult<Option<DataFrame>> {
+        self.prune()?;
+        let Some(kept) = self.kept else {
+            return Ok(None);
+        };
+        let sorted = kept.sort([SAMPLE_POSITION], SortMultipleOptions::default())?;
+        Ok(Some(sorted.drop(SAMPLE_POSITION)?))
+    }
+}
+
+/// A seeded, well-mixed rank for a row position (SplitMix64's finalizer). The same seed
+/// and table give the same sample; another seed gives another.
+pub(crate) fn sample_rank(seed: u64, position: u64) -> u64 {
+    let mut value = seed ^ position.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
     let max_len = 10000;
+    // Every k-th value, not the first ten thousand: a sample is spread across the
+    // table, and its head is one stretch of it.
     let limited_series = if series.len() > max_len {
-        series.slice(0, max_len)
+        let step = series.len().div_ceil(max_len);
+        series
+            .gather_every(step, 0)
+            .unwrap_or_else(|_| series.slice(0, max_len))
     } else {
         series.clone()
     };
@@ -1137,6 +1380,23 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
     })
 }
 
+/// The simpler distributions a family contains, most specific first.
+fn nested_in(dist: DistributionType) -> &'static [DistributionType] {
+    match dist {
+        DistributionType::Beta => &[DistributionType::Uniform],
+        DistributionType::Gamma => &[DistributionType::Exponential, DistributionType::ChiSquared],
+        DistributionType::Weibull => &[DistributionType::Exponential],
+        DistributionType::StudentsT => &[DistributionType::Normal],
+        _ => &[],
+    }
+}
+
+/// A nested distribution at or above this p-value holds, and is named instead.
+const NESTED_HOLDS_P: f64 = 0.05;
+
+/// Below this, the best-fitting candidate was rejected too.
+const NO_CLEAR_FIT_P: f64 = 0.01;
+
 fn infer_distribution(
     _series: &Series,
     sample: &Series,
@@ -1178,14 +1438,43 @@ fn infer_distribution(
         values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     let std = variance.sqrt();
 
+    // One value throughout fits every distribution's degenerate case and none of
+    // them usefully; a year column in a partitioned table is the usual one.
+    if std == 0.0 {
+        return DistributionInfo {
+            distribution_type: DistributionType::Constant,
+            confidence: 1.0,
+            sample_size,
+            is_sampled,
+            fit_quality: None,
+            all_distribution_pvalues: HashMap::new(),
+        };
+    }
+
     let mut candidates: Vec<(DistributionType, f64, f64)> = Vec::new();
+
+    // The distributions that live on the positive half-line fit whatever positive
+    // values they are given and set the rest aside, so on their own tests half of a
+    // symmetric t reads as a Gamma. A column with more than a trace below zero is
+    // none of them.
+    let negative_share = values.iter().filter(|&&v| v < 0.0).count() as f64 / values.len() as f64;
+    let positive_support = negative_share <= 0.001;
+    // The same for the counts: a Poisson, binomial or geometric variable is a
+    // non-negative integer, and fitting the integers in a column while setting the
+    // rest aside made a column half of negative values a binomial.
+    let count_share = values
+        .iter()
+        .filter(|&&v| v >= 0.0 && v == v.floor() && v.is_finite())
+        .count() as f64
+        / values.len() as f64;
+    let count_support = count_share >= 0.999;
 
     let normal_fit = calculate_normal_fit_quality(&values, mean, std);
     let normal_confidence = normal_fit.min(0.95);
     candidates.push((DistributionType::Normal, normal_fit, normal_confidence));
 
     let positive_values: Vec<f64> = values.iter().filter(|&&v| v > 0.0).copied().collect();
-    if positive_values.len() > 10 {
+    if positive_support && positive_values.len() > 10 {
         let lognormal_fit = calculate_lognormal_fit_quality(&values);
         let lognormal_confidence = lognormal_fit.min(0.95);
         if lognormal_fit > 0.01 {
@@ -1214,7 +1503,7 @@ fn infer_distribution(
     }
 
     let positive_exp: Vec<f64> = values.iter().filter(|&&v| v > 0.0).copied().collect();
-    if positive_exp.len() > 10 {
+    if positive_support && positive_exp.len() > 10 {
         let exp_score = test_exponential(&values);
         let exp_fit = calculate_exponential_fit_quality(&values);
         let exp_confidence = exp_score.min(0.95);
@@ -1230,14 +1519,22 @@ fn infer_distribution(
         candidates.push((DistributionType::Beta, beta_fit, beta_confidence));
     }
 
-    let gamma_score = test_gamma(&values);
+    let gamma_score = if positive_support {
+        test_gamma(&values)
+    } else {
+        0.0
+    };
     let gamma_fit = calculate_gamma_fit_quality(&values);
     let gamma_confidence = gamma_score.min(0.95);
     if gamma_score > 0.0 {
         candidates.push((DistributionType::Gamma, gamma_fit, gamma_confidence));
     }
 
-    let chi2_score = test_chi_squared(&values);
+    let chi2_score = if positive_support {
+        test_chi_squared(&values)
+    } else {
+        0.0
+    };
     let chi2_fit = calculate_chi_squared_fit_quality(&values);
     let chi2_confidence = chi2_score.min(0.95);
     if chi2_score > 0.0 {
@@ -1251,7 +1548,11 @@ fn infer_distribution(
         candidates.push((DistributionType::StudentsT, t_fit, t_confidence));
     }
 
-    let poisson_score = test_poisson(&values);
+    let poisson_score = if count_support {
+        test_poisson(&values)
+    } else {
+        0.0
+    };
     let poisson_fit = calculate_poisson_fit_quality(&values);
     let poisson_confidence = poisson_score.min(0.95);
     if poisson_score > 0.0 {
@@ -1262,7 +1563,7 @@ fn infer_distribution(
     let bernoulli_fit = calculate_bernoulli_fit_quality(&values);
     let bernoulli_confidence = bernoulli_score.min(0.95);
     let binary_count = values.iter().filter(|&&v| v == 0.0 || v == 1.0).count();
-    if bernoulli_score > 0.01 && binary_count as f64 / values.len() as f64 > 0.9 {
+    if bernoulli_score > 0.01 && binary_count as f64 / values.len() as f64 >= 0.999 {
         candidates.push((
             DistributionType::Bernoulli,
             bernoulli_fit,
@@ -1271,7 +1572,7 @@ fn infer_distribution(
     }
 
     let max_value = values.iter().fold(0.0f64, |a, &b| a.max(b));
-    if max_value > 1.0 {
+    if count_support && max_value > 1.0 {
         let binomial_score = test_binomial(&values);
         let binomial_fit = calculate_binomial_fit_quality(&values);
         let binomial_confidence = binomial_score.min(0.95);
@@ -1291,7 +1592,7 @@ fn infer_distribution(
             .filter(|&&v| v >= 0.0 && v == v.floor() && v.is_finite())
             .count();
 
-        if non_negative_int_count as f64 / values.len() as f64 > 0.9 {
+        if count_support && non_negative_int_count as f64 / values.len() as f64 > 0.9 {
             let geometric_score = test_geometric(&values);
             let geometric_fit = calculate_geometric_fit_quality(&values);
             let geometric_confidence = geometric_score.min(0.95);
@@ -1306,7 +1607,7 @@ fn infer_distribution(
     }
 
     let positive_weibull: Vec<f64> = values.iter().filter(|&&v| v > 0.0).copied().collect();
-    if positive_weibull.len() > 10 {
+    if positive_support && positive_weibull.len() > 10 {
         let weibull_score = test_weibull(&values);
         let weibull_fit = calculate_weibull_fit_quality(&values);
         let weibull_confidence = weibull_score.min(0.95);
@@ -1322,19 +1623,31 @@ fn infer_distribution(
     }
 
     if let Some(best) = candidates.iter().max_by(|a, b| {
-        // Primary comparison: p-value (confidence)
-        let p_cmp = a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal);
-        if p_cmp != std::cmp::Ordering::Equal {
-            return p_cmp;
-        }
-        if (a.2 - b.2).abs() < 0.01 {
-            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-        } else {
-            p_cmp
-        }
+        a.2.partial_cmp(&b.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }) {
+        // The best of a field that every test rejected is not a finding: say so, and
+        // keep the p-values for the detail view.
+        let distribution_type = if best.2 < NO_CLEAR_FIT_P {
+            DistributionType::Unknown
+        } else {
+            // A family that contains a simpler one fits whatever the simpler one does:
+            // uniform data is a Beta(1, 1). When the simpler one is not rejected on its
+            // own, it is the answer. The p-values come from different tests, so they
+            // are not ranked against each other here — only asked whether it holds.
+            nested_in(best.0)
+                .iter()
+                .find(|simpler| {
+                    candidates
+                        .iter()
+                        .any(|(t, _, p)| t == *simpler && *p >= NESTED_HOLDS_P)
+                })
+                .copied()
+                .unwrap_or(best.0)
+        };
         DistributionInfo {
-            distribution_type: best.0,
+            distribution_type,
             confidence: best.2,
             sample_size,
             is_sampled,
@@ -1658,9 +1971,12 @@ fn test_beta(values: &[f64]) -> f64 {
         return 0.0;
     }
 
+    // A Beta variable lives on [0, 1]; values past it rule it out rather than being
+    // set aside. Letting 15% fall outside made an exponential with rate 2 (86.5% of
+    // it below 1) a Beta on some samples and not on others.
     let values_in_range = values.iter().filter(|&&v| (0.0..=1.0).contains(&v)).count();
     let ratio_in_range = values_in_range as f64 / values.len() as f64;
-    if ratio_in_range < 0.85 {
+    if ratio_in_range < 0.999 {
         return 0.0;
     }
 
@@ -1949,7 +2265,13 @@ fn test_students_t(values: &[f64]) -> f64 {
     } else {
         3.0
     };
-    let df = df.clamp(1.0, 100.0);
+    // Past about thirty degrees of freedom a t is a normal: the two fit alike, and
+    // which one won was sampling noise. The normal is the simpler claim, so the t
+    // only competes where its tails are its own.
+    if df > 30.0 {
+        return 0.0;
+    }
+    let df = df.max(1.0);
 
     // KS test against Student's t distribution
     let ks_stat = kolmogorov_smirnov_test(values, |x| students_t_cdf(x, df));
@@ -2513,7 +2835,7 @@ pub fn calculate_fit_quality(
             calculate_geometric_fit_quality(values)
         }
         DistributionType::Weibull => calculate_weibull_fit_quality(values),
-        DistributionType::Unknown => 0.5,
+        DistributionType::Constant | DistributionType::Unknown => 0.5,
     }
 }
 
@@ -2739,54 +3061,74 @@ fn ln_gamma_approx(z: f64) -> f64 {
     }
 }
 
-// Beta distribution CDF (requires incomplete beta function approximation)
-fn beta_cdf(x: f64, alpha: f64, beta: f64) -> f64 {
+/// The regularized incomplete beta function `I_x(a, b)`, by its continued fraction
+/// (Lentz's method), flipped to the side where the fraction converges fast.
+fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
     }
     if x >= 1.0 {
         return 1.0;
     }
+    let ln_front = ln_gamma_approx(a + b) - ln_gamma_approx(a) - ln_gamma_approx(b)
+        + a * x.ln()
+        + b * (1.0 - x).ln();
+    let front = ln_front.exp();
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * beta_continued_fraction(x, a, b) / a
+    } else {
+        1.0 - front * beta_continued_fraction(1.0 - x, b, a) / b
+    }
+}
+
+fn beta_continued_fraction(x: f64, a: f64, b: f64) -> f64 {
+    const TINY: f64 = 1e-300;
+    let mut c = 1.0;
+    let mut d = 1.0 - (a + b) * x / (a + 1.0);
+    if d.abs() < TINY {
+        d = TINY;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..=300 {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        let even = m * (b - m) * x / ((a + m2 - 1.0) * (a + m2));
+        d = 1.0 + even * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + even / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        let odd = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1.0));
+        d = 1.0 + odd * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + odd / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        let step = d * c;
+        h *= step;
+        if (step - 1.0).abs() < 1e-12 {
+            break;
+        }
+    }
+    h
+}
+
+// Beta distribution CDF: the regularized incomplete beta function.
+fn beta_cdf(x: f64, alpha: f64, beta: f64) -> f64 {
     if alpha <= 0.0 || beta <= 0.0 {
         return 0.0;
     }
-    // Approximation using normal approximation for large parameters
-    // For small parameters, use simple approximation
-    if alpha + beta > 50.0 {
-        // Normal approximation
-        let mean = alpha / (alpha + beta);
-        let variance = (alpha * beta) / ((alpha + beta).powi(2) * (alpha + beta + 1.0));
-        if variance > 0.0 {
-            normal_cdf(x, mean, variance.sqrt())
-        } else if x < mean {
-            0.0
-        } else {
-            1.0
-        }
-    } else {
-        // Simple polynomial approximation for small parameters
-        // Beta CDF is related to incomplete beta function I_x(alpha, beta)
-        // For small alpha, beta, use approximation: I_x(a,b) ≈ x^a * (1-x)^b / B(a,b) for small x
-        // Simplified approximation using Stirling's approximation
-        let ln_beta =
-            ln_gamma_approx(alpha) + ln_gamma_approx(beta) - ln_gamma_approx(alpha + beta);
-        let beta_const = ln_beta.exp();
-        if beta_const > 0.0 {
-            let integrand = x.powf(alpha) * (1.0 - x).powf(beta) / beta_const;
-            integrand.clamp(0.0, 1.0)
-        } else {
-            // Fallback to normal approximation
-            let mean = alpha / (alpha + beta);
-            let variance = (alpha * beta) / ((alpha + beta).powi(2) * (alpha + beta + 1.0));
-            if variance > 0.0 {
-                normal_cdf(x, mean, variance.sqrt())
-            } else if x < mean {
-                0.0
-            } else {
-                1.0
-            }
-        }
-    }
+    regularized_incomplete_beta(x, alpha, beta)
 }
 
 // Beta distribution PDF
@@ -2965,14 +3307,10 @@ fn students_t_cdf(x: f64, df: f64) -> f64 {
     if df <= 0.0 {
         return 0.5; // Invalid, return median
     }
-    // For large df, approximate with normal
-    if df > 30.0 {
-        normal_cdf(x, 0.0, 1.0)
-    } else {
-        // Approximation using normal with correction
-        let z = x * (1.0 - 1.0 / (4.0 * df));
-        normal_cdf(z, 0.0, 1.0)
-    }
+    // Exact, through the incomplete beta: the tails are what tell a t from a normal,
+    // and a scaled normal standing in for it had none.
+    let tail = 0.5 * regularized_incomplete_beta(df / (df + x * x), df / 2.0, 0.5);
+    if x >= 0.0 { 1.0 - tail } else { tail }
 }
 
 // Student's t distribution PDF (approximation)
@@ -3725,7 +4063,7 @@ pub fn calculate_theoretical_bin_probabilities(
                     0.0
                 }
             }
-            DistributionType::Unknown => {
+            DistributionType::Constant | DistributionType::Unknown => {
                 // Fallback: uniform distribution
                 if sorted_data.is_empty() {
                     0.0
@@ -4058,4 +4396,159 @@ pub fn compute_correlation_pair(
         stats1,
         stats2,
     })
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use super::*;
+
+    /// `n` rows of `id` and a `score` that climbs with it, as a Parquet file: a head
+    /// sample of it is biased, and a spread one is not.
+    fn climbing(dir: &std::path::Path, n: i64) -> LazyFrame {
+        let ids: Vec<i64> = (0..n).collect();
+        let scores: Vec<f64> = ids.iter().map(|i| *i as f64).collect();
+        let mut df = df!("id" => ids, "score" => scores).unwrap();
+        let path = dir.join("climbing.parquet");
+        ParquetWriter::new(std::fs::File::create(&path).unwrap())
+            .with_row_group_size(Some(1_000))
+            .finish(&mut df)
+            .unwrap();
+        LazyFrame::scan_parquet(PlRefPath::try_from_path(&path).unwrap(), Default::default())
+            .unwrap()
+    }
+
+    fn mean(df: &DataFrame) -> f64 {
+        df.column("score")
+            .unwrap()
+            .as_materialized_series()
+            .mean()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_small_table_is_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = analysis_rows(&climbing(dir.path(), 500), Some(1_000), None, 1, false).unwrap();
+        assert_eq!(rows.df.height(), 500);
+        assert_eq!(rows.total_rows, 500);
+        assert_eq!(rows.sample_size, None);
+    }
+
+    #[test]
+    fn a_parquet_scan_is_sampled_in_blocks_across_all_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let lf = climbing(dir.path(), 100_000);
+        assert!(slices_reach_into_the_scan(&lf), "a Parquet scan seeks");
+        let rows = analysis_rows(&lf, Some(5_000), None, 7, false).unwrap();
+        assert_eq!(rows.df.height(), 5_000);
+        assert_eq!(rows.total_rows, 100_000);
+        assert_eq!(rows.sample_size, Some(5_000));
+        // The table's mean is 49,999.5; a head sample's would be 2,499.5.
+        assert!(
+            (mean(&rows.df) - 49_999.5).abs() < 2_500.0,
+            "{}",
+            mean(&rows.df)
+        );
+        // In table order, and reaching its last stretch.
+        let ids = rows.df.column("id").unwrap().i64().unwrap();
+        assert!(ids.into_no_null_iter().is_sorted());
+        assert!(ids.max().unwrap() > 95_000);
+        // The same seed, the same sample; another seed, another.
+        let again = analysis_rows(&lf, Some(5_000), None, 7, false).unwrap();
+        assert!(rows.df.equals(&again.df));
+        let other = analysis_rows(&lf, Some(5_000), None, 8, false).unwrap();
+        assert!(!rows.df.equals(&other.df));
+    }
+
+    #[test]
+    fn a_filtered_view_is_sampled_in_one_uniform_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let lf = climbing(dir.path(), 100_000).filter(col("id").gt_eq(lit(50_000)));
+        assert!(
+            !slices_reach_into_the_scan(&lf),
+            "a slice of a filter reads what is ahead of it"
+        );
+        let rows = analysis_rows(&lf, Some(5_000), None, 7, false).unwrap();
+        assert_eq!(rows.df.height(), 5_000);
+        assert_eq!(rows.total_rows, 50_000, "the pass counts as it goes");
+        assert!(
+            (mean(&rows.df) - 74_999.5).abs() < 1_500.0,
+            "{}",
+            mean(&rows.df)
+        );
+        assert!(
+            rows.df.column(SAMPLE_POSITION).is_err(),
+            "the position column does not leak"
+        );
+        let again = analysis_rows(&lf, Some(5_000), None, 7, false).unwrap();
+        assert!(rows.df.equals(&again.df), "seeded");
+    }
+
+    #[test]
+    fn no_sample_size_reads_every_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = analysis_rows(&climbing(dir.path(), 20_000), None, None, 1, false).unwrap();
+        assert_eq!(rows.df.height(), 20_000);
+        assert_eq!(rows.sample_size, None);
+    }
+
+    #[test]
+    fn the_incomplete_beta_and_the_t_cdf_are_exact() {
+        // I_0.5(2, 3) = 11/16.
+        let i = regularized_incomplete_beta(0.5, 2.0, 3.0);
+        assert!((i - 0.6875).abs() < 1e-6, "{i}");
+        // The 97.5th percentile of t with 5 degrees of freedom is 2.5706.
+        assert!((students_t_cdf(2.5706, 5.0) - 0.975).abs() < 1e-4);
+        assert!((students_t_cdf(-2.5706, 5.0) - 0.025).abs() < 1e-4);
+        assert!((students_t_cdf(0.0, 5.0) - 0.5).abs() < 1e-12);
+        // Beta(1, 1) is the uniform.
+        assert!((beta_cdf(0.3, 1.0, 1.0) - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_constant_column_is_constant_and_a_hopeless_one_has_no_clear_fit() {
+        let constant = Series::new("c".into(), vec![2020.0f64; 500]);
+        let info = infer_distribution(&constant, &constant, 500, false);
+        assert_eq!(info.distribution_type, DistributionType::Constant);
+
+        // Two far-apart clusters of non-integers: every candidate is rejected.
+        let values: Vec<f64> = (0..2_000)
+            .map(|i| {
+                let jitter = (i % 97) as f64 * 0.013;
+                if i % 2 == 0 {
+                    -1_000.3 + jitter
+                } else {
+                    1_000.7 + jitter
+                }
+            })
+            .collect();
+        let bimodal = Series::new("b".into(), values);
+        let info = infer_distribution(&bimodal, &bimodal, 2_000, false);
+        assert_eq!(info.distribution_type, DistributionType::Unknown);
+        assert_eq!(info.distribution_type.to_string(), "No clear fit");
+
+        // Integers, half of them negative: no count distribution, whatever the
+        // non-negative half looks like on its own.
+        let values: Vec<f64> = (0..2_000)
+            .map(|i| {
+                if i % 2 == 0 {
+                    -1_000.0 + (i % 7) as f64
+                } else {
+                    1_000.0 + (i % 5) as f64
+                }
+            })
+            .collect();
+        let integers = Series::new("i".into(), values);
+        let info = infer_distribution(&integers, &integers, 2_000, false);
+        assert!(
+            !matches!(
+                info.distribution_type,
+                DistributionType::Binomial
+                    | DistributionType::Poisson
+                    | DistributionType::Geometric
+            ),
+            "{:?}",
+            info.distribution_type
+        );
+    }
 }

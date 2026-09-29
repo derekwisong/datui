@@ -9,5 +9,7 @@ Navigation:
   Enter:         Select tool from sidebar (when sidebar focused)
 
 Actions:
-  r:             Resample data (only shown if data was sampled)
-  Esc:           Close analysis view or help dialog
+  r:             Draw another sample (when the result is a sample)
+  a:             Read every row instead, after confirming
+  Esc:           Cancel a run in progress; otherwise close the analysis
+                 view or this help

@@ -6498,7 +6498,10 @@ pub struct App {
     active_template_id: Option<String>, // ID of currently applied template
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
-    sampling_threshold: Option<usize>, // None = no sampling (full data); Some(n) = sample when rows >= n
+    /// Rows an analysis samples from a larger table; `None` reads every row.
+    analysis_sample_rows: Option<usize>,
+    /// `a` is waiting on the confirmation to read every row.
+    pending_read_all: bool,
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
@@ -6796,6 +6799,63 @@ impl App {
     /// True while a message is in front of the user that has to be dismissed.
     pub fn modal_showing(&self) -> bool {
         self.error_modal.active || self.confirmation_modal.active
+    }
+
+    /// The analysis on screen was run on a sample: what `r` and `a` act on.
+    fn analysis_results_are_sampled(&self) -> bool {
+        self.analysis_modal.view == analysis_modal::AnalysisView::Main
+            && self.analysis_modal.computing.is_none()
+            && self
+                .analysis_modal
+                .current_results()
+                .is_some_and(|r| r.sample_size.is_some())
+    }
+
+    /// How many rows the next analysis samples: none when `a` asked for every row.
+    fn analysis_sampling(&self) -> Option<usize> {
+        if self.analysis_modal.reads_all {
+            None
+        } else {
+            self.analysis_sample_rows
+        }
+    }
+
+    /// Run the selected tool again from scratch, as `r` and `a` do.
+    fn start_analysis_run(&mut self) -> Option<AppEvent> {
+        let (phase, event) = match self.analysis_modal.selected_tool? {
+            analysis_modal::AnalysisTool::Describe => {
+                self.analysis_modal.describe_results = None;
+                self.analysis_computation = Some(AnalysisComputationState {
+                    df: None,
+                    schema: None,
+                    partial_stats: Vec::new(),
+                    current: 0,
+                    total: 0,
+                    total_rows: 0,
+                    sample_seed: self.analysis_modal.random_seed,
+                    sample_size: None,
+                });
+                ("Describing data", AppEvent::AnalysisChunk)
+            }
+            analysis_modal::AnalysisTool::DistributionAnalysis => {
+                self.analysis_modal.distribution_results = None;
+                (
+                    "Analyzing distributions",
+                    AppEvent::AnalysisDistributionCompute,
+                )
+            }
+            analysis_modal::AnalysisTool::CorrelationMatrix => {
+                self.analysis_modal.correlation_results = None;
+                (
+                    "Computing correlations",
+                    AppEvent::AnalysisCorrelationCompute,
+                )
+            }
+            analysis_modal::AnalysisTool::DataQuality => return None,
+        };
+        self.analysis_modal.computing = Some(AnalysisProgress::new(phase));
+        self.busy = true;
+        Some(event)
     }
 
     /// Stop waiting for the analysis in flight.
@@ -8010,7 +8070,9 @@ impl App {
             active_template_id: None,
             loading_state: LoadingState::Idle,
             theme,
-            sampling_threshold: app_config.performance.sampling_threshold,
+            analysis_sample_rows: (app_config.performance.analysis_sample_rows > 0)
+                .then_some(app_config.performance.analysis_sample_rows),
+            pending_read_all: false,
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
@@ -12316,6 +12378,11 @@ impl App {
                     if self.confirmation_modal.focus_yes {
                         // Forgetting every recent is checked first: it is the only
                         // confirmation here that is not about overwriting a file.
+                        if std::mem::take(&mut self.pending_read_all) {
+                            self.confirmation_modal.hide();
+                            self.analysis_modal.reads_all = true;
+                            return self.start_analysis_run();
+                        }
                         if self.pending_clear_recents {
                             self.pending_clear_recents = false;
                             self.confirmation_modal.hide();
@@ -12386,6 +12453,7 @@ impl App {
                         }
                     } else {
                         self.pending_clear_recents = false;
+                        self.pending_read_all = false;
                         self.pending_forget_place = None;
                         // Declining an overwrite returns to the filled form:
                         // the typed path, format and options survive the No.
@@ -12409,6 +12477,7 @@ impl App {
                     // Disarmed on every exit from the modal, so a declined confirmation
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
+                    self.pending_read_all = false;
                     self.pending_forget_place = None;
                     // Declining an overwrite returns to the filled form: the
                     // typed path, format and options survive the Esc.
@@ -14097,45 +14166,26 @@ impl App {
                 KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
-                KeyCode::Char('r')
-                    if self.sampling_threshold.is_some()
-                        && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
-                {
-                    // Gated to Main: inside a detail view an undocumented `r`
-                    // cleared the results out from under the detail.
+                // Another sample, or every row. Both only where the results are a
+                // sample, and only on the main view: inside a detail an undocumented
+                // `r` cleared the results out from under it.
+                KeyCode::Char('r') if self.analysis_results_are_sampled() => {
                     self.analysis_modal.recalculate();
-                    match self.analysis_modal.selected_tool {
-                        Some(analysis_modal::AnalysisTool::Describe) => {
-                            self.analysis_modal.describe_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress::new("Describing data"));
-                            self.analysis_computation = Some(AnalysisComputationState {
-                                df: None,
-                                schema: None,
-                                partial_stats: Vec::new(),
-                                current: 0,
-                                total: 0,
-                                total_rows: 0,
-                                sample_seed: self.analysis_modal.random_seed,
-                                sample_size: None,
-                            });
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisChunk);
-                        }
-                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                            self.analysis_modal.distribution_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress::new("Analyzing distributions"));
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisDistributionCompute);
-                        }
-                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                            self.analysis_modal.correlation_results = None;
-                            self.analysis_modal.computing = Some(AnalysisProgress::new("Computing correlations"));
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisCorrelationCompute);
-                        }
-                        Some(analysis_modal::AnalysisTool::DataQuality) => {}
-                        None => {}
-                    }
+                    return self.start_analysis_run();
+                }
+                KeyCode::Char('a') if self.analysis_results_are_sampled() => {
+                    let total = self
+                        .analysis_modal
+                        .current_results()
+                        .map(|r| r.total_rows)
+                        .unwrap_or_default();
+                    self.pending_read_all = true;
+                    self.confirmation_modal.show(format!(
+                        "Read all {} rows? It can take much longer than the sample. \
+                         Esc stops it.",
+                        crate::numfmt::group_chrome(total)
+                    ));
+                    self.confirmation_modal.yes_label = "Read all";
                 }
                 KeyCode::Tab => {
                     // One rule for the whole screen: Tab moves sidebar <-> result.
@@ -16554,7 +16604,7 @@ impl App {
                 // Stub out binary columns: their blobs are never read for analysis (reading
                 // multi-GB blobs across partitions can exhaust memory and freeze the process).
                 let lf = match &self.data_table_state {
-                    Some(state) => state.lf.clone().select(state.binary_stub_exprs()),
+                    Some(state) => state.analysis_lf().select(state.binary_stub_exprs()),
                     None => {
                         self.analysis_computation = None;
                         self.analysis_modal.computing = None;
@@ -16568,34 +16618,16 @@ impl App {
                         .data_table_state
                         .as_ref()
                         .and_then(|s| s.num_rows_if_valid());
-                    let sampling = self.sampling_threshold;
+                    let sampling = self.analysis_sampling();
                     let seed = comp.sample_seed;
                     let streaming = self.app_config.performance.polars_streaming;
                     self.spawn_bg("Computing statistics...", move |task_gen, tx| {
-                        let total_rows = match cached_rows {
-                            Some(n) => n,
-                            None => match crate::statistics::collect_lazy(
-                                crate::widgets::datatable::row_count_lf(&lf),
-                                streaming,
-                            ) {
-                                Ok(count_df) => match count_df.get(0) {
-                                    Some(col) => match col.first() {
-                                        Some(AnyValue::UInt64(n)) => *n as usize,
-                                        _ => 0,
-                                    },
-                                    None => 0,
-                                },
-                                Err(e) => {
-                                    let _ = tx.send(AppEvent::BackgroundError {
-                                        generation: task_gen,
-                                        message: format!("{e}"),
-                                    });
-                                    return;
-                                }
-                            },
-                        };
                         match crate::statistics::compute_describe_from_lazy(
-                            &lf, total_rows, sampling, seed, streaming,
+                            &lf,
+                            cached_rows,
+                            sampling,
+                            seed,
+                            streaming,
                         ) {
                             Ok(results) => {
                                 let _ = tx.send(AppEvent::BackgroundDescribeReady {
@@ -16617,8 +16649,8 @@ impl App {
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
                     // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
-                    let lf = state.lf.clone().select(state.binary_stub_exprs());
-                    let sampling = self.sampling_threshold;
+                    let lf = state.analysis_lf().select(state.binary_stub_exprs());
+                    let sampling = self.analysis_sampling();
                     let seed = self.analysis_modal.random_seed;
                     let streaming = self.app_config.performance.polars_streaming;
                     self.spawn_bg("Analyzing distributions...", move |task_gen, tx| {
@@ -16655,17 +16687,26 @@ impl App {
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
                     // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
-                    let lf = state.lf.clone().select(state.binary_stub_exprs());
+                    let lf = state.analysis_lf().select(state.binary_stub_exprs());
                     let streaming = state.polars_streaming;
+                    let known_total = state.num_rows_if_valid();
                     let seed = self.analysis_modal.random_seed;
+                    let sampling = self.analysis_sampling();
                     self.spawn_bg("Computing correlation matrix...", move |task_gen, tx| {
-                        let result = crate::statistics::collect_lazy(lf, streaming).map(|df| {
-                            let matrix = crate::statistics::compute_correlation_matrix(&df).ok();
-                            let height = df.height();
+                        let result = crate::statistics::analysis_rows(
+                            &lf,
+                            sampling,
+                            known_total,
+                            seed,
+                            streaming,
+                        )
+                        .map(|rows| {
+                            let matrix =
+                                crate::statistics::compute_correlation_matrix(&rows.df).ok();
                             crate::statistics::AnalysisResults {
                                 column_statistics: vec![],
-                                total_rows: height,
-                                sample_size: None,
+                                total_rows: rows.total_rows,
+                                sample_size: rows.sample_size,
                                 sample_seed: seed,
                                 correlation_matrix: matrix,
                                 distribution_analyses: vec![],

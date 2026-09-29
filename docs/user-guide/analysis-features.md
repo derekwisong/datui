@@ -180,18 +180,31 @@ and offer to read a conflicting column as text.
 
 ## Sampling
 
-By default every tool uses every row. On very large datasets, set a threshold
-to analyze a sample instead. Data Quality is the exception: it does not read
-`sampling_threshold`, because its plan already chooses between metadata, a
-seeded sample of a stated size, and a full scan, and says what each will read
-before it runs.
+Describe, Distribution and Correlation read a table of up to 100,000 rows
+whole. A larger one is analyzed from a sample of 100,000 rows, spread across
+the whole table rather than taken from its start, and the title says so:
+`Distribution Analysis · sample of 100,000 of 36,839,175 rows`.
+
+| Key | Action |
+|---|---|
+| <kbd>r</kbd> | Draw another sample |
+| <kbd>a</kbd> | Read every row, after confirming the count |
+| <kbd>Esc</kbd> | Cancel a run in progress |
+
+How the sample is drawn depends on what the view is:
+
+| View | Sample | Reads |
+|---|---|---|
+| A Parquet or IPC file or hive directory, unfiltered | 50 runs of rows at seeded places across the table | The row groups those runs fall in |
+| Anything else: a filter, a query, CSV, several files | A seeded uniform sample, kept while the rows stream past | Every row once, holding only the sample |
+
+The sort is never part of an analysis: no statistic depends on it.
 
 ```toml
 [performance]
-sampling_threshold = 1000000   # sample when a table has this many rows or more
+analysis_sample_rows = 100000   # 0 reads every row of every table
 ```
 
-or `--sampling-threshold 1000000` for one run (`0` forces the full dataset).
-When a result is sampled the tool says so, and <kbd>r</kbd> draws a new sample.
-This setting applies to Describe, Distribution and Correlation. Data Quality
-uses its own compute budget instead.
+or `--sample-rows N` for one run. Data Quality does not use this setting: its
+plan chooses between metadata, a seeded sample of a stated size and a full
+scan, and says what each will read before it runs.

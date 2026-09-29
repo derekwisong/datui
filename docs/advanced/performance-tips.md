@@ -14,15 +14,11 @@ rather than all of them.
 **Query before you pivot.** Pivot has to read every affected row to discover
 the new column names. Filter or query down first.
 
-**Sample the analysis.** Describe, distribution fitting and the correlation
-matrix read every row by default. On a very large table:
-
-```toml
-[performance]
-sampling_threshold = 1000000
-```
-
-or `--sampling-threshold 1000000` for one run. See
+**Let the analysis sample.** Describe, distribution fitting and the
+correlation matrix analyze a 100,000-row sample of a larger table, spread
+across all of it; on an unfiltered Parquet table that reads a few dozen row
+groups, however large the table is. Filtering first makes the sample read the
+whole table once. `a` reads every row when the sample is not enough. See
 [Analysis](../user-guide/analysis-features.md#sampling).
 
 **Cap chart rows.** Charts use at most `row_limit` rows (default 10,000), set

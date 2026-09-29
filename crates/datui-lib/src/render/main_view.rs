@@ -177,11 +177,15 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             ("Enter", "Select"),
         ]
     };
-    if app.sampling_threshold.is_some()
-        && let Some(results) = app.analysis_modal.current_results()
-        && results.sample_size.is_some()
+    // On a sample: another one, or every row.
+    if modal.view == crate::analysis_modal::AnalysisView::Main
+        && app
+            .analysis_modal
+            .current_results()
+            .is_some_and(|results| results.sample_size.is_some())
     {
         pairs.push(("r", "Resample"));
+        pairs.push(("a", "All rows"));
     }
     pairs.push(("?", "Help"));
     pairs

@@ -125,14 +125,16 @@ impl<'a> AnalysisWidget<'a> {
             None => "Analysis",
         };
 
-        let breadcrumb_text = if let Some(results) = self.results {
-            if results.sample_size.is_some() {
-                format!("{} (sampled)", tool_name)
-            } else {
-                tool_name.to_string()
-            }
-        } else {
-            tool_name.to_string()
+        // What the numbers are of, stated rather than implied: a sample says how big
+        // and of how many, so a surprising figure can be told apart from a rare one.
+        let breadcrumb_text = match self.results.and_then(|r| r.sample_size.map(|n| (n, r))) {
+            Some((n, results)) => format!(
+                "{tool_name} {} sample of {} of {} rows",
+                crate::glyphs::get().middot,
+                crate::numfmt::group_chrome(n),
+                crate::numfmt::group_chrome(results.total_rows)
+            ),
+            None => tool_name.to_string(),
         };
 
         let header_row_style = header_style(self.theme, "controls_bg", "table_header");
@@ -2839,7 +2841,7 @@ pub fn calculate_theoretical_quantile_at_probability(
 
             scale_est * (-(1.0 - p).ln()).powf(1.0 / shape_est)
         }
-        DistributionType::PowerLaw | DistributionType::Unknown => {
+        DistributionType::PowerLaw | DistributionType::Constant | DistributionType::Unknown => {
             // Fallback: use empirical quantiles from percentiles
             interpolate_empirical_quantile(dist, p)
         }

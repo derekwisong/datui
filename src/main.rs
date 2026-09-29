@@ -131,8 +131,8 @@ fn main() -> Result<()> {
         config.display.align_numeric_right = ar;
     }
 
-    if let Some(st) = args.sampling_threshold {
-        config.performance.sampling_threshold = if st == 0 { None } else { Some(st) };
+    if let Some(rows) = args.sample_rows {
+        config.performance.analysis_sample_rows = rows;
     }
 
     if let Some(ps) = args.polars_streaming {
@@ -172,7 +172,7 @@ mod tests {
             clear_recents: false,
             template: None,
             remove_templates: false,
-            sampling_threshold: None,
+            sample_rows: None,
             pages_lookahead: None,
             pages_lookback: None,
             row_numbers: false,

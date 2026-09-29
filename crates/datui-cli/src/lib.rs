@@ -323,13 +323,9 @@ pub struct Args {
     #[arg(long = "remove-templates", action, help_heading = "Maintenance")]
     pub remove_templates: bool,
 
-    /// Sample datasets with this many or more rows for analysis — faster, less memory (default: [performance] sampling_threshold in config, else the full dataset). 0 disables sampling for this run
-    #[arg(
-        long = "sampling-threshold",
-        value_name = "N",
-        help_heading = "Performance"
-    )]
-    pub sampling_threshold: Option<usize>,
+    /// Rows an analysis samples from a larger table, spread across all of it (default: [performance] analysis_sample_rows, 100000). 0 reads every row
+    #[arg(long = "sample-rows", value_name = "N", help_heading = "Performance")]
+    pub sample_rows: Option<usize>,
 
     /// Use the Polars streaming engine where available (default: true)
     #[arg(long = "polars-streaming", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Performance")]

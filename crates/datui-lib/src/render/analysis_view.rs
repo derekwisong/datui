@@ -40,12 +40,12 @@ pub fn render(
             ]),
             // What decides how long this takes, stated rather than left to guess.
             Line::from(Span::styled(
-                match app.sampling_threshold {
-                    Some(n) => format!(
-                        "   Samples {} rows from a larger table",
+                match app.analysis_sample_rows {
+                    Some(n) if !app.analysis_modal.reads_all => format!(
+                        "   Samples {} rows, spread across the table, when it has more",
                         crate::numfmt::group_chrome(n)
                     ),
-                    None => "   Reads every row".to_string(),
+                    _ => "   Reads every row".to_string(),
                 },
                 Style::default().fg(ctx.dimmed),
             )),

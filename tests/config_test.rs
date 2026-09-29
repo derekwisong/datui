@@ -28,7 +28,7 @@ fn test_default_config() {
     assert_eq!(config.display.table_cell_padding, 2);
 
     // Check performance defaults
-    assert_eq!(config.performance.sampling_threshold, None);
+    assert_eq!(config.performance.analysis_sample_rows, 100_000);
     assert_eq!(config.performance.event_poll_interval_ms, 25);
 
     // Check theme defaults
@@ -159,7 +159,7 @@ row_start_index = 0
 
     // Check that defaults are still present for unspecified values
     assert_eq!(config.display.pages_lookahead, 3); // Default
-    assert_eq!(config.performance.sampling_threshold, None); // Default: no sampling
+    assert_eq!(config.performance.analysis_sample_rows, 100_000); // Default
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn test_merge_configs() {
     // Modify override config
     override_config.display.row_numbers = true;
     override_config.display.pages_lookahead = 5;
-    override_config.performance.sampling_threshold = Some(50000);
+    override_config.performance.analysis_sample_rows = 50000;
     override_config.theme.colors.keybind_hints = "blue".to_string();
 
     // Merge
@@ -179,7 +179,7 @@ fn test_merge_configs() {
     // Check that values were merged
     assert!(base.display.row_numbers);
     assert_eq!(base.display.pages_lookahead, 5);
-    assert_eq!(base.performance.sampling_threshold, Some(50000));
+    assert_eq!(base.performance.analysis_sample_rows, 50000);
     assert_eq!(base.theme.colors.keybind_hints, "blue");
 
     // Check that unmodified values remain default
@@ -211,18 +211,10 @@ fn test_validate_config_invalid_version() {
 }
 
 #[test]
-fn test_validate_config_zero_sampling_threshold() {
+fn test_validate_config_zero_sample_rows_reads_every_row() {
     let mut config = AppConfig::default();
-    config.performance.sampling_threshold = Some(0);
-
-    let result = config.validate();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("sampling_threshold must be greater than 0 when set")
-    );
+    config.performance.analysis_sample_rows = 0;
+    assert!(config.validate().is_ok());
 }
 
 #[test]
@@ -277,7 +269,7 @@ row_numbers = true
 row_start_index = 0
 
 [performance]
-sampling_threshold = 50000
+analysis_sample_rows = 50000
 event_poll_interval_ms = 50
 
 [theme.colors]
@@ -330,7 +322,7 @@ show_transformations = true
     assert_eq!(config.file_loading.infer_schema_length, Some(5000));
     assert_eq!(config.display.pages_lookahead, 5);
     assert!(config.display.row_numbers);
-    assert_eq!(config.performance.sampling_threshold, Some(50000));
+    assert_eq!(config.performance.analysis_sample_rows, 50000);
     assert_eq!(config.theme.colors.keybind_hints, "blue");
     assert_eq!(config.ui.controls.row_count_width, 25);
     assert_eq!(config.query.history_limit, 500);
@@ -572,8 +564,7 @@ fn test_validate_config_with_mixed_colors() {
 }
 
 #[test]
-fn test_template_sampling_threshold_default_none() {
-    // Default is None (no sampling); template and Rust default must match
+fn test_template_analysis_sample_rows_matches_the_default() {
     let (_temp_dir, config_manager) = setup_test_config_dir();
     let template_str = config_manager.generate_default_config();
 
@@ -581,14 +572,9 @@ fn test_template_sampling_threshold_default_none() {
         toml::from_str(&template_str).expect("Template should be valid TOML");
 
     assert_eq!(
-        template_config.performance.sampling_threshold, None,
-        "Template sampling_threshold should default to None (no sampling)"
-    );
-
-    let rust_default = AppConfig::default();
-    assert_eq!(
-        rust_default.performance.sampling_threshold, None,
-        "Rust default sampling_threshold should be None"
+        template_config.performance.analysis_sample_rows,
+        AppConfig::default().performance.analysis_sample_rows,
+        "the template and the Rust default agree"
     );
 }
 

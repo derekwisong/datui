@@ -671,6 +671,9 @@ pub struct ColumnQualityProfile {
     pub decimal_parse_count: Option<usize>,
     pub date_parse_count: Option<usize>,
     pub datetime_parse_count: Option<usize>,
+    /// Text values that parse as whole numbers and are written with a leading zero:
+    /// the mark of a code (a ZIP, an account, an industry code) rather than a number.
+    pub leading_zero_count: Option<usize>,
     pub dominant_value: Option<String>,
     pub dominant_count: Option<usize>,
     pub min_length: Option<usize>,
@@ -895,6 +898,22 @@ pub struct TemporalLatencyProfile {
     pub above_threshold_count: Option<usize>,
 }
 
+/// Columns that are null the same number of times, and how many rows are null in all
+/// of them at once. When the two counts agree, the columns go missing together: one
+/// fact about some rows, not one per column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedNulls {
+    pub columns: Vec<String>,
+    pub null_rows: usize,
+    pub rows_null_in_all: usize,
+}
+
+impl SharedNulls {
+    pub fn same_rows(&self) -> bool {
+        self.rows_null_in_all == self.null_rows
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DataQualityResults {
     pub total_rows: Option<usize>,
@@ -907,6 +926,7 @@ pub struct DataQualityResults {
     pub temporal: Vec<TemporalLatencyProfile>,
     pub identity: Option<IdentityProfile>,
     pub category_variants: Vec<CategoryVariantGroup>,
+    pub shared_nulls: Vec<SharedNulls>,
 }
 
 impl DataQualityResults {
@@ -945,6 +965,7 @@ impl DataQualityResults {
                     decimal_parse_count: None,
                     date_parse_count: None,
                     datetime_parse_count: None,
+                    leading_zero_count: None,
                     dominant_value: None,
                     dominant_count: None,
                     min_length: None,
@@ -956,6 +977,7 @@ impl DataQualityResults {
             temporal: Vec::new(),
             identity: None,
             category_variants: Vec::new(),
+            shared_nulls: Vec::new(),
         }
     }
 }
@@ -1084,6 +1106,7 @@ pub fn compute_data_quality(
         polars_streaming,
     )?;
     let temporal = profile_temporal(&profile_df, plan, sample_positions.as_deref())?;
+    let shared_nulls = profile_shared_nulls(&profile_df.lazy(), &columns, polars_streaming)?;
 
     Ok(DataQualityResults {
         total_rows,
@@ -1096,6 +1119,7 @@ pub fn compute_data_quality(
         temporal,
         identity: Some(identity),
         category_variants,
+        shared_nulls,
     })
 }
 
@@ -1349,6 +1373,7 @@ fn compute_full_quality(
     }
     let segments = profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)?;
     let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming)?;
+    let shared_nulls = profile_shared_nulls(lf, &columns, polars_streaming)?;
     Ok(DataQualityResults {
         total_rows: Some(total_rows),
         evaluated_rows: total_rows,
@@ -1360,7 +1385,57 @@ fn compute_full_quality(
         temporal,
         identity: Some(identity),
         category_variants,
+        shared_nulls,
     })
+}
+
+/// For every set of two or more columns with the same nonzero null count, how many
+/// rows are null in all of them.
+///
+/// Equal counts are only a hint; this is the check. It reads just those columns, once,
+/// and is skipped entirely when no two columns share a count.
+fn profile_shared_nulls(
+    lf: &LazyFrame,
+    columns: &[ColumnQualityProfile],
+    polars_streaming: bool,
+) -> Result<Vec<SharedNulls>> {
+    let mut by_count = BTreeMap::<usize, Vec<String>>::new();
+    for profile in columns.iter().filter(|profile| profile.null_count > 0) {
+        by_count
+            .entry(profile.null_count)
+            .or_default()
+            .push(profile.name.clone());
+    }
+    let groups = by_count
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .collect::<Vec<_>>();
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+    let exprs = groups
+        .iter()
+        .enumerate()
+        .map(|(index, (_, names))| {
+            names
+                .iter()
+                .map(|name| col(name.as_str()).is_null())
+                .reduce(Expr::and)
+                .expect("a group has two columns")
+                .sum()
+                .alias(format!("__quality_shared_null_{index}"))
+        })
+        .collect::<Vec<_>>();
+    let counts = collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
+    Ok(groups
+        .into_iter()
+        .enumerate()
+        .map(|(index, (null_rows, columns))| SharedNulls {
+            columns,
+            null_rows,
+            rows_null_in_all: usize_value(&counts, &format!("__quality_shared_null_{index}")),
+        })
+        .collect())
 }
 
 /// The most common value of every column, in one pass. A scan per column would
@@ -2524,6 +2599,15 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
             );
             exprs.push(
                 text.clone()
+                    .str()
+                    .starts_with(lit("0"))
+                    .and(text.clone().str().len_chars().gt(lit(1u32)))
+                    .and(text.clone().cast(DataType::Int64).is_not_null())
+                    .sum()
+                    .alias(format!("{prefix}leading_zero")),
+            );
+            exprs.push(
+                text.clone()
                     .cast(DataType::Float64)
                     .is_not_null()
                     .and(text.clone().is_not_null())
@@ -2693,6 +2777,11 @@ fn parse_profiles_at(
                     &format!("{prefix}parse_datetime"),
                     row,
                 ),
+                leading_zero_count: optional_usize_at(
+                    aggregate,
+                    &format!("{prefix}leading_zero"),
+                    row,
+                ),
                 dominant_value: None,
                 dominant_count: None,
                 min_length: optional_usize_at(aggregate, &format!("{prefix}min_length"), row),
@@ -2700,6 +2789,64 @@ fn parse_profiles_at(
             }
         })
         .collect()
+}
+
+/// The share of non-null text values that must parse before a text column is said
+/// to hold numbers or dates. Below it the column is text that happens to contain a
+/// few numbers, which is not a finding.
+pub const TEXT_READING_SHARE: f64 = 0.95;
+
+/// What the values of a text column parse as, most specific first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextReading {
+    WholeNumber,
+    Decimal,
+    Datetime,
+    Date,
+}
+
+impl TextReading {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::WholeNumber => "whole numbers",
+            Self::Decimal => "decimal numbers",
+            Self::Datetime => "ISO datetimes",
+            Self::Date => "ISO dates",
+        }
+    }
+
+    pub fn is_number(self) -> bool {
+        matches!(self, Self::WholeNumber | Self::Decimal)
+    }
+}
+
+/// The one typed reading a text column's values support, with how many parse.
+///
+/// A whole number also parses as a decimal and a datetime string may also parse as a
+/// date, so the column gets one answer rather than three rows saying overlapping
+/// things. Numbers are whole only when every number is.
+pub fn text_reading(profile: &ColumnQualityProfile) -> Option<(usize, TextReading)> {
+    let non_null = profile.non_null_rows();
+    if non_null == 0 {
+        return None;
+    }
+    let enough = |count: Option<usize>| {
+        count.filter(|parsed| *parsed as f64 >= non_null as f64 * TEXT_READING_SHARE)
+    };
+    if let Some(parsed) = enough(profile.decimal_parse_count) {
+        let reading = if profile.integer_parse_count == Some(parsed) {
+            TextReading::WholeNumber
+        } else {
+            TextReading::Decimal
+        };
+        return Some((parsed, reading));
+    }
+    [
+        (profile.datetime_parse_count, TextReading::Datetime),
+        (profile.date_parse_count, TextReading::Date),
+    ]
+    .into_iter()
+    .find_map(|(count, reading)| enough(count).map(|parsed| (parsed, reading)))
 }
 
 fn observations_from_profiles(
@@ -2754,39 +2901,15 @@ fn observations_from_profiles(
                 "one non-null value".to_string(),
             ));
         }
-        if let Some(parsed) = profile.decimal_parse_count
-            && profile.non_null_rows() > 0
-            && parsed > 0
-        {
+        if let Some((parsed, reading)) = text_reading(profile) {
             observations.push(observation(
                 ObservationKind::ParseableText,
                 profile,
                 parsed,
                 format!(
-                    "{:.2}% parse as decimal",
-                    rate(parsed, profile.non_null_rows()) * 100.0
-                ),
-            ));
-        }
-        if let Some(parsed) = profile.date_parse_count.filter(|count| *count > 0) {
-            observations.push(observation(
-                ObservationKind::ParseableText,
-                profile,
-                parsed,
-                format!(
-                    "{:.2}% parse as ISO date",
-                    rate(parsed, profile.non_null_rows()) * 100.0
-                ),
-            ));
-        }
-        if let Some(parsed) = profile.datetime_parse_count.filter(|count| *count > 0) {
-            observations.push(observation(
-                ObservationKind::ParseableText,
-                profile,
-                parsed,
-                format!(
-                    "{:.2}% parse as ISO datetime",
-                    rate(parsed, profile.non_null_rows()) * 100.0
+                    "{:.2}% parse as {}",
+                    rate(parsed, profile.non_null_rows()) * 100.0,
+                    reading.label()
                 ),
             ));
         }
@@ -2797,7 +2920,12 @@ fn observations_from_profiles(
         // null rate does. An order id repeating ten times in a billion rows is unique
         // in every 50,000-row sample of it, and "sampled" under a claim that a column
         // is nearly a key does not take the claim back.
+        //
+        // Only where a key can live: integers and text. A float measure or a timestamp
+        // is nearly unique by nature, and its repeats are coincidences, not duplicates.
         if precision == QualityPrecision::Exact
+            && (profile.dtype.is_integer()
+                || matches!(profile.dtype, DataType::String | DataType::Categorical(..)))
             && let (Some(distinct), Some(uniqueness)) =
                 (profile.distinct_count, profile.uniqueness_rate())
             && (KEY_LIKE_UNIQUENESS..1.0).contains(&uniqueness)
@@ -3776,6 +3904,111 @@ mod tests {
                 .any(|observation| observation.kind == ObservationKind::KeyLike),
             "a sampled distinct share cannot say a column is nearly a key"
         );
+    }
+
+    /// A float measure is nearly unique by nature: prices and volumes repeat by
+    /// coincidence, and calling that a key that slipped is noise.
+    #[test]
+    fn a_nearly_unique_float_is_not_a_key() {
+        let mut prices = (0..98).map(|row| row as f64 + 0.5).collect::<Vec<_>>();
+        prices.push(7.5);
+        prices.push(11.5);
+        let frame = df!("price" => &prices).unwrap().lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+        assert!(
+            !results
+                .observations
+                .iter()
+                .any(|observation| observation.kind == ObservationKind::KeyLike)
+        );
+    }
+
+    /// One reading per text column, and only when nearly every value supports it: a
+    /// column of names with a few numeric ones is text, not numbers stored as text.
+    #[test]
+    fn text_is_read_as_numbers_only_when_nearly_all_of_it_parses() {
+        let mut names = (0..97).map(|row| format!("name {row}")).collect::<Vec<_>>();
+        names.extend(["1", "2", "3"].map(String::from));
+        let codes = (0..100)
+            .map(|row| format!("{:04}", row * 37))
+            .collect::<Vec<_>>();
+        let amounts = (0..100).map(|row| format!("{row}.25")).collect::<Vec<_>>();
+        let frame = df!("name" => &names, "code" => &codes, "amount" => &amounts)
+            .unwrap()
+            .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+        let readings = results
+            .observations
+            .iter()
+            .filter(|observation| observation.kind == ObservationKind::ParseableText)
+            .map(|observation| (observation.column.as_str(), observation.fact.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            readings,
+            vec![
+                ("code", "100.00% parse as whole numbers"),
+                ("amount", "100.00% parse as decimal numbers"),
+            ]
+        );
+        let code = results
+            .columns
+            .iter()
+            .find(|profile| profile.name == "code")
+            .unwrap();
+        // 0000 and every value under 1000 keep a zero in front.
+        assert_eq!(code.leading_zero_count, Some(28));
+    }
+
+    /// Equal null counts are a hint; the shared-null check says whether the columns
+    /// are missing on the same rows or merely as often.
+    #[test]
+    fn columns_missing_together_are_found_to_share_their_rows() {
+        let missing = |rows: &[usize]| {
+            (0..10)
+                .map(|row| (!rows.contains(&row)).then_some(row as f64))
+                .collect::<Vec<_>>()
+        };
+        let frame = df!(
+            "open" => missing(&[2, 5]),
+            "close" => missing(&[2, 5]),
+            "volume" => missing(&[3, 8]),
+            "note" => missing(&[3, 9]),
+        )
+        .unwrap()
+        .lazy();
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&frame, Some(10), &plan, None, false).unwrap();
+            assert_eq!(
+                results.shared_nulls,
+                vec![SharedNulls {
+                    columns: ["open", "close", "volume", "note"]
+                        .map(String::from)
+                        .to_vec(),
+                    null_rows: 2,
+                    rows_null_in_all: 0,
+                }],
+                "{compute:?}: four columns with two nulls each share none of them all"
+            );
+        }
+        let frame = df!("open" => missing(&[2, 5]), "close" => missing(&[2, 5]))
+            .unwrap()
+            .lazy();
+        let results =
+            compute_data_quality(&frame, Some(10), &DataQualityPlan::default(), None, false)
+                .unwrap();
+        assert!(results.shared_nulls[0].same_rows());
     }
 
     /// The segment comparison names the sharpest single move, not the average of all

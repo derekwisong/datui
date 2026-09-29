@@ -207,7 +207,21 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         return vec![("Enter", "Run"), ("Esc", "Cancel")];
     }
     if modal.data_quality_observation_detail {
-        return vec![("Enter", "Evidence"), ("Esc", "Back")];
+        // Enter opens the rows when there are exact rows to open, and otherwise
+        // only closes the popup; the chip says which.
+        let opens = modal.data_quality_results.as_ref().is_some_and(|results| {
+            let report = crate::quality_report::build_report(results);
+            modal
+                .data_quality_table_state
+                .selected()
+                .and_then(|index| report.findings.get(index))
+                .is_some_and(|finding| finding.can_open_rows(results))
+        });
+        return if opens {
+            vec![("Enter", "Show Rows"), ("Esc", "Back")]
+        } else {
+            vec![("Enter", "Close"), ("Esc", "Back")]
+        };
     }
     if modal.data_quality_page == QualityPage::Scope {
         return vec![("Enter", "Apply"), ("PgUp/PgDn", "Files"), ("Esc", "Back")];
@@ -252,19 +266,38 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("e", "Plan"),
             ("Esc", "Back"),
         ],
-        _ => vec![
-            ("1", "Overview"),
-            ("2", "Columns"),
-            ("3", "Segments"),
-            ("4", "Trends"),
-            ("Enter", "Inspect"),
-            ("e", "Plan"),
-            ("Tab", "Focus"),
-            ("?", "Help"),
-            // Every other page carries it; the overview is not the one place
-            // without a way out.
-            ("Esc", "Back"),
-        ],
+        page => {
+            // Enter leads: the bar is cut from the right, and opening a finding is
+            // what these pages are for. The page already shown needs no chip.
+            let mut keys = vec![(
+                "Enter",
+                if page == QualityPage::Overview {
+                    "Details"
+                } else {
+                    "Inspect"
+                },
+            )];
+            keys.extend(
+                [
+                    ("1", "Overview", QualityPage::Overview),
+                    ("2", "Columns", QualityPage::Columns),
+                    ("3", "Segments", QualityPage::Segments),
+                    ("4", "Trends", QualityPage::Trends),
+                ]
+                .into_iter()
+                .filter(|(_, _, shown)| *shown != page)
+                .map(|(key, label, _)| (key, label)),
+            );
+            keys.extend([
+                ("e", "Plan"),
+                ("Tab", "Focus"),
+                ("?", "Help"),
+                // Every other page carries it; the overview is not the one place
+                // without a way out.
+                ("Esc", "Back"),
+            ]);
+            keys
+        }
     }
 }
 

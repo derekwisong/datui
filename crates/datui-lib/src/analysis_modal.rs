@@ -329,7 +329,7 @@ impl AnalysisModal {
             QualityPage::Plan => 7,
             QualityPage::Scope => 0,
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
-            QualityPage::Overview => results.observations.len(),
+            QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
             QualityPage::Trends => results.temporal.len(),

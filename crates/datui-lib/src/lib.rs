@@ -78,6 +78,7 @@ pub mod measurements;
 pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
+pub mod quality_report;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
@@ -6625,36 +6626,36 @@ pub struct App {
 
 impl App {
     fn open_quality_evidence(&mut self) {
-        let Some(observation) =
-            self.analysis_modal
-                .data_quality_results
-                .as_ref()
-                .and_then(|results| {
-                    self.analysis_modal
-                        .data_quality_table_state
-                        .selected()
-                        .and_then(|index| results.observations.get(index))
-                        .filter(|observation| {
-                            // An observation read from the footers is exact whatever the
-                            // run's compute budget was: the files it names are the files
-                            // it names. Everything measured over values is not.
-                            observation.evidence_scope().is_some()
-                                || results.precision == data_quality::QualityPrecision::Exact
-                        })
-                })
+        let Some(results) = self.analysis_modal.data_quality_results.as_ref() else {
+            return;
+        };
+        let report = quality_report::build_report(results);
+        // An observation read from the footers is exact whatever the run's compute
+        // budget was: the files it names are the files it names. Everything measured
+        // over values is not.
+        let Some(finding) = self
+            .analysis_modal
+            .data_quality_table_state
+            .selected()
+            .and_then(|index| report.findings.get(index))
+            .filter(|finding| finding.can_open_rows(results))
         else {
             return;
         };
         // A column its file never had, or holds in a type the scan cannot read, has no
         // value to filter on: its rows are the ones those files contributed, which is a
         // scope rather than a predicate.
-        let by_files = observation.evidence_scope();
-        let predicate = match (&by_files, observation.evidence_predicate()) {
+        let by_files = finding.evidence_scope(results);
+        let predicate = match (&by_files, finding.evidence_predicate(results)) {
             (Some(_), _) => polars::prelude::lit(true),
             (None, Some(predicate)) => predicate,
             (None, None) => return,
         };
-        let label = format!("{} / {}", observation.kind.label(), observation.column);
+        let label = format!(
+            "{} / {}",
+            finding.title,
+            quality_report::columns_label(&finding.columns, 40)
+        );
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -14149,16 +14150,12 @@ impl App {
                             self.busy = true;
                             return Some(AppEvent::AnalysisDataQualityCompute);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
+                            let findings = self.analysis_modal.quality_row_count();
                             self.analysis_modal.data_quality_observation_detail = self
                                 .analysis_modal
-                                .data_quality_results
-                                .as_ref()
-                                .is_some_and(|results| {
-                                    self.analysis_modal
-                                        .data_quality_table_state
-                                        .selected()
-                                        .is_some_and(|index| index < results.observations.len())
-                                });
+                                .data_quality_table_state
+                                .selected()
+                                .is_some_and(|index| index < findings);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Columns {
                             self.analysis_modal
                                 .set_quality_column_page(QualityPage::Detail);

@@ -188,8 +188,8 @@ In Data Quality:
 
 | Key | Action |
 |---|---|
-| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview, Columns, Segments, or Trends |
-| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, inspect an observation, open its exact matching rows, or close an open popup |
+| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends |
+| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, or close an open popup |
 | <kbd>e</kbd> | Edit the plan's seven fields — Scope, Grain, Compute, Compare, Time roles, Latency threshold, Sample rows — in a copy of the plan |
 | <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Scope | Open the precise scope entry |
@@ -202,7 +202,7 @@ In Data Quality:
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | Rerun with a new seed |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to its observation, then Analysis itself |
+| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to its finding, then Analysis itself |
 
 ## Pivot and melt
 

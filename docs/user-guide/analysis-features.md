@@ -40,13 +40,42 @@ and how many row pairs it was computed from.
 
 ## Data quality
 
-Choose **Data Quality** to profile selected rows at several scales. On a
-local file the default plan runs at once and the result opens first; the
-strip at the top echoes the plan that ran, and <kbd>e</kbd> edits it. On a
-remote source the first screen is an inert plan: no values are read until
-you press <kbd>Enter</kbd>. The plan shows the scope, profile grain, compute
-mode, comparison, estimated rows and transfer direction; <kbd>p</kbd> shows
-the estimate basis. A full value scan always asks for confirmation.
+Choose **Data Quality** to check the rows in scope and get a report: what is
+likely wrong, what depends on intent, and which columns are clean. On a local
+file the default plan runs at once and the report opens first; the strip at
+the top says what was checked, and <kbd>e</kbd> edits the plan. On a remote
+source the first screen is an inert plan: no values are read until you press
+<kbd>Enter</kbd>. A full value scan always asks for confirmation.
+
+### Reading the report
+
+The first line counts problems, notes and clean columns. Below it, findings
+are grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
+finding says what it is, why it matters and what to check; <kbd>Enter</kbd>
+again shows its rows when the run was exact.
+
+| Finding | Tier | Means |
+|---|---|---|
+| NaN or infinite | Problem | Float values that are NaN or ±infinity; one NaN makes a sum or mean NaN |
+| Empty text / Blank text | Problem | Text that is `""` or only whitespace: looks filled in, carries nothing |
+| Mixed spellings | Problem | Values equal after trimming and lowercasing, such as `"West"` and `"west "` |
+| Duplicate rows | Problem | Rows identical in every column |
+| Always missing | Problem | A column with no value in any row checked |
+| Missing in files / Type mismatch | Problem | Files without the column, or holding it in a type the dataset cannot read |
+| Missing values | Note | Nulls; columns missing on exactly the same rows are one finding |
+| Numbers as text / Dates as text | Note | At least 95% of a text column parses as numbers or ISO dates |
+| Codes as text | Note | Whole numbers with leading zeros or a fixed width: a code, fine as text |
+| Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
+| Single value | Note | One value in every row checked |
+
+A dataset-grain sample comes from the first rows of the scope (about twice
+the Sample rows budget), and the strip says so: on a file sorted by date, a
+column can look like a single value in that slice when the whole file is not.
+
+### The plan
+
+The plan shows the scope, profile grain, compute mode, comparison, estimated
+rows and transfer direction; <kbd>p</kbd> shows the estimate basis.
 
 | Setting | Choices |
 |---|---|
@@ -85,7 +114,7 @@ picker includes source time columns hidden by the current view.
 
 | Key | Action |
 |---|---|
-| <kbd>Enter</kbd> | Run the plan, inspect an observation, or open its exact matching rows |
+| <kbd>Enter</kbd> | Run the plan, open a finding, or show its exact rows |
 | <kbd>e</kbd> | Edit a copy of the plan; <kbd>Esc</kbd> discards edits |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends |
@@ -98,17 +127,16 @@ picker includes source time columns hidden by the current view.
 Every result states eligible and evaluated rows and whether values are exact,
 sampled, or metadata-only.
 
-- **Overview** — dataset notes and neutral observations. <kbd>Enter</kbd> on
-  one shows its definition, denominator, provenance and available examples:
-  category variants, the files behind an absent column or a type conflict, and
-  the values a conflict hides. For an exact null, empty, whitespace,
-  non-finite, constant, key-like or category-variant observation,
-  <kbd>Enter</kbd> again opens matching rows in a temporary table;
-  <kbd>Esc</kbd> returns to the same observation. The row view uses the same
-  scope and may read the source again; a sampled observation says when an
-  exact row view requires a full profile.
-- **Columns** — null, empty, whitespace, non-finite, distinct, parse, and
-  range measurements.
+- **Overview** — the report. <kbd>Enter</kbd> on a finding shows its numbers,
+  why it matters, what to check and its evidence: the spellings, the most
+  repeated value, the files behind a missing or mistyped column and the values
+  a conflict hides. On an exact run <kbd>Enter</kbd> again opens the matching
+  rows in a temporary table (every column's rows, for a grouped finding);
+  <kbd>Esc</kbd> returns to the same finding. The row view uses the same scope
+  and may read the source again; a sampled finding says when an exact row view
+  requires a full profile.
+- **Columns** — a mark per column (problem, note or clean), its missing
+  count and its findings; <kbd>Enter</kbd> opens the column's measurements.
 - **Segments** — keeps both row denominators visible and shows the chosen
   column measurement, its percentage-point change against the selected
   comparison, and the largest change any column made against that comparison;
@@ -146,10 +174,11 @@ changing the view or plan requires a new run.
 | Distinct | Distinct non-null values observed in the evaluated rows; sampled runs do not claim dataset-wide uniqueness |
 | Dominant share | Most frequent non-null value count ÷ evaluated non-null rows |
 | Range / length | Minimum and maximum value, character length for text, or element count for lists |
-| Parse share | Values accepted by the named integer, decimal, ISO-date or ISO-datetime parser ÷ evaluated non-null text values |
+| Parse share | Values accepted by the named integer, decimal, ISO-date or ISO-datetime parser ÷ evaluated non-null text values; a text column is reported at 95% or more, once, as its most specific reading |
+| Shared missing rows | For columns with the same null count, the rows null in all of them; equal to the count means the same rows |
 | Duplicate groups | Groups of identical complete evaluated rows; extra rows is Σ(group size − 1), rows involved is Σ(group size) |
 | Category variants | Original text values that become equal after outer-whitespace removal and lowercase normalization |
-| Key-like repeats | Non-null rows − distinct values, on exact profiles only, reported when distinct values are at least 95% of non-null rows and at least one value repeats. That counts rows beyond one per value; the drill-in opens every row that shares one, which is always more |
+| Nearly unique | Non-null rows − distinct values, on exact profiles of whole-number and text columns only, reported when distinct values are at least 95% of non-null rows and at least one value repeats. That counts rows beyond one per value; the drill-in opens every row that shares one, which is always more |
 | Absent values | Rows held by files whose footer has no such column ÷ rows in the loaded source; read from footers, not values |
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
@@ -160,7 +189,7 @@ Lifecycle percentiles use the evaluated duration values in sorted order. Date
 values are interpreted at midnight; datetime values retain their physical time
 unit. The role mapping is a user assertion and is included in the visible plan.
 
-A key-like column is reported only from an exact profile. A null rate measured
+A nearly unique column is reported only from an exact profile. A null rate measured
 on a sample stands for the whole; a distinct count does not, and an identifier
 that repeats ten times in a billion rows is unique in every sample of it.
 
@@ -169,7 +198,7 @@ that repeats ten times in a billion rows is unique in every sample of it.
 Absent columns and type conflicts come from the footers datui read when the
 dataset opened, not from values, so they are reported at every compute budget
 and counted over the whole loaded source whatever the plan's scope is. The
-observation detail names the largest twenty files by their Scope-page numbers,
+finding detail names the largest twenty files by their Scope-page numbers,
 and <kbd>Enter</kbd> opens the rows those files contributed as a `files`
 scope. Where footers were sampled, both counts are a floor, and the measured
 fact says how many footers were read. A full scan also reads the first five

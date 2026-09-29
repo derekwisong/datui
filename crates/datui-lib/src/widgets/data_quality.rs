@@ -2,11 +2,14 @@ use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
 use crate::config::Theme;
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, MAX_RETAINED_SAMPLE_ROWS, ObservationKind,
-    QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityScope,
-    TemporalRole,
+    QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityPrecision,
+    QualityScope, TemporalRole,
 };
 use crate::glyphs;
 use crate::numfmt;
+use crate::quality_report::{
+    QualityReport, Severity, build_report, coverage, describe, explain, verdict,
+};
 use crate::widgets::datatable::DataTableState;
 use crate::widgets::text_input::TextInput;
 use ratatui::buffer::Buffer;
@@ -90,7 +93,7 @@ pub fn render(
     if config.show_access {
         render_access_plan(&config, area, buf);
     } else if config.observation_detail {
-        render_observation_detail(&config, table_state, area, buf);
+        render_finding_detail(&config, table_state, area, buf);
     } else if config.confirm_run {
         render_run_confirmation(&config, area, buf);
     } else if config.running {
@@ -158,7 +161,51 @@ fn fit_segments(segments: Vec<Vec<Span<'static>>>, width: u16) -> Line<'static> 
     Line::from(spans)
 }
 
+/// Over a result, the strip says what the numbers were measured on, in words; the
+/// plan's own vocabulary is for the Plan page, where it is being chosen.
+fn render_coverage_strip(
+    config: &DataQualityWidgetConfig<'_>,
+    results: &DataQualityResults,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let plan = config.plan;
+    let mut facts = Vec::new();
+    if plan.grain != QualityGrain::Dataset {
+        facts.push(format!("by {}", plan.grain.label()));
+    }
+    if plan.comparison != QualityComparison::None {
+        facts.push(format!("compared with {}", plan.comparison_label()));
+    }
+    if plan.compute == QualityCompute::Sample && results.precision != QualityPrecision::Exact {
+        facts.push(format!("seed {}", results.sample_seed));
+    }
+    if config.state.is_remote_source() {
+        facts.push("remote source, read only".to_string());
+    }
+    let separator = format!(" {} ", glyphs::get().middot);
+    Paragraph::new(vec![
+        Line::styled(
+            fit(&coverage(results, plan), area.width as usize),
+            Style::default().fg(config.theme.get("text_primary")),
+        ),
+        Line::styled(facts.join(&separator), dimmed),
+    ])
+    .style(Style::default().bg(config.theme.get("table_header_bg")))
+    .render(area, buf);
+}
+
 fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
+    if let Some(results) = config.results
+        && !matches!(
+            config.page,
+            QualityPage::Plan | QualityPage::Scope | QualityPage::TimeRoles
+        )
+    {
+        render_coverage_strip(config, results, area, buf);
+        return;
+    }
     let remote = config.state.is_remote_source();
     let bytes = planned_read_bytes(config.state, config.plan);
     let source = if remote {
@@ -430,288 +477,379 @@ fn render_overview(
         render_run_prompt(area, config.theme, buf);
         return;
     };
+    let report = build_report(results);
     let notes = config.state.notes();
     let notes_height = if notes.is_empty() {
         0
     } else {
-        (notes.len() as u16).min(4) + 2
+        (notes.len() as u16).min(3) + 2
     };
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Length(notes_height),
-            Constraint::Length(2),
             Constraint::Fill(1),
         ])
-        .margin(1)
+        .horizontal_margin(1)
+        .vertical_margin(1)
         .split(area);
-    Paragraph::new(Line::from(vec![
-        Span::styled(
-            numfmt::group_chrome(results.evaluated_rows),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(" {} rows  ", results.precision.label())),
-        Span::styled(
-            numfmt::group_chrome(results.columns.len()),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" columns  "),
-        Span::styled(
-            numfmt::group_chrome(results.observations.len()),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" observations"),
-        Span::raw("  "),
-        Span::styled(
-            results
-                .identity
-                .as_ref()
-                .map(|identity| numfmt::group_chrome(identity.extra_rows))
-                .unwrap_or_else(|| "-".to_string()),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" duplicate extras"),
-    ]))
-    .render(sections[0], buf);
+    render_verdict(config, &report, sections[0], buf);
     if !notes.is_empty() {
-        let lines = notes
-            .iter()
-            .take(4)
-            .map(|note| {
-                Line::raw(format!(
-                    "{} {} {}",
-                    note.summary,
-                    glyphs::get().dash,
-                    note.scope
-                ))
-            })
-            .collect::<Vec<_>>();
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .title("Dataset Notes")
-                    .borders(Borders::ALL)
-                    .border_set(crate::glyphs::get().border)
-                    .border_style(Style::default().fg(config.theme.get("modal_border"))),
-            )
-            .render(sections[1], buf);
-    }
-    render_section_title("OBSERVATIONS", sections[2], config.theme, buf);
-
-    // Nothing to remark on is a result, not a blank screen: say so and point at
-    // the profiles that are there anyway.
-    if results.observations.is_empty() {
-        Paragraph::new(vec![
+        let mut lines = vec![rule_line(
+            "Dataset notes",
+            Some(&numfmt::group_chrome(notes.len())),
+            sections[1].width,
+            config.theme,
+        )];
+        lines.extend(notes.iter().take(3).map(|note| {
             Line::raw(format!(
-                "Nothing remarkable in {} {} rows across {} columns.",
-                numfmt::group_chrome(results.evaluated_rows),
-                results.precision.label(),
-                numfmt::group_chrome(results.columns.len())
-            )),
-            Line::raw(""),
-            Line::raw("2 Columns has every measured profile; 3 Segments compares them."),
-        ])
-        .wrap(Wrap { trim: true })
-        .style(Style::default().fg(config.theme.get("dimmed")))
-        .render(sections[3], buf);
+                "{} {} {}",
+                note.summary,
+                glyphs::get().dash,
+                note.scope
+            ))
+        }));
+        Paragraph::new(lines).render(sections[1], buf);
+    }
+
+    let list = sections[2];
+    if report.findings.is_empty() {
+        let message = if report.metadata_only {
+            "No values were read, so nothing about them is known. Press e and set Compute to sample or full to check the values."
+        } else {
+            "No columns to check."
+        };
+        Paragraph::new(message)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(config.theme.get("dimmed")))
+            .render(list, buf);
         return;
     }
-
-    let rows = results.observations.iter().map(|item| {
-        Row::new(vec![
-            item.kind.label().to_string(),
-            item.column.clone(),
-            format!(
-                "{} / {}",
-                numfmt::group_chrome(item.affected_rows),
-                numfmt::group_chrome(item.evaluated_rows)
-            ),
-            item.fact.clone(),
-        ])
-    });
-    normalize_selection(table_state, results.observations.len());
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(18),
-            Constraint::Length(24),
-            Constraint::Length(22),
-            Constraint::Fill(1),
-        ],
-    )
-    .header(
-        Row::new(["Kind", "Column", "Affected", "Measured fact"])
-            .style(Style::default().fg(config.theme.get("dimmed"))),
-    )
-    .row_highlight_style(config.theme.highlight_style())
-    .highlight_symbol(glyphs::get().selector);
-    StatefulWidget::render(table, sections[3], buf, table_state);
+    normalize_selection(table_state, report.findings.len());
+    render_findings(config, &report, table_state, list, buf);
 }
 
-fn render_observation_detail(
+/// The answer before the evidence: a mark and the counts. What they were measured on
+/// is the strip above.
+fn render_verdict(
+    config: &DataQualityWidgetConfig<'_>,
+    report: &QualityReport,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let g = glyphs::get();
+    let theme = config.theme;
+    let (mark, tone) = if report.problems > 0 {
+        (g.warning, theme.get("warning"))
+    } else if report.metadata_only {
+        (g.middot, theme.get("dimmed"))
+    } else {
+        (g.check, theme.get("success"))
+    };
+    Paragraph::new(Line::from(vec![
+        Span::styled(format!("{mark} "), Style::default().fg(tone)),
+        Span::styled(
+            verdict(report),
+            Style::default().fg(tone).add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .render(area, buf);
+}
+
+/// A title on a rule with a flat count chip, as `SectionRule` draws it, from the
+/// theme this widget is handed.
+fn rule_line(title: &str, chip: Option<&str>, width: u16, theme: &Theme) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(
+            title.to_string(),
+            Style::default()
+                .fg(theme.get("accent"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+    ];
+    let mut used = glyphs::display_width(title) + 1;
+    if let Some(chip) = chip {
+        let chip = format!(" {chip} ");
+        used += glyphs::display_width(&chip) + 1;
+        spans.push(Span::styled(
+            chip,
+            Style::default()
+                .bg(theme.get("controls_bg"))
+                .fg(theme.get("text_primary")),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        glyphs::get()
+            .rule_h
+            .repeat((width as usize).saturating_sub(used)),
+        Style::default().fg(theme.get("column_separator")),
+    ));
+    Line::from(spans)
+}
+
+fn severity_mark(severity: Severity, theme: &Theme) -> Span<'static> {
+    let g = glyphs::get();
+    match severity {
+        Severity::Problem => Span::styled(g.warning, Style::default().fg(theme.get("warning"))),
+        Severity::Note => Span::styled(g.middot, Style::default().fg(theme.get("text_primary"))),
+        Severity::Clean => Span::styled(g.check, Style::default().fg(theme.get("success"))),
+    }
+}
+
+/// Findings under one rule per severity. The selection lives in finding space, so
+/// the keys never land on a rule; the scroll offset lives in line space.
+fn render_findings(
+    config: &DataQualityWidgetConfig<'_>,
+    report: &QualityReport,
+    table_state: &mut TableState,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    enum Item {
+        Rule(Severity, usize),
+        Gap,
+        Finding(usize),
+    }
+    let mut items = Vec::new();
+    let mut current = None;
+    for (index, finding) in report.findings.iter().enumerate() {
+        if current != Some(finding.severity) {
+            if current.is_some() {
+                items.push(Item::Gap);
+            }
+            let count = report
+                .findings
+                .iter()
+                .filter(|other| other.severity == finding.severity)
+                .count();
+            let count = match finding.severity {
+                // The clean entry is one row naming many columns; count the columns.
+                Severity::Clean => report.clean_columns,
+                _ => count,
+            };
+            items.push(Item::Rule(finding.severity, count));
+            current = Some(finding.severity);
+        }
+        items.push(Item::Finding(index));
+    }
+
+    let height = area.height as usize;
+    if height == 0 {
+        return;
+    }
+    let selected = table_state.selected().unwrap_or(0);
+    let selected_line = items
+        .iter()
+        .position(|item| matches!(item, Item::Finding(index) if *index == selected))
+        .unwrap_or(0);
+    let mut offset = table_state.offset().min(items.len().saturating_sub(1));
+    if selected_line < offset {
+        // Bring the section's rule along when the selection is its first row.
+        offset = if selected_line > 0 && matches!(items[selected_line - 1], Item::Rule(..)) {
+            selected_line - 1
+        } else {
+            selected_line
+        };
+    } else if selected_line >= offset + height {
+        offset = selected_line + 1 - height;
+    }
+    *table_state.offset_mut() = offset;
+
+    // Mark, title, columns, summary. The title column fits the longest title; the
+    // columns take a share of what is left, so the summary keeps the rest.
+    const TITLE: usize = 17;
+    let width = area.width as usize;
+    let lead = 4; // rail + space + mark + space
+    let rest = width.saturating_sub(lead + TITLE);
+    let columns_width = (rest * 2 / 5).clamp(10.min(rest), 32);
+    let summary_width = rest.saturating_sub(columns_width + 1);
+    let g = glyphs::get();
+    let theme = config.theme;
+    let focused = config.focus == AnalysisFocus::Main;
+    for (row, item) in items.iter().skip(offset).take(height).enumerate() {
+        let line_area = Rect {
+            y: area.y + row as u16,
+            height: 1,
+            ..area
+        };
+        let line = match item {
+            Item::Gap => continue,
+            Item::Rule(severity, count) => rule_line(
+                severity.heading(),
+                Some(&numfmt::group_chrome(*count)),
+                area.width,
+                theme,
+            ),
+            Item::Finding(index) => {
+                let finding = &report.findings[*index];
+                let is_selected = *index == selected;
+                let columns = fit(&finding.columns_label(columns_width), columns_width);
+                let summary = fit(&finding.summary, summary_width);
+                let line = Line::from(vec![
+                    Span::styled(
+                        if is_selected { g.rail } else { " " },
+                        Style::default().fg(theme.get("accent")),
+                    ),
+                    Span::raw(" "),
+                    severity_mark(finding.severity, theme),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{:<TITLE$}", finding.title),
+                        Style::default().fg(theme.get("text_primary")),
+                    ),
+                    Span::styled(
+                        format!("{columns:<columns_width$} "),
+                        Style::default().fg(theme.get("text_primary")),
+                    ),
+                    Span::styled(summary, Style::default().fg(theme.get("dimmed"))),
+                ]);
+                if is_selected {
+                    let style = if focused {
+                        theme.highlight_style()
+                    } else {
+                        Style::default()
+                    };
+                    buf.set_style(line_area, style);
+                }
+                line
+            }
+        };
+        line.render(line_area, buf);
+    }
+}
+
+/// `text` cut to `width` display columns, with the ellipsis glyph when anything was
+/// cut, so a truncated count never reads as a smaller one.
+fn fit(text: &str, width: usize) -> String {
+    if glyphs::display_width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let ellipsis = glyphs::get().ellipsis;
+    let keep = width.saturating_sub(glyphs::display_width(ellipsis));
+    format!("{}{ellipsis}", glyphs::take_columns(text, keep))
+}
+
+/// The finding itself: what it is in one sentence with its numbers, why it matters,
+/// what to check, and the evidence, in a frame on top of the list.
+fn render_finding_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &TableState,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let Some((results, observation)) = config.results.and_then(|results| {
-        results
-            .observations
-            .get(table_state.selected()?)
-            .map(|observation| (results, observation))
-    }) else {
+    let Some(results) = config.results else {
         return;
     };
-    let definition = observation.kind.definition();
-    // Which files hold which columns is a fact about the source's footers, so those
-    // two checks count every file however the run was scoped. Saying so is the only
-    // thing that keeps their denominator from reading as a contradiction.
-    let from_footers = matches!(
-        observation.kind,
-        ObservationKind::Absent | ObservationKind::TypeConflict
-    );
+    let report = build_report(results);
+    let Some(finding) = table_state
+        .selected()
+        .and_then(|index| report.findings.get(index))
+    else {
+        return;
+    };
+    let theme = config.theme;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let label = Style::default().fg(theme.get("accent"));
+    let explanation = explain(finding);
+    let (headline, evidence) = describe(finding, results);
     let mut lines = vec![
         Line::styled(
-            format!("{}  /  {}", observation.kind.label(), observation.column),
+            finding.columns.join(", "),
             Style::default()
-                .fg(config.theme.get("accent"))
+                .fg(theme.get("text_primary"))
                 .add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
-        Line::raw(observation.fact.clone()),
-        Line::raw(format!(
-            "Affected: {} / {} {}",
-            numfmt::group_chrome(observation.affected_rows),
-            numfmt::group_chrome(observation.evaluated_rows),
-            if from_footers {
-                "rows of the loaded source"
-            } else {
-                "evaluated rows"
-            }
-        )),
-        Line::raw(format!("Definition: {definition}")),
-        Line::raw(""),
-        Line::styled(
-            format!(
-                "{} precision; {} eligible rows; sample seed {}",
-                results.precision.label(),
-                count_label(results.total_rows),
-                results.sample_seed
-            ),
-            Style::default().fg(config.theme.get("dimmed")),
-        ),
+        Line::raw(headline),
     ];
-    if from_footers {
+    if !evidence.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(
+            evidence
+                .into_iter()
+                .map(|line| Line::raw(format!("  {line}"))),
+        );
+    }
+    if !explanation.why.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("Why it matters: ", label),
+            Span::raw(explanation.why),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("What to check: ", label),
+            Span::raw(explanation.check),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    if let Some(kind) = finding.kind {
         lines.push(Line::styled(
-            "Read from every footer of the loaded source, not from the profiled scope.",
-            Style::default().fg(config.theme.get("dimmed")),
+            format!("Measured as: {}", kind.definition()),
+            dimmed,
         ));
     }
-    let by_files = observation.evidence_scope().is_some();
-    let can_open_rows = by_files
-        || (results.precision == crate::data_quality::QualityPrecision::Exact
-            && observation.evidence_predicate().is_some());
-    lines.push(Line::styled(
-        if by_files {
-            // Only the files named above are opened, and the count beside them covers
-            // every file — so the view holds fewer rows than "Affected" states.
-            format!(
-                "Enter opens the rows the {} named {} contributed, not all {} (the source may be read again).",
-                observation.files.len(),
-                if observation.files.len() == 1 {
-                    "file"
-                } else {
-                    "files"
-                },
-                numfmt::group_chrome(observation.affected_rows)
-            )
-        } else if observation.kind == ObservationKind::KeyLike {
-            // The measurement counts rows beyond one per value; the filter opens every
-            // row that shares one, which is always more.
-            "Enter opens every row that shares a repeated value, which is more rows than the count above.".to_string()
-        } else if can_open_rows {
-            "Enter opens matching rows (the source may be read again).".to_string()
-        } else if results.precision == crate::data_quality::QualityPrecision::Sampled {
-            "Sampled observation: run a full profile for exact matching rows.".to_string()
-        } else {
-            "No deterministic row filter for this aggregate; use the measured fact above.".to_string()
-        },
-        Style::default().fg(config.theme.get("dimmed")),
-    ));
-    // The files themselves, with what each holds. A conflict's values are the only way
-    // to see what the scan left behind, so they come first when a full run read them.
-    for file in observation.files.iter().take(4) {
-        let stored = file
-            .stored_type
-            .as_ref()
-            .map(|dtype| format!(" as {dtype}"))
-            .unwrap_or_default();
-        let examples = if file.examples.is_empty() {
-            String::new()
-        } else {
-            format!(
-                ": {}",
-                file.examples
-                    .iter()
-                    .map(|value| format!("{value:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        lines.push(Line::raw(format!(
-            "#{} {} ({} rows){stored}{examples}",
-            file.number,
-            file.name,
-            numfmt::group_chrome(file.rows)
-        )));
-    }
-    if observation.kind == ObservationKind::TypeConflict
-        && observation
-            .files
-            .iter()
-            .all(|file| file.examples.is_empty())
-    {
-        lines.push(Line::styled(
-            "Run a full profile to read the values those files hold.",
-            Style::default().fg(config.theme.get("dimmed")),
-        ));
-    }
-    if observation.kind == ObservationKind::CategoryVariants {
-        for group in results
-            .category_variants
-            .iter()
-            .filter(|group| {
-                group.column == observation.column
-                    && observation.normalized_category.as_ref() == Some(&group.normalized)
-            })
-            .take(3)
+    lines.push(Line::styled(coverage(results, config.plan), dimmed));
+    if finding.kind.is_some() {
+        let rows = if finding.can_open_rows(results) {
+            match finding.kind {
+                // The measurement counts rows beyond one per value; the rows that
+                // share a value are always more.
+                Some(ObservationKind::KeyLike) => {
+                    "Enter shows every row that shares a repeated value.".to_string()
+                }
+                Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
+                    let files = finding
+                        .evidence_scope(results)
+                        .map(|scope| match scope {
+                            QualityScope::SourceFiles(files) => files.len(),
+                            _ => 0,
+                        })
+                        .unwrap_or(0);
+                    format!(
+                        "Enter shows the rows of the {files} named {}.",
+                        if files == 1 { "file" } else { "files" }
+                    )
+                }
+                _ => "Enter shows the rows.".to_string(),
+            }
+        } else if results.precision == crate::data_quality::QualityPrecision::Sampled
+            && finding.evidence_predicate(results).is_some()
         {
-            lines.push(Line::raw(format!(
-                "{:?}: {}{}",
-                group.normalized,
-                group
-                    .variants
-                    .iter()
-                    .take(3)
-                    .map(|(value, count)| format!("{value:?} ({count})"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if group.complete { "" } else { " (partial)" }
-            )));
+            "Measured on a sample: run a full profile (e, Compute) to show the exact rows."
+                .to_string()
+        } else {
+            String::new()
+        };
+        if !rows.is_empty() {
+            lines.push(Line::styled(rows, dimmed));
         }
     }
-    // Taller and wider than the other popups: a drift observation names its files, and
-    // a file's path and the values it holds are both long.
-    let popup = centered_rect(96, 22, area);
+    // A reading surface: cap the measure on a wide terminal, and grow with the text
+    // up to the screen rather than cut it.
+    let width = area.width.saturating_sub(4).min(84);
+    let inner = width.saturating_sub(4).max(1) as usize;
+    let needed = lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(inner))
+        .sum::<usize>() as u16
+        + 2;
+    let popup = centered_rect(width, needed.min(area.height.saturating_sub(2)), area);
     Clear.render(popup, buf);
     Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
         .block(
             Block::default()
-                .title("Observation")
+                .title(finding.title)
                 .borders(Borders::ALL)
                 .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
+                .border_style(Style::default().fg(theme.get("modal_border_active")))
+                .padding(ratatui::widgets::Padding::horizontal(1)),
         )
         .render(popup, buf);
 }
@@ -787,113 +925,124 @@ fn render_columns(
         render_run_prompt(area, config.theme, buf);
         return;
     };
+    let report = build_report(results);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
         .margin(1)
         .split(area);
-    render_section_title("COLUMN PROFILES", sections[0], config.theme, buf);
-    let layout = if sections[1].width >= 148 {
+    let title = rule_line(
+        "Columns",
+        Some(&numfmt::group_chrome(results.columns.len())),
+        sections[0].width,
+        config.theme,
+    );
+    Paragraph::new(title).render(sections[0], buf);
+    let layout = if sections[1].width >= 120 {
         2
     } else if sections[1].width >= 72 {
         1
     } else {
         0
     };
-    let rows = results.columns.iter().map(|profile| {
-        let range = match (&profile.min, &profile.max) {
-            (Some(min), Some(max)) => format!("{min} .. {max}"),
-            _ => "-".to_string(),
-        };
-        let shape = match (profile.min_length, profile.max_length) {
-            (Some(min), Some(max)) => format!("len {min}..{max}; {range}"),
-            _ => range,
-        };
-        let dominant = profile
+    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let rows = results.columns.iter().enumerate().map(|(index, profile)| {
+        let severity = report
+            .column_status
+            .get(index)
+            .copied()
+            .unwrap_or(Severity::Clean);
+        let mark = Cell::from(Line::from(severity_mark(severity, config.theme)));
+        let findings = report
+            .column_findings
+            .get(index)
+            .filter(|titles| !titles.is_empty())
+            .map(|titles| Cell::from(titles.join(", ")))
+            .unwrap_or_else(|| Cell::from(Span::styled("none", dimmed)));
+        let most_common = profile
             .dominant_value
             .as_ref()
             .zip(profile.dominant_count)
             .map(|(value, count)| {
                 format!(
-                    "{}: {} ({:.1}%)",
-                    value,
-                    numfmt::group_chrome(count),
-                    count as f64 / profile.non_null_rows().max(1) as f64 * 100.0
+                    "{value} ({})",
+                    crate::quality_report::percent(count, profile.non_null_rows())
                 )
             })
             .unwrap_or_else(|| "-".to_string());
-        let null = format!(
-            "{} ({:.1}%)",
-            numfmt::group_chrome(profile.null_count),
-            profile.null_rate() * 100.0
-        );
+        let missing = if profile.null_count == 0 {
+            Cell::from(Span::styled("0", dimmed))
+        } else {
+            Cell::from(format!(
+                "{} ({})",
+                numfmt::group_chrome(profile.null_count),
+                crate::quality_report::percent(profile.null_count, profile.evaluated_rows)
+            ))
+        };
         let distinct = count_label(profile.distinct_count);
         Row::new(match layout {
             2 => vec![
-                profile.name.clone(),
-                profile.dtype.to_string(),
-                numfmt::group_chrome(profile.evaluated_rows),
-                null,
-                count_label(profile.empty_count),
-                distinct,
-                dominant,
-                shape,
+                mark,
+                Cell::from(profile.name.clone()),
+                Cell::from(profile.dtype.to_string()),
+                missing,
+                Cell::from(distinct),
+                Cell::from(most_common),
+                findings,
             ],
             1 => vec![
-                profile.name.clone(),
-                profile.dtype.to_string(),
-                null,
-                distinct,
-                dominant,
+                mark,
+                Cell::from(profile.name.clone()),
+                Cell::from(profile.dtype.to_string()),
+                missing,
+                findings,
             ],
-            _ => vec![profile.name.clone(), null, distinct],
+            _ => vec![mark, Cell::from(profile.name.clone()), findings],
         })
     });
     normalize_selection(table_state, results.columns.len());
     let (headers, widths) = match layout {
         2 => (
             vec![
+                "",
                 "Column",
                 "Type",
-                "Evaluated",
-                "Null",
-                "Empty",
+                "Missing",
                 "Distinct",
-                "Dominant",
-                "Shape / range",
+                "Most common",
+                "Findings",
             ],
             vec![
+                Constraint::Length(1),
                 Constraint::Length(22),
-                Constraint::Length(14),
-                Constraint::Length(14),
-                Constraint::Length(18),
-                Constraint::Length(12),
-                Constraint::Length(14),
-                Constraint::Length(24),
+                Constraint::Length(10),
+                Constraint::Length(16),
+                Constraint::Length(10),
+                Constraint::Length(22),
                 Constraint::Fill(1),
             ],
         ),
         1 => (
-            vec!["Column", "Type", "Null", "Distinct", "Dominant"],
+            vec!["", "Column", "Type", "Missing", "Findings"],
             vec![
-                Constraint::Length(22),
-                Constraint::Length(12),
+                Constraint::Length(1),
+                Constraint::Length(20),
+                Constraint::Length(8),
                 Constraint::Length(16),
-                Constraint::Length(12),
                 Constraint::Fill(1),
             ],
         ),
         _ => (
-            vec!["Column", "Null", "Distinct"],
+            vec!["", "Column", "Findings"],
             vec![
+                Constraint::Length(1),
+                Constraint::Length(16),
                 Constraint::Fill(1),
-                Constraint::Length(14),
-                Constraint::Length(10),
             ],
         ),
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(headers).style(Style::default().fg(config.theme.get("dimmed"))))
+        .header(Row::new(headers).style(dimmed))
         .row_highlight_style(config.theme.highlight_style())
         .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
@@ -1323,23 +1472,40 @@ fn render_detail(
             .render(area, buf);
         return;
     };
-    let mut text = vec![
-        Line::from(vec![
-            Span::styled(
-                &profile.name,
-                Style::default()
-                    .fg(config.theme.get("accent"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!("  {}", profile.dtype)),
-        ]),
+    // The column's findings first, in the report's own words; the measurements
+    // under them are the evidence.
+    let report = build_report(results);
+    // The frame's title names the column.
+    let mut text = vec![Line::styled(
+        format!("Type: {}", profile.dtype),
+        Style::default().fg(config.theme.get("dimmed")),
+    )];
+    let findings = report
+        .findings
+        .iter()
+        .filter(|finding| finding.kind.is_some() && finding.columns.contains(&profile.name))
+        .collect::<Vec<_>>();
+    if findings.is_empty() {
+        text.push(Line::from(vec![
+            severity_mark(Severity::Clean, config.theme),
+            Span::raw(" No findings"),
+        ]));
+    }
+    for finding in findings {
+        text.push(Line::from(vec![
+            severity_mark(finding.severity, config.theme),
+            Span::raw(format!(" {}: {}", finding.title, finding.summary)),
+        ]));
+    }
+    text.push(Line::raw(""));
+    text.extend([
         Line::raw(format!(
             "Evaluated: {} ({})",
             numfmt::group_chrome(profile.evaluated_rows),
             results.precision.label()
         )),
         Line::raw(format!(
-            "Null: {} / {} ({:.2}%)",
+            "Missing: {} / {} ({:.2}%)",
             numfmt::group_chrome(profile.null_count),
             numfmt::group_chrome(profile.evaluated_rows),
             profile.null_rate() * 100.0
@@ -1351,7 +1517,7 @@ fn render_detail(
                 .map(numfmt::group_chrome)
                 .unwrap_or_else(|| "-".to_string())
         )),
-    ];
+    ]);
     // A measurement that does not apply to this type is left out rather than
     // printed as a dash, so what is on screen was actually measured.
     if profile.min.is_some() || profile.max.is_some() {
@@ -1363,7 +1529,7 @@ fn render_detail(
     }
     if let Some((value, count)) = profile.dominant_value.as_ref().zip(profile.dominant_count) {
         text.push(Line::raw(format!(
-            "Dominant: {value:?}, {} {}",
+            "Most common: {value:?}, {} {}",
             numfmt::group_chrome(count),
             if count == 1 { "row" } else { "rows" }
         )));
@@ -1395,13 +1561,7 @@ fn render_detail(
     }
     text.push(Line::raw(""));
     text.push(Line::styled(
-        format!(
-            "Provenance: {} of {} eligible rows; {} precision; sample seed {}.",
-            numfmt::group_chrome(profile.evaluated_rows),
-            count_label(results.total_rows),
-            results.precision.label(),
-            results.sample_seed
-        ),
+        coverage(results, config.plan),
         Style::default().fg(config.theme.get("dimmed")),
     ));
     for group in results
@@ -1424,7 +1584,7 @@ fn render_detail(
     Paragraph::new(text)
         .block(
             Block::default()
-                .title(" Evidence ")
+                .title(profile.name.as_str())
                 .borders(Borders::ALL)
                 .border_set(crate::glyphs::get().border)
                 .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
@@ -1513,35 +1673,48 @@ fn render_sidebar(
         ])
     };
     let lines = match config.results {
-        Some(results) => vec![
-            heading("Measured"),
-            Line::raw(format!(
-                "{} rows{}",
-                numfmt::group_chrome(results.evaluated_rows),
-                if roomy {
-                    format!(" {}", results.precision.label())
-                } else {
-                    String::new()
+        // The verdict in counts, kept in view on the pages that do not lead with it.
+        // The strip above says what was measured.
+        Some(results) => {
+            let report = build_report(results);
+            let count = |severity: Severity, value: usize, one: &str, many: &str| {
+                Line::from(vec![
+                    severity_mark(severity, config.theme),
+                    Span::raw(format!(
+                        " {} {}",
+                        numfmt::group_chrome(value),
+                        if value == 1 { one } else { many }
+                    )),
+                ])
+            };
+            let mut lines = vec![heading("Result")];
+            if report.metadata_only {
+                if report.problems > 0 {
+                    lines.push(count(
+                        Severity::Problem,
+                        report.problems,
+                        "problem",
+                        "problems",
+                    ));
                 }
-            )),
-            Line::raw(format!(
-                "of {}{}",
-                count_label(results.total_rows),
-                if roomy { " eligible" } else { "" }
-            )),
-            Line::raw(format!(
-                "{} {}  {} {}",
-                numfmt::group_chrome(results.columns.len()),
-                if roomy { "columns" } else { "cols" },
-                numfmt::group_chrome(results.segments.len()),
-                match (roomy, results.segments.len()) {
-                    (true, 1) => "segment",
-                    (true, _) => "segments",
-                    (false, _) => "seg",
-                }
-            )),
-            Line::styled(written, Style::default().fg(config.theme.get("success"))),
-        ],
+                lines.push(Line::raw("values not read"));
+            } else {
+                lines.push(count(
+                    Severity::Problem,
+                    report.problems,
+                    "problem",
+                    "problems",
+                ));
+                lines.push(count(Severity::Note, report.notes, "note", "notes"));
+                lines.push(count(
+                    Severity::Clean,
+                    report.clean_columns,
+                    "clean column",
+                    if roomy { "clean columns" } else { "clean" },
+                ));
+            }
+            lines
+        }
         None => vec![
             heading("Planned"),
             Line::raw(format!(

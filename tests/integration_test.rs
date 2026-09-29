@@ -961,6 +961,7 @@ fn test_stale_background_events_are_ignored() {
             temporal: vec![],
             identity: None,
             category_variants: vec![],
+            shared_nulls: vec![],
         },
     });
     assert!(
@@ -1107,7 +1108,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-            .contains("Observation")
+            .contains("Why it matters"),
+        "the finding explains itself, not only its formula"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -1143,8 +1145,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             app.render(area, &mut buffer);
             let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
             assert!(screen.contains("Data Quality"));
-            if page != QualityPage::Trends {
-                assert!(screen.contains("Null"));
+            match page {
+                QualityPage::Columns => assert!(screen.contains("Findings")),
+                QualityPage::Segments => assert!(screen.contains("Null")),
+                _ => {}
             }
         }
     }
@@ -1167,7 +1171,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         (QualityPage::Plan, "Latency threshold"),
         (QualityPage::Scope, "ELIGIBLE ROWS"),
         (QualityPage::TimeRoles, "Semantic role"),
-        (QualityPage::Detail, "Provenance:"),
+        (QualityPage::Detail, "Missing:"),
     ] {
         app.analysis_modal.set_quality_page(page);
         for area in [
@@ -1187,15 +1191,19 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         }
     }
 
-    // Once a run exists the sidebar reports what it measured, not a second copy
-    // of the planned access already on the plan strip.
+    // Once a run exists the sidebar keeps the verdict in counts, and the strip
+    // says in words what was measured.
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     let area = Rect::new(0, 0, 120, 32);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    assert!(screen.contains("Measured"), "sidebar should report the run");
-    assert!(screen.contains("eligible"));
+    assert!(screen.contains("Result"), "sidebar should report the run");
+    assert!(screen.contains("clean"));
+    assert!(
+        screen.contains("in the current view"),
+        "the strip says what was measured"
+    );
 
     app.analysis_modal.set_quality_page(QualityPage::Plan);
     for (popup, expected) in [
@@ -1720,6 +1728,111 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         screen.contains("Run") && screen.contains("Edit"),
         "the global bar names the plan page's keys"
     );
+}
+
+/// The overview is a report: a verdict first, problems ranked above notes, columns
+/// that go missing together said once, the clean columns named, and a grouped
+/// finding still opens exactly its rows.
+#[test]
+fn data_quality_reads_as_a_report() {
+    use datui::data_quality::QualityPage;
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_report.parquet");
+    let gap = |row: i64| row % 50 == 7;
+    let mut df = df!(
+        "id" => (0..200i64).collect::<Vec<_>>(),
+        "open" => (0..200i64).map(|row| (!gap(row)).then_some(row as f64)).collect::<Vec<_>>(),
+        "close" => (0..200i64).map(|row| (!gap(row)).then_some(row as f64 + 0.5)).collect::<Vec<_>>(),
+        "region" => (0..200i64).map(|row| ["West", "west ", "East"][row as usize % 3]).collect::<Vec<_>>(),
+        "market" => vec!["US"; 200],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+
+    let area = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    for expected in [
+        "1 problem  2 notes  1 of 5 columns clean",
+        "All 200 rows in the current view checked",
+        "Mixed spellings",
+        "Missing values",
+        "same 4 rows (2.0%)",
+        "Single value",
+        "No findings",
+    ] {
+        assert!(
+            screen.contains(expected),
+            "overview should show {expected:?}"
+        );
+    }
+    let problem = screen.find("Mixed spellings").unwrap();
+    assert!(
+        problem < screen.find("Missing values").unwrap(),
+        "problems rank above notes"
+    );
+    assert!(
+        !screen.contains("Measured fact"),
+        "no raw observation table on the overview"
+    );
+
+    // The grouped finding opens every row it counts, and only those.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("the same rows"),
+        "the detail says the columns go missing together"
+    );
+    assert!(
+        screen.contains("Show Rows"),
+        "the bar names what Enter does"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.active);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows, 4);
 }
 
 /// A plan that needs a run is a form the user answers with Enter, which only the

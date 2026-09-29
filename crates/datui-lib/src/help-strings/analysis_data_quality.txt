@@ -1,13 +1,25 @@
-Data Quality profiles the selected scope. On a local file, choosing the tool
-runs the default plan at once and leads with the result; the strip up top
-echoes the plan that ran, and e edits it. On a remote source — and for any
-plan that needs confirming — nothing scans values until you run the visible
-plan.
+Data Quality checks the rows in scope and reports what it found. On a
+local file choosing the tool runs the default plan at once; on a remote
+source, and for any plan that needs confirming, nothing is read until you
+run the plan. The strip at the top says what was checked, and e edits it.
+
+Reading the report:
+  First line:   problems, notes and clean columns, counted
+  Problems:     likely defects that change results without saying so:
+                NaN or infinite values, empty or blank text, one value
+                spelled several ways, duplicate rows, a column always
+                missing, missing from some files, or typed differently
+  Notes:        fine or not depending on what the column is for: missing
+                values, a single value, numbers or dates stored as text,
+                a nearly unique column whose values repeat
+  Clean:        the columns no check found anything in
+  Columns missing on the same rows are one finding. Enter on a finding
+  says what it is, why it matters and what to check; Enter again shows
+  its rows when the run was exact.
 
 Keys:
-  Enter:            Run the plan, apply the edit in progress, inspect an
-                    observation, open its exact matching rows, or close an
-                    open popup
+  Enter:            Run the plan, apply the edit in progress, open a
+                    finding, show its exact rows, or close an open popup
   e:                Edit the plan's seven fields: Scope, Grain, Compute,
                     Compare, Time roles, Latency threshold, Sample rows
   ← / →:            In the plan editor: change the focused field's value;
@@ -18,7 +30,8 @@ Keys:
                     column, Enter done
   PgUp/PgDn:        On Scope: scroll the numbered source-file inventory
   p:                Show the detailed access plan
-  1 / 2 / 3 / 4:    Overview / Columns / Segments / Trends
+  1 / 2 / 3 / 4:    Overview (the report) / Columns (a mark and the
+                    findings per column) / Segments / Trends
   [ / ]:            Choose a column in Segments or Trends
   m:                Choose the measurement in Segments or Trends
   b:                Use the highlighted segment as the comparison baseline
@@ -32,14 +45,14 @@ Keys:
                     Time roles, Esc restores the whole pre-edit plan
   ?:                Toggle this help (F1 opens it)
 
-Every result states how many rows were eligible and evaluated and whether it is exact, sampled, estimated or metadata-only. Temporal meanings are used only after you assign a role to a column.
+Every result says how many rows were checked and whether they were all of them or a sample. A dataset-grain sample is drawn from the first rows of the scope, and the strip says how many. Temporal meanings are used only after you assign a role to a column.
 The Sample rows field sets the rows kept per segment: ←/→ cycle 1,000 to 50,000 (the engine's cap), and the default comes from [performance] quality_sample_rows. Dataset-grain sampling selects without replacement from a bounded prefix; eligible rows may be unknown. File, partition, chunk, and window sampling reads the full selected scope, keeps up to the Sample rows budget of seeded rows per segment, and requires confirmation. A per-segment budget multiplies by the number of segments, so a run that would keep more than 500,000 rows or 512 MiB is refused rather than trimmed; narrow the scope or lower the Sample rows budget.
 Time-window grain offers 1h, 1d, 1w and 1mo on each assigned time role. A window starts on the calendar boundary for its width, so weeks start on Monday, and is cut at the same place whether the run sampled or scanned it.
 Scope can be the current view, loaded source, view row range, selected source files, source partition value, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
 
 Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.
-For exact null, empty, whitespace, non-finite, constant, key-like, and category-variant observations, Enter from the detail opens a temporary row view. Esc returns to the same observation. Sampled observations explain when an exact row view needs a full run.
-Key-like columns are reported only from an exact profile: a null rate measured on a sample stands for the whole, but a distinct count does not. The count is rows beyond one per value; Enter opens every row that shares one, which is always more.
-Absent columns and type conflicts are read from the footers, so they are reported at every compute budget and counted over the whole loaded source rather than the profiled scope. Their detail names the files, and Enter opens the rows those files contributed. A full scan also reads the first few values each conflicting file holds; the access plan says how many extra one-column reads that costs.
+For missing values, empty or blank text, NaN or infinite values, a single value, a nearly unique column, and mixed spellings, Enter from the detail opens a temporary view of exactly those rows when the run was exact; a grouped finding opens the rows of every column in it. Esc returns to the same finding. A sampled finding says a full run is needed for its rows.
+Nearly unique is checked on whole-number and text columns only, and only from an exact profile: a null rate measured on a sample stands for the whole, but a distinct count does not. The count is rows beyond one per value; Enter opens every row that shares one, which is always more.
+Columns missing from some files and type mismatches are read from the footers, so they are reported at every compute budget and counted over the whole loaded source rather than the profiled scope. Their detail names the files, and Enter opens the rows those files contributed. A full scan also reads the first few values each conflicting file holds; the access plan says how many extra one-column reads that costs.
 Segments names the largest change any column made against the compared segment, so the first segment with a material one is where a shift starts.

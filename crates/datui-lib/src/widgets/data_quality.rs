@@ -22,6 +22,9 @@ use ratatui::widgets::{
 };
 
 pub struct DataQualityWidgetConfig<'a> {
+    /// The Sample form is this pane until the first run: nothing of the plan or the
+    /// report is drawn behind it, so there is one thing to look at.
+    pub first_run: bool,
     /// The clean entry's checks table shows every check, not the first few.
     pub checks_expanded: bool,
     pub state: &'a DataTableState,
@@ -82,7 +85,9 @@ pub fn render(
         .split(area);
 
     render_breadcrumb(&config, vertical[0], buf);
-    render_plan_strip(&config, vertical[1], buf);
+    if !config.first_run {
+        render_plan_strip(&config, vertical[1], buf);
+    }
 
     let body = if sidebar_width > 0 {
         let horizontal = Layout::default()
@@ -95,6 +100,13 @@ pub fn render(
         vertical[2]
     };
 
+    if config.first_run {
+        // The Sample form draws itself centered in `main_pane`; the pane stays empty.
+        if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
+            render_narrow_tool_picker(&config, sidebar_state, area, buf);
+        }
+        return;
+    }
     match config.page {
         QualityPage::Plan => render_plan(&config, table_state, body, buf),
         QualityPage::TimeRoles => render_time_roles(&config, table_state, body, buf),
@@ -1711,6 +1723,11 @@ fn render_sidebar(
             ),
         ])
     };
+    // Before the first run there is nothing planned or measured to report; the
+    // Sample form beside it says what will be read.
+    if config.first_run {
+        return;
+    }
     let lines = match config.results {
         // The verdict in counts, kept in view on the pages that do not lead with it.
         // The strip above says what was measured.

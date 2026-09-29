@@ -1814,6 +1814,19 @@ fn data_quality_reads_as_a_report() {
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
+    // Before the first run the pane is the Sample form and nothing else: no plan
+    // strip, plan table or planned access behind it.
+    let first = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(first);
+    app.render(first, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("Rows from:"));
+    for behind in ["grain", "Planned", "Latency threshold", "remote write"] {
+        assert!(
+            !screen.contains(behind),
+            "{behind:?} shows behind the first-run form"
+        );
+    }
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,

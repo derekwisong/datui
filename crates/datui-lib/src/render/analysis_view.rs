@@ -77,6 +77,7 @@ fn render_body(
             // it once per repaint made the dashboard slowest at the scale it is for.
             let modal = &mut app.analysis_modal;
             let config = data_quality::DataQualityWidgetConfig {
+                first_run: modal.sample_form.as_ref().is_some_and(|form| form.inline),
                 checks_expanded: modal.data_quality_checks_expanded,
                 state,
                 plan: &modal.data_quality_plan,

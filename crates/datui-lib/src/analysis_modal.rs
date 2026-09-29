@@ -104,6 +104,8 @@ pub struct AnalysisModal {
     pub data_quality_observation_detail: bool,
     /// Where the finding popup is scrolled to, and how far it can go (set as it draws).
     pub data_quality_detail_scroll: DetailScroll,
+    /// The segment a drill-in shows, and the one Segments selects on the way back.
+    pub data_quality_segment_index: usize,
     /// The clean entry's popup lists every check rather than the most important.
     pub data_quality_checks_expanded: bool,
     pub data_quality_confirm_run: bool,
@@ -355,6 +357,9 @@ impl AnalysisModal {
             QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
+            QualityPage::SegmentDetail => {
+                crate::data_quality::segment_changes(results, self.data_quality_segment_index).len()
+            }
             QualityPage::Trends => results.temporal.len(),
         }
     }
@@ -415,6 +420,19 @@ impl AnalysisModal {
         self.set_quality_page(page);
         self.data_quality_table_state
             .select(Some(self.data_quality_column_index));
+    }
+
+    /// Open the highlighted segment's columns, or go back to the list with the
+    /// segment still selected.
+    pub fn open_segment_detail(&mut self) {
+        self.data_quality_segment_index = self.data_quality_table_state.selected().unwrap_or(0);
+        self.set_quality_page(QualityPage::SegmentDetail);
+    }
+
+    pub fn close_segment_detail(&mut self) {
+        self.set_quality_page(QualityPage::Segments);
+        self.data_quality_table_state
+            .select(Some(self.data_quality_segment_index));
     }
 
     /// Move the finding popup by `rows`, within what it last drew.

@@ -1170,6 +1170,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // The largest measured move between segments is on the screen, not only in the
     // profile: #196 asks for it and nothing read it before.
     app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::RowChunks(5);
+    app.analysis_modal.data_quality_plan.comparison =
+        datui::data_quality::QualityComparison::Previous;
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     let wide = Rect::new(0, 0, 160, 40);
     let mut buffer = Buffer::empty(wide);
@@ -1179,6 +1181,24 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         screen.contains("Largest change"),
         "Segments should name the column and measurement that moved"
     );
+    // Enter shows a segment's every column and measure; Esc goes back to it.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::SegmentDetail
+    );
+    let mut buffer = Buffer::empty(wide);
+    app.render(wide, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Measure") && screen.contains("distinct"));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Segments);
 
     // Every remaining page and popup must say its own piece at each width, so a
     // clipped label or a screen that renders nothing at all fails here.
@@ -1258,6 +1278,12 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .is_some()
     );
     assert!(!app.is_busy());
+    // Column and measure are the Trends chart's; Segments shows every column.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('4'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('m'),
         KeyModifiers::NONE,
@@ -1270,12 +1296,6 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         app.analysis_modal.data_quality_metric,
         datui::data_quality::QualityMetric::EmptyRate
     );
-    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('4'),
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
     assert_eq!(app.analysis_modal.data_quality_column_index, 1);
 
     // Enter on a highlighted column must open that column, not the first one.

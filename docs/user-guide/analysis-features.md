@@ -95,7 +95,7 @@ Sample row, opens its form.
 | Sample | The shared sample: scope, method, rows and seed |
 | Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or hourly, daily, weekly, or monthly windows on an assigned time role |
 | Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
-| Comparison | None, previous ordered segment, or first-segment baseline |
+| Comparison | None, the segment before (partitions and files in the order their names count), or a baseline segment |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 
 <kbd>e</kbd> edits a copy of the plan; <kbd>Esc</kbd> discards it.
@@ -128,7 +128,7 @@ View Rows and <kbd>e</kbd> Plan.
 | <kbd>s</kbd> | Open the shared [Sample](#sampling) form |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends, directly |
-| <kbd>[</kbd> <kbd>]</kbd> | Choose a column in Segments or Trends, once the plan's Grain splits the rows |
+| <kbd>[</kbd> <kbd>]</kbd> | Choose the column the Trends chart follows |
 | <kbd>m</kbd> | Cycle the measurement: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | Rerun with a new sample seed, for every tool |
@@ -148,11 +148,13 @@ sampled, or metadata-only.
 - **Columns** — a mark per column (problem, note or clean), its missing
   count and its findings; <kbd>Enter</kbd> opens the column's measurements.
 - **Segments** — needs a Grain other than the whole dataset; until then the
-  page says so and <kbd>Enter</kbd> opens the plan on Grain. It keeps both row
-  denominators visible and shows the chosen
-  column measurement, its percentage-point change against the selected
-  comparison, and the largest change any column made against that comparison;
-  the first segment with a material one is where a shift starts.
+  page says so and <kbd>Enter</kbd> opens the plan on Grain. One row per
+  segment (`year=2019`, a file, a row chunk, a window) in the order its name
+  counts: its rows, its share of null cells, and, when compared, the largest
+  change any column made against the compared segment (`price nulls -12.0
+  pp`). The first segment with a material one is where a shift starts.
+  <kbd>Enter</kbd> on a segment lists every column's measures beside the
+  compared segment, largest change first; <kbd>Esc</kbd> goes back.
 - **Trends** — charts the measurement across ordered row chunks or time
   windows, and reports the time between dates for assigned role pairs: missing
   endpoints, negative durations, p50/p90/p95/p99, and maximum duration. Each

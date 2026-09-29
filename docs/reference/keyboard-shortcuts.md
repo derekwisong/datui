@@ -211,12 +211,13 @@ In Data Quality:
 | <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done. With no date or time column there is nothing to assign, and the row says so |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its frame counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
-| <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column, once the plan's Grain splits the rows |
-| <kbd>m</kbd> | In Segments/Trends, choose a measurement, likewise |
+| <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
+| <kbd>[</kbd> <kbd>]</kbd> | In Trends, choose the column the chart follows |
+| <kbd>m</kbd> | In Trends, choose the measurement the chart follows |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | Rerun with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to the report, then Analysis itself |
+| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself |
 
 ## Pivot and melt
 

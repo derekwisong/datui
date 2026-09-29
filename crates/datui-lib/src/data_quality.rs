@@ -428,6 +428,8 @@ pub enum QualityPage {
     Segments,
     Trends,
     Detail,
+    /// One segment's columns beside the segment it is compared with.
+    SegmentDetail,
     TimeRoles,
 }
 
@@ -445,6 +447,7 @@ impl QualityPage {
     pub fn tab(self) -> Self {
         match self {
             Self::Detail => Self::Columns,
+            Self::SegmentDetail => Self::Segments,
             Self::TimeRoles => Self::Plan,
             page => page,
         }
@@ -751,6 +754,19 @@ impl QualityMetric {
         }
     }
 
+    /// The measure's name in a table cell or a change: "nulls", "distinct".
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::NullRate => "nulls",
+            Self::EmptyRate => "empty",
+            Self::WhitespaceRate => "blank",
+            Self::NonFiniteRate => "NaN/inf",
+            Self::DistinctShare => "distinct",
+            Self::IntegerParseShare => "integer parse",
+            Self::DecimalParseShare => "decimal parse",
+        }
+    }
+
     pub fn value(self, column: &ColumnQualityProfile) -> Option<f64> {
         let ratio = |numerator: usize, denominator: usize| {
             (denominator > 0).then(|| numerator as f64 / denominator as f64)
@@ -998,6 +1014,70 @@ pub struct SegmentQualityProfile {
     pub largest_change: Option<String>,
 }
 
+/// One column's measure in a segment, and in the segment it is compared with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SegmentChange {
+    pub column: String,
+    pub metric: QualityMetric,
+    pub before: Option<f64>,
+    pub now: f64,
+}
+
+impl SegmentChange {
+    /// Percentage points moved, when there is something to have moved from.
+    pub fn change(&self) -> Option<f64> {
+        self.before.map(|before| (self.now - before) * 100.0)
+    }
+}
+
+/// Every column's measures in segment `index`: beside the segment it is compared
+/// with and largest move first, or on its own worst first. A measure that is zero
+/// on both sides says nothing and is left out.
+pub fn segment_changes(results: &DataQualityResults, index: usize) -> Vec<SegmentChange> {
+    const MEASURES: [QualityMetric; 5] = [
+        QualityMetric::NullRate,
+        QualityMetric::EmptyRate,
+        QualityMetric::WhitespaceRate,
+        QualityMetric::NonFiniteRate,
+        QualityMetric::DistinctShare,
+    ];
+    let Some(segment) = results.segments.get(index) else {
+        return Vec::new();
+    };
+    let compared = segment
+        .compared_with
+        .as_ref()
+        .and_then(|label| results.segments.iter().find(|other| &other.label == label));
+    let mut changes = Vec::new();
+    for column in &segment.columns {
+        let prior = compared.and_then(|other| other.columns.iter().find(|c| c.name == column.name));
+        for metric in MEASURES {
+            let Some(now) = metric.value(column) else {
+                continue;
+            };
+            let before = prior.and_then(|prior| metric.value(prior));
+            if now == 0.0 && before.unwrap_or(0.0) == 0.0 {
+                continue;
+            }
+            changes.push(SegmentChange {
+                column: column.name.clone(),
+                metric,
+                before,
+                now,
+            });
+        }
+    }
+    if compared.is_some() {
+        changes.sort_by(|left, right| {
+            let size = |change: &SegmentChange| change.change().unwrap_or(0.0).abs();
+            size(right).total_cmp(&size(left))
+        });
+    } else {
+        changes.sort_by(|left, right| right.now.total_cmp(&left.now));
+    }
+    changes
+}
+
 #[derive(Debug, Clone)]
 pub struct TemporalLatencyProfile {
     pub segment: String,
@@ -1055,10 +1135,8 @@ impl DataQualityResults {
     pub fn compare_segments(&mut self, plan: &DataQualityPlan) {
         apply_comparisons(
             &mut self.segments,
-            &plan.grain,
             plan.comparison,
             plan.baseline_segment.as_deref(),
-            self.precision,
         );
     }
 
@@ -1646,11 +1724,11 @@ fn segment_rows(
                 })
                 .collect()
         }
-        QualityGrain::Partition(column) => group_by_value(df, column, "partition")?,
+        QualityGrain::Partition(column) => group_by_value(df, column, &format!("{column}="))?,
         QualityGrain::TimeWindows { column, every } => group_by_time_window(df, column, every)?,
         QualityGrain::File => {
             if df.column(QUALITY_SOURCE_FILE_COLUMN).is_ok() {
-                group_by_value(df, QUALITY_SOURCE_FILE_COLUMN, "file")?
+                group_by_value(df, QUALITY_SOURCE_FILE_COLUMN, "file ")?
             } else {
                 vec![SegmentRows {
                     label: "file mapping unavailable for this view".to_string(),
@@ -1662,7 +1740,7 @@ fn segment_rows(
     Ok(groups)
 }
 
-fn group_by_value(df: &DataFrame, column: &str, kind: &str) -> Result<Vec<SegmentRows>> {
+fn group_by_value(df: &DataFrame, column: &str, prefix: &str) -> Result<Vec<SegmentRows>> {
     let values = df.column(column)?;
     let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut missing = Vec::new();
@@ -1672,7 +1750,7 @@ fn group_by_value(df: &DataFrame, column: &str, kind: &str) -> Result<Vec<Segmen
             missing.push(row as u32);
         } else {
             groups
-                .entry(format!("{kind} {}", value.str_value()))
+                .entry(format!("{prefix}{}", value.str_value()))
                 .or_default()
                 .push(row as u32);
         }
@@ -1686,7 +1764,7 @@ fn group_by_value(df: &DataFrame, column: &str, kind: &str) -> Result<Vec<Segmen
     // would put it before any value that outranks U+2205.
     if !missing.is_empty() {
         result.push(SegmentRows {
-            label: format!("{kind} ∅"),
+            label: format!("{prefix}∅"),
             indices: missing,
         });
     }
@@ -1843,14 +1921,59 @@ fn profile_segments(
             largest_change: None,
         });
     }
+    order_segments(&mut profiles);
     apply_comparisons(
         &mut profiles,
-        &plan.grain,
         plan.comparison,
         plan.baseline_segment.as_deref(),
-        precision,
     );
     Ok(profiles)
+}
+
+/// Segments in the order their names count: year=9 before year=10, part-2 before
+/// part-10, and the rows no segment could place (`∅`) last. "Previous" means the
+/// segment before in this order, so it has to be the order a person would read.
+fn order_segments(segments: &mut [SegmentQualityProfile]) {
+    segments.sort_by(|left, right| {
+        left.label
+            .ends_with('∅')
+            .cmp(&right.label.ends_with('∅'))
+            .then_with(|| natural_cmp(&left.label, &right.label))
+    });
+}
+
+/// Text compared with its runs of digits compared as numbers.
+fn natural_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut left, mut right) = (left, right);
+    loop {
+        let (Some(l), Some(r)) = (left.chars().next(), right.chars().next()) else {
+            return left.len().cmp(&right.len());
+        };
+        if l.is_ascii_digit() && r.is_ascii_digit() {
+            let digits = |text: &str| {
+                text.find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(text.len())
+            };
+            let (l_end, r_end) = (digits(left), digits(right));
+            let (l_num, r_num) = (
+                left[..l_end].trim_start_matches('0'),
+                right[..r_end].trim_start_matches('0'),
+            );
+            let order = l_num.len().cmp(&r_num.len()).then_with(|| l_num.cmp(r_num));
+            if order != Ordering::Equal {
+                return order;
+            }
+            left = &left[l_end..];
+            right = &right[r_end..];
+        } else {
+            if l != r {
+                return l.cmp(&r);
+            }
+            left = &left[l.len_utf8()..];
+            right = &right[r.len_utf8()..];
+        }
+    }
 }
 
 fn profile_segments_lazy(
@@ -1929,7 +2052,7 @@ fn profile_segments_lazy(
     ordered.sort_by(|left, right| {
         left.0
             .cmp(&right.0)
-            .then_with(|| left.1.label.cmp(&right.1.label))
+            .then_with(|| natural_cmp(&left.1.label, &right.1.label))
     });
     let mut segments = ordered
         .into_iter()
@@ -1942,10 +2065,8 @@ fn profile_segments_lazy(
     }
     apply_comparisons(
         &mut segments,
-        &plan.grain,
         plan.comparison,
         plan.baseline_segment.as_deref(),
-        QualityPrecision::Exact,
     );
     Ok(segments)
 }
@@ -2012,7 +2133,7 @@ fn segment_label(grain: &QualityGrain, raw: Option<&str>) -> String {
                 })
                 .unwrap_or_else(|_| format!("rows {raw}"))
         }
-        QualityGrain::Partition(_) => format!("partition {}", raw.unwrap_or("∅")),
+        QualityGrain::Partition(column) => format!("{column}={}", raw.unwrap_or("∅")),
         QualityGrain::TimeWindows { column, every } => time_window_label(column, every, raw),
         QualityGrain::File => format!("file {}", raw.unwrap_or("∅")),
         QualityGrain::Dataset => "current view".to_string(),
@@ -2021,22 +2142,12 @@ fn segment_label(grain: &QualityGrain, raw: Option<&str>) -> String {
 
 fn apply_comparisons(
     segments: &mut [SegmentQualityProfile],
-    grain: &QualityGrain,
     comparison: QualityComparison,
     baseline_segment: Option<&str>,
-    precision: QualityPrecision,
 ) {
     for segment in segments.iter_mut() {
         segment.compared_with = None;
         segment.largest_change = None;
-    }
-    if comparison == QualityComparison::Previous
-        && matches!(grain, QualityGrain::File | QualityGrain::Partition(_))
-    {
-        for segment in segments {
-            segment.largest_change = Some("previous unavailable: choose an order".to_string());
-        }
-        return;
     }
     let baseline_index = baseline_segment
         .and_then(|label| segments.iter().position(|segment| segment.label == label))
@@ -2055,7 +2166,7 @@ fn apply_comparisons(
             QualityComparison::Previous | QualityComparison::Baseline => None,
         };
         if let Some(other) = compared {
-            let change = largest_material_change(&segments[index], &segments[other], precision);
+            let change = largest_material_change(&segments[index], &segments[other]);
             segments[index].compared_with = Some(segments[other].label.clone());
             segments[index].largest_change = Some(change);
         }
@@ -2077,7 +2188,6 @@ const MATERIAL_CHANGE_PP: f64 = 1.0;
 fn largest_material_change(
     segment: &SegmentQualityProfile,
     baseline: &SegmentQualityProfile,
-    precision: QualityPrecision,
 ) -> String {
     let mut largest: Option<(f64, String)> = None;
     let mut range: Option<String> = None;
@@ -2108,10 +2218,7 @@ fn largest_material_change(
                 .as_ref()
                 .is_none_or(|(most, _)| change.abs() > most.abs())
             {
-                largest = Some((
-                    change,
-                    format!("{} {}", column.name, metric.label().to_lowercase()),
-                ));
+                largest = Some((change, format!("{} {}", column.name, metric.short_label())));
             }
         }
         if range.is_none() && (column.min != prior.min || column.max != prior.max) {
@@ -2123,14 +2230,14 @@ fn largest_material_change(
             ));
         }
     }
-    let precision = precision.label();
+    // The header says whether the rows were sampled; the change needs no tag.
     match largest {
         Some((change, what)) if change.abs() >= MATERIAL_CHANGE_PP => {
-            format!("{what} {change:+.2} pp ({precision})")
+            format!("{what} {change:+.1} pp")
         }
         _ => match range {
-            Some(moved) => format!("{moved} ({precision})"),
-            None => format!("nothing moved {MATERIAL_CHANGE_PP:.0} pp ({precision})"),
+            Some(moved) => moved,
+            None => format!("none over {MATERIAL_CHANGE_PP:.0} pp"),
         },
     }
 }
@@ -3293,6 +3400,47 @@ mod tests {
         assert_ne!(ids(1), ids(2));
     }
 
+    /// Partition segments are named as the directory names them and read in the
+    /// order their values count, so "previous" is the partition before; a segment's
+    /// drill-in puts the measure that moved most first.
+    #[test]
+    fn partitions_compare_with_the_one_before_in_value_order() {
+        let years = (0..300)
+            .map(|row| [9i64, 10, 11][row / 100])
+            .collect::<Vec<_>>();
+        // Year 10 loses a tenth of its prices; 11 has them all again.
+        let price = (0..300)
+            .map(|row| (!(100..110).contains(&row)).then_some(row as f64))
+            .collect::<Vec<_>>();
+        let frame = df!("year" => years, "price" => price).unwrap().lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            grain: QualityGrain::Partition("year".to_string()),
+            comparison: QualityComparison::Previous,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(300), &plan, None, false).unwrap();
+        let labels = results
+            .segments
+            .iter()
+            .map(|segment| segment.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["year=9", "year=10", "year=11"]);
+        assert_eq!(results.segments[0].compared_with, None);
+        assert_eq!(results.segments[1].compared_with.as_deref(), Some("year=9"));
+        assert_eq!(
+            results.segments[1].largest_change.as_deref(),
+            Some("price nulls +10.0 pp")
+        );
+        let changes = segment_changes(&results, 1);
+        assert_eq!(changes[0].column, "price");
+        assert_eq!(changes[0].metric, QualityMetric::NullRate);
+        assert_eq!(changes[0].before, Some(0.0));
+        assert!((changes[0].change().unwrap() - 10.0).abs() < 1e-9);
+        assert!(natural_cmp("part-2", "part-10").is_lt());
+        assert!(natural_cmp("year=2024", "year=2025").is_lt());
+    }
+
     /// Row chunks are cut from the shared sample by where each sampled row sat, and
     /// a chunk's size is known without reading it.
     #[test]
@@ -3402,7 +3550,7 @@ mod tests {
                 .iter()
                 .map(|segment| (segment.label.as_str(), segment.evaluated_rows))
                 .collect::<Vec<_>>(),
-            vec![("partition big", 5), ("partition small", 5)]
+            vec![("region=big", 5), ("region=small", 5)]
         );
     }
 
@@ -4055,7 +4203,7 @@ mod tests {
             .as_deref()
             .expect("the second chunk compares with the first");
         assert!(
-            change.starts_with("fee null rate +100.00 pp"),
+            change == "fee nulls +100.0 pp",
             "the column and the measurement that moved: {change}"
         );
     }
@@ -4514,7 +4662,7 @@ mod tests {
         };
         let full = labels(QualityCompute::Full);
         assert_eq!(labels(QualityCompute::Sample), full);
-        assert_eq!(full.last().unwrap(), "partition \u{2205}");
+        assert_eq!(full.last().unwrap(), "region=\u{2205}");
     }
 
     #[test]

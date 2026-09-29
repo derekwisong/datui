@@ -328,9 +328,8 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
         QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
         QualityPage::Detail => own.push(("Enter", "Columns")),
-        QualityPage::Segments if segmented => {
-            own.extend([("[ ]", "Column"), ("m", "Metric"), ("b", "Baseline")])
-        }
+        QualityPage::Segments if segmented => own.extend([("Enter", "Details"), ("b", "Baseline")]),
+        QualityPage::SegmentDetail => own.push(("Enter", "Segments")),
         QualityPage::Trends if trend => own.extend([("[ ]", "Column"), ("m", "Metric")]),
         _ => {}
     }

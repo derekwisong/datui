@@ -32,6 +32,7 @@ pub struct DataQualityWidgetConfig<'a> {
     pub from_cache: bool,
     pub metric: QualityMetric,
     pub column_index: usize,
+    pub segment_index: usize,
     pub page: QualityPage,
     pub editing: bool,
     pub plan_field: usize,
@@ -112,6 +113,9 @@ pub fn render(
         QualityPage::Overview => render_overview(&config, table_state, body, buf),
         QualityPage::Columns => render_columns(&config, table_state, body, buf),
         QualityPage::Segments => render_segments(&config, table_state, body, buf),
+        QualityPage::SegmentDetail => {
+            render_segment_detail(&config, table_state, config.segment_index, body, buf)
+        }
         QualityPage::Trends => render_trends(&config, table_state, body, buf),
         QualityPage::Detail => render_detail(&config, table_state, body, buf),
     }
@@ -1125,159 +1129,196 @@ fn render_segments(
         render_run_prompt(area, config.theme, buf);
         return;
     };
+    let theme = config.theme;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
         .margin(1)
         .split(area);
     if config.plan.grain == QualityGrain::Dataset {
-        render_section_title("SEGMENTS", sections[0], config.theme, buf);
+        render_section_title("SEGMENTS", sections[0], theme, buf);
         Paragraph::new(
             "The rows are one segment. Set the plan's Grain to split them by file, \
              partition, row chunk or time window, and compare the parts.",
         )
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(config.theme.get("text_primary")))
+        .style(Style::default().fg(theme.get("text_primary")))
         .render(sections[1], buf);
         return;
     }
-    let column = results.columns.get(config.column_index);
-    let mut heading = format!(
-        "SEGMENTS  /  {}  /  {}",
-        column.map(|profile| profile.name.as_str()).unwrap_or("-"),
-        config.metric.label()
-    );
-    if config.plan.comparison == QualityComparison::Previous
-        && matches!(
-            config.plan.grain,
-            QualityGrain::File | QualityGrain::Partition(_)
-        )
+    Paragraph::new(rule_line(
+        "Segments",
+        Some(&numfmt::group_chrome(results.segments.len())),
+        sections[0].width,
+        theme,
+    ))
+    .render(sections[0], buf);
+
+    // What there is for every segment without choosing anything: its rows, how
+    // much of it is empty, and the one change against its comparison that moved
+    // most. Enter shows the rest.
+    let rows_label = |segment: &crate::data_quality::SegmentQualityProfile| match segment.total_rows
     {
-        heading.push_str("  /  PREVIOUS NEEDS ORDER");
-    }
-    render_section_title(&heading, sections[0], config.theme, buf);
-    let layout = if sections[1].width >= 150 {
-        3
-    } else if sections[1].width >= 110 {
-        2
-    } else if sections[1].width >= 72 {
-        1
-    } else {
-        0
+        Some(total) if total != segment.evaluated_rows => format!(
+            "{} of {}",
+            numfmt::group_chrome(segment.evaluated_rows),
+            numfmt::group_chrome(total)
+        ),
+        _ => numfmt::group_chrome(segment.evaluated_rows),
     };
+    let label_width = results
+        .segments
+        .iter()
+        .map(|segment| glyphs::display_width(&segment.label))
+        .max()
+        .unwrap_or(0)
+        .clamp(7, 40) as u16
+        + 2;
+    let rows_width = results
+        .segments
+        .iter()
+        .map(|segment| glyphs::display_width(&rows_label(segment)))
+        .max()
+        .unwrap_or(0)
+        .max(4) as u16
+        + 2;
+    let compared = config.plan.comparison != QualityComparison::None;
     let rows = results.segments.iter().map(|segment| {
-        let value = segment_metric_value(segment, config.column_index, config.metric);
-        let metric = metric_label(value);
-        let compared = segment
-            .compared_with
-            .as_ref()
-            .and_then(|label| results.segments.iter().find(|other| &other.label == label));
-        let change =
-            value
-                .zip(compared.and_then(|other| {
-                    segment_metric_value(other, config.column_index, config.metric)
-                }))
-                .map(|(current, prior)| format!("{:+.2} pp", (current - prior) * 100.0))
-                .unwrap_or_else(|| "-".to_string());
-        let largest = segment
-            .largest_change
-            .clone()
-            .unwrap_or_else(|| "-".to_string());
-        Row::new(match layout {
-            3 => vec![
-                segment.label.clone(),
-                segment
-                    .total_rows
-                    .map(numfmt::group_chrome)
-                    .unwrap_or_else(|| "unknown".to_string()),
-                numfmt::group_chrome(segment.evaluated_rows),
-                metric.clone(),
-                segment
-                    .compared_with
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
-                change,
-                format!("{:.1}%", segment.null_rate * 100.0),
-                largest,
-            ],
-            2 => vec![
-                segment.label.clone(),
-                numfmt::group_chrome(segment.evaluated_rows),
-                metric.clone(),
-                segment
-                    .compared_with
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
-                change,
-                largest,
-            ],
-            1 => vec![segment.label.clone(), metric.clone(), change, largest],
-            _ => vec![segment.label.clone(), metric, change],
-        })
+        let mut cells = vec![
+            Cell::from(segment.label.clone()),
+            Cell::from(rows_label(segment)),
+            Cell::from(format!("{:.1}%", segment.null_rate * 100.0)),
+        ];
+        if compared {
+            cells.push(match &segment.largest_change {
+                Some(change) if change.starts_with("none over") => {
+                    Cell::from(Span::styled(change.clone(), dimmed))
+                }
+                Some(change) => Cell::from(change.clone()),
+                None => Cell::from(""),
+            });
+        }
+        Row::new(cells)
     });
+    let mut headers = vec!["Segment", "Rows", "Null cells"];
+    let mut widths = vec![
+        Constraint::Length(label_width),
+        Constraint::Length(rows_width),
+        Constraint::Length(12),
+    ];
+    if compared {
+        headers.push("Largest change");
+        widths.push(Constraint::Fill(1));
+    }
     normalize_selection(table_state, results.segments.len());
-    let (headers, widths) = match layout {
-        3 => (
-            vec![
-                "Segment",
-                "Total rows",
-                "Evaluated",
-                "Selected metric",
-                "Compared with",
-                "Delta",
-                "All-null rate",
-                "Largest change",
-            ],
-            vec![
-                Constraint::Length(22),
-                Constraint::Length(14),
-                Constraint::Length(14),
-                Constraint::Length(16),
-                Constraint::Length(20),
-                Constraint::Length(12),
-                Constraint::Length(14),
-                Constraint::Fill(1),
-            ],
-        ),
-        2 => (
-            vec![
-                "Segment",
-                "Evaluated",
-                "Selected metric",
-                "Compared with",
-                "Delta",
-                "Largest change",
-            ],
-            vec![
-                Constraint::Length(22),
-                Constraint::Length(14),
-                Constraint::Length(16),
-                Constraint::Length(20),
-                Constraint::Length(12),
-                Constraint::Fill(1),
-            ],
-        ),
-        1 => (
-            vec!["Segment", "Metric", "Delta", "Largest change"],
-            vec![
-                Constraint::Length(20),
-                Constraint::Length(10),
-                Constraint::Length(10),
-                Constraint::Fill(1),
-            ],
-        ),
-        _ => (
-            vec!["Segment", "Metric", "Delta"],
-            vec![
-                Constraint::Fill(1),
-                Constraint::Length(12),
-                Constraint::Length(14),
-            ],
-        ),
-    };
     let table = Table::new(rows, widths)
-        .header(Row::new(headers).style(Style::default().fg(config.theme.get("dimmed"))))
-        .row_highlight_style(config.theme.highlight_style())
+        .header(Row::new(headers).style(dimmed))
+        .row_highlight_style(theme.highlight_style())
+        .highlight_symbol(glyphs::get().selector);
+    StatefulWidget::render(table, sections[1], buf, table_state);
+}
+
+/// A rate as the report writes one: two places below 1% so a small share never
+/// reads as none.
+fn rate_label(value: f64) -> String {
+    let percent = value * 100.0;
+    if percent > 0.0 && percent < 1.0 {
+        format!("{percent:.2}%")
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
+/// One segment's columns, every measure beside the segment it is compared with,
+/// the largest move first: the answer to "what changed here" without choosing a
+/// column or a measure first.
+fn render_segment_detail(
+    config: &DataQualityWidgetConfig<'_>,
+    table_state: &mut TableState,
+    segment_index: usize,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let Some(results) = config.results else {
+        render_run_prompt(area, config.theme, buf);
+        return;
+    };
+    let Some(segment) = results.segments.get(segment_index) else {
+        return;
+    };
+    let theme = config.theme;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let changes = crate::data_quality::segment_changes(results, segment_index);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .margin(1)
+        .split(area);
+    let other = segment.compared_with.as_deref();
+    let title = match other {
+        Some(other) => format!("{} vs {other}", segment.label),
+        None => segment.label.clone(),
+    };
+    Paragraph::new(rule_line(
+        &title,
+        Some(&numfmt::group_chrome(changes.len())),
+        sections[0].width,
+        theme,
+    ))
+    .render(sections[0], buf);
+    if changes.is_empty() {
+        Paragraph::new(Span::styled("Nothing measured is above zero here", dimmed))
+            .render(sections[1], buf);
+        return;
+    }
+    let name_width = changes
+        .iter()
+        .map(|change| glyphs::display_width(&change.column))
+        .max()
+        .unwrap_or(0)
+        .clamp(6, 32) as u16
+        + 2;
+    let value_width = |label: &str| (glyphs::display_width(label).clamp(8, 24) + 2) as u16;
+    let rows = changes.iter().map(|change| {
+        let mut cells = vec![
+            Cell::from(change.column.clone()),
+            Cell::from(Span::styled(change.metric.short_label(), dimmed)),
+        ];
+        if other.is_some() {
+            cells.push(Cell::from(
+                change
+                    .before
+                    .map(rate_label)
+                    .unwrap_or_else(|| "-".to_string()),
+            ));
+        }
+        cells.push(Cell::from(rate_label(change.now)));
+        if other.is_some() {
+            cells.push(match change.change() {
+                Some(points) if points.abs() >= 1.0 => Cell::from(format!("{points:+.1} pp")),
+                Some(points) => Cell::from(Span::styled(format!("{points:+.1} pp"), dimmed)),
+                None => Cell::from(""),
+            });
+        }
+        Row::new(cells)
+    });
+    let mut headers = vec!["Column".to_string(), "Measure".to_string()];
+    let mut widths = vec![Constraint::Length(name_width), Constraint::Length(10)];
+    if let Some(other) = other {
+        headers.push(other.to_string());
+        widths.push(Constraint::Length(value_width(other)));
+    }
+    headers.push(segment.label.clone());
+    widths.push(Constraint::Length(value_width(&segment.label)));
+    if other.is_some() {
+        headers.push("Change".to_string());
+        widths.push(Constraint::Fill(1));
+    }
+    normalize_selection(table_state, changes.len());
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers).style(dimmed))
+        .row_highlight_style(theme.highlight_style())
         .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
 }

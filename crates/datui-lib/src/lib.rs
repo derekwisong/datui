@@ -14294,6 +14294,20 @@ impl App {
                         self.analysis_modal.data_quality_editing = false;
                         return None;
                     }
+                    // A drill-in backs out to the list it came from.
+                    KeyCode::Esc
+                        if self.analysis_modal.data_quality_page == QualityPage::SegmentDetail =>
+                    {
+                        self.analysis_modal.close_segment_detail();
+                        return None;
+                    }
+                    KeyCode::Esc
+                        if self.analysis_modal.data_quality_page == QualityPage::Detail =>
+                    {
+                        self.analysis_modal
+                            .set_quality_column_page(QualityPage::Columns);
+                        return None;
+                    }
                     KeyCode::Esc
                         if !matches!(self.analysis_modal.data_quality_page, QualityPage::Plan) =>
                     {
@@ -14326,10 +14340,7 @@ impl App {
                         return None;
                     }
                     KeyCode::Char('m')
-                        if matches!(
-                            self.analysis_modal.data_quality_page,
-                            QualityPage::Segments | QualityPage::Trends
-                        ) =>
+                        if self.analysis_modal.data_quality_page == QualityPage::Trends =>
                     {
                         self.analysis_modal.cycle_quality_metric();
                         return None;
@@ -14360,10 +14371,7 @@ impl App {
                         return None;
                     }
                     KeyCode::Char('[') | KeyCode::Char(']')
-                        if matches!(
-                            self.analysis_modal.data_quality_page,
-                            QualityPage::Segments | QualityPage::Trends
-                        ) =>
+                        if self.analysis_modal.data_quality_page == QualityPage::Trends =>
                     {
                         let count = self
                             .analysis_modal
@@ -14473,6 +14481,14 @@ impl App {
                         } else if self.analysis_modal.data_quality_page == QualityPage::Detail {
                             self.analysis_modal
                                 .set_quality_column_page(QualityPage::Columns);
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Segments
+                            && self.analysis_modal.data_quality_results.is_some()
+                        {
+                            self.analysis_modal.open_segment_detail();
+                        } else if self.analysis_modal.data_quality_page
+                            == QualityPage::SegmentDetail
+                        {
+                            self.analysis_modal.close_segment_detail();
                         }
                         return None;
                     }

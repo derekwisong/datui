@@ -208,7 +208,7 @@ In Data Quality:
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
 | <kbd>←</kbd> <kbd>→</kbd> in the plan editor | Change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Sample | Open the Sample form |
-| <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |
+| <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done. With no date or time column there is nothing to assign, and the row says so |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its frame counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column, once the plan's Grain splits the rows |

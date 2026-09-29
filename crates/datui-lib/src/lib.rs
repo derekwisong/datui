@@ -6734,17 +6734,21 @@ impl App {
     /// anything; Enter opens it, and the control bar says so.
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
-        let has_time_columns = self.data_table_state.as_ref().is_some_and(|state| {
-            !state
-                .quality_temporal_columns(&modal.data_quality_plan.scope)
-                .is_empty()
-        });
         data_quality::page_setup(
             modal.data_quality_page,
             &modal.data_quality_plan,
             modal.data_quality_results.as_ref(),
-            has_time_columns,
+            self.has_quality_time_columns(),
         )
+    }
+
+    /// Whether the plan's scope has a date or time column to give a role.
+    pub(crate) fn has_quality_time_columns(&self) -> bool {
+        self.data_table_state.as_ref().is_some_and(|state| {
+            !state
+                .quality_temporal_columns(&self.analysis_modal.data_quality_plan.scope)
+                .is_empty()
+        })
     }
 
     fn clear_quality_result_if_plan_changed(&mut self) {
@@ -14400,6 +14404,10 @@ impl App {
                         } else if self.analysis_modal.data_quality_editing
                             && self.analysis_modal.data_quality_plan_field == 4
                         {
+                            // With no date or time column there is no role to assign.
+                            if !self.has_quality_time_columns() {
+                                return None;
+                            }
                             self.analysis_modal.set_quality_page(QualityPage::TimeRoles);
                             self.analysis_modal.data_quality_editing = true;
                             self.analysis_modal.data_quality_plan_field = 0;

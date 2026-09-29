@@ -1943,6 +1943,51 @@ fn data_quality_reads_as_a_report() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
     assert!(app.analysis_modal.data_quality_editing);
     assert_eq!(app.analysis_modal.data_quality_plan_field, 1, "on Grain");
+    // The editor's bar names what the focused row takes.
+    let bar_now = |app: &mut App| {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let bar_row = (area.height as usize - 1) * area.width as usize;
+        buffer.content()[bar_row..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let bar = bar_now(&mut app);
+    assert!(bar.contains("Change") && bar.contains("Apply"), "{bar}");
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    let bar = bar_now(&mut app);
+    assert!(
+        bar.contains("Sample Form") && !bar.contains("Change"),
+        "{bar}"
+    );
+    for _ in 0..4 {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    assert_eq!(
+        app.analysis_modal.data_quality_plan_field, 4,
+        "on Time roles"
+    );
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("no date or time columns"));
+    let bar = bar_now(&mut app);
+    assert!(
+        !bar.contains("Time Roles") && !bar.contains("Change") && !bar.contains("Apply"),
+        "nothing to assign without a date column: {bar}"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,

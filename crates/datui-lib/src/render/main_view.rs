@@ -293,13 +293,18 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Back"),
         ];
     }
+    // The plan editor names what the focused row takes: Sample and Time roles
+    // open editors of their own, the rest change in place.
     if modal.data_quality_editing {
-        return vec![
-            (g.updown, "Field"),
-            (g.updown_lr, "Value"),
-            ("Enter", "Apply"),
-            ("Esc", "Cancel"),
-        ];
+        let mut keys = vec![(g.updown, "Field")];
+        match modal.data_quality_plan_field {
+            0 => keys.push(("Enter", "Sample Form")),
+            4 if app.has_quality_time_columns() => keys.push(("Enter", "Time Roles")),
+            4 => {}
+            _ => keys.extend([(g.updown_lr, "Change"), ("Enter", "Apply")]),
+        }
+        keys.push(("Esc", "Cancel"));
+        return keys;
     }
     // One shape on every page: the way out, then what this page is for, then the
     // keys every page shares in one order, then the rest of this page's. The bar is

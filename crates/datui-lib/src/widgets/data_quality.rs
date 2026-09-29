@@ -230,7 +230,13 @@ fn render_plan(
         .split(area);
     render_section_title("PROFILE PLAN", sections[0], config.theme, buf);
 
-    let temporal = if config.plan.temporal_roles.is_empty() {
+    let temporal = if config
+        .state
+        .quality_temporal_columns(&config.plan.scope)
+        .is_empty()
+    {
+        "none: no date or time columns".to_string()
+    } else if config.plan.temporal_roles.is_empty() {
         "none".to_string()
     } else {
         config

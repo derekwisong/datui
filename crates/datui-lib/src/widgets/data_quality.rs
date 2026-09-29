@@ -38,7 +38,6 @@ pub struct DataQualityWidgetConfig<'a> {
     pub show_access: bool,
     pub observation_detail: bool,
     pub confirm_run: bool,
-    pub running: bool,
     pub focus: AnalysisFocus,
     pub theme: &'a Theme,
 }
@@ -122,8 +121,6 @@ pub fn render(
         render_finding_detail(&config, table_state, area, buf);
     } else if config.confirm_run {
         render_run_confirmation(&config, area, buf);
-    } else if config.running {
-        render_running(&config, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
         render_narrow_tool_picker(&config, sidebar_state, area, buf);
     }
@@ -1937,30 +1934,6 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
             .borders(Borders::ALL)
             .border_set(crate::glyphs::get().border)
             .border_style(Style::default().fg(config.theme.get("warning"))),
-    )
-    .render(popup, buf);
-}
-
-fn render_running(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let popup = centered_rect(58, 7, area);
-    Clear.render(popup, buf);
-    Paragraph::new(vec![
-        Line::styled(
-            "Profiling data quality",
-            Style::default()
-                .fg(config.theme.get("accent"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(""),
-        Line::raw("The declared plan is running off the UI thread."),
-        Line::raw("Esc cancels installation of its result."),
-    ])
-    .block(
-        Block::default()
-            .title("Running")
-            .borders(Borders::ALL)
-            .border_set(crate::glyphs::get().border)
-            .border_style(Style::default().fg(config.theme.get("accent"))),
     )
     .render(popup, buf);
 }

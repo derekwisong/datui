@@ -1831,6 +1831,18 @@ fn data_quality_reads_as_a_report() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    // The run shows the progress every tool shows: the phase, the clock and what
+    // it reads, in place of the view. No plan page, no popup over it.
+    let mut buffer = Buffer::empty(first);
+    app.render(first, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("Profiling data quality") && screen.contains("random rows"),
+        "the shared progress view"
+    );
+    for gone in ["PROFILE PLAN", "Running", "Planned"] {
+        assert!(!screen.contains(gone), "{gone:?} shows during a run");
+    }
     while let Some(ev) = next {
         next = app.event(&ev);
     }

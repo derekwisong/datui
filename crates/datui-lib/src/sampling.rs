@@ -80,7 +80,7 @@ impl Sample {
     pub fn summary(&self) -> String {
         let rows = numfmt::group_chrome(self.rows);
         let how = match &self.method {
-            SampleMethod::Spread => format!("{rows} rows, spread"),
+            SampleMethod::Spread => format!("{rows} random rows"),
             SampleMethod::PerPartition { column } => format!("{rows} rows per {column}"),
             SampleMethod::FirstRows => format!("first {rows} rows"),
             SampleMethod::EveryRow => "every row".to_string(),
@@ -548,7 +548,7 @@ mod tests {
         let middot = crate::glyphs::get().middot;
         assert_eq!(
             Sample::default().summary(),
-            format!("100,000 rows, spread {middot} current view {middot} seed 42891")
+            format!("100,000 random rows {middot} current view {middot} seed 42891")
         );
         assert_eq!(
             sample(SampleMethod::FirstRows, 1_000).summary(),

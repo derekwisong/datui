@@ -39,12 +39,11 @@ fn render_body(
     app: &mut crate::App,
     ctx: &RenderContext,
 ) {
-    if let Some(ref progress) = app.analysis_modal.computing
-        && app.analysis_modal.selected_tool != Some(analysis_modal::AnalysisTool::DataQuality)
-    {
+    if let Some(ref progress) = app.analysis_modal.computing {
         // A run is one Polars query with no steps to count, so a gauge could only ever
         // read 0%. What moves is time: the spinner and the clock say it is alive, and
-        // the control bar says Esc cancels.
+        // the control bar says Esc cancels. Every tool, Data Quality included, runs
+        // behind this one view.
         Clear.render(area, buf);
         let g = crate::glyphs::get();
         let spinner = g.spinner[app.throbber_frame as usize % g.spinner.len()];
@@ -63,7 +62,15 @@ fn render_body(
             ]),
             // What decides how long this takes, stated rather than left to guess.
             Line::from(Span::styled(
-                format!("   Reads {}", app.analysis_modal.sample.summary()),
+                if app.analysis_modal.selected_tool
+                    == Some(analysis_modal::AnalysisTool::DataQuality)
+                    && app.analysis_modal.data_quality_plan.compute
+                        == crate::data_quality::QualityCompute::Metadata
+                {
+                    "   Reads file metadata only, no values".to_string()
+                } else {
+                    format!("   Reads {}", app.analysis_modal.sample.summary())
+                },
                 Style::default().fg(ctx.dimmed),
             )),
         ];
@@ -89,7 +96,6 @@ fn render_body(
                 show_access: modal.data_quality_show_access,
                 observation_detail: modal.data_quality_observation_detail,
                 confirm_run: modal.data_quality_confirm_run,
-                running: modal.computing.is_some(),
                 focus: modal.focus,
                 theme: &app.theme,
             };

@@ -84,16 +84,8 @@ fixed. A minimal reproducer usually deserves a unit test next to the code as wel
 
 ## Sanitizer
 
-The targets build without a sanitizer by default. `datui-lib` contains no `unsafe`, so
-for this code AddressSanitizer has very little to find that a panic would not already
-report: the bugs here are index arithmetic, unbounded recursion and disagreeing width
-calculations, and the fuzz profile turns on debug assertions and overflow checks so all
-of them trap. It costs about double the build output, 12 GB against 6.0 GB as measured
-on Linux, and runs the target itself noticeably slower, so it buys less coverage per
-minute of CI.
-
-It is still worth it for a long run, where it can reach the `unsafe` code inside Polars
-and Arrow that these targets feed. Turn it on with:
+Local runs omit the sanitizer by default. Enable AddressSanitizer when
+checking dependency memory errors or running a longer fuzzing session:
 
 ```bash
 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
@@ -101,12 +93,8 @@ DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 
 The Nightly workflow runs this configuration; the pull request job does not.
 
-Memory limits a sanitizer build more than disk does. cargo-fuzz compiles every crate as a
-single codegen unit, and instrumented that way `polars-core` alone peaks at about 8.5 GB,
-with `polars-expr`, `polars-ops` and `arrow-cast` at 2–3.4 GB each compiling alongside
-it. At four parallel jobs that is more than a 16 GB machine has, and the build is killed
-rather than failing with an error. The Nightly workflow builds with `CARGO_BUILD_JOBS=2`
-for this reason; do the same locally if the build disappears partway through:
+Sanitizer builds use substantial memory. The Nightly job limits parallel
+compilation to two jobs; use the same limit if your build is killed:
 
 ```bash
 CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
@@ -117,12 +105,8 @@ CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse
 cargo-fuzz reaches for `-Z sanitizer`, which is normally nightly-only, and
 `scripts/code/fuzz.sh` sets `RUSTC_BOOTSTRAP=1` to allow it on stable instead.
 
-That is a deliberate choice rather than a shortcut. `polars-ops` has a build script that
-enables its own `nightly` feature whenever it detects a nightly compiler, and that code
-path uses `core::unicode` internals which current nightly no longer exposes. The
-dependency tree therefore does not compile on nightly at all, for reasons unrelated to
-datui. Building on stable sidesteps that and keeps the fuzzers on the same pinned
-toolchain as every other job.
+Polars currently enables an incompatible internal code path on nightly.
+The wrapper uses stable with `RUSTC_BOOTSTRAP=1` to compile the fuzz targets.
 
 If a future Polars release fixes the nightly path, the flag can be dropped and the
 scripts switched to `cargo +nightly fuzz`.

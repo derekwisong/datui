@@ -1,50 +1,69 @@
-# Pivot and Melt
+# Pivot and melt
 
-Press <kbd>p</kbd> to reshape the current view between long and wide. The
-sidebar has a **Pivot** tab and a **Melt** tab; <kbd>←</kbd> <kbd>→</kbd>
-switch between them. Each field is one row; <kbd>Space</kbd> (or just typing)
-opens a picker scoped to that row, and the full spec —
-`department × job_title → avg(salary)` — is echoed above the footer as it
-takes shape. <kbd>Enter</kbd> applies it from anywhere in the form.
-
-| | From | To |
-|---|---|---|
-| **Pivot** (long to wide) | `id, date, key, value` | `id, date, key_A, key_B, key_C` |
-| **Melt** (wide to long) | `id, Q1, Q2, Q3` | `id, variable, value` |
-
-Both work on the table as currently queried, filtered and sorted.
+Press <kbd>p</kbd> to reshape the current query and filters.
+**Pivot** turns values into columns; **Melt** turns columns into rows.
 
 ## Pivot
 
-![Pivot Demo](../demos/04-pivot.gif)
+With the [quick-start penguin data](../getting-started/quick-start.md),
+run this query to keep the three needed columns and exclude missing sex values:
 
-1. **Index**: the columns that stay as rows. Type to search, <kbd>Space</kbd> to select. Order matters.
-2. **Columns**: the column whose distinct values become new column names.
-3. **Values**: the column that fills the new cells.
-4. **Aggregate**: how to combine several values per cell. `last` (default), `first`, `min`, `max`, `avg`, `med`, `std` or `count`. A string value column allows only `first` and `last`. `first` and `last` are positional and keep nulls: after a sort (nulls sort last), `last` returns null for every group that contains one, so a mostly-empty pivot usually means the value column has nulls, not that the pivot failed.
+```text
+select species, sex, body_mass_g where not null sex
+```
 
-New columns are named after the pivot column's values, sorted alphabetically.
+Press <kbd>p</kbd> and choose these settings on **Pivot**:
 
-While a reshape is applied, the bottom bar carries a `pivoted` or `melted`
-chip beside the row count; <kbd>R</kbd> resets the table and takes it away.
+| Setting | Value | Meaning |
+|---|---|---|
+| Index | `species` | One row per species |
+| Columns | `sex` | One output column per sex |
+| Values | `body_mass_g` | Values to aggregate |
+| Aggregate | `avg` | Mean body mass for each species/sex pair |
 
-Pivoting reads every affected row into memory to discover the column names.
-On a large table, query or filter first.
+Use <kbd>Tab</kbd> to move through settings. <kbd>Space</kbd> opens a column
+picker; type to narrow, select columns and press <kbd>Enter</kbd> to close it.
+Press <kbd>Enter</kbd> in the form to apply.
+
+The result has three rows. Values below are rounded to one decimal:
+
+| species | female | male |
+|---|---:|---:|
+| Adelie | 3368.8 | 4043.5 |
+| Chinstrap | 3527.2 | 3939.0 |
+| Gentoo | 4679.7 | 5484.8 |
+
+Output columns are sorted alphabetically. Pivot reads every affected row into
+memory to discover the columns; filter large datasets first.
+
+### Choose an aggregate
+
+Available functions are `last` (default), `first`, `min`, `max`, `avg`, `med`,
+`std` and `count`. String values support only `first` and `last`.
+Those two functions are positional and retain nulls. After sorting with nulls
+last, `last` returns null for any group ending in a null.
 
 ## Melt
 
-![Melt Demo](../demos/05-melt.gif)
+To turn the pivot above back into rows, press <kbd>p</kbd>, select **Melt**,
+and set:
 
-1. **Index**: the identifier columns to keep, selected as for pivot.
-2. **Strategy**, deciding the value columns. Its own row follows the choice:
-   - **All except index**: every other column.
-   - **By pattern**: a regex over column names, such as `Q[1-4]_2024` or `metric_.*`, typed on a **Pattern** row.
-   - **By type**: every numeric, string, datetime or boolean column, picked on a **Type** row.
-   - **Explicit list**: pick them with <kbd>Space</kbd> on a **Columns** row.
-3. **Variable name** and **Value name**: the two output columns. Default `variable` and `value`.
+| Setting | Value |
+|---|---|
+| Index | `species` |
+| Strategy | **All except index** |
+| Variable name | `sex` |
+| Value name | `mean_mass_g` |
 
-The spec line counts what the strategy resolves — `melt 48 value columns by
-pattern "q_.*"` — so a pattern that matches nothing is visible before it runs.
+Apply with <kbd>Enter</kbd>. The result has six rows with columns `species`,
+`sex` and `mean_mass_g`. This reshapes the averages; it does not recover the
+original individual penguins.
+
+Other strategies select columns by regex (**By pattern**), data type
+(**By type**) or an **Explicit list**. The form shows how many columns match
+before it runs. Default output names are `variable` and `value`.
+
+Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 
 ## Keys
 

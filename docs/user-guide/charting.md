@@ -1,12 +1,20 @@
-# Charting
+# Make a chart
 
-Press <kbd>c</kbd> to chart the current view. Tabs across the top show the
-chart type — switch it from anywhere with <kbd>1</kbd>–<kbd>5</kbd> or
-<kbd>[</kbd> <kbd>]</kbd> — and the sidebar holds the active type's columns
-and options. <kbd>Esc</kbd> returns to the table.
+Press <kbd>c</kbd> to chart the current query and filters. Press <kbd>Esc</kbd>
+to return to the table.
 
-To follow a complete example with public data, use the
-[quick start](../getting-started/quick-start.md#3-plot-individual-measurements).
+## Plot two columns
+
+Open the [quick-start penguin data](../getting-started/quick-start.md), then:
+
+1. Press <kbd>c</kbd> and select **XY**.
+2. Set **Plot style** to **Scatter**.
+3. Choose `flipper_length_mm` for **X** and `body_mass_g` for **Y**.
+
+Use <kbd>Tab</kbd> to move through settings and <kbd>Space</kbd> to open a
+column picker. Type part of a name to narrow it; on Y, <kbd>Space</kbd>
+toggles a series and <kbd>Enter</kbd> closes the picker.
+The chart contains the 342 rows with both measurements present.
 
 ## Chart types
 
@@ -20,7 +28,7 @@ To follow a complete example with public data, use the
 
 Every type has a **Limit Rows** option at the bottom of the sidebar: how many
 rows are used to build the chart. The default comes from `row_limit` in the
-[`[chart]` config section](configuration.md#charts) and is 10,000. This is a row cap, not random sampling. Filter or aggregate
+[`[chart]` config section](../reference/settings.md#charts) and is 10,000. This is a row cap, not random sampling. Filter or aggregate
 first when the chart needs to represent a larger period or dataset.
 
 ## Keys
@@ -49,4 +57,4 @@ missing, and you are asked before an existing file is overwritten.
 ## Colors
 
 Series take `chart_series_color_1` through `chart_series_color_7` from the
-[theme](configuration.md#colors).
+[theme](../reference/settings.md#colors).

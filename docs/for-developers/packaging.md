@@ -1,4 +1,4 @@
-# Building Packages
+# Build and publish packages
 
 Datui can be packaged for Debian/Ubuntu (`.deb`), Fedora/RHEL (`.rpm`), and Arch Linux (AUR).
 
@@ -90,19 +90,8 @@ winget job refuses to run komac against an empty release body. See
 
 ### Arch Linux Installation
 
-Arch users can install from the release tarball:
-
-```bash
-# Install runtime dependency (required for terminal rendering)
-sudo pacman -S fontconfig
-# Download the tarball from a release, then extract and install
-tar xf datui-X.Y.Z-x86_64.tar.gz
-sudo install -Dm755 datui /usr/bin/datui
-sudo install -Dm644 target/release/datui.1.gz /usr/share/man/man1/datui.1.gz
-sudo install -Dm644 LICENSE /usr/share/licenses/datui/LICENSE
-```
-
-Or use the included `PKGBUILD` with `makepkg` (it declares `fontconfig` as a dependency).
+See [Installation](../getting-started/installation.md#package-managers) for
+installing from the AUR. The steps below are for package maintainers.
 
 ### AUR Release Workflow
 
@@ -144,7 +133,20 @@ The release workflow calls `publish-packages.yml` to push PKGBUILD and .SRCINFO 
 | `AUR_USERNAME` | Your AUR account name (used as git commit author). |
 | `AUR_EMAIL` | Email for the AUR git commit (can be a noreply address). |
 
-If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, remove or comment out that step in `.github/workflows/release.yml`.
+If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, change the `publish-aur` job in `.github/workflows/publish-packages.yml`.
+
+## PyPI
+
+The release workflow builds Linux x86_64, Windows x86_64 and macOS ARM64/x86_64
+wheels with maturin. Each contains the Python extension and a bundled datui
+binary. Linux ARM64 currently has a standalone binary but no wheel.
+
+After the GitHub release is created, `publish-packages.yml` downloads the wheels
+and uploads them with twine using `PYPI_API_TOKEN`. The workflow also accepts a
+tag when run manually; a blank tag selects the latest release.
+
+Use `scripts/bump_version.py` to keep Rust and Python versions in sync.
+For local wheel development, see [Python bindings](python-bindings.md).
 
 ## WinGet releases
 

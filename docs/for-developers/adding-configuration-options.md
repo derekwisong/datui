@@ -1,474 +1,96 @@
-# Adding Configuration Options
+# Add configuration options
 
-When adding new configuration options to datui, follow this process:
+Start in `crates/datui-lib/src/config.rs`. Use an existing option in the same
+section as a model, and update all seven parts:
 
-## Process Overview
+| Part | Change |
+|---|---|
+| Struct | Add the field to the appropriate config section |
+| Default | Set its value in that section's `Default` implementation |
+| Merge | Handle it in the section's `merge()` method |
+| Generated comments | Add its description to the section's `*_COMMENTS` array |
+| Usage | Read the merged setting where the behavior is implemented |
+| Tests | Cover deserialization, defaults, merging and the affected behavior |
+| Documentation | Add it to the [settings reference](../reference/settings.md) and relevant guide |
 
-Adding a new configuration option requires updates in 7 places:
+## Example: `notes_accent`
 
-1. Config struct definition
-2. Default implementation
-3. Merge logic
-4. Comment constants (for generated configs)
-5. Application code usage
-6. Tests
-7. Documentation
-
-## Step-by-Step Guide
-
-### 1. Add Field to Config Struct
-
-Add the new field to the appropriate config struct in `crates/datui-lib/src/config.rs`:
+This existing display option controls whether unread dataset notes accent the
+Info key. The relevant pieces in `config.rs` are:
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DisplayConfig {
-    pub pages_lookahead: usize,
-    pub pages_lookback: usize,
-    pub row_numbers: bool,
-    pub row_start_index: usize,
-    pub font_size: Option<u8>,  // NEW FIELD
+// Field in DisplayConfig:
+pub notes_accent: bool,
+
+// Value in DisplayConfig::default():
+notes_accent: true,
+
+// Entry in DISPLAY_COMMENTS:
+("notes_accent", "Accent the i key when dataset notes are unread"),
+
+// Inside DisplayConfig::merge(), where default is DisplayConfig::default():
+if other.notes_accent != default.notes_accent {
+    self.notes_accent = other.notes_accent;
 }
 ```
 
-### 2. Update Default Implementation
+These are excerpts from separate locations, not one Rust block to paste.
+The control-bar construction in `lib.rs` reads the setting in
+`with_notes_pending`. Follow that path when
+checking whether a new setting reaches its intended behavior.
 
-Add the default value in the `Default` trait:
+The generated config shows ordinary fields as commented examples. The public
+dataset catalog is active TOML; preserve that distinction.
 
-```rust
-impl Default for DisplayConfig {
-    fn default() -> Self {
-        Self {
-            pages_lookahead: 3,
-            pages_lookback: 3,
-            row_numbers: false,
-            row_start_index: 1,
-            font_size: None,  // NEW: None = use terminal default
-        }
-    }
-}
+## Merge and validation rules
+
+| Field | Existing merge rule |
+|---|---|
+| `Option<T>` | Replace when the incoming value is `Some` |
+| Plain scalar | Replace when the incoming value differs from its default |
+| Color | Compare with the built-in default, then validate with `ColorParser` |
+
+A plain field set to its default cannot reliably override a non-default import.
+Do not assume the merge records whether a user explicitly wrote a value.
+
+Add range or format checks to the appropriate validation method when needed.
+Test an omitted field, an explicit value, merging over an existing value, and
+invalid/boundary values where relevant. A test that only assigns a field and
+reads it back does not check configuration loading.
+
+## Add a CLI override
+
+If the setting also needs a flag:
+
+1. Add it to `Args` in `crates/datui-cli/src/lib.rs`.
+2. Apply it after config loading; cloud overrides use `effective_cloud`.
+3. Test precedence and regenerate the CLI reference:
+
+```bash
+.venv/bin/python scripts/docs/generate_command_line_options.py -o docs/reference/command-line-options.md
 ```
 
-### 3. Update Merge Logic
+Check whether the Python options in `crates/datui-pyo3` should expose it too.
 
-Add merge handling in the section's `merge()` method:
+## Add a color
 
-```rust
-impl DisplayConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = DisplayConfig::default();
-        // ... existing merge logic ...
+In addition to the checklist, update `ColorConfig::validate`,
+`ColorConfig::merge`, `Theme::from_config`, and the theme's default values.
+Test both light and dark modes. Use the theme field in rendering code;
+do not put a hardcoded color in a widget.
 
-        // NEW: Merge font_size (Option fields)
-        if other.font_size.is_some() {
-            self.font_size = other.font_size;
-        }
-    }
-}
+Add the slot and its defaults to the [color reference](../reference/settings.md#colors).
+Use a name that describes its purpose, such as `modal_border_active`.
+
+## Check the change
+
+```bash
+cargo fmt
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace
+cargo run -- --generate-config
 ```
 
-**Merge rules:**
-- **Option fields**: If `other.field.is_some()`, take the value
-- **Non-Option fields**: If `other.field != default.field`, take the value
-
-### 4. Add Config File Comments
-
-The default config file is populated with comments useful to users.
-
-Add comments to the comment constant array right after the struct definition in `crates/datui-lib/src/config.rs`:
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DisplayConfig {
-    pub pages_lookahead: usize,
-    pub pages_lookback: usize,
-    pub row_numbers: bool,
-    pub row_start_index: usize,
-    pub font_size: Option<u8>,  // NEW FIELD
-}
-
-// Field comments for DisplayConfig
-const DISPLAY_COMMENTS: &[(&str, &str)] = &[
-    // ... existing fields ...
-    (
-        "font_size",
-        "Font size for terminal display (optional)\nSet to null to use terminal default, or 8-16 for explicit size",
-    ),
-];
-```
-
-**Note**: Comments are defined next to the struct definition. The config template is generated from Rust code defaults, with ordinary fields commented out so users can uncomment to override. The active public-dataset catalog is the deliberate exception.
-
-### 5. Use in Application Code
-
-Access the config value where needed:
-
-```rust
-let font_size = config.display.font_size.unwrap_or(terminal_default);
-```
-
-Or pass through App if needed globally:
-```rust
-app.font_size = config.display.font_size;
-```
-
-### 6. Add Tests
-
-Add tests in `tests/config_test.rs` or `tests/config_integration_test.rs`:
-
-```rust
-#[test]
-fn test_font_size_config() {
-    let mut config = AppConfig::default();
-    config.display.font_size = Some(12);
-
-    assert_eq!(config.display.font_size, Some(12));
-    assert!(config.validate().is_ok());
-}
-```
-
-### 7. Update Documentation
-
-Update documentation:
-- Add to `docs/user-guide/configuration.md`
-- Mention in README.md if it's a major feature
-
-**Note:** Configuration comments are defined in comment constants next to struct definitions (e.g., `DISPLAY_COMMENTS`, `PERFORMANCE_COMMENTS`) in `crates/datui-lib/src/config.rs`. The config template is generated programmatically from these constants.
-
-## Implementation Checklist
-
-- [ ] Field added to config struct
-- [ ] Default implementation updated
-- [ ] Merge logic implemented
-- [ ] Comments added to comment constant (next to struct)
-- [ ] Used in application code
-- [ ] Tests added
-- [ ] Documentation updated
-- [ ] All tests passing (`cargo test`)
-- [ ] No clippy warnings (`cargo clippy`)
-- [ ] Code formatted (`cargo fmt`)
-
-## Best Practices
-
-### Choosing Field Types
-
-- **Option fields**: Use `Option<T>` for optional settings
-  ```rust
-  pub font_size: Option<u8>,  // None = use default
-  ```
-
-- **Required fields**: Use plain types with sensible defaults
-  ```rust
-  pub pages_lookahead: usize,  // Always has a value
-  ```
-
-- **Strings**: Use `String` for text values
-  ```rust
-  pub accent: String,  // A color, e.g. "#ff9e64"
-  ```
-
-### Sensible Defaults
-
-Ensure defaults match existing behavior:
-
-```rust
-impl Default for DisplayConfig {
-    fn default() -> Self {
-        Self {
-            pages_lookahead: 3,
-            pages_lookback: 3,
-            row_numbers: false,
-            row_start_index: 1,
-        }
-    }
-}
-```
-
-### Clear Config Comments
-
-Comments in the comment constants should:
-- Explain what the option does
-- Show valid values or ranges
-- Provide examples
-- Note any interactions with other settings
-
-**Good example:**
-```rust
-const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
-    (
-        "analysis_sample_rows",
-        "Rows Describe, Distribution and Correlation read from a larger table (default 100000),\nas a sample spread across the whole of it. A smaller table is read whole.\n0 reads every row of every table; `a` on the analysis screen does it for one run.",
-    ),
-];
-```
-
-**Poor example:**
-```rust
-const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
-    ("analysis_sample_rows", "Sample rows"),
-];
-```
-
-### Validation
-
-Add validation in `AppConfig::validate()` for constraints:
-
-```rust
-fn validate(&self) -> Result<()> {
-    // ... existing validation ...
-
-    // Validate the new field's range
-    if self.performance.quality_sample_rows == 0
-        || self.performance.quality_sample_rows > 50_000
-    {
-        return Err(eyre!("quality_sample_rows must be between 1 and 50000"));
-    }
-
-    Ok(())
-}
-```
-
-### Testing Edge Cases
-
-Test important scenarios:
-- Missing values (uses default)
-- Invalid ranges (validation catches)
-- Boundary conditions
-- Config merging (CLI overrides config)
-- TOML parsing (valid syntax)
-
-## Adding Colors to Theme
-
-When adding new colors to the theme system, follow these additional steps:
-
-### 1. Add to ColorConfig Struct
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ColorConfig {
-    // ... existing colors ...
-    pub new_color: String,  // NEW
-}
-```
-
-### 2. Add to ColorConfig Default
-
-```rust
-impl Default for ColorConfig {
-    fn default() -> Self {
-        Self {
-            // ... existing colors ...
-            new_color: "cyan".to_string(),  // NEW
-        }
-    }
-}
-```
-
-### 3. Add to Validation
-
-```rust
-impl ColorConfig {
-    fn validate(&self, parser: &ColorParser) -> Result<()> {
-        macro_rules! validate_color {
-            ($field:expr, $name:expr) => {
-                parser
-                    .parse($field)
-                    .map_err(|e| eyre!("Invalid color value for '{}': {}", $name, e))?;
-            };
-        }
-
-        // ... existing validations ...
-        validate_color!(&self.new_color, "new_color");  // NEW
-
-        Ok(())
-    }
-}
-```
-
-### 4. Add to Merge Logic
-
-```rust
-impl ColorConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = ColorConfig::default();
-        // ... existing merge logic ...
-
-        if other.new_color != default.new_color {  // NEW
-            self.new_color = other.new_color;
-        }
-    }
-}
-```
-
-### 5. Add to Theme Parsing
-
-```rust
-impl Theme {
-    pub fn from_config(config: &ThemeConfig) -> Result<Self> {
-        let parser = ColorParser::new();
-        let mut colors = HashMap::new();
-
-        // ... existing color parsing ...
-        colors.insert(
-            "new_color".to_string(),
-            parser.parse(&config.colors.new_color)?,
-        );  // NEW
-
-        Ok(Self { colors })
-    }
-}
-```
-
-### 6. Add Comments to Comment Constant
-
-```rust
-// Field comments for ColorConfig
-const COLOR_COMMENTS: &[(&str, &str)] = &[
-    // ... existing colors ...
-    (
-        "new_color",
-        "Description of the new color and where it's used",
-    ),
-];
-```
-
-**Note**: Comments are simple text - they'll be prefixed with `#` when generating the config. The field itself will appear as `# new_color = "cyan"` (commented out).
-
-### 7. Replace Hardcoded Usage
-
-Find and replace hardcoded colors in widgets:
-
-**Before:**
-```rust
-Style::default().fg(Color::Cyan)
-```
-
-**After:**
-```rust
-Style::default().fg(self.color("new_color"))
-// or
-Style::default().fg(theme.get("new_color"))
-```
-
-### Color Naming Conventions
-
-- Use descriptive names: `sidebar_border` not `sb`
-- Be specific: `modal_border_active` vs `sidebar_border` (modals vs sidebars)
-- Group logically: `distribution_normal`, `distribution_skewed`, `distribution_other`
-- Consider purpose: `text_primary`, `text_secondary`, `text_inverse`
-
-## Common Patterns
-
-### Option Field Pattern
-
-```rust
-// Config struct
-pub struct Config {
-    pub optional_field: Option<T>,
-}
-
-// Default
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            optional_field: None,  // No default value
-        }
-    }
-}
-
-// Merge
-impl Config {
-    pub fn merge(&mut self, other: Self) {
-        if other.optional_field.is_some() {
-            self.optional_field = other.optional_field;
-        }
-    }
-}
-
-// Usage
-let value = config.optional_field.unwrap_or(fallback);
-```
-
-### Required Field Pattern
-
-```rust
-// Config struct
-pub struct Config {
-    pub required_field: usize,
-}
-
-// Default
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            required_field: 10,  // Sensible default
-        }
-    }
-}
-
-// Merge
-impl Config {
-    pub fn merge(&mut self, other: Self) {
-        let default = Config::default();
-        if other.required_field != default.required_field {
-            self.required_field = other.required_field;
-        }
-    }
-}
-
-// Usage
-let value = config.required_field;
-```
-
-### String Field Pattern
-
-```rust
-// Config struct
-pub struct Config {
-    pub mode: String,
-}
-
-// Default
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            mode: "auto".to_string(),
-        }
-    }
-}
-
-// Merge
-impl Config {
-    pub fn merge(&mut self, other: Self) {
-        let default = Config::default();
-        if other.mode != default.mode {
-            self.mode = other.mode;
-        }
-    }
-}
-
-// Validation
-fn validate(&self) -> Result<()> {
-    match self.mode.as_str() {
-        "option1" | "option2" | "option3" => Ok(()),
-        _ => Err(eyre!("Invalid mode: {}. Must be one of: option1, option2, option3", self.mode))
-    }
-}
-```
-
-## Resources
-
-- See `crates/datui-lib/src/config.rs` for existing implementations and comment constants (e.g., `PERFORMANCE_COMMENTS`, `DISPLAY_COMMENTS`)
-- See `tests/config_test.rs` for test examples
-- Run `datui --generate-config` to see the generated config template (ordinary settings are commented out; the editable public-dataset snapshot is active)
-
-## Questions?
-
-If you're unsure about:
-- **Which config section to use**: Look at similar settings in existing config
-- **Merge logic**: Follow the patterns in existing merge implementations
-- **Validation**: Add validation if there are constraints on the value
-- **Testing**: Look at existing tests for similar config types
+The last command writes to your config location and refuses to overwrite an
+existing file without `--force`. Inspect the generated field and its comments
+without replacing a personal config. See [Tests](tests.md) for fixtures.

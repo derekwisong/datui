@@ -1,10 +1,20 @@
-# Views
+# Save and apply views
 
-A view saves what you did to a table so you can do it again on the next
-one: the query, filters, sort, column order, frozen columns, and any pivot or
-melt. Views are scored against each file you open, so the right one is at
-the top of the list. (Views were called templates before 0.4; the config
-section, flags and files on disk keep that name, so nothing breaks.)
+Press <kbd>v</kbd> to save or apply a view. A view stores the active query,
+filters, sort, column layout, frozen columns and reshape settings.
+
+## Save and reuse a query
+
+1. Run a query, such as the species summary in the [quick start](../getting-started/quick-start.md#2-group-by-species).
+2. Press <kbd>v</kbd>, then <kbd>s</kbd>. Enter a name and press <kbd>Enter</kbd> to save.
+3. Open another file with the same columns, press <kbd>v</kbd>, select the view and press <kbd>Enter</kbd>.
+
+A view stores transformations, not a copy of the data. The next file produces
+its own results. Saving is unavailable until the current table has a change
+to store. In the description field, <kbd>Enter</kbd> inserts a newline;
+<kbd>Tab</kbd> out before saving.
+
+## Open the views list
 
 | Key | Action |
 |---|---|
@@ -13,7 +23,7 @@ section, flags and files on disk keep that name, so nothing breaks.)
 
 Or from the command line: `datui --template quarterly data.csv`.
 
-## The views list
+## List controls
 
 Views are listed by how well they fit the open file. A check mark marks the
 one currently applied, and the Match column says why a view fits: the same
@@ -30,10 +40,9 @@ file, the same columns, or a pattern.
 
 ## Saving
 
-Press <kbd>s</kbd> in the list. There must be something to save: on an
-untouched table <kbd>s</kbd> refuses, because there are no changes to save. The name starts as the file's name; add an optional description, and
-expand the Matching section (<kbd>Space</kbd>) to change how the view offers
-itself to future files:
+The save form starts with the filename as its name. Add a description if
+needed, then expand **Matching** with <kbd>Space</kbd> to choose which files
+should match the view:
 
 | Match | Fits a file when |
 |---|---|
@@ -43,19 +52,10 @@ itself to future files:
 | Filename pattern | its name matches a glob |
 | Schema | it has all the view's columns; extra columns are fine |
 
-Schema match starts enabled: it is what carries the view to the next table
-shaped like this one. <kbd>V</kbd> and `auto_apply` only ever apply a view
-one of whose rules fits the open file; the list shows every view regardless,
-ranked. Matches combine, so a view fitting by relative path and exact schema
-outranks one fitting by exact path alone; a dataset whose columns merely
-include a view's scores low, below a pattern match; and how often and how
-recently a view was used adds points. <kbd>i</kbd> in the list shows the
-arithmetic.
-
-In the form <kbd>Enter</kbd> saves; in the description it types, so
-<kbd>Tab</kbd> out of the description, then <kbd>Enter</kbd> — or
-<kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on a terminal that tells it from
-<kbd>Enter</kbd>.
+Schema matching is enabled by default. Matching views rank above unrelated
+ones; exact schemas rank above schemas with extra columns. Other match rules
+and usage history also affect the score. Press <kbd>i</kbd> to inspect it.
+<kbd>V</kbd> and automatic application use only views with a matching rule.
 
 Only the active query tab is saved: **Query**, **SQL** or **Fuzzy**. Filters,
 sort, column order and reshape are saved regardless.
@@ -72,6 +72,6 @@ overwrites what it carries.
 auto_apply = true   # apply the best match when a file opens
 ```
 
-Views are JSON files in the `templates/` directory beside your
+The config and CLI retain the older name **templates**. Views are JSON files in the `templates/` directory beside your
 [config file](configuration.md).
 `datui --remove-templates` deletes them all.

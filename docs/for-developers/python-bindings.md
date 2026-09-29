@@ -17,8 +17,8 @@ pip install maturin "polars==1.43.*" "pytest>=7.0"
 ```
 
 You also need Rust and Python development headers (`python3-dev` on Debian/Ubuntu).
-The [setup script](setup-script.md) creates `.venv`, but does not install
-maturin or pytest; install those separately as above.
+The [setup script](contributing.md#setup) installs these dependencies in `.venv`
+as well. Use the commands above when setting up only the Python bindings.
 
 <a id="building-locally"></a>
 <a id="testing"></a>

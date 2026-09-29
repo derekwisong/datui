@@ -1,37 +1,20 @@
-# Home screen
+# Browse files
 
 Run `datui` without a path, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>, to find and
 open a dataset. Type to filter the list; press <kbd>Enter</kbd> to open the
 selected row. The details pane previews its schema when available.
 
-## Keys
+## Open a file or directory
 
-| Key | Action |
-|---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> | Select a row; <kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> also work |
-| <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Move between sections |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
-| <kbd>Home</kbd> <kbd>End</kbd> | First or last row |
-| <kbd>Enter</kbd> | Open the selected dataset, browse a directory, or expand a section |
-| <kbd>→</kbd> | Browse inside a directory, including a Hive dataset; unfold a section |
-| <kbd>←</kbd> | Fold a section |
-| type | Filter names and known column names |
-| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths |
-| <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
-| <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory |
-| <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |
-| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
-| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
-| <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a remembered heading, forget it; on a cloud source, hide it |
-| <kbd>Shift</kbd>+<kbd>Delete</kbd> | Confirm forgetting all recent entries |
-| <kbd>Esc</kbd> | Clear the filter, leave a directory, or return to the open table |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
-| <kbd>?</kbd> | Help |
+1. Type part of a name to filter the list.
+2. Select the file with <kbd>↑</kbd> / <kbd>↓</kbd> and press <kbd>Enter</kbd>.
+3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
 
-Letters enter the filter here: <kbd>q</kbd> types a `q`. From a table opened
-through home, <kbd>q</kbd> returns home. <kbd>Esc</kbd> never quits.
-The bottom bar shows the available action for the selected row.
+To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
+<kbd>Tab</kbd> to complete it, then press <kbd>Enter</kbd>.
+
+<kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
+<kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
 
 ## Sections
 
@@ -66,7 +49,7 @@ The section count and filter include entries beyond that visible limit.
 Opening a dataset adds its parent to Recent. Press <kbd>Ctrl</kbd>+<kbd>D</kbd>
 to keep a directory in its own section; press it again to forget the directory.
 Remembered directories are stored in the cache. To keep one after clearing the
-cache, add it to your [config](configuration.md#data):
+cache, add it to your [config](../reference/settings.md#data):
 
 ```toml
 [data]
@@ -118,7 +101,7 @@ matches. Column metadata is remembered between runs.
 ### Tuning
 
 Set search depth, time, result count and additional exclusions in
-[`[data.search]`](configuration.md#data). `cross_filesystems = false` avoids
+[`[data.search]`](../reference/settings.md#data). `cross_filesystems = false` avoids
 crossing onto network shares or triggering automounts during a search.
 
 ## The details pane
@@ -183,24 +166,15 @@ they form a single table.
 
 <a id="the-door-does-not-refuse"></a>
 
-| Contents | What Open all does |
-|---|---|
-| Parquet, CSV or NDJSON with different schemas | Combines columns by name and widens compatible types |
-| Arrow, Avro, ORC or JSON with different schemas | Stops with the name of the file that disagrees |
-| Several formats | Opens the most common; Parquet wins ties. Notes list the skipped formats |
-| Delta, Iceberg or Hudi | Reads underlying files, **not the table's transaction log** |
-| Extensionless files | Recognizes Parquet, Arrow, Avro or ORC from their bytes |
-| No readable data | Reports the directory contents and why they cannot open |
+The **(all files)** or **(all partitions)** row combines a directory into one
+table. [Files and formats](loading-data.md#directories) explains format selection
+and [schema differences](loading-data.md#files-that-disagree).
+For Delta, Iceberg and Hudi, datui reads raw files without the transaction log;
+the result may contain deleted rows or superseded versions.
 
-Raw lake-table files can include deleted rows and superseded versions. The
-row-count chip identifies this, for example `not the Delta table`. For
-headerless CSVs, start with `datui --no-header exports/` so their first rows
-are read as data.
+### Storage markers
 
-[Loading data](loading-data.md#files-that-disagree) explains schema differences
-and the `∅`, `·` and `≠` cell markers.
-
-### Where a row's data lives
+<a id="where-a-rows-data-lives"></a>
 
 | Marker | ASCII | Location |
 |---|---|---|
@@ -245,6 +219,35 @@ and modification time. Clear them with:
 | `datui --clear-cache` | Cached metadata, recents, remembered directories and query history |
 
 These commands do not delete data files.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> | Select a row; <kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> also work |
+| <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Move between sections |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
+| <kbd>Home</kbd> <kbd>End</kbd> | First or last row |
+| <kbd>Enter</kbd> | Open the selected dataset, browse a directory, or expand a section |
+| <kbd>→</kbd> | Browse inside a directory, including a Hive dataset; unfold a section |
+| <kbd>←</kbd> | Fold a section |
+| type | Filter names and known column names |
+| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths |
+| <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
+| <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory |
+| <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
+| <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a remembered heading, forget it; on a cloud source, hide it |
+| <kbd>Shift</kbd>+<kbd>Delete</kbd> | Confirm forgetting all recent entries |
+| <kbd>Esc</kbd> | Clear the filter, leave a directory, or return to the open table |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
+| <kbd>?</kbd> | Help |
+
+Letters enter the filter here: <kbd>q</kbd> types a `q`. From a table opened
+through home, <kbd>q</kbd> returns home. <kbd>Esc</kbd> never quits.
+The bottom bar shows the available action for the selected row.
 
 ## Limits
 

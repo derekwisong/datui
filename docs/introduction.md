@@ -3,10 +3,10 @@
 Open, query, chart and export tabular data in your terminal. datui reads local
 files and cloud storage, and works with Polars frames in Python.
 
-**New here?** [Install datui](getting-started/installation.md), then follow the
+**Start here:** [Install datui](getting-started/installation.md), then follow the
 [quick start](getting-started/quick-start.md) with a small public dataset.
 
-## Find an answer
+## Find a task
 
 | I want to… | Go to |
 |---|---|
@@ -18,7 +18,7 @@ files and cloud storage, and works with Polars frames in Python.
 | Check missing values or schema changes | [Data quality](user-guide/data-quality.md) · [Dataset info](user-guide/dataset-info.md) |
 | Copy, export, or reuse a result | [Clipboard](user-guide/copying.md) · [Export](user-guide/exporting-data.md) · [Views](user-guide/views.md) |
 | Explore a DataFrame in Python | [Python module](user-guide/python-module.md) |
-| Change defaults or colors | [Configuration](user-guide/configuration.md) |
+| Change defaults or colors | [Configure datui](user-guide/configuration.md) · [Settings reference](reference/settings.md) |
 | Look up a key, expression, or flag | [Keyboard](reference/keyboard-shortcuts.md) · [Query syntax](reference/query-syntax.md) · [CLI](reference/command-line-options.md) |
 | Build or contribute | [Developer guide](for-developers.md) |
 

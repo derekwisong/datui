@@ -1,4 +1,4 @@
-# Loading Data
+# Files and formats
 
 ```bash
 datui data.parquet                             # a file
@@ -17,28 +17,22 @@ the [home screen](home-screen.md), and needs no flag:
 | The directory | What happens |
 |---|---|
 | A hive tree, or files that are one table | Opens as one table |
-| Separate tables, more than one format, or no data directly inside | The home screen, browsed into it — one keystroke from either a file or the union |
-| A Delta, Iceberg or Hudi root | The home screen, browsed into it, saying datui does not read the table itself yet |
+| Separate tables, more than one format, or no data directly inside | Opens the directory browser; choose a file or the **(all files)** row |
+| A Delta, Iceberg or Hudi root | Opens the directory browser with a warning that transaction logs are not applied |
 
 `--hive` means: read this as partitioned, which is the answer for a glob and
 for a layout that does not say so itself.
 
-Working out which of those a directory is means reading footers, or the front
-of a spread of its files, and datui reads them the way it is about to read the
-whole directory — `--no-header`, `--skip-rows`, `--skip-lines`,
-`--infer-schema-length` and the rest all apply. So `datui --no-header exports/`
-judges the directory as headerless, finds its files stack, and opens it;
-without the flag the same directory is judged with a header, its files do not
-agree, and the home screen opens on it instead. datui draws the screen first,
-and the loading screen keeps the way out visible: <kbd>Ctrl</kbd>+<kbd>O</kbd>,
-<kbd>q</kbd> and <kbd>?</kbd> stay in the bar beside the progress and act at
-once (<kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>Q</kbd> too). Keys
-are not held during a load — the allowed keys act, the rest are dropped — and
-abandoning a cloud load stops its reads instead of letting them run on.
+Reader options also affect directory detection. For headerless CSVs, use
+`datui --no-header exports/`; otherwise datui may treat the first data rows as
+headers and decide the files are separate tables.
+
+During loading, <kbd>Ctrl</kbd>+<kbd>O</kbd> cancels and returns home.
+<kbd>Ctrl</kbd>+<kbd>Q</kbd> quits. Other editing keys are not queued during a load.
 
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
-[configuration file](configuration.md#file-loading).
+[configuration file](../reference/settings.md#file-loading).
 
 ## Formats
 
@@ -96,11 +90,8 @@ opens as one table. Pass the root directory, which needs no flag, or a glob with
 Parquet is supported — for a hive tree of anything else, open one partition.
 
 Partition columns appear first in the table and on the **Partitions** tab of the
-[Info panel](dataset-info.md). On disk, a directory is faster to open than a glob:
-a local glob is handed to Polars, while a directory is walked by datui and gets the
-schema union, the row count and the notes. In a bucket both are datui's — it lists
-the prefix and matches the pattern itself — so a remote glob opens the same way a
-remote prefix does.
+[Info panel](dataset-info.md). Local directories use datui's schema union, counts and notes; local globs are
+delegated to Polars. Remote prefixes and globs both use datui's metadata reader.
 
 ### Files that disagree
 
@@ -187,7 +178,7 @@ query history. See [cache contents](home-screen.md#what-datui-remembers).
 A binary column shows a dim `‹binary›` placeholder instead of its bytes, so
 scrolling past large blobs stays fast. The bytes are still read for exports and
 analysis. The placeholder color is `binary_col` in the
-[theme](configuration.md#colors).
+[theme](../reference/settings.md#colors).
 
 ## Remote data
 

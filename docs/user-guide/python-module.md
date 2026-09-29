@@ -35,15 +35,11 @@ datui.view(["jan.parquet", "feb.parquet"])
 ```
 
 Options can be passed as keywords or as a `datui.DatuiOptions` instance.
-They mirror the [command-line flags](../reference/command-line-options.md):
-`delimiter`, `has_header`, `skip_lines`, `skip_rows`, `skip_tail_rows`,
-`null_values`, `compression`, `parse_dates`, `parse_strings`, `hive`,
-`single_spine_schema`, `excel_sheet`, `temp_dir`, `decompress_in_memory`,
-`row_numbers`, `row_start_index`, `pages_lookahead`, `pages_lookback`,
-`s3_endpoint_url`, `s3_access_key_id`, `s3_secret_access_key`, `s3_region`,
-`polars_streaming` and `debug`. For a frame, only the display options apply.
+Common options include `delimiter`, `has_header`, `null_values`, `hive`,
+`excel_sheet` and `row_numbers`. Use `help(datui.DatuiOptions)` for the full
+Python option list. For a frame, only display options apply.
 
-## Bring the result back
+## Return the current view
 
 ```python
 result = datui.view(lf, capture=True)
@@ -79,7 +75,7 @@ its own embedded Polars (0.55). The two need to agree on the plan format:
 |---|---|
 | 1.43 | The release Polars pairs with Rust 0.55; fully tested |
 | 1.38 to 1.42 | Read in testing (scan, filter, group by, join, cast, sort, unique) |
-| 1.44 and later | Most plans read; 1.44 writes joins 0.55 cannot read |
+| 1.44 | Most plans read; 1.44 writes joins 0.55 cannot read |
 | 1.37 and earlier | Refused: older path format |
 
 The wheel declares `polars>=1.38` and never downgrades the `polars` you have. A

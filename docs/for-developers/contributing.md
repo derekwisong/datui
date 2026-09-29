@@ -1,8 +1,19 @@
-# Contributing
+# Set up and contribute
 
-Contributions are welcome. Clone [the repository](https://github.com/derekwisong/datui),
-run the [setup script](setup-script.md), and you are ready to build, test and
-commit. This page describes what the script does, for doing it by hand.
+## Setup
+
+From a checkout with Rust and Python installed, run:
+
+```bash
+python scripts/setup_dev.py
+```
+
+The script creates `.venv`, installs script and wheel-building dependencies,
+installs pre-commit hooks, prepares test data and builds the documentation.
+It can be rerun. To prepare only the fixtures needed by Rust tests, use
+`./scripts/dev/setup-test-data.sh` instead.
+
+For manual setup, use the commands below.
 
 ## Python environment
 

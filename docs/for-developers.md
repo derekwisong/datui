@@ -35,7 +35,6 @@ The release build takes much longer and produces a much smaller, faster binary.
 
 | Page | What it covers |
 |---|---|
-| [Setup Script](for-developers/setup-script.md) | One command that prepares a Python environment, hooks, test data and docs |
 | [Tests](for-developers/tests.md) | Running the tests and generating the fixtures they need |
 | [Contributing](for-developers/contributing.md) | Pre-commit hooks and how changes land |
 | [Security Checks](for-developers/security-checks.md) | cargo-deny and zizmor, locally and in CI |
@@ -44,6 +43,5 @@ The release build takes much longer and produces a much smaller, faster binary.
 | [Glyphs](for-developers/glyph-audit.md) | Adding symbols with ASCII fallbacks |
 | [Documentation](for-developers/documentation.md) | Building this site |
 | [Generating the Demos](for-developers/demos.md) | Re-recording the GIFs |
-| [Building Packages](for-developers/packaging.md) | deb, rpm, AUR and winget |
+| [Build and publish packages](for-developers/packaging.md) | deb, rpm, AUR and winget |
 | [Python Bindings](for-developers/python-bindings.md) | Building and testing the extension |
-| [PyPI Deployment](for-developers/pypi-deployment.md) | How the wheel is published |

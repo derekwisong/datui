@@ -1,33 +1,30 @@
-# Remote data
+# Connect to cloud storage
 
-Pass an `s3://`, `gs://` or `https://` URL where you would pass a path. In S3
-and GCS, Parquet is read in place with range requests, one row group at a time:
-opening fetches metadata and the first required rows, <kbd>End</kbd> fetches the
-last, and a query that has to look at every row transfers about the size of the
-object. Row groups up to `max_buffered_rows` and the `max_buffered_mb` budget
-are held whole; a larger one is read one window at a time, so small row groups
-keep both the first screen and paging cheap. Buffered rows are reused; navigating beyond the buffer can require another read.
+Pass a cloud URL to datui, or use the [cloud browser](cloud-browser.md).
+The examples below use placeholder bucket/account names; substitute your own.
 
-Paging reads ahead: as the view nears the end of the rows on hand, the next ones
-are fetched in the background while you keep paging. If you get there first, the
-page you were on stays up until the new rows arrive.
+| Storage | Setup | Example URL |
+|---|---|---|
+| AWS S3 | [AWS profile or keys](#amazon-s3) | `s3://bucket/file.parquet` |
+| Google Cloud | [gcloud or service account](#google-cloud-storage) | `gs://bucket/file.parquet` |
+| Azure | [Azure CLI or PowerShell](#azure-blob-storage) | `abfss://container@account.dfs.core.windows.net/file.parquet` |
+| MinIO, R2, Ceph | [Custom endpoint](#s3-compatible-storage-minio-r2-ceph) | `s3://bucket/file.parquet` |
+| Public data | [No login](#public-data) | Select **Public datasets** on home |
+| HTTP(S) | [Direct download](#http-and-https) | `https://example.com/data.csv` |
 
-| Path | Opens as |
-|---|---|
-| A prefix of Parquet files (`s3://bucket/events/`) | One dataset. The schema combines the file footers; missing columns read as empty. The row count comes from those footers. Reading any part of it opens only the files holding those rows, and <kbd>End</kbd> pressed before the count is in waits for it |
-| A glob (`s3://bucket/events/*/*.parquet`) | The same kind of dataset: datui lists the literal part of the key and matches the rest itself |
-| A directory named without `--format` | The way its `(all files)` row opens on the home screen: CSV or JSON Lines read as one table in place; one holding only directories opens the home screen browsed into it |
-| Every other format, and anything over HTTP | Downloaded to a temporary file (`--temp-dir` chooses where; you are asked first when it is large), then opened like a local file |
-
-One remote path per run.
-
-Once credentials are in place, the buckets they reach are also listed on the
-[home screen](cloud-browser.md), so you can browse instead of
-typing URLs.
+One remote path can be opened per run. A supported directory or prefix can
+contain many files. See [formats and read costs](#what-gets-read).
 
 ## Amazon S3
 
-Set the keys and region in the environment:
+With an existing AWS profile:
+
+```bash
+AWS_PROFILE=analytics datui s3://analytics-exports/2024/
+```
+
+For an SSO profile, sign in with `aws sso login --profile analytics` first.
+Alternatively, set keys in your shell:
 
 ```bash
 export AWS_ACCESS_KEY_ID=AKIA...
@@ -36,14 +33,10 @@ export AWS_REGION=us-east-1          # or AWS_DEFAULT_REGION
 datui s3://my-bucket/events/2024/
 ```
 
-`AWS_SESSION_TOKEN` adds temporary credentials, and the keys under `[cloud]` in
-the config work the same way. On ECS, Lambda and EKS the task role is used. An EC2
-instance role is used only with `[cloud] instance_identity = true`, since finding it
-means a request that hangs on some networks; with no other AWS login, datui reads S3
-unsigned, which reaches public buckets only.
-
-Each bucket is read in its own region, asked of S3 once per session, so one login
-reaches buckets in every region.
+Use `AWS_SESSION_TOKEN` with temporary credentials. Datui discovers each
+bucket's region and uses supported task roles on ECS, Lambda and EKS.
+EC2 instance roles require `[cloud] instance_identity = true`.
+With no AWS credentials, requests are unsigned and can reach public buckets.
 
 ## AWS profiles
 
@@ -98,7 +91,7 @@ taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
 ## Several stores at once
 
 Name each store in the config, with the environment variables that hold its keys.
-The keys themselves never go in the file.
+These source entries name environment variables rather than storing their values.
 
 ```toml
 [[cloud.sources]]
@@ -137,17 +130,18 @@ datui s3://onprem@data/sales.parquet
 
 A source of `kind = "s3"` without `endpoint_url` is a second AWS login. Its URLs stay
 `s3://bucket/key`, and a bucket you reach by browsing it opens with its keys. See
-[Configuration](configuration.md#cloud) for every field.
+[Configuration](../reference/cloud-sources.md) for every field.
 
 ## Google Cloud Storage
 
-Either login works:
+Sign in and open a file:
 
 ```bash
-gcloud auth login                         # the gcloud CLI's own login
-gcloud auth application-default login     # or Application Default Credentials
+gcloud auth application-default login
 datui gs://my-bucket/path/file.parquet
 ```
+
+An existing `gcloud auth login` session also works.
 
 | Login | datui |
 |---|---|
@@ -164,14 +158,15 @@ search for projects.
 
 ## Azure Blob Storage
 
-Sign in, and every storage account the login can see is listed on the
-[home screen](cloud-browser.md).
+Sign in with the Azure CLI, then open a file:
 
 ```bash
-az login                  # the Azure CLI
-Connect-AzAccount         # or Azure PowerShell
-datui abfss://datui-test@datalake001.dfs.core.windows.net/demo/penguins.parquet
+az login
+datui abfss://container@account.dfs.core.windows.net/data.parquet
 ```
+
+In Azure PowerShell, use `Connect-AzAccount` instead of `az login`.
+The [cloud browser](cloud-browser.md) lists the accounts the login can access.
 
 | URL | Also accepted |
 |---|---|
@@ -229,24 +224,10 @@ The retry matters most on Azure, which refuses a public container to a login fro
 another tenant. A public bucket or container read this way is listed with the
 [public datasets](cloud-browser.md#public-datasets) from then on.
 
-A few well-known datasets are built in; see the
-[home screen](cloud-browser.md#public-datasets). For a compact list of your own, add a
-source with `public = true` and its data as URLs of any cloud:
-
-```toml
-# GBIF occurrence snapshots: CC BY-NC 4.0, see https://www.gbif.org/terms
-[[cloud.sources]]
-name = "gbif"
-label = "GBIF"
-public = true
-buckets = ["s3://gbif-open-data-us-east-1/occurrence/"]
-```
-
-Use structured `[[cloud.sources.datasets]]` tables to give entries names,
-descriptions, publishers, licenses and homepages; see
-[Configuration](configuration.md#cloud).
-
-A license is the publisher's, not datui's: check it before you use the data.
+For public data without a URL, run `datui` and select **CLOUD → Public datasets**.
+The [catalog](cloud-browser.md#public-datasets) lists publishers and licenses.
+To add your own collection, use a source with `public = true`; see the
+[public-source example](../reference/cloud-sources.md#public-datasets).
 
 Parquet part files with no extension, like GBIF's `occurrence.parquet/000001`,
 open as Parquet. So does a local file with no extension that starts and ends with
@@ -261,6 +242,18 @@ datui --format parquet https://example.com/download?id=42
 
 The file is downloaded, then opened. Use `--format` when the URL has no useful
 extension.
+
+## What gets read
+
+| Source | Read behavior |
+|---|---|
+| Cloud Parquet file, prefix or glob | Reads metadata and required row groups in place |
+| Cloud CSV or JSONL directory | Scans the files in place |
+| HTTP(S), or other download routes | Downloads the file before opening |
+
+Paging reuses buffered rows and reads ahead. Leaving the buffer can require
+another read; queries, sorting and analysis may scan the full input.
+See [large datasets](../advanced/performance-tips.md) for buffering and sampling.
 
 ## Building without cloud support
 

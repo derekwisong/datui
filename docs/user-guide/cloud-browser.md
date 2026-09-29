@@ -1,8 +1,14 @@
-# Cloud browser
+# Browse cloud data
 
-Run `datui` and select a source under `CLOUD`. <kbd>Enter</kbd> on a
-row lists what is inside, one level at a time; directories in a bucket descend like local ones,
-objects open like files, and opened objects go into `RECENT` like any other path.
+Run `datui` and select a source under **CLOUD**.
+
+1. Press <kbd>Enter</kbd> to list its buckets, projects or accounts.
+2. Select a bucket or container and press <kbd>Enter</kbd>.
+3. Open a directory to browse, or a file to load its table.
+
+For a first try, choose **Public datasets**; it needs no credentials.
+<kbd>Backspace</kbd> goes up a level and <kbd>Esc</kbd> returns to the previous screen.
+For private storage, [sign in first](remote-data.md).
 
 | Source | Levels |
 |---|---|
@@ -79,46 +85,10 @@ hide = ["gcs-default"]
 
 ## Which sources appear
 
-Sources appear when datui finds a supported login or an explicit configuration.
-Listing a bucket does not guarantee permission to read every object inside it.
-
-| Source | ID | Appears when |
-|---|---|---|
-| Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
-| Each other AWS profile that can log in | `aws-<profile>` | Keys, `credential_process`, SSO or a role in the profile |
-| Each MinIO client alias | `mc-<alias>` | An alias with keys in `mc`'s `config.json` (`~/.mc/`, `~/.mcli/`, or `MC_CONFIG_DIR`), or `MC_HOST_<alias>` in the environment, which wins |
-| s3cmd's server | `s3cfg` | Keys in the `[default]` section of `~/.s3cfg` (`%APPDATA%\s3cmd.ini` on Windows, or `S3CMD_CONFIG`) |
-| Azure | `az` | The Azure CLI has been used (`~/.azure`, or `AZURE_CONFIG_DIR`), or Azure PowerShell signed in (`~/.Azure/AzureRmContext.json`). Its rows are storage accounts, found across your subscriptions. With `az` on `PATH` or the Az.Accounts module installed and neither signed in, the row says `not signed in` |
-| Azure from the environment | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token, or a service principal (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`) |
-| Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, the file written by `gcloud auth application-default login`, or else the active `gcloud` configuration's login. Its rows are projects |
-| Each other `gcloud` configuration with a different account | `gcloud-<configuration>` | An `account` in `configurations/config_<name>` under `~/.config/gcloud` (`%APPDATA%\gcloud` on Windows, or `CLOUDSDK_CONFIG`) |
-| Public datasets | `public` | The configured `public` source, or the built-in catalog unless `public_datasets = false` |
-| Each `[[cloud.sources]]` entry | its `name` | Always |
-
-To show only some kinds of login found on the machine, or none:
-
-| `[cloud] discover` | `--cloud-discover` | Shows |
-|---|---|---|
-| unset, `true` or `"all"` | `all` | Every login found |
-| `false` or `"none"` | `none` | None |
-| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
-
-`[[cloud.sources]]` entries and public datasets appear whatever it says. The flag
-overrides the config for one run.
-
-A source in the config with the same name as one of these replaces it. The same
-server with the same key found in several places is one row; its note lists
-every place. `mc`'s placeholder aliases and its public `play` server are left
-out. See [Loading Data](remote-data.md#several-stores-at-once) for
-`[[cloud.sources]]`.
-
-Google Cloud lists every project the login can find, the one named in the
-environment or the active `gcloud` configuration first — and alone when
-searching for projects is refused. A profile that needs the AWS CLI shows
-`needs the AWS CLI` when it is not installed, and an expired SSO login shows
-the CLI's message; see [Loading Data](remote-data.md#aws-profiles). A cloud
-VM's identity is not discovered unless `[cloud] instance_identity = true`; see
-[Configuration](configuration.md#cloud).
+Datui finds supported logins on your machine and adds configured sources.
+Listing a bucket does not guarantee permission to read its objects.
+See [detected sources](../reference/cloud-sources.md#detected-sources) for
+credential locations, source IDs and the `discover` setting.
 
 ## Public datasets
 
@@ -141,7 +111,7 @@ opened unsigned is added to the list. For a list of your own, see
 
 `datui --generate-config` writes this catalog as active
 `[[cloud.sources.datasets]]` tables to edit; see
-[Configuration](configuration.md#cloud) for the fields and how the snapshot
+[Configuration](../reference/cloud-sources.md) for the fields and how the snapshot
 behaves.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
@@ -149,9 +119,8 @@ objects some tools leave to stand for folders.
 
 ## What a cloud row shows
 
-Inside a bucket: name, size and modification time, which is what a listing
-returns. Row counts and columns would need a read per object, which someone is
-billed for, so they are not fetched until you open one. A directory of
-`key=value` partitions is labelled `hive`, and every other directory by what
+Bucket listings show name, size and modification time. Row counts and schemas
+are fetched when a dataset opens; listing does not read every object's metadata. A directory of
+`key=value` partitions is labeled `hive`, and every other directory by what
 it holds — `12 parquet`, `3 csv`, or `dir` — like a local one. How a remote
 dataset then opens is in [Loading Data](loading-data.md#remote-data).

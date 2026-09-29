@@ -123,8 +123,8 @@
       <div class="hero">
         <div>
           <p class="eyebrow">A terminal UI for tabular data</p>
-          <h1>Open the file.<br>Find the answer.</h1>
-          <p class="lead">Query, chart and explore data where you work. From a CSV on your laptop to a Parquet dataset in cloud storage.</p>
+          <h1>Tabular data<br>in your terminal.</h1>
+          <p class="lead">Browse local files and cloud datasets. Run SQL, filter rows, make charts and export results.</p>
           <div class="actions">
             <a class="primary" href="#install">Install datui</a>
             <a href="{{ guide('getting-started/quick-start') }}">Try the quick start →</a>
@@ -132,7 +132,7 @@
           <p class="small">Linux, macOS and Windows · Open source · MIT licensed</p>
         </div>
         <figure class="terminal">
-          <figcaption>A question you can try in the quick start</figcaption>
+          <figcaption>Example: average body mass by species</figcaption>
           <div class="terminal-body">
             <pre><span class="prompt">$</span> datui --null-value NA penguins.csv</pre>
             <pre class="query">select mean_mass_g: avg body_mass_g
@@ -149,8 +149,8 @@ by species</pre>
       <section aria-label="What you can do">
         <div class="features">
           <div><h2>Find your data</h2><p>Browse recent files, directories and cloud buckets. Open S3, GCS, Azure or HTTP URLs, including public datasets that need no login.</p><a href="{{ guide('user-guide/loading-data') }}">Files and cloud storage →</a></div>
-          <div><h2>Ask a question</h2><p>Use SQL, short queries or fuzzy text search. Sort and filter rows, inspect statistics, and chart the result.</p><a href="{{ guide('user-guide/querying-data') }}">Querying and search →</a></div>
-          <div><h2>Keep the result</h2><p>Copy a table into a note. Export data or a chart. Save a view to repeat the same steps on the next file.</p><a href="{{ guide('user-guide/exporting-data') }}">Exporting data →</a></div>
+          <div><h2>Query and analyze</h2><p>Use SQL, short queries or fuzzy text search. Sort and filter rows, inspect statistics, and chart the result.</p><a href="{{ guide('user-guide/querying-data') }}">Querying and search →</a></div>
+          <div><h2>Save and reuse</h2><p>Copy a table into a note. Export data or a chart. Save a view to repeat the same steps on the next file.</p><a href="{{ guide('user-guide/exporting-data') }}">Exporting data →</a></div>
         </div>
         {% if demo_path %}
         <div class="demo">
@@ -163,8 +163,8 @@ by species</pre>
       </section>
       <section class="install" id="install">
         <p class="eyebrow">Get started</p>
-        <h2>Install it. Open something.</h2>
-        <p class="section-lead">On Linux or macOS, the installer picks the release for your machine. Prefer a package manager? Choose one below.</p>
+        <h2>Install datui</h2>
+        <p class="section-lead">On Linux or macOS, the installer picks the release for your machine. Package-manager commands are below.</p>
         <div class="install-command"><pre><code>curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh</code></pre></div>
         <div class="install-grid">
           <div class="install-option"><strong>macOS · Homebrew</strong><code>brew tap derekwisong/datui &amp;&amp; brew trust derekwisong/datui &amp;&amp; brew install datui</code></div>

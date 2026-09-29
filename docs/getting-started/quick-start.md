@@ -25,7 +25,7 @@ missing-value marker as null, shown as `∅`.
 | <kbd>Esc</kbd> | Close a panel or go back |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
-## 2. Ask a question
+## 2. Group by species
 
 Which species has the highest average body mass? Press <kbd>/</kbd>, type this
 on the **Query** tab, then press <kbd>Enter</kbd>:
@@ -72,7 +72,7 @@ within the default 10,000-row chart limit.
 Press <kbd>e</kbd> in the chart to save a PNG or EPS. Press <kbd>Esc</kbd>
 to return to the table. [More chart options](../user-guide/charting.md).
 
-## 4. Take the result with you
+## 4. Copy or export
 
 Run the three-row summary again, then choose an output:
 

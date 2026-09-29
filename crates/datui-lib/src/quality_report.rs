@@ -453,6 +453,176 @@ pub fn columns_label(columns: &[String], width: usize) -> String {
     label
 }
 
+/// What one check found: nothing, something, or nothing because it could not look.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Passed,
+    Found { tier: Severity, detail: String },
+    NotRun(&'static str),
+}
+
+/// One check the run makes: what it looks for, how far it reached, what it found.
+/// The list is the answer to "checked for what?" when nothing turned up.
+#[derive(Debug, Clone)]
+pub struct Check {
+    pub name: &'static str,
+    pub looks_for: &'static str,
+    pub applies_to: String,
+    pub outcome: Outcome,
+}
+
+/// How many checks the collapsed list shows before "more".
+pub const CHECKS_SHOWN: usize = 6;
+
+/// Every check, most important first.
+pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check> {
+    use polars::prelude::DataType;
+    let columns = &results.columns;
+    let count = |filter: &dyn Fn(&ColumnQualityProfile) -> bool| {
+        columns.iter().filter(|profile| filter(profile)).count()
+    };
+    let text = |profile: &ColumnQualityProfile| {
+        matches!(profile.dtype, DataType::String | DataType::Categorical(..))
+    };
+    let all = columns.len();
+    let floats = count(&|profile| profile.dtype.is_float());
+    let texts = count(&text);
+    let keys = count(&|profile| profile.dtype.is_integer() || text(profile));
+    let reach = |count: usize, kind: &str| {
+        let noun = if count == 1 { "column" } else { "columns" };
+        if kind.is_empty() {
+            format!("{} {noun}", numfmt::group_chrome(count))
+        } else {
+            format!("{} {kind} {noun}", numfmt::group_chrome(count))
+        }
+    };
+    let values_read = !report.metadata_only;
+    // Columns behind the findings a check produces, by the findings' titles.
+    let outcome = |titles: &[&str], applies: usize, none: &'static str| {
+        if !values_read {
+            return Outcome::NotRun("values not read");
+        }
+        if applies == 0 {
+            return Outcome::NotRun(none);
+        }
+        found(report, titles)
+    };
+    let files = results.source_files.filter(|files| *files > 1);
+    let by_files = |titles: &[&str]| match files {
+        Some(_) => found(report, titles),
+        None => Outcome::NotRun("needs several files"),
+    };
+    let files_reach = files
+        .map(|files| format!("{} files", numfmt::group_chrome(files)))
+        .unwrap_or_else(|| "files".to_string());
+    vec![
+        Check {
+            name: "Missing values",
+            looks_for: "nulls in any column",
+            applies_to: reach(all, ""),
+            outcome: outcome(&["Missing values", "Always missing"], all, "no columns"),
+        },
+        Check {
+            name: "NaN or infinite",
+            looks_for: "NaN or +/-infinity in float columns",
+            applies_to: reach(floats, "float"),
+            outcome: outcome(&["NaN or infinite"], floats, "no float columns"),
+        },
+        Check {
+            name: "Duplicate rows",
+            looks_for: "rows identical in every column",
+            applies_to: "whole rows".to_string(),
+            outcome: match results.identity.as_ref() {
+                _ if !values_read => Outcome::NotRun("values not read"),
+                Some(identity) if identity.extra_rows > 0 => Outcome::Found {
+                    tier: Severity::Problem,
+                    detail: format!("{} extra rows", numfmt::group_chrome(identity.extra_rows)),
+                },
+                Some(_) => Outcome::Passed,
+                None => Outcome::NotRun("not measured"),
+            },
+        },
+        Check {
+            name: "Blank text",
+            looks_for: "text that is empty or only whitespace",
+            applies_to: reach(texts, "text"),
+            outcome: outcome(&["Blank text", "Empty text"], texts, "no text columns"),
+        },
+        Check {
+            name: "Mixed spellings",
+            looks_for: "one value in several cases or spacings",
+            applies_to: reach(texts, "text"),
+            outcome: outcome(&["Mixed spellings"], texts, "no text columns"),
+        },
+        Check {
+            name: "Type mismatch",
+            looks_for: "a column typed differently by some files",
+            applies_to: files_reach.clone(),
+            outcome: by_files(&["Type mismatch"]),
+        },
+        Check {
+            name: "Missing in files",
+            looks_for: "a column some files do not have",
+            applies_to: files_reach,
+            outcome: by_files(&["Missing in files"]),
+        },
+        Check {
+            name: "Numbers as text",
+            looks_for: "text that reads as numbers or dates",
+            applies_to: reach(texts, "text"),
+            outcome: outcome(
+                &["Numbers as text", "Dates as text", "Codes as text"],
+                texts,
+                "no text columns",
+            ),
+        },
+        Check {
+            name: "Nearly unique",
+            looks_for: "a would-be key whose values repeat",
+            applies_to: reach(keys, "integer/text"),
+            outcome: if values_read && results.precision != QualityPrecision::Exact {
+                Outcome::NotRun("needs every row checked")
+            } else {
+                outcome(&["Nearly unique"], keys, "no integer or text columns")
+            },
+        },
+        Check {
+            name: "Single value",
+            looks_for: "a column with one value throughout",
+            applies_to: reach(all, ""),
+            outcome: outcome(&["Single value"], all, "no columns"),
+        },
+    ]
+}
+
+fn found(report: &QualityReport, titles: &[&str]) -> Outcome {
+    let mut columns = Vec::new();
+    let mut tier = Severity::Note;
+    for finding in report
+        .findings
+        .iter()
+        .filter(|finding| finding.kind.is_some() && titles.contains(&finding.title))
+    {
+        tier = tier.min(finding.severity);
+        for column in &finding.columns {
+            if !columns.contains(column) {
+                columns.push(column.clone());
+            }
+        }
+    }
+    match columns.len() {
+        0 => Outcome::Passed,
+        count => Outcome::Found {
+            tier,
+            detail: format!(
+                "{} {}",
+                numfmt::group_chrome(count),
+                if count == 1 { "column" } else { "columns" }
+            ),
+        },
+    }
+}
+
 /// Plain words for each kind of finding: what it is, why it matters, what to do.
 pub struct Explanation {
     pub what: &'static str,
@@ -490,7 +660,7 @@ pub fn explain(finding: &Finding) -> Explanation {
         (Some(ObservationKind::Constant), _) => Explanation {
             what: "Every value in the rows checked is the same.",
             why: "The column tells no rows apart. If it should vary, the feed may be stuck.",
-            check: "Whether that is by design. A sample from the start of a sorted file can look constant when the whole file is not.",
+            check: "Whether that is by design. A sample can miss a rare second value; a full run settles it.",
         },
         (Some(ObservationKind::ParseableText), "Codes as text") => Explanation {
             what: "Text that reads as numbers, written with leading zeros or at a fixed width.",
@@ -817,26 +987,14 @@ pub fn coverage(results: &DataQualityResults, plan: &DataQualityPlan) -> String 
             if segments == 1 { "segment" } else { "segments" }
         );
     }
-    // The dataset-grain sample is drawn from a bounded prefix; say so, because on a
-    // sorted file that prefix is one slice of the data.
-    let prefix = plan.sample_rows.min(50_000).saturating_mul(2).min(50_000);
+    // Spread across the whole scope, which the sampler counts as it goes.
     match results.total_rows {
-        Some(total) if total <= prefix => format!(
-            "Sampled {} of {} {scope}",
-            rows(checked),
-            numfmt::group_chrome(total)
-        ),
         Some(total) => format!(
-            "Sampled {} from the first {} of {} {scope}",
-            rows(checked),
-            numfmt::group_chrome(prefix),
+            "Sampled {} of {} rows {scope}",
+            numfmt::group_chrome(checked),
             numfmt::group_chrome(total)
         ),
-        None => format!(
-            "Sampled {} from the first {} {scope}",
-            rows(checked),
-            numfmt::group_chrome(prefix)
-        ),
+        None => format!("Sampled {} {scope}", rows(checked)),
     }
 }
 
@@ -1036,6 +1194,56 @@ mod tests {
         );
     }
 
+    /// The checks say what they covered, what they found, and what they could not
+    /// look at and why, so a clean result is one the reader can trust.
+    #[test]
+    fn checks_report_reach_findings_and_what_did_not_run() {
+        let mut results = results(
+            vec![
+                profile("price", DataType::Float64),
+                profile("region", DataType::String),
+                profile("id", DataType::Int64),
+            ],
+            vec![observation(ObservationKind::NonFinite, "price", 2)],
+        );
+        results.precision = QualityPrecision::Sampled;
+        let report = build_report(&results);
+        let list = checks(&results, &report);
+        let by_name = |name: &str| list.iter().find(|check| check.name == name).unwrap();
+        assert_eq!(list[0].name, "Missing values", "most important first");
+        assert_eq!(by_name("Missing values").outcome, Outcome::Passed);
+        assert_eq!(by_name("Missing values").applies_to, "3 columns");
+        assert_eq!(by_name("NaN or infinite").applies_to, "1 float column");
+        assert_eq!(
+            by_name("NaN or infinite").outcome,
+            Outcome::Found {
+                tier: Severity::Problem,
+                detail: "1 column".to_string()
+            }
+        );
+        assert_eq!(
+            by_name("Nearly unique").outcome,
+            Outcome::NotRun("needs every row checked"),
+            "a sample cannot say a column is nearly a key"
+        );
+        assert_eq!(
+            by_name("Type mismatch").outcome,
+            Outcome::NotRun("needs several files")
+        );
+
+        results.precision = QualityPrecision::Metadata;
+        results.source_files = Some(3);
+        let report = build_report(&results);
+        let list = checks(&results, &report);
+        let by_name = |name: &str| list.iter().find(|check| check.name == name).unwrap();
+        assert_eq!(
+            by_name("Missing values").outcome,
+            Outcome::NotRun("values not read")
+        );
+        assert_eq!(by_name("Type mismatch").outcome, Outcome::Passed);
+        assert_eq!(by_name("Type mismatch").applies_to, "3 files");
+    }
+
     #[test]
     fn column_labels_fit_and_count_the_rest() {
         let columns = ["open", "high", "low", "close"].map(String::from);
@@ -1045,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_names_a_prefix_sample() {
+    fn coverage_names_the_sample_and_its_total() {
         let plan = DataQualityPlan::default();
         let mut results = results(Vec::new(), Vec::new());
         results.precision = QualityPrecision::Sampled;
@@ -1053,7 +1261,7 @@ mod tests {
         results.total_rows = Some(200_000);
         assert_eq!(
             coverage(&results, &plan),
-            "Sampled 10,000 rows from the first 20,000 of 200,000 in the current view"
+            "Sampled 10,000 of 200,000 rows in the current view"
         );
         results.precision = QualityPrecision::Exact;
         results.total_rows = Some(10_000);

@@ -207,6 +207,19 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         return vec![("Enter", "Run"), ("Esc", "Cancel")];
     }
     if modal.data_quality_observation_detail {
+        if modal.quality_selected_is_clean() {
+            return vec![
+                (
+                    "Enter",
+                    if modal.data_quality_checks_expanded {
+                        "Fewer Checks"
+                    } else {
+                        "All Checks"
+                    },
+                ),
+                ("Esc", "Back"),
+            ];
+        }
         // Enter opens the rows when there are exact rows to open, and otherwise
         // only closes the popup; the chip says which.
         let opens = modal.data_quality_results.as_ref().is_some_and(|results| {

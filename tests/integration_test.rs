@@ -962,6 +962,7 @@ fn test_stale_background_events_are_ignored() {
             identity: None,
             category_variants: vec![],
             shared_nulls: vec![],
+            source_files: None,
         },
     });
     assert!(
@@ -1804,6 +1805,40 @@ fn data_quality_reads_as_a_report() {
         "no raw observation table on the overview"
     );
 
+    // The clean entry lists what was checked: the most important few, then all.
+    for code in [KeyCode::End, KeyCode::Enter] {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("Checks"),
+        "the clean entry names its checks"
+    );
+    assert!(screen.contains("Duplicate rows"));
+    assert!(screen.contains("4 more checks"));
+    assert!(
+        screen.contains("All Checks"),
+        "the bar says Enter shows the rest"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        app.analysis_modal.data_quality_observation_detail,
+        "Enter on the clean entry expands, it does not close"
+    );
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("Nearly unique") && screen.contains("Fewer Checks"));
+    for code in [KeyCode::Esc, KeyCode::Home] {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
     // The grouped finding opens every row it counts, and only those.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
@@ -2145,7 +2180,8 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     app.event(&AppEvent::AnalysisDataQualityCompute);
     drain_events(&mut app, &rx);
     let sampled = app.analysis_modal.data_quality_results.as_ref().unwrap();
-    assert_eq!(sampled.total_rows, None);
+    // The sampler counts the whole scope as it spreads the sample over it.
+    assert_eq!(sampled.total_rows, Some(4));
     assert_eq!(sampled.evaluated_rows, 1);
     assert_eq!(
         sampled.precision,

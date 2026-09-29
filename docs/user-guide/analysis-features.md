@@ -54,6 +54,12 @@ are grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
 finding says what it is, why it matters and what to check; <kbd>Enter</kbd>
 again shows its rows when the run was exact.
 
+<kbd>Enter</kbd> on the **Clean** entry lists the checks the run made: the
+columns each covered, what it found, or why it did not run (Nearly unique
+needs every row checked; the file checks need a source of several files).
+The six most important show first and <kbd>Enter</kbd> shows all ten. When a
+run finds nothing, the list is on the page under the verdict.
+
 | Finding | Tier | Means |
 |---|---|---|
 | NaN or infinite | Problem | Float values that are NaN or ±infinity; one NaN makes a sum or mean NaN |
@@ -68,9 +74,10 @@ again shows its rows when the run was exact.
 | Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
 | Single value | Note | One value in every row checked |
 
-A dataset-grain sample comes from the first rows of the scope (about twice
-the Sample rows budget), and the strip says so: on a file sorted by date, a
-column can look like a single value in that slice when the whole file is not.
+A dataset-grain sample is spread across the whole scope, as Describe's is:
+one Parquet or IPC file is read as a few dozen short runs across it, anything
+else in one streamed pass that keeps a seeded sample. The strip says how many
+rows were sampled of how many.
 
 ### The plan
 
@@ -81,7 +88,7 @@ rows and transfer direction; <kbd>p</kbd> shows the estimate basis.
 |---|---|
 | Scope | Current view, whole loaded source, a view row range, selected source files, one source partition value, or a source time range |
 | Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or hourly, daily, weekly, or monthly windows on an assigned time role |
-| Compute | Metadata only, seeded sample (bounded prefix for dataset grain; per-segment after a full selected-scope read for other grains), or full scan |
+| Compute | Metadata only, seeded sample (spread across the scope for dataset grain; per-segment after a full selected-scope read for other grains), or full scan |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 | Sample rows | Rows kept per segment for a sampled compute: <kbd>←</kbd> <kbd>→</kbd> cycle 1,000 to 50,000; the default comes from [`[performance] quality_sample_rows`](configuration.md#performance) |
@@ -98,11 +105,12 @@ picks a preset and <kbd>Enter</kbd> on Scope opens a precise entry:
 | `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
 
 Before a run, source-scoped plans report unknown row counts and read sizes,
-and metadata-only runs do not count rows. A dataset-grain bounded sample
-reports an eligible row count only when its probe reaches the end of the scope
-or a valid count was already cached; other grains sample each segment after
-reading the full selected scope, so they require confirmation and report exact
-eligible and per-segment counts afterward. The scope is applied before
+and metadata-only runs do not count rows. A local dataset-grain sample
+estimates its read as a ceiling (`up to`), since a single Parquet or IPC file
+is read in short runs and anything else is streamed once; the run reports the
+exact eligible count. Other grains sample each segment after reading the full
+selected scope, so they require confirmation and report exact eligible and
+per-segment counts afterward. The scope is applied before
 sampling, so sampling never reaches beyond its bounds.
 
 The Time roles row opens an explicit mapping table; every role starts
@@ -151,7 +159,7 @@ Sampling is a compute choice, not a grain.
 
 | | |
 |---|---|
-| Dataset grain | Selects without replacement from a bounded prefix of the scope — about twice the Sample rows budget, never more than the first 50,000 eligible rows; not a random sample of the entire dataset |
+| Dataset grain | A seeded sample of up to 50,000 rows without replacement, spread across the whole scope: a few dozen runs of one Parquet or IPC file, or one streamed pass over anything else; the same sampler as Describe and Distribution |
 | File, partition, chunk, window grain | A streaming full-scope read retains up to the plan's Sample rows budget of seeded rows per segment (engine cap 50,000), without replacement; the access plan says the value-read size is unknown and asks for confirmation |
 | Budgets | The Sample rows budget multiplies by the number of segments; a run that would retain more than 500,000 rows, 512 MiB, or 10,000 segments is refused rather than silently trimmed — narrow the scope or lower the Sample rows budget |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |

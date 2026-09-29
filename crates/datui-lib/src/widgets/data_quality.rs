@@ -8,7 +8,8 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
-    QualityReport, Severity, build_report, coverage, describe, explain, verdict,
+    CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, build_report, checks, coverage,
+    describe, explain, verdict,
 };
 use crate::widgets::datatable::DataTableState;
 use crate::widgets::text_input::TextInput;
@@ -22,6 +23,8 @@ use ratatui::widgets::{
 };
 
 pub struct DataQualityWidgetConfig<'a> {
+    /// The clean entry's checks table shows every check, not the first few.
+    pub checks_expanded: bool,
     pub state: &'a DataTableState,
     pub plan: &'a DataQualityPlan,
     pub results: Option<&'a DataQualityResults>,
@@ -207,7 +210,7 @@ fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
         return;
     }
     let remote = config.state.is_remote_source();
-    let bytes = planned_read_bytes(config.state, config.plan);
+    let bytes = planned_read_label(config.state, config.plan);
     let source = if remote {
         "remote transfer"
     } else {
@@ -249,11 +252,7 @@ fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
             vec![
                 Span::styled(format!("{source} "), source_style),
                 Span::styled(
-                    if remote {
-                        "unknown".to_string()
-                    } else {
-                        approximate_bytes_option(bytes)
-                    },
+                    if remote { "unknown".to_string() } else { bytes },
                     source_style.add_modifier(Modifier::BOLD),
                 ),
             ],
@@ -384,11 +383,10 @@ fn render_plan(
 
     render_section_title("ACCESS", sections[2], config.theme, buf);
     let planned = planned_rows(config.state, config.plan);
-    let bytes = planned_read_bytes(config.state, config.plan);
     let planned_label = planned
         .map(numfmt::group_chrome)
         .unwrap_or_else(|| "unknown".to_string());
-    let bytes_label = approximate_bytes_option(bytes);
+    let bytes_label = planned_read_label(config.state, config.plan);
     let access_rows = vec![
         Row::new(vec!["Rows evaluated", planned_label.as_str()]),
         Row::new(vec![
@@ -527,6 +525,23 @@ fn render_overview(
         return;
     }
     normalize_selection(table_state, report.findings.len());
+    if report.problems == 0 && report.notes == 0 && !report.metadata_only {
+        // Nothing to fix: what was checked is the answer, so it is on the page
+        // rather than behind the clean entry.
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Fill(1)])
+            .split(list);
+        render_findings(config, &report, table_state, parts[0], buf);
+        Paragraph::new(check_lines(
+            &checks(results, &report),
+            parts[1].width,
+            None,
+            config.theme,
+        ))
+        .render(parts[1], buf);
+        return;
+    }
     render_findings(config, &report, table_state, list, buf);
 }
 
@@ -721,6 +736,88 @@ fn render_findings(
     }
 }
 
+/// The checks the run made, one per line: mark, name, reach, outcome, and what each
+/// looks for when there is room. `limit` keeps the first few; the rest are counted.
+fn check_lines(
+    checks: &[Check],
+    width: u16,
+    limit: Option<usize>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    const NAME: usize = 18;
+    const REACH: usize = 24;
+    const OUTCOME: usize = 33;
+    let width = width as usize;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let g = glyphs::get();
+    let shown = limit.unwrap_or(checks.len()).min(checks.len());
+    let mut lines = vec![rule_line(
+        "Checks",
+        Some(&numfmt::group_chrome(checks.len())),
+        width as u16,
+        theme,
+    )];
+    for check in &checks[..shown] {
+        let (mark, outcome, style) = match &check.outcome {
+            Outcome::Passed => (
+                Span::styled(g.check, Style::default().fg(theme.get("success"))),
+                "passed".to_string(),
+                Style::default().fg(theme.get("text_primary")),
+            ),
+            Outcome::Found { tier, detail } => (
+                severity_mark(*tier, theme),
+                format!("{detail} flagged"),
+                Style::default().fg(theme.get("text_primary")),
+            ),
+            Outcome::NotRun(reason) => (
+                Span::styled(g.dash, dimmed),
+                format!("not run: {reason}"),
+                dimmed,
+            ),
+        };
+        let rest = width.saturating_sub(2 + NAME + REACH);
+        let outcome_width = if rest > OUTCOME + 20 { OUTCOME } else { rest };
+        let mut spans = vec![
+            mark,
+            Span::raw(" "),
+            Span::styled(format!("{:<NAME$}", check.name), style),
+            Span::styled(
+                format!("{:<REACH$}", fit(&check.applies_to, REACH - 1)),
+                dimmed,
+            ),
+            Span::styled(
+                format!(
+                    "{:<outcome_width$}",
+                    fit(&outcome, outcome_width.saturating_sub(1))
+                ),
+                style,
+            ),
+        ];
+        // What the check looks for, where the table has the width; the names say
+        // most of it, and the user guide says the rest.
+        let looks = rest.saturating_sub(outcome_width);
+        if looks >= 16 {
+            spans.push(Span::styled(fit(check.looks_for, looks), dimmed));
+        }
+        lines.push(Line::from(spans));
+    }
+    if shown < checks.len() {
+        lines.push(Line::styled(
+            format!(
+                "  {} more {}",
+                checks.len() - shown,
+                if checks.len() - shown == 1 {
+                    "check"
+                } else {
+                    "checks"
+                }
+            ),
+            dimmed,
+        ));
+    }
+    lines
+}
+
 /// `text` cut to `width` display columns, with the ellipsis glyph when anything was
 /// cut, so a truncated count never reads as a smaller one.
 fn fit(text: &str, width: usize) -> String {
@@ -758,6 +855,13 @@ fn render_finding_detail(
     let label = Style::default().fg(theme.get("accent"));
     let explanation = explain(finding);
     let (headline, evidence) = describe(finding, results);
+    // A reading surface: cap the measure on a wide terminal. The checks table on
+    // the clean entry is a table, and may use more of the width.
+    let width = area
+        .width
+        .saturating_sub(4)
+        .min(if finding.kind.is_none() { 118 } else { 84 });
+    let inner = width.saturating_sub(4).max(1);
     let mut lines = vec![
         Line::styled(
             finding.columns.join(", "),
@@ -786,6 +890,15 @@ fn render_finding_detail(
             Span::styled("What to check: ", label),
             Span::raw(explanation.check),
         ]));
+    }
+    if finding.kind.is_none() {
+        lines.push(Line::raw(""));
+        lines.extend(check_lines(
+            &checks(results, &report),
+            inner,
+            (!config.checks_expanded).then_some(CHECKS_SHOWN),
+            theme,
+        ));
     }
     lines.push(Line::raw(""));
     if let Some(kind) = finding.kind {
@@ -830,10 +943,8 @@ fn render_finding_detail(
             lines.push(Line::styled(rows, dimmed));
         }
     }
-    // A reading surface: cap the measure on a wide terminal, and grow with the text
-    // up to the screen rather than cut it.
-    let width = area.width.saturating_sub(4).min(84);
-    let inner = width.saturating_sub(4).max(1) as usize;
+    // Grow with the text up to the screen rather than cut it.
+    let inner = inner as usize;
     let needed = lines
         .iter()
         .map(|line| line.width().max(1).div_ceil(inner))
@@ -1678,6 +1789,12 @@ fn render_sidebar(
         Some(results) => {
             let report = build_report(results);
             let count = |severity: Severity, value: usize, one: &str, many: &str| {
+                // None of a kind is good news, whatever the kind.
+                let severity = if value == 0 {
+                    Severity::Clean
+                } else {
+                    severity
+                };
                 Line::from(vec![
                     severity_mark(severity, config.theme),
                     Span::raw(format!(
@@ -1776,7 +1893,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let popup = centered_rect(72, 16, area);
     Clear.render(popup, buf);
     let rows = planned_rows(config.state, config.plan);
-    let bytes = planned_read_bytes(config.state, config.plan);
+    let bytes = planned_read_label(config.state, config.plan);
     let rows_label = match rows {
         Some(rows) => numfmt::group_chrome(rows),
         None if config.plan.samples_each_segment() => format!(
@@ -1816,7 +1933,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             Cell::from(if config.state.is_remote_source() {
                 "unknown".to_string()
             } else {
-                approximate_bytes_option(bytes)
+                bytes
             }),
         ]),
         Row::new(vec![Cell::from("Requests"), Cell::from(request_count)]),
@@ -1854,7 +1971,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             Cell::from(if config.plan.samples_each_segment() {
                 "full scope read; refused over 500,000 rows or 512 MiB retained"
             } else {
-                "sample prefix row width; full scan unknown"
+                "spread sample; at most one read of the scope"
             }),
         ]),
     ];
@@ -1985,28 +2102,39 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
     }
     let rows = match plan.compute {
         QualityCompute::Metadata => 0,
-        QualityCompute::Sample => {
-            let multiplier = if plan.sample_rows <= 1_000 {
-                5
-            } else if plan.sample_rows <= 5_000 {
-                3
-            } else {
-                2
-            };
-            let rows = state.num_rows_if_valid()?;
-            let rows = match &plan.scope {
-                QualityScope::FirstRows(limit) => rows.min(*limit),
-                QualityScope::ViewRows { start, end } => {
-                    rows.min(*end).saturating_sub(start.saturating_sub(1))
-                }
-                QualityScope::CurrentView => rows,
-                _ => unreachable!(),
-            };
-            rows.min(plan.sample_rows.saturating_mul(multiplier).min(50_000))
-        }
+        // A ceiling: the sample is spread across the whole scope, which one Parquet or
+        // IPC file serves in a few dozen short runs and anything else in one stream.
+        QualityCompute::Sample => planned_scope_rows(state, plan)?,
         QualityCompute::Full => return None,
     };
     Some(rows.saturating_mul(state.estimated_row_bytes()))
+}
+
+fn planned_scope_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize> {
+    let rows = state.num_rows_if_valid()?;
+    Some(match &plan.scope {
+        QualityScope::FirstRows(limit) => rows.min(*limit),
+        QualityScope::ViewRows { start, end } => {
+            rows.min(*end).saturating_sub(start.saturating_sub(1))
+        }
+        QualityScope::CurrentView => rows,
+        _ => return None,
+    })
+}
+
+/// The planned read in words: a sample of a scope larger than itself reads at most
+/// the scope, and how much less depends on the source.
+fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
+    let bytes = planned_read_bytes(state, plan);
+    let sampled = plan.compute == QualityCompute::Sample
+        && planned_scope_rows(state, plan).is_some_and(|rows| rows > plan.sample_rows.min(50_000));
+    match bytes {
+        Some(bytes) if sampled => format!(
+            "up to {}",
+            approximate_bytes(bytes).trim_start_matches("about ")
+        ),
+        other => approximate_bytes_option(other),
+    }
 }
 
 fn approximate_bytes_option(bytes: Option<usize>) -> String {

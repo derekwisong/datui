@@ -16,6 +16,9 @@ Reading the report:
   Columns missing on the same rows are one finding. Enter on a finding
   says what it is, why it matters and what to check; Enter again shows
   its rows when the run was exact.
+  Enter on the clean entry lists the checks the run made: what each
+  covered, what it found, or why it did not run. Enter again shows all
+  of them. When nothing is found, the list is on the page.
 
 Keys:
   Enter:            Run the plan, apply the edit in progress, open a
@@ -45,8 +48,8 @@ Keys:
                     Time roles, Esc restores the whole pre-edit plan
   ?:                Toggle this help (F1 opens it)
 
-Every result says how many rows were checked and whether they were all of them or a sample. A dataset-grain sample is drawn from the first rows of the scope, and the strip says how many. Temporal meanings are used only after you assign a role to a column.
-The Sample rows field sets the rows kept per segment: ←/→ cycle 1,000 to 50,000 (the engine's cap), and the default comes from [performance] quality_sample_rows. Dataset-grain sampling selects without replacement from a bounded prefix; eligible rows may be unknown. File, partition, chunk, and window sampling reads the full selected scope, keeps up to the Sample rows budget of seeded rows per segment, and requires confirmation. A per-segment budget multiplies by the number of segments, so a run that would keep more than 500,000 rows or 512 MiB is refused rather than trimmed; narrow the scope or lower the Sample rows budget.
+Every result says how many rows were checked and whether they were all of them or a sample. A dataset-grain sample is spread across the whole scope, as Describe's is, and the strip says how many rows of how many. Temporal meanings are used only after you assign a role to a column.
+The Sample rows field sets the rows kept per segment: ←/→ cycle 1,000 to 50,000 (the engine's cap), and the default comes from [performance] quality_sample_rows. Dataset-grain sampling selects without replacement across the whole scope: short runs of one Parquet or IPC file, or one streamed pass over anything else. File, partition, chunk, and window sampling reads the full selected scope, keeps up to the Sample rows budget of seeded rows per segment, and requires confirmation. A per-segment budget multiplies by the number of segments, so a run that would keep more than 500,000 rows or 512 MiB is refused rather than trimmed; narrow the scope or lower the Sample rows budget.
 Time-window grain offers 1h, 1d, 1w and 1mo on each assigned time role. A window starts on the calendar boundary for its width, so weeks start on Monday, and is cut at the same place whether the run sampled or scanned it.
 Scope can be the current view, loaded source, view row range, selected source files, source partition value, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.

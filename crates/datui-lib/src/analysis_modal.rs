@@ -92,6 +92,8 @@ pub struct AnalysisModal {
     pub data_quality_scope_file_offset: usize,
     pub data_quality_show_access: bool,
     pub data_quality_observation_detail: bool,
+    /// The clean entry's popup lists every check rather than the most important.
+    pub data_quality_checks_expanded: bool,
     pub data_quality_confirm_run: bool,
     pub data_quality_plan_before_edit: Option<DataQualityPlan>,
     pub data_quality_last_plan: Option<DataQualityPlan>,
@@ -334,6 +336,18 @@ impl AnalysisModal {
             QualityPage::Segments => results.segments.len(),
             QualityPage::Trends => results.temporal.len(),
         }
+    }
+
+    /// Whether the highlighted Overview entry is the clean-columns entry, which opens
+    /// no rows and instead lists the checks.
+    pub fn quality_selected_is_clean(&self) -> bool {
+        self.data_quality_page == QualityPage::Overview
+            && self.data_quality_results.as_ref().is_some_and(|results| {
+                crate::quality_report::build_report(results)
+                    .findings
+                    .get(self.data_quality_table_state.selected().unwrap_or(0))
+                    .is_some_and(|finding| finding.kind.is_none())
+            })
     }
 
     /// Whether the Data Quality scope input owns typed characters. Mirrors the key

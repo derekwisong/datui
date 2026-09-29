@@ -189,7 +189,7 @@ In Data Quality:
 | Key | Action |
 |---|---|
 | <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends |
-| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, or close an open popup |
+| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, open a finding, show its exact rows, show all checks on the clean entry, or close an open popup |
 | <kbd>e</kbd> | Edit the plan's seven fields — Scope, Grain, Compute, Compare, Time roles, Latency threshold, Sample rows — in a copy of the plan |
 | <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
 | <kbd>Enter</kbd> on Scope | Open the precise scope entry |

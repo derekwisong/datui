@@ -5,7 +5,7 @@ use polars::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-// Sampling is without replacement from a bounded prefix, never a full-source random scan.
+// A dataset-grain sample is spread across the whole scope (see `statistics::analysis_rows`).
 const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
 const QUALITY_SAMPLE_POSITION: &str = "__datui_quality_sample_position";
@@ -927,6 +927,9 @@ pub struct DataQualityResults {
     pub identity: Option<IdentityProfile>,
     pub category_variants: Vec<CategoryVariantGroup>,
     pub shared_nulls: Vec<SharedNulls>,
+    /// How many source files' footers were compared, when the scope has files to
+    /// compare. `None` means the checks that compare files could not run.
+    pub source_files: Option<usize>,
 }
 
 impl DataQualityResults {
@@ -978,6 +981,7 @@ impl DataQualityResults {
             identity: None,
             category_variants: Vec::new(),
             shared_nulls: Vec::new(),
+            source_files: None,
         }
     }
 }
@@ -998,6 +1002,7 @@ pub fn compute_data_quality(
         if let Some(source) = source {
             results.observations = drift_observations(source, None, polars_streaming);
         }
+        results.source_files = source.map(|source| source.file_names.len());
         return Ok(results);
     }
     let grain_column = match &plan.grain {
@@ -1052,29 +1057,29 @@ pub fn compute_data_quality(
                     Some(sampled.segment_totals),
                 )
             }
-            QualityCompute::Sample
-                if total_rows.is_none_or(|rows| rows > plan.sample_rows.min(50_000)) =>
-            {
-                let (df, positions, observed_total) =
-                    sample_quality_rows(lf, plan.sample_rows, plan.sample_seed, polars_streaming)?;
-                let height = df.height();
-                let total_rows = total_rows.or(observed_total);
-                let precision = if total_rows == Some(height) {
-                    QualityPrecision::Exact
-                } else {
-                    QualityPrecision::Sampled
-                };
-                (df, Some(positions), height, precision, total_rows, None)
-            }
+            // The sampler Describe and Distribution use: spread across the whole scope,
+            // so a file sorted by date is not judged by its first stretch. Dataset grain
+            // has one segment, so no row needs its position.
             QualityCompute::Sample => {
-                let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
-                let height = df.height();
+                let sampled = crate::statistics::analysis_rows(
+                    lf,
+                    Some(plan.sample_rows.min(50_000)),
+                    total_rows,
+                    plan.sample_seed,
+                    polars_streaming,
+                )?;
+                let height = sampled.df.height();
+                let precision = if sampled.sample_size.is_some() {
+                    QualityPrecision::Sampled
+                } else {
+                    QualityPrecision::Exact
+                };
                 (
-                    df,
+                    sampled.df,
                     None,
                     height,
-                    QualityPrecision::Exact,
-                    Some(height),
+                    precision,
+                    Some(sampled.total_rows),
                     None,
                 )
             }
@@ -1120,47 +1125,8 @@ pub fn compute_data_quality(
         identity: Some(identity),
         category_variants,
         shared_nulls,
+        source_files: source.map(|source| source.file_names.len()),
     })
-}
-
-fn sample_quality_rows(
-    lf: &LazyFrame,
-    sample_rows: usize,
-    seed: u64,
-    polars_streaming: bool,
-) -> Result<(DataFrame, Vec<u32>, Option<usize>)> {
-    let requested = sample_rows.min(50_000);
-    let candidate_rows = requested.saturating_mul(2).min(50_000);
-    let probe_rows = candidate_rows.saturating_add(1).min(50_000);
-    let mut candidates = collect_lazy(lf.clone().limit(probe_rows as u32), polars_streaming)
-        .map_err(Report::from)?;
-    let observed_total = (candidates.height() < probe_rows).then_some(candidates.height());
-    if candidates.height() > candidate_rows {
-        candidates = candidates.slice(0, candidate_rows);
-    }
-    if candidates.height() <= requested {
-        let positions = (0..candidates.height() as u32).collect();
-        return Ok((candidates, positions, observed_total));
-    }
-    let mut indices = (0..candidates.height() as u32).collect::<Vec<_>>();
-    let mut random = seed;
-    for index in 0..requested {
-        // SplitMix64 produces a stable selection without adding a runtime dependency.
-        random = random.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut value = random;
-        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        value ^= value >> 31;
-        let selected = index + value as usize % (indices.len() - index);
-        indices.swap(index, selected);
-    }
-    indices.truncate(requested);
-    indices.sort_unstable();
-    let sampled = candidates.take(&UInt32Chunked::new(
-        "quality_sample".into(),
-        indices.clone(),
-    ))?;
-    Ok((sampled, indices, observed_total))
 }
 
 #[derive(Default)]
@@ -1386,6 +1352,7 @@ fn compute_full_quality(
         identity: Some(identity),
         category_variants,
         shared_nulls,
+        source_files: source.map(|source| source.file_names.len()),
     })
 }
 
@@ -3341,7 +3308,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_sample_total_stays_unknown_until_bounded_probe_reaches_end() {
+    /// The sampler counts the whole scope as it samples it, so a sampled run knows the
+    /// total it was drawn from even when no count was cached; metadata still does not.
+    fn a_sampled_run_knows_the_total_it_was_drawn_from() {
         let frame = DataFrame::new(
             100,
             vec![Column::new("id".into(), (0..100).collect::<Vec<_>>())],
@@ -3353,10 +3322,10 @@ mod tests {
             ..DataQualityPlan::default()
         };
         let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
-        assert_eq!(results.total_rows, None);
+        assert_eq!(results.total_rows, Some(100));
         assert_eq!(results.evaluated_rows, 10);
         assert_eq!(results.precision, QualityPrecision::Sampled);
-        assert_eq!(results.segments[0].total_rows, None);
+        assert_eq!(results.segments[0].total_rows, Some(100));
 
         let short = frame.clone().limit(8);
         let results = compute_data_quality(&short, None, &plan, None, false).unwrap();
@@ -3373,6 +3342,57 @@ mod tests {
         assert_eq!(results.evaluated_rows, 0);
     }
 
+    /// A dataset-grain sample is spread across the whole scope. A table sorted by year
+    /// whose head is all one year must not come back with a single-value year, and the
+    /// run knows the whole table's size rather than its head's.
+    #[test]
+    fn a_dataset_sample_spreads_across_a_sorted_table() {
+        let rows = 40_000;
+        let frame = df!(
+            "id" => (0..rows as i64).collect::<Vec<_>>(),
+            "year" => (0..rows).map(|row| 2020 + (row * 4 / rows) as i32).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            sample_rows: 1_000,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        assert_eq!(results.precision, QualityPrecision::Sampled);
+        assert_eq!(results.evaluated_rows, 1_000);
+        assert_eq!(results.total_rows, Some(rows));
+        let year = results
+            .columns
+            .iter()
+            .find(|profile| profile.name == "year")
+            .unwrap();
+        assert_eq!(year.distinct_count, Some(4), "every year is in the sample");
+        assert!(
+            !results
+                .observations
+                .iter()
+                .any(|observation| observation.kind == ObservationKind::Constant)
+        );
+
+        // Seeded: the same seed draws the same rows, another seed others.
+        let ids = |seed| {
+            let plan = DataQualityPlan {
+                sample_seed: seed,
+                ..plan.clone()
+            };
+            let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+            let id = results
+                .columns
+                .iter()
+                .find(|profile| profile.name == "id")
+                .unwrap();
+            (id.min.clone(), id.max.clone())
+        };
+        assert_eq!(ids(1), ids(1));
+        assert_ne!(ids(1), ids(2));
+    }
+
     #[test]
     fn sample_is_seeded_without_replacement_per_row_chunk() {
         let frame = DataFrame::new(
@@ -3387,12 +3407,6 @@ mod tests {
             grain: QualityGrain::RowChunks(10),
             ..DataQualityPlan::default()
         };
-        let first = sample_quality_rows(&frame, 20, 1, false).unwrap();
-        let again = sample_quality_rows(&frame, 20, 1, false).unwrap();
-        let other = sample_quality_rows(&frame, 20, 2, false).unwrap();
-        assert_eq!(first, again);
-        assert_ne!(first, other);
-        assert_eq!(first.0.column("id").unwrap().n_unique().unwrap(), 20);
 
         let sampled = sample_quality_segments(&frame, &plan, None, false).unwrap();
         let same = sample_quality_segments(&frame, &plan, None, false).unwrap();

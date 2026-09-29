@@ -13926,6 +13926,13 @@ impl App {
                         return None;
                     }
                     KeyCode::Enter if self.analysis_modal.data_quality_observation_detail => {
+                        // The clean entry has no rows to open; Enter shows every
+                        // check it passed, and again the most important few.
+                        if self.analysis_modal.quality_selected_is_clean() {
+                            self.analysis_modal.data_quality_checks_expanded =
+                                !self.analysis_modal.data_quality_checks_expanded;
+                            return None;
+                        }
                         self.open_quality_evidence();
                         if self.analysis_modal.active && !self.error_modal.active {
                             self.analysis_modal.data_quality_observation_detail = false;
@@ -14151,6 +14158,7 @@ impl App {
                             return Some(AppEvent::AnalysisDataQualityCompute);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
                             let findings = self.analysis_modal.quality_row_count();
+                            self.analysis_modal.data_quality_checks_expanded = false;
                             self.analysis_modal.data_quality_observation_detail = self
                                 .analysis_modal
                                 .data_quality_table_state

@@ -3,16 +3,7 @@
 <kbd>?</kbd> or <kbd>F1</kbd> shows the keys for whatever is on screen;
 <kbd>F1</kbd> works inside text fields too, and on the home screen, where
 letters type into the filter, <kbd>?</kbd> opens help until you start
-typing. The bar at the bottom of the screen shows the ones that matter
-most. A spinner in that bar means datui is busy. While it is, at the plain
-table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
-<kbd>l</kbd>), <kbd>?</kbd> and <kbd>F1</kbd> act at once, and
-<kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and
-<kbd>Ctrl</kbd>+<kbd>O</kbd> act from anywhere. Other keys are queued and
-replayed in order once the work is done — except a bare <kbd>Enter</kbd> or
-<kbd>Esc</kbd>, which is dropped. At most 32 keys are held, and held keys
-die with the screen they were typed at. At the loading screen nothing is
-held: the allowed keys act, the rest are dropped.
+typing. The bottom bar shows the main actions for the current screen.
 
 ## Table
 
@@ -38,7 +29,7 @@ held: the allowed keys act, the rest are dropped.
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
 | <kbd>N</kbd> | Toggle row numbers |
-| <kbd>F</kbd> | Toggle [digit grouping](../user-guide/configuration.md#number-formatting) |
+| <kbd>F</kbd> | Toggle [digit grouping](settings.md#number-formatting) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
@@ -293,6 +284,19 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page |
 | <kbd>Home</kbd> <kbd>End</kbd> | Top and bottom |
 | <kbd>Esc</kbd> or <kbd>?</kbd> | Close |
+
+## Keys while busy
+
+The bar at the bottom of the screen shows the ones that matter
+most. A spinner in that bar means datui is busy. While it is, at the plain
+table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
+<kbd>l</kbd>), <kbd>?</kbd> and <kbd>F1</kbd> act at once, and
+<kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and
+<kbd>Ctrl</kbd>+<kbd>O</kbd> act from anywhere. Other keys are queued and
+replayed in order once the work is done — except a bare <kbd>Enter</kbd> or
+<kbd>Esc</kbd>, which is dropped. At most 32 keys are held, and held keys
+die with the screen they were typed at. At the loading screen nothing is
+held: the allowed keys act, the rest are dropped.
 
 ## Terminal notes
 

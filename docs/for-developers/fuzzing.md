@@ -3,11 +3,6 @@
 Datui fuzzes the hand-written parsers and matchers that run on untrusted input, using
 [cargo-fuzz][cargo-fuzz] and libFuzzer. The targets live in `fuzz/`.
 
-Everything datui parses arrives from somewhere the user does not fully control: a query
-typed into the query bar, a config file written by a theme generator, column names that
-came out of a data file. Serde and Polars handle their own inputs; what is fuzzed here
-is the code datui wrote itself, which is where the index arithmetic lives.
-
 ## What is fuzzed
 
 | Target | Surface | What it checks |
@@ -17,10 +12,6 @@ is the code datui wrote itself, which is where the index arithmetic lives.
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights matches by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
-
-Three of these check an invariant rather than merely the absence of a panic. A fuzzer
-that only asks "did it crash" finds far less than one that can also ask "did it produce
-an answer that contradicts the other implementation of the same thing".
 
 ## Running
 
@@ -41,8 +32,8 @@ Then, from the repository root:
 ```
 
 `replay` is the quick one. It loads every committed corpus input, runs each once, and
-generates nothing new, so it finishes in seconds and never reports something different
-on two runs.
+generates no new test inputs. Use it to check known cases after editing a parser
+or matcher.
 
 ## What CI does
 
@@ -54,19 +45,9 @@ crashing again. It does not look for new bugs.
 AddressSanitizer on, as a matrix so one slow target does not consume another's budget.
 Crashing inputs are uploaded as build artifacts.
 
-Each target's corpus is cached between runs, and this matters more than the ten minutes
-does. Fuzzing is cumulative: reaching a bug often takes a chain of discoveries, where one
-input gets as far as the tokenizer, a mutation of it reaches the parser, and a mutation
-of *that* crashes. Starting from the seed corpus every night caps the search at whatever
-is reachable in one sitting, so the deep chains never form. With the corpus restored,
-each night begins where the last one left off.
-
-A cache entry cannot be updated in place, so the key carries the run id and
-`restore-keys` picks up the most recent previous entry. Restore and save are separate
-steps because the combined action only writes its cache when the job succeeds, and the
-night a target crashes is the night its corpus is most worth keeping. `cargo fuzz cmin` runs before the
-corpus is stored, dropping inputs that no longer reach anything the rest does — otherwise
-it grows until restoring it costs more than the fuzzing.
+Each target restores the previous coverage corpus before running and minimizes
+it with `cargo fuzz cmin` afterward. Separate cache restore/save steps preserve
+new inputs even when a target crashes.
 
 ## The corpus
 
@@ -82,14 +63,8 @@ The other three take structured input that `arbitrary` decodes from raw bytes, s
 hand-written seed would mean nothing. Those directories hold a bounded sample of
 minimized inputs from a real run, capped at 64 files each.
 
-The cap is deliberate. A few minutes of fuzzing produces thousands of inputs — around 27
-MB across 6,900 files even after `cargo fuzz cmin` — and carrying that in the repository
-buys far less than it costs, since nothing in it is reviewable. A run started from these
-seeds rediscovers the rest within minutes, and the Nightly workflow uploads whatever it
-finds as an artifact.
-
-So: contribute a `regression-*` file for anything that crashed, and leave the rest to the
-fuzzer. If you do want to add coverage seeds, minimize first:
+Commit a `regression-*` input for each fixed crash. Keep routine coverage inputs
+in the fuzzing cache. Minimize any additional seeds before committing them:
 
 ```bash
 ./scripts/code/fuzz.sh cmin parse_query
@@ -109,16 +84,8 @@ fixed. A minimal reproducer usually deserves a unit test next to the code as wel
 
 ## Sanitizer
 
-The targets build without a sanitizer by default. `datui-lib` contains no `unsafe`, so
-for this code AddressSanitizer has very little to find that a panic would not already
-report: the bugs here are index arithmetic, unbounded recursion and disagreeing width
-calculations, and the fuzz profile turns on debug assertions and overflow checks so all
-of them trap. It costs about double the build output, 12 GB against 6.0 GB as measured
-on Linux, and runs the target itself noticeably slower, so it buys less coverage per
-minute of CI.
-
-It is still worth it for a long run, where it can reach the `unsafe` code inside Polars
-and Arrow that these targets feed. Turn it on with:
+Local runs omit the sanitizer by default. Enable AddressSanitizer when
+checking dependency memory errors or running a longer fuzzing session:
 
 ```bash
 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
@@ -126,12 +93,8 @@ DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 
 The Nightly workflow runs this configuration; the pull request job does not.
 
-Memory limits a sanitizer build more than disk does. cargo-fuzz compiles every crate as a
-single codegen unit, and instrumented that way `polars-core` alone peaks at about 8.5 GB,
-with `polars-expr`, `polars-ops` and `arrow-cast` at 2–3.4 GB each compiling alongside
-it. At four parallel jobs that is more than a 16 GB machine has, and the build is killed
-rather than failing with an error. The Nightly workflow builds with `CARGO_BUILD_JOBS=2`
-for this reason; do the same locally if the build disappears partway through:
+Sanitizer builds use substantial memory. The Nightly job limits parallel
+compilation to two jobs; use the same limit if your build is killed:
 
 ```bash
 CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
@@ -142,12 +105,8 @@ CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse
 cargo-fuzz reaches for `-Z sanitizer`, which is normally nightly-only, and
 `scripts/code/fuzz.sh` sets `RUSTC_BOOTSTRAP=1` to allow it on stable instead.
 
-That is a deliberate choice rather than a shortcut. `polars-ops` has a build script that
-enables its own `nightly` feature whenever it detects a nightly compiler, and that code
-path uses `core::unicode` internals which current nightly no longer exposes. The
-dependency tree therefore does not compile on nightly at all, for reasons unrelated to
-datui. Building on stable sidesteps that and keeps the fuzzers on the same pinned
-toolchain as every other job.
+Polars currently enables an incompatible internal code path on nightly.
+The wrapper uses stable with `RUSTC_BOOTSTRAP=1` to compile the fuzz targets.
 
 If a future Polars release fixes the nightly path, the flag can be dropped and the
 scripts switched to `cargo +nightly fuzz`.

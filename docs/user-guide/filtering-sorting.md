@@ -1,8 +1,19 @@
-# Filtering and Sorting
+# Sort, filter and arrange columns
 
 Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 **Columns** and **Filters**; <kbd>←</kbd> <kbd>→</kbd> switch them, and
 <kbd>Tab</kbd> moves between the tab bar and the body.
+
+## Filter rows and sort a column
+
+With the [quick-start penguin data](../getting-started/quick-start.md):
+
+1. Press <kbd>s</kbd> and select **Filters**.
+2. Add a filter: `body_mass_g`, `>`, `5000`. Press <kbd>Enter</kbd> to save the row, then <kbd>a</kbd> to apply.
+3. Open <kbd>s</kbd> again. On **Columns**, select `body_mass_g` and press <kbd>Space</kbd> twice for descending order.
+4. Press <kbd>Enter</kbd> to apply. The 61 matching penguins appear heaviest first.
+
+## Apply or cancel changes
 
 | Key | Does |
 |---|---|
@@ -11,11 +22,10 @@ Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 | <kbd>Esc</kbd> | Close without changing anything |
 | <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
 
-Filters and sort from this sidebar apply to the loaded table. To filter the
-result of a query, put the condition in the query's `where` clause. While a
-filter or query narrows the view, the bottom bar reads `417 of 1,000` — the
-count on screen exact, a large total abbreviated (`417,321 of 1.2M`); the
-exact total is in the Info panel.
+Sidebar filters and sort apply to the current query or reshape result. Running
+a new query clears them, so apply the query first and the sidebar settings
+afterward. The bottom bar shows matching and total row counts, such as `417 of 1,000`.
+Large totals are abbreviated; **Info** shows the exact total.
 Canceling the sidebar discards whatever was staged; reopening it shows what
 is actually applied.
 
@@ -40,8 +50,7 @@ list, then:
 | <kbd>v</kbd> | Hide or show this column (it stays in the list, dimmed) |
 
 Every column carries its own direction, so `salary` can run descending while
-`start_date` runs ascending. Nulls go last either way, as they do in pandas,
-DuckDB and spreadsheets.
+`start_date` runs ascending. Nulls go last in either direction.
 
 Back in the main view, <kbd>r</kbd> reverses every direction at once and
 <kbd>R</kbd> resets everything: query, filters, sort, column order and hidden

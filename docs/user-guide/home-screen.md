@@ -1,134 +1,73 @@
-# The Home Screen
+# Browse files
 
-Run `datui` with no arguments, or press <kbd>Ctrl</kbd>+<kbd>O</kbd> from
-anywhere, and you get a list of datasets with what each contains before you
-open it.
+Run `datui` without a path, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>, to find and
+open a dataset. Type to filter the list; press <kbd>Enter</kbd> to open the
+selected row. The details pane previews its schema when available.
 
-![Home and Cloud Demo](../demos/14-cloud-home.gif)
+## Open a file or directory
 
-```
- ┌──╮ ╭──╮ ╶─┬─╴ ╷  ╷ ╶┬╴
- │  │ ├──┤   │   │  │  │    ~/work/analysis
- └──╯ ╵  ╵   ╵   ╰──╯ ╶┴╴
- › ▏  filter and search
- ▾ RECENT  3  ────────────────────────────────────────────────────────────
-   /mnt/data/warehouse/  2 parquet                                   nfs4
- ▎   ↕ sales  hive                          2.4M × 18    340 MB    2d
-     ↕ customers.parquet                     89k × 12      4 MB    1w
-   ~/exports/
-     ◦ q3.csv                                          1.2 GB    3h
- ▾ ~/work/analysis  2  current directory  ───────────────────────────────
-   ◦ raw_export.csv                                     1.2 GB    3h
-   ◦ notes/ dir
- ▾ /mnt/data  2  configured  ──────────────────────────────────── nfs4
-   ↕ events  hive                            1.1M × 9    120 MB    3h
-   ↕ lookup.parquet                           980 × 4      8 KB   2mo
- Enter Open  ↑↓ Move  ^C Quit  type Filter  ~ Path  ←→ Fold  ^↑↓ Section  Tab Sort  ? Help
-```
+1. Type part of a name to filter the list.
+2. Select the file with <kbd>↑</kbd> / <kbd>↓</kbd> and press <kbd>Enter</kbd>.
+3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
 
-Each row shows rows × columns, size and age. A pane on the right shows the
-schema and the file details of the highlighted dataset.
+To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
+<kbd>Tab</kbd> to complete it, then press <kbd>Enter</kbd>.
 
-## Keys
-
-Every letter types into the filter, so `json` finds json. The keys are:
-
-| Key | Action |
-|---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
-| <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A screenful, stopping at the first and last |
-| <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On any directory <kbd>→</kbd> goes inside it, whatever its label, so one partition or one file can always be reached. On a place row under `RECENT` it browses the place |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section |
-| <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
-| type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
-| <kbd>~</kbd> | While the filter is empty, type a path or URL (with a filter typed, <kbd>~</kbd> types into it). <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
-| <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows |
-| <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level |
-| <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
-| <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
-| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor, or forget it if remembered. A file stands for its directory, a heading for the directory it lists |
-| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
-| <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
-| <kbd>Esc</kbd> | Back out one layer: filter, then directory, then to the data you had open |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
-| <kbd>?</kbd> | Help |
-
-<kbd>Esc</kbd> never quits and <kbd>q</kbd> types a `q`; from a dataset opened
-here, <kbd>q</kbd> returns here. The control bar says
-what <kbd>Esc</kbd> will do next, and when a key cannot do what it asks, the
-line beside the filter says why.
+<kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
+<kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
 
 ## Sections
 
-Datasets are grouped by where they came from, in this order:
+| Section | Contents |
+|---|---|
+| `RECENT` | Opened datasets, grouped by their parent directory or cloud location |
+| Current directory | Files where you launched datui |
+| `CLOUD` | Detected and configured cloud sources; open one to list its contents |
+| Configured directories | Paths from `[data] directories`, in configured order |
+| Remembered directories | Paths saved with <kbd>Ctrl</kbd>+<kbd>D</kbd> |
+| `ELSEWHERE` | Directories from the desktop's recent-files list; folded initially |
+| `Found` | Recursive search results while you type |
 
-| Section | Contents | Chip | Starts |
-|---|---|---|---|
-| `RECENT` | Datasets you have opened, grouped under the directory each lives in, local or in a bucket | | open |
-| current directory | Where you launched datui | `current directory` | open |
-| `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
-| configured directories | `[data] directories`, in the order listed | `configured` | open |
-| remembered directories | Directories kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>, in the order kept | `remembered` | open |
-| `ELSEWHERE` | Directories from your desktop's recent-files list | | folded |
-| `Found` | Datasets below the current directory, while you are typing | | |
-
-A section titled by a path carries a chip beside its count saying why it is
-there. The note at the far end of the rule says how it is doing: the filesystem
-it is on (`nfs4`), `first 5,000` for a listing cut short, `listing` (with
-`1,200 so far` once a slow share has sent its first rows, which show as they
-arrive), or `unavailable`. A folded section shows how many rows it hides. Filtering keeps
-the grouping, so a match always shows which section it came from. With thirty
-list rows or more, a blank line separates the sections.
+Folded sections stay folded between runs. Path sections show why they are
+listed and their status: for example `configured`, `nfs4`, `listing` (with
+`1,200 so far` once a slow share sends its first rows, which show as they
+arrive), `unavailable`, or `first 5,000` when a listing is incomplete.
 
 ### Recent
 
-Every dataset you have opened sits under a **place row**: the directory it
-lives in, local or in a bucket, newest place first. The place row names the path,
-what datui last found the place to be (`hive`, `12 parquet`) when it has seen
-it, and, on a network share or in an object store, what it is on. A sort orders
-the rows inside each place and never flattens the section.
+A **place row** groups datasets by directory. Open the place to browse its
+contents, including files you have not opened individually. This is why a
+familiar directory can show more files than your recent individual opens.
+Places are ordered by recency; sorting changes the dataset order within each
+place.
 
-| On a place row | Does |
-|---|---|
-| <kbd>Enter</kbd> or <kbd>→</kbd> | Browse the place, as it would a directory. <kbd>Esc</kbd> comes back |
-| <kbd>Delete</kbd> | Forget every recent under it, after confirming |
-
-Whole places are shown until they take a third of the list, and always at least
-one. What is left is one row, `… 13 more in 5 places`; <kbd>Enter</kbd> on it
-shows the whole section for the session. The count on the header is the true
-count. A filter matches anywhere in `RECENT`, past the cap.
+Initially, whole places fill up to a third of the list, with at least one
+place shown. Select `… more in … places` to expand the rest for this session.
+The section count and filter include entries beyond that visible limit.
 
 ### Adding a directory
 
-Opening a dataset puts its directory under `RECENT` as a place, so a place only
-has to be found by hand once (<kbd>~</kbd>, type the path, open something).
-<kbd>Enter</kbd> on the place row takes you back there.
-
-To keep a place listed as a section of its own, even when empty or unmounted,
-press <kbd>Ctrl</kbd>+<kbd>D</kbd> on it. It is listed after the configured
-directories with a `remembered` chip until you press <kbd>Ctrl</kbd>+<kbd>D</kbd>
-again or <kbd>Delete</kbd> on its heading. It is kept in the cache, so
-`datui --clear-cache` forgets it too.
-
-For a place that should survive that, name it in the config:
+Opening a dataset adds its parent to Recent. Press <kbd>Ctrl</kbd>+<kbd>D</kbd>
+to keep a directory in its own section; press it again to forget the directory.
+Remembered directories are stored in the cache. To keep one after clearing the
+cache, add it to your [config](../reference/settings.md#data):
 
 ```toml
 [data]
 directories = ["/mnt/data", "~/datasets", "$WORK/warehouse"]
 ```
 
-`~` and `$VAR` are expanded. An unreachable directory shows as `unavailable`
-instead of vanishing.
+`~` and `$VAR` expand. Unreachable configured directories stay listed as
+`unavailable`.
+
+To add a cloud account or storage endpoint to the home screen, see
+[Named cloud sources](../reference/cloud-sources.md#named-sources).
 
 ### Desktop places
 
-`ELSEWHERE` lists the directories named in freedesktop's `recently-used.xbel`,
-the file GTK apps and file managers write. Only directories, never file names,
-and their contents appear only after you press <kbd>Enter</kbd>. Datui reads the
-file and never writes it. To ignore it:
+`ELSEWHERE` reads directories from freedesktop's `recently-used.xbel`, used by
+GTK apps and file managers. Datui does not modify that file or list a place's
+contents until you enter it. Disable this with:
 
 ```toml
 [data]
@@ -137,423 +76,213 @@ use_desktop_recents = false
 
 ## Searching below the current directory
 
-Typing filters what is on screen and also starts a recursive search of the
-working directory. Matches appear in a `Found` section, named by their path
-below the root so three files called `sales.parquet` stay distinct.
+Typing filters the visible list and starts a background search below the
+working directory. `Found` results show relative paths, so identically named
+files in different folders remain distinguishable. The directory walk runs
+once; later keystrokes filter its results in memory.
 
-```
-Found   ~/work/analysis · 954 searched
-  europe/q3/sales.parquet          12.4 MB   1.2M rows   3 days ago
-  americas/q3/sales.parquet         9.1 MB   890K rows   3 days ago
-```
-
-The walk runs once, in the background, on the first keystroke; after that every
-keystroke filters in memory. If it stops early the heading says so:
-`partial · out of time`, `partial · too many` or `partial · too deep`.
+An incomplete search says `partial · out of time`, `partial · too many`, or
+`partial · too deep` in its heading.
 
 ### Matching
 
-Fuzzy matching uses fzf's scoring, so it ranks the way fzf, Telescope and
-snacks.picker do: a match after `/` or `_` beats one mid-word, consecutive
-beats scattered, a match in the file name beats one in a directory, and ties go
-to the shorter name. Matched characters are underlined.
-
-Typing also matches **column names**: `customer_id` finds every dataset with
-that column, with the match shown beside the row. Name matches rank above
-column matches. Columns are known for Parquet datasets that have been listed
-at least once, and are remembered between runs.
+Name matching uses fzf-style scoring: consecutive characters, word boundaries
+and filename matches rank higher. Matched characters are underlined.
+Known Parquet column names also match; name matches rank ahead of column
+matches. Column metadata is remembered between runs.
 
 ### What is skipped
 
-| Rule | Effect |
+| Default rule | Examples |
 |---|---|
-| Hidden directories | `.git`, `.venv`, `.tox`, caches |
-| A fixed name list | `node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`, `__pycache__`, `venv`, `env` |
-| Filesystem boundaries | A search never wanders onto a mount |
+| Hidden directories | `.git`, `.venv`, caches |
+| Build and dependency directories | `node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`, `__pycache__`, `venv`, `env` |
+| Filesystem boundaries | Mounted disks and network shares |
 | Symlinks | Not followed |
 
-`.gitignore` is **not** read: people gitignore data directories because the
-data is too big to commit, which is exactly the data you want to open.
+`.gitignore` is not read by default: data directories are often gitignored.
 
 ### Tuning
 
-`[data.search]` sets the depth, time budget, result cap, skip list and
-extensions; see [Configuration](configuration.md#data). The key that matters is
-`cross_filesystems = false`: leaving it off is what stops a search from
-descending onto a network share, or on autofs from mounting one by looking at
-it.
+Set search depth, time, result count and additional exclusions in
+[`[data.search]`](../reference/settings.md#data). `cross_filesystems = false` avoids
+crossing onto network shares or triggering automounts during a search.
 
 ## The details pane
 
-```
- DETAILS
-kind         hive table
-storage      nfs4
-rows         412M
-columns      38
-on disk      184 MB
-in memory    1.4 GB
-compression  zstd, 7.6×
-row groups   12
-partitions   1,460 by date, region
-range        date 2021-01-01 to 2024-12-31
-modified     3 days ago
-```
+| Field | Meaning |
+|---|---|
+| Kind / storage | File or dataset format, and the filesystem or object store |
+| Contains | Files by format, directories and partitions |
+| Rows × columns | Known counts; blank when they would require scanning data |
+| On disk | Stored size |
+| In memory | Parquet's uncompressed size, not current process memory |
+| Row groups | Parquet's read units; their size affects paging cost |
+| Partitions | Keys and values found in directory names |
+| Schema | Known columns and their types |
 
-| Line | From | Why it matters |
-|---|---|---|
-| `kind` | the listing | what the row is, in words: `parquet file`, `directory`, `hive table`, `delta table` |
-| `storage` | the mount table | `nfs4`, `cifs` and `fuse.sshfs` all behave differently from a local disk. Remote storage is colored |
-| `contains` | one listing of a directory | the data files by format, the directories and the partitions inside it, one to a line; `no data files` when there is nothing to open |
-| `in memory` | the Parquet footer | what the data occupies once decompressed, against what it occupies on disk |
-| `compression` | the Parquet footer | the codec, and how many times smaller the file is than the data |
-| `row groups` | the Parquet footer | one huge group cannot be read in parallel; thousands of tiny ones cost overhead |
-| `partitions` | directory names | the layout of a partitioned dataset, without opening a file |
-
-None of this reads the data itself. Row and column counts come from Parquet
-footers, summed over at most 64 files for hive and multi-file datasets. A larger
-one is not counted, and its columns come from a spread of the directory rather
-than all of it, so it shows `? × 39+`: neither figure is a total, and both say
-so. CSV and other formats that need a scan to count show neither. Below the
-counts, the pane lists the full schema of a Parquet dataset, each type in the
-color the table uses. The pane leads with facts; at most one dimmed line of
-guidance follows, and it yields first when the terminal is small.
+Parquet previews read metadata, not data rows. Counts cover up to 64 files;
+for a larger dataset the pane shows an unknown row count and a sampled column
+count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts.
 
 ### What a row's label says
 
-A directory's label says what is directly inside it, from one listing:
-
-| Label | Means |
+| Label | Directory contents |
 |---|---|
-| `hive` | It has a `key=value` child directory, and at least as many of those as data files |
-| `delta` `iceberg` `hudi` | The format's marker is present |
-| `12 parquet`, `3 csv`, `40 json` | Every data file directly inside is one format, and the count is the files |
-| `mixed` | Data files of more than one format |
-| `dir` | No data file directly inside — `dir+` where the listing was cut short, so none was *found*. The top of a store says `bucket` or `container` instead |
-| `…` | Nothing has looked into it yet |
-| spinner | A directory in a bucket being looked into |
-| `?` | Looking into a directory in a bucket failed; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again |
+| `hive` | `key=value` subdirectories, at least as numerous as direct data files |
+| `delta`, `iceberg`, `hudi` | A lake-table marker |
+| `12 parquet`, `3 csv` | Direct data files of one format |
+| `mixed` | Several formats |
+| `dir` | No direct data files; `dir+` means the listing was cut short |
+| `bucket`, `container` | The top of an object store |
+| `…`, spinner, `?` | Not inspected yet, inspecting, or inspection failed |
 
-A directory larger than the listing cap counts what it read and says so: `5000+
-parquet`. The details pane's `contains` lines list what there is to open inside.
-Names engines and repositories use for their own files are not counted: a name
-beginning with `_` or `.`, or ending `_$folder$`. A `key=value` name is a
-partition whatever it begins with, so a dataset partitioned on `_date` is still
-counted; a marker named after one, `year=2024_$folder$`, is not.
+The details pane's `contains` lines list the directory's contents.
+Job markers and names beginning with `_` or `.` are skipped, except partition
+names such as `_date=2025-01-01`. Folder markers ending in `_$folder$` are
+also skipped. A capped listing says so, for example `5000+ parquet`.
 
-A file with no extension, such as Spark's `part-00000`, is data when its first
-bytes carry a Parquet, Arrow, Avro or ORC signature. datui looks on a local disk
-only; on a network share such a file is left to the `(all files)` row, which
-reads it by its contents.
+Select the `… files datui can't open` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
+to reveal unreadable files such as `README.md`.
+They are dimmed and cannot be opened. Set `[data] show_unreadable_files = true`
+to show them by default.
 
-A listing shows the files datui can read. Inside a directory, the last row says
-how many others are hidden, `… 10 files datui can't open`, and its details pane
-names them. <kbd>Enter</kbd> on that row or <kbd>Ctrl</kbd>+<kbd>A</kbd> shows
-them, dimmed and after the directories; <kbd>Ctrl</kbd>+<kbd>A</kbd> hides them
-again. <kbd>Enter</kbd> does nothing on one; its details pane says datui has no
-reader for it. A path to one typed at <kbd>~</kbd> says so beside the prompt
-instead of opening or downloading it. To list them from the start, set
-`show_unreadable_files = true` under `[data]`.
+### Opening a directory
 
-A file that fails to load is reported on the home screen, where it was chosen;
-<kbd>Esc</kbd> still returns to the dataset open before.
+<a id="two-doors-into-every-directory"></a>
 
-A label describes; it does not promise what <kbd>Enter</kbd> will do. A
-directory of fifteen unrelated tables reads `15 parquet` and is still a place to
-look inside.
+<kbd>→</kbd> always browses inside. <kbd>Enter</kbd> follows the action shown
+in the bottom bar:
 
-### Two doors into every directory
-
-<kbd>→</kbd> goes inside any directory, to reach a single partition or a
-single file; <kbd>Esc</kbd> comes back out. The first row in there,
-`<directory> (all files)` — `(all partitions)` for a hive directory — opens
-the whole directory whatever it is labelled, so a wrong label costs one
-keystroke rather than access. The control bar says which key is which, for the
-row under the cursor:
-
-| It says | <kbd>Enter</kbd> will |
+| Action | Result |
 |---|---|
-| `Enter Open all` | read the whole directory as one table; <kbd>→</kbd> goes inside instead |
-| `Enter Inside` | step into the directory — the same as <kbd>→</kbd>, so only one is offered |
-| `Enter Open` | load the file on the row |
-| `Enter Look` | find out what the row is, then do whichever of those it calls for |
+| Open all | Combine the directory into one table |
+| Inside | Browse its files |
+| Open | Load the selected file |
+| Look | Inspect the directory, then choose the appropriate action |
 
-### The door does not refuse
+Inside a directory, the first row is **(all files)** or **(all partitions)**.
+Use it to combine the contents explicitly, even when Enter on the parent row
+would browse. A label such as `15 parquet` describes the files, not whether
+they form a single table.
 
-Whatever the directory is, the door reads it and says what it did. What it says
-is in the Notes tab, which the <kbd>i</kbd> key opens.
+### Combining files
 
-| Directory | Read as | What it says |
+<a id="the-door-does-not-refuse"></a>
+
+The **(all files)** or **(all partitions)** row combines a directory into one
+table. [Files and formats](loading-data.md#directories) explains format selection
+and [schema differences](loading-data.md#files-that-disagree).
+For Delta, Iceberg and Hudi, datui reads raw files without the transaction log;
+the result may contain deleted rows or superseded versions.
+
+### Storage markers
+
+<a id="where-a-rows-data-lives"></a>
+
+| Marker | ASCII | Location |
 |---|---|---|
-| One format, or a hive tree of Parquet | One table | — |
-| Parquet, CSV or NDJSON files that differ | One table, unioned by name and widened by type | which columns differ, and whether a column was widened |
-| Arrow, Avro, ORC or JSON files that differ | Refused, naming the file it stopped at | — |
-| More than one format | The commonest of them; Parquet wins a tie | what it passed over, by format and count |
-| `delta`, `iceberg`, `hudi` | The plain files under the table | that they are not the table, plus a chip by the row count |
-| Files written with no extension | What their first bytes say: Parquet, Arrow, Avro or ORC | — |
-| A directory of CSV or NDJSON in a bucket | One table, with that reader | — |
-| A directory in a bucket holding nothing datui reads | Refused, naming what is there | — |
-
-A lake table's files include rows a delete tombstoned and versions an update
-replaced — datui does not read the table's log yet — so their row count carries
-`not the Delta table` beside it. A directory of headerless CSVs is not offered
-as one table, because each file's first row of data would become column names;
-pass `--no-header` to read those rows as data.
-
-### Where a row's data lives
-
-A marker before each name says what opening it will cost:
-
-| Unicode | ASCII | Means |
-|---|---|---|
-| `◦` | `.` | local disk |
-| `▪` | `*` | memory, such as `/tmp` on tmpfs |
-| `↕` | `~` | network filesystem: NFS, SMB, sshfs |
-| `≈` | `@` | object store or URL |
-| `◌` | `?` | unknown |
-
-Local disk is dimmed; the rest are colored.
+| `◦` | `.` | Local disk |
+| `▪` | `*` | Memory, such as a tmpfs mount |
+| `↕` | `~` | Network filesystem: NFS, SMB, sshfs |
+| `≈` | `@` | Object store or URL |
+| `◌` | `?` | Unknown |
 
 ## Cloud storage
 
-Every object store datui can read is one row under `CLOUD`. <kbd>Enter</kbd> on a
-row lists what is inside, one level at a time; directories in a bucket descend like local ones,
-objects open like files, and opened objects go into `RECENT` like any other path.
+Open a source under `CLOUD` to browse buckets, projects or containers.
+**Public datasets** needs no login. See [Cloud browser](cloud-browser.md)
+for discovery, refresh behavior and listing errors, or
+[Remote data](remote-data.md) for credentials and URLs.
 
-| Source | Levels |
-|---|---|
-| S3 and S3-compatible | source › bucket › directory › object |
-| Google Cloud | source › project › bucket › directory › object |
-| Azure | source › account › container › directory › blob |
-| Public datasets | source › dataset › directory › object |
-
-```
-▾ CLOUD  5  ──────────────────────────────────────────────────────
-  ≈ Amazon S3         s3      3 buckets     datui config
-  ≈ Google Cloud      gcs     4 projects    project: example-project · gcloud
-  ≈ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
-  ≈ onprem            s3      403           minio.corp.example:9000 · datui config
-  ≈ Public datasets   public  11 datasets    built in
-```
-
-| Column | Shows |
-|---|---|
-| Name | The source's `label`, or its name |
-| API | `s3`, `gcs`, `azure`, or `public` |
-| Count | How many buckets (projects for Google Cloud, accounts for Azure, datasets for public data), a spinner while listing, `not listed` before the first listing, or why there are none |
-| Note | The endpoint, project or profile, and where the login was found |
-
-The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
-<kbd>Backspace</kbd> goes up one level, from a bucket back to its source, and
-<kbd>Esc</kbd> returns to where you started.
-
-The details pane for a source lists its endpoint, region, login and when its
-buckets were listed. When listing failed, the row says it in a word and the pane
-gives the whole message:
-
-| Row says | Means |
-|---|---|
-| `403` | The login cannot list buckets. An object can still open by its URL, `datui s3://bucket/key` |
-| `not logged in` | No usable credentials reached the store |
-| `no project` | A Google login that cannot search for projects, and no project is named; set `GOOGLE_CLOUD_PROJECT` or `DATUI_GCP_PROJECT` |
-| `unsupported login` | An application-default login datui cannot use itself (workload identity federation, impersonation), and no `gcloud` to ask |
-| `needs gcloud` | A login through `gcloud`, which is not installed |
-| `not signed in` | Azure tools are installed but nobody is signed in; the pane names `az login` or `Connect-AzAccount` |
-| `not configured` | A variable named in `[[cloud.sources]]` is not set |
-| `unavailable` | The endpoint did not answer |
-| `not found` | The source was removed or hidden since its row was drawn; <kbd>Ctrl</kbd>+<kbd>R</kbd> at the top looks again |
-
-### Loading
-
-The rows appear at once, with the buckets an earlier run listed. No source is
-listed, and no credential command (`aws`, `gcloud`, `az`, a profile's
-`credential_process`) run for one, until you ask:
-
-| To list | Do |
-|---|---|
-| One source | <kbd>Enter</kbd> or <kbd>→</kbd> on it. Once a session |
-| Every source on screen | <kbd>Ctrl</kbd>+<kbd>R</kbd> |
-| Every source, at launch | `[cloud] list_on_start = true` |
-
-Sources are listed a few at a time, each row updating as its answer arrives, so a
-slow endpoint holds up only its own row.
-
-A recent from a named S3-compatible source shows the name beside it, or
-`source not found: <name>` once that source has left the config.
-
-Typing also matches bucket names already listed, this session or an earlier one,
-from every source, in `Found`:
-`Lab MinIO › data` and `onprem › data` stay two rows.
-
-<kbd>Delete</kbd> on a source hides it until `datui --clear-cache`. To hide one
-for good:
-
-```toml
-[cloud]
-hide = ["gcs-default"]
-```
-
-### Which sources appear
-
-Exactly the ones datui can use to open the data, so a bucket that is listed is
-one that can be read.
-
-| Source | ID | Appears when |
-|---|---|---|
-| Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
-| Each other AWS profile that can log in | `aws-<profile>` | Keys, `credential_process`, SSO or a role in the profile |
-| Each MinIO client alias | `mc-<alias>` | An alias with keys in `mc`'s `config.json` (`~/.mc/`, `~/.mcli/`, or `MC_CONFIG_DIR`), or `MC_HOST_<alias>` in the environment, which wins |
-| s3cmd's server | `s3cfg` | Keys in the `[default]` section of `~/.s3cfg` (`%APPDATA%\s3cmd.ini` on Windows, or `S3CMD_CONFIG`) |
-| Azure | `az` | The Azure CLI has been used (`~/.azure`, or `AZURE_CONFIG_DIR`), or Azure PowerShell signed in (`~/.Azure/AzureRmContext.json`). Its rows are storage accounts, found across your subscriptions. With `az` on `PATH` or the Az.Accounts module installed and neither signed in, the row says `not signed in` |
-| Azure from the environment | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token, or a service principal (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`) |
-| Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, the file written by `gcloud auth application-default login`, or else the active `gcloud` configuration's login. Its rows are projects |
-| Each other `gcloud` configuration with a different account | `gcloud-<configuration>` | An `account` in `configurations/config_<name>` under `~/.config/gcloud` (`%APPDATA%\gcloud` on Windows, or `CLOUDSDK_CONFIG`) |
-| Public datasets | `public` | The configured `public` source, or the built-in catalog unless `public_datasets = false` |
-| Each `[[cloud.sources]]` entry | its `name` | Always |
-
-To show only some kinds of login found on the machine, or none:
-
-| `[cloud] discover` | `--cloud-discover` | Shows |
-|---|---|---|
-| unset, `true` or `"all"` | `all` | Every login found |
-| `false` or `"none"` | `none` | None |
-| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
-
-`[[cloud.sources]]` entries and public datasets appear whatever it says. The flag
-overrides the config for one run.
-
-A source in the config with the same name as one of these replaces it. The same
-server with the same key found in several places is one row; its note lists
-every place. `mc`'s placeholder aliases and its public `play` server are left
-out. See [Loading Data](loading-data.md#several-stores-at-once) for
-`[[cloud.sources]]`.
-
-Google Cloud lists every project the login can find, the one named in the
-environment or the active `gcloud` configuration first — and alone when
-searching for projects is refused. A profile that needs the AWS CLI shows
-`needs the AWS CLI` when it is not installed, and an expired SSO login shows
-the CLI's message; see [Loading Data](loading-data.md#aws-profiles). A cloud
-VM's identity is not discovered unless `[cloud] instance_identity = true`; see
-[Configuration](configuration.md#cloud).
-
-### Public datasets
-
-`Public datasets` lists data its publishers host and keep up to date, readable with
-no login. Nothing is requested until you open one. HTTP(S) files open as tables; object-store
-roots open for browsing. Datui bundles no dataset files. Hosted CSV extracts have
-the coverage shown below; they are not the separately prepared demo tables.
-
-| Dataset | Data | License |
-|---|---|---|
-| NYC flights (2013) | Departures from JFK, LaGuardia and Newark; delays in minutes | CC0 (nycflights13) |
-| Food nutrition (fast food) | 515 menu items; nutrients per item, not per 100 g | GPL-3 (OpenIntro package) |
-| US baby names (1880-2017) | Published name counts by year and sex; counts below five are suppressed | CC0 / public domain |
-| NOAA daily weather (GHCN-D) | Worldwide weather station observations, by year and by station | CC0 |
-| Premier League (2020-21) | Match rounds, dates, teams and full-time scores | CC0 |
-| NYC yellow taxis (January 2025) | One original monthly trip file; fares, distances and congestion fees | NYC Open Data terms |
-| Earthquakes (past month) | Rolling month of worldwide earthquakes; magnitudes, depth and location | Public domain |
-| Space launches (1957-2018) | Historical launch records and agencies; includes failed attempts | MIT (The Economist extract); credit Jonathan McDowell |
-| Palmer penguins | 344 penguins: species, island, bill, flipper length and body mass | CC0; credit Horst, Hill and Gorman (2020) |
-| Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
-| Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
-
-The details pane gives each one's publisher, license and homepage. The license is
-the publisher's: check it before you use the data. <kbd>Backspace</kbd> at a
-dataset's top returns to the list. A public bucket or container you have browsed or
-opened unsigned is added to the list. For a list of your own, see
-[Loading Data](loading-data.md#public-data).
-
-`datui --generate-config` writes this catalog as active
-`[[cloud.sources.datasets]]` tables to edit; see
-[Configuration](configuration.md#cloud) for the fields and how the snapshot
-behaves.
-
-Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
-objects some tools leave to stand for folders.
-
-### What a cloud row shows
-
-Inside a bucket: name, size and modification time, which is what a listing
-returns. Row counts and columns would need a read per object, which someone is
-billed for, so they are not fetched until you open one. A directory of
-`key=value` partitions is labelled `hive`, and every other directory by what
-it holds — `12 parquet`, `3 csv`, or `dir` — like a local one. How a remote
-dataset then opens is in [Loading Data](loading-data.md#remote-data).
+<a id="which-sources-appear"></a>
+<a id="public-datasets"></a>
+<a id="what-a-cloud-row-shows"></a>
 
 ## Network locations
 
-Nothing on the home screen touches a network location on the thread that draws
-the screen. Network roots and cloud URLs are recognized from their name and the
-mount table, listed in the background, and show a spinner until the listing
-arrives. A location that never answers is marked `unavailable` and not retried.
-Remembered counts for a remote dataset are shown without re-checking; local
-datasets are re-measured when their size or modification time changes.
+Listings run in the background. A location that fails to answer shows
+`unavailable`; press <kbd>Ctrl</kbd>+<kbd>R</kbd> to retry. Remote metadata can
+come from cache; local metadata is refreshed when file size or modification
+time changes.
 
 ## Loading
 
-<kbd>Enter</kbd> leaves the home screen at once and shows the load in
-progress, with the phase it is in: scanning, caching the schema, filling the
-first buffer. <kbd>Ctrl</kbd>+<kbd>O</kbd> during a load abandons it and comes
-back. A dataset that will not open returns you here with the reason:
-
-```
-› corrupt▏   …parquet: 'parquet scan': the file must end with PAR1
-```
+<kbd>Enter</kbd> shows loading progress. Press <kbd>Ctrl</kbd>+<kbd>O</kbd> to
+cancel and return home. If a file cannot open, home shows the error and
+<kbd>Esc</kbd> can return to the previously open dataset.
 
 ## What datui remembers
 
-Three things, all in the cache directory:
+Datui caches recent paths and measured metadata: counts, column names, size
+and modification time. Clear them with:
 
-- The paths you have opened, at most 50.
-- The directories you kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>.
-- What it measured: row and column counts and column names, each stamped with
-  the size and modification time it was taken from.
+| Command | Removes |
+|---|---|
+| `datui --clear-recents` | Recent paths only |
+| `datui --clear-cache` | Cached metadata, recents, remembered directories and query history |
 
-<kbd>Delete</kbd> forgets one recent entry, <kbd>Shift</kbd>+<kbd>Delete</kbd>
-forgets them all, and so does `datui --clear-recents`. `datui --clear-cache`
-clears everything including measurements and query history. Both are caches;
-they cost only speed to rebuild.
+These commands do not delete data files.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> | Select a row; <kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> also work |
+| <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Move between sections |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
+| <kbd>Home</kbd> <kbd>End</kbd> | First or last row |
+| <kbd>Enter</kbd> | Open the selected dataset, browse a directory, or expand a section |
+| <kbd>→</kbd> | Browse inside a directory, including a Hive dataset; unfold a section |
+| <kbd>←</kbd> | Fold a section |
+| type | Filter names and known column names |
+| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths |
+| <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
+| <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory |
+| <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
+| <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
+| <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a remembered heading, forget it; on a cloud source, hide it |
+| <kbd>Shift</kbd>+<kbd>Delete</kbd> | Confirm forgetting all recent entries |
+| <kbd>Esc</kbd> | Clear the filter, leave a directory, or return to the open table |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
+| <kbd>?</kbd> | Help |
+
+Letters enter the filter here: <kbd>q</kbd> types a `q`. From a table opened
+through home, <kbd>q</kbd> returns home. <kbd>Esc</kbd> never quits.
+The bottom bar shows the available action for the selected row.
 
 ## Limits
 
-Every kind of work the home screen does is capped, so it stays fast however
-long you have used it:
-
-| Work | Limit |
+| Work | Default limit |
 |---|---|
-| recent paths kept | 50 |
-| directories promoted to sections by a recent | 8 |
-| entries listed from one directory | 5,000 |
-| subdirectories inspected per listing | 64 |
-| entries read to classify a directory | 5,000 |
-| files read to count a multi-file dataset | 64 |
-| datasets measured at once | 12, only ones on screen |
-| network directories probed at once | 4 |
-| recursive search depth | 8 |
-| recursive search results | 20,000 |
-| recursive search time | 1.5 s |
+| Recent paths | 50 |
+| Directories promoted from recents | 8 |
+| Entries listed or inspected to classify a directory | 5,000 |
+| Subdirectories inspected per listing | 64 |
+| Files read for a preview count | 64 |
+| Datasets measured concurrently | 12, visible entries only |
+| Network directories probed concurrently | 4 |
+| Recursive search | Depth 8; 20,000 results; 1.5 seconds |
 
-A directory cut short reads `first 5,000` beside its name, whether it is local
-or on a share. A subdirectory past
-the 64 is still listed, as a directory rather than a dataset, until you enter it.
+Entries beyond an inspection limit remain browsable. The listing or search
+heading marks incomplete results: a directory cut short reads `first 5,000`
+beside its name, whether it is local or on a share.
 
 ## Narrow and plain terminals
 
-Below about 100 columns the details pane gives way to the list; below about 56
-the size and shape columns go too. On a terminal shorter than 28 rows the
-wordmark becomes a one-line title.
-
-Without a UTF-8 locale datui falls back to ASCII everywhere: markers, arrows and
-rules. No Nerd Font glyphs are used anywhere. Override the detection with:
+The details pane hides below roughly 100 columns; size and shape columns hide
+below roughly 56. Below 28 rows, the wordmark becomes a one-line title.
+Without a UTF-8 locale, markers and borders use ASCII. Override detection with:
 
 ```toml
 [display]
-unicode = "auto"    # "auto" (default), "always", or "never"
+unicode = "auto"    # "always" or "never" to override
 ```
 
 ## Desktop launchers
 
-The packages install `/usr/share/applications/datui.desktop`, so datui appears
-in GNOME, KDE, rofi, wofi and Omarchy menus and file managers offer
-"Open with datui" for the formats it reads. Launching it from a menu opens the
-home screen.
+Linux packages include a desktop entry for application menus and file-manager
+“Open with” actions. Launching datui from a menu opens home.

@@ -14,19 +14,14 @@ through fontconfig (`fc-list`, `fc-query`), and exits non-zero on a violation.
 
 | Rule | Why |
 |---|---|
-| Every codepoint exists in JetBrainsMono Nerd Font | The most common TUI font; the default set must be complete there |
+| Every codepoint exists in JetBrainsMono Nerd Font | Required coverage for the default set |
 | No `Emoji=Yes, Emoji_Presentation=No` codepoint missing from any floor font | A terminal whose font lacks one falls back to the **color emoji** font and renders a blank cell or a clipped blob — no user font choice fixes it |
 | The ASCII set is pure ASCII | It is the floor a C locale falls back to |
 
 The floor fonts are JetBrainsMono Nerd Font, Liberation Mono and Noto Sans
 Mono. A *non-emoji* codepoint missing from the last two is reported but
 allowed: fontconfig substitutes another text font, which renders fine in one
-color. The braille spinner, the wordmark's heavy box drawing and the `✓`
-check mark are in that category today; `⚠` was not (emoji-class, absent from
-both) and was replaced with `▲` for exactly that reason, as `☁ ☑ ☐ ⇅ ◐ ◑`
-were before it (#325, #326).
-
-A wider list (Fira Code, Hack, Cascadia, Iosevka, Menlo, SF Mono, Consolas,
+color. A wider list (Fira Code, Hack, Cascadia, Iosevka, Menlo, SF Mono, Consolas,
 DejaVu Sans Mono) is audited informationally wherever those fonts are
 installed.
 
@@ -40,5 +35,5 @@ installed.
 
 Users whose fonts carry more than the floor can override any slot with the
 `[glyphs]` config section; see
-[Configuration](../user-guide/configuration.md#glyphs). The default set never
+[Configuration](../reference/settings.md#glyphs). The default set never
 assumes more than the floor.

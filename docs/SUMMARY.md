@@ -1,45 +1,65 @@
 # Summary
 
-[Introduction](introduction.md)
+[Documentation](introduction.md)
 
+# Start
+
+- [Install datui](getting-started/installation.md)
+- [Quick start](getting-started/quick-start.md)
 - [Demos](demos.md)
 
-- [Getting Started](getting-started.md)
-  - [Installation](getting-started/installation.md)
-  - [Quick Start](getting-started/quick-start.md)
+# Open data
 
-- [User Guide](user-guide.md)
-  - [The Home Screen](user-guide/home-screen.md)
-  - [Loading Data](user-guide/loading-data.md)
-  - [Querying Data](user-guide/querying-data.md)
-  - [Filtering and Sorting](user-guide/filtering-sorting.md)
-  - [Charting](user-guide/charting.md)
-  - [Analysis](user-guide/analysis-features.md)
-  - [Pivot and Melt](user-guide/reshaping.md)
-  - [Exporting Data](user-guide/exporting-data.md)
-  - [Copying to the Clipboard](user-guide/copying.md)
-  - [Views](user-guide/views.md)
-  - [Dataset Info](user-guide/dataset-info.md)
-  - [Python Module](user-guide/python-module.md)
-  - [Configuration](user-guide/configuration.md)
-  - [Theming from Your System](user-guide/system-theming.md)
-  - [Performance Tips](advanced/performance-tips.md)
+- [Browse files](user-guide/home-screen.md)
+- [Files and formats](user-guide/loading-data.md)
+- [Connect to cloud storage](user-guide/remote-data.md)
+- [Browse cloud data](user-guide/cloud-browser.md)
+- [Inspect a dataset](user-guide/dataset-info.md)
 
-- [Reference](reference.md)
-  - [Keyboard Shortcuts](reference/keyboard-shortcuts.md)
-  - [Query Syntax](reference/query-syntax.md)
-  - [Command Line Options](reference/command-line-options.md)
+# Query and reshape
 
-- [For Developers](for-developers.md)
-  - [Setup Script](for-developers/setup-script.md)
-  - [Tests](for-developers/tests.md)
-  - [Security Checks](for-developers/security-checks.md)
-  - [Fuzzing](for-developers/fuzzing.md)
-  - [Glyph Coverage Audit](for-developers/glyph-audit.md)
-  - [Adding Configuration Options](for-developers/adding-configuration-options.md)
-  - [Documentation](for-developers/documentation.md)
-  - [Generating the Demos](for-developers/demos.md)
-  - [Contributing](for-developers/contributing.md)
-  - [Building Packages](for-developers/packaging.md)
-  - [Python Bindings](for-developers/python-bindings.md)
-  - [PyPI Deployment](for-developers/pypi-deployment.md)
+- [Queries and search](user-guide/querying-data.md)
+- [Sort, filter and arrange columns](user-guide/filtering-sorting.md)
+- [Pivot and melt](user-guide/reshaping.md)
+
+# Charts and analysis
+
+- [Make a chart](user-guide/charting.md)
+- [Statistics and distributions](user-guide/analysis-features.md)
+- [Check data quality](user-guide/data-quality.md)
+- [Large datasets](advanced/performance-tips.md)
+
+# Save and reuse
+
+- [Copy to the clipboard](user-guide/copying.md)
+- [Export data](user-guide/exporting-data.md)
+- [Save and apply views](user-guide/views.md)
+- [Use datui from Python](user-guide/python-module.md)
+
+# Configure
+
+- [Configure datui](user-guide/configuration.md)
+- [Use a system theme](user-guide/system-theming.md)
+
+# Reference
+
+- [Keyboard shortcuts](reference/keyboard-shortcuts.md)
+- [Query syntax](reference/query-syntax.md)
+- [Command-line options](reference/command-line-options.md)
+- [Settings](reference/settings.md)
+- [Cloud sources](reference/cloud-sources.md)
+- [Data quality](reference/data-quality.md)
+
+# Contribute
+
+- [Development overview](for-developers.md)
+- [Set up and contribute](for-developers/contributing.md)
+- [Run tests](for-developers/tests.md)
+- [Build documentation](for-developers/documentation.md)
+- [Record demos](for-developers/demos.md)
+- [Add configuration options](for-developers/adding-configuration-options.md)
+- [Build Python bindings](for-developers/python-bindings.md)
+- [Build and publish packages](for-developers/packaging.md)
+- [Security checks](for-developers/security-checks.md)
+- [Fuzzing](for-developers/fuzzing.md)
+- [Check glyph coverage](for-developers/glyph-audit.md)

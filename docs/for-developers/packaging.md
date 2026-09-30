@@ -1,4 +1,4 @@
-# Building Packages
+# Build and publish packages
 
 Datui can be packaged for Debian/Ubuntu (`.deb`), Fedora/RHEL (`.rpm`), and Arch Linux (AUR).
 
@@ -79,33 +79,19 @@ The same script is used in GitHub Actions:
 generates a body from the commit subjects since the previous tag. The body is
 therefore never empty, and hand-written notes are always optional.
 
-The timing is the point. `publish-packages.yml` starts about a minute after the
-release is created, and komac copies the release body into the winget manifest
-as `ReleaseNotes`. Notes typed onto the release page afterwards fix what people
-read on GitHub and nothing else, because winget already has whatever the body
-said. Version 0.3.1 shipped to winget with no release notes that way.
+Write notes before tagging: `publish-packages.yml` copies the release body into
+the winget manifest. Editing the GitHub release afterward does not update winget.
 
 To write notes for a release, run `python scripts/bump_version.py notes` and
 commit the file with the release. `tests/release_notes_test.rs` checks the
 wiring in CI, which runs on the release commit before the tag is pushed, and the
 winget job refuses to run komac against an empty release body. See
-`release-notes/README.md`.
+[the release-notes guide](https://github.com/derekwisong/datui/blob/main/release-notes/README.md).
 
 ### Arch Linux Installation
 
-Arch users can install from the release tarball:
-
-```bash
-# Install runtime dependency (required for terminal rendering)
-sudo pacman -S fontconfig
-# Download the tarball from a release, then extract and install
-tar xf datui-X.Y.Z-x86_64.tar.gz
-sudo install -Dm755 datui /usr/bin/datui
-sudo install -Dm644 target/release/datui.1.gz /usr/share/man/man1/datui.1.gz
-sudo install -Dm644 LICENSE /usr/share/licenses/datui/LICENSE
-```
-
-Or use the included `PKGBUILD` with `makepkg` (it declares `fontconfig` as a dependency).
+See [Installation](../getting-started/installation.md#package-managers) for
+installing from the AUR. The steps below are for package maintainers.
 
 ### AUR Release Workflow
 
@@ -137,7 +123,7 @@ Use **stable** release tags only (e.g. `v0.3.2`); the AUR package fetches the ta
 
 ### Automated AUR updates (GitHub Actions)
 
-The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically when you push a version tag. It publishes to the **datui-bin** AUR package (per AUR convention for pre-built binaries). It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
+The release workflow calls `publish-packages.yml` to push PKGBUILD and .SRCINFO to the AUR after creating the release. It publishes to the **datui-bin** AUR package (per AUR convention for pre-built binaries). It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
 
 **Required repository secrets** (Settings → Secrets and variables → Actions):
 
@@ -147,7 +133,20 @@ The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically whe
 | `AUR_USERNAME` | Your AUR account name (used as git commit author). |
 | `AUR_EMAIL` | Email for the AUR git commit (can be a noreply address). |
 
-If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, remove or comment out that step in `.github/workflows/release.yml`.
+If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, change the `publish-aur` job in `.github/workflows/publish-packages.yml`.
+
+## PyPI
+
+The release workflow builds Linux x86_64, Windows x86_64 and macOS ARM64/x86_64
+wheels with maturin. Each contains the Python extension and a bundled datui
+binary. Linux ARM64 currently has a standalone binary but no wheel.
+
+After the GitHub release is created, `publish-packages.yml` downloads the wheels
+and uploads them with twine using `PYPI_API_TOKEN`. The workflow also accepts a
+tag when run manually; a blank tag selects the latest release.
+
+Use `scripts/bump_version.py` to keep Rust and Python versions in sync.
+For local wheel development, see [Python bindings](python-bindings.md).
 
 ## WinGet releases
 

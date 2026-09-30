@@ -13763,3 +13763,74 @@ fn test_a_view_replays_the_query_before_the_melt() {
         "{applied:?}\n{expected:?}"
     );
 }
+
+/// A reshape over another keeps no source: a view saved after a pivot then a melt holds
+/// only the melt. Applying it fails on the next file, whose columns the melt never saw,
+/// and leaves the table as it was rather than showing a melt of the wrong data.
+#[test]
+fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
+    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+    let steps = [
+        AppEvent::SqlSearch("SELECT * FROM df WHERE id >= 4".to_string()),
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        }),
+        AppEvent::Melt(MeltSpec {
+            index: vec!["id".to_string()],
+            value_columns: vec!["k1".to_string(), "k2".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        }),
+    ];
+    let next_path = PathBuf::from("tests/sample-data/view_pivot_melt_next.csv");
+    std::fs::write(&next_path, long_csv(3)).unwrap();
+    let (mut app, rx, tx) = open_csv_with(
+        "view_pivot_melt_first.csv",
+        &long_csv(1),
+        OpenOptions::default(),
+    );
+    for step in &steps {
+        app.event(step);
+        pump_until_idle(&mut app, &rx, &tx);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+    }
+    let template = app
+        .create_template_from_current_state(
+            "view_pivot_melt".to_string(),
+            None,
+            datui::template::MatchCriteria {
+                exact_path: Some(next_path.clone()),
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+            },
+        )
+        .unwrap();
+    assert!(template.settings.melt.is_some());
+    assert!(template.settings.reshape_source.is_none());
+
+    pump_open_until_loaded(&mut app, &rx, vec![next_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let before = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .visible_lf()
+        .collect()
+        .unwrap();
+    app.event(&key(KeyCode::Char('V')));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    assert!(app.modal_showing(), "the view says it could not apply");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.last_melt_spec().is_none());
+    let after = state.visible_lf().collect().unwrap();
+    assert!(after.equals_missing(&before), "{after:?}\n{before:?}");
+}

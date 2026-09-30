@@ -41,19 +41,14 @@ pub fn render(
     }
 }
 
-/// A plan field's choices, a short list over the plan it sets.
+/// A Setup row's choices, a short list over the Setup it sets.
 fn render_plan_picker(
     picker: &analysis_modal::PlanPicker,
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     ctx: &RenderContext,
 ) {
-    let title = match picker.field {
-        1 => "Grain",
-        2 => "Values",
-        3 => "Compare",
-        _ => "Latency threshold",
-    };
+    let title = picker.title.as_str();
     let items = picker.state.filtered();
     let widest = items
         .iter()
@@ -99,13 +94,41 @@ fn render_body(
     ctx: &RenderContext,
 ) {
     if let Some(ref progress) = app.analysis_modal.computing {
-        // A run is one Polars query with no steps to count, so a gauge could only ever
-        // read 0%. What moves is time: the spinner and the clock say it is alive, and
-        // the control bar says Esc cancels. Every tool, Data Quality included, runs
-        // behind this one view.
+        // A run has no total to count against, so a gauge could only ever read 0%.
+        // What moves is time and the stage: the spinner, the clock and the stage's
+        // name say it is alive, rows are counted only where the read counts them,
+        // and the control bar says Esc cancels. Every tool, Data Quality included,
+        // runs behind this one view, whose lines never move as the stages go by.
         Clear.render(area, buf);
         let g = crate::glyphs::get();
         let spinner = g.spinner[app.throbber_frame as usize % g.spinner.len()];
+        let quality =
+            app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
+        let source = if quality {
+            let rows = progress
+                .read
+                .as_ref()
+                .and_then(crate::sampling::ReadWatch::rows_seen)
+                .map(|rows| {
+                    format!(
+                        " {} {} rows so far",
+                        g.middot,
+                        crate::numfmt::group_chrome(rows)
+                    )
+                })
+                .unwrap_or_default();
+            match progress.reads_source {
+                Some(true) => format!("   Reading the source{rows}"),
+                Some(false) => "   No source read: rows already read".to_string(),
+                None => progress
+                    .reuse
+                    .as_ref()
+                    .map(|reuse| format!("   {reuse}"))
+                    .unwrap_or_default(),
+            }
+        } else {
+            String::new()
+        };
         let lines = vec![
             Line::from(""),
             Line::from(vec![
@@ -121,8 +144,7 @@ fn render_body(
             ]),
             // What decides how long this takes, stated rather than left to guess.
             Line::from(Span::styled(
-                if app.analysis_modal.selected_tool
-                    == Some(analysis_modal::AnalysisTool::DataQuality)
+                if quality
                     && app.analysis_modal.data_quality_plan.compute
                         == crate::data_quality::QualityCompute::Metadata
                 {
@@ -132,6 +154,7 @@ fn render_body(
                 },
                 Style::default().fg(ctx.dimmed),
             )),
+            Line::from(Span::styled(source, Style::default().fg(ctx.dimmed))),
         ];
         Paragraph::new(lines).render(area, buf);
     } else if let Some(state) = &app.data_table_state {
@@ -139,18 +162,29 @@ fn render_body(
             // Borrowed field by field, never cloned. A per-file profile of a large
             // dataset owns a column profile per column per segment, and copying all of
             // it once per repaint made the dashboard slowest at the scale it is for.
+            let candidates = app.quality_time_candidates();
+            let note = app.analysis_modal.data_quality_setup_note.clone();
+            let plan = &app.analysis_modal.data_quality_plan;
+            let unchanged = app.analysis_modal.data_quality_results.is_some()
+                && app.analysis_modal.data_quality_last_plan.as_ref() == Some(plan);
+            let setup = data_quality::SetupView {
+                time_candidates: &candidates,
+                reuses_sample: app.quality_kept_serves(plan),
+                may_read_blocks: app.quality_may_read_blocks(plan),
+                counts_segments: app.quality_needs_segment_count(plan),
+                cached: app.quality_cached(plan),
+                unchanged,
+                edited: app.analysis_modal.setup_edited(),
+                note: note.as_deref(),
+                cancelling: app.cancelled_analysis_running(),
+            };
             let modal = &mut app.analysis_modal;
             let config = data_quality::DataQualityWidgetConfig {
-                first_run: modal.sample_form.as_ref().is_some_and(|form| form.inline),
                 checks_expanded: modal.data_quality_checks_expanded,
                 state,
-                // The Plan page edits the working plan; the result pages show the
-                // plan they were measured with, whatever is being edited.
-                plan: if matches!(
-                    modal.data_quality_page,
-                    crate::data_quality::QualityPage::Plan
-                        | crate::data_quality::QualityPage::TimeRoles
-                ) {
+                // Setup edits the draft; the result pages show the plan they were
+                // measured with, whatever is being staged.
+                plan: if modal.data_quality_page.is_setup() {
                     &modal.data_quality_plan
                 } else {
                     modal
@@ -169,7 +203,7 @@ fn render_body(
                 segment_index: modal.data_quality_segment_index,
                 segments_by_change: modal.data_quality_segments_by_change,
                 page: modal.data_quality_page,
-                pending: modal.quality_plan_pending(),
+                setup,
                 plan_field: modal.data_quality_plan_field,
                 show_access: modal.data_quality_show_access,
                 observation_detail: modal.data_quality_observation_detail,
@@ -280,7 +314,7 @@ pub fn help_title_and_text(modal: &AnalysisModal) -> (String, String) {
 }
 
 /// `12s`, `3m 05s`, `1h 02m`: a clock for a wait, to the second while seconds matter.
-fn elapsed(d: std::time::Duration) -> String {
+pub(crate) fn elapsed(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     match secs {
         0..=59 => format!("{secs}s"),

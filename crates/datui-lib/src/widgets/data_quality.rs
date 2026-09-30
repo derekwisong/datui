@@ -1,4 +1,4 @@
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll};
+use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, SetupRow};
 use crate::config::Theme;
 use crate::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison,
@@ -13,7 +13,8 @@ use crate::quality_report::{
 };
 use crate::render::context::RenderContext;
 use crate::widgets::datatable::DataTableState;
-use crate::widgets::ui::{Picker, Surface};
+use crate::widgets::ui::{FormValue, Picker, Surface};
+use polars::prelude::{DataType, Schema};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -22,16 +23,36 @@ use ratatui::widgets::{
     Cell, Paragraph, Row, StatefulWidget, Table, TableState, Tabs, Widget, Wrap,
 };
 
+/// What Setup says about the draft beside its rows, all of it known without a read.
+#[derive(Debug, Clone, Default)]
+pub struct SetupView<'a> {
+    /// The columns a time role can be given: date and time columns, then text.
+    pub time_candidates: &'a [String],
+    /// A run would start from the rows the last run read.
+    pub reuses_sample: bool,
+    /// A random sample may read seeded runs of one file instead of streaming it.
+    pub may_read_blocks: bool,
+    /// A run would count its segments' rows in a pass of its own.
+    pub counts_segments: bool,
+    /// The session cache holds this draft's report.
+    pub cached: bool,
+    /// The report on screen was measured with exactly this draft.
+    pub unchanged: bool,
+    /// Setup holds edits Esc would discard.
+    pub edited: bool,
+    /// Why Enter did not run.
+    pub note: Option<&'a str>,
+    /// When a cancelled read began winding down, while it still is.
+    pub cancelling: Option<std::time::Instant>,
+}
+
 pub struct DataQualityWidgetConfig<'a> {
-    /// The Sample form is this pane until the first run: nothing of the plan or the
-    /// report is drawn behind it, so there is one thing to look at.
-    pub first_run: bool,
     /// The clean entry's checks table shows every check, not the first few.
     pub checks_expanded: bool,
     pub state: &'a DataTableState,
     pub plan: &'a DataQualityPlan,
     /// The plan the result on screen was measured with; the header says this one
-    /// even while the Plan page edits another.
+    /// even while Setup edits another.
     pub measured: &'a DataQualityPlan,
     pub results: Option<&'a DataQualityResults>,
     pub from_cache: bool,
@@ -40,8 +61,7 @@ pub struct DataQualityWidgetConfig<'a> {
     pub segment_index: usize,
     pub segments_by_change: bool,
     pub page: QualityPage,
-    /// The plan has been edited since the result on screen was measured.
-    pub pending: bool,
+    pub setup: SetupView<'a>,
     pub plan_field: usize,
     pub show_access: bool,
     pub observation_detail: bool,
@@ -94,9 +114,7 @@ pub fn render(
         .split(area);
 
     render_header(&config, vertical[0], buf);
-    if !config.first_run {
-        render_tabs(&config, vertical[1], buf);
-    }
+    render_tabs(&config, vertical[1], buf);
 
     let body = if sidebar_width > 0 {
         let horizontal = Layout::default()
@@ -109,15 +127,8 @@ pub fn render(
         vertical[2]
     };
 
-    if config.first_run {
-        // The Sample form draws itself centered in `main_pane`; the pane stays empty.
-        if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
-            render_narrow_tool_picker(&config, sidebar_state, area, buf);
-        }
-        return;
-    }
     match config.page {
-        QualityPage::Plan => render_plan(&config, table_state, body, buf),
+        QualityPage::Setup => render_setup(&config, body, buf),
         QualityPage::TimeRoles => render_time_roles(&config, table_state, body, buf),
         QualityPage::Overview => render_overview(&config, table_state, body, buf),
         QualityPage::Columns => render_columns(&config, table_state, body, buf),
@@ -145,7 +156,7 @@ pub fn render(
 fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let middot = glyphs::get().middot;
     let mut text = "Data Quality".to_string();
-    if let Some(results) = config.results.filter(|_| !config.first_run) {
+    if let Some(results) = config.results.filter(|_| !config.page.is_setup()) {
         let plan = config.measured;
         text.push_str(&format!(" {middot} {}", measured_on(plan, results)));
         if plan.grain != QualityGrain::Dataset {
@@ -159,10 +170,21 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
         }
     }
     let mut spans = vec![Span::raw(text)];
-    if config.from_cache {
+    if config.from_cache && !config.page.is_setup() {
         spans.push(Span::styled(
             "  [session cache]",
             Style::default().fg(config.theme.get("dimmed")),
+        ));
+    }
+    // State, not a message: it holds until the worker exits, on every page.
+    if let Some(since) = config.setup.cancelling {
+        spans.push(Span::styled(
+            format!(
+                "  Cancellation requested; source read finishing {} {}",
+                glyphs::get().middot,
+                crate::render::analysis_view::elapsed(since.elapsed())
+            ),
+            Style::default().fg(config.theme.get("warning")),
         ));
     }
     Paragraph::new(Line::from(spans))
@@ -195,8 +217,19 @@ fn measured_on(plan: &DataQualityPlan, results: &DataQualityResults) -> String {
     }
 }
 
-/// The pages, with the one shown carrying the accent. `←→` walk them.
+/// The pages, with the one shown carrying the accent. `←→` walk them. Setup is not
+/// one of them: it names itself alone, since the report's pages do not apply to it.
 fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
+    if config.page.is_setup() {
+        Paragraph::new(Line::styled(
+            "Setup",
+            Style::default()
+                .fg(config.theme.get("accent"))
+                .add_modifier(Modifier::BOLD),
+        ))
+        .render(area, buf);
+        return;
+    }
     let shown = config.page.tab();
     Tabs::new(QualityPage::TABS.iter().map(|page| page.title()))
         .style(Style::default().fg(config.theme.get("dimmed")))
@@ -209,137 +242,435 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         .divider(" ")
         .render(area, buf);
 }
-fn render_plan(
-    config: &DataQualityWidgetConfig<'_>,
-    table_state: &mut TableState,
-    area: Rect,
-    buf: &mut Buffer,
-) {
-    let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+/// One line of Setup, top to bottom.
+enum SetupLine {
+    Rule(&'static str, Option<String>),
+    Row(SetupRow),
+    Note(String, bool),
+}
+
+/// Data Quality Setup: every setting a run takes, in four sections, and what the
+/// run will read. Nothing here reads: the schema, the rows on screen and what
+/// earlier runs kept are all it knows. Staged edits wait for Enter.
+fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let plan = config.plan;
-    let has_time_columns = !config
-        .state
-        .quality_temporal_columns(&plan.scope)
-        .is_empty();
-    let temporal = if !has_time_columns {
-        "none: no date or time columns".to_string()
-    } else if plan.temporal_roles.is_empty() {
-        "none".to_string()
-    } else {
-        format!(
-            "{}: {}",
-            plan.temporal_roles.len(),
-            plan.temporal_roles
-                .iter()
-                .map(|item| format!("{}={}", item.role.label(), item.column))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+    let view = &config.setup;
+    let ctx = config.ctx;
+    // A short terminal gives up the top margin before it gives up a row.
+    let top = u16::from(area.height >= 20);
+    let area = Rect {
+        x: area.x + 1,
+        y: area.y + top,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(top),
     };
-    let comparison = match (plan.comparison, plan.baseline_segment.as_deref()) {
-        (QualityComparison::Baseline, Some(segment)) => format!("baseline {segment}"),
-        (comparison, _) => comparison.choice_label().to_string(),
-    };
-    let mut rows = vec![
-        ("Sample", plan.sample().summary()),
-        ("Grain", plan.grain.label()),
-        (
-            "Values",
-            if plan.compute == QualityCompute::Metadata {
-                "file metadata only".to_string()
-            } else {
-                "read".to_string()
-            },
-        ),
-        ("Compare", comparison),
-        ("Time roles", temporal),
+    if area.height < 3 || area.width < 20 {
+        return;
+    }
+    let width = area.width as usize;
+    let schema = config.state.quality_schema(&plan.scope);
+
+    let mut lines = vec![
+        SetupLine::Rule("Rows & sample", None),
+        SetupLine::Row(SetupRow::Sample),
     ];
-    // An interval needs two roles; until then the threshold has nothing to apply to.
-    if plan.temporal_roles.len() >= 2 {
-        rows.push((
-            "Latency threshold",
-            plan.latency_threshold_seconds
-                .map(|seconds| duration_label(Some(seconds)))
-                .unwrap_or_else(|| "none".to_string()),
-        ));
+    let texts = config.state.quality_text_columns(&plan.scope).len();
+    let times = view.time_candidates.len().saturating_sub(texts);
+    let counts = [(times, "date or time"), (texts, "text")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, kind)| format!("{} {kind}", numfmt::group_chrome(count)))
+        .collect::<Vec<_>>()
+        .join(&format!(" {} ", glyphs::get().middot));
+    lines.push(SetupLine::Rule(
+        "Columns",
+        (!counts.is_empty()).then_some(counts),
+    ));
+    lines.push(SetupLine::Row(SetupRow::TextAsTime));
+    lines.push(SetupLine::Row(SetupRow::TimeRoles));
+    for (note, warn) in column_notes(plan, schema) {
+        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
+            lines.push(SetupLine::Note(line, warn));
+        }
     }
-    let plan_rows = rows.len() as u16;
-    // The plan is the page; the access summary takes what is left, and `p` has it
-    // in full on a terminal too short for both.
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(plan_rows),
-            Constraint::Length(2),
-            Constraint::Fill(1),
-        ])
-        .margin(1)
-        .split(area);
-    Paragraph::new(rule_line("Plan", None, sections[0].width, theme)).render(sections[0], buf);
-    // The field under the cursor carries the rail while the page has the keys.
-    if config.focus == AnalysisFocus::Main {
-        table_state.select(Some(config.plan_field.min(rows.len() - 1)));
+    lines.push(SetupLine::Rule("Study", None));
+    for row in [
+        SetupRow::Grain,
+        SetupRow::Compare,
+        SetupRow::Values,
+        SetupRow::Latency,
+    ] {
+        lines.push(SetupLine::Row(row));
+    }
+    lines.push(SetupLine::Rule("Read", None));
+    let read_start = lines.len();
+    for note in read_lines(config) {
+        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
+            lines.push(SetupLine::Note(line, false));
+        }
+    }
+
+    // The status line keeps the bottom row: why Run waits, or that it would
+    // replace the report on screen.
+    let status = setup_status(config);
+    let body_height = area.height.saturating_sub(1) as usize;
+    // Scrolled only as far as the focused row needs; the read summary, last, is
+    // what gives way, and says how much of it is off screen.
+    let focused = lines
+        .iter()
+        .position(
+            |line| matches!(line, SetupLine::Row(row) if *row == SetupRow::at(config.plan_field)),
+        )
+        .unwrap_or(0);
+    let (offset, room) = if lines.len() <= body_height {
+        (0, body_height)
     } else {
-        table_state.select(None);
-    }
-    let table = Table::new(
-        rows.into_iter()
-            .map(|(label, value)| Row::new(vec![Cell::from(label), Cell::from(value)])),
-        [Constraint::Length(19), Constraint::Fill(1)],
-    )
-    .row_highlight_style(theme.highlight_style())
-    .highlight_symbol(glyphs::get().selector);
-    StatefulWidget::render(table, sections[1], buf, table_state);
-    if config.pending {
+        // One line counts what is cut, unless scrolling reaches the end anyway.
+        let room = body_height.saturating_sub(1);
+        let offset = (focused + 1).saturating_sub(room);
+        if offset + body_height >= lines.len() {
+            (lines.len() - body_height, body_height)
+        } else {
+            (offset, room)
+        }
+    };
+    let end = (offset + room).min(lines.len());
+    let cut = lines.len() - end;
+    let dimmed = Style::default().fg(ctx.dimmed);
+    let warning = Style::default().fg(ctx.warning);
+    if cut > 0 {
         Paragraph::new(Line::styled(
-            "  Changed since the last run: Enter runs it, Esc puts it back",
-            Style::default().fg(theme.get("warning")),
+            format!(
+                "  {} {cut} more{}",
+                glyphs::get().ellipsis,
+                if end >= read_start { " (p)" } else { "" }
+            ),
+            dimmed,
         ))
         .render(
             Rect {
-                y: sections[2].y + 1,
+                y: area.y + room as u16,
                 height: 1,
-                ..sections[2]
+                ..area
             },
             buf,
         );
     }
+    for (index, line) in lines.iter().enumerate().take(end).skip(offset) {
+        let row_area = Rect {
+            y: area.y + (index - offset) as u16,
+            height: 1,
+            ..area
+        };
+        match line {
+            SetupLine::Rule(title, chip) => crate::widgets::ui::SectionRule {
+                title,
+                chip: chip.as_deref(),
+                focused: false,
+            }
+            .render(row_area, buf, ctx),
+            SetupLine::Row(row) => {
+                let (value, placeholder) = setup_value(config, *row);
+                let room = (row_area.width as usize).saturating_sub(1 + SETUP_LABEL_WIDTH as usize);
+                let value = fit(&value, room);
+                crate::widgets::ui::FormRow {
+                    label: row.label(),
+                    value: if placeholder {
+                        FormValue::Placeholder(&value)
+                    } else {
+                        FormValue::Choice(&value)
+                    },
+                    focused: config.focus == AnalysisFocus::Main
+                        && SetupRow::at(config.plan_field) == *row,
+                    label_width: SETUP_LABEL_WIDTH,
+                }
+                .render(row_area, buf, ctx);
+            }
+            SetupLine::Note(text, warn) => {
+                Paragraph::new(Line::styled(
+                    format!("  {text}"),
+                    if *warn { warning } else { dimmed },
+                ))
+                .render(row_area, buf);
+            }
+        }
+    }
+    if let Some((text, warn)) = status {
+        Paragraph::new(Line::styled(text, if warn { warning } else { dimmed })).render(
+            Rect {
+                y: area.y + area.height - 1,
+                height: 1,
+                ..area
+            },
+            buf,
+        );
+    }
+}
 
-    let planned = planned_rows(config.state, plan)
+/// Where Setup's values start, past the rail gutter and the longest label.
+const SETUP_LABEL_WIDTH: u16 = 15;
+
+/// A Setup row's value, and whether it is a placeholder: a choice not made, or one
+/// that has nothing to apply to yet.
+fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, bool) {
+    let plan = config.plan;
+    match row {
+        SetupRow::Sample => (plan.sample().summary(), false),
+        SetupRow::TextAsTime if plan.time_formats.is_empty() => {
+            ("none: every text column is text".to_string(), true)
+        }
+        // The columns here, each one's format on its own line below.
+        SetupRow::TextAsTime => (
+            plan.time_formats
+                .iter()
+                .map(|format| format.column.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            false,
+        ),
+        SetupRow::TimeRoles if config.setup.time_candidates.is_empty() => {
+            ("none: no date, time or text columns".to_string(), true)
+        }
+        SetupRow::TimeRoles if plan.temporal_roles.is_empty() => ("none".to_string(), true),
+        SetupRow::TimeRoles => (
+            plan.temporal_roles
+                .iter()
+                .map(|role| format!("{} = {}", role.role.label(), role.column))
+                .collect::<Vec<_>>()
+                .join(", "),
+            false,
+        ),
+        SetupRow::Grain => (plan.grain.label(), false),
+        SetupRow::Compare => (
+            match (plan.comparison, plan.baseline_segment.as_deref()) {
+                (QualityComparison::Baseline, Some(segment)) => format!("baseline {segment}"),
+                (comparison, _) => comparison.choice_label().to_string(),
+            },
+            false,
+        ),
+        SetupRow::Values if plan.compute == QualityCompute::Metadata => {
+            ("file metadata only".to_string(), false)
+        }
+        SetupRow::Values => ("read".to_string(), false),
+        SetupRow::Latency if plan.interval_pairs().is_empty() => {
+            ("needs an interval to measure".to_string(), true)
+        }
+        SetupRow::Latency => (
+            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds).to_string(),
+            plan.latency_threshold_seconds.is_none(),
+        ),
+    }
+}
+
+/// What the columns section says under its rows: text that needs a format before
+/// it can be read as time, and which intervals the roles measure, or why none.
+fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> {
+    let mut notes = plan
+        .time_formats
+        .iter()
+        .map(|format| {
+            (
+                format!("{} read as {}", format.column, format.label()),
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut unread = Vec::new();
+    let grain = match &plan.grain {
+        QualityGrain::TimeWindows { column, .. } => Some(column.as_str()),
+        _ => None,
+    };
+    for column in plan
+        .temporal_roles
+        .iter()
+        .map(|role| role.column.as_str())
+        .chain(grain)
+    {
+        if !plan.reads_as_time(column, schema) && !unread.contains(&column) {
+            unread.push(column);
+        }
+    }
+    for column in unread {
+        notes.push((
+            format!("{column} is text: choose its format under Text as time"),
+            true,
+        ));
+    }
+    let pairs = plan.interval_pairs();
+    if !pairs.is_empty() {
+        notes.push((
+            format!(
+                "Intervals: {}",
+                pairs
+                    .iter()
+                    .map(|(start, end)| format!("{} to {}", start.label(), end.label()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            false,
+        ));
+    } else if !plan.temporal_roles.is_empty() {
+        notes.push((
+            format!(
+                "No interval from {}. Measured: event to published, received or \
+                 processed; period end to published; published to received; received \
+                 to processed",
+                plan.temporal_roles
+                    .iter()
+                    .map(|role| role.role.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            true,
+        ));
+    }
+    notes
+}
+
+/// What Run will read, in the order it happens, before it happens.
+fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
+    let plan = config.plan;
+    let view = &config.setup;
+    let state = config.state;
+    let mut lines = Vec::new();
+    if view.unchanged {
+        lines.push("The report on screen is this setup's: Run shows it, no read".to_string());
+        return lines;
+    }
+    if view.cached {
+        lines.push("This setup's report is in the session cache: no read".to_string());
+        return lines;
+    }
+    let scope_rows = planned_scope_rows(state, plan);
+    let n = numfmt::group_chrome(plan.dataset_rows);
+    match plan.compute {
+        QualityCompute::Metadata => {
+            lines.push("File metadata only: no values read".to_string());
+            return lines;
+        }
+        QualityCompute::Full => lines.push(format!(
+            "Every eligible row, in up to {} passes over the scope: one per check",
+            full_passes(config)
+        )),
+        QualityCompute::Sample if view.reuses_sample => {
+            lines.push("Uses the rows the last run read: no source read".to_string());
+        }
+        QualityCompute::Sample => lines.push(match &plan.method {
+            crate::sampling::SampleMethod::FirstRows => {
+                format!("Reads the first {n} rows of the scope")
+            }
+            crate::sampling::SampleMethod::PerPartition { column } => {
+                format!("One pass over every eligible row, keeping {n} per {column}")
+            }
+            _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
+                "Reads every row: the scope holds no more than the sample".to_string()
+            }
+            _ if view.may_read_blocks => {
+                format!("Seeded runs of the file, about {n} rows, not a pass over it")
+            }
+            _ => format!("One pass that streams every eligible row, keeping a seeded {n}"),
+        }),
+    }
+    let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
+    if plan.compute == QualityCompute::Sample && view.counts_segments && !exact {
+        let column = match &plan.grain {
+            QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => {
+                column.as_str()
+            }
+            _ => "",
+        };
+        lines.push(format!(
+            "Plus one count of {column} for exact segment totals, kept for later runs"
+        ));
+    }
+    if plan.compute == QualityCompute::Sample {
+        lines.push("Then measured in memory: no further reads".to_string());
+    }
+    let rows = planned_rows(state, plan)
         .map(numfmt::group_chrome)
         .unwrap_or_else(|| "unknown".to_string());
-    let bytes_label = planned_read_label(config.state, plan);
-    let access_rows = vec![
-        Row::new(vec!["Rows evaluated".to_string(), planned]),
-        Row::new(vec![
-            if config.state.is_remote_source() {
-                "Remote transfer".to_string()
-            } else {
-                "Local read".to_string()
-            },
-            bytes_label,
-        ]),
-        Row::new(vec!["Remote writes".to_string(), "none".to_string()]),
-        Row::new(vec![
-            "Session memory".to_string(),
-            "profile; size unknown".to_string(),
-        ]),
-    ];
-    let access_area = sections[3];
-    Paragraph::new(rule_line("Access", None, access_area.width, theme)).render(access_area, buf);
-    let access =
-        Table::new(access_rows, [Constraint::Length(21), Constraint::Fill(1)]).style(dimmed);
-    Widget::render(
-        access,
-        Rect {
-            y: access_area.y + 2,
-            height: access_area.height.saturating_sub(2),
-            ..access_area
-        },
-        buf,
-    );
+    let sampled = plan.compute == QualityCompute::Sample;
+    let read = if sampled && view.reuses_sample && view.counts_segments && !exact {
+        "the grain's column, for the count".to_string()
+    } else if sampled && view.reuses_sample {
+        "none".to_string()
+    } else if state.is_remote_source() {
+        "unknown".to_string()
+    } else if sampled
+        && view.may_read_blocks
+        && !exact
+        && matches!(plan.method, crate::sampling::SampleMethod::Spread)
+    {
+        // A ceiling of the whole file would say more than the runs read.
+        "the row groups the runs fall in".to_string()
+    } else {
+        planned_read_label(state, plan)
+    };
+    lines.push(format!(
+        "Rows evaluated {rows} {} {} {read}",
+        glyphs::get().middot,
+        if state.is_remote_source() {
+            "remote transfer"
+        } else {
+            "local read"
+        }
+    ));
+    lines
+}
+
+/// Collects a full run makes over its scope: one per check, and a count first when
+/// the scope's size is not known. How much each reads again depends on the
+/// source; that there are this many is the plan's.
+fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
+    let plan = config.plan;
+    let state = config.state;
+    let texts = state
+        .quality_schema(&plan.scope)
+        .iter()
+        .filter(|(_, dtype)| matches!(dtype, DataType::String | DataType::Categorical(..)))
+        .count();
+    // Profile, most common values, duplicates, and at most one for shared nulls.
+    let mut passes = 4 + texts;
+    if !matches!(plan.grain, QualityGrain::Dataset) {
+        passes += 1;
+    }
+    if !plan.interval_pairs().is_empty() {
+        passes += 1;
+    }
+    if planned_scope_rows(state, plan).is_none() {
+        passes += 1;
+    }
+    passes + state.quality_conflict_reads()
+}
+
+/// Setup's bottom line: a cancelled read still running, why Enter did not run, or
+/// that the draft differs from the report it would replace.
+fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> {
+    let view = &config.setup;
+    if let Some(since) = view.cancelling {
+        // Said as a reason once Enter has been refused for it, short enough to keep
+        // its clock beside the tool list at 80 columns.
+        return Some((
+            format!(
+                "{} {} {}",
+                if view.note.is_some() {
+                    "Run waits: source read finishing"
+                } else {
+                    "Cancellation requested; source read finishing"
+                },
+                glyphs::get().middot,
+                crate::render::analysis_view::elapsed(since.elapsed())
+            ),
+            true,
+        ));
+    }
+    if let Some(note) = view.note {
+        return Some((note.to_string(), true));
+    }
+    if view.edited {
+        return Some(("Edited: Enter runs it, Esc discards".to_string(), false));
+    }
+    None
 }
 
 fn render_overview(
@@ -391,7 +722,7 @@ fn render_overview(
     let list = sections[2];
     if report.findings.is_empty() {
         let message = if report.metadata_only {
-            "No values were read, so nothing about them is known. Set the plan's Values to read (e) to check them."
+            "No values were read, so nothing about them is known. Set Values to read in Setup (e) to check them."
         } else {
             "No columns to check."
         };
@@ -909,7 +1240,7 @@ fn render_time_roles(
     let theme = config.theme;
     let dimmed = Style::default().fg(theme.get("dimmed"));
     let accent = Style::default().fg(theme.get("accent"));
-    let columns = config.state.quality_temporal_columns(&config.plan.scope);
+    let columns = config.setup.time_candidates;
     let roles = TemporalRole::ALL.len() as u16;
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -953,7 +1284,7 @@ fn render_time_roles(
     // The candidates, with a few of their values from the rows already on screen,
     // so choosing which column is "received" is choosing among things seen.
     Paragraph::new(rule_line(
-        "Date and time columns",
+        "Date, time and text columns",
         Some(&numfmt::group_chrome(columns.len())),
         sections[3].width,
         theme,
@@ -972,12 +1303,17 @@ fn render_time_roles(
     let types = columns
         .iter()
         .map(|column| {
-            config
-                .state
-                .schema
-                .get(column)
-                .map(|dtype| dtype.to_string())
-                .unwrap_or_default()
+            // Text says how it is read, so a role on it is not mistaken for a cast.
+            match (
+                config.plan.time_format(column),
+                config.state.quality_schema(&config.plan.scope).get(column),
+            ) {
+                (Some(format), _) => format!("text as {}", format.kind.label()),
+                (None, Some(DataType::String | DataType::Categorical(..))) => {
+                    "text, no format".to_string()
+                }
+                (None, dtype) => dtype.map(|dtype| dtype.to_string()).unwrap_or_default(),
+            }
         })
         .collect::<Vec<_>>();
     let type_width = types
@@ -1172,7 +1508,7 @@ fn render_segments(
         Paragraph::new(rule_line("Segments", Some("1"), sections[0].width, theme))
             .render(sections[0], buf);
         Paragraph::new(
-            "The rows are one segment. Set the plan's Grain to split them by file, \
+            "The rows are one segment. Set Grain in Setup (e) to split them by file, \
              partition, row chunk or time window, and compare the parts.",
         )
         .wrap(Wrap { trim: true })
@@ -1430,7 +1766,7 @@ fn render_trends(
         ))
         .render(title, buf);
         Paragraph::new(
-            "Set the plan's Grain to a partition column, to days, weeks or months of a \
+            "Set Grain in Setup (e) to a partition column, to days, weeks or months of a \
              date, or to chunks of rows, to follow each column from one to the next.",
         )
         .wrap(Wrap { trim: true })
@@ -1456,15 +1792,12 @@ fn render_trends(
     ))
     .render(sections[2], buf);
     if results.temporal.is_empty() {
-        let message = if config
-            .state
-            .quality_temporal_columns(&config.plan.scope)
-            .is_empty()
-        {
-            "No date or time columns, so no delays to measure."
+        let message = if config.setup.time_candidates.is_empty() {
+            "No date, time or text columns, so no delays to measure."
         } else {
-            "Assign the plan's Time roles, such as when a row happened and when it was \
-             received, to measure the delay between them."
+            "Assign Time roles in Setup (e), such as when a row happened and when it was \
+             received, to measure the delay between them. Text is read as time through \
+             a format chosen under Text as time."
         };
         Paragraph::new(message)
             .wrap(Wrap { trim: true })
@@ -1713,7 +2046,7 @@ fn duration_label(seconds: Option<i64>) -> String {
 }
 
 /// One column's findings, then its measurements, as aligned label and value rows
-/// on the page, the way the Plan page lays out its fields.
+/// on the page, the way Setup lays out its rows.
 fn render_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2121,9 +2454,20 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         ),
         row("Remote writes", "none".to_string()),
         row("Local file writes", "none".to_string()),
+        row("Passes", passes_label(config)),
         row(
             "Estimate basis",
-            "the shared sample; at most one read of the scope".to_string(),
+            match plan.compute {
+                QualityCompute::Metadata => "file footers read when the data opened".to_string(),
+                QualityCompute::Sample => {
+                    "rows: the sample; bytes: a ceiling, the whole scope".to_string()
+                }
+                QualityCompute::Full => {
+                    "rows: every eligible row; what each pass re-reads depends on the \
+                     source and its caches"
+                        .to_string()
+                }
+            },
         ),
     ];
     let width = 72.min(area.width.saturating_sub(2));
@@ -2140,11 +2484,35 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     render_counted(lines, content, config.theme, buf);
 }
 
+/// The reads a run makes over its scope, counted from the plan: honest about the
+/// passes even where their bytes are unknown.
+fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
+    let plan = config.plan;
+    let view = &config.setup;
+    match plan.compute {
+        _ if view.unchanged || view.cached => "none: the report is already here".to_string(),
+        QualityCompute::Metadata => "none".to_string(),
+        QualityCompute::Full => format!("up to {}, one per check", full_passes(config)),
+        QualityCompute::Sample => {
+            let sample = if view.reuses_sample {
+                "none for the sample: the last run's rows"
+            } else {
+                "one sampling pass"
+            };
+            if view.counts_segments {
+                format!("{sample}, then one count of the grain's column")
+            } else {
+                sample.to_string()
+            }
+        }
+    }
+}
+
 /// A full scan asks first: it may read the whole source.
 fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let width = 60.min(area.width.saturating_sub(2));
     let lines = [
-        "This plan reads every eligible row and may read the whole source.",
+        "This setup reads every eligible row and may read the whole source.",
         "The source stays read-only; remote writes are 0 B.",
     ]
     .iter()
@@ -2163,7 +2531,7 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
 }
 
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
-    Paragraph::new("Return to Plan and run it to create a profile.")
+    Paragraph::new("No report yet: e opens Setup, and Enter there runs it.")
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.get("text_primary")))
         .render(area, buf);
@@ -2380,7 +2748,6 @@ mod tests {
 
         fn config(&self, page: QualityPage) -> DataQualityWidgetConfig<'_> {
             DataQualityWidgetConfig {
-                first_run: false,
                 checks_expanded: false,
                 state: &self.state,
                 plan: &self.plan,
@@ -2392,7 +2759,7 @@ mod tests {
                 segment_index: 0,
                 segments_by_change: false,
                 page,
-                pending: false,
+                setup: SetupView::default(),
                 plan_field: 0,
                 show_access: false,
                 observation_detail: false,
@@ -2508,7 +2875,7 @@ mod tests {
     fn no_page_has_an_uppercase_title() {
         let screen = Screen::new();
         for page in [
-            QualityPage::Plan,
+            QualityPage::Setup,
             QualityPage::Overview,
             QualityPage::Columns,
             QualityPage::Segments,
@@ -2542,7 +2909,7 @@ mod tests {
             "Analysis Tools",
         ] {
             for (width, height) in [(80, 24), (60, 20)] {
-                let mut config = screen.config(QualityPage::Plan);
+                let mut config = screen.config(QualityPage::Setup);
                 match title {
                     "Access Plan" => config.show_access = true,
                     "Full Scan" => config.confirm_run = true,
@@ -2570,5 +2937,85 @@ mod tests {
                 assert!(frame.contains('╮'), "{title}:\n{text}");
             }
         }
+    }
+
+    /// Setup at the baseline size and the smallest: every row in its section, the
+    /// focused one on screen with the rail whichever it is, and every character
+    /// outside ASCII a glyph slot, which has an ASCII twin under `LANG=C`.
+    #[test]
+    fn setup_fits_80x24_and_60x20_in_glyph_slots() {
+        let screen = Screen::new();
+        let g = glyphs::get();
+        let slots = [
+            g.rail,
+            g.rule_h,
+            g.rule_h_focused,
+            g.middot,
+            g.ellipsis,
+            g.selector,
+        ]
+        .concat();
+        for (width, height) in [(80, 24), (60, 20)] {
+            for row in SetupRow::ALL {
+                let mut config = screen.config(QualityPage::Setup);
+                config.plan_field = row.index();
+                let rows = screen.draw(config, 0, width, height);
+                let text = rows.join("\n");
+                assert!(
+                    rows.iter()
+                        .any(|line| line.contains(&format!("{}{}", g.rail, row.label()))),
+                    "{row:?} focused at {width}x{height}:\n{text}"
+                );
+                for other in SetupRow::ALL {
+                    assert!(
+                        text.contains(other.label()),
+                        "{other:?} on screen at {width}x{height}:\n{text}"
+                    );
+                }
+                for section in ["Rows & sample", "Columns", "Study", "Read"] {
+                    assert!(
+                        text.contains(section),
+                        "{section} at {width}x{height}:\n{text}"
+                    );
+                }
+                for c in text.chars().filter(|c| !c.is_ascii()) {
+                    assert!(
+                        slots.contains(c) || "╭╮╰╯│─".contains(c),
+                        "{c:?} is not a glyph slot at {width}x{height}:\n{text}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Setup says what a run will read before it runs, and says it honestly: a full
+    /// run counts its passes rather than promising one read, and Setup's own line
+    /// says why Enter waits.
+    #[test]
+    fn setup_states_the_read_and_why_run_waits() {
+        let screen = Screen::new();
+        let mut config = screen.config(QualityPage::Setup);
+        config.show_access = true;
+        let text = screen.draw(config, 0, 100, 30).join("\n");
+        assert!(!text.contains("at most one read"), "{text}");
+        assert!(text.contains("one per check"), "{text}");
+
+        let config = screen.config(QualityPage::Setup);
+        let text = screen.draw(config, 0, 100, 30).join("\n");
+        assert!(text.contains("passes over the scope"), "{text}");
+
+        let mut config = screen.config(QualityPage::Setup);
+        config.setup.cancelling = Some(std::time::Instant::now());
+        config.setup.note = Some("Run waits: a cancelled read is still finishing");
+        let rows = screen.draw(config, 0, 100, 30);
+        let text = rows.join("\n");
+        assert!(
+            rows[0].contains("Cancellation requested; source read finishing"),
+            "the header keeps the state: {text}"
+        );
+        assert!(
+            text.contains("Run waits: source read finishing"),
+            "Setup says why Enter did not run: {text}"
+        );
     }
 }

@@ -58,11 +58,12 @@ constant column.
 ## Data quality
 
 Choose **Data Quality** to check the rows in scope and get a report: what is
-likely wrong, what depends on intent, and which columns are clean. It reads the
-same [sample](#sampling) as every other tool.
+likely wrong, what depends on intent, and which columns are clean. It opens on
+its Setup, which starts from the same [sample](#sampling) as every other tool
+and reads nothing until you run it.
 
 See [Check data quality](data-quality.md) for the workflow and the
-[reference](../reference/data-quality.md) for the plan, keys and metric
+[reference](../reference/data-quality.md) for Setup, keys and metric
 definitions.
 
 <a id="keys-and-result-tabs"></a>

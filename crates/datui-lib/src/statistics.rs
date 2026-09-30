@@ -972,6 +972,20 @@ pub fn analysis_rows(
     seed: u64,
     polars_streaming: bool,
 ) -> Result<AnalysisRows> {
+    analysis_rows_watched(lf, sample_rows, known_total, seed, polars_streaming, None)
+}
+
+/// [`analysis_rows`], stopping when `watch` says to: the streamed pass between
+/// batches, the seeded runs between runs. A whole read is one collect, which runs to
+/// its end.
+pub(crate) fn analysis_rows_watched(
+    lf: &LazyFrame,
+    sample_rows: Option<usize>,
+    known_total: Option<usize>,
+    seed: u64,
+    polars_streaming: bool,
+    watch: Option<&crate::sampling::ReadWatch>,
+) -> Result<AnalysisRows> {
     let Some(n) = sample_rows.filter(|n| *n > 0) else {
         let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
         let total_rows = df.height();
@@ -983,7 +997,7 @@ pub fn analysis_rows(
         });
     };
     if !slices_reach_into_the_scan(lf) {
-        let (df, total_rows) = stream_sample(lf, n, seed)?;
+        let (df, total_rows) = stream_sample(lf, n, seed, watch)?;
         let sample_size = (total_rows > n).then_some(df.height());
         return Ok(AnalysisRows {
             df,
@@ -1005,7 +1019,7 @@ pub fn analysis_rows(
             per_value: None,
         });
     }
-    let df = block_sample(lf, total_rows, n, seed, polars_streaming)?;
+    let df = block_sample(lf, total_rows, n, seed, polars_streaming, watch)?;
     Ok(AnalysisRows {
         sample_size: Some(df.height()),
         df,
@@ -1054,6 +1068,7 @@ fn block_sample(
     n: usize,
     seed: u64,
     polars_streaming: bool,
+    watch: Option<&crate::sampling::ReadWatch>,
 ) -> Result<DataFrame> {
     // Under twice the sample, reading the table is about as cheap as reading runs of
     // it, and runs that must fit side by side would crowd or overlap. Read it and keep
@@ -1087,6 +1102,9 @@ fn block_sample(
                 scope.spawn(|| {
                     let mut read = Vec::new();
                     loop {
+                        if watch.is_some_and(|watch| watch.stopped()) {
+                            break;
+                        }
                         let block = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((offset, run)) = runs.get(block) else {
                             break;
@@ -1095,7 +1113,12 @@ fn block_sample(
                             lf.clone().slice(*offset as i64, *run as IdxSize),
                             polars_streaming,
                         )
-                        .map(|df| (block, df))
+                        .map(|df| {
+                            if let Some(watch) = watch {
+                                watch.saw(df.height());
+                            }
+                            (block, df)
+                        })
                         .map_err(Report::from);
                         read.push(rows);
                     }
@@ -1112,6 +1135,9 @@ fn block_sample(
             })
             .collect()
     });
+    if let Some(watch) = watch {
+        watch.check()?;
+    }
     let mut read = read.into_iter().collect::<Result<Vec<_>>>()?;
     read.sort_by_key(|(block, _)| *block);
     let mut out: Option<DataFrame> = None;
@@ -1125,14 +1151,27 @@ fn block_sample(
 }
 
 /// A uniform sample of `n` rows from one streamed pass, and how many rows there were.
-fn stream_sample(lf: &LazyFrame, n: usize, seed: u64) -> Result<(DataFrame, usize)> {
+fn stream_sample(
+    lf: &LazyFrame,
+    n: usize,
+    seed: u64,
+    watch: Option<&crate::sampling::ReadWatch>,
+) -> Result<(DataFrame, usize)> {
     let state = std::sync::Arc::new(std::sync::Mutex::new(Reservoir::new(n, seed)));
     let callback_state = std::sync::Arc::clone(&state);
+    let callback_watch = watch.cloned();
     let sink = lf
         .clone()
         .with_row_index(SAMPLE_POSITION, None)
         .sink_batches(
-            PlanCallback::new(move |batch| {
+            PlanCallback::new(move |batch: DataFrame| {
+                // True stops the sink: a cancel ends the read at the next batch.
+                if let Some(watch) = &callback_watch {
+                    if watch.stopped() {
+                        return Ok(true);
+                    }
+                    watch.saw(batch.height());
+                }
                 callback_state
                     .lock()
                     .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?
@@ -1144,6 +1183,9 @@ fn stream_sample(lf: &LazyFrame, n: usize, seed: u64) -> Result<(DataFrame, usiz
         )?;
     // Streaming whatever the setting: holding the table is what this is here to avoid.
     collect_lazy(sink, true).map_err(Report::from)?;
+    if let Some(watch) = watch {
+        watch.check()?;
+    }
     let reservoir = std::mem::take(
         &mut *state
             .lock()

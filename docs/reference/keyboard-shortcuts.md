@@ -181,8 +181,8 @@ In the chart export dialog:
 | <kbd>Tab</kbd> | Switch focus between the tool list and the result |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
-| <kbd>Enter</kbd> | Pick the highlighted tool: its result, or a run on the shared sample; the first run on a dataset starts in the Sample form, where Enter runs it. In a result, open the detail of a column or a correlation pair |
-| <kbd>s</kbd> | On a tool's main view, open the Sample form: the rows every tool reads. In the distribution detail, toggle the histogram between linear and log |
+| <kbd>Enter</kbd> | Pick the highlighted tool: its result, or a run on the shared sample; the first run on a dataset starts in the Sample form, where Enter runs it. Data Quality opens its Setup instead, where Enter runs it. In a result, open the detail of a column or a correlation pair |
+| <kbd>s</kbd> | On a tool's main view, open the Sample form: the rows every tool reads (in Data Quality, over its Setup). In the distribution detail, toggle the histogram between linear and log |
 | <kbd>v</kbd> | On a tool's main view, show the sample's rows in the table viewer; <kbd>Esc</kbd> returns to the tool |
 | <kbd>r</kbd> | On a sampled result, draw another sample for every tool (from the main analysis view, not inside a detail) |
 | <kbd>a</kbd> | On a sampled result, read every row instead, after confirming; the sample's method becomes Every row |
@@ -192,25 +192,36 @@ In the Sample form:
 
 | Key | Action |
 |---|---|
-| <kbd>Enter</kbd> | Apply the sample and run the tool on screen again |
+| <kbd>Enter</kbd> | Apply the sample and run the tool on screen again; in Data Quality, apply it to Setup, which runs on its own Enter |
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> | Move between the settings |
 | <kbd>←</kbd> <kbd>→</kbd> | Change the focused choice |
 | typing | On Values, Files, From row, To row, From, Before and Random seed: the value |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | On Files, scroll the numbered source files |
 | <kbd>Esc</kbd> | Discard the edit |
 
-In Data Quality:
+In Data Quality Setup:
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends, Plan |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
+| <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values or Latency in place; on another row, <kbd>→</kbd> opens it |
+| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
+| <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup |
+| <kbd>p</kbd> | Show the detailed access plan |
+| <kbd>Enter</kbd> | Run, from any row: the one key in Setup that reads. A full scan asks first; while a cancelled read finishes, Run waits and Setup says why |
+| <kbd>Esc</kbd> | Discard every staged change and go back to the report, or to the tool list before the first run |
+| In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date, time or text column there is nothing to assign, and the row says so |
+
+In the Data Quality report:
+
+| Key | Action |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends |
 | <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends directly |
-| <kbd>Enter</kbd> | On the Plan, run it, from any field. Elsewhere, open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the plan setting that fills it |
-| <kbd>e</kbd> | Go to the Plan |
-| <kbd>Space</kbd> on the Plan | Open the field under the cursor: the Sample form, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
-| <kbd>s</kbd> | Open the shared Sample form |
+| <kbd>Enter</kbd> | Open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the Setup row that fills it |
+| <kbd>e</kbd> | Open Setup |
+| <kbd>s</kbd> | Open Setup with the Sample form over it |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
-| In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date or time column there is nothing to assign, and the row says so |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its last row counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> on a column | Open its detail: its findings, then what was measured; <kbd>Enter</kbd> again returns to the list |
@@ -218,9 +229,9 @@ In Data Quality:
 | <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | In Trends, choose the measure the table draws |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
-| <kbd>r</kbd> | Rerun with a new seed, for every tool |
+| <kbd>r</kbd> | On a sampled report, run again with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup or a list of choices, the plan's edits (back to the plan the report was measured with), the Time roles editor, a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself |
+| <kbd>Esc</kbd> | Back out one layer: a popup, a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself. While a run reads, cancel it |
 
 ## Pivot and melt
 

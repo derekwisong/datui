@@ -278,7 +278,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
 }
 
 /// The Data Quality pages' keys. Whatever owns the keys right now — a run in
-/// flight, a popup, the scope editor, the plan editor — the bar says so.
+/// flight, a popup, a list of choices, Setup — the bar says so.
 fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     use crate::data_quality::QualityPage;
     let g = crate::glyphs::get();
@@ -352,6 +352,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("?", "Help"),
         ];
     }
+    if modal.data_quality_page == QualityPage::Setup {
+        return setup_control_keys(app);
+    }
     // One shape on every page: the way out, then what this page is for, then the
     // keys every page shares in one order, then the rest of this page's. The bar is
     // cut by position, so the page's own action and the sample, which every tool's
@@ -370,20 +373,6 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         own.push(("Enter", setup.label()));
     }
     match page {
-        // Enter runs from any field; Space opens the one under the cursor.
-        QualityPage::Plan => {
-            own.push(("Enter", "Run"));
-            match modal
-                .data_quality_plan_field
-                .min(modal.quality_plan_rows() - 1)
-            {
-                0 => own.push(("Space", "Sample Form")),
-                4 if app.has_quality_time_columns() => own.push(("Space", "Time Roles")),
-                4 => {}
-                _ => own.push(("Space", "Choose")),
-            }
-            own.extend([(g.updown, "Field"), ("p", "Access")]);
-        }
         QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
         QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
         QualityPage::Detail => own.push(("Enter", "Columns")),
@@ -404,24 +393,58 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         _ => {}
     }
     let mut own = own.into_iter();
-    // Esc on an edited plan puts back what the last run used.
-    let back = if page == QualityPage::Plan && modal.quality_plan_pending() {
-        "Discard"
-    } else {
-        "Back"
-    };
-    let mut keys = vec![("Esc", back)];
+    let mut keys = vec![("Esc", "Back")];
     keys.extend(own.next());
-    // The plan is an editor: what the field under the cursor takes leads too.
-    if page == QualityPage::Plan {
-        keys.extend(own.next());
-    }
-    keys.extend([("s", "Sample"), (g.updown_lr, "Page"), ("v", "View Rows")]);
-    if page != QualityPage::Plan {
-        keys.push(("e", "Plan"));
-    }
+    keys.extend([
+        ("e", "Setup"),
+        ("s", "Sample"),
+        (g.updown_lr, "Page"),
+        ("v", "View Rows"),
+    ]);
     keys.extend(own);
     keys.extend([("Tab", "Focus"), ("?", "Help")]);
+    keys
+}
+
+/// Setup's keys: the way out and Run first, then what the row under the cursor
+/// takes. Enter is Run here and nowhere else; the lists and forms Setup opens say
+/// Choose, Done or Apply. While a cancelled read finishes, Run is not offered, and
+/// Setup's own line says why.
+fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+    use crate::analysis_modal::SetupRow;
+    let g = crate::glyphs::get();
+    let modal = &app.analysis_modal;
+    let mut keys = vec![(
+        "Esc",
+        if modal.setup_edited() {
+            "Discard"
+        } else {
+            "Back"
+        },
+    )];
+    if app.cancelled_analysis_running().is_none() {
+        keys.push(("Enter", "Run"));
+    }
+    let row = modal.setup_row();
+    let choices = !modal.data_quality_plan.interval_pairs().is_empty();
+    match row {
+        SetupRow::Sample => keys.push(("Space", "Sample Form")),
+        SetupRow::TextAsTime => keys.push(("Space", "Choose")),
+        SetupRow::TimeRoles if !app.quality_time_candidates().is_empty() => {
+            keys.push(("Space", "Time Roles"));
+        }
+        SetupRow::TimeRoles => {}
+        SetupRow::Latency if !choices => {}
+        SetupRow::Grain | SetupRow::Compare | SetupRow::Values | SetupRow::Latency => {
+            keys.extend([(g.updown_lr, "Change"), ("Space", "Choose")]);
+        }
+    }
+    keys.extend([
+        (g.updown, "Row"),
+        ("s", "Sample"),
+        ("p", "Access"),
+        ("?", "Help"),
+    ]);
     keys
 }
 
@@ -622,7 +645,7 @@ mod tests {
         app.analysis_modal.active = true;
         app.analysis_modal.selected_tool = Some(AnalysisTool::DataQuality);
         for page in [
-            QualityPage::Plan,
+            QualityPage::Setup,
             QualityPage::TimeRoles,
             QualityPage::Overview,
             QualityPage::Columns,

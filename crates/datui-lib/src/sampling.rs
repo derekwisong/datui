@@ -7,7 +7,7 @@ use crate::data_quality::{
     QualityScope, QualitySourceContext, apply_quality_scope, prepare_source_quality_scan,
 };
 use crate::numfmt;
-use crate::statistics::{AnalysisRows, analysis_rows, collect_lazy, sample_rank};
+use crate::statistics::{AnalysisRows, collect_lazy, sample_rank};
 use color_eyre::Result;
 use color_eyre::eyre::Report;
 use polars::prelude::*;
@@ -27,6 +27,56 @@ const MAX_GROUP_ROWS: usize = 2_000_000;
 
 /// The row index the per-partition sampler ranks rows by, dropped before anyone sees it.
 const GROUP_POSITION: &str = "__datui_group_sample_position";
+
+/// What a read that was stopped says. Its work is dropped, never shown as a result.
+pub const CANCELLED: &str = "Cancelled";
+
+/// A read's line to the screen: told to stop, and telling how many rows it has seen.
+///
+/// Shared with the UI thread, which sets `stop` on a cancel and reads the count as
+/// it draws. A streamed read checks `stop` between batches and a seeded block read
+/// between blocks; a single collect cannot be stopped partway and runs to its end.
+#[derive(Debug, Clone, Default)]
+pub struct ReadWatch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    rows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Whether anything has counted rows yet: a read that cannot observe its batches
+    /// has no count to show, which is not a count of zero.
+    counted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ReadWatch {
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Rows the read has seen so far, once it has counted any.
+    pub fn rows_seen(&self) -> Option<usize> {
+        self.counted
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(|| self.rows.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(crate) fn saw(&self, rows: usize) {
+        self.counted
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.rows
+            .fetch_add(rows, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Stopped: the read's partial rows are not a sample, so it fails instead.
+    pub(crate) fn check(&self) -> Result<()> {
+        if self.stopped() {
+            Err(Report::msg(CANCELLED))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// How the rows of a scope are picked.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -254,14 +304,35 @@ pub(crate) fn read_rows(
     known_total: Option<usize>,
     polars_streaming: bool,
 ) -> Result<AnalysisRows> {
+    read_rows_watched(lf, sample, known_total, polars_streaming, None)
+}
+
+/// [`read_rows`], stopping when `watch` says to and counting the rows it streams.
+pub(crate) fn read_rows_watched(
+    lf: &LazyFrame,
+    sample: &Sample,
+    known_total: Option<usize>,
+    polars_streaming: bool,
+    watch: Option<&ReadWatch>,
+) -> Result<AnalysisRows> {
     let n = sample.rows.max(1);
     match &sample.method {
-        SampleMethod::EveryRow => {
-            analysis_rows(lf, None, known_total, sample.seed, polars_streaming)
-        }
-        SampleMethod::Spread => {
-            analysis_rows(lf, Some(n), known_total, sample.seed, polars_streaming)
-        }
+        SampleMethod::EveryRow => crate::statistics::analysis_rows_watched(
+            lf,
+            None,
+            known_total,
+            sample.seed,
+            polars_streaming,
+            watch,
+        ),
+        SampleMethod::Spread => crate::statistics::analysis_rows_watched(
+            lf,
+            Some(n),
+            known_total,
+            sample.seed,
+            polars_streaming,
+            watch,
+        ),
         SampleMethod::FirstRows => {
             let df = collect_lazy(lf.clone().limit(n as IdxSize), polars_streaming)
                 .map_err(Report::from)?;
@@ -279,7 +350,8 @@ pub(crate) fn read_rows(
             })
         }
         SampleMethod::PerPartition { column } => {
-            let (df, total_rows, per_value) = per_group_sample(lf, column, n, sample.seed)?;
+            let (df, total_rows, per_value) =
+                per_group_sample_within(lf, column, n, sample.seed, MAX_GROUP_ROWS, watch)?;
             let sample_size = (total_rows > df.height()).then_some(df.height());
             Ok(AnalysisRows {
                 df,
@@ -304,7 +376,7 @@ pub struct PerValue {
 }
 
 /// Up to `n` seeded rows from each value of `column`, from one streamed pass, in table
-/// order, and how many rows there were.
+/// order, and how many rows there were, holding at most `limit` rows.
 ///
 /// Never refused for keeping too many rows. Whether `n` of every value fits is only
 /// known once every value has been seen, which is the end of the read, and a read
@@ -312,22 +384,13 @@ pub struct PerValue {
 /// comes down as values arrive, to what [`MAX_GROUP_ROWS`] holds for all of them; each
 /// value keeps its lowest-ranked rows, which is a seeded uniform sample of it at any
 /// size, and [`PerValue::kept`] says what the size came down to.
-fn per_group_sample(
-    lf: &LazyFrame,
-    column: &str,
-    n: usize,
-    seed: u64,
-) -> Result<(DataFrame, usize, PerValue)> {
-    per_group_sample_within(lf, column, n, seed, MAX_GROUP_ROWS)
-}
-
-/// [`per_group_sample`], holding at most `limit` rows.
 fn per_group_sample_within(
     lf: &LazyFrame,
     column: &str,
     n: usize,
     seed: u64,
     limit: usize,
+    watch: Option<&ReadWatch>,
 ) -> Result<(DataFrame, usize, PerValue)> {
     let schema = lf.clone().collect_schema()?;
     if schema.get(column).is_none() {
@@ -343,11 +406,19 @@ fn per_group_sample_within(
         ..Default::default()
     }));
     let callback_state = std::sync::Arc::clone(&state);
+    let callback_watch = watch.cloned();
     let sink = lf
         .clone()
         .with_row_index(GROUP_POSITION, None)
         .sink_batches(
-            PlanCallback::new(move |batch| {
+            PlanCallback::new(move |batch: DataFrame| {
+                // True stops the sink: a cancel ends the read at the next batch.
+                if let Some(watch) = &callback_watch {
+                    if watch.stopped() {
+                        return Ok(true);
+                    }
+                    watch.saw(batch.height());
+                }
                 callback_state
                     .lock()
                     .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?
@@ -359,6 +430,9 @@ fn per_group_sample_within(
         )?;
     // Streaming whatever the setting: holding the table is what this is here to avoid.
     collect_lazy(sink, true).map_err(Report::from)?;
+    if let Some(watch) = watch {
+        watch.check()?;
+    }
     let state = std::mem::take(
         &mut *state
             .lock()
@@ -560,7 +634,7 @@ mod tests {
     #[test]
     fn per_partition_past_the_limit_keeps_fewer_of_each_value() {
         let (df, seen, per_value) =
-            per_group_sample_within(&table(), "part", 500, 42_891, 999).unwrap();
+            per_group_sample_within(&table(), "part", 500, 42_891, 999, None).unwrap();
         assert_eq!(seen, 10_000);
         assert_eq!(per_value.kept, 333);
         assert_eq!(df.height(), 333 + 333 + 100);
@@ -572,7 +646,7 @@ mod tests {
                 .collect()
         );
         let (asked, _, _) =
-            per_group_sample_within(&table(), "part", 333, 42_891, usize::MAX).unwrap();
+            per_group_sample_within(&table(), "part", 333, 42_891, usize::MAX, None).unwrap();
         assert!(df.equals(&asked), "the rows a sample of 333 each keeps");
 
         let lowered = Sample {

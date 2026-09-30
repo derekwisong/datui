@@ -439,6 +439,62 @@ mod probe_slot_tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// The directory browsed into is the whole screen, so its listing never waits for
+    /// a slot held by roots the user has left.
+    #[test]
+    fn the_directory_browsed_into_is_never_held_behind_the_cap() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.network_check = |_| true;
+        let dir = PathBuf::from("/pretend/share/raw");
+        app.home.browsing = Some(dir.clone());
+        app.home_probes_inflight = (0..MAX_CONCURRENT_PROBES)
+            .map(|i| PathBuf::from(format!("/pretend/slow{i}")))
+            .collect();
+
+        app.spawn_home_probes();
+
+        assert!(app.home_probes_inflight.contains(&dir));
+    }
+
+    /// Rows read so far show, marked as still listing, until the listing lands; a batch
+    /// arriving after the whole answer is dropped. A listing cut at the cap says so.
+    #[test]
+    fn rows_so_far_show_until_the_listing_lands() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.network_check = |_| true;
+        let dir = PathBuf::from("/pretend/share/raw");
+        app.home.browsing = Some(dir.clone());
+        app.home_probes_inflight = vec![dir.clone()];
+        let row = |name: &str| discover::Entry::directory(&dir.join(name));
+
+        app.event(&AppEvent::HomeProbeProgress {
+            root: dir.clone(),
+            rows: vec![row("2009-01-03")],
+        });
+        app.home.rebuild(&[], &[]);
+        let section = &app.home.sections[0];
+        assert!(section.waiting);
+        assert_eq!(section.subtitle.as_deref(), Some("1 so far"));
+        assert_eq!(section.rows.len(), 1);
+
+        app.event(&AppEvent::HomeProbeReady {
+            root: dir.clone(),
+            rows: Some(vec![row("2009-01-03"), row("2009-01-04")]),
+            cut_short: true,
+        });
+        app.event(&AppEvent::HomeProbeProgress {
+            root: dir.clone(),
+            rows: vec![row("late")],
+        });
+        app.home.rebuild(&[], &[]);
+        let section = &app.home.sections[0];
+        assert!(!section.waiting);
+        assert_eq!(section.rows.len(), 2);
+        assert_eq!(section.subtitle.as_deref(), Some("first 5,000"));
+    }
+
     /// A probe that answers must give its slot back. The cap is there to bound threads
     /// wedged on a dead mount, and those never answer at all; counting completed probes
     /// against it meant that after MAX_CONCURRENT_PROBES roots, no root was ever probed
@@ -461,6 +517,7 @@ mod probe_slot_tests {
             app.event(&AppEvent::HomeProbeReady {
                 root: root.clone(),
                 rows,
+                cut_short: false,
             });
         }
 
@@ -484,6 +541,7 @@ mod probe_slot_tests {
         app.event(&AppEvent::HomeProbeReady {
             root: answered,
             rows: Some(Vec::new()),
+            cut_short: false,
         });
 
         assert_eq!(
@@ -5216,6 +5274,13 @@ pub enum AppEvent {
     HomeProbeReady {
         root: PathBuf,
         rows: Option<Vec<crate::discover::Entry>>,
+        /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
+        cut_short: bool,
+    },
+    /// The rows of a network directory read so far, while its listing goes on.
+    HomeProbeProgress {
+        root: PathBuf,
+        rows: Vec<crate::discover::Entry>,
     },
     /// What peeking inside some directories of a cloud listing found: the ones that are
     /// partitioned or Parquet datasets.
@@ -8799,8 +8864,15 @@ impl App {
             // Each probe of an unreachable share costs a thread that will never come
             // back. A handful is a rounding error; an unbounded number, on a machine
             // with a page of dead mounts, is not.
-            if self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
-                break;
+            //
+            // Except the directory browsed into, which is the whole screen and has
+            // nothing else to show. Held behind the cap, it waited on roots the user
+            // had left — a few slow bucket listings kept a share's directory on a
+            // spinner long after it could have been read. One more thread per
+            // directory the user opens is bounded by the user.
+            let browsed = self.home.browsing.as_ref() == Some(&root);
+            if !browsed && self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
+                continue;
             }
             self.home_probes_inflight.push(root.clone());
             let tx = self.events.clone();
@@ -8835,13 +8907,18 @@ impl App {
                             let _ = tx.send(AppEvent::HomeProbeReady {
                                 root,
                                 rows: Some(rows),
+                                cut_short: false,
                             });
                         }
                         Some(Err(message)) => {
                             let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                         }
                         None => {
-                            let _ = tx.send(AppEvent::HomeProbeReady { root, rows: None });
+                            let _ = tx.send(AppEvent::HomeProbeReady {
+                                root,
+                                rows: None,
+                                cut_short: false,
+                            });
                         }
                     }
                     return;
@@ -8864,13 +8941,24 @@ impl App {
                             let _ = tx.send(AppEvent::HomeProbeReady {
                                 root,
                                 rows: other.and_then(Result::ok),
+                                cut_short: false,
                             });
                         }
                     }
                     return;
                 }
+                let mut cut_short = false;
                 let rows = if std::fs::read_dir(&root).is_ok() {
-                    let mut rows = crate::discover::scan_dir(&root);
+                    // What has been read shows while the rest is read: a share can take
+                    // seconds over a directory of thousands.
+                    let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
+                        let _ = tx.send(AppEvent::HomeProbeProgress {
+                            root: root.clone(),
+                            rows: so_far.to_vec(),
+                        });
+                    });
+                    cut_short = scan.truncated;
+                    let mut rows = scan.entries;
                     // Measuring happens here too: it is the same remote filesystem,
                     // and this thread is already the one allowed to block on it.
                     for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
@@ -8890,7 +8978,11 @@ impl App {
                 } else {
                     None
                 };
-                let _ = tx.send(AppEvent::HomeProbeReady { root, rows });
+                let _ = tx.send(AppEvent::HomeProbeReady {
+                    root,
+                    rows,
+                    cut_short,
+                });
             });
         }
     }
@@ -9147,6 +9239,7 @@ impl App {
         if let Some(dir) = self.home.browsing.clone() {
             self.home.probed.remove(&dir);
             self.home.unreachable.remove(&dir);
+            self.home.cut_short.remove(&dir);
         }
         // A peek that failed is asked again: Ctrl+R is the request to try.
         self.home.peek_failed.clear();
@@ -9240,6 +9333,8 @@ impl App {
             browsing: self.home.browsing.clone(),
             probed: self.home.probed.clone(),
             unreachable: self.home.unreachable.clone(),
+            listing_so_far: self.home.listing_so_far.clone(),
+            cut_short: self.home.cut_short.clone(),
             probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
@@ -16813,7 +16908,21 @@ impl App {
                 self.home_refresh();
                 None
             }
-            AppEvent::HomeProbeReady { root, rows } => {
+            AppEvent::HomeProbeProgress { root, rows } => {
+                // Only while that listing is still out: a late batch must not paint
+                // over the whole answer.
+                if self.home_probes_inflight.contains(root) && !self.home.probed.contains_key(root)
+                {
+                    self.home.listing_so_far.insert(root.clone(), rows.clone());
+                    self.home_refresh();
+                }
+                None
+            }
+            AppEvent::HomeProbeReady {
+                root,
+                rows,
+                cut_short,
+            } => {
                 // Give the slot back. The cap exists to bound threads wedged on a dead
                 // `hard` mount, which never send this event and so keep their slot for
                 // good — a probe that answered is not one of those. Without this the
@@ -16824,6 +16933,9 @@ impl App {
                 match rows {
                     Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
                     None => self.home.probe_failed(root.clone()),
+                }
+                if *cut_short {
+                    self.home.cut_short.insert(root.clone());
                 }
                 // An account read with its keys because the sign-in has no data role
                 // says so beside the account.

@@ -77,8 +77,9 @@ Datasets are grouped by where they came from, in this order:
 
 A section titled by a path carries a chip beside its count saying why it is
 there. The note at the far end of the rule says how it is doing: the filesystem
-it is on (`nfs4`), `first 5000` for a listing cut short, `listing`, or
-`unavailable`. A folded section shows how many rows it hides. Filtering keeps
+it is on (`nfs4`), `first 5,000` for a listing cut short, `listing` (with
+`1,200 so far` once a slow share has sent its first rows, which show as they
+arrive), or `unavailable`. A folded section shows how many rows it hides. Filtering keeps
 the grouping, so a match always shows which section it came from. With thirty
 list rows or more, a blank line separates the sections.
 
@@ -525,7 +526,8 @@ long you have used it:
 | recursive search results | 20,000 |
 | recursive search time | 1.5 s |
 
-A directory cut short reads `first 5000` beside its name. A subdirectory past
+A directory cut short reads `first 5,000` beside its name, whether it is local
+or on a share. A subdirectory past
 the 64 is still listed, as a directory rather than a dataset, until you enter it.
 
 ## Narrow and plain terminals

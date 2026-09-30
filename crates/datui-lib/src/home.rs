@@ -854,6 +854,10 @@ pub struct HomeState {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// The rows of network directories still being listed, read so far.
+    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    /// Network directories whose listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
+    pub cut_short: std::collections::HashSet<PathBuf>,
     /// Why a cloud listing was refused, when the service said.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
@@ -967,6 +971,8 @@ impl Default for HomeState {
             peeking: std::collections::HashSet::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
+            listing_so_far: std::collections::HashMap::new(),
+            cut_short: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
             peek_failed: std::collections::HashSet::new(),
@@ -993,6 +999,10 @@ pub struct ListingRequest {
     pub browsing: Option<PathBuf>,
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// Rows of network directories still being listed. See [`HomeState::listing_so_far`].
+    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    /// See [`HomeState::cut_short`].
+    pub cut_short: std::collections::HashSet<PathBuf>,
     /// Why a cloud listing was refused.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     pub network_check: fn(&Path) -> bool,
@@ -1131,6 +1141,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         browsing,
         probed,
         unreachable,
+        listing_so_far,
+        cut_short,
         probe_errors,
         network_check,
         cloud,
@@ -1185,10 +1197,33 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // it was missing here, which is why descending into a bucket showed nothing
         // and kept showing nothing.
         let remote = network_check(&dir);
-        let rows = if remote {
-            probed.get(&dir).cloned().unwrap_or_default()
+        // A remote listing still being read shows what it has, and says so.
+        let so_far = remote && !probed.contains_key(&dir) && listing_so_far.contains_key(&dir);
+        let (rows, truncated) = if remote {
+            let rows = probed
+                .get(&dir)
+                .or_else(|| listing_so_far.get(&dir))
+                .cloned()
+                .unwrap_or_default();
+            (rows, cut_short.contains(&dir))
         } else {
-            discover::scan_dir(&dir)
+            let scan = discover::scan_dir_bounded(&dir);
+            (scan.entries, scan.truncated)
+        };
+        // A directory cut off at the cap otherwise looks exactly like one that happens
+        // to hold that many things.
+        let subtitle = if so_far {
+            Some(format!(
+                "{} so far",
+                crate::numfmt::group_chrome(rows.len())
+            ))
+        } else if truncated {
+            Some(format!(
+                "first {}",
+                crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
+            ))
+        } else {
+            None
         };
         let unavailable = remote && unreachable.contains(&dir);
         // The first row inside any directory opens the whole of it, since `Enter` on the
@@ -1215,7 +1250,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                     }
                 }
             },
-            subtitle: None,
+            subtitle,
             origin: None,
             root: Some(dir.clone()),
             rows,
@@ -1224,9 +1259,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // listing was refused says why.
             unavailable_note: probe_errors.get(&dir).cloned(),
             folded_by_default: false,
-            // Its wait is drawn in place of the whole list; see `awaiting_listing`.
+            // Its wait is drawn in place of the whole list until rows arrive (see
+            // `awaiting_listing`), and on the heading once they do.
             remote_root: None,
-            waiting: false,
+            waiting: so_far,
             grouped_by_place: false,
             door,
             place_labels: Default::default(),
@@ -1288,7 +1324,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // where a directory big enough to hit the cap realistically lives.
         let mut truncated = false;
         let rows = if root.network {
-            probed.get(&root.path).cloned().unwrap_or_default()
+            truncated = cut_short.contains(&root.path);
+            probed
+                .get(&root.path)
+                .or_else(|| listing_so_far.get(&root.path))
+                .cloned()
+                .unwrap_or_default()
         } else if root.available {
             let scan = discover::scan_dir_bounded(&root.path);
             truncated = scan.truncated;
@@ -1335,7 +1376,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // looks exactly like one that happens to hold that many things.
         let mut state: Vec<String> = Vec::new();
         if truncated {
-            state.push(format!("first {}", discover::MAX_ENTRIES_PER_DIR));
+            state.push(format!(
+                "first {}",
+                crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
+            ));
         }
         if root.network {
             state.push(fstype);
@@ -1941,6 +1985,8 @@ impl HomeState {
             browsing: self.browsing.clone(),
             probed: self.probed.clone(),
             unreachable: self.unreachable.clone(),
+            listing_so_far: self.listing_so_far.clone(),
+            cut_short: self.cut_short.clone(),
             probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
@@ -2912,6 +2958,8 @@ impl HomeState {
     pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
         self.unreachable.remove(&root);
         self.probe_errors.remove(&root);
+        self.listing_so_far.remove(&root);
+        self.cut_short.remove(&root);
         self.probed.insert(root.clone(), rows);
         self.apply_cloud_kinds(&root);
     }
@@ -3001,6 +3049,7 @@ impl HomeState {
     /// Record that a probe could not read the root.
     pub fn probe_failed(&mut self, root: PathBuf) {
         self.probed.remove(&root);
+        self.listing_so_far.remove(&root);
         self.unreachable.insert(root);
     }
 

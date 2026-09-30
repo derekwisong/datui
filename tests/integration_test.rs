@@ -8211,6 +8211,8 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
             browsing: None,
             probed: Default::default(),
             unreachable: Default::default(),
+            listing_so_far: Default::default(),
+            cut_short: Default::default(),
             probe_errors: Default::default(),
             network_check: app.home.network_check,
             cloud: Vec::new(),
@@ -9129,6 +9131,7 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
     app.event(&AppEvent::HomeProbeReady {
         root: PathBuf::from("/mnt/somewhere-else"),
         rows: Some(Vec::new()),
+        cut_short: false,
     });
 
     for _ in 0..50 {

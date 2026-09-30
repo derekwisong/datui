@@ -1191,9 +1191,20 @@ pub struct Scan {
 /// enough moved the arbitrariness rather than removing it, since two directories holding
 /// the same subdirectories would still disagree about what to call them.
 pub fn scan_dir_bounded(dir: &Path) -> Scan {
+    scan_dir_progressive(dir, |_| {})
+}
+
+/// How often a listing still being read shows what it has so far.
+const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// [`scan_dir_bounded`], handing `progress` the rows read so far, sorted, every
+/// [`LISTING_PROGRESS_EVERY`] while the read goes on. A directory a share takes seconds
+/// to list shows its first rows as they arrive rather than a spinner until the last.
+pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> Scan {
     let Ok(iter) = std::fs::read_dir(dir) else {
         return Scan::default();
     };
+    let mut shown = std::time::Instant::now();
 
     let mut entries = Vec::new();
     let mut seen = 0usize;
@@ -1245,6 +1256,12 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
         };
 
         entries.push(Entry::new(path, kind).with_fs_metadata(&meta));
+        if shown.elapsed() >= LISTING_PROGRESS_EVERY {
+            let mut so_far = entries.clone();
+            sort_entries(&mut so_far);
+            progress(&so_far);
+            shown = std::time::Instant::now();
+        }
     }
 
     sort_entries(&mut entries);

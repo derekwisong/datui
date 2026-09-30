@@ -16,6 +16,14 @@ use std::sync::mpsc;
 
 mod common;
 
+/// Whether the app is still waiting on background work: `busy` or the row count. What
+/// these tests wait on rather than a quiet spell on the channel, which on a loaded
+/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
+/// for minutes.
+fn work_pending(app: &App) -> bool {
+    app.is_busy() || app.row_count_pending()
+}
+
 /// Pumps the load event chain until the file is open, including background
 /// task results delivered over the channel.
 fn pump_open_until_loaded(
@@ -25,6 +33,8 @@ fn pump_open_until_loaded(
     options: OpenOptions,
 ) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
+    // Only a hang guard; nothing here is timed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         match next.take() {
             Some(ev) => {
@@ -34,9 +44,17 @@ fn pump_open_until_loaded(
                 }
                 next = app.event(&ev);
             }
-            _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+            // Done once nothing is chained, queued or still owed.
+            _ => match rx.try_recv() {
                 Ok(ev) => next = Some(ev),
-                Err(_) => return,
+                Err(_) if !work_pending(app) => return,
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "background work never reported back"
+                    );
+                    next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+                }
             },
         }
     }

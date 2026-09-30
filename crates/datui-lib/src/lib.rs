@@ -1065,7 +1065,9 @@ mod chart_prepare_tests {
         tx: &mpsc::Sender<AppEvent>,
         done: impl Fn(&App) -> bool,
     ) {
-        for _ in 0..500 {
+        // Waits on the channel between checks; the deadline is only a hang guard.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
             while let Ok(ev) = rx.try_recv() {
                 if let Some(next) = app.event(&ev) {
                     let _ = tx.send(next);
@@ -1074,9 +1076,16 @@ mod chart_prepare_tests {
             if done(app) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "app never reached the expected state"
+            );
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
+                && let Some(next) = app.event(&ev)
+            {
+                let _ = tx.send(next);
+            }
         }
-        panic!("app did not reach the expected state within 5 seconds");
     }
 
     pub(super) fn open(
@@ -2422,6 +2431,19 @@ pub mod tests {
                 }
             }
         });
+    }
+
+    /// Whether the app is still waiting on background work: `busy`, the row count, or
+    /// the buffer collect, a load-ahead included. What a test driving the app without
+    /// a terminal waits on: a quiet channel says only that nothing arrived lately,
+    /// which on a loaded machine is not the same thing. Work the app has abandoned is
+    /// not waited on; a cancelled analysis can run for minutes.
+    pub fn work_pending(app: &crate::App) -> bool {
+        app.is_busy()
+            || app.row_count_pending()
+            || app
+                .collect_inflight
+                .is_some_and(|inflight| inflight.generation == app.task_generation)
     }
 
     /// Returns a tokio runtime handle for use in tests.

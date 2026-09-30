@@ -25,20 +25,45 @@ use crate::{App, AppEvent, InputMode, OpenOptions};
 /// a recent that no longer exists and a dead root derived from it. Fifty runs fills the
 /// list. `DATUI_CACHE_DIR` is process-wide, so this is done once and as early as
 /// possible.
+///
+/// The directories are named at random, not by process id: ids are reused, and a run
+/// that landed on a finished run's id inherited its recents and templates. They are
+/// removed when the process exits.
 pub(crate) fn isolate_cache() {
+    // Held for the life of the process. A static is never dropped, so they are removed
+    // by an exit handler instead.
+    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_scratch_dirs() {
+        if let Ok(mut held) = SCRATCH.lock() {
+            held.clear();
+        }
+    }
+    let scratch_dir = |prefix: &str| {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("a scratch directory for the test process")
+    };
+
     static ISOLATE: std::sync::Once = std::sync::Once::new();
     ISOLATE.call_once(|| {
-        let dir = std::env::temp_dir().join(format!("datui-flow-cache-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = scratch_dir("datui-flow-cache-");
         // The config directory holds templates; see `ConfigManager::new` for why a
         // test must never reach the real one.
-        let config_dir =
-            std::env::temp_dir().join(format!("datui-flow-config-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&config_dir);
+        let config_dir = scratch_dir("datui-flow-config-");
         // SAFETY: test-only. Tests run on parallel threads, so this can race another test
         // reading the environment; accepted in tests and never done outside them.
-        unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
-        unsafe { std::env::set_var("DATUI_CONFIG_DIR", &config_dir) };
+        unsafe { std::env::set_var("DATUI_CACHE_DIR", dir.path()) };
+        unsafe { std::env::set_var("DATUI_CONFIG_DIR", config_dir.path()) };
+        let mut held = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
+        held.push(dir);
+        held.push(config_dir);
+        // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
+        // callback only drops the directories above.
+        unsafe { atexit(remove_scratch_dirs) };
     });
 }
 
@@ -96,7 +121,16 @@ impl Harness {
 
     /// Run `event` and everything that follows from it.
     fn run(&mut self, event: AppEvent) {
-        let mut next = Some(event);
+        self.run_until(Some(event), |_| false);
+    }
+
+    /// Run `event`, if any, and what follows from it until `stop` holds between two
+    /// events or nothing is left to do. A result still out when it stops waits on the
+    /// channel until the next run handles it.
+    fn run_until(&mut self, event: Option<AppEvent>, stop: impl Fn(&App) -> bool) {
+        let mut next = event;
+        // Waits on the work, not on a quiet spell; the deadline is only a hang guard.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
             if let Some(event) = next.take() {
                 if let AppEvent::Crash(message) = &event {
@@ -105,20 +139,61 @@ impl Harness {
                 next = self.app.event(&event);
                 continue;
             }
+            if stop(&self.app) {
+                break;
+            }
             if let Ok(event) = self.rx.try_recv() {
                 next = Some(event);
                 continue;
             }
-            if self.app.busy {
-                match self.rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                    Ok(event) => {
-                        next = Some(event);
-                        continue;
-                    }
-                    Err(_) => panic!("the app stayed busy with no background result"),
-                }
+            if crate::tests::work_pending(&self.app) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "background work never reported back"
+                );
+                next = self
+                    .rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .ok();
+                continue;
             }
             break;
+        }
+    }
+
+    /// Run `event` until the app is no longer busy, holding back the events `hold`
+    /// picks rather than handling them. What was held is returned, for `run` later.
+    fn run_holding(&mut self, event: AppEvent, hold: impl Fn(&AppEvent) -> bool) -> Vec<AppEvent> {
+        let mut held = Vec::new();
+        let mut next = Some(event);
+        // Only a hang guard; nothing here is timed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
+            if let Some(event) = next.take() {
+                if hold(&event) {
+                    held.push(event);
+                } else if let AppEvent::Crash(message) = &event {
+                    panic!("the app crashed: {message}");
+                } else {
+                    next = self.app.event(&event);
+                }
+                continue;
+            }
+            if let Ok(event) = self.rx.try_recv() {
+                next = Some(event);
+                continue;
+            }
+            if !self.app.is_busy() {
+                return held;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background work never reported back"
+            );
+            next = self
+                .rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .ok();
         }
     }
 
@@ -507,22 +582,29 @@ fn a_search_that_ran_says_how_many_rows_matched() {
     h.app.app_config.query.default_mode = crate::QueryMode::Search;
     h.press(KeyCode::Char('/'));
     h.type_str("al");
-    h.press(KeyCode::Enter);
+    // The rows on screen and their count held back: it can land before the rows or
+    // after them, so only holding it makes the prompt below open while it is out.
+    let count = h.run_holding(
+        AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        |event| matches!(event, AppEvent::BackgroundLenReady { .. }),
+    );
     assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.row_count_pending(), "the count is still out");
 
-    h.press(KeyCode::Char('/'));
+    h.run_until(
+        Some(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+        ))),
+        |_| true,
+    );
     assert_eq!(h.app.query_mode, crate::QueryMode::Search);
-    // The count runs in the background without setting busy; until it
-    // settles there is nothing to claim.
-    if h.app.row_count_pending() {
-        assert!(!screen(&mut h.app).contains(" match"));
+    // Until the count settles there is nothing to claim.
+    assert!(!screen(&mut h.app).contains(" match"));
+    for event in count {
+        h.run(event);
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while h.app.row_count_pending() && std::time::Instant::now() < deadline {
-        if let Ok(event) = h.rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            h.run(event);
-        }
-    }
+    h.run_until(None, |_| false);
     let drawn = screen(&mut h.app);
     assert!(drawn.contains(" 1 match "), "{drawn}");
     assert!(drawn.contains("Every word's letters in order, in any text column"));

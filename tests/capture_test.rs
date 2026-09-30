@@ -2,6 +2,14 @@
 
 mod common;
 
+/// Whether the app is still waiting on background work: `busy` or the row count. What
+/// these tests wait on rather than a quiet spell on the channel, which on a loaded
+/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
+/// for minutes.
+fn work_pending(app: &App) -> bool {
+    app.is_busy() || app.row_count_pending()
+}
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -15,6 +23,8 @@ fn pump_open_until_loaded(
     options: OpenOptions,
 ) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
+    // Only a hang guard; nothing here is timed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         match next.take() {
             Some(ev) => {
@@ -24,16 +34,26 @@ fn pump_open_until_loaded(
                 }
                 next = app.event(&ev);
             }
-            _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+            // Done once nothing is chained, queued or still owed.
+            _ => match rx.try_recv() {
                 Ok(ev) => next = Some(ev),
-                Err(_) => return,
+                Err(_) if !work_pending(app) => return,
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "background work never reported back"
+                    );
+                    next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+                }
             },
         }
     }
 }
 
+/// Waits on the channel while the app is busy; the deadline is only a hang guard.
 fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
-    for _ in 0..500 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
         while let Ok(ev) = rx.try_recv() {
             if let Some(next) = app.event(&ev) {
                 let _ = tx.send(next);
@@ -42,9 +62,13 @@ fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Send
         if !app.is_busy() {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(std::time::Instant::now() < deadline, "app never settled");
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
+            && let Some(next) = app.event(&ev)
+        {
+            let _ = tx.send(next);
+        }
     }
-    panic!("app did not settle within 5 seconds");
 }
 
 fn open_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {

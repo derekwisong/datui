@@ -11,6 +11,14 @@ use std::sync::mpsc;
 
 mod common;
 
+/// Whether the app is still waiting on background work: `busy` or the row count. What
+/// these tests wait on rather than a quiet spell on the channel, which on a loaded
+/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
+/// for minutes.
+fn work_pending(app: &App) -> bool {
+    app.is_busy() || app.row_count_pending()
+}
+
 /// Enter on a tool in the Analysis sidebar. A tool with no result yet shows its
 /// Sample form in the pane rather than running; the next Enter runs it.
 fn show_sample_form(app: &mut App) {
@@ -20,34 +28,83 @@ fn show_sample_form(app: &mut App) {
     )));
 }
 
-/// Drains all pending events from the channel and processes them (for async operations).
+/// Handle events, and the events they chain to, until the app waits on no background
+/// work and the channel is empty.
+///
+/// Waits on the work, not on a quiet gap: a run that took longer than the gap on a
+/// slow runner left the previous run's result in place for the asserts after it.
 fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
-    while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-        if let Some(next) = app.event(&ev)
-            && let Some(next2) = app.event(&next)
-        {
-            app.event(&next2);
+    while let Some(event) = next_event(app, rx) {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
         }
     }
 }
 
-/// Handle events until the analysis run in flight has finished, then until the
-/// channel is quiet. Waits on the run rather than on a gap between events: a run
-/// that works for longer than [`drain_events`]'s five quiet seconds on a slow
-/// runner was left unfinished there.
-fn drain_until_analysis_done(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+/// The next event on the channel: one already there, or one background work still
+/// owes. `None` once nothing is there and nothing is owed.
+fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
+    // Only a hang guard; nothing here is timed.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    while (app.analysis_modal.computing.is_some() || app.is_busy())
-        && std::time::Instant::now() < deadline
-    {
-        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100))
-            && let Some(next) = app.event(&ev)
-            && let Some(next2) = app.event(&next)
-        {
-            app.event(&next2);
+    loop {
+        if let Ok(event) = rx.try_recv() {
+            return Some(event);
+        }
+        if !work_pending(app) {
+            return None;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background work never reported back"
+        );
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            return Some(event);
         }
     }
-    drain_events(app, rx);
+}
+
+/// Ticks for a loop that polls the way `run()` does until what it waits for is true.
+/// Bounded by a hang guard rather than a count: on a loaded machine a count of ticks
+/// runs out before the work does. The guard fails the test instead of ending the loop,
+/// so a wait that never came true cannot fall through to asserts that pass anyway.
+#[track_caller]
+fn ticks() -> impl Iterator<Item = usize> {
+    let caller = std::panic::Location::caller();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    (0..).inspect(move |_| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wait at {caller} never finished"
+        );
+    })
+}
+
+/// Hand results and their follow-ups back through the channel, as `run()` does, until
+/// `done`. Waits on the channel between checks, so a slow machine costs time and
+/// never the answer.
+#[track_caller]
+fn pump_until(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    done: impl Fn(&App) -> bool,
+) {
+    for _ in ticks() {
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if done(app) {
+            return;
+        }
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
+            && let Some(next) = app.event(&ev)
+        {
+            let _ = tx.send(next);
+        }
+    }
 }
 
 /// Pumps the load event chain until complete, including background task results from the channel.
@@ -67,15 +124,11 @@ fn pump_open_until_loaded(
                 }
                 next = app.event(&ev);
             }
-            _ => {
-                // No chained event; check the channel for background task results.
-                match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-                    Ok(ev) => {
-                        next = Some(ev);
-                    }
-                    Err(_) => return, // Timeout or disconnected: loading complete or stuck.
-                }
-            }
+            // Nothing chained: the load is done once nothing more is owed.
+            _ => match next_event(app, rx) {
+                Some(ev) => next = Some(ev),
+                None => return,
+            },
         }
     }
 }
@@ -96,10 +149,7 @@ fn pump_open_until_error(
             Some(AppEvent::Crash(message)) => return Some(message),
             Some(AppEvent::BackgroundError { message, .. }) => return Some(message),
             Some(ev) => next = app.event(&ev),
-            None => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-                Ok(ev) => next = Some(ev),
-                Err(_) => return None,
-            },
+            None => next = Some(next_event(app, rx)?),
         }
     }
 }
@@ -447,23 +497,13 @@ fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<A
 }
 
 /// Feed background results back until the chart for the current selection is prepared.
+#[track_caller]
 fn pump_until_chart_ready(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
 ) {
-    for _ in 0..500 {
-        while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
-                let _ = tx.send(next);
-            }
-        }
-        if app.chart_data_ready() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("chart data was not prepared within 5 seconds");
+    pump_until(app, rx, tx, App::chart_data_ready);
 }
 
 /// Chart data is prepared off the render path: selecting columns starts a background
@@ -527,19 +567,24 @@ fn test_chart_prepares_one_selection_at_a_time() {
     }
 
     let mut results = 0;
-    for _ in 0..500 {
+    let mut handle = |app: &mut App, ev: AppEvent| {
+        if matches!(ev, AppEvent::BackgroundChartReady) {
+            results += 1;
+        }
+        if let Some(next) = app.event(&ev) {
+            let _ = tx.send(next);
+        }
+    };
+    for _ in ticks() {
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::BackgroundChartReady) {
-                results += 1;
-            }
-            if let Some(next) = app.event(&ev) {
-                let _ = tx.send(next);
-            }
+            handle(&mut app, ev);
         }
         if app.chart_data_ready() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            handle(&mut app, ev);
+        }
     }
     assert!(app.chart_data_ready());
     assert_eq!(
@@ -851,7 +896,7 @@ fn test_startup_buffer_race_does_not_lose_rows() {
 
         // Process events like the main loop: drain channel, render, check needs_recollect.
         let mut completed = false;
-        for _tick in 0..200 {
+        for _tick in ticks() {
             // Drain all pending events.
             loop {
                 match rx.try_recv() {
@@ -1095,7 +1140,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_until_analysis_done(&mut app, &rx);
+    drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
@@ -1118,7 +1163,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     )));
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_until_analysis_done(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     assert!(app.analysis_modal.data_quality_results.is_some());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
@@ -2658,7 +2703,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_until_analysis_done(&mut app, &rx);
+    drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
@@ -2699,7 +2744,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     );
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_until_analysis_done(&mut app, &rx);
+    drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal
             .data_quality_results
@@ -2732,7 +2777,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     assert!(app.analysis_modal.data_quality_results.is_none());
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_until_analysis_done(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     // The earlier sample again is the session cache's, not another read.
     key(&mut app, KeyCode::Char('s'));
@@ -2869,7 +2914,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
 
     // Render once so visible_rows is set for real, then settle the post-render bounce.
     let settle = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>| {
-        for _ in 0..200 {
+        for _ in ticks() {
             let mut buf = Buffer::empty(terminal_area);
             app.render(terminal_area, &mut buf);
             let needs = app
@@ -2894,7 +2939,6 @@ fn test_scroll_past_end_does_not_hang_busy() {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("app did not settle within 2 seconds");
     };
     settle(&mut app, &rx, &tx);
 
@@ -2966,7 +3010,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
     app.event(&AppEvent::Filter(vec![filter]));
 
     // Drain BackgroundLenReady then BackgroundCollectReady.
-    for _ in 0..200 {
+    for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);
         let needs = app
@@ -2986,7 +3030,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
                 let _ = tx.send(next);
             }
         }
-        if !app.is_busy() && !needs {
+        if !needs && !work_pending(&app) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -3033,7 +3077,7 @@ fn test_hive_dir_loads_and_counts_via_footers() {
 
     // Drive render -> buffer collect -> background count to completion.
     let mut counted = false;
-    for _ in 0..200 {
+    for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);
         let needs = app
@@ -3101,9 +3145,12 @@ fn write_parquet(dir: &std::path::Path, sub: &str, mut df: polars::prelude::Data
     ParquetWriter::new(f).finish(&mut df).unwrap();
 }
 
-/// Render a loaded app until its buffer stops growing, and return what the table area
-/// shows. Drains the app's events each pass: a buffer fill lands as one, so without it
-/// the screen is whatever the first synchronous collect managed.
+/// Render a loaded app until no collect is owed and no background work is still to
+/// report, and return what the table area shows. Idle alone is not enough: a row
+/// count landing later can widen the buffer after the app first goes quiet. Drains the
+/// app's events each pass: a buffer fill lands as one, so without it the screen is
+/// whatever the first synchronous collect managed.
+#[track_caller]
 fn painted(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -3111,9 +3158,11 @@ fn painted(
     area: Rect,
 ) -> String {
     let mut buf = Buffer::empty(area);
-    for _ in 0..60 {
+    for _ in ticks() {
         app.render(area, &mut buf);
+        let mut handled = false;
         while let Ok(ev) = rx.try_recv() {
+            handled = true;
             if let Some(next) = app.event(&ev) {
                 let _ = tx.send(next);
             }
@@ -3127,7 +3176,9 @@ fn painted(
                 n
             })
             .unwrap_or(false);
-        if !needs && !app.is_busy() {
+        // Something that landed since the frame was drawn needs a frame of its own
+        // before the view can be called finished.
+        if !handled && !needs && !work_pending(app) {
             break;
         }
         if needs {
@@ -5092,7 +5143,7 @@ fn export_csv(
     if let Some(next) = app.event(&start) {
         let _ = tx.send(next);
     }
-    for _ in 0..200 {
+    for _ in ticks() {
         while let Ok(ev) = rx.try_recv() {
             if let Some(next) = app.event(&ev) {
                 let _ = tx.send(next);
@@ -6075,7 +6126,7 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
 
     // Render as we go: `visible_rows` is set by the render, and without it there is
     // no display slice to assert on later.
-    for _tick in 0..200 {
+    for _tick in ticks() {
         drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -6110,10 +6161,14 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
     drain_like_main_loop(&mut app, &tx, &rx);
     app.event(&ctrl_o());
 
-    for _tick in 0..100 {
-        drain_like_main_loop(&mut app, &tx, &rx);
+    // Until the abandoned load has reported everything it was going to.
+    for _tick in ticks() {
+        let stepped = drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
+        if stepped == 0 && !app.background_work_in_flight() {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
@@ -6151,10 +6206,10 @@ fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
     let mut pump = EventPump::new(app, tx, rx);
     pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while (pump.app.is_busy() || pump.app.data_table_state.is_none())
-        && std::time::Instant::now() < deadline
-    {
+    for _ in ticks() {
+        if !pump.app.is_busy() && pump.app.data_table_state.is_some() {
+            break;
+        }
         pump.wait_and_drain(std::time::Duration::from_millis(100))
             .unwrap();
     }
@@ -6566,6 +6621,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
 /// Draw, ask for what the frame needs, take one answer, draw again — the shape of
 /// `run()` around `terminal.draw`, so a state the real loop passes through for one
 /// frame can be caught here too.
+#[track_caller]
 fn pump_home(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -6573,7 +6629,7 @@ fn pump_home(
     buf: &mut Buffer,
     done: impl Fn(&App) -> bool,
 ) {
-    for _ in 0..200 {
+    for _ in ticks() {
         buf.reset();
         Widget::render(&mut *app, area, buf);
         app.request_what_the_frame_needs();
@@ -6586,7 +6642,6 @@ fn pump_home(
             app.event(&next);
         }
     }
-    panic!("the home screen never settled");
 }
 
 /// Everything a buffer has drawn, as lines.
@@ -6663,7 +6718,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     tx.send(AppEvent::Open(vec![first.clone()], OpenOptions::default()))
         .unwrap();
 
-    for _tick in 0..200 {
+    for _tick in ticks() {
         drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -6710,7 +6765,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
 
     // Every frame from here until the second dataset is installed.
     let mut frames = 0usize;
-    for _tick in 0..200 {
+    for _tick in ticks() {
         drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -6775,7 +6830,7 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
             |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name),
         )
     };
-    for _tick in 0..200 {
+    for _tick in ticks() {
         drain_like_main_loop(&mut app, &tx, &rx);
         if row_of(&app, "model.onnx").is_some() {
             break;
@@ -6809,7 +6864,7 @@ fn a_load_chosen_at_home_fails_at_home() {
     let mut app = App::new(tx.clone(), common::test_runtime());
     tx.send(AppEvent::Open(vec![first], OpenOptions::default()))
         .unwrap();
-    for _tick in 0..200 {
+    for _tick in ticks() {
         drain_like_main_loop(&mut app, &tx, &rx);
         if app.data_table_state.is_some() && !app.is_busy() {
             break;
@@ -6829,7 +6884,7 @@ fn a_load_chosen_at_home_fails_at_home() {
         }
     };
     type_at_prompt(&mut app, &broken);
-    for _tick in 0..200 {
+    for _tick in ticks() {
         drain_like_main_loop(&mut app, &tx, &rx);
         if !app.is_busy() && app.input_mode == InputMode::Home {
             break;
@@ -6848,10 +6903,10 @@ fn a_load_chosen_at_home_fails_at_home() {
         let path = datui::canonical::canonicalize(path).unwrap();
         cache.load_recents().contains(&path)
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !recorded(std::path::Path::new("tests/sample-data/people.parquet"))
-        && std::time::Instant::now() < deadline
-    {
+    for _ in ticks() {
+        if recorded(std::path::Path::new("tests/sample-data/people.parquet")) {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(recorded(std::path::Path::new(
@@ -7027,19 +7082,9 @@ fn test_escape_after_backspace_above_the_start_returns_home() {
 }
 
 /// Feed background results back into the app until it is no longer busy.
+#[track_caller]
 fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
-    for _ in 0..500 {
-        while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
-                let _ = tx.send(next);
-            }
-        }
-        if !app.is_busy() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("app did not settle within 5 seconds");
+    pump_until(app, rx, tx, |app| !app.is_busy());
 }
 
 /// A 100-row table: `a` 0..100, `c` = a % 3, `name` "alpha_N" for even and "beta_N" for odd `a`.
@@ -9616,10 +9661,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
 
     // The worker's answer comes back on the channel.
     let mut opened = false;
-    for _ in 0..50 {
-        let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(10)) else {
-            break;
-        };
+    while let Some(event) = next_event(&app, &rx) {
         if matches!(event, AppEvent::Open(..)) {
             opened = true;
         }
@@ -9692,10 +9734,7 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
         cut_short: false,
     });
 
-    for _ in 0..50 {
-        let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(10)) else {
-            break;
-        };
+    while let Some(event) = next_event(&app, &rx) {
         let mut follow = app.event(&event);
         while let Some(next) = follow {
             follow = app.event(&next);
@@ -10640,9 +10679,9 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
                         return Some(AppEvent::Open(paths, options));
                     }
                     Some(ev) => next = app.event(&ev),
-                    None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
-                        Ok(ev) => next = Some(ev),
-                        Err(_) => panic!("the chain stopped without settling on anything"),
+                    None => match next_event(app, rx) {
+                        Some(ev) => next = Some(ev),
+                        None => panic!("the chain stopped without settling on anything"),
                     },
                 }
             }
@@ -11423,12 +11462,15 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
 
     // The look lands. It must find nothing waiting for it.
     let mut landed = None;
-    while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(4000)) {
-        if matches!(ev, AppEvent::DirectoryLookedAt { .. }) {
-            landed = app.event(&ev);
+    for _ in ticks() {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
+            && matches!(ev, AppEvent::DirectoryLookedAt { .. })
+        {
+            landed = Some(app.event(&ev));
             break;
         }
     }
+    let landed = landed.expect("the look reports back");
     assert!(
         landed.is_none(),
         "the answer to a question the user walked away from does not open anything"
@@ -11471,9 +11513,9 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
             match next.take() {
                 Some(AppEvent::Open(paths, options)) => return Some((paths, options)),
                 Some(ev) => next = app.event(&ev),
-                None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
-                    Ok(ev) => next = Some(ev),
-                    Err(_) => panic!("the chain stopped without settling"),
+                None => match next_event(&app, &rx) {
+                    Some(ev) => next = Some(ev),
+                    None => panic!("the chain stopped without settling"),
                 },
             }
         }
@@ -11558,9 +11600,9 @@ fn test_a_csv_setting_does_not_decide_a_directory_of_parquet() {
                     panic!("a CSV setting cannot make two Parquet tables into one")
                 }
                 Some(ev) => next = app.event(&ev),
-                None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
-                    Ok(ev) => next = Some(ev),
-                    Err(_) => panic!("the chain stopped without settling"),
+                None => match next_event(&app, &rx) {
+                    Some(ev) => next = Some(ev),
+                    None => panic!("the chain stopped without settling"),
                 },
             }
         }
@@ -11599,9 +11641,9 @@ fn test_a_directory_with_no_data_is_not_forced_open() {
                 panic!("a directory with nothing readable in it has no table to open")
             }
             Some(ev) => next = app.event(&ev),
-            None => match rx.recv_timeout(std::time::Duration::from_millis(4000)) {
-                Ok(ev) => next = Some(ev),
-                Err(_) => panic!("the chain stopped without settling"),
+            None => match next_event(&app, &rx) {
+                Some(ev) => next = Some(ev),
+                None => panic!("the chain stopped without settling"),
             },
         }
     }
@@ -11765,21 +11807,18 @@ fn test_tsv_and_psv_take_every_csv_option() {
 /// Run the app's events, from `first`, until it is idle with nothing left to do,
 /// agreeing to any download it asks about.
 fn settle_from(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: AppEvent) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut next = Some(first);
-    while std::time::Instant::now() < deadline {
+    loop {
         match next.take() {
             Some(ev) => next = app.event(&ev),
             // A download is asked about first; Yes has the focus.
             None if app.awaiting_download_confirmation() => next = Some(key(KeyCode::Enter)),
-            None => match rx.recv_timeout(std::time::Duration::from_millis(300)) {
-                Ok(ev) => next = Some(ev),
-                Err(_) if !app.is_busy() => return,
-                Err(_) => {}
+            None => match next_event(app, rx) {
+                Some(ev) => next = Some(ev),
+                None => return,
             },
         }
     }
-    panic!("the app did not settle");
 }
 
 fn column_names(app: &App) -> Vec<String> {

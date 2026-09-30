@@ -22,7 +22,7 @@ use crate::error_display::user_message_from_polars;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
-use crate::query::parse_query;
+use crate::query::{ParsedQuery, parse_query};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
@@ -6989,7 +6989,13 @@ impl DataTableState {
         }
 
         match parse_query(&query) {
-            Ok((cols, filter, group_by_cols, group_by_col_names, distinct)) => {
+            Ok(ParsedQuery {
+                cols,
+                filter,
+                group_by: group_by_cols,
+                group_by_names: group_by_col_names,
+                distinct,
+            }) => {
                 let mut lf = self.query_source();
                 let mut schema_opt: Option<Arc<Schema>> = None;
 

@@ -1152,8 +1152,20 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
     }
 }
 
-/// (select columns, where filter, by expressions, by column names, distinct).
-type ParseQueryResult = Result<(Vec<Expr>, Option<Expr>, Vec<Expr>, Vec<String>, bool), String>;
+/// A parsed q-style query, ready to apply to a LazyFrame.
+#[derive(Debug, Default)]
+pub struct ParsedQuery {
+    /// The select list; empty means every column.
+    pub cols: Vec<Expr>,
+    /// The where clause, its terms ANDed.
+    pub filter: Option<Expr>,
+    /// The by expressions.
+    pub group_by: Vec<Expr>,
+    /// Names of the by columns that have one (a plain column or an alias).
+    pub group_by_names: Vec<String>,
+    /// `select distinct`: drop duplicate result rows.
+    pub distinct: bool,
+}
 
 /// Convert Polars-specific error messages to user-friendly query errors.
 pub fn sanitize_query_error(msg: &str) -> String {
@@ -1178,11 +1190,11 @@ pub fn sanitize_query_error(msg: &str) -> String {
     msg.to_string()
 }
 
-pub fn parse_query(query: &str) -> ParseQueryResult {
+pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
     // Empty query is equivalent to "select" - return all columns with no filter or grouping
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Ok((Vec::new(), None, Vec::new(), Vec::new(), false));
+        return Ok(ParsedQuery::default());
     }
 
     let tokens = tokenize(query)?;
@@ -1422,7 +1434,13 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
         }
     }
 
-    Ok((cols, filter, group_by_cols, group_by_col_names, distinct))
+    Ok(ParsedQuery {
+        cols,
+        filter,
+        group_by: group_by_cols,
+        group_by_names: group_by_col_names,
+        distinct,
+    })
 }
 
 #[cfg(test)]
@@ -1506,7 +1524,7 @@ mod tests {
     fn test_parse_not_function() {
         let query = "select a where not[a = b]";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").eq(col("b")).not()));
     }
@@ -1520,11 +1538,11 @@ mod tests {
 
         let query3 = "select a where not a = b";
 
-        let (_, filter1, _, _, _) = parse_query(query1).unwrap();
+        let filter1 = parse_query(query1).unwrap().filter;
 
-        let (_, filter2, _, _, _) = parse_query(query2).unwrap();
+        let filter2 = parse_query(query2).unwrap().filter;
 
-        let (_, filter3, _, _, _) = parse_query(query3).unwrap();
+        let filter3 = parse_query(query3).unwrap().filter;
 
         // All should produce equivalent expressions
 
@@ -1540,7 +1558,7 @@ mod tests {
     fn test_parse_avg_without_brackets() {
         let query = "select avg 5+a by category";
 
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 1);
 
@@ -1552,7 +1570,7 @@ mod tests {
     fn test_parse_string_literal() {
         let query = "select a, b:\"foo\"";
 
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 2);
 
@@ -1568,7 +1586,7 @@ mod tests {
     fn test_parse_string_in_where() {
         let query = "select a where name=\"george\", age > 7";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         // Should have name="george" AND age > 7
 
@@ -1580,7 +1598,7 @@ mod tests {
     fn test_parse_col_syntax() {
         let query = "select col[\"first name\"]";
 
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 1);
 
@@ -1592,7 +1610,7 @@ mod tests {
     fn test_parse_col_syntax_with_alias() {
         let query = "select a, b:col[\"first name\"]";
 
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 2);
 
@@ -1606,7 +1624,7 @@ mod tests {
     fn test_parse_col_syntax_with_string_literal() {
         let query = "select col[\"first name\"]:\"derek\", foo where foo > 7";
 
-        let (cols, filter, _, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
 
         assert_eq!(cols.len(), 2);
 
@@ -1622,7 +1640,7 @@ mod tests {
     fn test_parse_string_escape_sequences() {
         let query = "select a where name=\"george\\\"s name\"";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         // Should parse escaped quote correctly
 
@@ -1634,7 +1652,7 @@ mod tests {
     fn test_parse_query_simple_where() {
         let query = "select a where a > 10";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").gt(lit(10.0))));
     }
@@ -1643,7 +1661,7 @@ mod tests {
     fn test_parse_query_unary_minus_in_where() {
         // Minus next to literal with operator on other side: -0.5+discount → (-0.5)+discount
         let query = "select sum total-1 by product where 0<-0.5+discount";
-        let (cols, filter, _, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
         assert_eq!(cols.len(), 1);
         assert!(filter.is_some());
         // Filter: 0 < (-0.5) + discount
@@ -1654,7 +1672,7 @@ mod tests {
     #[test]
     fn test_parse_query_negative_literal_where() {
         let query = "select where 0<-0.1+discount";
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         let expected = lit(0.0).lt(lit(0).sub(lit(0.1)).add(col("discount")));
         assert_eq!(filter, Some(expected));
     }
@@ -1674,7 +1692,7 @@ mod tests {
     fn test_parse_query_alias() {
         let query = "select my_col:a + 1";
 
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols, vec![col("a").add(lit(1.0)).alias("my_col")]);
     }
@@ -1684,7 +1702,7 @@ mod tests {
     fn test_parse_query_and_or() {
         let query = "select a where a > 10 | a < 5, b = 2";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         let expected =
             (col("a").gt(lit(10.0)).or(col("a").lt(lit(5.0)))).and(col("b").eq(lit(2.0)));
@@ -1697,7 +1715,7 @@ mod tests {
     fn test_parse_query_neq() {
         let query = "select a where a != 10";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").neq(lit(10.0))));
     }
@@ -1707,7 +1725,7 @@ mod tests {
     fn test_parse_query_gte() {
         let query = "select a where a >= 10";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").gt_eq(lit(10.0))));
     }
@@ -1717,7 +1735,7 @@ mod tests {
     fn test_parse_query_lte() {
         let query = "select a where a <= 10";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").lt_eq(lit(10.0))));
     }
@@ -1727,7 +1745,7 @@ mod tests {
     fn test_empty_query() {
         let query = "select";
 
-        let (cols, filter, _, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
 
         assert!(cols.is_empty());
 
@@ -1739,7 +1757,7 @@ mod tests {
     fn test_select_all_implicit() {
         let query = "select where a > 1";
 
-        let (cols, filter, _, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
 
         assert!(cols.is_empty());
 
@@ -1782,7 +1800,7 @@ mod tests {
         // c>c%n should be parsed as c > (c % n), not (c > c) % n
         let query = "select t, v where c>c%n";
 
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         // Should parse as c > (c % n)
         let expected = col("c").gt(col("c").div(col("n")));
@@ -1842,7 +1860,7 @@ mod tests {
     #[test]
     fn test_parse_query_select_with_date_accessor() {
         let query = "select event_date: timestamp.date";
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
         assert_eq!(cols.len(), 1);
         assert_eq!(
             cols[0],
@@ -1857,7 +1875,7 @@ mod tests {
     #[test]
     fn test_parse_query_select_col_with_accessor() {
         let query = "select col[\"Event Time\"].date, col[\"Event Time\"].year";
-        let (cols, _, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
         assert_eq!(cols.len(), 2);
         assert_eq!(
             cols[0],
@@ -1872,7 +1890,7 @@ mod tests {
     #[test]
     fn test_parse_query_where_with_date_accessor() {
         let query = "select where created_at.month = 12";
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         assert_eq!(
             filter,
             Some(
@@ -1888,7 +1906,7 @@ mod tests {
     #[test]
     fn test_parse_query_where_dow() {
         let query = "select where event_ts.dow = 1";
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         assert_eq!(
             filter,
             Some(
@@ -1945,7 +1963,7 @@ mod tests {
     #[test]
     fn test_parse_query_where_date_literal() {
         let query = "select where dt_col.date > 2021.01.01";
-        let (_, filter, _, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         assert!(filter.is_some());
         // Verify the filter parses without error (date literal 2021.01.01 -> ISO 2021-01-01)
     }
@@ -1974,31 +1992,34 @@ mod tests {
 
     #[test]
     fn test_parse_null_and_not_null() {
-        let (_, f1, _, _, _) = parse_query("select where null col1").unwrap();
+        let f1 = parse_query("select where null col1").unwrap().filter;
         assert!(f1.is_some());
-        let (_, f2, _, _, _) = parse_query("select where not null col1").unwrap();
+        let f2 = parse_query("select where not null col1").unwrap().filter;
         assert!(f2.is_some());
     }
 
     #[test]
     fn test_parse_coalesce() {
-        let (cols, _, _, _, _) = parse_query("select a: coln^cola^colb").unwrap();
+        let cols = parse_query("select a: coln^cola^colb").unwrap().cols;
         assert_eq!(cols.len(), 1);
         // coalesce(coln, coalesce(cola, colb)) - parsing succeeds
     }
 
     #[test]
     fn test_parse_first_last_aggregation() {
-        let (cols, _, _, _, _) = parse_query("select first[value], last[value] by group").unwrap();
+        let cols = parse_query("select first[value], last[value] by group")
+            .unwrap()
+            .cols;
         assert_eq!(cols.len(), 2);
     }
 
     #[test]
     fn test_parse_string_accessors() {
-        let (_, filter, _, _, _) =
-            parse_query("select where city_name.ends_with[\"lanta\"]").unwrap();
+        let filter = parse_query("select where city_name.ends_with[\"lanta\"]")
+            .unwrap()
+            .filter;
         assert!(filter.is_some());
-        let (cols, _, _, _, _) = parse_query("select name.len, name.upper").unwrap();
+        let cols = parse_query("select name.len, name.upper").unwrap().cols;
         assert_eq!(cols.len(), 2);
     }
 
@@ -2013,7 +2034,11 @@ mod tests {
     #[test]
     fn test_parse_by_with_date_accessor() {
         let query = "select order_date, count: count id by order_date.year";
-        let (cols, _, group_by_cols, _, _) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            group_by: group_by_cols,
+            ..
+        } = parse_query(query).unwrap();
         assert_eq!(cols.len(), 2);
         assert_eq!(group_by_cols.len(), 1);
         assert_eq!(
@@ -2025,7 +2050,11 @@ mod tests {
     #[test]
     fn test_unaliased_aggregates_of_same_column_coexist() {
         let query = "select avg salary, max salary by department";
-        let (cols, _, group_by_cols, _, _) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            group_by: group_by_cols,
+            ..
+        } = parse_query(query).unwrap();
         assert_eq!(cols.len(), 2);
         assert_eq!(cols[0], col("salary").mean().alias("avg_salary"));
         assert_eq!(cols[1], col("salary").max().alias("max_salary"));
@@ -2034,27 +2063,33 @@ mod tests {
 
     #[test]
     fn test_unaliased_aggregate_bracketed_and_bare_name_alike() {
-        let (bracketed, _, _, _, _) = parse_query("select avg[salary] by department").unwrap();
-        let (bare, _, _, _, _) = parse_query("select avg salary by department").unwrap();
+        let bracketed = parse_query("select avg[salary] by department")
+            .unwrap()
+            .cols;
+        let bare = parse_query("select avg salary by department").unwrap().cols;
         assert_eq!(bracketed, bare);
         assert_eq!(bracketed[0], col("salary").mean().alias("avg_salary"));
     }
 
     #[test]
     fn test_unaliased_aggregate_col_syntax_auto_alias() {
-        let (cols, _, _, _, _) = parse_query("select sum[col[\"unit price\"]] by region").unwrap();
+        let cols = parse_query("select sum[col[\"unit price\"]] by region")
+            .unwrap()
+            .cols;
         assert_eq!(cols[0], col("unit price").sum().alias("sum_unit price"));
     }
 
     #[test]
     fn test_bare_count_names_itself() {
-        let (cols, _, _, _, _) = parse_query("select count[x] by g").unwrap();
+        let cols = parse_query("select count[x] by g").unwrap().cols;
         assert_eq!(cols[0], col("x").count().alias("count_x"));
     }
 
     #[test]
     fn test_explicit_alias_overrides_aggregate_auto_alias() {
-        let (cols, _, _, _, _) = parse_query("select total:sum[price] by region").unwrap();
+        let cols = parse_query("select total:sum[price] by region")
+            .unwrap()
+            .cols;
         // The outer alias is applied last, so the result column is named "total".
         assert_eq!(
             cols[0],
@@ -2065,7 +2100,7 @@ mod tests {
     #[test]
     fn test_aggregate_of_expression_keeps_default_name() {
         // No single source column, so there is nothing to build a {fn}_{column} name from.
-        let (cols, _, _, _, _) = parse_query("select sum[price*qty] by region").unwrap();
+        let cols = parse_query("select sum[price*qty] by region").unwrap().cols;
         assert_eq!(cols[0], (col("price").mul(col("qty"))).sum());
     }
 
@@ -2073,7 +2108,11 @@ mod tests {
     fn test_docs_grouping_example_collects_with_auto_aliases() {
         // The example from docs/user-guide/querying-data.md must run as written.
         let query = "select avg salary, max salary, count name by department";
-        let (cols, _, group_by_cols, _, _) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            group_by: group_by_cols,
+            ..
+        } = parse_query(query).unwrap();
         let df = df!(
             "department" => &["eng", "eng", "ops"],
             "salary" => &[100.0f64, 200.0, 300.0],
@@ -2115,7 +2154,7 @@ mod tests {
     #[test]
     fn test_slash_in_where_clause() {
         // Same shape as the existing % test: c>c/n is c > (c/n).
-        let (_, filter, _, _, _) = parse_query("select t, v where c>c/n").unwrap();
+        let filter = parse_query("select t, v where c>c/n").unwrap().filter;
         assert_eq!(filter, Some(col("c").gt(col("c").div(col("n")))));
     }
 
@@ -2211,7 +2250,13 @@ mod tests {
 
     /// Run a query over `df` the way `DataTableState::query` does.
     fn eval(query: &str, df: &DataFrame) -> DataFrame {
-        let (cols, filter, by, _, distinct) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            filter,
+            group_by: by,
+            distinct,
+            ..
+        } = parse_query(query).unwrap();
         let mut lf = df.clone().lazy();
         if let Some(f) = filter {
             lf = lf.filter(f);
@@ -2376,7 +2421,9 @@ mod tests {
 
     #[test]
     fn test_string_pieces_auto_alias() {
-        let (cols, _, _, _, _) = parse_query("select FT.part[\"-\", 0], FT.strip").unwrap();
+        let cols = parse_query("select FT.part[\"-\", 0], FT.strip")
+            .unwrap()
+            .cols;
         let names: Vec<String> = cols
             .iter()
             .map(|e| e.clone().meta().output_name().unwrap().to_string())
@@ -2386,7 +2433,9 @@ mod tests {
 
     #[test]
     fn test_in_parses_to_equalities() {
-        let (_, filter, _, _, _) = parse_query("select where name in [\"a\", \"b\"]").unwrap();
+        let filter = parse_query("select where name in [\"a\", \"b\"]")
+            .unwrap()
+            .filter;
         assert_eq!(
             filter,
             Some(col("name").eq(lit("a")).or(col("name").eq(lit("b"))))
@@ -2552,7 +2601,7 @@ mod tests {
 
     #[test]
     fn test_word_operators_are_still_column_names() {
-        let (cols, _, _, _, _) = parse_query("select in, mod, like + xbar").unwrap();
+        let cols = parse_query("select in, mod, like + xbar").unwrap().cols;
         assert_eq!(cols[0], col("in"));
         assert_eq!(cols[1], col("mod"));
         assert_eq!(cols[2], col("like").add(col("xbar")));
@@ -2562,7 +2611,9 @@ mod tests {
 
     #[test]
     fn test_new_aggregates() {
-        let (cols, _, _, _, _) = parse_query("select nunique ID, var x, dev x by g").unwrap();
+        let cols = parse_query("select nunique ID, var x, dev x by g")
+            .unwrap()
+            .cols;
         assert_eq!(cols[0], col("ID").n_unique().alias("nunique_ID"));
         assert_eq!(cols[1], col("x").var(1).alias("var_x"));
         assert_eq!(cols[2], col("x").std(1).alias("dev_x"));
@@ -2619,10 +2670,11 @@ mod tests {
 
     #[test]
     fn test_select_distinct() {
-        let (cols, _, _, _, distinct) = parse_query("select distinct carrier, origin").unwrap();
+        let ParsedQuery { cols, distinct, .. } =
+            parse_query("select distinct carrier, origin").unwrap();
         assert!(distinct);
         assert_eq!(cols, vec![col("carrier"), col("origin")]);
-        let (_, _, _, _, distinct) = parse_query("select carrier").unwrap();
+        let distinct = parse_query("select carrier").unwrap().distinct;
         assert!(!distinct);
 
         let df = df!(
@@ -2637,14 +2689,14 @@ mod tests {
         let out = eval("select distinct carrier where n > 1", &df);
         assert_eq!(values(&out, "carrier"), ["UA", "AA"]);
         // A column named distinct is col["distinct"].
-        let (cols, _, _, _, distinct) = parse_query("select col[\"distinct\"]").unwrap();
+        let ParsedQuery { cols, distinct, .. } = parse_query("select col[\"distinct\"]").unwrap();
         assert!(!distinct);
         assert_eq!(cols, vec![col("distinct")]);
         // So is a bare `distinct` that is plainly a column or an alias.
-        let (cols, _, _, _, distinct) = parse_query("select distinct, n").unwrap();
+        let ParsedQuery { cols, distinct, .. } = parse_query("select distinct, n").unwrap();
         assert!(!distinct);
         assert_eq!(cols, vec![col("distinct"), col("n")]);
-        let (cols, _, _, _, distinct) = parse_query("select distinct: n").unwrap();
+        let ParsedQuery { cols, distinct, .. } = parse_query("select distinct: n").unwrap();
         assert!(!distinct);
         assert_eq!(cols, vec![col("n").alias("distinct")]);
     }

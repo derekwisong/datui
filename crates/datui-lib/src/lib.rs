@@ -1758,6 +1758,17 @@ mod view_matching_tests {
             app.template_modal.rows[0].reason,
             Some(template::MatchReason::SameColumns)
         );
+
+        // `V` applies it there: the next year's rows under the saved query.
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('V'),
+            KeyModifiers::NONE,
+        )));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(app.active_template_id.is_some(), "the view is applied");
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["day", "high_c"]);
     }
 }
 

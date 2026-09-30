@@ -4,8 +4,8 @@ Navigation:
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
   ::                Go to line number (e.g. :0 Enter for top)
-  Enter:            On a row of a by query, grouped or aggregated, drill
-                    into its rows (Esc comes back)
+  Enter:            On a row of a by query or a SQL GROUP BY, drill into
+                    its rows (Esc comes back)
 
 Data Operations:
   /:                Query: SQL, Search or q-style

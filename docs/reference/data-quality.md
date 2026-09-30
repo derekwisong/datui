@@ -103,6 +103,7 @@ The Read section says what Run will do, before it does it:
 | Plus one count of the grain's column | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
 | Too many segments … to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
 | Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
+| Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
 
 Before a run, source-scoped setups report unknown row counts and read sizes,
@@ -131,7 +132,7 @@ valid from to valid to. Setup names any assigned role that is in no interval.
 | | |
 |---|---|
 | Valid from to valid to | A validity period: a missing end is **open**, and an end before its start **ends first**. Overlaps and gaps between periods need an entity key and consecutive rows, which a sample does not hold, so they are not counted |
-| Window by | Only with a time-window grain. A second clock is a second grouping: on a full scan, one more pass for each |
+| Window by | Only with a time-window grain. By their start or end, intervals are grouped once per column they start or end on; on a full scan each grouping is a pass, and Read says how many before Run |
 | Time zones | A datetime with a zone, or text read with an offset, is its instant in UTC. A date or datetime with no zone is read as if it were UTC, and Setup says so when it meets a zoned one. Windows start on UTC boundaries |
 
 ### Text as time
@@ -262,10 +263,11 @@ sampled, or metadata-only.
   <kbd>↑</kbd> <kbd>↓</kbd> move between the counts, and <kbd>Enter</kbd>
   shows the rows behind the one under the cursor: on a sampled run the
   sample's, cut from the rows the run kept while they are held (drawn again
-  from the seed otherwise), and on an exact one the table's. Segments by row chunk or file are not values to filter on, so their
-  rows do not open. <kbd>Esc</kbd> returns to the list. With nothing to show,
-  the page says why, and <kbd>Enter</kbd> opens Time roles or Intervals in
-  Setup.
+  from the seed otherwise), and on an exact one the table's. A row chunk or a
+  file is not a value to filter on, so its rows do not open, and the detail
+  says so. <kbd>Esc</kbd> returns to the list. With nothing to show, the page
+  says why; when roles or a pair are missing, <kbd>Enter</kbd> opens Time
+  roles or Intervals in Setup.
 
 <a id="sampling-and-budgets"></a>
 

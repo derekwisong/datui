@@ -90,8 +90,9 @@ single days, sample **Equal per value** of the date, or read every row.
 A breach is `duration > threshold`: exactly an hour is not over an hour.
 <kbd>Enter</kbd> on an interval opens its detail at any terminal size;
 <kbd>Enter</kbd> on a count there shows its rows; on a sample, they are cut
-from the rows the run kept rather than read from the file again. Valid from to valid to reads as a validity
-period: no end is **open**, and an end before its start **ends first**.
+from the rows the run kept rather than read from the file again. Valid from
+to valid to reads as a validity period: no end is **open**, and an end before
+its start **ends first**.
 
 ## Times stored as text
 

@@ -952,6 +952,7 @@ mod quality_sample_tests {
             phase: data_quality::QualityPhase {
                 stage: data_quality::QualityStage::ProfilingColumns,
                 reads_source: false,
+                interruptible: false,
             },
         });
         assert!(app.analysis_modal.computing.is_none());
@@ -993,6 +994,7 @@ mod quality_sample_tests {
             phase: data_quality::QualityPhase {
                 stage: data_quality::QualityStage::ProfilingColumns,
                 reads_source: false,
+                interruptible: false,
             },
         });
         let progress = app.analysis_modal.computing.as_ref().unwrap();

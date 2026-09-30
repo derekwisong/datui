@@ -159,6 +159,16 @@ impl ReadWatch {
             .fetch_add(rows, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Start counting again for the next read, handing back what the last one
+    /// counted, if it counted anything.
+    pub(crate) fn restart(&self) -> Option<usize> {
+        let counted = self
+            .counted
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        let rows = self.rows.swap(0, std::sync::atomic::Ordering::Relaxed);
+        counted.then_some(rows)
+    }
+
     /// Stopped: the read's partial rows are not a sample, so it fails instead.
     pub(crate) fn check(&self) -> Result<()> {
         if self.stopped() {

@@ -1049,6 +1049,8 @@ fn test_stale_background_events_are_ignored() {
             shared_nulls: vec![],
             source_files: None,
             per_value: None,
+            footers_read: None,
+            reads: None,
         },
         kept: None,
         plan: Box::default(),

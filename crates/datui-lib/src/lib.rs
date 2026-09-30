@@ -7076,6 +7076,13 @@ impl App {
         self.path.as_deref()
     }
 
+    /// Whether any leased background work, current or abandoned, has yet to report
+    /// back. Exposed for tests that wait for abandoned work to finish rather than
+    /// guessing how long it takes.
+    pub fn background_work_in_flight(&self) -> bool {
+        self.leases.values().any(|n| *n > 0)
+    }
+
     /// See the `screen_generation` field.
     pub fn screen_generation(&self) -> u64 {
         self.screen_generation

@@ -533,6 +533,29 @@ pub fn relative_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool
     })
 }
 
+/// Whether the view's path pattern fits `file_path`, as opened or as the save form
+/// spells it: a file opened by a relative path or through a link is still under the
+/// resolved directory its pattern was suggested from.
+pub fn path_pattern_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
+    criteria.path_pattern.as_deref().is_some_and(|pattern| {
+        let fits = |p: &Path| {
+            p.to_str()
+                .is_some_and(|text| matches_pattern(text, pattern))
+        };
+        fits(file_path) || fits(&exact_location(file_path))
+    })
+}
+
+/// Whether the view's filename pattern fits the name of `file_path`.
+pub fn filename_pattern_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
+    criteria.filename_pattern.as_deref().is_some_and(|pattern| {
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches_pattern(name, pattern))
+    })
+}
+
 /// Whether the template's own criteria match this file: a path or pattern hit,
 /// or every schema column the template asks for present. Distinct from the
 /// relevance score, which also carries usage and recency and so is never zero
@@ -558,15 +581,7 @@ pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> O
             return Some(MatchReason::SameColumns);
         }
     }
-    if let Some(pattern) = &criteria.path_pattern
-        && matches_pattern(file_path.to_str().unwrap_or(""), pattern)
-    {
-        return Some(MatchReason::Pattern);
-    }
-    if let Some(pattern) = &criteria.filename_pattern
-        && let Some(name) = file_path.file_name().and_then(|n| n.to_str())
-        && matches_pattern(name, pattern)
-    {
+    if path_pattern_matches(criteria, file_path) || filename_pattern_matches(criteria, file_path) {
         return Some(MatchReason::Pattern);
     }
     None
@@ -617,7 +632,7 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
     // For non-exact matches, sum components
     // Path pattern match
     if let Some(pattern) = &template.match_criteria.path_pattern
-        && matches_pattern(file_path.to_str().unwrap_or(""), pattern)
+        && path_pattern_matches(&template.match_criteria, file_path)
     {
         score += 50.0;
         score += pattern_specificity_bonus(pattern);
@@ -625,9 +640,7 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
 
     // Filename pattern match
     if let Some(pattern) = &template.match_criteria.filename_pattern
-        && let Some(filename) = file_path.file_name()
-        && let Some(filename_str) = filename.to_str()
-        && matches_pattern(filename_str, pattern)
+        && filename_pattern_matches(&template.match_criteria, file_path)
     {
         score += 30.0;
         score += pattern_specificity_bonus(pattern);
@@ -957,7 +970,7 @@ mod tests {
         let by_exact = a_template(
             "exact",
             MatchCriteria {
-                exact_path: Some(absolute),
+                exact_path: Some(absolute.clone()),
                 ..no_criteria()
             },
         );
@@ -976,6 +989,23 @@ mod tests {
             match_reason(&by_relative, opened, &schema),
             Some(MatchReason::SameFile)
         );
+        // The save form suggests a pattern from the resolved directory.
+        let by_pattern = a_template(
+            "pattern",
+            MatchCriteria {
+                path_pattern: Some(format!(
+                    "{}{}*.toml",
+                    absolute.parent().unwrap().display(),
+                    std::path::MAIN_SEPARATOR
+                )),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_pattern, opened, &schema),
+            Some(MatchReason::Pattern)
+        );
+        assert!(calculate_relevance(&by_pattern, opened, &schema) >= 50.0);
     }
 
     /// Views saved before URLs were told apart from local paths carry the working

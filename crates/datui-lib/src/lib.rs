@@ -12875,15 +12875,21 @@ impl App {
 
             // Suggest a path pattern from the absolute path: the parent of a
             // bare relative name is "", and ""/*.parquet is a pattern that
-            // matches every parquet file anywhere, forever.
+            // matches every parquet file anywhere, forever. The separator is the
+            // path's own, or a Windows path never fits its pattern.
             if let Some(parent) = absolute_path.parent()
                 && let Some(parent_str) = parent.to_str()
                 && !parent_str.is_empty()
                 && let Some(ext) = absolute_path.extension()
             {
+                let separator = if crate::source::is_remote_url(path) {
+                    '/'
+                } else {
+                    std::path::MAIN_SEPARATOR
+                };
                 self.template_modal.path_pattern_input.set_value(format!(
-                    "{}/*.{}",
-                    parent_str,
+                    "{}{separator}*.{}",
+                    parent_str.trim_end_matches(separator),
                     ext.to_string_lossy()
                 ));
             }
@@ -13065,21 +13071,10 @@ impl App {
         } else if exact_schema_match {
             details.push_str("Exact schema: 900.0\n");
         } else {
-            if let Some(pattern) = &template.match_criteria.path_pattern
-                && path
-                    .to_str()
-                    .map(|p| p.contains(pattern.trim_end_matches("/*")))
-                    .unwrap_or(false)
-            {
+            if template::path_pattern_matches(&template.match_criteria, path) {
                 details.push_str("Path pattern match: 50.0+\n");
             }
-            if let Some(pattern) = &template.match_criteria.filename_pattern
-                && path
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .map(|f| f.contains(pattern.trim_end_matches('*')) || pattern == "*")
-                    .unwrap_or(false)
-            {
+            if template::filename_pattern_matches(&template.match_criteria, path) {
                 details.push_str("Filename pattern match: 30.0+\n");
             }
             if let Some(required_cols) = &template.match_criteria.schema_columns {

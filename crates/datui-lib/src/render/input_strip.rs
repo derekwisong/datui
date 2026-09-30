@@ -11,7 +11,7 @@ use ratatui::widgets::{Paragraph, Tabs, Widget};
 /// What each mode takes, beside its tab.
 fn mode_hint(mode: QueryMode) -> &'static str {
     match mode {
-        QueryMode::Sql => "Table: df",
+        QueryMode::Sql => "Table: df; Alt+Enter for a new line",
         QueryMode::Search => "Every word's letters in order, in any text column",
         QueryMode::QStyle => "Subset of q, evaluated right to left; F1 syntax",
     }

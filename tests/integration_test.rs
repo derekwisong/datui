@@ -12217,6 +12217,72 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     assert_eq!(c.sort_order, Some(1), "the applied sort arrives staged");
 }
 
+/// Sort & Filter: `v` is visibility only (#379). A column hidden and shown again
+/// returns to its place, in the same session or after the hide was applied, and
+/// hiding never reorders the list under the cursor.
+#[test]
+fn showing_a_hidden_column_puts_it_back_in_place() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_unhide_in_place.csv");
+    let abc = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let apply = |app: &mut App| {
+        if let Some(next) = press(app, KeyCode::Enter) {
+            let _ = tx.send(next);
+        }
+        pump_until_idle(app, &rx, &tx);
+    };
+    let open_list = |app: &mut App| {
+        press(app, KeyCode::Char('s'));
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+    };
+
+    // Hide c and show it again before applying: nothing moves.
+    open_list(&mut app);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('v'));
+    apply(&mut app);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().headers(),
+        abc(&["a", "c", "name"])
+    );
+
+    // Hide c and apply; reopened, it is still listed second and comes back there.
+    // The cursor stays on the second row across opens.
+    open_list(&mut app);
+    press(&mut app, KeyCode::Char('v'));
+    apply(&mut app);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().headers(),
+        abc(&["a", "name"])
+    );
+    open_list(&mut app);
+    let modal = &app.sort_filter_modal.sort;
+    let under_cursor = modal.filtered_columns()[modal.table_state.selected().unwrap()]
+        .1
+        .name
+        .clone();
+    assert_eq!(under_cursor, "c", "the hidden column keeps its row");
+    press(&mut app, KeyCode::Char('v'));
+    apply(&mut app);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().headers(),
+        abc(&["a", "c", "name"])
+    );
+
+    // Hiding a leaves the rows where they were, so Down v hides c.
+    open_list(&mut app);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('v'));
+    apply(&mut app);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().headers(),
+        abc(&["name"])
+    );
+}
+
 /// Each column of a multi-sort runs its own way: Space cycles one column
 /// none → ascending → descending, Enter applies from the list, and the header
 /// carries each column's own mark. `r` still reverses the whole view.

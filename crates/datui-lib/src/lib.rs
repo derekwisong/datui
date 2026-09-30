@@ -120,7 +120,7 @@ use filter_modal::{FilterEditStep, FilterStatement};
 use numfmt::NumberFormatSettings;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
-use sort_modal::{SortColumn, SortFocus};
+use sort_modal::{SortColumn, SortFocus, order_with_hidden};
 pub use template::{Template, TemplateManager};
 use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DrillRow};
@@ -19765,17 +19765,23 @@ impl App {
         // The cursor starts on the add row; the editor never survives a resync.
         modal.filter.cursor = modal.filter.statements.len();
         modal.filter.editor = None;
-        // A schema column the applied order leaves out is hidden; it lines up after
-        // the visible ones, unlocked, exactly as toggling it back on would place it.
-        let mut next_hidden_order = order.len();
+        // A schema column the applied order leaves out is hidden; it is listed where
+        // it stood when hidden, so showing it again puts it back there. Everything
+        // up to the last frozen column stays frozen, hidden ones included.
+        let full = order_with_hidden(&order, &headers, &modal.sort.applied_order);
+        let last_locked = locked
+            .checked_sub(1)
+            .and_then(|i| order.get(i))
+            .and_then(|name| full.iter().position(|c| c == name));
+        let places: HashMap<&str, usize> = full
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.as_str(), i))
+            .collect();
         modal.sort.columns = headers
             .iter()
             .map(|name| {
-                let position = order.iter().position(|c| c == name);
-                let display_order = position.unwrap_or_else(|| {
-                    next_hidden_order += 1;
-                    next_hidden_order - 1
-                });
+                let display_order = places[name.as_str()];
                 SortColumn {
                     name: name.clone(),
                     // 1-based: what toggling a column in the modal assigns and what
@@ -19787,9 +19793,9 @@ impl App {
                         .and_then(|i| sort_descending.get(i).copied())
                         .unwrap_or(false),
                     display_order,
-                    is_locked: position.is_some_and(|p| p < locked),
+                    is_locked: last_locked.is_some_and(|l| display_order <= l),
                     is_to_be_locked: false,
-                    is_visible: position.is_some(),
+                    is_visible: order.contains(name),
                 }
             })
             .collect();
@@ -19807,6 +19813,8 @@ impl App {
         let (columns, descending) = self.sort_filter_modal.sort.sorted_columns_and_directions();
         let column_order = self.sort_filter_modal.sort.get_column_order();
         let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+        self.sort_filter_modal.sort.applied_order =
+            self.sort_filter_modal.sort.get_full_column_order();
         let statements = self.sort_filter_modal.filter.statements.clone();
         for col in &mut self.sort_filter_modal.sort.columns {
             col.is_to_be_locked = false;

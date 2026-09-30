@@ -1900,6 +1900,7 @@ mod template_rollback_tests {
         assert!(state.error.is_none(), "and the rollback clears the error");
     }
 
+    #[cfg(feature = "sql")]
     fn words_csv(dir: &tempfile::TempDir) -> PathBuf {
         let path = dir.path().join("words.csv");
         let mut csv = String::from("id,name\n");

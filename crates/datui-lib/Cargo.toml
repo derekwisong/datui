@@ -104,6 +104,9 @@ features = [
     "is_unique",
     "json",
     "lazy",
+    # `Expr::meta()`, which a drill uses to read a key's column; it arrived only
+    # through `polars/sql`.
+    "meta",
     "parquet",
     "polars-io",
     "pivot",

@@ -233,6 +233,7 @@ fn rank(finding: &Finding) -> u8 {
         Some(ObservationKind::TypeConflict) => 0,
         Some(ObservationKind::Absent) => 1,
         Some(ObservationKind::DuplicateRows) => 2,
+        Some(ObservationKind::UnparsedTime) => 3,
         Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => 3,
         Some(ObservationKind::Nulls) if finding.title == "Mostly missing" => 9,
         Some(ObservationKind::NonFinite) => 4,
@@ -286,7 +287,8 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         | ObservationKind::DuplicateRows
         | ObservationKind::CategoryVariants
         | ObservationKind::Absent
-        | ObservationKind::TypeConflict => Severity::Problem,
+        | ObservationKind::TypeConflict
+        | ObservationKind::UnparsedTime => Severity::Problem,
     };
     let profile = results
         .columns
@@ -321,6 +323,7 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         ObservationKind::Absent => "Missing in files",
         ObservationKind::TypeConflict => "Type mismatch",
         ObservationKind::KeyLike => "Nearly unique",
+        ObservationKind::UnparsedTime => "Unparsed times",
     };
     let affected_rows = match kind {
         // One group per normalized value; the column's cost is all of them.
@@ -363,6 +366,16 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         | ObservationKind::Empty
         | ObservationKind::Whitespace
         | ObservationKind::NonFinite => rows(first.affected_rows),
+        ObservationKind::UnparsedTime => format!(
+            "{} {} ({})",
+            numfmt::group_chrome(first.affected_rows),
+            if first.affected_rows == 1 {
+                "value"
+            } else {
+                "values"
+            },
+            percent(first.affected_rows, first.evaluated_rows)
+        ),
         ObservationKind::Constant if grouped => "one value each".to_string(),
         ObservationKind::Constant => profile
             .and_then(|profile| profile.dominant_value.as_ref())
@@ -750,6 +763,10 @@ pub fn advice(finding: &Finding) -> Vec<String> {
         (Some(ObservationKind::KeyLike), _) => {
             &["Duplicates if it is a key; expected if it is a measurement"]
         }
+        (Some(ObservationKind::UnparsedTime), _) => &[
+            "Left out of time windows and intervals, not counted as missing",
+            "Check: another format, or values that are not times (Setup, e)",
+        ],
         (None, _) => &[],
     };
     lines.iter().map(|line| line.to_string()).collect()
@@ -949,6 +966,18 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                 observation(&finding.observations[0]).fact.clone()
             }
         }
+        Some(ObservationKind::UnparsedTime) => {
+            let observation = observation(&finding.observations[0]);
+            if let Some(format) = &observation.time_format {
+                evidence.push(format!("Read as {} for this study only", format.label()));
+            }
+            format!(
+                "{} of {} values ({}) do not parse",
+                count(finding.affected_rows),
+                count(finding.evaluated_rows),
+                percent(finding.affected_rows, finding.evaluated_rows)
+            )
+        }
         Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
             let observation = observation(&finding.observations[0]);
             // Read from the footers, so the denominator is the whole loaded source
@@ -1077,6 +1106,7 @@ mod tests {
             fact: String::new(),
             normalized_category: None,
             files: Vec::new(),
+            time_format: None,
         }
     }
 

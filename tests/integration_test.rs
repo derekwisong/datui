@@ -1182,6 +1182,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             fact: "1 null row".to_string(),
             normalized_category: None,
             files: Vec::new(),
+            time_format: None,
         });
     app.analysis_modal.data_quality_table_state.select(Some(0));
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -1452,6 +1453,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
                 stored_type: Some("str".to_string()),
                 examples: vec!["sixty".to_string()],
             }],
+            time_format: None,
         }];
         app.analysis_modal.set_quality_page(QualityPage::Overview);
         app.analysis_modal.data_quality_table_state.select(Some(0));
@@ -1494,6 +1496,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         fact: "matching rows".to_string(),
         normalized_category: None,
         files: Vec::new(),
+        time_format: None,
     }];
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     app.event(&AppEvent::Key(KeyEvent::new(

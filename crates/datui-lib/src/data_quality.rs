@@ -744,6 +744,220 @@ pub struct TemporalRoleAssignment {
     pub timezone: Option<String>,
 }
 
+/// The intervals a run measures, start role to end role. Two assigned roles that
+/// are not one of these pairs measure nothing, and Setup says so before a run.
+pub const INTERVAL_PAIRS: [(TemporalRole, TemporalRole); 6] = [
+    (TemporalRole::Event, TemporalRole::Published),
+    (TemporalRole::Event, TemporalRole::Received),
+    (TemporalRole::PeriodEnd, TemporalRole::Published),
+    (TemporalRole::Published, TemporalRole::Received),
+    (TemporalRole::Received, TemporalRole::Processed),
+    (TemporalRole::Event, TemporalRole::Processed),
+];
+
+/// Whether text read as time is a date or a date with a time of day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimeKind {
+    Date,
+    Datetime,
+}
+
+impl TimeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::Datetime => "datetime",
+        }
+    }
+}
+
+/// The formats Setup offers for reading text as time, the unambiguous ones first.
+/// Named formats rather than inference: a run reads every row the same way, and a
+/// value the format does not read is counted, not guessed at.
+pub const TIME_FORMATS: [(TimeKind, &str); 14] = [
+    (TimeKind::Datetime, "%Y-%m-%d %H:%M:%S"),
+    (TimeKind::Datetime, "%Y-%m-%dT%H:%M:%S"),
+    (TimeKind::Datetime, "%Y-%m-%d %H:%M:%S%.f"),
+    (TimeKind::Datetime, "%Y-%m-%dT%H:%M:%S%.f"),
+    (TimeKind::Datetime, "%Y-%m-%d %H:%M"),
+    (TimeKind::Date, "%Y-%m-%d"),
+    (TimeKind::Date, "%Y%m%d"),
+    (TimeKind::Datetime, "%m/%d/%Y %H:%M:%S"),
+    (TimeKind::Datetime, "%m/%d/%Y %I:%M:%S %p"),
+    (TimeKind::Datetime, "%d/%m/%Y %H:%M:%S"),
+    (TimeKind::Datetime, "%d.%m.%Y %H:%M:%S"),
+    (TimeKind::Date, "%m/%d/%Y"),
+    (TimeKind::Date, "%d/%m/%Y"),
+    (TimeKind::Date, "%d.%m.%Y"),
+];
+
+/// A text column read as a date or datetime for one study. Grain and time roles see
+/// the parsed value; every other check sees the text as stored, so a column's own
+/// findings keep their physical meaning. A value the format does not read is counted
+/// as unparsed, never folded into the column's missing values.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TimeInterpretation {
+    pub column: String,
+    pub kind: TimeKind,
+    /// A strftime format, as Polars' `str.to_datetime` takes it. No offset: the
+    /// values are read as local times with no time zone.
+    pub format: String,
+}
+
+impl TimeInterpretation {
+    /// `datetime %Y-%m-%d %H:%M:%S`.
+    pub fn label(&self) -> String {
+        format!("{} {}", self.kind.label(), self.format)
+    }
+
+    /// The column's values as time: null where the format does not read the text.
+    pub fn expr(&self) -> Expr {
+        let options = StrptimeOptions {
+            format: Some(PlSmallStr::from(self.format.as_str())),
+            strict: false,
+            exact: true,
+            cache: true,
+        };
+        // A categorical column holds codes; its values are read as the text they name.
+        let text = col(self.column.as_str()).cast(DataType::String).str();
+        match self.kind {
+            TimeKind::Date => text.to_date(options),
+            TimeKind::Datetime => text.to_datetime(
+                Some(TimeUnit::Microseconds),
+                None,
+                options,
+                lit(PlSmallStr::from_static("raise")),
+            ),
+        }
+    }
+
+    /// Rows holding text the format does not read.
+    pub fn unparsed(&self) -> Expr {
+        col(self.column.as_str())
+            .is_not_null()
+            .and(self.expr().is_null())
+    }
+
+    /// Whether the format reads `value`, the way a run will: for the examples Setup
+    /// shows beside each format, from rows already on screen.
+    pub fn reads(&self, value: &str) -> bool {
+        match self.kind {
+            TimeKind::Date => chrono::NaiveDate::parse_from_str(value, &self.format).is_ok(),
+            TimeKind::Datetime => {
+                chrono::NaiveDateTime::parse_from_str(value, &self.format).is_ok()
+            }
+        }
+    }
+}
+
+/// What a Data Quality run is doing now. The worker names each stage as it enters
+/// it, and the progress view shows the latest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualityStage {
+    Preparing,
+    ReusingSample,
+    ReadingSample,
+    CountingRows,
+    CountingSegments,
+    ProfilingColumns,
+    CheckingDuplicates,
+    CheckingSpellings,
+    ReadingConflicts,
+    ProfilingSegments,
+    ComputingIntervals,
+    CheckingSharedNulls,
+    Assembling,
+}
+
+impl QualityStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preparing => "Preparing the plan",
+            Self::ReusingSample => "Reusing the retained sample",
+            Self::ReadingSample => "Reading the sample",
+            Self::CountingRows => "Counting rows",
+            Self::CountingSegments => "Counting segment rows",
+            Self::ProfilingColumns => "Profiling columns",
+            Self::CheckingDuplicates => "Checking duplicate rows",
+            Self::CheckingSpellings => "Checking category spellings",
+            Self::ReadingConflicts => "Reading conflicting values",
+            Self::ProfilingSegments => "Profiling segments",
+            Self::ComputingIntervals => "Computing intervals",
+            Self::CheckingSharedNulls => "Checking columns missing together",
+            Self::Assembling => "Assembling the report",
+        }
+    }
+}
+
+/// A stage, and whether it reads the source or works on rows already read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QualityPhase {
+    pub stage: QualityStage,
+    pub reads_source: bool,
+}
+
+/// A run's line to the screen: its stages as it enters them, the rows its sampler
+/// has seen, and a stop the run checks between stages and its reads check between
+/// batches.
+#[derive(Clone, Default)]
+pub struct QualityWatch {
+    read: crate::sampling::ReadWatch,
+    report: Option<Arc<dyn Fn(QualityPhase) + Send + Sync>>,
+    last: Arc<std::sync::Mutex<Option<QualityPhase>>>,
+}
+
+impl std::fmt::Debug for QualityWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QualityWatch")
+            .field("read", &self.read)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QualityWatch {
+    /// A watch that hands each new stage to `report`.
+    pub fn new(report: impl Fn(QualityPhase) + Send + Sync + 'static) -> Self {
+        Self {
+            report: Some(Arc::new(report)),
+            ..Self::default()
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.read.stop();
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.read.stopped()
+    }
+
+    /// The sampler's side: its stop and its row count.
+    pub fn read(&self) -> &crate::sampling::ReadWatch {
+        &self.read
+    }
+
+    /// Enter `stage`. Said once however often it is entered, and refused once the run
+    /// is cancelled: between stages is where a run stops.
+    fn stage(&self, stage: QualityStage, reads_source: bool) -> Result<()> {
+        self.read.check()?;
+        let phase = QualityPhase {
+            stage,
+            reads_source,
+        };
+        let mut last = self
+            .last
+            .lock()
+            .map_err(|_| Report::msg("quality progress lock failed"))?;
+        if *last != Some(phase) {
+            *last = Some(phase);
+            if let Some(report) = &self.report {
+                report(phase);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataQualityPlan {
     pub scope: QualityScope,
@@ -758,6 +972,8 @@ pub struct DataQualityPlan {
     pub baseline_segment: Option<String>,
     pub temporal_roles: Vec<TemporalRoleAssignment>,
     pub latency_threshold_seconds: Option<i64>,
+    /// Text columns read as time for this study, by grain and roles only.
+    pub time_formats: Vec<TimeInterpretation>,
 }
 
 impl Default for DataQualityPlan {
@@ -773,6 +989,7 @@ impl Default for DataQualityPlan {
             baseline_segment: None,
             temporal_roles: Vec::new(),
             latency_threshold_seconds: None,
+            time_formats: Vec::new(),
         }
     }
 }
@@ -803,6 +1020,77 @@ impl DataQualityPlan {
             rows: self.dataset_rows,
             seed: self.sample_seed,
         }
+    }
+
+    /// Take `sample` as the rows this plan reads. Metadata-only stays metadata-only;
+    /// otherwise every row is a full read and anything less a sampled one.
+    ///
+    /// Choosing equal rows per value of a column is choosing to look at that column's
+    /// values side by side, and the grain is what does that. Taken only when the
+    /// choice is new and the grain has not been set, so a grain chosen afterwards
+    /// stays chosen.
+    pub fn adopt_sample(&mut self, sample: &crate::sampling::Sample) {
+        if self.scope != sample.scope {
+            self.baseline_segment = None;
+        }
+        self.scope = sample.scope.clone();
+        self.sample_seed = sample.seed;
+        self.dataset_rows = sample.rows;
+        if self.compute != QualityCompute::Metadata {
+            self.compute = if sample.method == crate::sampling::SampleMethod::EveryRow {
+                QualityCompute::Full
+            } else {
+                QualityCompute::Sample
+            };
+        }
+        if let crate::sampling::SampleMethod::PerPartition { column } = &sample.method
+            && self.method != sample.method
+            && self.grain == QualityGrain::Dataset
+        {
+            self.grain = QualityGrain::Partition(column.clone());
+            self.baseline_segment = None;
+        }
+        self.method = sample.method.clone();
+    }
+
+    /// How `column` is read as time, when it is text read through a format.
+    pub fn time_format(&self, column: &str) -> Option<&TimeInterpretation> {
+        self.time_formats
+            .iter()
+            .find(|interpretation| interpretation.column == column)
+    }
+
+    /// A column's values as time: parsed through its format when it has one, and as
+    /// stored otherwise.
+    pub fn time_value(&self, column: &str) -> Expr {
+        self.time_format(column)
+            .map(TimeInterpretation::expr)
+            .unwrap_or_else(|| col(column))
+    }
+
+    /// Whether `column` of `schema` can be read as time: a date or time type, or text
+    /// with a format.
+    pub fn reads_as_time(&self, column: &str, schema: &Schema) -> bool {
+        self.time_format(column).is_some() || schema.get(column).is_some_and(DataType::is_temporal)
+    }
+
+    /// The column a role is assigned to.
+    pub fn role_column(&self, role: TemporalRole) -> Option<&str> {
+        self.temporal_roles
+            .iter()
+            .find(|assignment| assignment.role == role)
+            .map(|assignment| assignment.column.as_str())
+    }
+
+    /// The intervals this plan's roles measure: each supported pair whose two roles
+    /// are assigned.
+    pub fn interval_pairs(&self) -> Vec<(TemporalRole, TemporalRole)> {
+        INTERVAL_PAIRS
+            .into_iter()
+            .filter(|(start, end)| {
+                self.role_column(*start).is_some() && self.role_column(*end).is_some()
+            })
+            .collect()
     }
 
     pub fn set_row_chunks(&mut self) {
@@ -988,6 +1276,8 @@ pub enum ObservationKind {
     /// A column whose values are nearly unique and still repeat: the shape of a key
     /// that is not quite one.
     KeyLike,
+    /// Text read as time that the chosen format does not read.
+    UnparsedTime,
 }
 
 impl ObservationKind {
@@ -1004,6 +1294,7 @@ impl ObservationKind {
             Self::Absent => "Absent",
             Self::TypeConflict => "Type conflict",
             Self::KeyLike => "Key-like",
+            Self::UnparsedTime => "Unparsed time",
         }
     }
 
@@ -1024,6 +1315,9 @@ impl ObservationKind {
             }
             Self::KeyLike => {
                 "Non-null rows - distinct values, where distinct >= 95% of non-null rows"
+            }
+            Self::UnparsedTime => {
+                "Non-null text the chosen time format does not read / non-null values"
             }
         }
     }
@@ -1057,6 +1351,8 @@ pub struct QualityObservation {
     /// [`ObservationKind::TypeConflict`] measurement, commonest first. Empty for every
     /// check measured over values rather than over footers.
     pub files: Vec<QualityFileEvidence>,
+    /// The format an [`ObservationKind::UnparsedTime`] measurement read the text with.
+    pub time_format: Option<TimeInterpretation>,
 }
 
 impl QualityObservation {
@@ -1112,6 +1408,9 @@ impl QualityObservation {
             // measurement, so they are outside its rows too.
             ObservationKind::KeyLike => {
                 Some(value.clone().is_duplicated().and(value.is_not_null()))
+            }
+            ObservationKind::UnparsedTime => {
+                self.time_format.as_ref().map(TimeInterpretation::unparsed)
             }
             // Absent and conflicting rows are named by their files, not by a predicate
             // over values: the column is not in those rows to be tested.
@@ -1257,6 +1556,9 @@ pub struct TemporalLatencyProfile {
     pub evaluated_rows: usize,
     pub missing_start: usize,
     pub missing_end: usize,
+    /// Text the start column's format did not read; not counted as missing.
+    pub unparsed_start: usize,
+    pub unparsed_end: usize,
     pub negative_count: usize,
     pub p50_seconds: Option<i64>,
     pub p90_seconds: Option<i64>,
@@ -1370,15 +1672,40 @@ pub struct QualitySample {
     precision: QualityPrecision,
     total_rows: Option<usize>,
     per_value: Option<crate::sampling::PerValue>,
-    /// Segment row counts already read, by the grain they were counted for.
-    counted: Vec<(QualityGrain, BTreeMap<String, usize>)>,
+    /// Segment row counts already read, by the grain they were counted for and the
+    /// format its column was read through, when it is text read as time.
+    counted: Vec<(SegmentKey, BTreeMap<String, usize>)>,
+}
+
+/// What decides a segment count: the grain, and how its column was read as time.
+type SegmentKey = (QualityGrain, Option<TimeInterpretation>);
+
+fn segment_key(plan: &DataQualityPlan) -> SegmentKey {
+    let format = match &plan.grain {
+        QualityGrain::TimeWindows { column, .. } => plan.time_format(column).cloned(),
+        _ => None,
+    };
+    (plan.grain.clone(), format)
 }
 
 impl QualitySample {
     /// Whether this sample can serve `plan` without a read: it was read for row
     /// positions when the grain needs them.
-    fn serves(&self, plan: &DataQualityPlan) -> bool {
+    pub fn serves(&self, plan: &DataQualityPlan) -> bool {
         !matches!(plan.grain, QualityGrain::RowChunks(_)) || self.positions.is_some()
+    }
+
+    /// Whether `plan`'s segments need a count this sample does not hold: a partition
+    /// or time-window grain on a sample, counted neither while sampling nor by an
+    /// earlier run.
+    pub fn needs_segment_count(&self, plan: &DataQualityPlan) -> bool {
+        self.precision == QualityPrecision::Sampled
+            && segments_need_count(plan)
+            && !per_value_counts(plan, self.per_value.as_ref())
+            && !self
+                .counted
+                .iter()
+                .any(|(key, _)| *key == segment_key(plan))
     }
 
     /// The rows themselves, as the sample every tool reads.
@@ -1395,6 +1722,34 @@ impl QualitySample {
             df,
         }
     }
+}
+
+/// Whether a sampled run of `plan` counts its segments' rows: partitions and time
+/// windows are counted for exact totals; files and row chunks are known without it.
+pub fn segments_need_count(plan: &DataQualityPlan) -> bool {
+    matches!(
+        plan.grain,
+        QualityGrain::Partition(_) | QualityGrain::TimeWindows { .. }
+    )
+}
+
+/// Whether the pass that samples `plan`'s rows also counts its segments: an
+/// equal-per-value sample by the column the grain splits by counts every value as
+/// it streams.
+pub fn sampler_counts_segments(plan: &DataQualityPlan) -> bool {
+    matches!(
+        (&plan.grain, &plan.method),
+        (
+            QualityGrain::Partition(column),
+            crate::sampling::SampleMethod::PerPartition { column: sampled },
+        ) if column == sampled
+    )
+}
+
+/// Whether a sample's own counts are `plan`'s segment totals: the sampler counted
+/// them, and the sample kept what it counted.
+fn per_value_counts(plan: &DataQualityPlan, per_value: Option<&crate::sampling::PerValue>) -> bool {
+    sampler_counts_segments(plan) && per_value.is_some()
 }
 
 pub fn compute_data_quality(
@@ -1418,17 +1773,84 @@ pub fn compute_data_quality_kept(
     polars_streaming: bool,
     kept: Option<&QualitySample>,
 ) -> Result<(DataQualityResults, Option<QualitySample>)> {
+    let (results, kept) = compute_data_quality_watched(
+        lf,
+        total_rows,
+        plan,
+        source,
+        polars_streaming,
+        kept,
+        &QualityWatch::default(),
+    );
+    results.map(|results| (results, kept))
+}
+
+/// [`compute_data_quality_kept`], naming each stage to `watch` as it enters it and
+/// stopping between stages, or inside a streamed read, once `watch` is cancelled.
+///
+/// The sample a sampled run read comes back whether or not the run finished: a run
+/// stopped after its read has still paid for it, and the next run can cut it.
+pub fn compute_data_quality_watched(
+    lf: &LazyFrame,
+    total_rows: Option<usize>,
+    plan: &DataQualityPlan,
+    source: Option<&QualitySourceContext>,
+    polars_streaming: bool,
+    kept: Option<&QualitySample>,
+    watch: &QualityWatch,
+) -> (Result<DataQualityResults>, Option<QualitySample>) {
+    let mut acquired = None;
+    let inputs = QualityInputs {
+        lf,
+        total_rows,
+        plan,
+        source,
+        polars_streaming,
+        watch,
+    };
+    let results = profile_quality(inputs, kept, &mut acquired);
+    (results, acquired)
+}
+
+/// What a run is asked to measure, and how it reports.
+#[derive(Clone, Copy)]
+struct QualityInputs<'a> {
+    lf: &'a LazyFrame,
+    total_rows: Option<usize>,
+    plan: &'a DataQualityPlan,
+    source: Option<&'a QualitySourceContext>,
+    polars_streaming: bool,
+    watch: &'a QualityWatch,
+}
+
+/// The run itself. A sampled run's rows go into `acquired` the moment they are
+/// read, so they outlive a run that stops after.
+fn profile_quality(
+    inputs: QualityInputs<'_>,
+    kept: Option<&QualitySample>,
+    acquired: &mut Option<QualitySample>,
+) -> Result<DataQualityResults> {
+    let QualityInputs {
+        lf,
+        total_rows,
+        plan,
+        source,
+        polars_streaming,
+        watch,
+    } = inputs;
+    watch.stage(QualityStage::Preparing, false)?;
     let collected_schema = lf.clone().collect_schema()?;
     let schema = visible_schema(&collected_schema, source);
     // What the footers already said: which files have which columns. Free at every
     // compute budget, including the one that reads no values at all.
     if plan.compute == QualityCompute::Metadata {
+        watch.stage(QualityStage::Assembling, false)?;
         let mut results = DataQualityResults::empty(total_rows, plan, &schema);
         if let Some(source) = source {
             results.observations = drift_observations(source, None, polars_streaming);
         }
         results.source_files = source.map(|source| source.file_names.len());
-        return Ok((results, None));
+        return Ok(results);
     }
     let grain_column = match &plan.grain {
         QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => Some(column),
@@ -1442,10 +1864,18 @@ pub fn compute_data_quality_kept(
             plan.scope.label()
         )));
     }
+    if let QualityGrain::TimeWindows { column, .. } = &plan.grain
+        && !plan.reads_as_time(column, &collected_schema)
+    {
+        return Err(Report::msg(format!(
+            "Grain column {column} is text; choose a format for it under Text as time"
+        )));
+    }
     if plan.compute == QualityCompute::Full {
         let total_rows = match total_rows {
             Some(rows) => rows,
             None => {
+                watch.stage(QualityStage::CountingRows, true)?;
                 let count = collect_lazy(
                     crate::widgets::datatable::row_count_lf(lf),
                     polars_streaming,
@@ -1463,18 +1893,31 @@ pub fn compute_data_quality_kept(
         if total_rows == 0 && plan.scope != QualityScope::CurrentView {
             return Err(crate::sampling::no_rows_error(&plan.scope));
         }
-        return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming)
-            .map(|results| (results, None));
+        return compute_full_quality(
+            lf,
+            total_rows,
+            plan,
+            source,
+            &schema,
+            polars_streaming,
+            watch,
+        );
     }
 
     // The shared analysis sampler, as every other tool reads: by default spread
     // across the whole scope, so a file sorted by date is not judged by its first
     // stretch. Every grain cuts its segments from this one sample, so a segmented
     // run reads no more than the sample says and measures the rows every tool reads.
-    let mut kept = match kept.filter(|kept| kept.serves(plan)) {
-        Some(kept) => kept.clone(),
-        None => read_quality_sample(lf, total_rows, plan, polars_streaming)?,
-    };
+    let kept = acquired.insert(match kept.filter(|kept| kept.serves(plan)) {
+        Some(kept) => {
+            watch.stage(QualityStage::ReusingSample, false)?;
+            kept.clone()
+        }
+        None => {
+            watch.stage(QualityStage::ReadingSample, true)?;
+            read_quality_sample(lf, total_rows, plan, polars_streaming, watch)?
+        }
+    });
     let profile_df = kept.df.clone();
     let sample_positions = kept.positions.clone();
     let evaluated_rows = profile_df.height();
@@ -1487,12 +1930,20 @@ pub fn compute_data_quality_kept(
         return Err(crate::sampling::no_rows_error(&plan.scope));
     }
     let profile_df = attach_source_file(profile_df, source)?;
+    watch.stage(QualityStage::ProfilingColumns, false)?;
     let mut columns = profile_columns(&profile_df, &schema, polars_streaming)?;
     // The same Polars aggregations a full scan uses, over the rows the sample kept:
     // they scale to any sample the shared form asks for, where a walk over rows did
     // not, and a sample and a scan are measured the same way.
     let profile_lf = profile_df.clone().lazy();
     add_dominance_lazy(&profile_lf, &mut columns, polars_streaming)?;
+    let formats = interpretation_exprs(plan, &collected_schema);
+    let unparsed = if formats.is_empty() {
+        DataFrame::default()
+    } else {
+        collect_lazy(profile_lf.clone().select(formats), polars_streaming).map_err(Report::from)?
+    };
+    watch.stage(QualityStage::CheckingDuplicates, false)?;
     let identity = profile_identity_lazy(
         &profile_lf,
         &schema,
@@ -1500,14 +1951,34 @@ pub fn compute_data_quality_kept(
         precision,
         polars_streaming,
     )?;
+    watch.stage(QualityStage::CheckingSpellings, false)?;
     let category_variants = profile_category_variants_lazy(&profile_lf, &schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns, precision);
+    observations.extend(interpretation_observations(
+        &unparsed,
+        plan,
+        &collected_schema,
+    ));
     observations.extend(identity_observations(&identity, &category_variants));
     // A sampled run does not promise the extra reads, so the counts come without the
     // values behind them.
     if let Some(source) = source {
         observations.extend(drift_observations(source, None, polars_streaming));
     }
+    let totals = {
+        let mut totals = known_segment_totals(plan, total_rows, source);
+        if precision == QualityPrecision::Sampled {
+            totals.extend(sampled_segment_totals(
+                lf,
+                plan,
+                kept,
+                polars_streaming,
+                watch,
+            )?);
+        }
+        totals
+    };
+    watch.stage(QualityStage::ProfilingSegments, false)?;
     let segments = profile_segments(
         &profile_df,
         total_rows,
@@ -1516,24 +1987,16 @@ pub fn compute_data_quality_kept(
         &schema,
         SegmentSampleProvenance {
             positions: sample_positions.as_deref(),
-            totals: &{
-                let mut totals = known_segment_totals(plan, total_rows, source);
-                if precision == QualityPrecision::Sampled {
-                    totals.extend(sampled_segment_totals(
-                        lf,
-                        plan,
-                        &mut kept,
-                        polars_streaming,
-                    )?);
-                }
-                totals
-            },
+            totals: &totals,
         },
         polars_streaming,
     )?;
+    watch.stage(QualityStage::ComputingIntervals, false)?;
     let temporal = profile_temporal(&profile_df, plan, sample_positions.as_deref())?;
+    watch.stage(QualityStage::CheckingSharedNulls, false)?;
     let shared_nulls = profile_shared_nulls(&profile_df.lazy(), &columns, polars_streaming)?;
     let per_value = kept.per_value.as_ref().map(|per_value| per_value.kept);
+    watch.stage(QualityStage::Assembling, false)?;
 
     let results = DataQualityResults {
         total_rows,
@@ -1550,7 +2013,7 @@ pub fn compute_data_quality_kept(
         source_files: source.map(|source| source.file_names.len()),
         per_value,
     };
-    Ok((results, Some(kept)))
+    Ok(results)
 }
 
 /// Read the rows a sampled run measures.
@@ -1559,6 +2022,7 @@ fn read_quality_sample(
     total_rows: Option<usize>,
     plan: &DataQualityPlan,
     polars_streaming: bool,
+    watch: &QualityWatch,
 ) -> Result<QualitySample> {
     let sample = crate::sampling::Sample {
         scope: QualityScope::CurrentView,
@@ -1574,7 +2038,13 @@ fn read_quality_sample(
     } else {
         lf.clone()
     };
-    let sampled = crate::sampling::read_rows(&read_from, &sample, total_rows, polars_streaming)?;
+    let sampled = crate::sampling::read_rows_watched(
+        &read_from,
+        &sample,
+        total_rows,
+        polars_streaming,
+        Some(watch.read()),
+    )?;
     let (df, positions) = if chunked {
         let positions = sampled
             .df
@@ -1613,19 +2083,13 @@ fn sampled_segment_totals(
     plan: &DataQualityPlan,
     kept: &mut QualitySample,
     polars_streaming: bool,
+    watch: &QualityWatch,
 ) -> Result<BTreeMap<String, usize>> {
-    if !matches!(
-        plan.grain,
-        QualityGrain::Partition(_) | QualityGrain::TimeWindows { .. }
-    ) {
+    if !segments_need_count(plan) {
         return Ok(BTreeMap::new());
     }
-    if let (
-        QualityGrain::Partition(column),
-        crate::sampling::SampleMethod::PerPartition { column: sampled },
-        Some(per_value),
-    ) = (&plan.grain, &plan.method, &kept.per_value)
-        && column == sampled
+    if per_value_counts(plan, kept.per_value.as_ref())
+        && let Some(per_value) = &kept.per_value
     {
         return Ok(per_value
             .totals
@@ -1633,11 +2097,13 @@ fn sampled_segment_totals(
             .map(|(raw, rows)| (segment_label(&plan.grain, raw.as_deref()), *rows))
             .collect());
     }
-    if let Some((_, totals)) = kept.counted.iter().find(|(grain, _)| *grain == plan.grain) {
+    let key = segment_key(plan);
+    if let Some((_, totals)) = kept.counted.iter().find(|(counted, _)| *counted == key) {
         return Ok(totals.clone());
     }
+    watch.stage(QualityStage::CountingSegments, true)?;
     let totals = counted_segment_totals(lf, plan, polars_streaming)?;
-    kept.counted.push((plan.grain.clone(), totals.clone()));
+    kept.counted.push((key, totals.clone()));
     Ok(totals)
 }
 
@@ -1648,14 +2114,18 @@ fn compute_full_quality(
     source: Option<&QualitySourceContext>,
     schema: &Schema,
     polars_streaming: bool,
+    watch: &QualityWatch,
 ) -> Result<DataQualityResults> {
-    let aggregate = collect_lazy(
-        lf.clone().select(build_profile_exprs(schema)),
-        polars_streaming,
-    )
-    .map_err(Report::from)?;
+    watch.stage(QualityStage::ProfilingColumns, true)?;
+    let full_schema = lf.clone().collect_schema()?;
+    // Text read as time is counted in the same pass as every column's profile.
+    let mut exprs = build_profile_exprs(schema);
+    exprs.extend(interpretation_exprs(plan, &full_schema));
+    let aggregate =
+        collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
     let mut columns = parse_profiles(&aggregate, schema, total_rows);
     add_dominance_lazy(lf, &mut columns, polars_streaming)?;
+    watch.stage(QualityStage::CheckingDuplicates, true)?;
     let identity = profile_identity_lazy(
         lf,
         schema,
@@ -1663,21 +2133,36 @@ fn compute_full_quality(
         QualityPrecision::Exact,
         polars_streaming,
     )?;
+    watch.stage(QualityStage::CheckingSpellings, true)?;
     let category_variants = profile_category_variants_lazy(lf, schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns, QualityPrecision::Exact);
+    observations.extend(interpretation_observations(&aggregate, plan, &full_schema));
     observations.extend(identity_observations(&identity, &category_variants));
     // Only a run that already reads every value pays for the conflicting values, and
     // only that run's access plan promised the read.
     if let Some(source) = source {
+        if source.conflict_scan.is_some() {
+            watch.stage(QualityStage::ReadingConflicts, true)?;
+        }
         observations.extend(drift_observations(
             source,
             source.conflict_scan.as_ref(),
             polars_streaming,
         ));
     }
-    let segments = profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)?;
+    watch.stage(QualityStage::ProfilingSegments, true)?;
+    let segments = if unsegmented(plan, source) {
+        // The whole scope is one segment, and its profile is the one just measured:
+        // reading it again would be a second pass for the same numbers.
+        vec![whole_segment(plan, total_rows, &columns, schema.len())]
+    } else {
+        profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)?
+    };
+    watch.stage(QualityStage::ComputingIntervals, true)?;
     let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming)?;
+    watch.stage(QualityStage::CheckingSharedNulls, true)?;
     let shared_nulls = profile_shared_nulls(lf, &columns, polars_streaming)?;
+    watch.stage(QualityStage::Assembling, false)?;
     Ok(DataQualityResults {
         total_rows: Some(total_rows),
         evaluated_rows: total_rows,
@@ -1967,6 +2452,7 @@ fn identity_observations(
             ),
             normalized_category: None,
             files: Vec::new(),
+            time_format: None,
         });
     }
     observations.extend(variants.iter().map(|group| QualityObservation {
@@ -1982,6 +2468,7 @@ fn identity_observations(
         ),
         normalized_category: Some(group.normalized.clone()),
         files: Vec::new(),
+        time_format: None,
     }));
     observations
 }
@@ -2026,7 +2513,9 @@ fn segment_rows(
                 .collect()
         }
         QualityGrain::Partition(column) => group_by_value(df, column, &format!("{column}="))?,
-        QualityGrain::TimeWindows { column, every } => group_by_time_window(df, column, every)?,
+        QualityGrain::TimeWindows { column, every } => {
+            group_by_time_window(df, plan, column, every)?
+        }
         QualityGrain::File => {
             if df.column(QUALITY_SOURCE_FILE_COLUMN).is_ok() {
                 group_by_value(df, QUALITY_SOURCE_FILE_COLUMN, "file ")?
@@ -2075,18 +2564,23 @@ fn group_by_value(df: &DataFrame, column: &str, prefix: &str) -> Result<Vec<Segm
 /// Where a row's window starts. Both the sampled and the full-scan path bucket
 /// through this one expression, so a week never starts on a different day
 /// depending on how much of it was read.
-fn time_window_start(column: &str, every: &str) -> Expr {
-    col(column)
+fn time_window_start(value: Expr, every: &str) -> Expr {
+    value
         .cast(DataType::Datetime(TimeUnit::Microseconds, None))
         .dt()
         .truncate(lit(every.to_string()))
 }
 
-fn group_by_time_window(df: &DataFrame, column: &str, every: &str) -> Result<Vec<SegmentRows>> {
+fn group_by_time_window(
+    df: &DataFrame,
+    plan: &DataQualityPlan,
+    column: &str,
+    every: &str,
+) -> Result<Vec<SegmentRows>> {
     let starts = df
         .clone()
         .lazy()
-        .select([time_window_start(column, every).alias(QUALITY_WINDOW_START)])
+        .select([time_window_start(plan.time_value(column), every).alias(QUALITY_WINDOW_START)])
         .collect()?;
     let starts = starts.column(QUALITY_WINDOW_START)?;
     let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
@@ -2135,7 +2629,8 @@ fn time_window_label(column: &str, every: &str, start: Option<&str>) -> String {
 }
 
 fn value_epoch_micros(value: AnyValue<'_>) -> Option<i64> {
-    match value {
+    // A one-row segment's column can be a scalar, whose values come back owned.
+    match value.as_borrowed() {
         AnyValue::Date(days) => Some(i64::from(days) * 86_400_000_000),
         AnyValue::Datetime(value, TimeUnit::Nanoseconds, _) => Some(value / 1_000),
         AnyValue::Datetime(value, TimeUnit::Microseconds, _) => Some(value),
@@ -2169,7 +2664,9 @@ fn counted_segment_totals(
     const ROWS: &str = "__quality_count_rows";
     let key = match &plan.grain {
         QualityGrain::Partition(column) => col(column.as_str()),
-        QualityGrain::TimeWindows { column, every } => time_window_start(column, every),
+        QualityGrain::TimeWindows { column, every } => {
+            time_window_start(plan.time_value(column), every)
+        }
         _ => return Ok(BTreeMap::new()),
     };
     let counts = collect_lazy(
@@ -2364,38 +2861,22 @@ fn profile_segments_lazy(
     schema: &Schema,
     polars_streaming: bool,
 ) -> Result<Vec<SegmentQualityProfile>> {
-    if matches!(plan.grain, QualityGrain::Dataset)
-        || matches!(plan.grain, QualityGrain::File) && source.is_none()
-    {
+    if unsegmented(plan, source) {
         let aggregate = collect_lazy(
             lf.clone().select(build_profile_exprs(schema)),
             polars_streaming,
         )
         .map_err(Report::from)?;
         let columns = parse_profiles(&aggregate, schema, total_rows);
-        let null_cells = columns
-            .iter()
-            .map(|column| column.null_count)
-            .sum::<usize>();
-        let denominator = total_rows.saturating_mul(schema.len());
-        return Ok(vec![SegmentQualityProfile {
-            label: if matches!(plan.grain, QualityGrain::File) {
-                "file mapping unavailable for this view".to_string()
-            } else {
-                "current view".to_string()
-            },
-            total_rows: Some(total_rows),
-            evaluated_rows: total_rows,
-            columns,
-            null_cells,
-            null_rate: rate(null_cells, denominator),
-            compared_with: None,
-            largest_change: None,
-            change_size: None,
-        }]);
+        return Ok(vec![whole_segment(
+            plan,
+            total_rows,
+            &columns,
+            schema.len(),
+        )]);
     }
 
-    let (grouped_lf, group) = grouped_frame(lf, &plan.grain, source)?;
+    let (grouped_lf, group) = grouped_frame(lf, plan, source)?;
     let mut aggregates = vec![len().alias("__quality_segment_rows")];
     aggregates.extend(build_profile_exprs(schema));
     let grouped = collect_lazy(
@@ -2454,12 +2935,48 @@ fn profile_segments_lazy(
     Ok(segments)
 }
 
+/// Whether a full run's grain leaves the scope whole: the dataset grain, or files
+/// where the view has lost which file a row came from.
+fn unsegmented(plan: &DataQualityPlan, source: Option<&QualitySourceContext>) -> bool {
+    matches!(plan.grain, QualityGrain::Dataset)
+        || matches!(plan.grain, QualityGrain::File) && source.is_none()
+}
+
+/// The scope as its one segment, from its columns' profile.
+fn whole_segment(
+    plan: &DataQualityPlan,
+    total_rows: usize,
+    columns: &[ColumnQualityProfile],
+    column_count: usize,
+) -> SegmentQualityProfile {
+    let null_cells = columns
+        .iter()
+        .map(|column| column.null_count)
+        .sum::<usize>();
+    let denominator = total_rows.saturating_mul(column_count);
+    SegmentQualityProfile {
+        label: if matches!(plan.grain, QualityGrain::File) {
+            "file mapping unavailable for this view".to_string()
+        } else {
+            "current view".to_string()
+        },
+        total_rows: Some(total_rows),
+        evaluated_rows: total_rows,
+        columns: columns.to_vec(),
+        null_cells,
+        null_rate: rate(null_cells, denominator),
+        compared_with: None,
+        largest_change: None,
+        change_size: None,
+    }
+}
+
 fn grouped_frame(
     lf: &LazyFrame,
-    grain: &QualityGrain,
+    plan: &DataQualityPlan,
     source: Option<&QualitySourceContext>,
 ) -> Result<(LazyFrame, Expr)> {
-    match grain {
+    match &plan.grain {
         QualityGrain::Dataset => Err(color_eyre::eyre::eyre!(
             "dataset grain does not need grouping"
         )),
@@ -2471,9 +2988,10 @@ fn grouped_frame(
                 col(row).cast(DataType::UInt64) / lit((*size).max(1) as u64),
             ))
         }
-        QualityGrain::TimeWindows { column, every } => {
-            Ok((lf.clone(), time_window_start(column, every)))
-        }
+        QualityGrain::TimeWindows { column, every } => Ok((
+            lf.clone(),
+            time_window_start(plan.time_value(column), every),
+        )),
         QualityGrain::File => {
             let source = source
                 .ok_or_else(|| color_eyre::eyre::eyre!("source-file mapping is unavailable"))?;
@@ -2687,55 +3205,99 @@ fn range_label(column: &ColumnQualityProfile) -> String {
     }
 }
 
+/// A role's column as a run reads it: the column's own name, where its time values
+/// are, and where the rows are flagged whose text the column's format did not read.
+struct TimedColumn {
+    name: String,
+    values: String,
+    unparsed: Option<String>,
+}
+
+/// The measured intervals whose two roles sit on columns the run can read as time.
+/// A role on text with no format measures nothing: its interval is left out rather
+/// than read as all missing.
+fn resolved_intervals(
+    plan: &DataQualityPlan,
+    schema: &Schema,
+) -> Vec<(TemporalRole, TemporalRole, String, String)> {
+    let usable = |role| {
+        plan.role_column(role)
+            .filter(|column| plan.reads_as_time(column, schema))
+            .map(str::to_string)
+    };
+    plan.interval_pairs()
+        .into_iter()
+        .filter_map(|(start, end)| Some((start, end, usable(start)?, usable(end)?)))
+        .collect()
+}
+
 fn profile_temporal(
     df: &DataFrame,
     plan: &DataQualityPlan,
     sample_positions: Option<&[u32]>,
 ) -> Result<Vec<TemporalLatencyProfile>> {
-    let role_column = |role| {
-        plan.temporal_roles
-            .iter()
-            .find(|assignment| assignment.role == role)
-            .map(|assignment| assignment.column.as_str())
-            .filter(|column| df.column(column).is_ok())
-    };
-    let pairs = [
-        (TemporalRole::Event, TemporalRole::Published),
-        (TemporalRole::Event, TemporalRole::Received),
-        (TemporalRole::PeriodEnd, TemporalRole::Published),
-        (TemporalRole::Published, TemporalRole::Received),
-        (TemporalRole::Received, TemporalRole::Processed),
-        (TemporalRole::Event, TemporalRole::Processed),
-    ];
     // Resolved before the rows are grouped, as the lazy path does: the default plan
     // assigns no roles at all, and splitting the sample into ten thousand segments to
     // discover that costs a DataFrame copy per segment and answers nothing.
-    let resolved = pairs
-        .into_iter()
-        .filter_map(|(start_role, end_role)| {
-            Some((
-                start_role,
-                end_role,
-                role_column(start_role)?,
-                role_column(end_role)?,
-            ))
-        })
-        .collect::<Vec<_>>();
+    let resolved = resolved_intervals(plan, df.schema());
     if resolved.is_empty() {
         return Ok(Vec::new());
     }
-    let groups = segment_rows(df, plan, sample_positions)?;
+    // Text read as time is parsed once, beside the text, with a flag on the rows the
+    // format did not read, so an unread value is told apart from a missing one.
+    let mut parsed = Vec::new();
+    let mut timed = |column: &str| {
+        let Some(format) = plan.time_format(column) else {
+            return TimedColumn {
+                name: column.to_string(),
+                values: column.to_string(),
+                unparsed: None,
+            };
+        };
+        let values = format!("__datui_quality_time::{column}");
+        let unparsed = format!("__datui_quality_unparsed::{column}");
+        if !parsed
+            .iter()
+            .any(|(name, _): &(String, Expr)| *name == values)
+        {
+            parsed.push((values.clone(), format.expr()));
+            parsed.push((unparsed.clone(), format.unparsed()));
+        }
+        TimedColumn {
+            name: column.to_string(),
+            values,
+            unparsed: Some(unparsed),
+        }
+    };
+    let intervals = resolved
+        .iter()
+        .map(|(start_role, end_role, start, end)| {
+            (*start_role, *end_role, timed(start), timed(end))
+        })
+        .collect::<Vec<_>>();
+    let df = if parsed.is_empty() {
+        df.clone()
+    } else {
+        df.clone()
+            .lazy()
+            .with_columns(
+                parsed
+                    .into_iter()
+                    .map(|(name, expr)| expr.alias(name))
+                    .collect::<Vec<_>>(),
+            )
+            .collect()?
+    };
+    let groups = segment_rows(&df, plan, sample_positions)?;
     let mut profiles = Vec::new();
     for group in groups {
-        let segment = take_rows(df, &group.indices)?;
-        for (start_role, end_role, start_column, end_column) in &resolved {
+        let segment = take_rows(&df, &group.indices)?;
+        for (start_role, end_role, start, end) in &intervals {
             profiles.push(latency_profile(
                 &segment,
                 &group.label,
-                *start_role,
-                *end_role,
-                start_column,
-                end_column,
+                (*start_role, start),
+                (*end_role, end),
                 plan.latency_threshold_seconds,
             )?);
         }
@@ -2750,41 +3312,21 @@ fn profile_temporal_lazy(
     polars_streaming: bool,
 ) -> Result<Vec<TemporalLatencyProfile>> {
     let schema = lf.clone().collect_schema()?;
-    let role_column = |role| {
-        plan.temporal_roles
-            .iter()
-            .find(|assignment| assignment.role == role)
-            .map(|assignment| assignment.column.as_str())
-            .filter(|column| schema.get(column).is_some())
-    };
-    let supported = [
-        (TemporalRole::Event, TemporalRole::Published),
-        (TemporalRole::Event, TemporalRole::Received),
-        (TemporalRole::PeriodEnd, TemporalRole::Published),
-        (TemporalRole::Published, TemporalRole::Received),
-        (TemporalRole::Received, TemporalRole::Processed),
-        (TemporalRole::Event, TemporalRole::Processed),
-    ];
-    let pairs = supported
-        .into_iter()
-        .filter_map(|(start_role, end_role)| {
-            Some((
-                start_role,
-                end_role,
-                role_column(start_role)?.to_string(),
-                role_column(end_role)?.to_string(),
-            ))
-        })
-        .collect::<Vec<_>>();
+    let pairs = resolved_intervals(plan, &schema);
     if pairs.is_empty() {
         return Ok(Vec::new());
     }
 
+    let unparsed = |column: &str| {
+        plan.time_format(column)
+            .map(|format| format.unparsed().sum())
+            .unwrap_or_else(|| lit(0u32))
+    };
     let mut expressions = vec![len().alias("__quality_temporal_rows")];
     for (index, (_, _, start_column, end_column)) in pairs.iter().enumerate() {
         let prefix = format!("latency::{index}::");
-        let start = col(start_column);
-        let end = col(end_column);
+        let start = plan.time_value(start_column);
+        let end = plan.time_value(end_column);
         let duration = (end
             .clone()
             .cast(DataType::Datetime(TimeUnit::Microseconds, None))
@@ -2794,11 +3336,18 @@ fn profile_temporal_lazy(
         .dt()
         .total_seconds(false);
         expressions.extend([
-            start
+            // Missing is the stored value; text the format did not read is counted
+            // on its own.
+            col(start_column.as_str())
                 .is_null()
                 .sum()
                 .alias(format!("{prefix}missing_start")),
-            end.is_null().sum().alias(format!("{prefix}missing_end")),
+            col(end_column.as_str())
+                .is_null()
+                .sum()
+                .alias(format!("{prefix}missing_end")),
+            unparsed(start_column).alias(format!("{prefix}unparsed_start")),
+            unparsed(end_column).alias(format!("{prefix}unparsed_end")),
             duration
                 .clone()
                 .lt(lit(0i64))
@@ -2837,7 +3386,7 @@ fn profile_temporal_lazy(
     let aggregate = if ungrouped {
         collect_lazy(lf.clone().select(expressions), polars_streaming).map_err(Report::from)?
     } else {
-        let (grouped_lf, group) = grouped_frame(lf, &plan.grain, source)?;
+        let (grouped_lf, group) = grouped_frame(lf, plan, source)?;
         collect_lazy(
             grouped_lf
                 .group_by([group.alias("__quality_segment")])
@@ -2871,6 +3420,8 @@ fn profile_temporal_lazy(
                 evaluated_rows,
                 missing_start: usize_value_at(&aggregate, &format!("{prefix}missing_start"), row),
                 missing_end: usize_value_at(&aggregate, &format!("{prefix}missing_end"), row),
+                unparsed_start: usize_value_at(&aggregate, &format!("{prefix}unparsed_start"), row),
+                unparsed_end: usize_value_at(&aggregate, &format!("{prefix}unparsed_end"), row),
                 negative_count: usize_value_at(&aggregate, &format!("{prefix}negative"), row),
                 p50_seconds: optional_i64_at(&aggregate, &format!("{prefix}p50"), row),
                 p90_seconds: optional_i64_at(&aggregate, &format!("{prefix}p90"), row),
@@ -2898,28 +3449,50 @@ fn profile_temporal_lazy(
 fn latency_profile(
     df: &DataFrame,
     segment: &str,
-    start_role: TemporalRole,
-    end_role: TemporalRole,
-    start_column: &str,
-    end_column: &str,
+    (start_role, start): (TemporalRole, &TimedColumn),
+    (end_role, end): (TemporalRole, &TimedColumn),
     threshold_seconds: Option<i64>,
 ) -> Result<TemporalLatencyProfile> {
-    let starts = df.column(start_column)?;
-    let ends = df.column(end_column)?;
+    let starts = df.column(&start.values)?;
+    let ends = df.column(&end.values)?;
+    let flags = |column: &TimedColumn| {
+        column
+            .unparsed
+            .as_ref()
+            .map(|name| df.column(name))
+            .transpose()
+    };
+    let (start_flags, end_flags) = (flags(start)?, flags(end)?);
+    let unread = |flags: Option<&Column>, row: usize| -> Result<bool> {
+        Ok(match flags {
+            Some(flags) => flags.get(row)? == AnyValue::Boolean(true),
+            None => false,
+        })
+    };
     let mut missing_start = 0;
     let mut missing_end = 0;
+    let mut unparsed_start = 0;
+    let mut unparsed_end = 0;
     let mut seconds = Vec::new();
     for row in 0..df.height() {
-        let start = value_epoch_micros(starts.get(row)?);
-        let end = value_epoch_micros(ends.get(row)?);
-        if start.is_none() {
-            missing_start += 1;
+        let start_at = value_epoch_micros(starts.get(row)?);
+        let end_at = value_epoch_micros(ends.get(row)?);
+        if start_at.is_none() {
+            if unread(start_flags, row)? {
+                unparsed_start += 1;
+            } else {
+                missing_start += 1;
+            }
         }
-        if end.is_none() {
-            missing_end += 1;
+        if end_at.is_none() {
+            if unread(end_flags, row)? {
+                unparsed_end += 1;
+            } else {
+                missing_end += 1;
+            }
         }
-        if let (Some(start), Some(end)) = (start, end) {
-            seconds.push((end - start) / 1_000_000);
+        if let (Some(start_at), Some(end_at)) = (start_at, end_at) {
+            seconds.push((end_at - start_at) / 1_000_000);
         }
     }
     seconds.sort_unstable();
@@ -2935,11 +3508,13 @@ fn latency_profile(
         segment: segment.to_string(),
         start_role,
         end_role,
-        start_column: start_column.to_string(),
-        end_column: end_column.to_string(),
+        start_column: start.name.clone(),
+        end_column: end.name.clone(),
         evaluated_rows: df.height(),
         missing_start,
         missing_end,
+        unparsed_start,
+        unparsed_end,
         negative_count: seconds.iter().filter(|value| **value < 0).count(),
         p50_seconds: percentile(50),
         p90_seconds: percentile(90),
@@ -2949,6 +3524,61 @@ fn latency_profile(
         above_threshold_count: threshold_seconds
             .map(|threshold| seconds.iter().filter(|value| **value > threshold).count()),
     })
+}
+
+/// Two counts per text column read as time, in whatever pass profiles the columns:
+/// its non-null values, and those the format does not read.
+fn interpretation_exprs(plan: &DataQualityPlan, schema: &Schema) -> Vec<Expr> {
+    plan.time_formats
+        .iter()
+        .enumerate()
+        .filter(|(_, format)| schema.get(&format.column).is_some())
+        .flat_map(|(index, format)| {
+            [
+                col(format.column.as_str())
+                    .is_not_null()
+                    .sum()
+                    .alias(format!("__datui_time::{index}::values")),
+                format
+                    .unparsed()
+                    .sum()
+                    .alias(format!("__datui_time::{index}::unparsed")),
+            ]
+        })
+        .collect()
+}
+
+/// Text the chosen format does not read, one observation per column that has any,
+/// from the counts [`interpretation_exprs`] took.
+fn interpretation_observations(
+    counts: &DataFrame,
+    plan: &DataQualityPlan,
+    schema: &Schema,
+) -> Vec<QualityObservation> {
+    plan.time_formats
+        .iter()
+        .enumerate()
+        .filter(|(_, format)| schema.get(&format.column).is_some())
+        .filter_map(|(index, format)| {
+            let values = optional_usize(counts, &format!("__datui_time::{index}::values"))?;
+            let unparsed = optional_usize(counts, &format!("__datui_time::{index}::unparsed"))?;
+            (unparsed > 0).then(|| QualityObservation {
+                kind: ObservationKind::UnparsedTime,
+                column: format.column.clone(),
+                affected_rows: unparsed,
+                evaluated_rows: values,
+                fact: format!(
+                    "{} of {} values do not read as {}",
+                    crate::numfmt::group_chrome(unparsed),
+                    crate::numfmt::group_chrome(values),
+                    format.label()
+                ),
+                normalized_category: None,
+                files: Vec::new(),
+                time_format: Some(format.clone()),
+            })
+        })
+        .collect()
 }
 
 /// A categorical column stores integer codes, not text: `.str()` rejects it and
@@ -3526,6 +4156,7 @@ fn drift_observations(
                 ),
                 normalized_category: None,
                 files,
+                time_format: None,
             });
         }
     }
@@ -3579,6 +4210,7 @@ fn observation(
         fact,
         normalized_category: None,
         files: Vec::new(),
+        time_format: None,
     }
 }
 
@@ -3711,6 +4343,7 @@ mod tests {
                 fact: String::new(),
                 normalized_category: None,
                 files: Vec::new(),
+                time_format: None,
             };
             let rows = fixture()
                 .filter(observation.evidence_predicate().unwrap())
@@ -3726,6 +4359,7 @@ mod tests {
             fact: String::new(),
             normalized_category: Some("north".to_string()),
             files: Vec::new(),
+            time_format: None,
         };
         let rows = df!("category" => &["North", " north ", "NORTH"])
             .unwrap()
@@ -5428,5 +6062,310 @@ mod tests {
         assert_eq!(labels(&full).len(), 3);
         assert_eq!(labels(&full)[2], "event_at ∅");
         assert!(labels(&full)[0].starts_with("week of "));
+    }
+
+    fn text_times() -> LazyFrame {
+        df!(
+            "created" => [
+                Some("2024-01-01 08:00:00"),
+                Some("2024-01-01 09:30:00"),
+                Some("2024-01-02 10:00:00"),
+                Some("not a time"),
+                None,
+                Some("2024-01-03 12:00:00"),
+            ],
+            "sent" => [
+                Some("2024-01-01 09:00:00"),
+                Some("2024-01-01 09:00:00"),
+                None,
+                Some("2024-01-02 11:00:00"),
+                Some("2024-01-02 11:00:00"),
+                Some("2024-01-03 12:30:00"),
+            ],
+        )
+        .unwrap()
+        .lazy()
+    }
+
+    fn read_as_datetime(column: &str) -> TimeInterpretation {
+        TimeInterpretation {
+            column: column.to_string(),
+            kind: TimeKind::Datetime,
+            format: "%Y-%m-%d %H:%M:%S".to_string(),
+        }
+    }
+
+    /// Text read through a format gives time windows and intervals, sampled or read
+    /// in full, alike. A value the format does not read is its own count, not a
+    /// missing value, and the column's own profile stays the text it is.
+    #[test]
+    fn text_read_as_time_windows_and_measures_intervals() {
+        let plan = DataQualityPlan {
+            grain: QualityGrain::TimeWindows {
+                column: "created".to_string(),
+                every: "1d".to_string(),
+            },
+            temporal_roles: vec![
+                TemporalRoleAssignment {
+                    role: TemporalRole::Event,
+                    column: "created".to_string(),
+                    timezone: None,
+                },
+                TemporalRoleAssignment {
+                    role: TemporalRole::Received,
+                    column: "sent".to_string(),
+                    timezone: None,
+                },
+            ],
+            time_formats: vec![read_as_datetime("created"), read_as_datetime("sent")],
+            ..DataQualityPlan::default()
+        };
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                ..plan.clone()
+            };
+            let results = compute_data_quality(&text_times(), Some(6), &plan, None, false)
+                .unwrap_or_else(|error| panic!("{compute:?}: {error}"));
+            let labels = results
+                .segments
+                .iter()
+                .map(|segment| segment.label.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                labels,
+                ["2024-01-01", "2024-01-02", "2024-01-03", "created ∅"],
+                "{compute:?}"
+            );
+            let (unparsed_start, missing_start) =
+                results
+                    .temporal
+                    .iter()
+                    .fold((0, 0), |(unparsed, missing), latency| {
+                        (
+                            unparsed + latency.unparsed_start,
+                            missing + latency.missing_start,
+                        )
+                    });
+            assert_eq!((unparsed_start, missing_start), (1, 1), "{compute:?}");
+            let first_day = results
+                .temporal
+                .iter()
+                .find(|latency| latency.segment == "2024-01-01")
+                .unwrap();
+            // 08:00 to 09:00, and 09:30 to 09:00.
+            assert_eq!(first_day.negative_count, 1, "{compute:?}");
+            assert_eq!(first_day.max_seconds, Some(3_600), "{compute:?}");
+
+            let unparsed = results
+                .observations
+                .iter()
+                .find(|observation| observation.kind == ObservationKind::UnparsedTime)
+                .unwrap_or_else(|| panic!("{compute:?}: no unparsed finding"));
+            assert_eq!(unparsed.column, "created");
+            assert_eq!((unparsed.affected_rows, unparsed.evaluated_rows), (1, 5));
+            let rows = text_times()
+                .filter(unparsed.evidence_predicate().unwrap())
+                .collect()
+                .unwrap();
+            assert_eq!(rows.height(), 1, "the evidence is the unread value");
+            let created = results
+                .columns
+                .iter()
+                .find(|column| column.name == "created")
+                .unwrap();
+            assert_eq!(created.dtype, DataType::String, "still text to every check");
+            assert_eq!(created.null_count, 1);
+        }
+    }
+
+    /// A role on text with no format measures no interval, and a time-window grain on
+    /// it is refused with the remedy, rather than failing somewhere inside a read.
+    #[test]
+    fn text_without_a_format_is_not_read_as_time() {
+        let plan = DataQualityPlan {
+            temporal_roles: vec![
+                TemporalRoleAssignment {
+                    role: TemporalRole::Event,
+                    column: "created".to_string(),
+                    timezone: None,
+                },
+                TemporalRoleAssignment {
+                    role: TemporalRole::Received,
+                    column: "sent".to_string(),
+                    timezone: None,
+                },
+            ],
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&text_times(), Some(6), &plan, None, false).unwrap();
+        assert!(results.temporal.is_empty());
+        let windows = DataQualityPlan {
+            grain: QualityGrain::TimeWindows {
+                column: "created".to_string(),
+                every: "1d".to_string(),
+            },
+            ..DataQualityPlan::default()
+        };
+        let error = compute_data_quality(&text_times(), Some(6), &windows, None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Text as time"), "{error}");
+    }
+
+    /// The formats Setup offers read on screen what a run reads: chrono for the
+    /// examples, Polars for the run, one answer.
+    #[test]
+    fn every_offered_format_reads_its_example_the_same_way_twice() {
+        let samples = [
+            "2024-01-31 08:15:00",
+            "2024-01-31T08:15:00",
+            "2024-01-31 08:15:00.250",
+            "2024-01-31T08:15:00.5",
+            "2024-01-31 08:15",
+            "2024-01-31",
+            "20240131",
+            "01/31/2024 08:15:00",
+            "01/31/2024 08:15:00 AM",
+            "31/01/2024 08:15:00",
+            "31.01.2024 08:15:00",
+            "01/31/2024",
+            "31/01/2024",
+            "31.01.2024",
+            "not a time",
+        ];
+        let frame = df!("text" => samples).unwrap().lazy();
+        for (kind, format) in TIME_FORMATS {
+            let interpretation = TimeInterpretation {
+                column: "text".to_string(),
+                kind,
+                format: format.to_string(),
+            };
+            let parsed = frame
+                .clone()
+                .select([interpretation.expr().is_not_null().alias("read")])
+                .collect()
+                .unwrap();
+            let read = parsed.column("read").unwrap().bool().unwrap().clone();
+            let mut any = false;
+            for (index, sample) in samples.iter().enumerate() {
+                let polars = read.get(index).unwrap_or(false);
+                any |= polars;
+                assert_eq!(
+                    interpretation.reads(sample),
+                    polars,
+                    "{format} on {sample:?}"
+                );
+            }
+            assert!(any, "{format} reads none of the examples");
+        }
+    }
+
+    /// A run names each stage once as it enters it, and says whether the stage reads
+    /// the source; a cancelled run stops at the next stage instead of finishing.
+    #[test]
+    fn a_run_reports_its_stages_and_stops_when_cancelled() {
+        let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&stages);
+        let watch = QualityWatch::new(move |phase| seen.lock().unwrap().push(phase));
+        let plan = DataQualityPlan {
+            grain: QualityGrain::Partition("constant".to_string()),
+            ..DataQualityPlan::default()
+        };
+        let (results, kept) =
+            compute_data_quality_watched(&fixture(), Some(4), &plan, None, false, None, &watch);
+        results.unwrap();
+        let stages = stages.lock().unwrap().clone();
+        assert_eq!(stages.first().unwrap().stage, QualityStage::Preparing);
+        assert_eq!(stages.last().unwrap().stage, QualityStage::Assembling);
+        let read = stages
+            .iter()
+            .find(|phase| phase.stage == QualityStage::ReadingSample)
+            .unwrap();
+        assert!(read.reads_source);
+        assert!(
+            stages
+                .iter()
+                .filter(|phase| phase.stage == QualityStage::ProfilingColumns)
+                .all(|phase| !phase.reads_source),
+            "the sample is profiled in memory"
+        );
+        let distinct = stages
+            .iter()
+            .map(|phase| phase.stage.label())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            stages.len(),
+            distinct.len(),
+            "each stage said once: {stages:?}"
+        );
+
+        // The same plan again reuses the rows it read, and says so.
+        let again = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&again);
+        let watch = QualityWatch::new(move |phase| seen.lock().unwrap().push(phase));
+        compute_data_quality_watched(
+            &fixture(),
+            Some(4),
+            &plan,
+            None,
+            false,
+            kept.as_ref(),
+            &watch,
+        )
+        .0
+        .unwrap();
+        let again = again.lock().unwrap().clone();
+        assert!(again.iter().all(|phase| !phase.reads_source), "{again:?}");
+        assert!(
+            again
+                .iter()
+                .any(|phase| phase.stage == QualityStage::ReusingSample)
+        );
+
+        let cancelled = QualityWatch::default();
+        cancelled.cancel();
+        let (results, kept) =
+            compute_data_quality_watched(&fixture(), Some(4), &plan, None, false, None, &cancelled);
+        assert_eq!(results.unwrap_err().to_string(), crate::sampling::CANCELLED);
+        assert!(kept.is_none(), "stopped before its read, it read nothing");
+
+        // Stopped after its read, the run still hands its rows back: they were paid for.
+        let late = QualityWatch::default();
+        let stopper = late.clone();
+        let late = QualityWatch {
+            report: Some(Arc::new(move |phase: QualityPhase| {
+                if phase.stage == QualityStage::ProfilingColumns {
+                    stopper.cancel();
+                }
+            })),
+            ..late
+        };
+        let (results, kept) =
+            compute_data_quality_watched(&fixture(), Some(4), &plan, None, false, None, &late);
+        assert!(results.is_err());
+        assert!(kept.is_some(), "the sample it read comes back");
+    }
+
+    /// A stop reaches into a streamed read: the sampler ends at its next batch and
+    /// the partial rows never become a sample.
+    #[test]
+    fn a_stopped_stream_is_not_a_sample() {
+        let watch = crate::sampling::ReadWatch::default();
+        watch.stop();
+        let sample = crate::sampling::Sample {
+            scope: QualityScope::CurrentView,
+            method: crate::sampling::SampleMethod::PerPartition {
+                column: "constant".to_string(),
+            },
+            rows: 1,
+            seed: 7,
+        };
+        let read =
+            crate::sampling::read_rows_watched(&fixture(), &sample, None, false, Some(&watch));
+        let Err(error) = read else {
+            panic!("a stopped read returned rows");
+        };
+        assert_eq!(error.to_string(), crate::sampling::CANCELLED);
     }
 }

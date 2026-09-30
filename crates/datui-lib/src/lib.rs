@@ -20177,13 +20177,8 @@ fn run_impl(
     // still applies to any paths that were given.
     if let RunInput::Paths(ref paths, _) = input {
         for path in paths {
-            let s = path.to_string_lossy();
-            let is_remote = s.starts_with("s3://")
-                || s.starts_with("gs://")
-                || s.starts_with("http://")
-                || s.starts_with("https://");
-            let is_glob = s.contains('*');
-            if !is_remote && !is_glob && !path.exists() {
+            let is_glob = path.to_string_lossy().contains('*');
+            if !source::is_remote_url(path) && !is_glob && !path.exists() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("File not found: {}", path.display()),

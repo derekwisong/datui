@@ -430,7 +430,10 @@ fn render_bar_chart(
     let lo = bars.iter().map(|b| b.value).fold(0.0_f64, f64::min);
     let hi = bars.iter().map(|b| b.value).fold(0.0_f64, f64::max);
     let span = if hi > lo { hi - lo } else { 1.0 };
-    let zero = ((-lo / span) * bar_w as f64).round() as usize;
+    // A negative value keeps a cell left of zero, however small it is beside the rest.
+    let zero = (((-lo / span) * bar_w as f64).round() as usize)
+        .max(usize::from(lo < 0.0))
+        .min(bar_w);
     for (i, (bar, value)) in bars.iter().zip(&values).enumerate() {
         let y = area.y + 1 + i as u16;
         match &bar.label {
@@ -442,10 +445,12 @@ fn render_bar_chart(
         if bar_w == 0 {
             continue;
         }
+        // A value that is not zero always draws: the thinnest mark, at least.
+        let nonzero = usize::from(bar.value != 0.0);
         if bar.value >= 0.0 {
             // Eighths of a cell, so short bars still differ.
             let eighths = ((bar.value / span) * bar_w as f64 * 8.0).round() as usize;
-            let eighths = eighths.min((bar_w - zero.min(bar_w)) * 8);
+            let eighths = eighths.max(nonzero).min((bar_w - zero.min(bar_w)) * 8);
             let mut body = g.bar_eighths[7].repeat(eighths / 8);
             if let Some(part) = (eighths % 8).checked_sub(1) {
                 body.push_str(g.bar_eighths[part]);
@@ -454,7 +459,7 @@ fn render_bar_chart(
         } else {
             // Leftward from zero in whole cells: the eighths fill from the left.
             let cells = ((-bar.value / span) * bar_w as f64).round() as usize;
-            let cells = cells.min(zero);
+            let cells = cells.max(nonzero).min(zero);
             put(
                 buf,
                 bar_x + zero - cells,
@@ -1508,6 +1513,42 @@ mod tests {
             "{:?}",
             canvas[3]
         );
+    }
+
+    /// A value far smaller than the rest still draws a mark, either side of zero, so
+    /// no bar that is not zero reads as zero.
+    #[test]
+    fn a_tiny_value_still_draws_a_mark() {
+        use crate::chart_data::Bar;
+        let g = crate::glyphs::get();
+        let mut data = bar_data(0);
+        data.bars = [
+            ("big", 10_000.0),
+            ("tiny", 0.1),
+            ("zero", 0.0),
+            ("neg", -0.1),
+        ]
+        .into_iter()
+        .map(|(label, value)| Bar {
+            label: Some(label.to_string()),
+            value,
+        })
+        .collect();
+        let rows = render_bars(&data, 100, 24);
+        let canvas: Vec<String> = rows.iter().map(|r| r.chars().skip(42).collect()).collect();
+        // The bar zone: the row with its label and value taken out.
+        let marks = |row: &str| {
+            let mut words = row.split_whitespace();
+            let (label, value) = (words.next().unwrap(), words.next().unwrap());
+            let zone = row.replacen(label, "", 1).replacen(value, "", 1);
+            g.bar_eighths
+                .iter()
+                .filter(|m| !m.trim().is_empty() && zone.contains(**m))
+                .count()
+        };
+        assert!(marks(&canvas[3]) > 0, "tiny: {:?}", canvas[3]);
+        assert_eq!(marks(&canvas[4]), 0, "zero: {:?}", canvas[4]);
+        assert!(marks(&canvas[5]) > 0, "neg: {:?}", canvas[5]);
     }
 
     #[test]

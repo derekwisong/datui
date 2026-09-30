@@ -255,8 +255,8 @@ const ASCII: Glyphs = Glyphs {
     scroll_thumb: "#",
     binary_stub: "<binary>",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
-    // Under half a cell draws nothing; the value beside the bar says the rest.
-    bar_eighths: &[" ", " ", " ", "=", "=", "=", "=", "#"],
+    // Under half a cell is still a mark, so a small value never reads as zero.
+    bar_eighths: &["-", "-", "-", "=", "=", "=", "=", "#"],
     wordmark: None,
     border: ratatui::symbols::border::Set {
         top_left: "+",

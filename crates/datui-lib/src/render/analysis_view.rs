@@ -191,19 +191,6 @@ fn render_body(
         }
         let context = state.get_analysis_context();
         Clear.render(area, buf);
-        let column_offset = match app.analysis_modal.selected_tool {
-            Some(analysis_modal::AnalysisTool::Describe) => {
-                app.analysis_modal.describe_column_offset
-            }
-            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                app.analysis_modal.distribution_column_offset
-            }
-            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                app.analysis_modal.correlation_column_offset
-            }
-            Some(analysis_modal::AnalysisTool::DataQuality) => 0,
-            None => 0,
-        };
 
         let results_for_widget = app.analysis_modal.current_results().cloned();
         let config = analysis::AnalysisWidgetConfig {
@@ -212,7 +199,6 @@ fn render_body(
             context: &context,
             view: app.analysis_modal.view,
             selected_tool: app.analysis_modal.selected_tool,
-            column_offset,
             selected_correlation: app.analysis_modal.selected_correlation,
             focus: app.analysis_modal.focus,
             selected_theoretical_distribution: app.analysis_modal.selected_theoretical_distribution,
@@ -221,6 +207,21 @@ fn render_body(
             table_cell_padding: app.table_cell_padding,
             number_format: &ctx.number_format,
             sample: &app.analysis_modal.sample,
+            ctx,
+        };
+        // Each table sets how far it scrolls as it draws.
+        let mut unused = analysis_modal::ColumnScroll::default();
+        let column_scroll = match app.analysis_modal.selected_tool {
+            Some(analysis_modal::AnalysisTool::Describe) => {
+                &mut app.analysis_modal.describe_columns
+            }
+            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                &mut app.analysis_modal.distribution_columns
+            }
+            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                &mut app.analysis_modal.correlation_columns
+            }
+            _ => &mut unused,
         };
         let widget = analysis::AnalysisWidget::new(
             config,
@@ -229,6 +230,7 @@ fn render_body(
             &mut app.analysis_modal.correlation_table_state,
             &mut app.analysis_modal.sidebar_state,
             &mut app.analysis_modal.distribution_selector_state,
+            column_scroll,
         );
         widget.render(area, buf);
     } else {

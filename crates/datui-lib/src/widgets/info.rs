@@ -17,12 +17,12 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
-};
+use ratatui::widgets::{Gauge, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
 
 use super::datatable::DataTableState;
 use crate::export_modal::ExportFormat;
+use crate::render::context::RenderContext;
+use crate::widgets::ui::{HintBar, SectionRule, Surface};
 
 /// One drawn line of the Notes tab.
 struct NoteRow {
@@ -452,11 +452,7 @@ pub struct DataTableInfo<'a> {
     pub state: &'a DataTableState,
     pub ctx: InfoContext<'a>,
     pub modal: &'a mut InfoModal,
-    pub border_color: ratatui::style::Color,
-    pub active_color: ratatui::style::Color,
-    pub primary_color: ratatui::style::Color,
-    /// Style of the schema row the cursor is on.
-    pub highlight: Style,
+    pub theme: &'a RenderContext,
 }
 
 /// The first line of the Schema tab: the dataset's size, or that it does not know yet.
@@ -482,19 +478,13 @@ impl<'a> DataTableInfo<'a> {
         state: &'a DataTableState,
         ctx: InfoContext<'a>,
         modal: &'a mut InfoModal,
-        border_color: ratatui::style::Color,
-        active_color: ratatui::style::Color,
-        primary_color: ratatui::style::Color,
-        highlight: Style,
+        theme: &'a RenderContext,
     ) -> Self {
         Self {
             state,
             ctx,
             modal,
-            border_color,
-            active_color,
-            primary_color,
-            highlight,
+            theme,
         }
     }
 
@@ -570,20 +560,21 @@ impl<'a> DataTableInfo<'a> {
         let header = Row::new(header_cells).bold();
 
         let total_rows = self.state.schema.len();
+        // Focus is the accent on the section rule, and the rail on the row.
         let body_focused = self.modal.focus == InfoFocus::Body;
-        let border_style = if body_focused {
-            Style::default().fg(self.active_color)
-        } else {
-            Style::default().fg(self.border_color)
+        let title = format!("Schema: {src}");
+        SectionRule {
+            title: &title,
+            chip: None,
+            focused: body_focused,
+        }
+        .render(Rect { height: 1, ..area }, buf, self.theme);
+        let inner = Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
         };
-        let block = Block::default()
-            .title(Line::from(format!("Schema: {}", src)).bold())
-            .title_style(ratatui::style::Style::reset())
-            .padding(Padding::new(1, 1, 1, 1))
-            .border_style(border_style);
-        let inner = block.inner(area);
         let visible_height = inner.height as usize;
-        block.render(area, buf);
 
         // One row of header; one more reserved for the out-of-view count when
         // the columns do not all fit, so their existence is stated before any
@@ -651,12 +642,22 @@ impl<'a> DataTableInfo<'a> {
             ],
             (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
         };
-        // The rail, not a bespoke `>>`: one selection language everywhere.
+        // The rail and the tint while the table has focus; the accent alone when
+        // it does not, so the cursor stays visible without claiming focus. The
+        // rail's column is kept either way, so focus arriving moves nothing.
+        let g = crate::glyphs::get();
+        let (highlight, symbol) = if body_focused {
+            (self.theme.highlight_style(), g.selector)
+        } else {
+            (Style::default().fg(self.theme.accent), g.selector_blank)
+        };
+        let symbol = Span::styled(symbol, Style::default().fg(self.theme.accent));
         let table = Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
-            .row_highlight_style(self.highlight)
-            .highlight_symbol(crate::glyphs::get().selector);
+            .row_highlight_style(highlight)
+            .highlight_symbol(symbol)
+            .highlight_spacing(HighlightSpacing::Always);
         let table_area = Rect {
             height: inner.height.saturating_sub(u16::from(!fits)),
             ..inner
@@ -674,7 +675,7 @@ impl<'a> DataTableInfo<'a> {
             };
             if let Some(text) = counted {
                 Paragraph::new(text)
-                    .style(Style::default().fg(self.border_color))
+                    .style(Style::default().fg(self.theme.dimmed))
                     .alignment(ratatui::layout::Alignment::Right)
                     .render(
                         Rect {
@@ -689,7 +690,8 @@ impl<'a> DataTableInfo<'a> {
     }
 
     fn render_resources_tab(&self, area: Rect, buf: &mut Buffer) {
-        const LABEL_WIDTH: u16 = 16;
+        // One past the longest label, "Parquet version:", so no value touches its label.
+        const LABEL_WIDTH: u16 = 17;
         let label_constraint = Constraint::Length(LABEL_WIDTH);
         let value_constraint = Constraint::Min(1);
         let mut y = area.y;
@@ -766,7 +768,7 @@ impl<'a> DataTableInfo<'a> {
             let ratio = (buf_rows as f64 / max_rows as f64).min(1.0);
             let label = format!("{} / {}", format_int(buf_rows), format_int(max_rows));
             Gauge::default()
-                .gauge_style(Style::default().fg(self.primary_color))
+                .gauge_style(Style::default().fg(self.theme.text_primary))
                 .ratio(ratio)
                 .label(Span::raw(label))
                 .render(row_chunks[1], buf);
@@ -802,7 +804,7 @@ impl<'a> DataTableInfo<'a> {
                 None => crate::glyphs::get().dash.to_string(),
             };
             Gauge::default()
-                .gauge_style(Style::default().fg(self.primary_color))
+                .gauge_style(Style::default().fg(self.theme.text_primary))
                 .ratio(ratio)
                 .label(Span::raw(label))
                 .render(mb_chunks[1], buf);
@@ -979,7 +981,7 @@ impl<'a> DataTableInfo<'a> {
             .map(|(index, note)| note_rows(note, index == selected, width))
             .collect();
         let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
-        let dim = Style::default().fg(self.border_color);
+        let dim = Style::default().fg(self.theme.dimmed);
 
         // Try the whole panel first. Only when that leaves notes out is a row needed
         // to count them, and only then do the notes have one row fewer — deciding it
@@ -1256,46 +1258,7 @@ fn columns_by_type(schema: &Schema) -> String {
 
 impl<'a> Widget for &mut DataTableInfo<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let tab_bar_focused = self.modal.focus == InfoFocus::TabBar;
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(crate::glyphs::get().border)
-            .title("Info")
-            .title_style(ratatui::style::Style::reset());
-
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2),
-                Constraint::Min(4),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-
-        // The panel's own keys, said where they work: nothing here may live
-        // only in `?`.
-        let g = crate::glyphs::get();
-        crate::widgets::ui::HintBar::with_styles(
-            Style::default()
-                .fg(self.active_color)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(self.border_color),
-            Style::default().fg(self.active_color),
-        )
-        .hint(g.updown_lr, "Tabs")
-        .hint("Tab", "Focus")
-        .hint(g.updown, "Scroll")
-        .hint_weighted("Esc", "Close", 8)
-        .render(chunks[2], buf);
-
-        let tab_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(chunks[0]);
-
+        let ctx = self.theme;
         let has_partitions = self
             .state
             .partition_columns
@@ -1303,44 +1266,86 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         let has_notes = self.state.has_notes();
-        let tab_titles: Vec<&str> = InfoTab::visible(has_partitions, has_notes)
-            .into_iter()
-            .map(InfoTab::title)
-            .collect();
-        let sel = self.modal.active_tab.index(has_partitions, has_notes);
-        // The one tab style: the active tab carries the accent, bold.
-        let tabs = Tabs::new(tab_titles)
-            .style(Style::default().fg(self.border_color))
-            .highlight_style(
-                Style::default()
-                    .fg(self.active_color)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .select(sel);
-        tabs.render(tab_chunks[0], buf);
-        let line_style = if tab_bar_focused {
-            Style::default().fg(self.active_color)
-        } else {
-            Style::default().fg(self.border_color)
-        };
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_set(crate::glyphs::get().border)
-            .border_style(line_style)
-            .render(tab_chunks[1], buf);
+        let tab = self.modal.active_tab;
+        let on_tab_bar = self.modal.focus == InfoFocus::TabBar;
 
-        match self.modal.active_tab {
-            InfoTab::Schema => self.render_schema_tab(chunks[1], buf),
-            InfoTab::Resources => self.render_resources_tab(chunks[1], buf),
-            InfoTab::Partitions => {
-                if has_partitions {
-                    self.render_partitioned_data_tab(chunks[1], buf)
-                } else {
-                    self.render_schema_tab(chunks[1], buf)
-                }
+        // The panel's own keys, said where they work and only while they work:
+        // nothing here may live only in `?`.
+        let g = crate::glyphs::get();
+        let scrolls = match tab {
+            InfoTab::Schema => !on_tab_bar,
+            InfoTab::Notes => has_notes,
+            _ => false,
+        };
+        let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
+        if scrolls {
+            footer = footer.hint_weighted(g.updown, "Scroll", 2);
+        }
+        if tab == InfoTab::Schema {
+            footer = footer.hint_weighted("Tab", "Focus", 1);
+        }
+        let footer = footer.hint_weighted("Esc", "Close", 4);
+        // A frame of three rows has one inside it: the body's, so a panel too
+        // short for a note still says so rather than showing only keys.
+        let surface = Surface::new("Info");
+        let surface = if area.height > 3 {
+            surface.footer(&footer)
+        } else {
+            surface
+        };
+        let content = surface.render(area, buf, ctx);
+        if content.height == 0 || content.width < 4 {
+            return;
+        }
+        // Short of height, the blank row under the tabs goes first, then the tab
+        // line: the body is what the panel is for.
+        let tab_rows = u16::from(content.height >= 4);
+        let gap = u16::from(content.height >= 6);
+
+        // Tab line: the active tab carries the accent, and the rail sits beside
+        // its name while the tab bar holds focus. The slot is reserved either
+        // way, so focus arriving or leaving moves nothing.
+        let tabs = InfoTab::visible(has_partitions, has_notes);
+        let active = tabs[tab.index(has_partitions, has_notes)];
+        let mut spans = Vec::new();
+        for (i, t) in tabs.iter().enumerate() {
+            let is_active = *t == active;
+            if i > 0 {
+                spans.push(Span::styled(
+                    format!(" {}", g.rule),
+                    Style::default().fg(ctx.dimmed),
+                ));
             }
-            InfoTab::Notes if has_notes => self.render_notes_tab(chunks[1], buf),
-            InfoTab::Notes => self.render_schema_tab(chunks[1], buf),
+            let mark = if on_tab_bar && is_active { g.rail } else { " " };
+            spans.push(Span::styled(mark, Style::default().fg(ctx.accent)));
+            let style = if is_active {
+                Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ctx.text_secondary)
+            };
+            spans.push(Span::styled(t.title(), style));
+        }
+        Paragraph::new(Line::from(spans)).render(
+            Rect {
+                height: tab_rows,
+                ..content
+            },
+            buf,
+        );
+
+        // A blank row under the tabs rather than a rule: the tab line is state,
+        // not a section.
+        let body = Rect {
+            y: content.y + tab_rows + gap,
+            height: content.height - tab_rows - gap,
+            ..content
+        };
+        match tab {
+            InfoTab::Schema => self.render_schema_tab(body, buf),
+            InfoTab::Resources => self.render_resources_tab(body, buf),
+            InfoTab::Partitions if has_partitions => self.render_partitioned_data_tab(body, buf),
+            InfoTab::Notes if has_notes => self.render_notes_tab(body, buf),
+            InfoTab::Partitions | InfoTab::Notes => self.render_schema_tab(body, buf),
         }
     }
 }
@@ -1380,6 +1385,7 @@ mod tests {
         // with no count taken.
         state.num_rows = 70;
 
+        let theme = RenderContext::for_test();
         let painted = |state: &DataTableState| {
             let area = Rect::new(0, 0, 60, 12);
             let mut buf = Buffer::empty(area);
@@ -1392,10 +1398,7 @@ mod tests {
                     parquet_metadata: None,
                 },
                 &mut modal,
-                ratatui::style::Color::White,
-                ratatui::style::Color::Cyan,
-                ratatui::style::Color::White,
-                Style::default(),
+                &theme,
             );
             panel.render_schema_summary(area, &mut buf);
             (0..area.height)
@@ -1451,6 +1454,7 @@ mod tests {
         )
         .unwrap();
 
+        let theme = RenderContext::for_test();
         let area = Rect::new(0, 0, 60, 16);
         let mut buf = Buffer::empty(area);
         let mut modal = InfoModal::default();
@@ -1462,10 +1466,7 @@ mod tests {
                 parquet_metadata: None,
             },
             &mut modal,
-            ratatui::style::Color::White,
-            ratatui::style::Color::Cyan,
-            ratatui::style::Color::White,
-            Style::default(),
+            &theme,
         );
         (&mut panel).render(area, &mut buf);
         let text = (0..area.height)
@@ -1547,6 +1548,7 @@ mod tests {
             state
         };
 
+        let theme = RenderContext::for_test();
         let painted = |meter: &std::sync::Arc<Meter>, height: u16| {
             let state = dataset_with(meter);
             let area = Rect::new(0, 0, 70, height);
@@ -1560,10 +1562,7 @@ mod tests {
                     parquet_metadata: None,
                 },
                 &mut modal,
-                ratatui::style::Color::White,
-                ratatui::style::Color::Cyan,
-                ratatui::style::Color::White,
-                Style::default(),
+                &theme,
             );
             panel.render_resources_tab(area, &mut buf);
             (0..area.height)
@@ -1658,7 +1657,7 @@ mod tests {
         let listing_row = row("Listing:");
         assert_eq!(
             listing_row.trim_end(),
-            "Listing:        1.00 ms",
+            "Listing:         1.00 ms",
             "the walk reports a time and nothing else: no file count it never learned, \
              and no request count no listing route can take"
         );
@@ -1697,6 +1696,107 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Focus is the accent: in the schema, the section rule brightens and the row
+    /// carries the rail; on the tab bar, the rail sits beside the active tab and
+    /// the row keeps only the accent. One frame either way, the footer inside it.
+    #[test]
+    fn focus_moves_the_accent_between_the_tab_bar_and_the_schema() {
+        use crate::widgets::datatable::DataTableState;
+        use polars::prelude::*;
+
+        let rows = || {
+            df!("id" => &[1i64, 2], "name" => &["a", "b"])
+                .unwrap()
+                .lazy()
+        };
+        let mut lf = rows();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        let theme = RenderContext::for_test();
+        let g = crate::glyphs::get();
+
+        let paint = |focus: InfoFocus| {
+            let area = Rect::new(0, 0, 50, 16);
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal::default();
+            modal.open();
+            modal.focus = focus;
+            let mut panel = DataTableInfo::new(
+                &state,
+                InfoContext {
+                    path: None,
+                    format: None,
+                    parquet_metadata: None,
+                },
+                &mut modal,
+                &theme,
+            );
+            (&mut panel).render(area, &mut buf);
+            let text: Vec<String> = (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect()
+                })
+                .collect();
+            (buf, text)
+        };
+        let find = |text: &[String], needle: &str| {
+            let y = text
+                .iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not drawn: {text:#?}"));
+            // Cells, not bytes: the frame and the rail are multibyte.
+            let x = text[y][..text[y].find(needle).unwrap()].chars().count();
+            (x as u16, y as u16)
+        };
+
+        // The body has focus: the rule is bright, the id row carries the rail,
+        // and the tab line has none.
+        let (buf, text) = paint(InfoFocus::Body);
+        let (x, y) = find(&text, "Schema: Inferred");
+        assert_eq!(buf[(x, y)].fg, theme.accent_bright, "{text:#?}");
+        let (_, id_row) = find(&text, " id ");
+        assert!(text[id_row as usize].contains(g.rail), "{text:#?}");
+        let (x, y) = find(&text, "Resources");
+        assert!(!text[y as usize].contains(g.rail), "{text:#?}");
+        assert_ne!(
+            buf[(x, y)].fg,
+            theme.accent,
+            "an inactive tab is not accented"
+        );
+
+        // The tab bar has focus: the rail moves beside the active tab, and the
+        // row the cursor is on keeps the accent without the rail.
+        let (buf, text) = paint(InfoFocus::TabBar);
+        let (_, tab_row) = find(&text, "Resources");
+        assert!(
+            text[tab_row as usize].contains(&format!("{}Schema", g.rail)),
+            "{text:#?}"
+        );
+        let (x, y) = find(&text, "Schema: Inferred");
+        assert_eq!(buf[(x, y)].fg, theme.accent, "{text:#?}");
+        let (id_x, id_row) = find(&text, " id ");
+        assert!(!text[id_row as usize].contains(g.rail), "{text:#?}");
+        assert_eq!(buf[(id_x + 1, id_row)].fg, theme.accent, "{text:#?}");
+
+        // One frame: its corners on the first and last rows and nowhere else,
+        // the footer on the last row inside it.
+        for row in &text[1..text.len() - 1] {
+            assert!(
+                !row.contains(g.border.top_left) && !row.contains(g.border.bottom_left),
+                "a second border inside the panel: {text:#?}"
+            );
+        }
+        assert!(text[text.len() - 2].contains("Esc"), "{text:#?}");
     }
 
     #[test]

@@ -93,14 +93,36 @@ pub struct DetailScroll {
     pub max: u16,
 }
 
+/// A result table wider than its pane scrolls by statistic: the first one shown,
+/// and the furthest that first can go, which is where the last statistic comes
+/// into view. The table sets `max` as it draws, so the keys stop where it does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ColumnScroll {
+    pub offset: usize,
+    pub max: usize,
+}
+
+impl ColumnScroll {
+    pub fn left(&mut self) {
+        self.offset = self.offset.min(self.max).saturating_sub(1);
+    }
+
+    pub fn right(&mut self) {
+        if self.offset < self.max {
+            self.offset += 1;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AnalysisModal {
     pub active: bool,
     pub scroll_position: usize,
     pub selected_column: Option<usize>,
-    pub describe_column_offset: usize, // For horizontal scrolling in describe table
-    pub distribution_column_offset: usize, // For horizontal scrolling in distribution table
-    pub correlation_column_offset: usize, // For horizontal scrolling in correlation matrix
+    pub describe_columns: ColumnScroll,
+    pub distribution_columns: ColumnScroll,
+    /// Kept on the selected cell by the matrix as it draws.
+    pub correlation_columns: ColumnScroll,
     /// The rows every tool reads: one scope, method, size and seed for all of them,
     /// so switching tools compares like with like. Kept across opens; `s` edits it.
     pub sample: crate::sampling::Sample,
@@ -186,9 +208,9 @@ impl AnalysisModal {
         self.active = true;
         self.scroll_position = 0;
         self.selected_column = None;
-        self.describe_column_offset = 0;
-        self.distribution_column_offset = 0;
-        self.correlation_column_offset = 0;
+        self.describe_columns = ColumnScroll::default();
+        self.distribution_columns = ColumnScroll::default();
+        self.correlation_columns = ColumnScroll::default();
         self.table_state.select(Some(0));
         self.distribution_table_state.select(Some(0));
         self.correlation_table_state.select(Some(0));
@@ -223,9 +245,9 @@ impl AnalysisModal {
         self.active = false;
         self.scroll_position = 0;
         self.selected_column = None;
-        self.describe_column_offset = 0;
-        self.distribution_column_offset = 0;
-        self.correlation_column_offset = 0;
+        self.describe_columns = ColumnScroll::default();
+        self.distribution_columns = ColumnScroll::default();
+        self.correlation_columns = ColumnScroll::default();
         self.view = AnalysisView::Main;
         self.focus = AnalysisFocus::Main;
         self.selected_tool = None;
@@ -259,20 +281,13 @@ impl AnalysisModal {
         }
     }
 
+    /// Tab on the main view: the tool list and the result trade focus. The detail
+    /// views have one focusable thing, so Tab is not offered there.
     pub fn switch_focus(&mut self) {
-        if self.view == AnalysisView::DistributionDetail {
-            self.focus = match self.focus {
-                AnalysisFocus::Main => AnalysisFocus::DistributionSelector,
-                AnalysisFocus::DistributionSelector => AnalysisFocus::Main,
-                _ => AnalysisFocus::DistributionSelector,
-            };
-        } else {
-            self.focus = match self.focus {
-                AnalysisFocus::Main => AnalysisFocus::Sidebar,
-                AnalysisFocus::Sidebar => AnalysisFocus::Main,
-                _ => AnalysisFocus::Main,
-            };
-        }
+        self.focus = match self.focus {
+            AnalysisFocus::Main => AnalysisFocus::Sidebar,
+            _ => AnalysisFocus::Main,
+        };
     }
 
     /// The tool under the sidebar cursor.
@@ -350,36 +365,31 @@ impl AnalysisModal {
     }
 
     pub fn scroll_left(&mut self) {
-        match self.selected_tool {
-            Some(AnalysisTool::Describe) if self.describe_column_offset > 0 => {
-                self.describe_column_offset -= 1;
-            }
-            Some(AnalysisTool::DistributionAnalysis) if self.distribution_column_offset > 0 => {
-                self.distribution_column_offset -= 1;
-            }
-            _ => {}
+        if let Some(columns) = self.column_scroll_mut() {
+            columns.left();
         }
     }
 
-    pub fn scroll_right(&mut self, max_columns: usize, visible_columns: usize) {
+    pub fn scroll_right(&mut self) {
+        if let Some(columns) = self.column_scroll_mut() {
+            columns.right();
+        }
+    }
+
+    /// The selected tool's statistic scroll, for the tools that scroll by statistic.
+    pub fn column_scroll(&self) -> Option<&ColumnScroll> {
         match self.selected_tool {
-            Some(AnalysisTool::Describe) => {
-                let offset = &mut self.describe_column_offset;
-                if *offset + visible_columns < max_columns
-                    && *offset < max_columns.saturating_sub(1)
-                {
-                    *offset += 1;
-                }
-            }
-            Some(AnalysisTool::DistributionAnalysis) => {
-                let offset = &mut self.distribution_column_offset;
-                if *offset + visible_columns < max_columns
-                    && *offset < max_columns.saturating_sub(1)
-                {
-                    *offset += 1;
-                }
-            }
-            _ => {}
+            Some(AnalysisTool::Describe) => Some(&self.describe_columns),
+            Some(AnalysisTool::DistributionAnalysis) => Some(&self.distribution_columns),
+            _ => None,
+        }
+    }
+
+    fn column_scroll_mut(&mut self) -> Option<&mut ColumnScroll> {
+        match self.selected_tool {
+            Some(AnalysisTool::Describe) => Some(&mut self.describe_columns),
+            Some(AnalysisTool::DistributionAnalysis) => Some(&mut self.distribution_columns),
+            _ => None,
         }
     }
 
@@ -917,33 +927,22 @@ impl AnalysisModal {
         }
     }
 
-    pub fn move_correlation_cell(
-        &mut self,
-        direction: (i32, i32),
-        max_rows: usize,
-        max_cols: usize,
-        visible_cols: usize,
-    ) {
+    /// Move the correlation cursor by `(rows, columns)`, stopping at the edges. The
+    /// matrix scrolls to keep the cell in view as it draws, from the width it has.
+    pub fn move_correlation_cell(&mut self, (rows, cols): (isize, isize)) {
+        let n = self
+            .correlation_results
+            .as_ref()
+            .and_then(|results| results.correlation_matrix.as_ref())
+            .map_or(0, |matrix| matrix.columns.len());
+        if n == 0 {
+            return;
+        }
         if let Some((row, col)) = self.selected_correlation {
-            let new_row = ((row as i32) + direction.0)
-                .max(0)
-                .min((max_rows - 1) as i32) as usize;
-            let new_col = ((col as i32) + direction.1)
-                .max(0)
-                .min((max_cols - 1) as i32) as usize;
-            self.selected_correlation = Some((new_row, new_col));
-            self.correlation_table_state.select(Some(new_row));
-
-            if new_col < self.correlation_column_offset {
-                self.correlation_column_offset = new_col;
-            } else if new_col >= self.correlation_column_offset + visible_cols.saturating_sub(1) {
-                if new_col >= visible_cols {
-                    self.correlation_column_offset =
-                        new_col.saturating_sub(visible_cols.saturating_sub(1));
-                } else {
-                    self.correlation_column_offset = 0;
-                }
-            }
+            let row = row.saturating_add_signed(rows).min(n - 1);
+            let col = col.saturating_add_signed(cols).min(n - 1);
+            self.selected_correlation = Some((row, col));
+            self.correlation_table_state.select(Some(row));
         }
     }
 

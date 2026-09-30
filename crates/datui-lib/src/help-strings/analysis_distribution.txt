@@ -36,7 +36,8 @@ Color Coding:
 
 Navigation:
   ↑↓ / j/k:      Navigate rows
-  ←→ / h/l:      Scroll columns horizontally
+  ←→ / h/l:      Scroll the statistics as far as the last; when they do
+                 not all fit, the header counts those out of view
   Home/End:      Jump to first/last row
   PgUp/PgDn:     Navigate by page
   Tab:           Switch focus between main area and sidebar

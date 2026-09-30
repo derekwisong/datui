@@ -11,7 +11,8 @@ panel on the Notes tab; after that, on Schema.
   Esc / i:          Close info panel
 
   The panel's footer names the keys that work now, and when the schema
-  table is taller than the panel it counts the columns out of view.
+  table is taller than the panel it counts the columns out of view. The
+  rail marks focus: beside the active tab, or on the schema's current row.
 
 Tabs:
   Schema:     Every column, its type, and which footers the schema came from

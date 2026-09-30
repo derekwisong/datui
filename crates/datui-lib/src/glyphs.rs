@@ -16,6 +16,9 @@
 //! overrides, where the risk is theirs. The ASCII fallback exists for terminals
 //! that are not doing UTF-8 at all.
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::symbols::{Marker, line};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
@@ -136,6 +139,149 @@ pub struct Glyphs {
     /// The one border every Surface draws. Not a `[glyphs]` override slot:
     /// its eight pieces must agree with each other, and ratatui draws them.
     pub border: ratatui::symbols::border::Set<'static>,
+    /// What the plots draw with. Not a `[glyphs]` override slot: ratatui draws
+    /// these, and the Unicode marks are whole blocks of braille and eighths.
+    pub plot: PlotMarks,
+}
+
+/// The marks ratatui's `Chart`, `Canvas` and `BarChart` put on a plot, and the lines
+/// of its axes and legend frame. ratatui picks none of these from the locale, so each
+/// set names its own.
+#[derive(Debug, Clone, Copy)]
+pub struct PlotMarks {
+    /// A line: an XY line, a density curve, a fit drawn over bars, a dense Q-Q plot.
+    pub line: Marker,
+    /// One mark per point: a scatter, a box plot's strokes, a sparse Q-Q plot.
+    pub point: Marker,
+    /// A column from zero up to each point: the XY bar style and the histogram.
+    pub bar: Marker,
+    /// A vertical bar's top, one to eight eighths of a cell filled from the bottom;
+    /// the last is a whole cell, the bar's body.
+    pub column_eighths: &'static [&'static str; 8],
+    /// The axes and the legend frame.
+    pub axis: line::Set<'static>,
+}
+
+impl PlotMarks {
+    /// The vertical bars a `BarChart` draws with.
+    pub fn column_set(&self) -> ratatui::symbols::bar::Set<'static> {
+        let e = self.column_eighths;
+        ratatui::symbols::bar::Set {
+            full: e[7],
+            seven_eighths: e[6],
+            three_quarters: e[5],
+            five_eighths: e[4],
+            half: e[3],
+            three_eighths: e[2],
+            one_quarter: e[1],
+            one_eighth: e[0],
+            empty: " ",
+        }
+    }
+
+    /// Whether a canvas drawing with `marker` put this symbol in its cell, rather
+    /// than an axis or a label. Braille's blank pattern counts: the grid draws it.
+    pub fn is_mark(marker: Marker, symbol: &str) -> bool {
+        let mut chars = symbol.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return false;
+        };
+        match marker {
+            Marker::Braille => ('\u{2800}'..='\u{28ff}').contains(&c),
+            Marker::Dot => symbol == ratatui::symbols::DOT,
+            Marker::Custom(mark) => c == mark,
+            _ => false,
+        }
+    }
+
+    /// ratatui's `Chart` draws its axes and legend frame from `line::NORMAL`
+    /// whatever the set, and exposes neither; this finds them by shape and redraws
+    /// them from the set's own `axis` lines. The axes are the `└` with `│` above it
+    /// and a `─` run to its right that no `┘` closes; the legend is a closed box.
+    /// A label, title or name holding the same characters is left alone. A chart
+    /// too small for both axes has no corner to find them by, so there every line
+    /// cell changes. Nothing changes under the Unicode set.
+    pub fn redraw_axes(&self, area: Rect, buf: &mut Buffer) {
+        let (from, to) = (line::NORMAL, self.axis);
+        if from == to {
+            return;
+        }
+        let area = area.intersection(buf.area);
+        let at = |x: u16, y: u16| buf[(x, y)].symbol();
+        // How many cells in a row hold `symbol`, stepping from (x, y) by (dx, dy).
+        let run = |x: u16, y: u16, (dx, dy): (i32, i32), symbol: &str| {
+            let mut n = 0;
+            let (mut cx, mut cy) = (i32::from(x) + dx, i32::from(y) + dy);
+            while (i32::from(area.left())..i32::from(area.right())).contains(&cx)
+                && (i32::from(area.top())..i32::from(area.bottom())).contains(&cy)
+                && at(cx as u16, cy as u16) == symbol
+            {
+                n += 1;
+                cx += dx;
+                cy += dy;
+            }
+            n
+        };
+        let (up, down, right) = ((0, -1), (0, 1), (1, 0));
+        let mut frame = Vec::new();
+        let mut found_axes = false;
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let symbol = at(x, y);
+                if symbol == from.bottom_left {
+                    let (high, wide) = (
+                        run(x, y, up, from.vertical),
+                        run(x, y, right, from.horizontal),
+                    );
+                    let end = x + wide + 1;
+                    let boxed = end < area.right() && at(end, y) == from.bottom_right;
+                    if high > 0 && wide > 0 && !boxed {
+                        found_axes = true;
+                        frame.extend((y - high..=y).map(|y| (x, y)));
+                        frame.extend((x + 1..end).map(|x| (x, y)));
+                    }
+                } else if symbol == from.top_left {
+                    let wide = run(x, y, right, from.horizontal);
+                    let high = run(x, y, down, from.vertical);
+                    let (r, b) = (x + wide + 1, y + high + 1);
+                    let closed = r < area.right()
+                        && b < area.bottom()
+                        && at(r, y) == from.top_right
+                        && at(x, b) == from.bottom_left
+                        && at(r, b) == from.bottom_right
+                        && run(r, y, down, from.vertical) == high
+                        && run(x, b, right, from.horizontal) == wide;
+                    if closed {
+                        for i in x..=r {
+                            frame.extend([(i, y), (i, b)]);
+                        }
+                        for j in y + 1..b {
+                            frame.extend([(x, j), (r, j)]);
+                        }
+                    }
+                }
+            }
+        }
+        if !found_axes {
+            frame = (area.top()..area.bottom())
+                .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+                .collect();
+        }
+        let pairs = [
+            (from.vertical, to.vertical),
+            (from.horizontal, to.horizontal),
+            (from.top_left, to.top_left),
+            (from.top_right, to.top_right),
+            (from.bottom_left, to.bottom_left),
+            (from.bottom_right, to.bottom_right),
+        ];
+        for (x, y) in frame {
+            let cell = &mut buf[(x, y)];
+            if let Some((_, twin)) = pairs.iter().find(|(line, _)| cell.symbol() == *line) {
+                cell.set_symbol(twin);
+            }
+        }
+    }
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -204,6 +350,13 @@ const UNICODE: Glyphs = Glyphs {
         "└──╯ ╵  ╵   ╵   ╰──╯ ╶┴╴",
     ]),
     border: ratatui::symbols::border::ROUNDED,
+    plot: PlotMarks {
+        line: Marker::Braille,
+        point: Marker::Dot,
+        bar: Marker::HalfBlock,
+        column_eighths: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
+        axis: line::NORMAL,
+    },
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -267,6 +420,26 @@ const ASCII: Glyphs = Glyphs {
         vertical_right: "|",
         horizontal_top: "-",
         horizontal_bottom: "-",
+    },
+    plot: PlotMarks {
+        line: Marker::Custom('*'),
+        point: Marker::Custom('o'),
+        bar: Marker::Custom('#'),
+        // Where the bar's top edge sits in its last cell: low, halfway, full.
+        column_eighths: &["_", "_", "-", "-", "-", "#", "#", "#"],
+        axis: line::Set {
+            vertical: "|",
+            horizontal: "-",
+            top_right: "+",
+            top_left: "+",
+            bottom_right: "+",
+            bottom_left: "+",
+            vertical_left: "+",
+            vertical_right: "+",
+            horizontal_down: "+",
+            horizontal_up: "+",
+            cross: "+",
+        },
     },
 };
 
@@ -723,6 +896,112 @@ mod tests {
                 "{left:?} and {right:?} are different widths"
             );
         }
+    }
+
+    /// ratatui draws the plot marks, so the audit script cannot see the ASCII
+    /// set's marker characters; this checks them, and that each column eighth is
+    /// one cell in both sets.
+    #[test]
+    fn the_ascii_plot_marks_are_ascii() {
+        let p = ascii().plot;
+        for marker in [p.line, p.point, p.bar] {
+            let Marker::Custom(c) = marker else {
+                panic!("{marker:?} is drawn by ratatui from its own Unicode set");
+            };
+            assert!(c.is_ascii_graphic(), "{c:?}");
+        }
+        let a = p.axis;
+        for piece in [
+            a.vertical,
+            a.horizontal,
+            a.top_right,
+            a.top_left,
+            a.bottom_right,
+            a.bottom_left,
+            a.vertical_left,
+            a.vertical_right,
+            a.horizontal_down,
+            a.horizontal_up,
+            a.cross,
+        ] {
+            assert!(piece.is_ascii(), "{piece:?}");
+        }
+        for set in [unicode(), ascii()] {
+            for eighth in set.plot.column_eighths {
+                assert_eq!(UnicodeWidthStr::width(*eighth), 1, "{eighth:?}");
+            }
+        }
+    }
+
+    fn chart_buffer(width: u16, height: u16, x_title: &str, name: &str) -> Buffer {
+        use ratatui::widgets::{Axis, Chart, Dataset, LegendPosition, Widget};
+        let labels = || vec!["0", "5", "10"];
+        let chart = Chart::new(vec![
+            Dataset::default()
+                .name(name)
+                .marker(Marker::Custom('o'))
+                .data(&[(5.0, 5.0)]),
+        ])
+        .x_axis(
+            Axis::default()
+                .title(x_title)
+                .bounds([0.0, 10.0])
+                .labels(labels()),
+        )
+        .y_axis(Axis::default().bounds([0.0, 10.0]).labels(labels()))
+        .legend_position(Some(LegendPosition::TopRight))
+        .hidden_legend_constraints((
+            ratatui::layout::Constraint::Percentage(100),
+            ratatui::layout::Constraint::Percentage(100),
+        ));
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        chart.render(area, &mut buf);
+        buf
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let a = buf.area;
+        (a.top()..a.bottom())
+            .map(|y| {
+                (a.left()..a.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The swap finds the axes and the legend frame by shape: a title or a legend
+    /// name holding the same characters keeps them, and Unicode changes nothing.
+    #[test]
+    fn redraw_axes_changes_only_the_frame() {
+        let before = chart_buffer(40, 12, "a│b└─c", "x─│y");
+        let mut buf = before.clone();
+        unicode().plot.redraw_axes(buf.area, &mut buf);
+        assert_eq!(buf, before);
+
+        ascii().plot.redraw_axes(buf.area, &mut buf);
+        let text = buffer_text(&buf);
+        let rows: Vec<&str> = text.lines().collect();
+        assert!(rows[0].ends_with("+----+"), "the legend frame:\n{text}");
+        assert!(rows[1].ends_with("|x─│y|"), "the legend name:\n{text}");
+        assert!(rows[2].ends_with("+----+"), "the legend frame:\n{text}");
+        assert!(text.contains("a│b└─c"), "the axis title:\n{text}");
+        assert!(rows[10].contains("+-------"), "the axis corner:\n{text}");
+        let kept: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert_eq!(kept, "─││└─", "only the name and the title:\n{text}");
+    }
+
+    /// Under three rows the chart has no x axis, so no corner to find the y axis by;
+    /// every line cell changes then, and the plot is still ASCII.
+    #[test]
+    fn redraw_axes_in_a_chart_too_small_for_both_axes() {
+        let mut buf = chart_buffer(20, 2, "", "");
+        assert!(!buffer_text(&buf).is_ascii());
+        ascii().plot.redraw_axes(buf.area, &mut buf);
+        let text = buffer_text(&buf);
+        assert!(text.is_ascii() && text.contains('|'), "{text}");
     }
 
     /// `get()` stores a copy of a const, so no address can identify the active

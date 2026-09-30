@@ -5,7 +5,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    symbols,
     text::{Line, Span},
     widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Widget, Wrap},
 };
@@ -16,8 +15,10 @@ use crate::chart_data::{
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
+use crate::glyphs::Glyphs;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
+use unicode_width::UnicodeWidthStr;
 
 const SIDEBAR_WIDTH: u16 = 42;
 /// Where the value column starts, past the rail gutter: the longest label,
@@ -243,8 +244,6 @@ pub fn render_chart_view(
     ctx: &RenderContext,
     view: ChartView<'_>,
 ) {
-    let text_secondary = theme.get("text_secondary");
-
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Fill(1)])
@@ -291,14 +290,36 @@ pub fn render_chart_view(
             .render(notes, buf);
         chart_inner = plot;
     }
-    match view.data {
+    render_plot(
+        chart_inner,
+        buf,
+        modal,
+        theme,
+        ctx,
+        view.data,
+        crate::glyphs::get(),
+    );
+}
+
+/// The plot itself, drawn with the marks of the glyph set `g`.
+fn render_plot(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    modal: &ChartModal,
+    theme: &Theme,
+    ctx: &RenderContext,
+    data: ChartRenderData<'_>,
+    g: &Glyphs,
+) {
+    let text_secondary = theme.get("text_secondary");
+    match data {
         ChartRenderData::XY {
             series,
             breaks,
             x_axis_kind,
             x_bounds,
         } => render_xy_chart(
-            chart_inner,
+            area,
             buf,
             modal,
             theme,
@@ -309,23 +330,24 @@ pub fn render_chart_view(
                 x_bounds,
             },
             text_secondary,
+            g,
         ),
         ChartRenderData::Histogram { data } => {
-            render_histogram_chart(chart_inner, buf, theme, data, text_secondary)
+            render_histogram_chart(area, buf, theme, data, text_secondary, g)
         }
         ChartRenderData::BoxPlot { data } => {
-            render_box_plot_chart(chart_inner, buf, theme, data, text_secondary)
+            render_box_plot_chart(area, buf, theme, data, text_secondary, g)
         }
         ChartRenderData::Kde { data } => {
-            render_kde_chart(chart_inner, buf, modal, theme, data, text_secondary)
+            render_kde_chart(area, buf, modal, theme, data, text_secondary, g)
         }
         ChartRenderData::Heatmap { data } => {
-            render_heatmap_chart(chart_inner, buf, theme, data, text_secondary)
+            render_heatmap_chart(area, buf, theme, data, text_secondary)
         }
         ChartRenderData::Bar { data } => {
             let picked =
                 modal.effective_bar_category().is_some() && modal.effective_bar_value().is_some();
-            render_bar_chart(chart_inner, buf, ctx, data, picked)
+            render_bar_chart(area, buf, ctx, data, picked, g)
         }
     }
 }
@@ -339,6 +361,7 @@ fn render_bar_chart(
     ctx: &RenderContext,
     data: Option<&BarData>,
     picked: bool,
+    g: &Glyphs,
 ) {
     let hint = |text: &str, buf: &mut ratatui::buffer::Buffer| {
         Paragraph::new(text.to_string())
@@ -366,7 +389,6 @@ fn render_bar_chart(
         width: area.width - 1,
         ..area
     };
-    let g = crate::glyphs::get();
     let width = area.width as usize;
 
     // A header row, then a row per bar; when they do not all fit, the last row is
@@ -505,6 +527,7 @@ fn render_xy_chart(
     theme: &Theme,
     xy: XYData<'_>,
     text_secondary: ratatui::style::Color,
+    g: &Glyphs,
 ) {
     let XYData {
         series: chart_data,
@@ -573,6 +596,7 @@ fn render_xy_chart(
             chart = chart.legend_position(None);
         }
         chart.render(area, buf);
+        g.plot.redraw_axes(area, buf);
         return;
     }
 
@@ -585,9 +609,9 @@ fn render_xy_chart(
                 ChartType::Bar => GraphType::Bar,
             };
             let marker = match chart_type {
-                ChartType::Line => symbols::Marker::Braille,
-                ChartType::Scatter => symbols::Marker::Dot,
-                ChartType::Bar => symbols::Marker::HalfBlock,
+                ChartType::Line => g.plot.line,
+                ChartType::Scatter => g.plot.point,
+                ChartType::Bar => g.plot.bar,
             };
 
             let series_colors = [
@@ -645,6 +669,7 @@ fn render_xy_chart(
 
             // A series is drawn as its runs between gaps, so a line never bridges a
             // missing value; only the first run is named, which keeps one legend entry.
+            let name_width = legend_width(names_and_points.iter().map(|s| s.name));
             let datasets: Vec<Dataset> = names_and_points
                 .iter()
                 .enumerate()
@@ -664,7 +689,7 @@ fn render_xy_chart(
                                 .style(style)
                                 .data(run);
                             if j == 0 {
-                                dataset.name(series.name)
+                                dataset.name(legend_name(series.name, name_width))
                             } else {
                                 dataset
                             }
@@ -746,6 +771,7 @@ fn render_xy_chart(
                 chart = chart.legend_position(None);
             }
             chart.render(area, buf);
+            g.plot.redraw_axes(area, buf);
         }
     } else {
         Paragraph::new("Select X and Y columns in the sidebar.")
@@ -755,12 +781,26 @@ fn render_xy_chart(
     }
 }
 
+/// The widest of the legend's names, in cells.
+fn legend_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
+    names.map(UnicodeWidthStr::width).max().unwrap_or(0)
+}
+
+/// A legend name padded to the legend's width. ratatui writes each name over the
+/// plot without clearing the rest of its row, so marks showed through beside a
+/// short name.
+fn legend_name(name: &str, width: usize) -> String {
+    let pad = width.saturating_sub(UnicodeWidthStr::width(name));
+    format!("{name}{:pad$}", "")
+}
+
 fn render_histogram_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     data: Option<&HistogramData>,
     text_secondary: ratatui::style::Color,
+    g: &Glyphs,
 ) {
     let Some(data) = data else {
         Paragraph::new("Select a column for histogram")
@@ -825,7 +865,7 @@ fn render_histogram_chart(
     let style = Style::default().fg(theme.get("primary_chart_series_color"));
     let dataset = Dataset::default()
         .name("")
-        .marker(symbols::Marker::HalfBlock)
+        .marker(g.plot.bar)
         .graph_type(GraphType::Bar)
         .style(style)
         .data(&series[0]);
@@ -834,6 +874,7 @@ fn render_histogram_chart(
         .x_axis(x_axis)
         .y_axis(y_axis)
         .render(area, buf);
+    g.plot.redraw_axes(area, buf);
 }
 
 fn render_kde_chart(
@@ -843,6 +884,7 @@ fn render_kde_chart(
     theme: &Theme,
     data: Option<&KdeData>,
     text_secondary: ratatui::style::Color,
+    g: &Glyphs,
 ) {
     let Some(data) = data else {
         Paragraph::new("Select a column for KDE")
@@ -869,6 +911,7 @@ fn render_kde_chart(
         "chart_series_color_7",
     ];
 
+    let name_width = legend_width(data.series.iter().map(|s| s.name.as_str()));
     let datasets: Vec<Dataset> = data
         .series
         .iter()
@@ -880,9 +923,9 @@ fn render_kde_chart(
                 .unwrap_or("primary_chart_series_color");
             let style = Style::default().fg(theme.get(color_key));
             Dataset::default()
-                .name(s.name.as_str())
+                .name(legend_name(&s.name, name_width))
                 .graph_type(GraphType::Line)
-                .marker(symbols::Marker::Braille)
+                .marker(g.plot.line)
                 .style(style)
                 .data(&s.points)
         })
@@ -932,6 +975,7 @@ fn render_kde_chart(
         chart = chart.legend_position(None);
     }
     chart.render(area, buf);
+    g.plot.redraw_axes(area, buf);
 }
 
 fn render_box_plot_chart(
@@ -940,6 +984,7 @@ fn render_box_plot_chart(
     theme: &Theme,
     data: Option<&BoxPlotData>,
     text_secondary: ratatui::style::Color,
+    g: &Glyphs,
 ) {
     let Some(data) = data else {
         Paragraph::new("Select a column for box plot")
@@ -1006,6 +1051,7 @@ fn render_box_plot_chart(
             Dataset::default()
                 .name("")
                 .graph_type(GraphType::Line)
+                .marker(g.plot.point)
                 .style(*style)
                 .data(points)
         })
@@ -1043,6 +1089,7 @@ fn render_box_plot_chart(
         .x_axis(x_axis)
         .y_axis(y_axis)
         .render(area, buf);
+    g.plot.redraw_axes(area, buf);
 }
 
 fn render_heatmap_chart(
@@ -1551,6 +1598,170 @@ mod tests {
         assert!(marks(&canvas[3]) > 0, "tiny: {:?}", canvas[3]);
         assert_eq!(marks(&canvas[4]), 0, "zero: {:?}", canvas[4]);
         assert!(marks(&canvas[5]) > 0, "neg: {:?}", canvas[5]);
+    }
+
+    fn plot_text(modal: &ChartModal, data: ChartRenderData<'_>, g: &Glyphs) -> String {
+        let ctx = RenderContext::for_test();
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
+            .expect("default theme colors must resolve");
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,
+    /// its bars, its axes and its legend frame. The Unicode set keeps its own.
+    #[test]
+    fn every_plot_is_ascii_under_the_ascii_set() {
+        use crate::chart_data::{BoxPlotStats, HistogramBin, KdeSeries};
+        let (ascii, unicode) = (crate::glyphs::ascii(), crate::glyphs::unicode());
+        let check = |what: &str, text: &str, marks: &[char]| {
+            assert!(text.is_ascii(), "{what}:\n{text}");
+            assert!(text.contains("+-"), "{what} has its axis corner:\n{text}");
+            for mark in marks {
+                assert!(text.contains(*mark), "{what} draws {mark:?}:\n{text}");
+            }
+        };
+
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["price".to_string(), "volume".to_string()];
+        modal.show_legend = true;
+        let series = vec![
+            (0..20).map(|i| (i as f64, (i * i) as f64)).collect(),
+            (0..20)
+                .map(|i| (i as f64, 400.0 - (i * i) as f64))
+                .collect(),
+        ];
+        let xy = |series| ChartRenderData::XY {
+            series,
+            breaks: None,
+            x_axis_kind: XAxisTemporalKind::Numeric,
+            x_bounds: None,
+        };
+        for (chart_type, mark) in [
+            (ChartType::Line, '*'),
+            (ChartType::Scatter, 'o'),
+            (ChartType::Bar, '#'),
+        ] {
+            modal.chart_type = chart_type;
+            let text = plot_text(&modal, xy(Some(&series)), ascii);
+            check(chart_type.as_str(), &text, &[mark]);
+            // The legend's frame, top right.
+            assert!(text.lines().next().unwrap().ends_with('+'), "{text}");
+            let text = plot_text(&modal, xy(Some(&series)), unicode);
+            assert!(text.contains('└') && text.contains('┐'), "{text}");
+        }
+        // Axes before the data is in.
+        check("placeholder", &plot_text(&modal, xy(None), ascii), &[]);
+
+        let histogram = HistogramData {
+            column: "price".to_string(),
+            bins: (0..10)
+                .map(|i| HistogramBin {
+                    center: i as f64 + 0.5,
+                    count: (1 + i % 4) as f64,
+                })
+                .collect(),
+            x_min: 0.0,
+            x_max: 10.0,
+            max_count: 4.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let data = ChartRenderData::Histogram {
+            data: Some(&histogram),
+        };
+        check("histogram", &plot_text(&modal, data, ascii), &['#']);
+
+        let box_plot = BoxPlotData {
+            stats: ["price", "volume"]
+                .iter()
+                .map(|name| BoxPlotStats {
+                    name: name.to_string(),
+                    min: 0.0,
+                    q1: 2.0,
+                    median: 5.0,
+                    q3: 7.0,
+                    max: 10.0,
+                })
+                .collect(),
+            y_min: 0.0,
+            y_max: 10.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let data = ChartRenderData::BoxPlot {
+            data: Some(&box_plot),
+        };
+        check("box plot", &plot_text(&modal, data, ascii), &['o']);
+
+        let kde = KdeData {
+            series: vec![KdeSeries {
+                name: "price".to_string(),
+                points: (0..=100)
+                    .map(|i| {
+                        let x = i as f64 / 10.0 - 5.0;
+                        (x, (-x * x / 2.0).exp())
+                    })
+                    .collect(),
+            }],
+            x_min: -5.0,
+            x_max: 5.0,
+            y_max: 1.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let data = ChartRenderData::Kde { data: Some(&kde) };
+        check("KDE", &plot_text(&modal, data, ascii), &['*']);
+
+        // Bars draw no axes of their own.
+        let bars = bar_data(5);
+        let text = plot_text(&modal, ChartRenderData::Bar { data: Some(&bars) }, ascii);
+        assert!(text.is_ascii() && text.contains('#'), "bars:\n{text}");
+    }
+
+    /// The legend reads clean over a full plot: a short name's row is blank past
+    /// the name, not the marks behind it.
+    #[test]
+    fn the_legend_hides_the_plot_behind_it() {
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["price".to_string(), "volume".to_string()];
+        modal.show_legend = true;
+        modal.chart_type = ChartType::Bar;
+        // Bars in every column fill the plot, legend corner included.
+        let series: Vec<Vec<(f64, f64)>> = vec![(0..120).map(|i| (i as f64, 100.0)).collect(); 2];
+        for g in [crate::glyphs::ascii(), crate::glyphs::unicode()] {
+            let text = plot_text(
+                &modal,
+                ChartRenderData::XY {
+                    series: Some(&series),
+                    breaks: None,
+                    x_axis_kind: XAxisTemporalKind::Numeric,
+                    x_bounds: None,
+                },
+                g,
+            );
+            let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+            let corner = g.plot.axis.top_left.chars().next().unwrap();
+            let left = rows[0].iter().position(|c| *c == corner).expect(&text);
+            let interior = |y: usize| {
+                rows[y][left + 1..rows[y].len() - 1]
+                    .iter()
+                    .collect::<String>()
+            };
+            assert_eq!(interior(1), "price ", "{text}");
+            assert_eq!(interior(2), "volume", "{text}");
+        }
     }
 
     #[test]

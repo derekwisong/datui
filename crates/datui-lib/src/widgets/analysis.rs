@@ -2,7 +2,6 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    symbols,
     text::{Line, Span},
     widgets::{
         Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, GraphType, List,
@@ -13,6 +12,7 @@ use ratatui::{
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView, HistogramScale};
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
+use crate::glyphs::PlotMarks;
 use crate::numfmt::{self, NumberFormatSettings};
 use crate::statistics::{
     AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics,
@@ -387,20 +387,19 @@ impl<'a> AnalysisWidget<'a> {
                 (0.0, 1.0) // Fallback for empty data
             };
 
-            // Q-Q plot approximation (larger, better aspect ratio)
-            // Use selected theoretical distribution from selector
-            render_qq_plot(
+            // Both plots of the selected theoretical distribution, on one x range.
+            let plot = DistributionPlotConfig {
                 dist,
-                self.selected_theoretical_distribution,
-                qq_plot_area,
-                buf,
+                dist_type: self.selected_theoretical_distribution,
+                area: qq_plot_area,
                 shared_y_axis_label_width,
-                self.theme,
-                Some(unified_x_range),
-            );
+                theme: self.theme,
+                unified_x_range: Some(unified_x_range),
+                histogram_scale: self.histogram_scale,
+                glyphs: crate::glyphs::get(),
+            };
+            render_qq_plot(plot, buf);
 
-            // Histogram comparison (vertical bars)
-            // Use selected theoretical distribution from selector
             // Check if log scale is requested but can't be used
             // Use actual data values, not unified range (which may include theoretical bounds and padding)
             let sorted_data = &dist.sorted_sample_values;
@@ -408,16 +407,13 @@ impl<'a> AnalysisWidget<'a> {
             let log_scale_requested_but_unavailable =
                 matches!(self.histogram_scale, HistogramScale::Log) && !can_use_log_scale;
 
-            let histogram_config = HistogramRenderConfig {
-                dist,
-                dist_type: self.selected_theoretical_distribution,
-                area: histogram_area,
-                shared_y_axis_label_width,
-                theme: self.theme,
-                unified_x_range: Some(unified_x_range),
-                histogram_scale: self.histogram_scale,
-            };
-            render_distribution_histogram(histogram_config, buf);
+            render_distribution_histogram(
+                DistributionPlotConfig {
+                    area: histogram_area,
+                    ..plot
+                },
+                buf,
+            );
 
             // Right side: Distribution selector
             render_distribution_selector(
@@ -1428,7 +1424,9 @@ fn render_distribution_selector(
     StatefulWidget::render(table, area, buf, selector_state);
 }
 
-struct HistogramRenderConfig<'a> {
+/// What the Distribution detail's two plots draw: the Q-Q plot and the histogram.
+#[derive(Clone, Copy)]
+struct DistributionPlotConfig<'a> {
     dist: &'a DistributionAnalysis,
     dist_type: DistributionType,
     area: Rect,
@@ -1436,6 +1434,7 @@ struct HistogramRenderConfig<'a> {
     theme: &'a Theme,
     unified_x_range: Option<(f64, f64)>,
     histogram_scale: HistogramScale,
+    glyphs: &'a crate::glyphs::Glyphs,
 }
 
 fn render_distribution_settings(
@@ -1586,10 +1585,10 @@ pub(crate) fn render_sidebar(
     Widget::render(list, area, buf);
 }
 
-fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer) {
+fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffer) {
     // Use BarChart widget to show histogram comparing data vs theoretical distribution
     // Use fixed-width bins that span both data range and theoretical distribution range
-    let HistogramRenderConfig {
+    let DistributionPlotConfig {
         dist,
         dist_type,
         area,
@@ -1597,6 +1596,7 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
         theme,
         unified_x_range,
         histogram_scale,
+        glyphs: g,
     } = config;
     let sorted_data = &dist.sorted_sample_values;
 
@@ -1854,6 +1854,7 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
         // The same 0-100 scale the curve and the labels use; left to itself the chart
         // scales to its tallest bar and the curve no longer measures against the bars.
         .max(100)
+        .bar_set(g.plot.column_set())
         .bar_width(final_bar_width)
         .bar_gap(bar_gap)
         .group_gap(group_gap);
@@ -1889,9 +1890,8 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
         None => Vec::new(),
     };
 
-    // Create scatter plot dataset for theoretical distribution
-    // Use Braille marker for dense, continuous appearance
-    let marker = symbols::Marker::Braille;
+    // Dense points in the line mark read as a continuous curve.
+    let marker = g.plot.line;
 
     let theory_dataset = Dataset::default()
         .name("") // Empty name to prevent legend from appearing
@@ -1987,18 +1987,14 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
     barchart.render(bar_plot_area, buf);
     let mut overlay = Buffer::empty(area);
     theory_chart.render(area, &mut overlay);
-    let is_block = |symbol: &str| matches!(symbol, "▁" | "▂" | "▃" | "▄" | "▅" | "▆" | "▇" | "█");
-    let is_braille = |symbol: &str| {
-        symbol
-            .chars()
-            .next()
-            .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
-    };
+    g.plot.redraw_axes(area, &mut overlay);
+    let is_bar = |symbol: &str| g.plot.column_eighths.contains(&symbol);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             let cell = &overlay[(x, y)];
             let symbol = cell.symbol();
-            if symbol == " " || (is_braille(symbol) && is_block(buf[(x, y)].symbol())) {
+            if symbol == " " || (PlotMarks::is_mark(marker, symbol) && is_bar(buf[(x, y)].symbol()))
+            {
                 continue;
             }
             buf[(x, y)] = cell.clone();
@@ -2006,15 +2002,17 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
     }
 }
 
-fn render_qq_plot(
-    dist: &DistributionAnalysis,
-    dist_type: DistributionType,
-    area: Rect,
-    buf: &mut Buffer,
-    shared_y_axis_label_width: u16,
-    theme: &Theme,
-    unified_x_range: Option<(f64, f64)>,
-) {
+fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
+    let DistributionPlotConfig {
+        dist,
+        dist_type,
+        area,
+        shared_y_axis_label_width,
+        theme,
+        unified_x_range,
+        glyphs: g,
+        ..
+    } = config;
     // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
     // Use sorted_sample_values and position-based quantiles (not just 5 percentiles)
     let sorted_data = &dist.sorted_sample_values;
@@ -2134,9 +2132,9 @@ fn render_qq_plot(
     // Create datasets
     // Use appropriate marker based on point density
     let marker = if qq_data.len() > 100 {
-        symbols::Marker::Braille // Better for dense scatter plots
+        g.plot.line
     } else {
-        symbols::Marker::Dot
+        g.plot.point
     };
 
     let datasets = vec![
@@ -2216,6 +2214,7 @@ fn render_qq_plot(
         .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0))); // Hide legend
 
     chart.render(area, buf);
+    g.plot.redraw_axes(area, buf);
 }
 
 fn render_condensed_statistics(
@@ -2357,9 +2356,8 @@ mod tests {
     /// The histogram's bars sit on the axis they are drawn against: the first bin's
     /// bar in the first plot column, and nothing past the chart's right edge. They were
     /// shifted right by a bar and a half, onto the next bin and off the end.
-    #[test]
-    fn histogram_bars_stay_on_their_axis() {
-        // The low end is the busy one, so the first bin has a bar.
+    /// Busy at the low end, so the first bin has a bar, with a Normal fit.
+    fn skewed_normal_fit() -> DistributionAnalysis {
         let mut values: Vec<f64> = (0..400).map(|i| 23.0 + (i % 20) as f64).collect();
         values.extend((0..100).map(|i| 23.0 + 3.18 * i as f64));
         values.sort_by(f64::total_cmp);
@@ -2378,51 +2376,91 @@ mod tests {
                 aic: 0.0,
             }),
         )];
+        dist
+    }
+
+    /// One of the Distribution detail's plots, in a 60x20 area of an 80x20 buffer.
+    fn render_distribution_plot(
+        dist: &DistributionAnalysis,
+        g: &crate::glyphs::Glyphs,
+        render: fn(DistributionPlotConfig, &mut Buffer),
+    ) -> Buffer {
         let theme =
             crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
-        let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
-        let label_width = 5;
-        render_distribution_histogram(
-            HistogramRenderConfig {
-                dist: &dist,
+        render(
+            DistributionPlotConfig {
+                dist,
                 dist_type: DistributionType::Normal,
-                area,
-                shared_y_axis_label_width: label_width,
+                area: Rect::new(0, 0, 60, 20),
+                shared_y_axis_label_width: 5,
                 theme: &theme,
                 unified_x_range: Some((23.0, 341.1)),
                 histogram_scale: HistogramScale::Linear,
+                glyphs: g,
             },
             &mut buf,
         );
-        let is_bar = |x: u16| (0..20).any(|y| buf[(x, y)].symbol() == "█");
-        // Labels, a space, the axis line: the plot's first column.
-        assert!(is_bar(label_width + 2), "the first bin starts at the axis");
-        assert!(
-            (area.right()..80).all(|x| !is_bar(x)),
-            "nothing is drawn past the chart"
-        );
-        // The fit's curve is drawn, and goes behind the bars rather than through them:
-        // below the top of a bar, every cell is solid.
-        let braille = |x: u16, y: u16| {
-            buf[(x, y)]
-                .symbol()
-                .chars()
-                .next()
-                .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
-        };
-        assert!(
-            (0..80).any(|x| (0..20).any(|y| braille(x, y))),
-            "the curve is drawn"
-        );
-        for x in 0..80 {
-            if let Some(top) = (0..20).find(|y| buf[(x, *y)].symbol() == "█") {
-                assert!(
-                    (top..20).all(|y| !braille(x, y)),
-                    "a notch in the bar at column {x}"
-                );
+        buf
+    }
+
+    #[test]
+    fn histogram_bars_stay_on_their_axis() {
+        let dist = skewed_normal_fit();
+        for g in [crate::glyphs::unicode(), crate::glyphs::ascii()] {
+            let buf = render_distribution_plot(&dist, g, render_distribution_histogram);
+            let full = g.plot.column_eighths[7];
+            let is_bar = |x: u16| (0..20).any(|y| buf[(x, y)].symbol() == full);
+            // Labels, a space, the axis line: the plot's first column.
+            assert!(is_bar(5 + 2), "the first bin starts at the axis");
+            assert!(
+                (60..80).all(|x| !is_bar(x)),
+                "nothing is drawn past the chart"
+            );
+            // The fit's curve is drawn, and goes behind the bars rather than through
+            // them: below the top of a bar, every cell is solid.
+            let curve = |x: u16, y: u16| PlotMarks::is_mark(g.plot.line, buf[(x, y)].symbol());
+            assert!(
+                (0..80).any(|x| (0..20).any(|y| curve(x, y) && buf[(x, y)].symbol() != "\u{2800}")),
+                "the curve is drawn"
+            );
+            for x in 0..80 {
+                if let Some(top) = (0..20).find(|y| buf[(x, *y)].symbol() == full) {
+                    assert!(
+                        (top..20).all(|y| !curve(x, y)),
+                        "a notch in the bar at column {x}"
+                    );
+                }
             }
         }
+    }
+
+    /// Under the ASCII set, both of the Distribution detail's plots draw ASCII only:
+    /// bars, the fit's curve, the Q-Q points and every axis line.
+    #[test]
+    fn distribution_plots_are_ascii_under_the_ascii_set() {
+        let g = crate::glyphs::ascii();
+        let mut dist = skewed_normal_fit();
+        let qq: Vec<f64> = (0..dist.sorted_sample_values.len())
+            .map(|i| 23.0 + 318.0 * i as f64 / 499.0)
+            .collect();
+        dist.qq = vec![(DistributionType::Normal, qq)];
+        for (name, render) in [
+            (
+                "histogram",
+                render_distribution_histogram as fn(DistributionPlotConfig, &mut Buffer),
+            ),
+            ("Q-Q plot", render_qq_plot),
+        ] {
+            let text = rendered_text(&render_distribution_plot(&dist, g, render));
+            assert!(text.is_ascii(), "{name}:\n{text}");
+            assert!(
+                text.contains('|') && text.contains("+-"),
+                "{name} axes:\n{text}"
+            );
+        }
+        let qq = rendered_text(&render_distribution_plot(&dist, g, render_qq_plot));
+        assert!(qq.contains('*'), "the Q-Q points:\n{qq}");
     }
 
     #[test]

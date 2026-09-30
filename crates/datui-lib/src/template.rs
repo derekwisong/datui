@@ -95,6 +95,35 @@ pub struct MatchCriteria {
     pub schema_types: Option<Vec<String>>,
 }
 
+impl MatchCriteria {
+    /// Repair the paths of a view saved before URLs were told apart from local paths:
+    /// its exact path was the working directory joined to the URL, and its relative
+    /// path the URL itself. Both become the URL, as the exact path.
+    fn unmangle_urls(&mut self) {
+        if let Some(url) = self.exact_path.as_deref().and_then(unmangled_url) {
+            self.exact_path = Some(url);
+        }
+        if let Some(relative) = self.relative_path.take() {
+            if crate::source::is_remote_url(Path::new(&relative)) {
+                self.exact_path
+                    .get_or_insert_with(|| PathBuf::from(&relative));
+            } else {
+                self.relative_path = Some(relative);
+            }
+        }
+    }
+}
+
+/// The URL inside `<working directory>/s3://bucket/key`, or None when `path` is not
+/// a URL behind a local prefix.
+fn unmangled_url(path: &Path) -> Option<PathBuf> {
+    let text = path.to_string_lossy();
+    let scheme_end = text.find("://")?;
+    let start = text[..scheme_end].rfind(['/', '\\'])? + 1;
+    let url = PathBuf::from(&text[start..]);
+    crate::source::is_remote_url(&url).then_some(url)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,7 +228,8 @@ impl TemplateManager {
                 && let Ok(content) = fs::read_to_string(&path)
             {
                 match serde_json::from_str::<Template>(&content) {
-                    Ok(template) => {
+                    Ok(mut template) => {
+                        template.match_criteria.unmangle_urls();
                         self.templates.push(template);
                     }
                     Err(e) => {
@@ -436,6 +466,64 @@ impl MatchReason {
     }
 }
 
+/// A dataset's location as a view records it: a URL as written, a local path made
+/// absolute and resolved. The save form offers this and matching compares with it,
+/// so the two are spelled alike.
+pub fn exact_location(path: &Path) -> PathBuf {
+    if crate::source::is_remote_url(path) {
+        return path.to_path_buf();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => return path.to_path_buf(),
+        }
+    };
+    // Matching runs on the interface thread, where a stalled network mount must
+    // not be touched; such a path is compared as spelled.
+    if crate::home::is_network_path(&absolute) {
+        return absolute;
+    }
+    crate::canonical::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+/// A local dataset's path relative to the working directory, when it is under it.
+/// A URL has none: it names the same data wherever datui runs.
+pub fn relative_location(path: &Path) -> Option<String> {
+    if crate::source::is_remote_url(path) {
+        return None;
+    }
+    let cwd = exact_location(&std::env::current_dir().ok()?);
+    let relative = exact_location(path)
+        .strip_prefix(&cwd)
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    (!relative.is_empty()).then_some(relative)
+}
+
+/// Whether the view's exact path names the dataset at `file_path`. A URL compares as
+/// text less any trailing slash, which is how a directory's URL may or may not end.
+pub fn exact_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
+    let Some(stored) = criteria.exact_path.as_deref() else {
+        return false;
+    };
+    if crate::source::is_remote_url(stored) || crate::source::is_remote_url(file_path) {
+        let url = |p: &Path| p.to_string_lossy().trim_end_matches('/').to_string();
+        return url(stored) == url(file_path);
+    }
+    stored == file_path || stored == exact_location(file_path)
+}
+
+/// Whether the view's relative path names the dataset at `file_path`.
+pub fn relative_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
+    criteria.relative_path.as_deref().is_some_and(|stored| {
+        relative_location(file_path).is_some_and(|rel| Path::new(&rel) == Path::new(stored))
+    })
+}
+
 /// Whether the template's own criteria match this file: a path or pattern hit,
 /// or every schema column the template asks for present. Distinct from the
 /// relevance score, which also carries usage and recency and so is never zero
@@ -450,16 +538,7 @@ pub fn criteria_match(template: &Template, file_path: &Path, schema: &Schema) ->
 /// what `V` and auto-apply do.
 pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> Option<MatchReason> {
     let criteria = &template.match_criteria;
-    if let Some(exact) = &criteria.exact_path
-        && exact == file_path
-    {
-        return Some(MatchReason::SameFile);
-    }
-    if let Some(relative) = &criteria.relative_path
-        && let Ok(cwd) = std::env::current_dir()
-        && let Ok(rel) = file_path.strip_prefix(&cwd)
-        && rel.to_string_lossy() == *relative
-    {
+    if exact_path_matches(criteria, file_path) || relative_path_matches(criteria, file_path) {
         return Some(MatchReason::SameFile);
     }
     if let Some(required) = &criteria.schema_columns
@@ -487,29 +566,8 @@ pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> O
 fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -> f64 {
     let mut score = 0.0;
 
-    // Check exact path (absolute) match
-    let exact_path_match = template
-        .match_criteria
-        .exact_path
-        .as_ref()
-        .map(|exact| exact == file_path)
-        .unwrap_or(false);
-
-    // Check relative path match
-    let relative_path_match = if let Some(relative_path) = &template.match_criteria.relative_path {
-        // Calculate relative path from current working directory
-        if let Ok(cwd) = std::env::current_dir() {
-            if let Ok(rel_path) = file_path.strip_prefix(&cwd) {
-                rel_path.to_string_lossy() == *relative_path
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    let exact_path_match = exact_path_matches(&template.match_criteria, file_path);
+    let relative_path_match = relative_path_matches(&template.match_criteria, file_path);
 
     // Check for exact schema match
     let exact_schema_match = if let Some(required_cols) = &template.match_criteria.schema_columns {
@@ -836,6 +894,134 @@ mod tests {
         );
         assert_eq!(match_reason(&fits_nothing, path, &schema), None);
         assert!(!criteria_match(&fits_nothing, path, &schema));
+    }
+
+    /// A URL is recorded as written and matches itself, with or without the
+    /// trailing slash a directory's URL may carry; another URL is another file.
+    #[test]
+    fn a_remote_path_matches_the_same_url() {
+        use polars::prelude::DataType;
+        let schema = Schema::from_iter([("DATA_VALUE".into(), DataType::Int64)]);
+        let url = Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/");
+        assert_eq!(exact_location(url), url);
+        assert_eq!(relative_location(url), None);
+
+        let view = a_template(
+            "tmax",
+            MatchCriteria {
+                exact_path: Some(exact_location(url)),
+                relative_path: relative_location(url),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&view, url, &schema),
+            Some(MatchReason::SameFile)
+        );
+        let unslashed = Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX");
+        assert_eq!(
+            match_reason(&view, unslashed, &schema),
+            Some(MatchReason::SameFile)
+        );
+        let other_year = Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2023/ELEMENT=TMAX/");
+        assert_eq!(match_reason(&view, other_year, &schema), None);
+        assert!(calculate_relevance(&view, url, &schema) >= 1000.0);
+    }
+
+    /// A local file opened by a relative path is the same file as its absolute,
+    /// resolved path, and has a path relative to the working directory.
+    #[test]
+    fn a_relative_local_path_matches_its_absolute_path() {
+        let schema = Schema::default();
+        let opened = Path::new("Cargo.toml");
+        let absolute = crate::canonical::canonicalize(opened).unwrap();
+        assert_eq!(exact_location(opened), absolute);
+        assert_eq!(relative_location(opened).as_deref(), Some("Cargo.toml"));
+
+        let by_exact = a_template(
+            "exact",
+            MatchCriteria {
+                exact_path: Some(absolute),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_exact, opened, &schema),
+            Some(MatchReason::SameFile)
+        );
+        let by_relative = a_template(
+            "relative",
+            MatchCriteria {
+                relative_path: Some("Cargo.toml".into()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_relative, opened, &schema),
+            Some(MatchReason::SameFile)
+        );
+    }
+
+    /// Views saved before URLs were told apart from local paths carry the working
+    /// directory joined to the URL, and the URL as the relative path. They still
+    /// load, with the URL as their exact path, and match it.
+    #[test]
+    fn a_view_saved_with_a_mangled_url_loads_with_the_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ConfigManager::with_dir(dir.path().to_path_buf());
+        let templates = dir.path().join("templates");
+        fs::create_dir_all(&templates).unwrap();
+        let json = r#"{
+            "id": "old",
+            "name": "old",
+            "description": null,
+            "created": 1790000000,
+            "usage_count": 0,
+            "match_criteria": {
+                "exact_path": "/home/me/work/s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/",
+                "relative_path": "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX",
+                "filename_pattern": "ELEMENT=TMAX",
+                "schema_columns": ["day", "high_c"]
+            },
+            "settings": {
+                "sql_query": "SELECT 1 AS day, 2 AS high_c FROM df",
+                "filters": [],
+                "sort_columns": [],
+                "sort_ascending": true,
+                "column_order": [],
+                "locked_columns_count": 0
+            }
+        }"#;
+        fs::write(templates.join("template_old.json"), json).unwrap();
+
+        let manager = TemplateManager::new(&config).unwrap();
+        assert!(manager.broken_templates.is_empty());
+        let view = manager.get_template_by_id("old").unwrap();
+        let url = "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/";
+        assert_eq!(
+            view.match_criteria.exact_path.as_deref(),
+            Some(Path::new(url))
+        );
+        assert_eq!(view.match_criteria.relative_path, None);
+        assert_eq!(
+            match_reason(view, Path::new(url), &Schema::default()),
+            Some(MatchReason::SameFile)
+        );
+    }
+
+    #[test]
+    fn unmangled_url_finds_the_url_behind_a_local_prefix() {
+        assert_eq!(
+            unmangled_url(Path::new("/work/gs://bucket/a.parquet")),
+            Some(PathBuf::from("gs://bucket/a.parquet"))
+        );
+        assert_eq!(
+            unmangled_url(Path::new(r"C:\work\https://example.com/a.csv")),
+            Some(PathBuf::from("https://example.com/a.csv"))
+        );
+        assert_eq!(unmangled_url(Path::new("s3://bucket/a.parquet")), None);
+        assert_eq!(unmangled_url(Path::new("/data/a.csv")), None);
+        assert_eq!(unmangled_url(Path::new("/data/odd://name.csv")), None);
     }
 
     #[test]

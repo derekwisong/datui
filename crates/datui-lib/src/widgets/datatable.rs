@@ -4461,6 +4461,12 @@ impl DataTableState {
         self.remote_source
     }
 
+    /// The schema of the data as loaded, before any query or reshape: what a view's
+    /// settings run on, and so what its schema rule records and matches.
+    pub fn source_schema(&self) -> &Arc<Schema> {
+        &self.original_schema
+    }
+
     /// Record the row groups of a remote Parquet object, `rows` in each, so a buffer
     /// fill is planned as whole groups (see `align_to_row_groups`). Also the row count.
     pub fn set_row_groups(&mut self, rows: &[usize]) {

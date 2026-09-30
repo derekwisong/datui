@@ -46,13 +46,15 @@ should match the view:
 
 | Match | Fits a file when |
 |---|---|
-| Exact path | its absolute path is the same |
-| Relative path | its path relative to the current directory is the same |
+| Exact path | its absolute path, or its URL for remote data, is the same |
+| Relative path | its path relative to the current directory is the same; local files only |
 | Path pattern | its path matches a glob |
 | Filename pattern | its name matches a glob |
 | Schema | it has all the view's columns; extra columns are fine |
 
-Schema matching is enabled by default. Matching views rank above unrelated
+Schema matching is enabled by default. The view records the columns of the data
+as loaded, before its query, so a view whose query renames or computes columns
+still matches the next file. Matching views rank above unrelated
 ones; exact schemas rank above schemas with extra columns. Other match rules
 and usage history also affect the score. Press <kbd>i</kbd> to inspect it.
 <kbd>V</kbd> and automatic application use only views with a matching rule.

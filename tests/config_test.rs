@@ -353,6 +353,41 @@ fn test_merge_option_fields() {
 }
 
 #[test]
+fn test_query_default_mode() {
+    use datui::config::{QueryConfig, QueryMode};
+
+    // Omitted: SQL.
+    let config: AppConfig = toml::from_str("[query]\nhistory_limit = 10\n").unwrap();
+    assert_eq!(config.query.default_mode, QueryMode::Sql);
+
+    for (text, mode) in [
+        ("sql", QueryMode::Sql),
+        ("search", QueryMode::Search),
+        ("q-style", QueryMode::QStyle),
+    ] {
+        let config: AppConfig =
+            toml::from_str(&format!("[query]\ndefault_mode = \"{text}\"\n")).unwrap();
+        assert_eq!(config.query.default_mode, mode, "{text}");
+    }
+    assert!(toml::from_str::<AppConfig>("[query]\ndefault_mode = \"fuzzy\"\n").is_err());
+
+    // A file that picks q-style wins, and a later one that says nothing keeps it.
+    let mut base = QueryConfig::default();
+    base.merge(QueryConfig {
+        default_mode: QueryMode::QStyle,
+        ..QueryConfig::default()
+    });
+    assert_eq!(base.default_mode, QueryMode::QStyle);
+    base.merge(QueryConfig::default());
+    assert_eq!(base.default_mode, QueryMode::QStyle);
+
+    // The generated config documents it.
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+    assert!(template.contains("default_mode = \"sql\""), "{template}");
+}
+
+#[test]
 fn test_turning_the_notes_accent_off_survives_a_merge() {
     use datui::config::DisplayConfig;
 

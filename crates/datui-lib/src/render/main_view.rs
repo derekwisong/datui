@@ -75,6 +75,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                     }
                     _ => vec![
                         ("Enter", "Run"),
+                        ("^T", "Mode"),
                         ("Tab", "Focus"),
                         ("F1", "Help"),
                         ("Esc", "Cancel"),

@@ -2466,6 +2466,69 @@ const CONTROLS_COMMENTS: &[(&str, &str)] = &[
 pub struct QueryConfig {
     pub history_limit: usize,
     pub enable_history: bool,
+    pub default_mode: QueryMode,
+}
+
+/// A mode of the query prompt, in tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum QueryMode {
+    #[default]
+    Sql,
+    /// Rows whose text columns contain every word (the fuzzy search).
+    Search,
+    /// Datui's q-inspired language.
+    QStyle,
+}
+
+impl QueryMode {
+    /// The modes this build offers, in tab order. SQL is absent without the
+    /// `sql` feature rather than present and broken.
+    pub fn available() -> &'static [QueryMode] {
+        #[cfg(feature = "sql")]
+        {
+            &[QueryMode::Sql, QueryMode::Search, QueryMode::QStyle]
+        }
+        #[cfg(not(feature = "sql"))]
+        {
+            &[QueryMode::Search, QueryMode::QStyle]
+        }
+    }
+
+    /// This mode if the build offers it, otherwise the next one in tab order.
+    pub fn resolve(self) -> QueryMode {
+        if Self::available().contains(&self) {
+            self
+        } else {
+            QueryMode::Search
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            QueryMode::Sql => "SQL",
+            QueryMode::Search => "Search",
+            QueryMode::QStyle => "q-style",
+        }
+    }
+
+    /// Position among the available modes: the tab index.
+    pub fn index(self) -> usize {
+        Self::available()
+            .iter()
+            .position(|&m| m == self)
+            .unwrap_or(0)
+    }
+
+    pub fn next(self) -> QueryMode {
+        let modes = Self::available();
+        modes[(self.index() + 1) % modes.len()]
+    }
+
+    pub fn prev(self) -> QueryMode {
+        let modes = Self::available();
+        modes[(self.index() + modes.len() - 1) % modes.len()]
+    }
 }
 
 // Field comments for QueryConfig
@@ -2475,6 +2538,12 @@ const QUERY_COMMENTS: &[(&str, &str)] = &[
         "Maximum number of queries to keep in history",
     ),
     ("enable_history", "Enable query history caching"),
+    (
+        "default_mode",
+        "Mode / opens on when no query is active: \"sql\", \"search\" or \"q-style\".\n\
+         Editing an active query reopens its own mode.\n\
+         A build without SQL opens on \"search\" instead of \"sql\".",
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2792,6 +2861,7 @@ impl Default for QueryConfig {
         Self {
             history_limit: 1000,
             enable_history: true,
+            default_mode: QueryMode::default(),
         }
     }
 }
@@ -3560,6 +3630,9 @@ impl QueryConfig {
         }
         if other.enable_history != default.enable_history {
             self.enable_history = other.enable_history;
+        }
+        if other.default_mode != default.default_mode {
+            self.default_mode = other.default_mode;
         }
     }
 }

@@ -1,31 +1,34 @@
 # Queries and search
 
-Press <kbd>/</kbd> to open the query prompt. It has three tabs; <kbd>←</kbd>
-<kbd>→</kbd> switch them, and <kbd>Tab</kbd> moves between the tab bar and
-the input.
+Press <kbd>/</kbd> to open the query prompt. It opens on **SQL**, or on the
+active query's mode when you edit one.
+<kbd>Ctrl</kbd>+<kbd>T</kbd> switches mode without leaving the input;
+<kbd>Tab</kbd> moves to the tab bar, where <kbd>←</kbd> <kbd>→</kbd> switch too.
 
-| Tab | What you type | Example |
+| Mode | What you type | Example |
 |---|---|---|
-| **Query** | Datui's own short language, described below | `select name, salary by dept where salary > 100000` |
-| **Fuzzy** | Words to look for in any text column | `smith london` |
 | **SQL** | SQL over the table named `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
+| **Search** | Words; each word's letters in order, in any text column | `smth london` |
+| **q-style** | Datui's short language, a subset of q, described below | `select name, salary by dept where salary > 100000` |
 
 <kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
-walk the history of the current tab. Submit an empty query to return to the
+walk the history of the current mode. Submit an empty query to return to the
 full table. Running a query — or clearing one — starts a fresh view: sidebar
 filters, sort, frozen columns and pivot/melt are dropped. Apply sidebar settings after the query.
+
+To open on another mode, set it in the [config](../reference/settings.md#query-views-debug):
+
+```toml
+[query]
+default_mode = "q-style"   # "sql" (default), "search" or "q-style"
+```
+
+A build without SQL has no SQL tab and opens on Search instead.
 
 ## Run a query
 
 With the [quick-start penguin data](../getting-started/quick-start.md), enter
-this on the **Query** tab:
-
-```text
-select mean_mass_g: avg body_mass_g by species
-```
-
-It returns three species averages. Gentoo has the highest, about 5,076 g.
-On the **SQL** tab, the equivalent query is:
+this on the **SQL** tab:
 
 ```sql
 SELECT species, AVG(body_mass_g) AS mean_mass_g
@@ -33,10 +36,29 @@ FROM df
 GROUP BY species
 ```
 
-The examples below use the Query tab. See [Query syntax](../reference/query-syntax.md)
+It returns three species averages. Gentoo has the highest, about 5,076 g.
+
+## Search
+
+Type words on the **Search** tab and press <kbd>Enter</kbd>. A row matches
+when, for every word, one of its text columns contains that word's characters
+in order, not necessarily adjacent, so `smth` finds `Smith`. Matching is
+case-insensitive. Reopen the prompt to see how many rows matched.
+
+## q-style
+
+q-style is a scoped option for people who know q: a subset of the q
+language, not a complete q or q-sql, and it **evaluates right to left**. The
+penguin query above reads:
+
+```text
+select mean_mass_g: avg body_mass_g by species
+```
+
+The examples below use q-style. See [Query syntax](../reference/query-syntax.md)
 for the complete grammar and [the demo](../demos.md#querying) for a recording.
 
-## Choosing columns
+### Choosing columns
 
 ```
 select a, b, c              # these columns
@@ -45,7 +67,7 @@ select total: price * qty   # a computed column, named with :
 select col["First Name"]    # a name with spaces
 ```
 
-## Filtering rows
+### Filtering rows
 
 ```
 select where a > 10                      # comparison: = != < > <= >=
@@ -58,7 +80,7 @@ select where not null email
 select where city.contains["York"]       # string accessors
 ```
 
-## Arithmetic
+### Arithmetic
 
 `+`, `-`, `*` and `/` for divide; `%` also divides. Expressions bind **right to left**:
 `a * b + c` is `a * (b + c)`. Use parentheses when in doubt. Comparisons bind
@@ -69,7 +91,7 @@ the comparison first: `100 < (a + b) * 2`.
 select margin: (price - cost) / price where qty > 0
 ```
 
-## Dates and times
+### Dates and times
 
 Date and Datetime columns have dot accessors, and date literals are written
 `YYYY.MM.DD`.
@@ -85,7 +107,7 @@ Accessors include `date`, `time`, `year`, `month`, `week`, `day`, `dow`,
 [reference](../reference/query-syntax.md#date-and-datetime-accessors) has the
 full list.
 
-## Grouping and aggregating
+### Grouping and aggregating
 
 ```
 select name, salary by department                         # group: drill into a row with Enter
@@ -100,13 +122,7 @@ summary row per group. Brackets around the argument are optional. An unaliased
 aggregate of a column is named `fn_column` (`avg salary` → `avg_salary`); name
 it yourself with `:`.
 
-## Fuzzy search
-
-Type on the **Fuzzy** tab and press <kbd>Enter</kbd>. A row matches when its
-text columns contain the characters of every word, in order but not necessarily
-adjacent, so `smth` finds `Smith`. Matching is case-insensitive.
-
 ## Saving a query
 
-The active tab's query is saved with a [view](views.md), along with
+The active query is saved with a [view](views.md), in its own mode, along with
 filters and sort, so it can be replayed on the next file of the same shape.

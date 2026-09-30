@@ -7,7 +7,7 @@ Navigation:
   Enter:           On a grouped row, drill into the group (Esc comes back)
 
 Data Operations:
-  /:                Open Query input
+  /:                Query: SQL, Search or q-style
   c:                Open charts
   s:                Open the Sort & Filter sidebar (tabs: Columns, Filters)
   a:                Open Statistical Analysis. In a Data Quality evidence

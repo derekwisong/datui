@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::event_pump::EventPump;
-use datui::{App, AppEvent, InputMode, OpenOptions};
+use datui::{App, AppEvent, InputMode, OpenOptions, QueryMode};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -7035,6 +7035,13 @@ fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Send
 fn open_query_filter_fixture(
     name: &str,
 ) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    open_query_filter_fixture_with(name, datui::AppConfig::default())
+}
+
+fn open_query_filter_fixture_with(
+    name: &str,
+    config: datui::AppConfig,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
     let csv_path = test_data_dir.join(name);
@@ -7050,7 +7057,8 @@ fn open_query_filter_fixture(
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
     let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx.clone(), common::test_runtime());
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
     pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
@@ -12262,11 +12270,141 @@ fn i_opens_on_notes_while_they_are_unread() {
     );
 }
 
+fn q_style_config() -> datui::AppConfig {
+    let mut config = datui::AppConfig::default();
+    config.query.default_mode = QueryMode::QStyle;
+    config
+}
+
+fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)));
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+    }
+}
+
+fn run_and_settle(
+    app: &mut App,
+    event: AppEvent,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+) {
+    let mut next = app.event(&event);
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+    }
+    pump_until_idle(app, rx, tx);
+}
+
+/// A new user pressing `/` gets SQL; a build without SQL opens on Search.
+#[test]
+fn the_query_prompt_opens_on_sql() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("prompt_default.csv");
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    #[cfg(feature = "sql")]
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+    #[cfg(not(feature = "sql"))]
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Search));
+}
+
+/// `[query] default_mode` chooses where `/` opens, read from the config file.
+#[test]
+fn the_preferred_query_mode_is_where_the_prompt_opens() {
+    let config: datui::AppConfig = toml::from_str("[query]\ndefault_mode = \"q-style\"\n").unwrap();
+    let (mut app, _rx, _tx) = open_query_filter_fixture_with("prompt_preferred.csv", config);
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::QStyle));
+
+    // Typed there, a q-style query runs as one.
+    for c in "select a where a > 10".chars() {
+        press_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_active_query(), "select a where a > 10");
+    assert!(state.get_active_sql_query().is_empty());
+}
+
+/// Editing an active query reopens its own mode, whatever the preference:
+/// q-style text is never offered up as SQL, or the other way round.
+#[test]
+fn reopening_the_prompt_selects_the_active_query_mode() {
+    let (mut app, rx, tx) = open_query_filter_fixture("prompt_reopen_mode.csv");
+
+    run_and_settle(
+        &mut app,
+        AppEvent::Search("select a where a > 10".to_string()),
+        &rx,
+        &tx,
+    );
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::QStyle));
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), None);
+
+    run_and_settle(
+        &mut app,
+        AppEvent::FuzzySearch("alpha".to_string()),
+        &rx,
+        &tx,
+    );
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Search));
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    #[cfg(feature = "sql")]
+    {
+        run_and_settle(
+            &mut app,
+            AppEvent::SqlSearch("SELECT a FROM df WHERE a > 90".to_string()),
+            &rx,
+            &tx,
+        );
+        press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+        press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    }
+
+    // Clearing the query returns `/` to the default.
+    run_and_settle(&mut app, AppEvent::Search(String::new()), &rx, &tx);
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(
+        app.query_prompt_mode(),
+        Some(datui::AppConfig::default().query.default_mode.resolve())
+    );
+}
+
+/// Ctrl+T switches the mode from inside the input, in tab order and around,
+/// and what is then typed runs in the mode on screen.
+#[test]
+fn ctrl_t_switches_the_query_mode() {
+    let (mut app, rx, tx) = open_query_filter_fixture("prompt_chord.csv");
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    let modes = QueryMode::available();
+    assert_eq!(app.query_prompt_mode(), Some(modes[0]));
+    for &mode in modes[1..].iter().chain(&modes[..1]) {
+        press_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(app.query_prompt_mode(), Some(mode));
+    }
+
+    while app.query_prompt_mode() != Some(QueryMode::Search) {
+        press_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    }
+    for c in "alpha".chars() {
+        press_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_active_fuzzy_query(), "alpha");
+    assert_eq!(current_rows(&app), 50);
+}
+
 /// Reopening `/` restores the last query selected, so typing states a new
 /// question instead of appending to the tail of the old one.
 #[test]
 fn reopening_the_query_prompt_selects_the_old_query() {
-    let (mut app, rx, tx) = open_query_filter_fixture("reopen_query.csv");
+    let (mut app, rx, tx) = open_query_filter_fixture_with("reopen_query.csv", q_style_config());
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('/'),
@@ -12479,7 +12617,8 @@ fn screen_text(app: &mut App) -> String {
 /// follows, and Ctrl+Z puts it back: readline's bindings, in the query prompt.
 #[test]
 fn test_query_prompt_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
-    let (mut app, rx, tx) = open_query_filter_fixture("ctrl_u_query_prompt.csv");
+    let (mut app, rx, tx) =
+        open_query_filter_fixture_with("ctrl_u_query_prompt.csv", q_style_config());
 
     press(&mut app, KeyCode::Char('/'));
     assert_eq!(app.input_mode, InputMode::Editing);

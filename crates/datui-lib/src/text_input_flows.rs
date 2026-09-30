@@ -87,6 +87,13 @@ impl Harness {
         harness
     }
 
+    /// Loaded, with `/` preferring the q-style mode.
+    fn q_style() -> Self {
+        let mut h = Self::with_data();
+        h.app.app_config.query.default_mode = crate::QueryMode::QStyle;
+        h
+    }
+
     /// Run `event` and everything that follows from it.
     fn run(&mut self, event: AppEvent) {
         let mut next = Some(event);
@@ -148,7 +155,7 @@ fn drawn(input: &TextInput, width: u16) -> String {
 
 #[test]
 fn typing_a_query_and_submitting_it_applies_the_query() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     assert_eq!(h.app.input_mode, InputMode::Editing);
@@ -167,7 +174,7 @@ fn typing_a_query_and_submitting_it_applies_the_query() {
 fn reopening_the_query_bar_shows_the_query_that_is_running() {
     // Reopening has to put the live query back on screen, not the blank field
     // that Esc left behind: the user edits from where they were.
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("select name where age > 40");
@@ -186,7 +193,7 @@ fn reopening_the_query_bar_shows_the_query_that_is_running() {
 
 #[test]
 fn esc_leaves_the_query_bar_without_running_anything() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("select name where age > 40");
@@ -199,7 +206,7 @@ fn esc_leaves_the_query_bar_without_running_anything() {
 
 #[test]
 fn editing_keys_work_in_the_query_bar() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("select nme");
@@ -218,7 +225,7 @@ fn editing_keys_work_in_the_query_bar() {
 
 #[test]
 fn the_query_bar_recalls_earlier_queries_with_the_arrow_keys() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("select name where age > 40");
@@ -232,7 +239,7 @@ fn the_query_bar_recalls_earlier_queries_with_the_arrow_keys() {
 
 #[test]
 fn go_to_line_opens_on_an_empty_field() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("select name where age > 40");
@@ -354,7 +361,7 @@ fn the_view_name_field_takes_text() {
 
 #[test]
 fn unicode_survives_a_round_trip_through_a_field() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("where name == \"café\"");
@@ -414,7 +421,7 @@ fn the_pivot_and_melt_modal_opens_a_picker_narrowed_as_you_type() {
 
 #[test]
 fn each_query_tab_keeps_its_own_value() {
-    let mut h = Harness::with_data();
+    let mut h = Harness::q_style();
 
     h.press(KeyCode::Char('/'));
     h.type_str("select name");
@@ -422,8 +429,8 @@ fn each_query_tab_keeps_its_own_value() {
     // Tab moves to the tab bar, then the arrow keys change tab.
     h.press(KeyCode::Tab);
     assert_eq!(h.app.query_focus, crate::QueryFocus::TabBar);
-    h.press(KeyCode::Right);
-    assert_eq!(h.app.query_tab, crate::QueryTab::Fuzzy);
+    h.press(KeyCode::Left);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Search);
 
     h.press(KeyCode::Tab);
     assert_eq!(h.app.query_focus, crate::QueryFocus::Input);
@@ -431,6 +438,96 @@ fn each_query_tab_keeps_its_own_value() {
     assert_eq!(h.app.fuzzy_input.value(), "ada");
     assert_eq!(drawn(&h.app.fuzzy_input, 20), "ada");
 
-    // The SQL-like tab still holds what was typed there.
+    // The q-style tab still holds what was typed there, and going back to
+    // it, text and all, is the tab bar's round trip.
     assert_eq!(h.app.query_input.value(), "select name");
+    h.press(KeyCode::Tab);
+    h.press(KeyCode::Right);
+    h.press(KeyCode::Tab);
+    assert_eq!(h.app.query_mode, crate::QueryMode::QStyle);
+    assert_eq!(h.app.query_input.value(), "select name");
+    assert_eq!(h.app.fuzzy_input.value(), "ada");
+}
+
+#[test]
+fn ctrl_t_cycles_the_mode_without_leaving_the_input() {
+    let mut h = Harness::with_data();
+    h.press(KeyCode::Char('/'));
+    let first = h.app.query_mode;
+    h.type_str("abc");
+
+    let mut seen = vec![first];
+    for _ in 1..crate::QueryMode::available().len() {
+        h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(h.app.query_focus, crate::QueryFocus::Input);
+        seen.push(h.app.query_mode);
+    }
+    assert_eq!(seen, crate::QueryMode::available());
+    h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.query_mode, first, "the chord wraps around");
+
+    // Typing goes to the mode on screen, and the chord typed nothing.
+    h.type_str("d");
+    let typed = match first {
+        crate::QueryMode::Sql => &h.app.sql_input,
+        crate::QueryMode::Search => &h.app.fuzzy_input,
+        crate::QueryMode::QStyle => &h.app.query_input,
+    };
+    assert_eq!(typed.value(), "abcd");
+}
+
+/// Esc closes the prompt whole from every mode. The q-style path used to leave
+/// the prompt's input type behind.
+#[test]
+fn esc_closes_the_query_prompt_from_every_mode() {
+    let mut h = Harness::with_data();
+    for &mode in crate::QueryMode::available() {
+        h.press(KeyCode::Char('/'));
+        while h.app.query_mode != mode {
+            h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        }
+        h.press(KeyCode::Esc);
+        assert_eq!(h.app.input_mode, InputMode::Normal, "{mode:?}");
+        assert_eq!(h.app.input_type, None, "{mode:?}");
+        assert_eq!(h.app.query_prompt_mode(), None, "{mode:?}");
+    }
+}
+
+/// Reopened on a search that ran, the prompt says how many rows matched, and
+/// drops the count once the words are edited.
+#[test]
+fn a_search_that_ran_says_how_many_rows_matched() {
+    let screen = |app: &mut App| -> String {
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        buf.content().iter().map(|c| c.symbol()).collect()
+    };
+    let mut h = Harness::with_data();
+    h.app.app_config.query.default_mode = crate::QueryMode::Search;
+    h.press(KeyCode::Char('/'));
+    h.type_str("al");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.app.input_mode, InputMode::Normal);
+
+    h.press(KeyCode::Char('/'));
+    assert_eq!(h.app.query_mode, crate::QueryMode::Search);
+    // The count runs in the background without setting busy; until it
+    // settles there is nothing to claim.
+    if h.app.row_count_pending() {
+        assert!(!screen(&mut h.app).contains(" match"));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.app.row_count_pending() && std::time::Instant::now() < deadline {
+        if let Ok(event) = h.rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            h.run(event);
+        }
+    }
+    let drawn = screen(&mut h.app);
+    assert!(drawn.contains(" 1 match "), "{drawn}");
+    assert!(drawn.contains("Every word's letters in order, in any text column"));
+
+    h.press(KeyCode::End);
+    h.type_str("x");
+    assert!(!screen(&mut h.app).contains(" 1 match "));
 }

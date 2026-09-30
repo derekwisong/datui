@@ -14,8 +14,12 @@ Sleep 0.8s
 Show
 Sleep 1s
 
-# Open the query input.
+# Open the query input on q-style: / starts on SQL.
 Type "/"
+Sleep 0.5s
+Ctrl+T
+Sleep 0.3s
+Ctrl+T
 Sleep 0.5s
 
 # One name, one sex, every year. A comma is AND.

@@ -31,6 +31,25 @@ fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
     }
 }
 
+/// Handle events until the analysis run in flight has finished, then until the
+/// channel is quiet. Waits on the run rather than on a gap between events: a run
+/// that works for longer than [`drain_events`]'s five quiet seconds on a slow
+/// runner was left unfinished there.
+fn drain_until_analysis_done(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while (app.analysis_modal.computing.is_some() || app.is_busy())
+        && std::time::Instant::now() < deadline
+    {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100))
+            && let Some(next) = app.event(&ev)
+            && let Some(next2) = app.event(&next)
+        {
+            app.event(&next2);
+        }
+    }
+    drain_events(app, rx);
+}
+
 /// Pumps the load event chain until complete, including background task results from the channel.
 fn pump_open_until_loaded(
     app: &mut App,
@@ -1065,7 +1084,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
@@ -1088,7 +1107,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     )));
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
 
     assert!(app.analysis_modal.data_quality_results.is_some());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
@@ -2621,7 +2640,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
@@ -2662,7 +2681,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     );
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
     assert_eq!(
         app.analysis_modal
             .data_quality_results
@@ -2695,7 +2714,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     assert!(app.analysis_modal.data_quality_results.is_none());
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
 
     // The earlier sample again is the session cache's, not another read.
     key(&mut app, KeyCode::Char('s'));

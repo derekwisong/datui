@@ -248,25 +248,46 @@ pub fn keep_out_of_log(secret: &str) {
     }
 }
 
-/// Values of variables whose names say they hold a credential.
+/// Values of variables whose names say they hold a credential, the `[cloud] env_files`
+/// ones included.
 fn keep_out_of_log_from_env() {
-    for (name, value) in std::env::vars() {
-        let name = name.to_ascii_uppercase();
-        let secret = [
-            "SECRET",
-            "TOKEN",
-            "PASSWORD",
-            "PASSWD",
-            "ACCESS_KEY",
-            "SAS_KEY",
-        ]
-        .iter()
-        .any(|word| name.contains(word))
-            || name.ends_with("_KEY");
-        if secret {
+    for (name, value) in crate::cloud_env::vars() {
+        if holds_a_credential(&name, &value) {
             keep_out_of_log(&value);
         }
     }
+}
+
+/// Whether an environment variable's value is a credential to mask. The name decides,
+/// except that a file or directory is not the secret itself: masking the path in
+/// `AWS_WEB_IDENTITY_TOKEN_FILE` would hide every mention of it.
+fn holds_a_credential(name: &str, value: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    let named = [
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PASSWD",
+        "ACCESS_KEY",
+        "ACCOUNT_KEY",
+        "CONNECTION_STRING",
+    ]
+    .iter()
+    .any(|word| name.contains(word))
+        || name.ends_with("_KEY");
+    let names_a_place = [
+        "_FILE",
+        "_PATH",
+        "_DIR",
+        "_DIRECTORY",
+        "_HOME",
+        "_URL",
+        "_URI",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix));
+    let path = Path::new(value);
+    named && !names_a_place && !(path.is_absolute() && path.exists())
 }
 
 /// Log a failure not worth stopping for (cache, history) instead of dropping it.
@@ -289,11 +310,12 @@ pub fn redact(text: &str, secrets: &[String]) -> String {
         [
             // scheme://user:password@host
             r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@",
-            // ?X-Amz-Signature=..., &sig=..., &token=...
-            r"(?i)([?&;](?:x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|signature|sig|token|access_token|api_key|apikey|key|password|secret)=)[^&\s]+",
+            // ?X-Amz-Signature=..., &sig=..., &token=..., or a SAS token on its own
+            r"(?i)((?:^|[?&;])(?:x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|signature|sig|token|access_token|api_key|apikey|key|password|secret)=)[^&\s]+",
             // Authorization: Bearer ..., "authorization": "..."
             r#"(?i)(authorization"?\s*[:=]\s*"?)[^"\r\n]+"#,
-            r"(?i)(\b(?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]{8,}",
+            // Case-sensitive Basic, or "basic statistics" would lose its noun.
+            r"(\b(?i:bearer)\s+|\bBasic\s+)[A-Za-z0-9._~+/=-]{8,}",
             // secret_access_key = ..., "session_token": "...", AccountKey=...
             r#"(?i)((?:secret[_-]?access[_-]?key|session[_-]?token|account[_-]?key|client[_-]?secret|sas[_-]?token|password)"?\s*[:=]\s*"?)[^\s",;}]+"#,
         ]
@@ -595,6 +617,45 @@ mod tests {
         assert_eq!(
             redact("s3://bucket/key.parquet: not found", &secrets),
             "s3://bucket/key.parquet: not found"
+        );
+        for plain in [
+            "basic statistics failed for column_with_long_name",
+            "abfss://container@account.dfs.core.windows.net/data.parquet",
+        ] {
+            assert_eq!(redact(plain, &secrets), plain);
+        }
+        assert!(!redact("Basic YWxpY2U6aHVudGVyMg==", &secrets).contains("YWxpY2U6"));
+        assert!(!redact("sig=Zm9vYmFyYmF6&sv=2022", &secrets).contains("Zm9vYmFy"));
+    }
+
+    #[test]
+    fn a_variable_is_masked_by_its_name_but_not_when_it_names_a_place() {
+        let key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        for name in [
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AZURE_STORAGE_ACCOUNT_KEY",
+            "AZURE_STORAGE_CONNECTION_STRING",
+            "MINIO_ROOT_PASSWORD",
+            "hf_token",
+            "OPENAI_API_KEY",
+        ] {
+            assert!(holds_a_credential(name, key), "{name}");
+        }
+        for name in [
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "GITHUB_TOKEN_PATH",
+            "PASSWORD_STORE_DIR",
+            "VAULT_TOKEN_URL",
+        ] {
+            assert!(!holds_a_credential(name, key), "{name}");
+        }
+        assert!(!holds_a_credential("AWS_REGION", key));
+        let dir = tempfile::tempdir().unwrap();
+        let place = dir.path().to_string_lossy();
+        assert!(
+            !holds_a_credential("SOME_SECRET", &place),
+            "a path that exists is not the secret"
         );
     }
 

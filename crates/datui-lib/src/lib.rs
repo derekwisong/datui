@@ -21049,6 +21049,21 @@ fn run_impl(
     {
         logging::keep_out_of_log(secret);
     }
+    // A connection's keys come from variables it names, which need not look secret.
+    for connection in &config.cloud.connections {
+        for name in [
+            &connection.secret_access_key_env,
+            &connection.session_token_env,
+            &connection.account_key_env,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(value) = crate::cloud_env::var(name) {
+                logging::keep_out_of_log(&value);
+            }
+        }
+    }
 
     let theme = Theme::from_config(&config.theme)
         .or_else(|e| Theme::from_config(&AppConfig::default().theme).map_err(|_| e))?;

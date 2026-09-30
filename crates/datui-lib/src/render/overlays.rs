@@ -184,15 +184,20 @@ const MIN_HELP_MEASURE: usize = 16;
 
 /// Wrap one help line to `width` display columns at word boundaries; a
 /// single overlong word is split hard. Continuations hang under the text
-/// they continue: a keyed row's under its description, any other line under
-/// its own indent, so a wrapped row still reads as one row of its table.
+/// they continue: a keyed row's under its description, a bullet's past its
+/// dash, any other line under its own indent, so a wrapped row still reads
+/// as one row of its table.
 fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
     use crate::glyphs::{display_width, take_columns};
     if width == 0 {
         return vec![String::new()];
     }
     let fits = |lead: usize| width.saturating_sub(lead) >= MIN_HELP_MEASURE;
-    let indent = line.len() - line.trim_start_matches(' ').len();
+    let mut indent = line.len() - line.trim_start_matches(' ').len();
+    // A bullet's text hangs past its dash, as the help files lay one out.
+    if line[indent..].starts_with("- ") {
+        indent += 2;
+    }
     let head_end = match crate::glyphs::key_gap(line) {
         Some((_, desc)) if fits(display_width(&line[..desc])) => desc,
         _ if fits(indent) => indent,
@@ -374,8 +379,9 @@ mod tests {
         );
     }
 
-    /// A keyed row hangs under its description; a prose line keeps its
-    /// indent; a column too narrow to hang in gives way to the indent.
+    /// A keyed row hangs under its description, a bullet past its dash, a
+    /// prose line at its indent; a column too narrow to hang in gives way to
+    /// the indent.
     #[test]
     fn help_wrap_hangs_under_the_text_it_continues() {
         let row = "  Enter:      Open a finding, then its rows";
@@ -389,6 +395,10 @@ mod tests {
         assert_eq!(
             wrap_help_line("  A note is an observation, not a fault", 24),
             ["  A note is an", "  observation, not a", "  fault"]
+        );
+        assert_eq!(
+            wrap_help_line("  - Empty select: select (all columns)", 24),
+            ["  - Empty select: select", "    (all columns)"]
         );
         assert_eq!(
             wrap_help_line(row, 24),
@@ -445,8 +455,8 @@ mod tests {
     }
 
     /// At 80×24 and 60×20, in UTF-8 and in ASCII, a wrapped help row
-    /// continues under its description, a wrapped prose line under its own
-    /// indent, and no word goes missing.
+    /// continues under its description, a bullet past its dash, a prose line
+    /// under its own indent, and no word goes missing.
     #[test]
     fn wrapped_help_rows_hang_under_their_description() {
         fn indent(line: &str) -> usize {
@@ -474,9 +484,14 @@ mod tests {
                         if shown.len() == words.len() {
                             continue;
                         }
+                        let bullet = if line.trim_start().starts_with("- ") {
+                            2
+                        } else {
+                            0
+                        };
                         let hang = crate::glyphs::key_gap(line)
                             .map(|(_, desc)| crate::glyphs::display_width(&line[..desc]))
-                            .unwrap_or_else(|| indent(line));
+                            .unwrap_or_else(|| indent(line) + bullet);
                         while shown.len() < words.len() {
                             let next = rows.next().expect("the rest of a wrapped line");
                             assert_eq!(

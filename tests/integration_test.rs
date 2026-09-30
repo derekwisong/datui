@@ -1183,7 +1183,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
                 QualityPage::Columns => assert!(screen.contains("Findings")),
                 // One segment is no comparison: the page says what makes one.
                 QualityPage::Segments => assert!(screen.contains("one segment")),
-                QualityPage::Trends => assert!(screen.contains("TIME BETWEEN DATES")),
+                QualityPage::Trends => assert!(screen.contains("Time between dates")),
                 _ => {}
             }
         }
@@ -1231,7 +1231,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     for (page, expected) in [
         (QualityPage::Plan, "Time roles"),
         (QualityPage::TimeRoles, "Date and time columns"),
-        (QualityPage::Detail, "Missing:"),
+        (QualityPage::Detail, "Missing"),
     ] {
         app.analysis_modal.set_quality_page(page);
         for area in [

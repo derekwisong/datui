@@ -869,14 +869,18 @@ mod quality_sample_tests {
         );
         assert!(key(&mut app, KeyCode::Char('r')).is_none());
         assert!(!app.is_busy());
+        key(&mut app, KeyCode::Char('e'));
+        assert!(key(&mut app, KeyCode::Enter).is_none());
 
-        // The worker exits; the state goes, and Run runs.
+        // The worker exits; the state goes, the reason with it, and Run runs.
         drop(worker);
         while let Ok(event) = rx.try_recv() {
             app.event(&event);
         }
         assert!(app.cancelled_analysis_running().is_none());
-        assert!(!screen(&mut app).contains("Cancellation requested"));
+        let text = screen(&mut app);
+        assert!(!text.contains("Cancellation requested"), "{text}");
+        assert!(!text.contains("Run waits"), "{text}");
         key(&mut app, KeyCode::Char('e'));
         assert!(matches!(
             key(&mut app, KeyCode::Enter),
@@ -8057,6 +8061,10 @@ pub struct KeptQualitySample {
     rows: std::sync::Arc<data_quality::QualitySample>,
 }
 
+/// Why Data Quality's Run did not start: a cancelled read is still finishing. Said
+/// on Setup's line until that read ends.
+const QUALITY_RUN_WAITS: &str = "Run waits: a cancelled read is still finishing";
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
@@ -9162,8 +9170,7 @@ impl App {
         use data_quality::QualityPage;
         if self.cancelled_analysis_running().is_some() {
             self.analysis_modal.data_quality_confirm_run = false;
-            self.analysis_modal.data_quality_setup_note =
-                Some("Run waits: a cancelled read is still finishing".to_string());
+            self.analysis_modal.data_quality_setup_note = Some(QUALITY_RUN_WAITS.to_string());
             return None;
         }
         if let Some(problem) = self.quality_setup_problem() {
@@ -20106,6 +20113,12 @@ impl App {
                     .is_some_and(|(cancelled, _)| !self.leases.contains_key(&cancelled))
                 {
                     self.analysis_cancelled = None;
+                    // Run can run again, so Setup no longer says it waits.
+                    if self.analysis_modal.data_quality_setup_note.as_deref()
+                        == Some(QUALITY_RUN_WAITS)
+                    {
+                        self.analysis_modal.data_quality_setup_note = None;
+                    }
                 }
                 None
             }

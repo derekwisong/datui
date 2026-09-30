@@ -648,14 +648,15 @@ fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
 fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> {
     let view = &config.setup;
     if let Some(since) = view.cancelling {
-        // Said as a reason once Enter has been refused for it.
+        // Said as a reason once Enter has been refused for it, short enough to keep
+        // its clock beside the tool list at 80 columns.
         return Some((
             format!(
-                "{}ancellation requested; source read finishing {} {}",
+                "{} {} {}",
                 if view.note.is_some() {
-                    "Run waits: c"
+                    "Run waits: source read finishing"
                 } else {
-                    "C"
+                    "Cancellation requested; source read finishing"
                 },
                 glyphs::get().middot,
                 crate::render::analysis_view::elapsed(since.elapsed())
@@ -3013,7 +3014,7 @@ mod tests {
             "the header keeps the state: {text}"
         );
         assert!(
-            text.contains("Run waits: cancellation requested"),
+            text.contains("Run waits: source read finishing"),
             "Setup says why Enter did not run: {text}"
         );
     }

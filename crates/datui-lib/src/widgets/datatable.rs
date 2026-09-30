@@ -4035,19 +4035,40 @@ impl DataTableState {
         }
     }
 
+    /// The columns a Data Quality scope reads: the loaded source's for a source
+    /// scope, the view's otherwise.
+    pub(crate) fn quality_schema(&self, scope: &crate::data_quality::QualityScope) -> &Schema {
+        if scope.uses_source() {
+            &self.original_schema
+        } else {
+            &self.schema
+        }
+    }
+
     pub(crate) fn quality_temporal_columns(
         &self,
         scope: &crate::data_quality::QualityScope,
     ) -> Vec<String> {
-        let schema = if scope.uses_source() {
-            &self.original_schema
-        } else {
-            &self.schema
-        };
-        schema
+        self.quality_schema(scope)
             .iter()
             .filter(|(name, dtype)| {
                 name.as_str() != crate::schema_union::DRIFT_COLUMN && dtype.is_temporal()
+            })
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
+    /// The scope's text columns: the ones Data Quality Setup can read as time
+    /// through a format.
+    pub(crate) fn quality_text_columns(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> Vec<String> {
+        self.quality_schema(scope)
+            .iter()
+            .filter(|(name, dtype)| {
+                name.as_str() != crate::schema_union::DRIFT_COLUMN
+                    && matches!(dtype, DataType::String | DataType::Categorical(..))
             })
             .map(|(name, _)| name.to_string())
             .collect()

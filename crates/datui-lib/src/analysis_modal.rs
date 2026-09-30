@@ -1,17 +1,68 @@
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, QUALITY_WINDOW_WIDTHS, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, TemporalRole, TemporalRoleAssignment,
+    QualityGrain, QualityMetric, QualityPage, TIME_FORMATS, TemporalRole, TemporalRoleAssignment,
+    TimeInterpretation, TimeKind,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
 use ratatui::widgets::TableState;
 
-/// What a plan field's picker sets.
+/// The rows of Data Quality Setup, top to bottom: the rows read, what the columns
+/// mean, and how the study splits and compares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupRow {
+    Sample,
+    TextAsTime,
+    TimeRoles,
+    Grain,
+    Compare,
+    Values,
+    Latency,
+}
+
+impl SetupRow {
+    pub const ALL: [Self; 7] = [
+        Self::Sample,
+        Self::TextAsTime,
+        Self::TimeRoles,
+        Self::Grain,
+        Self::Compare,
+        Self::Values,
+        Self::Latency,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sample => "Sample",
+            Self::TextAsTime => "Text as time",
+            Self::TimeRoles => "Time roles",
+            Self::Grain => "Grain",
+            Self::Compare => "Compare",
+            Self::Values => "Values",
+            Self::Latency => "Latency over",
+        }
+    }
+
+    /// The row at `index`, the last one past the end.
+    pub fn at(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len() - 1)]
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|row| *row == self).unwrap_or(0)
+    }
+}
+
+/// What a Setup row's picker sets.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanChoice {
     Grain(QualityGrain),
     Values(QualityCompute),
     Compare(QualityComparison),
     Latency(Option<i64>),
+    /// A text column to read as time; choosing it asks for the format next.
+    TextColumn(String),
+    /// How a text column is read as time, or `None` to read it as text again.
+    Format(String, Option<(TimeKind, &'static str)>),
 }
 
 impl PlanChoice {
@@ -22,25 +73,67 @@ impl PlanChoice {
             Self::Values(_) => plan.compute != QualityCompute::Metadata,
             Self::Compare(comparison) => &plan.comparison == comparison,
             Self::Latency(seconds) => &plan.latency_threshold_seconds == seconds,
+            Self::TextColumn(column) => plan.time_format(column).is_some(),
+            Self::Format(column, format) => {
+                plan.time_format(column)
+                    .map(|current| (current.kind, current.format.as_str()))
+                    == format.map(|(kind, format)| (kind, format))
+            }
         }
     }
 }
 
-/// A plan field's choices, open as a list.
+/// A Setup row's choices, open as a list.
 #[derive(Debug, Clone)]
 pub struct PlanPicker {
-    pub field: usize,
+    pub row: SetupRow,
+    pub title: String,
     pub choices: Vec<PlanChoice>,
     pub state: crate::widgets::ui::PickerState,
 }
 
-/// What the data offers the plan's choices: partition columns, date columns
-/// (and whether they hold times of day), and whether there are files to split by.
+/// What the data offers Setup's choices: partition columns, the columns a time
+/// window can split by (and whether they hold times of day), whether there are
+/// files to split by, and the text columns that could be read as time, each with
+/// a few of its values from the rows on screen.
 #[derive(Debug, Clone, Default)]
 pub struct PlanContext {
     pub partitions: Vec<String>,
     pub time_columns: Vec<(String, bool)>,
     pub files: bool,
+    pub text_columns: Vec<(String, Vec<String>)>,
+}
+
+/// A latency threshold as Setup offers it.
+pub fn threshold_label(seconds: Option<i64>) -> &'static str {
+    match seconds {
+        None => "none",
+        Some(3_600) => "1 hour",
+        Some(86_400) => "1 day",
+        Some(604_800) => "1 week",
+        Some(_) => "custom",
+    }
+}
+
+/// Read `column` as time through `format`, or as text again with `None`. A time
+/// window on a column that is text again has no clock, so the grain goes back to
+/// the whole dataset rather than failing the run.
+pub fn set_time_format(plan: &mut DataQualityPlan, column: &str, format: Option<(TimeKind, &str)>) {
+    plan.time_formats
+        .retain(|interpretation| interpretation.column != column);
+    match format {
+        Some((kind, format)) => plan.time_formats.push(TimeInterpretation {
+            column: column.to_string(),
+            kind,
+            format: format.to_string(),
+        }),
+        None => {
+            if matches!(&plan.grain, QualityGrain::TimeWindows { column: on, .. } if on == column) {
+                plan.grain = QualityGrain::Dataset;
+                plan.baseline_segment = None;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +157,16 @@ pub enum AnalysisTool {
 #[derive(Debug, Clone)]
 pub struct AnalysisProgress {
     pub phase: String,
-    /// When the run began, for the elapsed time on screen. A run is one Polars query
-    /// with no steps to count, so time is the only progress there is to show.
+    /// When the run began, for the elapsed time on screen. A run has no total to
+    /// count against, so time is the progress there is to show.
     pub started: std::time::Instant,
+    /// Whether the stage now running reads the source or works on rows already
+    /// read. `None` until a Data Quality run names its first stage.
+    pub reads_source: Option<bool>,
+    /// The sampler's count of rows seen, where the read can count them.
+    pub read: Option<crate::sampling::ReadWatch>,
+    /// What the run starts from, when it reuses something: said before it starts.
+    pub reuse: Option<String>,
 }
 
 impl AnalysisProgress {
@@ -74,6 +174,9 @@ impl AnalysisProgress {
         Self {
             phase: phase.to_string(),
             started: std::time::Instant::now(),
+            reads_source: None,
+            read: None,
+            reuse: None,
         }
     }
 }
@@ -156,10 +259,20 @@ pub struct AnalysisModal {
     pub distribution_selector_state: TableState,             // For distribution selector list
     pub histogram_scale: HistogramScale,                     // Scale for histogram (linear or log)
     pub data_quality_page: QualityPage,
+    /// The plan: the one the last Run committed, and while Setup is open, the draft
+    /// being staged for the next.
     pub data_quality_plan: DataQualityPlan,
+    /// The plan as it stood when Setup opened: Esc puts it back. `None` while Setup
+    /// is closed.
+    pub data_quality_setup_before: Option<DataQualityPlan>,
+    /// The report page Setup was opened from, and goes back to.
+    pub data_quality_setup_return: QualityPage,
+    /// Why Enter did not run, said on Setup's own line until the next edit.
+    pub data_quality_setup_note: Option<String>,
     pub data_quality_table_state: TableState,
-    /// The list a plan field's choices open in, while it is open.
+    /// The list a Setup row's choices open in, while it is open.
     pub data_quality_picker: Option<PlanPicker>,
+    /// The Setup row under the cursor, or the role in the time roles editor.
     pub data_quality_plan_field: usize,
     pub data_quality_show_access: bool,
     pub data_quality_observation_detail: bool,
@@ -225,8 +338,11 @@ impl AnalysisModal {
         self.distribution_results = None;
         self.correlation_results = None;
         self.data_quality_results = None;
-        self.data_quality_page = QualityPage::Plan;
+        self.data_quality_page = QualityPage::Setup;
         self.data_quality_plan = DataQualityPlan::default();
+        self.data_quality_setup_before = None;
+        self.data_quality_setup_return = QualityPage::Overview;
+        self.data_quality_setup_note = None;
         self.data_quality_table_state.select(Some(0));
         self.data_quality_picker = None;
         self.data_quality_plan_field = 0;
@@ -258,7 +374,9 @@ impl AnalysisModal {
         self.distribution_results = None;
         self.correlation_results = None;
         self.data_quality_results = None;
-        self.data_quality_page = QualityPage::Plan;
+        self.data_quality_page = QualityPage::Setup;
+        self.data_quality_setup_before = None;
+        self.data_quality_setup_note = None;
         self.data_quality_picker = None;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
@@ -404,7 +522,7 @@ impl AnalysisModal {
             return 0;
         };
         match self.data_quality_page {
-            QualityPage::Plan => 6,
+            QualityPage::Setup => SetupRow::ALL.len(),
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
             QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
@@ -533,8 +651,6 @@ impl AnalysisModal {
     }
 
     /// Show a tab, keeping the column in view across Columns, Segments and Trends.
-    /// The plan acts on Enter, which only the main pane hears, so it brings the
-    /// cursor along.
     pub fn show_quality_tab(&mut self, page: QualityPage) {
         if matches!(
             self.data_quality_page,
@@ -543,12 +659,9 @@ impl AnalysisModal {
             self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
         }
         self.set_quality_page(page);
-        match page {
-            QualityPage::Columns => self
-                .data_quality_table_state
-                .select(Some(self.data_quality_column_index)),
-            QualityPage::Plan => self.focus = AnalysisFocus::Main,
-            _ => {}
+        if page == QualityPage::Columns {
+            self.data_quality_table_state
+                .select(Some(self.data_quality_column_index));
         }
     }
 
@@ -579,35 +692,37 @@ impl AnalysisModal {
         self.data_quality_metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
     }
 
-    /// The plan the result on screen was measured with; the working plan until a
-    /// run exists. Result pages read this one, so an edit not yet run never
-    /// relabels what was measured.
+    /// The plan the result on screen was measured with; the plan until a run
+    /// exists. Result pages read this one, so a draft never relabels what was
+    /// measured.
     pub fn quality_result_plan(&self) -> &DataQualityPlan {
         self.data_quality_last_plan
             .as_ref()
             .unwrap_or(&self.data_quality_plan)
     }
 
-    /// The plan has been edited since the result on screen was measured.
+    /// The plan differs from the one the result on screen was measured with.
     pub fn quality_plan_pending(&self) -> bool {
         self.data_quality_results.is_some()
             && self.data_quality_last_plan.as_ref() != Some(&self.data_quality_plan)
     }
 
-    /// Rows on the Plan page: the latency threshold only once two time roles give
-    /// it an interval to measure.
-    pub fn quality_plan_rows(&self) -> usize {
-        if self.data_quality_plan.temporal_roles.len() >= 2 {
-            6
-        } else {
-            5
-        }
+    /// The Setup row under the cursor.
+    pub fn setup_row(&self) -> SetupRow {
+        SetupRow::at(self.data_quality_plan_field)
     }
 
-    /// The choices a plan field offers, in the words the header uses.
-    pub fn plan_choices(&self, field: usize, context: &PlanContext) -> Vec<(String, PlanChoice)> {
-        match field {
-            1 => {
+    /// Whether Setup holds staged changes Esc would discard.
+    pub fn setup_edited(&self) -> bool {
+        self.data_quality_setup_before
+            .as_ref()
+            .is_some_and(|before| *before != self.data_quality_plan)
+    }
+
+    /// The choices a Setup row offers, in the words the header uses.
+    pub fn plan_choices(&self, row: SetupRow, context: &PlanContext) -> Vec<(String, PlanChoice)> {
+        match row {
+            SetupRow::Grain => {
                 let mut grains = vec![QualityGrain::Dataset];
                 if context.files {
                     grains.push(QualityGrain::File);
@@ -641,12 +756,14 @@ impl AnalysisModal {
                     .map(|grain| (grain.label(), PlanChoice::Grain(grain)))
                     .collect()
             }
-            2 => {
-                let read = if self.sample.method == crate::sampling::SampleMethod::EveryRow {
-                    QualityCompute::Full
-                } else {
-                    QualityCompute::Sample
-                };
+            SetupRow::Values => {
+                // The draft's sample says which kind of read it is.
+                let read =
+                    if self.data_quality_plan.method == crate::sampling::SampleMethod::EveryRow {
+                        QualityCompute::Full
+                    } else {
+                        QualityCompute::Sample
+                    };
                 vec![
                     ("read".to_string(), PlanChoice::Values(read)),
                     (
@@ -655,7 +772,7 @@ impl AnalysisModal {
                     ),
                 ]
             }
-            3 => [
+            SetupRow::Compare => [
                 QualityComparison::None,
                 QualityComparison::Previous,
                 QualityComparison::Baseline,
@@ -668,28 +785,43 @@ impl AnalysisModal {
                 )
             })
             .collect(),
-            5 => [None, Some(3_600), Some(86_400), Some(604_800)]
+            SetupRow::Latency if self.data_quality_plan.interval_pairs().is_empty() => Vec::new(),
+            SetupRow::Latency => [None, Some(3_600), Some(86_400), Some(604_800)]
                 .into_iter()
                 .map(|seconds| {
                     (
-                        match seconds {
-                            None => "none",
-                            Some(3_600) => "1 hour",
-                            Some(86_400) => "1 day",
-                            _ => "1 week",
-                        }
-                        .to_string(),
+                        threshold_label(seconds).to_string(),
                         PlanChoice::Latency(seconds),
                     )
                 })
                 .collect(),
-            _ => Vec::new(),
+            // Each text column with the first value on screen, so choosing which one
+            // holds times is choosing among things seen.
+            SetupRow::TextAsTime => context
+                .text_columns
+                .iter()
+                .map(|(column, examples)| {
+                    let label = match (self.data_quality_plan.time_format(column), examples.first())
+                    {
+                        (Some(format), _) => format!("{column}  as {}", format.label()),
+                        (None, Some(example)) => format!("{column}  {example}"),
+                        (None, None) => column.clone(),
+                    };
+                    (label, PlanChoice::TextColumn(column.clone()))
+                })
+                .collect(),
+            SetupRow::Sample | SetupRow::TimeRoles => Vec::new(),
         }
     }
 
-    /// Open the focused plan field's choices, the current one selected.
-    pub fn open_plan_picker(&mut self, field: usize, context: &PlanContext) {
-        let choices = self.plan_choices(field, context);
+    /// Open the focused Setup row's choices, the current one selected.
+    pub fn open_plan_picker(&mut self, row: SetupRow, context: &PlanContext) {
+        let choices = self.plan_choices(row, context);
+        self.data_quality_plan_field = row.index();
+        self.show_picker(row, row.label().to_string(), choices);
+    }
+
+    fn show_picker(&mut self, row: SetupRow, title: String, choices: Vec<(String, PlanChoice)>) {
         if choices.is_empty() {
             return;
         }
@@ -700,26 +832,73 @@ impl AnalysisModal {
         let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(current);
-        self.data_quality_plan_field = field;
         self.data_quality_picker = Some(PlanPicker {
-            field,
+            row,
+            title,
             choices,
             state,
         });
     }
 
-    /// Take the picker's selection into the plan and close it.
-    pub fn choose_plan_picker(&mut self) {
-        let Some(picker) = self.data_quality_picker.take() else {
-            return;
-        };
-        let Some(choice) = picker
+    /// How `column` can be read as time: each format with how many of `examples`,
+    /// values on screen, it reads, the formats that read the most first; and, when
+    /// it has a format, reading it as text again.
+    pub fn open_format_picker(&mut self, column: &str, examples: &[String]) {
+        let mut formats = TIME_FORMATS
+            .iter()
+            .enumerate()
+            .map(|(order, (kind, format))| {
+                let interpretation = TimeInterpretation {
+                    column: column.to_string(),
+                    kind: *kind,
+                    format: format.to_string(),
+                };
+                let read = examples
+                    .iter()
+                    .filter(|value| interpretation.reads(value))
+                    .count();
+                (read, order, *kind, *format)
+            })
+            .collect::<Vec<_>>();
+        // Most read first; the offered order among equals, so the list is stable.
+        formats.sort_by_key(|(read, order, _, _)| (std::cmp::Reverse(*read), *order));
+        let mut choices = formats
+            .into_iter()
+            .map(|(read, _, kind, format)| {
+                // The count first, so a narrow list clips the format, not the
+                // evidence for choosing it.
+                let label = if examples.is_empty() {
+                    format!("{} {format}", kind.label())
+                } else {
+                    format!(
+                        "reads {read} of {}  {} {format}",
+                        examples.len(),
+                        kind.label()
+                    )
+                };
+                (
+                    label,
+                    PlanChoice::Format(column.to_string(), Some((kind, format))),
+                )
+            })
+            .collect::<Vec<_>>();
+        if self.data_quality_plan.time_format(column).is_some() {
+            choices.push((
+                "text, not a time".to_string(),
+                PlanChoice::Format(column.to_string(), None),
+            ));
+        }
+        self.show_picker(SetupRow::TextAsTime, format!("Read {column} As"), choices);
+    }
+
+    /// Take the picker's selection into the plan and close it. A text column chosen
+    /// to read as time comes back: its format is the next choice.
+    pub fn choose_plan_picker(&mut self) -> Option<String> {
+        let picker = self.data_quality_picker.take()?;
+        let choice = picker
             .state
             .selected_original()
-            .and_then(|index| picker.choices.get(index))
-        else {
-            return;
-        };
+            .and_then(|index| picker.choices.get(index))?;
         let plan = &mut self.data_quality_plan;
         match choice.clone() {
             PlanChoice::Grain(grain) => {
@@ -736,7 +915,38 @@ impl AnalysisModal {
                 }
             }
             PlanChoice::Latency(seconds) => plan.latency_threshold_seconds = seconds,
+            PlanChoice::TextColumn(column) => return Some(column),
+            PlanChoice::Format(column, format) => set_time_format(plan, &column, format),
         }
+        None
+    }
+
+    /// The next or previous choice of a Setup row whose choices are a short list,
+    /// in place: ←→ on Grain, Compare, Values and Latency.
+    pub fn cycle_setup_choice(&mut self, row: SetupRow, context: &PlanContext, forward: bool) {
+        let choices = self.plan_choices(row, context);
+        if choices.is_empty() || matches!(row, SetupRow::TextAsTime) {
+            return;
+        }
+        let current = choices
+            .iter()
+            .position(|(_, choice)| choice.is_current(&self.data_quality_plan))
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1).min(choices.len() - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
+        let mut state = crate::widgets::ui::PickerState::new(labels);
+        state.select_original(next);
+        self.data_quality_picker = Some(PlanPicker {
+            row,
+            title: row.label().to_string(),
+            choices,
+            state,
+        });
+        self.choose_plan_picker();
     }
 
     pub fn cycle_quality_time_role(
@@ -1006,9 +1216,10 @@ mod quality_scope_tests {
             partitions: vec!["year".to_string()],
             time_columns: vec![("date".to_string(), false), ("stamp".to_string(), true)],
             files: true,
+            text_columns: Vec::new(),
         };
         let labels = modal
-            .plan_choices(1, &context)
+            .plan_choices(SetupRow::Grain, &context)
             .into_iter()
             .map(|(label, _)| label)
             .collect::<Vec<_>>();
@@ -1030,7 +1241,7 @@ mod quality_scope_tests {
             ]
         );
         // Choosing opens the list on the current value and sets the one chosen.
-        modal.open_plan_picker(1, &context);
+        modal.open_plan_picker(SetupRow::Grain, &context);
         let picker = modal.data_quality_picker.as_mut().unwrap();
         assert_eq!(picker.state.selected_original(), Some(0));
         picker.state.move_down();
@@ -1054,7 +1265,7 @@ mod quality_scope_tests {
         let mut modal = AnalysisModal::new();
         let context = PlanContext::default();
         modal.data_quality_plan.compute = QualityCompute::Metadata;
-        modal.open_plan_picker(2, &context);
+        modal.open_plan_picker(SetupRow::Values, &context);
         modal
             .data_quality_picker
             .as_mut()
@@ -1063,10 +1274,68 @@ mod quality_scope_tests {
             .select_original(0);
         modal.choose_plan_picker();
         assert_eq!(modal.data_quality_plan.compute, QualityCompute::Sample);
-        modal.sample.method = crate::sampling::SampleMethod::EveryRow;
-        modal.open_plan_picker(2, &context);
+        modal.data_quality_plan.method = crate::sampling::SampleMethod::EveryRow;
+        modal.open_plan_picker(SetupRow::Values, &context);
         modal.choose_plan_picker();
         assert_eq!(modal.data_quality_plan.compute, QualityCompute::Full);
-        assert_eq!(modal.quality_plan_rows(), 5, "no latency row without roles");
+        modal.open_plan_picker(SetupRow::Latency, &context);
+        assert!(
+            modal.data_quality_picker.is_none(),
+            "no threshold without an interval to measure"
+        );
+    }
+
+    /// A text column is read as time in two choices, the column and then its
+    /// format, the formats that read the values on screen first; reading it as text
+    /// again takes back a time window that needed it.
+    #[test]
+    fn text_is_read_as_time_through_a_chosen_format() {
+        let mut modal = AnalysisModal::new();
+        let context = PlanContext {
+            text_columns: vec![(
+                "created".to_string(),
+                vec!["2024-01-31 08:15:00".to_string()],
+            )],
+            ..PlanContext::default()
+        };
+        modal.open_plan_picker(SetupRow::TextAsTime, &context);
+        assert_eq!(modal.choose_plan_picker(), Some("created".to_string()));
+        modal.open_format_picker("created", &["2024-01-31 08:15:00".to_string()]);
+        let picker = modal.data_quality_picker.as_ref().unwrap();
+        assert_eq!(picker.title, "Read created As");
+        let first = picker.state.filtered()[0].1.to_string();
+        assert_eq!(first, "reads 1 of 1  datetime %Y-%m-%d %H:%M:%S");
+        assert_eq!(modal.choose_plan_picker(), None);
+        let format = modal.data_quality_plan.time_format("created").unwrap();
+        assert_eq!(format.kind, TimeKind::Datetime);
+
+        // Now a time window can split by it; as text again, the window goes.
+        let windows = PlanContext {
+            time_columns: vec![("created".to_string(), true)],
+            ..context.clone()
+        };
+        modal.open_plan_picker(SetupRow::Grain, &windows);
+        let picker = modal.data_quality_picker.as_mut().unwrap();
+        picker.state.move_down();
+        picker.state.move_down();
+        modal.choose_plan_picker();
+        assert!(matches!(
+            modal.data_quality_plan.grain,
+            QualityGrain::TimeWindows { .. }
+        ));
+        modal.open_format_picker("created", &[]);
+        let picker = modal.data_quality_picker.as_mut().unwrap();
+        let text = picker
+            .state
+            .filtered()
+            .iter()
+            .position(|(_, label)| *label == "text, not a time")
+            .unwrap();
+        for _ in 0..text {
+            picker.state.move_down();
+        }
+        modal.choose_plan_picker();
+        assert!(modal.data_quality_plan.time_formats.is_empty());
+        assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
     }
 }

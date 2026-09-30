@@ -421,8 +421,10 @@ pub fn apply_quality_scope(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QualityPage {
+    /// Everything a run needs, staged until Enter runs it. Not a tab: a report's
+    /// pages are tabs, and Setup is where a report comes from.
     #[default]
-    Plan,
+    Setup,
     Overview,
     Columns,
     Segments,
@@ -434,23 +436,22 @@ pub enum QualityPage {
 }
 
 impl QualityPage {
-    /// The tabs, in the order ←→ walk them. A column's detail sits under Columns and
-    /// the time roles editor under Plan.
-    pub const TABS: [Self; 5] = [
-        Self::Overview,
-        Self::Columns,
-        Self::Segments,
-        Self::Trends,
-        Self::Plan,
-    ];
+    /// The report's tabs, in the order ←→ walk them. A column's detail sits under
+    /// Columns and a segment's under Segments.
+    pub const TABS: [Self; 4] = [Self::Overview, Self::Columns, Self::Segments, Self::Trends];
 
     pub fn tab(self) -> Self {
         match self {
             Self::Detail => Self::Columns,
             Self::SegmentDetail => Self::Segments,
-            Self::TimeRoles => Self::Plan,
+            Self::TimeRoles => Self::Setup,
             page => page,
         }
+    }
+
+    /// Setup and its time roles editor, which stage a run rather than show one.
+    pub fn is_setup(self) -> bool {
+        self.tab() == Self::Setup
     }
 
     pub fn title(self) -> &'static str {
@@ -459,12 +460,12 @@ impl QualityPage {
             Self::Columns => "Columns",
             Self::Segments => "Segments",
             Self::Trends => "Trends",
-            _ => "Plan",
+            _ => "Setup",
         }
     }
 }
 
-/// What an empty page is missing, which Enter opens in the plan.
+/// What an empty page is missing, which Enter opens in Setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QualitySetup {
     Grain,

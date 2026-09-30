@@ -779,6 +779,123 @@ mod quality_sample_tests {
             "the same sample again leaves the chosen grain alone"
         );
     }
+
+    fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    fn screen(app: &mut App) -> String {
+        let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buffer);
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    /// Esc on a Data Quality run whose read cannot stop at once: the last report is
+    /// kept, Setup comes back, and until the worker exits the header and Setup say
+    /// the read is finishing and Run does not start another beside it. The stages
+    /// the stopped worker still sends are dropped.
+    #[test]
+    fn a_cancelled_run_says_so_until_its_worker_exits() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
+        app.data_table_state = Some(
+            DataTableState::from_schema_and_lazyframe(
+                df.schema().clone(),
+                polars::prelude::IntoLazy::lazy(df.clone()),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        let modal = &mut app.analysis_modal;
+        modal.active = true;
+        modal.selected_tool = Some(analysis_modal::AnalysisTool::DataQuality);
+        modal.focus = analysis_modal::AnalysisFocus::Main;
+        let plan = data_quality::DataQualityPlan::default();
+        modal.data_quality_results = Some(data_quality::DataQualityResults::empty(
+            Some(3),
+            &plan,
+            df.schema(),
+        ));
+        modal.data_quality_last_plan = Some(plan.clone());
+        modal.set_quality_page(data_quality::QualityPage::Overview);
+        // A run under way: its worker holds a lease on the generation it began on.
+        modal.data_quality_plan.sample_seed = 7;
+        modal.computing = Some(AnalysisProgress::new("Reading the sample"));
+        app.busy = true;
+        let worker = app.lease_for_tests();
+        let stopped = app.task_generation;
+
+        assert!(app.hard_escape_while_busy(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(key(&mut app, KeyCode::Esc).is_none());
+        assert!(app.analysis_modal.computing.is_none());
+        assert!(!app.is_busy());
+        assert!(
+            app.analysis_modal.data_quality_results.is_some(),
+            "the last report is kept"
+        );
+        assert_eq!(
+            app.analysis_modal.data_quality_page,
+            data_quality::QualityPage::Setup
+        );
+        assert!(app.flash_message().is_none(), "state, not a flash");
+        let text = screen(&mut app);
+        assert!(
+            text.contains("Cancellation requested; source read finishing"),
+            "{text}"
+        );
+
+        // A stage the stopped worker still sends changes nothing.
+        app.event(&AppEvent::BackgroundQualityPhase {
+            generation: stopped,
+            phase: data_quality::QualityPhase {
+                stage: data_quality::QualityStage::ProfilingColumns,
+                reads_source: false,
+            },
+        });
+        assert!(app.analysis_modal.computing.is_none());
+
+        // Run waits, with the reason, rather than read beside it.
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        assert!(!app.is_busy());
+        assert!(screen(&mut app).contains("Run waits"));
+        // So does r on the report.
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.analysis_modal.data_quality_page,
+            data_quality::QualityPage::Overview
+        );
+        assert!(key(&mut app, KeyCode::Char('r')).is_none());
+        assert!(!app.is_busy());
+
+        // The worker exits; the state goes, and Run runs.
+        drop(worker);
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
+        assert!(app.cancelled_analysis_running().is_none());
+        assert!(!screen(&mut app).contains("Cancellation requested"));
+        key(&mut app, KeyCode::Char('e'));
+        assert!(matches!(
+            key(&mut app, KeyCode::Enter),
+            Some(AppEvent::AnalysisDataQualityCompute)
+        ));
+
+        // The run in flight hears its own stages, and shows them.
+        let running = app.task_generation;
+        app.event(&AppEvent::BackgroundQualityPhase {
+            generation: running,
+            phase: data_quality::QualityPhase {
+                stage: data_quality::QualityStage::ProfilingColumns,
+                reads_source: false,
+            },
+        });
+        let progress = app.analysis_modal.computing.as_ref().unwrap();
+        assert_eq!(progress.phase, "Profiling columns");
+        assert_eq!(progress.reads_source, Some(false));
+    }
 }
 
 #[cfg(test)]
@@ -6603,6 +6720,18 @@ pub enum AppEvent {
         results: crate::data_quality::DataQualityResults,
         /// The rows a sampled run read, for the next run and drill to cut.
         kept: Option<KeptQualitySample>,
+        /// The plan the run was dispatched with: what the results are labeled with.
+        plan: Box<crate::data_quality::DataQualityPlan>,
+    },
+    /// A Data Quality run entered a stage.
+    BackgroundQualityPhase {
+        generation: u64,
+        phase: crate::data_quality::QualityPhase,
+    },
+    /// A Data Quality run that stopped short had already read its sample: kept, so
+    /// the read it paid for is not thrown away.
+    BackgroundQualitySampleKept {
+        kept: KeptQualitySample,
     },
     /// Background task completed: buffer data collected.
     /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
@@ -8044,6 +8173,11 @@ pub struct App {
     pivot_generation: Option<u64>,
     /// A view being applied whose pivot is still being read.
     view_pivot: Option<PendingView>,
+    /// The Data Quality run in flight's line to its worker: Esc stops it through this.
+    quality_watch: Option<data_quality::QualityWatch>,
+    /// An analysis Esc cancelled, whose worker may still be reading: its generation,
+    /// and when the cancel came. See [`App::cancelled_analysis_running`].
+    analysis_cancelled: Option<(u64, std::time::Instant)>,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -8312,12 +8446,14 @@ impl App {
         }
     }
 
-    /// What the data offers the plan's choices.
+    /// What the data offers Setup's choices. Read from the schema and the rows
+    /// already on screen: nothing here reads the source.
     fn quality_plan_context(&self) -> analysis_modal::PlanContext {
         let Some(state) = self.data_table_state.as_ref() else {
             return analysis_modal::PlanContext::default();
         };
-        let scope = &self.analysis_modal.data_quality_plan.scope;
+        let plan = &self.analysis_modal.data_quality_plan;
+        let scope = &plan.scope;
         let schema = &state.schema;
         let mut partitions = state.partition_columns.clone().unwrap_or_default();
         // A directory whose files agree opens as one scan and names no partition
@@ -8330,29 +8466,63 @@ impl App {
                 .filter(|column| schema.get(column).is_some())
                 .collect();
         }
+        // Date and time columns, then text read as time: a window can split by either.
+        let mut time_columns: Vec<(String, bool)> = state
+            .quality_temporal_columns(scope)
+            .into_iter()
+            .map(|column| {
+                let has_time =
+                    !matches!(schema.get(&column), Some(polars::prelude::DataType::Date));
+                (column, has_time)
+            })
+            .collect();
+        for format in &plan.time_formats {
+            if !time_columns
+                .iter()
+                .any(|(column, _)| *column == format.column)
+            {
+                time_columns.push((
+                    format.column.clone(),
+                    format.kind == data_quality::TimeKind::Datetime,
+                ));
+            }
+        }
         analysis_modal::PlanContext {
             partitions,
-            time_columns: state
-                .quality_temporal_columns(scope)
+            time_columns,
+            files: state.quality_source_file_count() > 1,
+            text_columns: state
+                .quality_text_columns(scope)
                 .into_iter()
                 .map(|column| {
-                    let has_time =
-                        !matches!(schema.get(&column), Some(polars::prelude::DataType::Date));
-                    (column, has_time)
+                    let examples = state.buffered_values(&column, 3);
+                    (column, examples)
                 })
                 .collect(),
-            files: state.quality_source_file_count() > 1,
         }
     }
 
-    /// Space on a plan field: the Sample form, the role editor, or the field's
-    /// choices.
-    fn open_plan_field(&mut self) -> Option<AppEvent> {
-        match self.analysis_modal.data_quality_plan_field {
-            0 => self.open_sample_form(),
-            4 => {
-                // With no date or time column there is no role to assign.
-                if self.has_quality_time_columns() {
+    /// The columns a time role can be given: date and time columns, then text,
+    /// which a role reads through its Text as time format.
+    pub(crate) fn quality_time_candidates(&self) -> Vec<String> {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return Vec::new();
+        };
+        let scope = &self.analysis_modal.data_quality_plan.scope;
+        let mut columns = state.quality_temporal_columns(scope);
+        columns.extend(state.quality_text_columns(scope));
+        columns
+    }
+
+    /// Space on a Setup row: the Sample form, the role editor, or the row's choices.
+    fn open_setup_row(&mut self) -> Option<AppEvent> {
+        use analysis_modal::SetupRow;
+        self.analysis_modal.data_quality_setup_note = None;
+        match self.analysis_modal.setup_row() {
+            SetupRow::Sample => self.open_quality_sample_form(),
+            SetupRow::TimeRoles => {
+                // With no date, time or text column there is no role to assign.
+                if !self.quality_time_candidates().is_empty() {
                     self.analysis_modal.data_quality_plan_before_edit =
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal
@@ -8360,15 +8530,29 @@ impl App {
                     self.analysis_modal.data_quality_plan_field = 0;
                 }
             }
-            field => {
+            row => {
                 let context = self.quality_plan_context();
-                self.analysis_modal.open_plan_picker(field, &context);
+                self.analysis_modal.open_plan_picker(row, &context);
             }
         }
         None
     }
 
-    /// The plan setting the Data Quality page on screen lacks before it can show
+    /// Enter in a Setup row's list: take the choice, and after a text column, ask
+    /// for its format with the values on screen beside each one.
+    fn choose_setup_picker(&mut self) {
+        self.analysis_modal.data_quality_setup_note = None;
+        if let Some(column) = self.analysis_modal.choose_plan_picker() {
+            let examples = self
+                .data_table_state
+                .as_ref()
+                .map(|state| state.buffered_values(&column, 3))
+                .unwrap_or_default();
+            self.analysis_modal.open_format_picker(&column, &examples);
+        }
+    }
+
+    /// The Setup setting the Data Quality page on screen lacks before it can show
     /// anything; Enter opens it, and the control bar says so.
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
@@ -8380,12 +8564,85 @@ impl App {
         )
     }
 
-    /// Whether the plan's scope has a date or time column to give a role.
+    /// Whether the plan's scope has a column it reads as time: a date or time
+    /// column, or text given a format. What an empty Trends page points to.
     pub(crate) fn has_quality_time_columns(&self) -> bool {
-        self.data_table_state.as_ref().is_some_and(|state| {
-            !state
-                .quality_temporal_columns(&self.analysis_modal.data_quality_plan.scope)
-                .is_empty()
+        !self
+            .analysis_modal
+            .data_quality_plan
+            .time_formats
+            .is_empty()
+            || self.data_table_state.as_ref().is_some_and(|state| {
+                !state
+                    .quality_temporal_columns(&self.analysis_modal.data_quality_plan.scope)
+                    .is_empty()
+            })
+    }
+
+    /// Whether Data Quality's retained rows are the rows `plan` reads and serve its
+    /// grain, so a run starts from them rather than from the source.
+    pub(crate) fn quality_kept_serves(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        plan.compute == data_quality::QualityCompute::Sample
+            && self
+                .kept_quality_sample(&plan.sample())
+                .is_some_and(|kept| kept.serves(plan))
+    }
+
+    /// Whether a run of `plan` counts its segments' rows in a pass of its own: a
+    /// sampled partition or time-window grain that neither the sampler nor an earlier
+    /// run has counted.
+    pub(crate) fn quality_needs_segment_count(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        if plan.compute != data_quality::QualityCompute::Sample
+            || !data_quality::segments_need_count(plan)
+        {
+            return false;
+        }
+        match self.kept_quality_sample(&plan.sample()) {
+            Some(kept) if kept.serves(plan) => kept.needs_segment_count(plan),
+            // A fresh sample: an equal-per-value one counts its column as it reads.
+            _ => !data_quality::sampler_counts_segments(plan),
+        }
+    }
+
+    /// Whether a random sample of `plan` may read seeded runs of one file rather
+    /// than stream every row: one Parquet or IPC file, its rows as loaded. Told from
+    /// the path and the view, since the sampler's own test needs the plan built; a
+    /// false yes only means Setup says a pass may be shorter than it is.
+    pub(crate) fn quality_may_read_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return false;
+        };
+        let one_file = self.path.as_ref().is_some_and(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "parquet" | "pq" | "arrow" | "ipc" | "feather"
+                    )
+                })
+        }) && state.source_file_count() == Some(1);
+        one_file
+            && !state.changes_rows()
+            && matches!(
+                plan.scope,
+                data_quality::QualityScope::CurrentView | data_quality::QualityScope::WholeSource
+            )
+    }
+
+    /// Whether the session cache holds a report for exactly `plan` on this view.
+    pub(crate) fn quality_cached(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return false;
+        };
+        self.quality_cache.iter().any(|entry| {
+            entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+                && &entry.plan == plan
         })
     }
 
@@ -8508,6 +8765,17 @@ impl App {
                 .is_some_and(|r| r.sample_size.is_some())
     }
 
+    /// An analysis Esc cancelled whose worker has not exited: a read Polars cannot
+    /// stop partway, still running. While it does, Data Quality does not start
+    /// another beside it, and says so.
+    pub(crate) fn cancelled_analysis_running(&self) -> Option<std::time::Instant> {
+        let (generation, since) = self.analysis_cancelled?;
+        self.leases
+            .get(&generation)
+            .is_some_and(|n| *n > 0)
+            .then_some(since)
+    }
+
     /// Work a cancel passed that is still running: leased on a generation since left.
     fn cancelled_work_running(&self) -> bool {
         self.leases
@@ -8567,10 +8835,19 @@ impl App {
     }
 
     /// Run the tool on screen with the Sample form's sample, or say on the form why
-    /// its scope does not parse.
+    /// its scope does not parse. In Data Quality the sample is staged in Setup's
+    /// draft instead: the form applies, and Run reads.
     fn run_sample_form(&mut self) -> Option<AppEvent> {
+        let quality =
+            self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
         let form = self.analysis_modal.sample_form.as_mut()?;
         match form.finish() {
+            Ok(sample) if quality => {
+                self.analysis_modal.sample_form = None;
+                self.analysis_modal.data_quality_plan.adopt_sample(&sample);
+                self.analysis_modal.data_quality_setup_note = None;
+                None
+            }
             Ok(sample) => {
                 self.analysis_modal.sample_form = None;
                 self.apply_sample(sample)
@@ -8583,6 +8860,19 @@ impl App {
     }
 
     fn open_sample_form_as(&mut self, inline: bool) {
+        let sample = self.analysis_modal.sample.clone();
+        self.open_sample_form_on(&sample, inline);
+    }
+
+    /// `s` in Data Quality: the Sample form over Setup, on the draft's sample. Its
+    /// Enter stages the sample in the draft and returns to Setup; only Run reads.
+    fn open_quality_sample_form(&mut self) {
+        self.open_quality_setup();
+        let sample = self.analysis_modal.data_quality_plan.sample();
+        self.open_sample_form_on(&sample, false);
+    }
+
+    fn open_sample_form_on(&mut self, sample: &sampling::Sample, inline: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -8642,8 +8932,7 @@ impl App {
             time_columns: state.quality_temporal_columns(&data_quality::QualityScope::WholeSource),
             value_columns,
         };
-        let mut form =
-            sample_modal::SampleForm::new(&self.analysis_modal.sample, context, &self.theme);
+        let mut form = sample_modal::SampleForm::new(sample, context, &self.theme);
         form.inline = inline;
         self.analysis_modal.sample_form = Some(form);
         self.sync_sample_form_focus();
@@ -8800,36 +9089,147 @@ impl App {
     /// engine and into the session cache's key. Metadata-only stays metadata-only.
     fn sync_quality_plan(&mut self) {
         let sample = self.analysis_modal.sample.clone();
-        let plan = &mut self.analysis_modal.data_quality_plan;
-        if plan.scope != sample.scope {
-            plan.baseline_segment = None;
+        self.analysis_modal.data_quality_plan.adopt_sample(&sample);
+    }
+
+    /// Open Data Quality Setup: the plan, staged. Edits wait for Run, and Esc puts
+    /// back the plan as it stood here. Opening it again while open changes nothing.
+    fn open_quality_setup(&mut self) {
+        use data_quality::QualityPage;
+        let modal = &mut self.analysis_modal;
+        if !modal.data_quality_page.is_setup() {
+            modal.data_quality_setup_return = modal.data_quality_page.tab();
         }
-        plan.scope = sample.scope;
-        plan.sample_seed = sample.seed;
-        plan.dataset_rows = sample.rows;
-        if plan.compute != data_quality::QualityCompute::Metadata {
-            plan.compute = if sample.method == sampling::SampleMethod::EveryRow {
-                data_quality::QualityCompute::Full
-            } else {
-                data_quality::QualityCompute::Sample
+        if modal.data_quality_setup_before.is_none() {
+            modal.data_quality_setup_before = Some(modal.data_quality_plan.clone());
+        }
+        if modal.data_quality_page != QualityPage::Setup {
+            modal.set_quality_page(QualityPage::Setup);
+            modal.data_quality_plan_field = 0;
+        }
+        modal.focus = analysis_modal::AnalysisFocus::Main;
+    }
+
+    /// Esc on Setup: every staged edit goes, and the report it came from comes back.
+    /// With no report yet, Setup stays in the pane and the cursor goes to the tools.
+    fn leave_quality_setup(&mut self) {
+        use data_quality::QualityPage;
+        let modal = &mut self.analysis_modal;
+        if let Some(before) = modal.data_quality_setup_before.take() {
+            modal.data_quality_plan = before;
+        }
+        modal.data_quality_setup_note = None;
+        modal.data_quality_confirm_run = false;
+        modal.data_quality_picker = None;
+        if modal.data_quality_results.is_some() {
+            let back = match modal.data_quality_setup_return {
+                QualityPage::Setup | QualityPage::TimeRoles => QualityPage::Overview,
+                page => page,
             };
+            modal.set_quality_page(back);
+        } else {
+            modal.set_quality_page(QualityPage::Setup);
+            modal.focus = analysis_modal::AnalysisFocus::Sidebar;
         }
-        // Choosing equal rows per value of a column is choosing to look at that column's
-        // values side by side, and the grain is what does that. Taken only when the
-        // choice is new and the grain has not been set, so a grain chosen afterwards
-        // stays chosen.
-        if let sampling::SampleMethod::PerPartition { column } = &sample.method
-            && plan.method != sample.method
-            && plan.grain == data_quality::QualityGrain::Dataset
+    }
+
+    /// What stops Setup from running as it stands, said on its own line: a time
+    /// window on text that has no format to read it with.
+    fn quality_setup_problem(&self) -> Option<String> {
+        let plan = &self.analysis_modal.data_quality_plan;
+        let schema = self.data_table_state.as_ref()?.quality_schema(&plan.scope);
+        match &plan.grain {
+            data_quality::QualityGrain::TimeWindows { column, .. }
+                if plan.compute != data_quality::QualityCompute::Metadata
+                    && !plan.reads_as_time(column, schema) =>
+            {
+                Some(format!(
+                    "{column} is text: choose its format under Text as time"
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Run, from Setup: the one place a Data Quality run starts. The draft becomes
+    /// the plan, and its sample the one every tool reads; then the report for it is
+    /// shown if one is already here, and otherwise read, once.
+    ///
+    /// Waits, with the reason on Setup, while a cancelled read is still finishing: a
+    /// second read beside it is how memory runs out. A full scan asks first, and
+    /// Esc there leaves the draft staged and the last report as it was.
+    fn run_quality_setup(&mut self) -> Option<AppEvent> {
+        use data_quality::QualityPage;
+        if self.cancelled_analysis_running().is_some() {
+            self.analysis_modal.data_quality_confirm_run = false;
+            self.analysis_modal.data_quality_setup_note =
+                Some("Run waits: a cancelled read is still finishing".to_string());
+            return None;
+        }
+        if let Some(problem) = self.quality_setup_problem() {
+            self.analysis_modal.data_quality_setup_note = Some(problem);
+            return None;
+        }
+        if self
+            .analysis_modal
+            .data_quality_plan
+            .requires_confirmation()
+            && !self.analysis_modal.data_quality_confirm_run
         {
-            plan.grain = data_quality::QualityGrain::Partition(column.clone());
-            plan.baseline_segment = None;
+            // The prompt is answered with Enter, which only the main pane hears.
+            self.analysis_modal.data_quality_confirm_run = true;
+            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+            return None;
         }
-        plan.method = sample.method;
+        self.analysis_modal.data_quality_confirm_run = false;
+        self.commit_quality_plan();
+        let modal = &mut self.analysis_modal;
+        if modal.data_quality_results.is_some()
+            && modal.data_quality_last_plan.as_ref() == Some(&modal.data_quality_plan)
+        {
+            let back = match modal.data_quality_setup_return {
+                QualityPage::Setup | QualityPage::TimeRoles => QualityPage::Overview,
+                page => page,
+            };
+            modal.set_quality_page(back);
+            return None;
+        }
+        if self.restore_cached_quality() {
+            return None;
+        }
+        self.analysis_modal.data_quality_from_cache = false;
+        let mut progress = AnalysisProgress::new("Preparing the plan");
+        if self.quality_kept_serves(&self.analysis_modal.data_quality_plan) {
+            progress.reuse = Some("Starts from the rows the last run read".to_string());
+        }
+        self.analysis_modal.computing = Some(progress);
+        self.busy = true;
+        Some(AppEvent::AnalysisDataQualityCompute)
+    }
+
+    /// The draft is the plan now: Setup closes on it, and its sample becomes the
+    /// one every tool reads. The other tools' results were of the old sample, so
+    /// they go; Data Quality's last report stays, labeled with what it measured,
+    /// until the run replaces it.
+    fn commit_quality_plan(&mut self) {
+        let modal = &mut self.analysis_modal;
+        let sample = modal.data_quality_plan.sample();
+        if sample != modal.sample {
+            modal.describe_results = None;
+            modal.distribution_results = None;
+            modal.correlation_results = None;
+        }
+        modal.sample = sample;
+        modal.sample_dataset = Some(self.dataset_generation);
+        modal.sample_run_for = Some(self.dataset_generation);
+        modal.data_quality_setup_before = None;
+        modal.data_quality_setup_note = None;
+        modal.data_quality_picker = None;
     }
 
     /// Adopt a new shared sample: every tool's results were of the old one, so all of
-    /// them go, and the tool on screen runs again.
+    /// them go, and the tool on screen runs again. Data Quality only takes it into
+    /// its plan: nothing reads until its Run.
     fn apply_sample(&mut self, sample: sampling::Sample) -> Option<AppEvent> {
         // A first run on the sample as it stands takes nothing from the other tools.
         if sample != self.analysis_modal.sample {
@@ -8845,35 +9245,9 @@ impl App {
         self.analysis_modal.sample_run_for = Some(self.dataset_generation);
         self.sync_quality_plan();
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
-            return self.run_quality_plan();
+            return None;
         }
         self.start_analysis_run()
-    }
-
-    /// Run the Data Quality plan as the Plan page's Enter does: from the session cache
-    /// when it holds this plan, after confirmation when the plan needs one.
-    fn run_quality_plan(&mut self) -> Option<AppEvent> {
-        use data_quality::QualityPage;
-        self.sync_quality_plan();
-        if self.restore_cached_quality() {
-            return None;
-        }
-        self.analysis_modal.set_quality_page(QualityPage::Plan);
-        if self
-            .analysis_modal
-            .data_quality_plan
-            .requires_confirmation()
-        {
-            // The prompt is answered with Enter, which only the main pane hears.
-            self.analysis_modal.data_quality_confirm_run = true;
-            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
-            return None;
-        }
-        self.analysis_modal.data_quality_results = None;
-        self.analysis_modal.data_quality_from_cache = false;
-        self.analysis_modal.computing = Some(AnalysisProgress::new("Profiling data quality"));
-        self.busy = true;
-        Some(AppEvent::AnalysisDataQualityCompute)
     }
 
     /// Run the selected tool again from scratch, as `r` and `a` do.
@@ -8921,6 +9295,12 @@ impl App {
     /// The tool is put back unchosen, so its view does not sit on a spinner for a run
     /// that is not coming; Enter on it runs it again.
     fn cancel_analysis(&mut self) {
+        // The worker holds a lease on the generation it was spawned on; while it does,
+        // its read is still running.
+        self.analysis_cancelled = Some((self.task_generation, std::time::Instant::now()));
+        if let Some(watch) = self.quality_watch.take() {
+            watch.cancel();
+        }
         self.task_generation = self.task_generation.wrapping_add(1);
         // Keys typed while it ran were typed at the run, which is gone: an impatient
         // second Enter replayed now would start it again behind the Esc.
@@ -8934,12 +9314,15 @@ impl App {
             self.flash_note("Sample view cancelled".to_string());
             return;
         }
+        // Data Quality keeps its last report and goes back to Setup, where the plan
+        // can be edited while the read winds down; the header and Setup say it is
+        // still running until the worker exits, which a flash could not.
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
-            self.analysis_modal.data_quality_results = None;
-        } else {
-            self.analysis_modal.selected_tool = None;
-            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+            self.open_quality_setup();
+            return;
         }
+        self.analysis_modal.selected_tool = None;
+        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
         self.flash_note("Analysis cancelled".to_string());
     }
 
@@ -9220,6 +9603,8 @@ impl App {
     pub fn something_is_spinning(&self) -> bool {
         self.busy
             || (self.row_count_pending() && !self.awaiting_download_confirmation())
+            // The clock beside "source read finishing" keeps time until it has.
+            || (self.analysis_modal.active && self.cancelled_analysis_running().is_some())
             || self.chart_preparing()
             || (self.input_mode == InputMode::Home
                 && (self.home.awaiting_listing().is_some()
@@ -10238,6 +10623,8 @@ impl App {
             reading_sample: false,
             pivot_generation: None,
             view_pivot: None,
+            quality_watch: None,
+            analysis_cancelled: None,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -16059,18 +16446,26 @@ impl App {
             {
                 return self.sample_form_key(event);
             }
+            let quality = self.analysis_modal.selected_tool
+                == Some(analysis_modal::AnalysisTool::DataQuality);
             if event.code == KeyCode::Char('s') && self.analysis_modal.sample_key_opens_form() {
-                self.open_sample_form();
+                // Data Quality stages the sample in Setup; every other tool runs on it.
+                if quality {
+                    self.open_quality_sample_form();
+                } else {
+                    self.open_sample_form();
+                }
                 return None;
             }
-            if event.code == KeyCode::Char('v') && self.analysis_modal.sample_key_opens_form() {
+            // The rows of the sample in use: on a report, not over a draft that may
+            // name other rows.
+            if event.code == KeyCode::Char('v')
+                && self.analysis_modal.sample_key_opens_form()
+                && !(quality && self.analysis_modal.data_quality_page.is_setup())
+            {
                 return self.read_sample_view();
             }
-            if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
-                && self.analysis_modal.view == analysis_modal::AnalysisView::Main
-                // Before the first run the pane is the Sample form, not the plan.
-                && self.analysis_modal.sample_form.is_none()
-            {
+            if quality && self.analysis_modal.view == analysis_modal::AnalysisView::Main {
                 use crate::data_quality::QualityPage;
 
                 // A finding's popup scrolls when it holds more than the screen does.
@@ -16097,11 +16492,11 @@ impl App {
                     return None;
                 }
 
-                // A plan field's choices own the keys while they are open.
+                // A Setup row's choices own the keys while they are open.
                 if self.analysis_modal.data_quality_picker.is_some() {
                     match event.code {
                         KeyCode::Esc => self.analysis_modal.data_quality_picker = None,
-                        KeyCode::Enter => self.analysis_modal.choose_plan_picker(),
+                        KeyCode::Enter => self.choose_setup_picker(),
                         code => {
                             if let Some(picker) = self.analysis_modal.data_quality_picker.as_mut() {
                                 match code {
@@ -16130,8 +16525,10 @@ impl App {
                                 self.analysis_modal.data_quality_plan = plan;
                             }
                             self.analysis_modal.data_quality_plan_before_edit = None;
-                            self.analysis_modal.set_quality_page(QualityPage::Plan);
-                            self.analysis_modal.data_quality_plan_field = 4;
+                            self.analysis_modal.data_quality_setup_note = None;
+                            self.analysis_modal.set_quality_page(QualityPage::Setup);
+                            self.analysis_modal.data_quality_plan_field =
+                                analysis_modal::SetupRow::TimeRoles.index();
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
@@ -16144,15 +16541,7 @@ impl App {
                         | KeyCode::Char('h')
                         | KeyCode::Right
                         | KeyCode::Char('l') => {
-                            let columns = self
-                                .data_table_state
-                                .as_ref()
-                                .map(|state| {
-                                    state.quality_temporal_columns(
-                                        &self.analysis_modal.data_quality_plan.scope,
-                                    )
-                                })
-                                .unwrap_or_default();
+                            let columns = self.quality_time_candidates();
                             self.analysis_modal.cycle_quality_time_role(
                                 field,
                                 &columns,
@@ -16163,30 +16552,63 @@ impl App {
                     }
                     return None;
                 }
-                // The plan is edited where it stands: ↑↓ the field, Space its choices,
-                // Enter runs from any field, Esc puts back what the last run used.
-                if self.analysis_modal.data_quality_page == QualityPage::Plan
+                // Setup is edited where it stands: ↑↓ or Tab the row, ←→ a short
+                // list's choice, Space the row's editor, Enter runs from any row, and
+                // Esc discards every staged edit.
+                if self.analysis_modal.data_quality_page == QualityPage::Setup
                     && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                    && !self.analysis_modal.data_quality_confirm_run
+                    && !self.analysis_modal.data_quality_show_access
                 {
-                    let rows = self.analysis_modal.quality_plan_rows();
+                    use analysis_modal::SetupRow;
+                    let rows = SetupRow::ALL.len();
                     let field = self.analysis_modal.data_quality_plan_field.min(rows - 1);
                     match event.code {
-                        KeyCode::Up | KeyCode::Char('k') => {
+                        KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
                             self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
                             return None;
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
+                        KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
                             self.analysis_modal.data_quality_plan_field = (field + 1).min(rows - 1);
+                            return None;
+                        }
+                        KeyCode::Home => {
+                            self.analysis_modal.data_quality_plan_field = 0;
+                            return None;
+                        }
+                        KeyCode::End => {
+                            self.analysis_modal.data_quality_plan_field = rows - 1;
                             return None;
                         }
                         KeyCode::Char(' ') => {
                             self.analysis_modal.data_quality_plan_field = field;
-                            return self.open_plan_field();
+                            return self.open_setup_row();
                         }
-                        KeyCode::Esc if self.analysis_modal.quality_plan_pending() => {
-                            if let Some(plan) = self.analysis_modal.data_quality_last_plan.clone() {
-                                self.analysis_modal.data_quality_plan = plan;
+                        KeyCode::Left
+                        | KeyCode::Char('h')
+                        | KeyCode::Right
+                        | KeyCode::Char('l') => {
+                            let forward = matches!(event.code, KeyCode::Right | KeyCode::Char('l'));
+                            let row = SetupRow::at(field);
+                            match row {
+                                SetupRow::Grain
+                                | SetupRow::Compare
+                                | SetupRow::Values
+                                | SetupRow::Latency => {
+                                    let context = self.quality_plan_context();
+                                    self.analysis_modal.data_quality_setup_note = None;
+                                    self.analysis_modal
+                                        .cycle_setup_choice(row, &context, forward);
+                                }
+                                // A row whose value is a form or a list opens it.
+                                _ if forward => return self.open_setup_row(),
+                                _ => {}
                             }
+                            return None;
+                        }
+                        KeyCode::Enter => return self.run_quality_setup(),
+                        KeyCode::Esc => {
+                            self.leave_quality_setup();
                             return None;
                         }
                         _ => {}
@@ -16221,9 +16643,14 @@ impl App {
                         }
                         return event;
                     }
+                    // Declining the full read leaves the draft staged, and the sample and
+                    // report as they were.
                     KeyCode::Esc if self.analysis_modal.data_quality_confirm_run => {
                         self.analysis_modal.data_quality_confirm_run = false;
                         return None;
+                    }
+                    KeyCode::Enter if self.analysis_modal.data_quality_confirm_run => {
+                        return self.run_quality_setup();
                     }
                     // A drill-in backs out to the list it came from.
                     KeyCode::Esc
@@ -16239,23 +16666,14 @@ impl App {
                             .set_quality_column_page(QualityPage::Columns);
                         return None;
                     }
-                    KeyCode::Esc
-                        if !matches!(self.analysis_modal.data_quality_page, QualityPage::Plan) =>
-                    {
-                        self.analysis_modal.set_quality_page(QualityPage::Plan);
-                        // The plan page acts on Enter (run) and only the main pane
-                        // hears it; opening the page brings the cursor along.
-                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
-                        return None;
-                    }
                     KeyCode::Char('p') => {
                         self.analysis_modal.data_quality_show_access =
                             !self.analysis_modal.data_quality_show_access;
                         return None;
                     }
-                    // The plan is a tab like the others; e goes there from anywhere.
+                    // Setup, with every setting, from anywhere in the report.
                     KeyCode::Char('e') => {
-                        self.analysis_modal.show_quality_tab(QualityPage::Plan);
+                        self.open_quality_setup();
                         return None;
                     }
                     KeyCode::Char(digit @ '1'..='4') => {
@@ -16302,53 +16720,38 @@ impl App {
                         self.analysis_modal.toggle_segment_order();
                         return None;
                     }
-                    // Another sample for every tool: the seed is the shared sample's.
-                    KeyCode::Char('r') => {
-                        let sample = sampling::Sample {
-                            seed: sample_modal::new_seed(),
-                            ..self.analysis_modal.sample.clone()
-                        };
-                        return self.apply_sample(sample);
+                    // Another sample, run at once: a new seed for every tool. On a report
+                    // only, never over a draft, and not beside a cancelled read.
+                    KeyCode::Char('r')
+                        if !self.analysis_modal.data_quality_page.is_setup()
+                            && self.analysis_modal.data_quality_results.is_some() =>
+                    {
+                        if self.cancelled_analysis_running().is_some() {
+                            self.flash_note(
+                                "A cancelled read is still finishing; try again shortly".into(),
+                            );
+                            return None;
+                        }
+                        self.analysis_modal.data_quality_plan.sample_seed =
+                            sample_modal::new_seed();
+                        return self.run_quality_setup();
                     }
                     KeyCode::Enter
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_page == QualityPage::Plan {
-                            self.sync_quality_plan();
-                            if self.analysis_modal.data_quality_results.is_some()
-                                && self.analysis_modal.data_quality_last_plan.as_ref()
-                                    == Some(&self.analysis_modal.data_quality_plan)
-                            {
-                                self.analysis_modal.set_quality_page(QualityPage::Overview);
-                                return None;
-                            }
-                            if self.restore_cached_quality() {
-                                return None;
-                            }
-                            if self
-                                .analysis_modal
-                                .data_quality_plan
-                                .requires_confirmation()
-                                && !self.analysis_modal.data_quality_confirm_run
-                            {
-                                self.analysis_modal.data_quality_confirm_run = true;
-                                return None;
-                            }
-                            self.analysis_modal.data_quality_confirm_run = false;
-                            self.analysis_modal.data_quality_results = None;
-                            self.analysis_modal.data_quality_from_cache = false;
-                            self.analysis_modal.computing =
-                                Some(AnalysisProgress::new("Profiling data quality"));
-                            self.busy = true;
-                            return Some(AppEvent::AnalysisDataQualityCompute);
-                        } else if let Some(setup) = self.quality_page_setup() {
-                            // Straight to the setting that fills the page, on the plan.
-                            self.analysis_modal.show_quality_tab(QualityPage::Plan);
+                        if let Some(setup) = self.quality_page_setup() {
+                            // Straight to the setting that fills the page, in Setup.
+                            self.open_quality_setup();
                             self.analysis_modal.data_quality_plan_field = match setup {
-                                data_quality::QualitySetup::Grain => 1,
-                                data_quality::QualitySetup::TimeRoles => 4,
-                            };
-                            return self.open_plan_field();
+                                data_quality::QualitySetup::Grain => {
+                                    analysis_modal::SetupRow::Grain
+                                }
+                                data_quality::QualitySetup::TimeRoles => {
+                                    analysis_modal::SetupRow::TimeRoles
+                                }
+                            }
+                            .index();
+                            return self.open_setup_row();
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
                             let findings = self.analysis_modal.quality_row_count();
                             self.analysis_modal.data_quality_checks_expanded = false;
@@ -16516,24 +16919,32 @@ impl App {
                                 self.restore_recent_quality_plan();
                                 // The plan's rows are the shared sample's, whatever
                                 // the last plan here read.
-                                self.sync_quality_plan();
-                                self.restore_cached_quality()
+                                // A draft staged in Setup stays as it is.
+                                let draft = self.analysis_modal.data_quality_setup_before.is_some();
+                                if !draft {
+                                    self.sync_quality_plan();
+                                }
+                                (!draft && self.restore_cached_quality())
                                     || self.analysis_modal.data_quality_results.is_some()
                             }
                             None => true,
                         };
+                        // Data Quality never runs from the list: its Setup is the pane,
+                        // and only its Run reads, whatever another tool already sampled.
+                        if !has_result
+                            && self.analysis_modal.selected_tool
+                                == Some(analysis_modal::AnalysisTool::DataQuality)
+                        {
+                            self.open_quality_setup();
+                            return None;
+                        }
                         // Once a sample has been run on this dataset, every tool reads
                         // it: a tool with no result runs at once, and s changes the
                         // sample for all of them.
                         let sample_run = self.analysis_modal.sample_run_for
                             == Some(self.dataset_generation);
                         if !has_result && sample_run {
-                            return match self.analysis_modal.selected_tool {
-                                Some(analysis_modal::AnalysisTool::DataQuality) => {
-                                    self.run_quality_plan()
-                                }
-                                _ => self.start_analysis_run(),
-                            };
+                            return self.start_analysis_run();
                         }
                         // Before the first, the form is what the pane is for, so the
                         // cursor goes with it: Enter runs, the arrows change a setting,
@@ -18877,8 +19288,7 @@ impl App {
                 None
             }
             AppEvent::AnalysisDataQualityCompute => {
-                // Whatever path asked for the run, it reads the shared sample.
-                self.sync_quality_plan();
+                // The plan Run committed; Setup's Run is the only way here.
                 if let Some(state) = &self.data_table_state {
                     let plan = self.analysis_modal.data_quality_plan.clone();
                     let source_scope = plan.scope.uses_source();
@@ -18914,6 +19324,17 @@ impl App {
                     {
                         source.conflict_scan = state.quality_conflict_scan();
                     }
+                    // Each stage the worker enters comes back tagged with the generation
+                    // it was spawned on, so a cancelled run's stages are dropped.
+                    let generation = self.task_generation;
+                    let phases = self.events.clone();
+                    let watch = data_quality::QualityWatch::new(move |phase| {
+                        let _ = phases.send(AppEvent::BackgroundQualityPhase { generation, phase });
+                    });
+                    if let Some(progress) = self.analysis_modal.computing.as_mut() {
+                        progress.read = Some(watch.read().clone());
+                    }
+                    self.quality_watch = Some(watch.clone());
                     self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
                         let lf = if source_scope {
                             match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
@@ -18943,27 +19364,35 @@ impl App {
                                 return;
                             }
                         };
-                        match crate::data_quality::compute_data_quality_kept(
+                        let (results, rows) = crate::data_quality::compute_data_quality_watched(
                             &lf,
                             cached_rows,
                             &plan,
                             source.as_ref(),
                             streaming,
                             kept.as_deref(),
-                        ) {
-                            Ok((results, rows)) => {
+                            &watch,
+                        );
+                        let kept = rows.map(|rows| KeptQualitySample {
+                            dataset_generation,
+                            view_generation,
+                            sample: plan.sample(),
+                            rows: std::sync::Arc::new(rows),
+                        });
+                        match results {
+                            Ok(results) => {
                                 let _ = tx.send(AppEvent::BackgroundDataQualityReady {
                                     generation: task_gen,
                                     results,
-                                    kept: rows.map(|rows| KeptQualitySample {
-                                        dataset_generation,
-                                        view_generation,
-                                        sample: plan.sample(),
-                                        rows: std::sync::Arc::new(rows),
-                                    }),
+                                    kept,
+                                    plan: Box::new(plan),
                                 });
                             }
                             Err(error) => {
+                                // Stopped after the sample was read: the read is kept.
+                                if let Some(kept) = kept {
+                                    let _ = tx.send(AppEvent::BackgroundQualitySampleKept { kept });
+                                }
                                 let _ = tx.send(AppEvent::BackgroundError {
                                     generation: task_gen,
                                     message: format!("{error}"),
@@ -19294,6 +19723,7 @@ impl App {
                 generation,
                 results,
                 kept,
+                plan,
             } => {
                 // Kept whatever became of the run's results: the rows are the rows the
                 // key names, and a read is not to be thrown away.
@@ -19307,19 +19737,34 @@ impl App {
                     && self.analysis_modal.selected_tool
                         == Some(analysis_modal::AnalysisTool::DataQuality)
                 {
-                    self.cache_quality_result(
-                        results,
-                        self.analysis_modal.data_quality_plan.clone(),
-                    );
-                    self.analysis_modal.data_quality_last_plan =
-                        Some(self.analysis_modal.data_quality_plan.clone());
+                    // Labeled with the plan it was dispatched with, whatever has been
+                    // staged since.
+                    let plan = plan.as_ref().clone();
+                    self.cache_quality_result(results, plan.clone());
+                    self.analysis_modal.data_quality_last_plan = Some(plan);
                     self.analysis_modal.data_quality_results = Some(results.clone());
                     self.analysis_modal.data_quality_from_cache = false;
                     self.analysis_modal
                         .set_quality_page(crate::data_quality::QualityPage::Overview);
                     self.analysis_modal.computing = None;
+                    self.quality_watch = None;
                     self.status_message = None;
                     self.busy = false;
+                }
+                None
+            }
+            AppEvent::BackgroundQualityPhase { generation, phase } => {
+                if *generation == self.task_generation
+                    && let Some(progress) = self.analysis_modal.computing.as_mut()
+                {
+                    progress.phase = phase.stage.label().to_string();
+                    progress.reads_source = Some(phase.reads_source);
+                }
+                None
+            }
+            AppEvent::BackgroundQualitySampleKept { kept } => {
+                if kept.dataset_generation == self.dataset_generation {
+                    self.quality_sample = Some(kept.clone());
                 }
                 None
             }
@@ -19633,6 +20078,13 @@ impl App {
                     if *n == 0 {
                         self.leases.remove(generation);
                     }
+                }
+                // The cancelled analysis's worker has exited: its read is over.
+                if self
+                    .analysis_cancelled
+                    .is_some_and(|(cancelled, _)| !self.leases.contains_key(&cancelled))
+                {
+                    self.analysis_cancelled = None;
                 }
                 None
             }

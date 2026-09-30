@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod axes;
 pub mod chart;
 pub mod chart_export_modal;
 pub mod controls;

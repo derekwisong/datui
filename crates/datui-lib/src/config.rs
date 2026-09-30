@@ -1028,10 +1028,10 @@ impl CloudSourceConfig {
                     "cloud.sources \"{name}\": every dataset needs a nonempty name"
                 ));
             }
-            if !public_url_is_valid(&dataset.url) {
+            if !public_url_is_valid(&dataset.url) && !public_file_url_is_valid(&dataset.url) {
                 return Err(eyre!(
                     "cloud.sources \"{name}\" dataset \"{}\": \"{}\" is not an s3://, \
-                     gs:// or Azure URL",
+                     gs://, Azure URL or HTTP(S) data-file URL",
                     dataset.name,
                     dataset.url
                 ));
@@ -1118,6 +1118,23 @@ fn public_url_is_valid(url: &str) -> bool {
         "s3" | "gs" => !host.is_empty() && !host.contains('@'),
         _ => crate::source::azure_parts(url).is_some(),
     }
+}
+
+/// Direct web files are opened, never treated as listable buckets.
+fn public_file_url_is_valid(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "http" | "https") || url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some((host, _)) = rest.split_once('/') else {
+        return false;
+    };
+    let (path, _) = crate::source::url_path_extension(url);
+    !host.is_empty()
+        && !host.contains(['@', '?', '#'])
+        && crate::discover::is_data_file(Path::new(&path))
 }
 
 /// Write `contents` to `path`, readable only by the owner.

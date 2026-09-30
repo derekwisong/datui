@@ -3788,8 +3788,12 @@ impl DataTableState {
     /// Frame and optional row-to-file map used by the data-quality worker. The hidden
     /// scan index is projected only while it still identifies source files; the worker
     /// replaces it with file names before profiling and never exposes it as user data.
+    /// Unsorted unless `ordered`, as every tool's sample reads it: a sample drawn by
+    /// position is then the same rows whichever tool drew it. A row range is the one
+    /// scope whose meaning is the order on screen.
     pub(crate) fn data_quality_scan(
         &self,
+        ordered: bool,
     ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
         let known_files =
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
@@ -3810,7 +3814,12 @@ impl DataTableState {
         if self.can_name_source_files() {
             expressions.push(col(crate::schema_union::DRIFT_COLUMN));
         }
-        let lf = self.lf.clone().select(expressions);
+        let lf = if ordered {
+            self.lf.clone()
+        } else {
+            self.analysis_lf()
+        }
+        .select(expressions);
         let lf = if source
             .as_ref()
             .is_some_and(|mapping| mapping.row_index_column == "__datui_quality_row")
@@ -3881,6 +3890,26 @@ impl DataTableState {
 
     /// Build a temporary filtered table without changing the current pipeline. The
     /// caller keeps this state to restore its query, filters, sort, and buffer.
+    /// A table of rows already read: an analysis's sample, shown in the table viewer
+    /// with everything it offers (sort, filter, query, copy, export). The rows are in
+    /// memory, so nothing here reads the source again.
+    pub(crate) fn sample_view(&self, df: DataFrame) -> Result<Self> {
+        let options = crate::OpenOptions {
+            pages_lookahead: Some(self.pages_lookahead),
+            pages_lookback: Some(self.pages_lookback),
+            max_buffered_rows: Some(self.max_buffered_rows),
+            max_buffered_mb: Some(self.max_buffered_mb),
+            row_numbers: self.row_numbers,
+            row_start_index: self.row_start_index,
+            polars_streaming: self.polars_streaming,
+            ..crate::OpenOptions::default()
+        };
+        let schema = df.schema().clone();
+        let mut view = Self::from_schema_and_lazyframe(schema, df.lazy(), &options, None)?;
+        view.visible_rows = self.visible_rows;
+        Ok(view)
+    }
+
     pub(crate) fn quality_evidence_view(
         &self,
         scope: &crate::data_quality::QualityScope,
@@ -4196,6 +4225,18 @@ impl DataTableState {
     /// True while `lf` is the data as loaded: no sidebar filter or sort, no query in
     /// any bar, no pivot or melt, no drill-down. Derived rather than kept, so clearing
     /// the filters or un-sorting makes the frame pristine again by itself.
+    /// Whether the table shows other rows than its source holds: a filter, a query, a
+    /// reshape or a drill. A sort alone reorders the same rows.
+    pub(crate) fn changes_rows(&self) -> bool {
+        !self.filters.is_empty()
+            || !self.active_query.is_empty()
+            || !self.active_sql_query.is_empty()
+            || !self.active_fuzzy_query.is_empty()
+            || self.reshaped_lf.is_some()
+            || self.grouped.is_some()
+            || self.drilled_down_group_index.is_some()
+    }
+
     fn is_pristine(&self) -> bool {
         self.filters.is_empty()
             && self.sort_columns.is_empty()
@@ -5990,6 +6031,35 @@ impl DataTableState {
     pub fn buffered_rows(&self) -> usize {
         self.buffered_end_row
             .saturating_sub(self.buffered_start_row)
+    }
+
+    /// The first `limit` distinct non-null values of `column` among the rows already
+    /// buffered for display, as text. Reads nothing: a column the buffer lacks gives
+    /// none.
+    pub(crate) fn buffered_values(&self, column: &str, limit: usize) -> Vec<String> {
+        let Some(series) = [self.df.as_ref(), self.locked_df.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|df| df.column(column).ok())
+        else {
+            return Vec::new();
+        };
+        let series = series.as_materialized_series();
+        let mut values = Vec::new();
+        for value in (0..series.len()).filter_map(|index| series.get(index).ok()) {
+            if values.len() == limit {
+                break;
+            }
+            let text = match value {
+                AnyValue::Null => continue,
+                AnyValue::String(text) => text.to_string(),
+                value => value.to_string(),
+            };
+            if !values.contains(&text) {
+                values.push(text);
+            }
+        }
+        values
     }
 
     /// Current scrollable display buffer. None until first collect().
@@ -11299,7 +11369,7 @@ mod tests {
         state.drift_files = vec!["first.parquet".into(), "second.parquet".into()];
         state.drift_file_starts = vec![0, 2];
         state.query("select a where a > 2".to_string());
-        let (current, _) = state.data_quality_scan();
+        let (current, _) = state.data_quality_scan(false);
         let (source, context) = state.data_quality_source_scan();
         let source =
             crate::data_quality::prepare_source_quality_scan(source, context.as_ref()).unwrap();
@@ -11407,9 +11477,16 @@ mod tests {
         let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
         let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
-        let results =
-            crate::statistics::compute_describe_from_lazy(&analysis_lf, Some(3), None, 0, false)
-                .expect("describe should not fail on binary columns");
+        let results = crate::statistics::compute_describe_from_lazy(
+            &analysis_lf,
+            Some(3),
+            &crate::sampling::Sample {
+                method: crate::sampling::SampleMethod::EveryRow,
+                ..crate::sampling::Sample::default()
+            },
+            false,
+        )
+        .expect("describe should not fail on binary columns");
 
         let blob_stat = results
             .column_statistics

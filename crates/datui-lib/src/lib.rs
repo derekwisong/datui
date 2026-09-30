@@ -78,8 +78,11 @@ pub mod measurements;
 pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
+pub mod quality_report;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
+pub mod sample_modal;
+pub mod sampling;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
@@ -436,6 +439,62 @@ mod probe_slot_tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// The directory browsed into is the whole screen, so its listing never waits for
+    /// a slot held by roots the user has left.
+    #[test]
+    fn the_directory_browsed_into_is_never_held_behind_the_cap() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.network_check = |_| true;
+        let dir = PathBuf::from("/pretend/share/raw");
+        app.home.browsing = Some(dir.clone());
+        app.home_probes_inflight = (0..MAX_CONCURRENT_PROBES)
+            .map(|i| PathBuf::from(format!("/pretend/slow{i}")))
+            .collect();
+
+        app.spawn_home_probes();
+
+        assert!(app.home_probes_inflight.contains(&dir));
+    }
+
+    /// Rows read so far show, marked as still listing, until the listing lands; a batch
+    /// arriving after the whole answer is dropped. A listing cut at the cap says so.
+    #[test]
+    fn rows_so_far_show_until_the_listing_lands() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.network_check = |_| true;
+        let dir = PathBuf::from("/pretend/share/raw");
+        app.home.browsing = Some(dir.clone());
+        app.home_probes_inflight = vec![dir.clone()];
+        let row = |name: &str| discover::Entry::directory(&dir.join(name));
+
+        app.event(&AppEvent::HomeProbeProgress {
+            root: dir.clone(),
+            rows: vec![row("2009-01-03")],
+        });
+        app.home.rebuild(&[], &[]);
+        let section = &app.home.sections[0];
+        assert!(section.waiting);
+        assert_eq!(section.subtitle.as_deref(), Some("1 so far"));
+        assert_eq!(section.rows.len(), 1);
+
+        app.event(&AppEvent::HomeProbeReady {
+            root: dir.clone(),
+            rows: Some(vec![row("2009-01-03"), row("2009-01-04")]),
+            cut_short: true,
+        });
+        app.event(&AppEvent::HomeProbeProgress {
+            root: dir.clone(),
+            rows: vec![row("late")],
+        });
+        app.home.rebuild(&[], &[]);
+        let section = &app.home.sections[0];
+        assert!(!section.waiting);
+        assert_eq!(section.rows.len(), 2);
+        assert_eq!(section.subtitle.as_deref(), Some("first 5,000"));
+    }
+
     /// A probe that answers must give its slot back. The cap is there to bound threads
     /// wedged on a dead mount, and those never answer at all; counting completed probes
     /// against it meant that after MAX_CONCURRENT_PROBES roots, no root was ever probed
@@ -458,6 +517,7 @@ mod probe_slot_tests {
             app.event(&AppEvent::HomeProbeReady {
                 root: root.clone(),
                 rows,
+                cut_short: false,
             });
         }
 
@@ -481,6 +541,7 @@ mod probe_slot_tests {
         app.event(&AppEvent::HomeProbeReady {
             root: answered,
             rows: Some(Vec::new()),
+            cut_short: false,
         });
 
         assert_eq!(
@@ -561,8 +622,8 @@ mod classify_batch_tests {
 
         // It lands, and what follows it is about where the viewport is now.
         app.event(&AppEvent::HomeClassified {
-            generation: app.home_generation,
             measured: Vec::new(),
+            done: true,
         });
         let next = app.home.unclassified_visible(CLASSIFY_BATCH);
         assert!(
@@ -582,25 +643,28 @@ mod classify_batch_tests {
         app.home.classify_in_flight = true;
 
         app.event(&AppEvent::HomeClassified {
-            generation: app.home_generation,
             measured: Vec::new(),
+            done: true,
         });
 
         assert!(!app.home.classify_in_flight);
     }
 
-    /// A pass belonging to a listing the user has moved on from is dropped, which is
-    /// what keeps a stale kind from being written into a row that is not the row it
-    /// was asked about.
+    /// A pass that lands after the listing was rebuilt still labels its row. A probe
+    /// or a cloud peek landing rebuilds the listing, and a Recent section with a few
+    /// buckets in it lands several in a row: dropping the answer each time left a share
+    /// dataset unlabeled for half a minute.
     #[test]
-    fn a_stale_pass_is_dropped() {
+    fn a_pass_that_outlives_its_listing_still_counts() {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.home.apply_listing(unlooked_at(4));
         let path = PathBuf::from("/pretend/share/d0000");
+        app.home.classify_in_flight = true;
 
+        // What a rebuild does to the generation while the pass is out.
+        app.home_generation = app.home_generation.wrapping_add(1);
         app.event(&AppEvent::HomeClassified {
-            generation: app.home_generation.wrapping_sub(1),
             measured: vec![(
                 path.clone(),
                 home::Measured {
@@ -608,11 +672,105 @@ mod classify_batch_tests {
                     ..Default::default()
                 },
             )],
+            done: true,
         });
 
-        assert!(
-            !app.home.enriched.contains_key(&path),
-            "a result from a listing that is gone should not be kept"
+        let kind = app.home.visible().iter().find_map(|row| match row {
+            home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
+            _ => None,
+        });
+        assert_eq!(kind, Some(discover::EntryKind::Hive));
+    }
+
+    /// Space folds the header under the cursor, and never starts a filter: a filter of
+    /// one space is invisible at the prompt and searched below the working directory.
+    /// Once typing has started it types.
+    #[test]
+    fn space_folds_a_header_and_types_only_mid_filter() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.input_mode = InputMode::Home;
+        app.home.apply_listing(unlooked_at(3));
+        let space = || AppEvent::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.home.selected = 0;
+        assert!(app.home.selection_is_header());
+
+        app.event(&space());
+        assert!(app.home.is_collapsed(0));
+        app.event(&space());
+        assert!(!app.home.is_collapsed(0));
+
+        app.home.selected = 1;
+        app.event(&space());
+        assert_eq!(app.home.filter, "", "a space on a row is nothing");
+        assert!(!app.home.is_collapsed(0));
+
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::NONE,
+        )));
+        app.event(&space());
+        assert_eq!(app.home.filter, "d ");
+    }
+
+    /// A row's label shows as soon as its answer lands, not when the batch it was in
+    /// finishes; the slot stays taken until then, so a second batch never overlaps it.
+    #[test]
+    fn a_label_lands_before_its_batch_is_done() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.apply_listing(unlooked_at(4));
+        let path = PathBuf::from("/pretend/share/d0000");
+        app.home.classify_in_flight = true;
+
+        app.event(&AppEvent::HomeClassified {
+            measured: vec![(
+                path.clone(),
+                home::Measured {
+                    kind: Some(discover::EntryKind::Hive),
+                    ..Default::default()
+                },
+            )],
+            done: false,
+        });
+
+        let kind = app.home.visible().iter().find_map(|row| match row {
+            home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
+            _ => None,
+        });
+        assert_eq!(kind, Some(discover::EntryKind::Hive));
+        assert!(app.home.classify_in_flight, "the batch is still out");
+    }
+}
+
+#[cfg(test)]
+mod quality_sample_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Choosing equal rows per value of a column sets the grain to that column, so
+    /// Segments and Trends have what the sample was drawn for; a grain chosen
+    /// afterwards is not taken back.
+    #[test]
+    fn the_grain_follows_an_equal_per_value_sample_once() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let per_date = sampling::SampleMethod::PerPartition {
+            column: "date".into(),
+        };
+        app.analysis_modal.sample.method = per_date.clone();
+        app.sync_quality_plan();
+        assert_eq!(
+            app.analysis_modal.data_quality_plan.grain,
+            data_quality::QualityGrain::Partition("date".into())
+        );
+
+        app.analysis_modal.data_quality_plan.grain = data_quality::QualityGrain::Dataset;
+        app.sync_quality_plan();
+        assert_eq!(
+            app.analysis_modal.data_quality_plan.grain,
+            data_quality::QualityGrain::Dataset,
+            "the same sample again leaves the chosen grain alone"
         );
     }
 }
@@ -5059,17 +5217,23 @@ pub enum AppEvent {
         path: PathBuf,
         preview: Option<crate::discover::SchemaPreview>,
     },
-    /// Measurements for rows the home screen asked about.
+    /// Measurements for rows the home screen asked about, sent as each row is read so
+    /// a slow row does not hold back the ones before it. `done` marks the end of the
+    /// batch and frees the slot for the next one.
+    ///
+    /// No generation, unlike its neighbors: what a look found is keyed by path and
+    /// true of that path whichever listing asked, so an answer that outlives its
+    /// listing is still the answer.
     HomeMeasured {
-        generation: u64,
         measured: Vec<(PathBuf, crate::home::Measured)>,
+        done: bool,
     },
     /// What the rows on screen turned out to be. The same payload as
     /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
     /// things a look into a row produces.
     HomeClassified {
-        generation: u64,
         measured: Vec<(PathBuf, crate::home::Measured)>,
+        done: bool,
     },
     /// A batch of datasets found by the background search below the working
     /// directory. Sent repeatedly while the walk runs, so a cold tree fills in
@@ -5110,6 +5274,13 @@ pub enum AppEvent {
     HomeProbeReady {
         root: PathBuf,
         rows: Option<Vec<crate::discover::Entry>>,
+        /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
+        cut_short: bool,
+    },
+    /// The rows of a network directory read so far, while its listing goes on.
+    HomeProbeProgress {
+        root: PathBuf,
+        rows: Vec<crate::discover::Entry>,
     },
     /// What peeking inside some directories of a cloud listing found: the ones that are
     /// partitioned or Parquet datasets.
@@ -5191,6 +5362,12 @@ pub enum AppEvent {
     AnalysisCorrelationCompute,
     /// Run the configured data-quality plan off the UI thread.
     AnalysisDataQualityCompute,
+    /// Background task completed: the shared sample's rows, to show as a table.
+    BackgroundSampleReady {
+        generation: u64,
+        df: polars::prelude::DataFrame,
+        label: String,
+    },
     /// Background task completed: describe/statistics results.
     BackgroundDescribeReady {
         generation: u64,
@@ -5210,6 +5387,8 @@ pub enum AppEvent {
     BackgroundDataQualityReady {
         generation: u64,
         results: crate::data_quality::DataQualityResults,
+        /// The rows a sampled run read, for the next run and drill to cut.
+        kept: Option<KeptQualitySample>,
     },
     /// Background task completed: buffer data collected.
     /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
@@ -6359,6 +6538,16 @@ struct QualityCacheEntry {
     results: data_quality::DataQualityResults,
 }
 
+/// The rows the last sampled Data Quality run read, and what decided which rows they
+/// were. A run or a drill that names the same rows cuts these instead of reading.
+#[derive(Debug, Clone)]
+pub struct KeptQualitySample {
+    dataset_generation: u64,
+    view_generation: u64,
+    sample: sampling::Sample,
+    rows: std::sync::Arc<data_quality::QualitySample>,
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
@@ -6447,7 +6636,14 @@ pub struct App {
     startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
     quality_cache: Vec<QualityCacheEntry>,
+    /// See [`KeptQualitySample`]. One, the last: a sample is up to two million rows.
+    quality_sample: Option<KeptQualitySample>,
+    /// The table an analysis drill left behind: Data Quality's matching rows or the
+    /// sample's, shown in its place until Esc brings it back.
     quality_evidence_return: Option<Box<DataTableState>>,
+    /// The shared sample is being read to show as a table; a cancel leaves the tool
+    /// on screen as it was.
+    reading_sample: bool,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -6502,8 +6698,6 @@ pub struct App {
     active_template_id: Option<String>, // ID of currently applied template
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
-    /// Rows an analysis samples from a larger table; `None` reads every row.
-    analysis_sample_rows: Option<usize>,
     /// `a` is waiting on the confirmation to read every row.
     pending_read_all: bool,
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
@@ -6624,40 +6818,41 @@ pub struct App {
 }
 
 impl App {
-    fn open_quality_evidence(&mut self) {
-        let Some(observation) =
-            self.analysis_modal
-                .data_quality_results
-                .as_ref()
-                .and_then(|results| {
-                    self.analysis_modal
-                        .data_quality_table_state
-                        .selected()
-                        .and_then(|index| results.observations.get(index))
-                        .filter(|observation| {
-                            // An observation read from the footers is exact whatever the
-                            // run's compute budget was: the files it names are the files
-                            // it names. Everything measured over values is not.
-                            observation.evidence_scope().is_some()
-                                || results.precision == data_quality::QualityPrecision::Exact
-                        })
-                })
-        else {
-            return;
-        };
+    fn open_quality_evidence(&mut self) -> Option<AppEvent> {
+        let results = self.analysis_modal.data_quality_results.as_ref()?;
+        let report = quality_report::build_report(results);
+        // Files named from the footers open from the table whatever the run read;
+        // a sampled measurement opens the sample it was taken on.
+        let finding = self
+            .analysis_modal
+            .data_quality_table_state
+            .selected()
+            .and_then(|index| report.findings.get(index))
+            .filter(|finding| finding.can_open_rows(results))?;
         // A column its file never had, or holds in a type the scan cannot read, has no
         // value to filter on: its rows are the ones those files contributed, which is a
         // scope rather than a predicate.
-        let by_files = observation.evidence_scope();
-        let predicate = match (&by_files, observation.evidence_predicate()) {
+        let by_files = finding.evidence_scope(results);
+        let predicate = match (&by_files, finding.evidence_predicate(results)) {
             (Some(_), _) => polars::prelude::lit(true),
             (None, Some(predicate)) => predicate,
-            (None, None) => return,
+            (None, None) => return None,
         };
-        let label = format!("{} / {}", observation.kind.label(), observation.column);
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
+        let label = format!(
+            "Data Quality / {} / {}",
+            finding.title,
+            quality_report::columns_label(&finding.columns, 40)
+        );
+        if finding.opens_sample(results) {
+            let sample = self
+                .analysis_modal
+                .data_quality_last_plan
+                .as_ref()
+                .unwrap_or(&self.analysis_modal.data_quality_plan)
+                .sample();
+            return self.read_sample_rows(sample, Some((predicate, format!("{label} / sampled"))));
+        }
+        let state = self.data_table_state.as_ref()?;
         let scope = by_files.as_ref().unwrap_or_else(|| {
             self.analysis_modal
                 .data_quality_last_plan
@@ -6670,7 +6865,7 @@ impl App {
             Err(error) => {
                 self.error_modal
                     .show(format!("Cannot open matching rows: {error}"));
-                return;
+                return None;
             }
         };
         if let Some(original) = self.data_table_state.replace(view) {
@@ -6680,6 +6875,7 @@ impl App {
             self.collect_inflight = None;
             self.spawn_async_collect("Loading matching rows...");
         }
+        None
     }
 
     fn return_from_quality_evidence(&mut self, reopen_analysis: bool) -> bool {
@@ -6716,15 +6912,95 @@ impl App {
         }
     }
 
-    fn clear_quality_result_if_plan_changed(&mut self) {
-        if self.analysis_modal.data_quality_results.is_some()
-            && self.analysis_modal.data_quality_last_plan.as_ref()
-                != Some(&self.analysis_modal.data_quality_plan)
+    /// What the data offers the plan's choices.
+    fn quality_plan_context(&self) -> analysis_modal::PlanContext {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return analysis_modal::PlanContext::default();
+        };
+        let scope = &self.analysis_modal.data_quality_plan.scope;
+        let schema = &state.schema;
+        let mut partitions = state.partition_columns.clone().unwrap_or_default();
+        // A directory whose files agree opens as one scan and names no partition
+        // columns; its directory names still do.
+        if partitions.is_empty()
+            && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
         {
-            self.analysis_modal.data_quality_results = None;
-            self.analysis_modal.data_quality_last_plan = None;
-            self.analysis_modal.data_quality_from_cache = false;
+            partitions = DataTableState::discover_hive_partition_columns(dir)
+                .into_iter()
+                .filter(|column| schema.get(column).is_some())
+                .collect();
         }
+        analysis_modal::PlanContext {
+            partitions,
+            time_columns: state
+                .quality_temporal_columns(scope)
+                .into_iter()
+                .map(|column| {
+                    let has_time =
+                        !matches!(schema.get(&column), Some(polars::prelude::DataType::Date));
+                    (column, has_time)
+                })
+                .collect(),
+            files: state.quality_source_file_count() > 1,
+        }
+    }
+
+    /// Space on a plan field: the Sample form, the role editor, or the field's
+    /// choices.
+    fn open_plan_field(&mut self) -> Option<AppEvent> {
+        match self.analysis_modal.data_quality_plan_field {
+            0 => self.open_sample_form(),
+            4 => {
+                // With no date or time column there is no role to assign.
+                if self.has_quality_time_columns() {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::TimeRoles);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            field => {
+                let context = self.quality_plan_context();
+                self.analysis_modal.open_plan_picker(field, &context);
+            }
+        }
+        None
+    }
+
+    /// The plan setting the Data Quality page on screen lacks before it can show
+    /// anything; Enter opens it, and the control bar says so.
+    pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
+        let modal = &self.analysis_modal;
+        data_quality::page_setup(
+            modal.data_quality_page,
+            modal.quality_result_plan(),
+            modal.data_quality_results.as_ref(),
+            self.has_quality_time_columns(),
+        )
+    }
+
+    /// Whether the plan's scope has a date or time column to give a role.
+    pub(crate) fn has_quality_time_columns(&self) -> bool {
+        self.data_table_state.as_ref().is_some_and(|state| {
+            !state
+                .quality_temporal_columns(&self.analysis_modal.data_quality_plan.scope)
+                .is_empty()
+        })
+    }
+
+    /// The rows the last sampled Data Quality run read, when they are the rows
+    /// `sample` names now: same dataset, same view, same sample.
+    fn kept_quality_sample(
+        &self,
+        sample: &sampling::Sample,
+    ) -> Option<std::sync::Arc<data_quality::QualitySample>> {
+        let kept = self.quality_sample.as_ref()?;
+        let view_generation = self.data_table_state.as_ref()?.len_generation();
+        (kept.dataset_generation == self.dataset_generation
+            && kept.view_generation == view_generation
+            && &kept.sample == sample)
+            .then(|| kept.rows.clone())
     }
 
     fn restore_cached_quality(&mut self) -> bool {
@@ -6751,7 +7027,11 @@ impl App {
         true
     }
 
-    fn cache_quality_result(&mut self, results: &data_quality::DataQualityResults) {
+    fn cache_quality_result(
+        &mut self,
+        results: &data_quality::DataQualityResults,
+        plan: data_quality::DataQualityPlan,
+    ) {
         let Some(view_generation) = self
             .data_table_state
             .as_ref()
@@ -6759,7 +7039,6 @@ impl App {
         else {
             return;
         };
-        let plan = self.analysis_modal.data_quality_plan.clone();
         self.quality_cache.retain(|entry| {
             !(entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
@@ -6822,13 +7101,365 @@ impl App {
             .any(|(generation, n)| *generation != self.task_generation && *n > 0)
     }
 
-    /// How many rows the next analysis samples: none when `a` asked for every row.
-    fn analysis_sampling(&self) -> Option<usize> {
-        if self.analysis_modal.reads_all {
-            None
-        } else {
-            self.analysis_sample_rows
+    /// Where the value tools (Describe, Distribution, Correlation) read the shared
+    /// sample from, and what the table already knows of its size. Row ranges are
+    /// counted in the order the table shows; every other view scope reads without the
+    /// sort, which no statistic needs and which makes a sampled read read everything.
+    fn sample_source(&self, state: &DataTableState) -> (sampling::SampleSource, Option<usize>) {
+        Self::sample_source_for(state, &self.analysis_modal.sample.scope)
+    }
+
+    fn sample_source_for(
+        state: &DataTableState,
+        scope: &data_quality::QualityScope,
+    ) -> (sampling::SampleSource, Option<usize>) {
+        if scope.uses_source() {
+            let (lf, source) = state.data_quality_source_scan();
+            return (sampling::SampleSource::loaded(lf, source), None);
         }
+        let lf = match scope {
+            data_quality::QualityScope::FirstRows(_)
+            | data_quality::QualityScope::ViewRows { .. } => state.lf.clone(),
+            _ => state.analysis_lf(),
+        };
+        (
+            sampling::SampleSource::view(lf.select(state.binary_stub_exprs())),
+            sampling::view_scope_rows(state.num_rows_if_valid(), scope),
+        )
+    }
+
+    /// Open the Sample form on a copy of the shared sample. A per-partition sample
+    /// splits by a column; partition columns lead the choices, then the columns a
+    /// partition is usually made of (text, integers, dates), never floats.
+    fn open_sample_form(&mut self) {
+        self.open_sample_form_as(false);
+    }
+
+    /// A tool with nothing to show yet: the Sample form is its pane, as it stands.
+    /// Where the cursor goes is the caller's: into the form when the tool is picked,
+    /// back to the tool list when Esc leaves it.
+    fn open_first_run_form(&mut self) {
+        self.open_sample_form_as(true);
+        self.sync_sample_form_focus();
+    }
+
+    /// The scope field shows its cursor only while the form has the cursor.
+    fn sync_sample_form_focus(&mut self) {
+        let focused = self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
+        if let Some(form) = self.analysis_modal.sample_form.as_mut() {
+            let has_cursor = focused || !form.inline;
+            form.sync_focus(has_cursor);
+        }
+    }
+
+    /// Run the tool on screen with the Sample form's sample, or say on the form why
+    /// its scope does not parse.
+    fn run_sample_form(&mut self) -> Option<AppEvent> {
+        let form = self.analysis_modal.sample_form.as_mut()?;
+        match form.finish() {
+            Ok(sample) => {
+                self.analysis_modal.sample_form = None;
+                self.apply_sample(sample)
+            }
+            Err(error) => {
+                form.error = Some(error);
+                None
+            }
+        }
+    }
+
+    fn open_sample_form_as(&mut self, inline: bool) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let mut partition_columns = state.partition_columns.clone().unwrap_or_default();
+        let mut partition_values = Vec::new();
+        // A directory whose files agree opens as one scan and names no partition
+        // columns; its directory names still do. One branch of the tree is walked for
+        // the columns and one listing read for the first column's values: local,
+        // and small next to opening the dataset.
+        if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
+            if partition_columns.is_empty() {
+                partition_columns = DataTableState::discover_hive_partition_columns(dir)
+                    .into_iter()
+                    .filter(|column| state.schema.get(column).is_some())
+                    .collect();
+            }
+            if let Some(first) = partition_columns.first() {
+                let prefix = format!("{first}=");
+                let mut values: Vec<String> = std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        name.strip_prefix(&prefix).map(str::to_string)
+                    })
+                    .collect();
+                values.sort();
+                if !values.is_empty() {
+                    partition_values.push((first.clone(), values));
+                }
+            }
+        }
+        // An equal-per-value sample splits by a column: partition columns first, then
+        // text, the usual stuff of a group (a ticker, a region), then dates and
+        // integers. Never floats.
+        let mut value_columns = partition_columns.clone();
+        for kind in 0..3 {
+            for (name, dtype) in state.schema.iter() {
+                let rank = match dtype {
+                    DataType::String | DataType::Categorical(..) | DataType::Boolean => 0,
+                    DataType::Date => 1,
+                    dtype if dtype.is_integer() => 2,
+                    _ => continue,
+                };
+                if rank == kind && !value_columns.iter().any(|column| column == name.as_str()) {
+                    value_columns.push(name.to_string());
+                }
+            }
+        }
+        let context = sample_modal::SampleContext {
+            view_rows: state.num_rows_if_valid(),
+            filtered: state.changes_rows(),
+            files: state.quality_source_file_names().to_vec(),
+            partition_columns,
+            partition_values,
+            time_columns: state.quality_temporal_columns(&data_quality::QualityScope::WholeSource),
+            value_columns,
+        };
+        let mut form =
+            sample_modal::SampleForm::new(&self.analysis_modal.sample, context, &self.theme);
+        form.inline = inline;
+        self.analysis_modal.sample_form = Some(form);
+        self.sync_sample_form_focus();
+    }
+
+    fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let form = self.analysis_modal.sample_form.as_mut()?;
+        let typing = form.field.is_text();
+        let on_files = form.field == sample_modal::SampleField::Files;
+        let file_count = form.context.files.len();
+        match event.code {
+            // In a tool's empty pane the form stays, as it was: Esc discards the
+            // edit and hands the cursor back to the tool list.
+            KeyCode::Esc if form.inline => {
+                self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+                self.open_first_run_form();
+            }
+            KeyCode::Esc => self.analysis_modal.sample_form = None,
+            KeyCode::Enter => return self.run_sample_form(),
+            KeyCode::Down | KeyCode::Tab => form.move_field(true),
+            KeyCode::Up | KeyCode::BackTab => form.move_field(false),
+            KeyCode::Char('j') if !typing => form.move_field(true),
+            KeyCode::Char('k') if !typing => form.move_field(false),
+            KeyCode::Left | KeyCode::Char('h') if !typing => form.adjust(false),
+            KeyCode::Right | KeyCode::Char('l') if !typing => form.adjust(true),
+            KeyCode::PageDown if on_files => {
+                form.file_offset = (form.file_offset + crate::widgets::sample_form::FILES_SHOWN)
+                    .min(file_count.saturating_sub(1));
+            }
+            KeyCode::PageUp if on_files => {
+                form.file_offset = form
+                    .file_offset
+                    .saturating_sub(crate::widgets::sample_form::FILES_SHOWN);
+            }
+            _ if typing => {
+                if let Some(input) = form.input_mut(form.field) {
+                    let _ = input.handle_key(event, None);
+                }
+                form.error = None;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Read the shared sample, as the tool on screen reads it, to show as a table.
+    ///
+    /// Data Quality's last sample is kept and cut when it is these rows; any other is
+    /// drawn again from its seed, which makes it the same rows the tool measured.
+    fn read_sample_view(&mut self) -> Option<AppEvent> {
+        let sample = self.analysis_modal.sample.clone();
+        self.read_sample_rows(sample, None)
+    }
+
+    /// Read `sample` off the UI thread and show its rows: all of them, or only a
+    /// finding's, under the finding's label. The sample is drawn again from its seed,
+    /// so these are the rows the tool measured.
+    fn read_sample_rows(
+        &mut self,
+        sample: sampling::Sample,
+        evidence: Option<(polars::prelude::Expr, String)>,
+    ) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let (source, known_total) = Self::sample_source_for(state, &sample.scope);
+        let streaming = self.app_config.performance.polars_streaming;
+        // The rows Data Quality just measured, when they are the rows asked for: cut
+        // from memory rather than drawn again from the files.
+        let kept = self.kept_quality_sample(&sample).map(|kept| {
+            let columns: Vec<_> = state
+                .schema
+                .iter_names()
+                .filter(|name| kept.df().column(name.as_str()).is_ok())
+                .map(|name| polars::prelude::col(name.clone()))
+                .collect();
+            (kept, columns)
+        });
+        self.reading_sample = true;
+        self.analysis_modal.computing = Some(AnalysisProgress::new(if evidence.is_some() {
+            "Reading the matching sampled rows"
+        } else {
+            "Reading the sample"
+        }));
+        self.busy = true;
+        self.spawn_bg("Reading the sample...", move |task_gen, tx| {
+            let rows = match kept {
+                Some((kept, columns)) => polars::prelude::IntoLazy::lazy(kept.df().clone())
+                    .select(columns)
+                    .collect()
+                    .map_err(color_eyre::eyre::Report::from)
+                    .map(|df| kept.analysis_rows(df)),
+                None => source
+                    .cut(&sample.scope)
+                    .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
+            };
+            let read = rows.and_then(|rows| {
+                let label = format!(
+                    "Sample {} {}",
+                    crate::glyphs::get().middot,
+                    sample.outcome(
+                        rows.total_rows,
+                        rows.sample_size,
+                        rows.per_value.as_ref().map(|per_value| per_value.kept),
+                    )
+                );
+                match evidence {
+                    Some((predicate, label)) => {
+                        let df = polars::prelude::IntoLazy::lazy(rows.df)
+                            .filter(predicate)
+                            .collect()?;
+                        Ok((df, label))
+                    }
+                    None => Ok((rows.df, label)),
+                }
+            });
+            let _ = tx.send(match read {
+                Ok((df, label)) => AppEvent::BackgroundSampleReady {
+                    generation: task_gen,
+                    label,
+                    df,
+                },
+                Err(error) => AppEvent::BackgroundError {
+                    generation: task_gen,
+                    message: format!("{error}"),
+                },
+            });
+        });
+        None
+    }
+
+    /// Put the sample's rows in the table viewer in place of the table, as Data
+    /// Quality's drill-in does; Esc brings the table and Analysis back.
+    fn show_sample_view(&mut self, df: polars::prelude::DataFrame, label: String) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let view = match state.sample_view(df) {
+            Ok(view) => view,
+            Err(error) => {
+                self.error_modal
+                    .show(format!("Cannot show the sample: {error}"));
+                return;
+            }
+        };
+        if let Some(original) = self.data_table_state.replace(view) {
+            self.quality_evidence_return = Some(Box::new(original));
+            self.quality_evidence_label = Some(label);
+            self.analysis_modal.active = false;
+            self.collect_inflight = None;
+            self.spawn_async_collect("Loading the sample...");
+        }
+    }
+
+    /// Mirror the shared sample into the Data Quality plan, which carries it into the
+    /// engine and into the session cache's key. Metadata-only stays metadata-only.
+    fn sync_quality_plan(&mut self) {
+        let sample = self.analysis_modal.sample.clone();
+        let plan = &mut self.analysis_modal.data_quality_plan;
+        if plan.scope != sample.scope {
+            plan.baseline_segment = None;
+        }
+        plan.scope = sample.scope;
+        plan.sample_seed = sample.seed;
+        plan.dataset_rows = sample.rows;
+        if plan.compute != data_quality::QualityCompute::Metadata {
+            plan.compute = if sample.method == sampling::SampleMethod::EveryRow {
+                data_quality::QualityCompute::Full
+            } else {
+                data_quality::QualityCompute::Sample
+            };
+        }
+        // Choosing equal rows per value of a column is choosing to look at that column's
+        // values side by side, and the grain is what does that. Taken only when the
+        // choice is new and the grain has not been set, so a grain chosen afterwards
+        // stays chosen.
+        if let sampling::SampleMethod::PerPartition { column } = &sample.method
+            && plan.method != sample.method
+            && plan.grain == data_quality::QualityGrain::Dataset
+        {
+            plan.grain = data_quality::QualityGrain::Partition(column.clone());
+            plan.baseline_segment = None;
+        }
+        plan.method = sample.method;
+    }
+
+    /// Adopt a new shared sample: every tool's results were of the old one, so all of
+    /// them go, and the tool on screen runs again.
+    fn apply_sample(&mut self, sample: sampling::Sample) -> Option<AppEvent> {
+        // A first run on the sample as it stands takes nothing from the other tools.
+        if sample != self.analysis_modal.sample {
+            self.analysis_modal.describe_results = None;
+            self.analysis_modal.distribution_results = None;
+            self.analysis_modal.correlation_results = None;
+            self.analysis_modal.data_quality_results = None;
+            self.analysis_modal.data_quality_last_plan = None;
+            self.analysis_modal.data_quality_from_cache = false;
+        }
+        self.analysis_modal.sample = sample;
+        self.analysis_modal.sample_dataset = Some(self.dataset_generation);
+        self.analysis_modal.sample_run_for = Some(self.dataset_generation);
+        self.sync_quality_plan();
+        if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
+            return self.run_quality_plan();
+        }
+        self.start_analysis_run()
+    }
+
+    /// Run the Data Quality plan as the Plan page's Enter does: from the session cache
+    /// when it holds this plan, after confirmation when the plan needs one.
+    fn run_quality_plan(&mut self) -> Option<AppEvent> {
+        use data_quality::QualityPage;
+        self.sync_quality_plan();
+        if self.restore_cached_quality() {
+            return None;
+        }
+        self.analysis_modal.set_quality_page(QualityPage::Plan);
+        if self
+            .analysis_modal
+            .data_quality_plan
+            .requires_confirmation()
+        {
+            // The prompt is answered with Enter, which only the main pane hears.
+            self.analysis_modal.data_quality_confirm_run = true;
+            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+            return None;
+        }
+        self.analysis_modal.data_quality_results = None;
+        self.analysis_modal.data_quality_from_cache = false;
+        self.analysis_modal.computing = Some(AnalysisProgress::new("Profiling data quality"));
+        self.busy = true;
+        Some(AppEvent::AnalysisDataQualityCompute)
     }
 
     /// Run the selected tool again from scratch, as `r` and `a` do.
@@ -6843,7 +7474,7 @@ impl App {
                     current: 0,
                     total: 0,
                     total_rows: 0,
-                    sample_seed: self.analysis_modal.random_seed,
+                    sample_seed: self.analysis_modal.sample.seed,
                     sample_size: None,
                 });
                 ("Describing data", AppEvent::AnalysisChunk)
@@ -6884,6 +7515,11 @@ impl App {
         self.analysis_computation = None;
         self.busy = false;
         self.status_message = None;
+        // Reading the sample to look at changed nothing on screen; the tool stays.
+        if std::mem::take(&mut self.reading_sample) {
+            self.flash_note("Sample view cancelled".to_string());
+            return;
+        }
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             self.analysis_modal.data_quality_results = None;
         } else {
@@ -7027,7 +7663,7 @@ impl App {
                 }
             }
             InputMode::Normal => {
-                self.analysis_modal.quality_scope_typing()
+                self.analysis_modal.sample_scope_typing()
                     || (self.template_modal.active
                         && self.template_modal.mode != TemplateModalMode::List
                         && matches!(
@@ -7458,6 +8094,7 @@ impl App {
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
         self.quality_cache.clear();
+        self.quality_sample = None;
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
         // Whatever chart state survived belongs to the dataset being replaced.
@@ -8058,10 +8695,14 @@ impl App {
             template_modal: TemplateModal::new(),
             opened_from_home: false,
             startup_template: None,
-            analysis_modal: AnalysisModal::new(),
+            analysis_modal: AnalysisModal::with_sample_rows(
+                app_config.performance.analysis_sample_rows,
+            ),
             quality_cache: Vec::new(),
+            quality_sample: None,
             quality_evidence_return: None,
             quality_evidence_label: None,
+            reading_sample: false,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -8089,8 +8730,6 @@ impl App {
             active_template_id: None,
             loading_state: LoadingState::Idle,
             theme,
-            analysis_sample_rows: (app_config.performance.analysis_sample_rows > 0)
-                .then_some(app_config.performance.analysis_sample_rows),
             pending_read_all: false,
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
@@ -8225,8 +8864,15 @@ impl App {
             // Each probe of an unreachable share costs a thread that will never come
             // back. A handful is a rounding error; an unbounded number, on a machine
             // with a page of dead mounts, is not.
-            if self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
-                break;
+            //
+            // Except the directory browsed into, which is the whole screen and has
+            // nothing else to show. Held behind the cap, it waited on roots the user
+            // had left — a few slow bucket listings kept a share's directory on a
+            // spinner long after it could have been read. One more thread per
+            // directory the user opens is bounded by the user.
+            let browsed = self.home.browsing.as_ref() == Some(&root);
+            if !browsed && self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
+                continue;
             }
             self.home_probes_inflight.push(root.clone());
             let tx = self.events.clone();
@@ -8261,13 +8907,18 @@ impl App {
                             let _ = tx.send(AppEvent::HomeProbeReady {
                                 root,
                                 rows: Some(rows),
+                                cut_short: false,
                             });
                         }
                         Some(Err(message)) => {
                             let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                         }
                         None => {
-                            let _ = tx.send(AppEvent::HomeProbeReady { root, rows: None });
+                            let _ = tx.send(AppEvent::HomeProbeReady {
+                                root,
+                                rows: None,
+                                cut_short: false,
+                            });
                         }
                     }
                     return;
@@ -8290,13 +8941,24 @@ impl App {
                             let _ = tx.send(AppEvent::HomeProbeReady {
                                 root,
                                 rows: other.and_then(Result::ok),
+                                cut_short: false,
                             });
                         }
                     }
                     return;
                 }
+                let mut cut_short = false;
                 let rows = if std::fs::read_dir(&root).is_ok() {
-                    let mut rows = crate::discover::scan_dir(&root);
+                    // What has been read shows while the rest is read: a share can take
+                    // seconds over a directory of thousands.
+                    let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
+                        let _ = tx.send(AppEvent::HomeProbeProgress {
+                            root: root.clone(),
+                            rows: so_far.to_vec(),
+                        });
+                    });
+                    cut_short = scan.truncated;
+                    let mut rows = scan.entries;
                     // Measuring happens here too: it is the same remote filesystem,
                     // and this thread is already the one allowed to block on it.
                     for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
@@ -8316,7 +8978,11 @@ impl App {
                 } else {
                     None
                 };
-                let _ = tx.send(AppEvent::HomeProbeReady { root, rows });
+                let _ = tx.send(AppEvent::HomeProbeReady {
+                    root,
+                    rows,
+                    cut_short,
+                });
             });
         }
     }
@@ -8573,6 +9239,7 @@ impl App {
         if let Some(dir) = self.home.browsing.clone() {
             self.home.probed.remove(&dir);
             self.home.unreachable.remove(&dir);
+            self.home.cut_short.remove(&dir);
         }
         // A peek that failed is asked again: Ctrl+R is the request to try.
         self.home.peek_failed.clear();
@@ -8666,6 +9333,8 @@ impl App {
             browsing: self.home.browsing.clone(),
             probed: self.home.probed.clone(),
             unreachable: self.home.unreachable.clone(),
+            listing_so_far: self.home.listing_so_far.clone(),
+            cut_short: self.home.cut_short.clone(),
             probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
@@ -8698,13 +9367,18 @@ impl App {
         }
 
         self.home.measure_in_flight = true;
-        let generation = self.home_generation;
         let tx = self.events.clone();
         let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
+            home::look_into_batch(wanted, &cache, |path, m| {
+                let _ = tx.send(AppEvent::HomeMeasured {
+                    measured: vec![(path, m)],
+                    done: false,
+                });
+            });
             let _ = tx.send(AppEvent::HomeMeasured {
-                generation,
-                measured: home::look_into_batch(wanted, &cache),
+                measured: Vec::new(),
+                done: true,
             });
         });
     }
@@ -8763,13 +9437,18 @@ impl App {
         }
 
         self.home.classify_in_flight = true;
-        let generation = self.home_generation;
         let tx = self.events.clone();
         let cache = self.cache.clone();
         std::thread::spawn(move || {
+            home::look_into_batch(wanted, &cache, |path, m| {
+                let _ = tx.send(AppEvent::HomeClassified {
+                    measured: vec![(path, m)],
+                    done: false,
+                });
+            });
             let _ = tx.send(AppEvent::HomeClassified {
-                generation,
-                measured: home::look_into_batch(wanted, &cache),
+                measured: Vec::new(),
+                done: true,
             });
         });
     }
@@ -9059,6 +9738,15 @@ impl App {
     ///
     /// Collapsing moves the cursor to the header, so the section the user just folded
     /// is what stays selected rather than whatever row happens to fall into place.
+    /// Fold or unfold the section whose header is highlighted.
+    fn home_toggle_fold(&mut self) {
+        if let Some(section) = self.home.selected_section() {
+            self.home.toggle_collapsed(section);
+            self.home.clamp_selection();
+            self.cache.save_folds(&self.home.folds);
+        }
+    }
+
     fn home_collapse(&mut self, collapse: bool) {
         // The listing browsed into is the whole screen. It never folds, and the fold
         // must not be remembered for its path either — see `set_collapsed`.
@@ -9414,11 +10102,7 @@ impl App {
             _ => {}
         }
         if self.home.selection_is_header() {
-            if let Some(section) = self.home.selected_section() {
-                self.home.toggle_collapsed(section);
-                self.home.clamp_selection();
-                self.cache.save_folds(&self.home.folds);
-            }
+            self.home_toggle_fold();
             return None;
         }
         let entry = self.home.selected_entry()?;
@@ -9997,6 +10681,14 @@ impl App {
             // is where a new user asks for the keys. F1 opens help mid-filter.
             KeyCode::Char('?') if self.home.filter.is_empty() && !ctrl => {
                 self.open_help_overlay();
+            }
+            // Space before typing starts folds a header, as Enter does, and is otherwise
+            // nothing: a filter of one space is invisible at the prompt and matched every
+            // name with a space in it, below the working directory too.
+            KeyCode::Char(' ') if self.home.filter.is_empty() && !ctrl => {
+                if self.home.selection_is_header() {
+                    self.home_toggle_fold();
+                }
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);
@@ -12517,8 +13209,13 @@ impl App {
                         // first: reading every row, and forgetting recents.
                         if std::mem::take(&mut self.pending_read_all) {
                             self.confirmation_modal.hide();
-                            self.analysis_modal.reads_all = true;
-                            return self.start_analysis_run();
+                            // Every row is a sample method like the others: it shows in
+                            // the strip, and `s` changes it back.
+                            let sample = sampling::Sample {
+                                method: sampling::SampleMethod::EveryRow,
+                                ..self.analysis_modal.sample.clone()
+                            };
+                            return self.apply_sample(sample);
                         }
                         if self.pending_clear_recents {
                             self.pending_clear_recents = false;
@@ -13817,11 +14514,48 @@ impl App {
                 self.cancel_analysis();
                 return None;
             }
+            // The Sample form owns the keys while it has the cursor: always when it
+            // floats over a result, and in a tool's empty pane once Tab moves in.
+            if self
+                .analysis_modal
+                .sample_form
+                .as_ref()
+                .is_some_and(|form| {
+                    !form.inline || self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                })
+            {
+                return self.sample_form_key(event);
+            }
+            if event.code == KeyCode::Char('s') && self.analysis_modal.sample_key_opens_form() {
+                self.open_sample_form();
+                return None;
+            }
+            if event.code == KeyCode::Char('v') && self.analysis_modal.sample_key_opens_form() {
+                return self.read_sample_view();
+            }
             if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
                 && self.analysis_modal.view == analysis_modal::AnalysisView::Main
+                // Before the first run the pane is the Sample form, not the plan.
+                && self.analysis_modal.sample_form.is_none()
             {
                 use crate::data_quality::QualityPage;
 
+                // A finding's popup scrolls when it holds more than the screen does.
+                if self.analysis_modal.data_quality_observation_detail {
+                    let rows = match event.code {
+                        KeyCode::Down | KeyCode::Char('j') => Some(1),
+                        KeyCode::Up | KeyCode::Char('k') => Some(-1),
+                        KeyCode::PageDown => Some(10),
+                        KeyCode::PageUp => Some(-10),
+                        KeyCode::End => Some(i32::from(u16::MAX)),
+                        KeyCode::Home => Some(-i32::from(u16::MAX)),
+                        _ => None,
+                    };
+                    if let Some(rows) = rows {
+                        self.analysis_modal.scroll_quality_detail(rows);
+                        return None;
+                    }
+                }
                 if (self.analysis_modal.data_quality_confirm_run
                     || self.analysis_modal.data_quality_show_access
                     || self.analysis_modal.data_quality_observation_detail)
@@ -13830,85 +14564,100 @@ impl App {
                     return None;
                 }
 
-                if self.analysis_modal.data_quality_page == QualityPage::Scope
-                    && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
-                {
+                // A plan field's choices own the keys while they are open.
+                if self.analysis_modal.data_quality_picker.is_some() {
                     match event.code {
-                        KeyCode::Esc => {
-                            self.analysis_modal.set_quality_page(QualityPage::Plan);
-                            self.analysis_modal.data_quality_plan_field = 0;
-                        }
-                        KeyCode::Enter => {
-                            let input = self.analysis_modal.data_quality_scope_input.value();
-                            match data_quality::QualityScope::parse_command(input) {
-                                Ok(scope) => {
-                                    let file_count = self
-                                        .data_table_state
-                                        .as_ref()
-                                        .map(|state| state.quality_source_file_count())
-                                        .unwrap_or(0);
-                                    if let data_quality::QualityScope::SourceFiles(indices) = &scope
-                                        && indices.iter().any(|index| *index > file_count)
-                                    {
-                                        self.analysis_modal.data_quality_scope_error = Some(
-                                            format!(
-                                                "File number exceeds source inventory ({file_count})"
-                                            ),
-                                        );
-                                        return None;
-                                    }
-                                    self.analysis_modal.data_quality_plan.scope = scope;
-                                    self.analysis_modal.data_quality_plan.baseline_segment = None;
-                                    self.analysis_modal.data_quality_scope_error = None;
-                                    self.analysis_modal.set_quality_page(QualityPage::Plan);
-                                    self.analysis_modal.data_quality_editing = false;
-                                    self.analysis_modal.data_quality_plan_before_edit = None;
-                                    self.analysis_modal.data_quality_plan_field = 0;
-                                    self.clear_quality_result_if_plan_changed();
-                                }
-                                Err(error) => {
-                                    self.analysis_modal.data_quality_scope_error =
-                                        Some(error.to_string());
+                        KeyCode::Esc => self.analysis_modal.data_quality_picker = None,
+                        KeyCode::Enter => self.analysis_modal.choose_plan_picker(),
+                        code => {
+                            if let Some(picker) = self.analysis_modal.data_quality_picker.as_mut() {
+                                match code {
+                                    KeyCode::Up => picker.state.move_up(),
+                                    KeyCode::Down => picker.state.move_down(),
+                                    KeyCode::Backspace => picker.state.backspace(),
+                                    KeyCode::Char(c) => picker.state.filter_key(c, event.modifiers),
+                                    _ => {}
                                 }
                             }
-                        }
-                        KeyCode::PageDown => {
-                            let count = self
-                                .data_table_state
-                                .as_ref()
-                                .map(|state| state.quality_source_file_count())
-                                .unwrap_or(0);
-                            self.analysis_modal.data_quality_scope_file_offset = self
-                                .analysis_modal
-                                .data_quality_scope_file_offset
-                                .saturating_add(8)
-                                .min(count.saturating_sub(1));
-                        }
-                        KeyCode::PageUp => {
-                            self.analysis_modal.data_quality_scope_file_offset = self
-                                .analysis_modal
-                                .data_quality_scope_file_offset
-                                .saturating_sub(8);
-                        }
-                        _ => {
-                            let _ = self
-                                .analysis_modal
-                                .data_quality_scope_input
-                                .handle_key(event, None);
-                            self.analysis_modal.data_quality_scope_error = None;
                         }
                     }
                     return None;
                 }
-
-                if self.analysis_modal.data_quality_editing
-                    && matches!(
-                        event.code,
-                        KeyCode::Char('e' | '1' | '2' | '3' | '4' | 'r' | 'b' | 'm' | '[' | ']')
-                            | KeyCode::Tab
-                    )
+                // The role editor owns the keys: the role, and its column.
+                if self.analysis_modal.data_quality_page == QualityPage::TimeRoles
+                    && event.code != KeyCode::Char('?')
                 {
+                    let field = self.analysis_modal.data_quality_plan_field;
+                    match event.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            if event.code == KeyCode::Esc
+                                && let Some(plan) =
+                                    self.analysis_modal.data_quality_plan_before_edit.take()
+                            {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.analysis_modal.set_quality_page(QualityPage::Plan);
+                            self.analysis_modal.data_quality_plan_field = 4;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 1).min(crate::data_quality::TemporalRole::ALL.len() - 1);
+                        }
+                        KeyCode::Left
+                        | KeyCode::Char('h')
+                        | KeyCode::Right
+                        | KeyCode::Char('l') => {
+                            let columns = self
+                                .data_table_state
+                                .as_ref()
+                                .map(|state| {
+                                    state.quality_temporal_columns(
+                                        &self.analysis_modal.data_quality_plan.scope,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            self.analysis_modal.cycle_quality_time_role(
+                                field,
+                                &columns,
+                                matches!(event.code, KeyCode::Right | KeyCode::Char('l')),
+                            );
+                        }
+                        _ => {}
+                    }
                     return None;
+                }
+                // The plan is edited where it stands: ↑↓ the field, Space its choices,
+                // Enter runs from any field, Esc puts back what the last run used.
+                if self.analysis_modal.data_quality_page == QualityPage::Plan
+                    && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                {
+                    let rows = self.analysis_modal.quality_plan_rows();
+                    let field = self.analysis_modal.data_quality_plan_field.min(rows - 1);
+                    match event.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                            return None;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field = (field + 1).min(rows - 1);
+                            return None;
+                        }
+                        KeyCode::Char(' ') => {
+                            self.analysis_modal.data_quality_plan_field = field;
+                            return self.open_plan_field();
+                        }
+                        KeyCode::Esc if self.analysis_modal.quality_plan_pending() => {
+                            if let Some(plan) = self.analysis_modal.data_quality_last_plan.clone() {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            return None;
+                        }
+                        _ => {}
+                    }
                 }
 
                 match event.code {
@@ -13925,34 +14674,36 @@ impl App {
                         return None;
                     }
                     KeyCode::Enter if self.analysis_modal.data_quality_observation_detail => {
-                        self.open_quality_evidence();
+                        // The clean entry has no rows to open; Enter shows every
+                        // check it passed, and again the most important few.
+                        if self.analysis_modal.quality_selected_is_clean() {
+                            self.analysis_modal.data_quality_checks_expanded =
+                                !self.analysis_modal.data_quality_checks_expanded;
+                            self.analysis_modal.data_quality_detail_scroll.offset = 0;
+                            return None;
+                        }
+                        let event = self.open_quality_evidence();
                         if self.analysis_modal.active && !self.error_modal.active {
                             self.analysis_modal.data_quality_observation_detail = false;
                         }
-                        return None;
+                        return event;
                     }
                     KeyCode::Esc if self.analysis_modal.data_quality_confirm_run => {
                         self.analysis_modal.data_quality_confirm_run = false;
                         return None;
                     }
+                    // A drill-in backs out to the list it came from.
                     KeyCode::Esc
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles =>
+                        if self.analysis_modal.data_quality_page == QualityPage::SegmentDetail =>
                     {
-                        if let Some(plan) = self.analysis_modal.data_quality_plan_before_edit.take()
-                        {
-                            self.analysis_modal.data_quality_plan = plan;
-                        }
-                        self.analysis_modal.set_quality_page(QualityPage::Plan);
-                        self.analysis_modal.data_quality_editing = false;
-                        self.analysis_modal.data_quality_plan_field = 4;
+                        self.analysis_modal.close_segment_detail();
                         return None;
                     }
-                    KeyCode::Esc if self.analysis_modal.data_quality_editing => {
-                        if let Some(plan) = self.analysis_modal.data_quality_plan_before_edit.take()
-                        {
-                            self.analysis_modal.data_quality_plan = plan;
-                        }
-                        self.analysis_modal.data_quality_editing = false;
+                    KeyCode::Esc
+                        if self.analysis_modal.data_quality_page == QualityPage::Detail =>
+                    {
+                        self.analysis_modal
+                            .set_quality_column_page(QualityPage::Columns);
                         return None;
                     }
                     KeyCode::Esc
@@ -13969,56 +14720,18 @@ impl App {
                             !self.analysis_modal.data_quality_show_access;
                         return None;
                     }
+                    // The plan is a tab like the others; e goes there from anywhere.
                     KeyCode::Char('e') => {
-                        self.analysis_modal.data_quality_plan_before_edit =
-                            Some(self.analysis_modal.data_quality_plan.clone());
-                        self.analysis_modal.set_quality_page(QualityPage::Plan);
-                        self.analysis_modal.data_quality_editing = true;
-                        self.analysis_modal.data_quality_plan_field = 0;
-                        // The editor owns the keyboard, and Tab is swallowed while
-                        // it is open, so the cursor has to be moved into it here —
-                        // from the sidebar, ↑↓ would go on moving the tool selector.
-                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+                        self.analysis_modal.show_quality_tab(QualityPage::Plan);
                         return None;
                     }
-                    KeyCode::Char('1') => {
-                        self.analysis_modal.set_quality_page(QualityPage::Overview);
-                        return None;
-                    }
-                    KeyCode::Char('2') => {
-                        self.analysis_modal.set_quality_page(QualityPage::Columns);
-                        self.analysis_modal
-                            .data_quality_table_state
-                            .select(Some(self.analysis_modal.data_quality_column_index));
-                        return None;
-                    }
-                    KeyCode::Char('3') => {
-                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
-                            self.analysis_modal.data_quality_column_index = self
-                                .analysis_modal
-                                .data_quality_table_state
-                                .selected()
-                                .unwrap_or(0);
-                        }
-                        self.analysis_modal.set_quality_page(QualityPage::Segments);
-                        return None;
-                    }
-                    KeyCode::Char('4') => {
-                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
-                            self.analysis_modal.data_quality_column_index = self
-                                .analysis_modal
-                                .data_quality_table_state
-                                .selected()
-                                .unwrap_or(0);
-                        }
-                        self.analysis_modal.set_quality_page(QualityPage::Trends);
+                    KeyCode::Char(digit @ '1'..='4') => {
+                        let tab = digit as usize - '1' as usize;
+                        self.analysis_modal.show_quality_tab(QualityPage::TABS[tab]);
                         return None;
                     }
                     KeyCode::Char('m')
-                        if matches!(
-                            self.analysis_modal.data_quality_page,
-                            QualityPage::Segments | QualityPage::Trends
-                        ) =>
+                        if self.analysis_modal.data_quality_page == QualityPage::Trends =>
                     {
                         self.analysis_modal.cycle_quality_metric();
                         return None;
@@ -14027,101 +14740,48 @@ impl App {
                         if self.analysis_modal.data_quality_page == QualityPage::Segments
                             && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
+                        // The segment under the cursor, looked up while the results
+                        // still order the list.
+                        let selected = self.analysis_modal.selected_segment();
                         if let Some(mut results) = self.analysis_modal.data_quality_results.take() {
-                            if let Some(label) = self
-                                .analysis_modal
-                                .data_quality_table_state
-                                .selected()
+                            if let Some(label) = selected
                                 .and_then(|index| results.segments.get(index))
                                 .map(|segment| segment.label.clone())
                             {
-                                self.analysis_modal.data_quality_plan.comparison =
+                                let mut plan = self.analysis_modal.quality_result_plan().clone();
+                                plan.comparison = crate::data_quality::QualityComparison::Baseline;
+                                plan.baseline_segment = Some(label.clone());
+                                results.compare_segments(&plan);
+                                self.cache_quality_result(&results, plan.clone());
+                                self.analysis_modal.data_quality_last_plan = Some(plan);
+                                let working = &mut self.analysis_modal.data_quality_plan;
+                                working.comparison =
                                     crate::data_quality::QualityComparison::Baseline;
-                                self.analysis_modal.data_quality_plan.baseline_segment =
-                                    Some(label);
-                                results.compare_segments(&self.analysis_modal.data_quality_plan);
-                                self.cache_quality_result(&results);
-                                self.analysis_modal.data_quality_last_plan =
-                                    Some(self.analysis_modal.data_quality_plan.clone());
+                                working.baseline_segment = Some(label);
                             }
                             self.analysis_modal.data_quality_results = Some(results);
                         }
                         return None;
                     }
-                    KeyCode::Char('[') | KeyCode::Char(']')
-                        if matches!(
-                            self.analysis_modal.data_quality_page,
-                            QualityPage::Segments | QualityPage::Trends
-                        ) =>
+                    KeyCode::Char('o')
+                        if self.analysis_modal.data_quality_page == QualityPage::Segments =>
                     {
-                        let count = self
-                            .analysis_modal
-                            .data_quality_results
-                            .as_ref()
-                            .map(|results| results.columns.len())
-                            .unwrap_or(0);
-                        self.analysis_modal
-                            .cycle_quality_column(count, event.code == KeyCode::Char(']'));
+                        self.analysis_modal.toggle_segment_order();
                         return None;
                     }
+                    // Another sample for every tool: the seed is the shared sample's.
                     KeyCode::Char('r') => {
-                        self.analysis_modal.recalculate();
-                        self.analysis_modal.data_quality_plan.sample_seed =
-                            self.analysis_modal.random_seed;
-                        self.analysis_modal.data_quality_results = None;
-                        self.analysis_modal.data_quality_from_cache = false;
-                        if self
-                            .analysis_modal
-                            .data_quality_plan
-                            .requires_confirmation()
-                        {
-                            self.analysis_modal.set_quality_page(QualityPage::Plan);
-                            self.analysis_modal.data_quality_confirm_run = true;
-                            // The prompt is answered with Enter, which only the
-                            // main pane hears; r works from the sidebar too.
-                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
-                            return None;
-                        }
-                        self.analysis_modal.computing =
-                            Some(AnalysisProgress::new("Profiling data quality"));
-                        self.busy = true;
-                        return Some(AppEvent::AnalysisDataQualityCompute);
+                        let sample = sampling::Sample {
+                            seed: sample_modal::new_seed(),
+                            ..self.analysis_modal.sample.clone()
+                        };
+                        return self.apply_sample(sample);
                     }
                     KeyCode::Enter
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
-                            self.analysis_modal.set_quality_page(QualityPage::Plan);
-                            self.analysis_modal.data_quality_editing = false;
-                            self.analysis_modal.data_quality_plan_field = 4;
-                            self.analysis_modal.data_quality_plan_before_edit = None;
-                            self.clear_quality_result_if_plan_changed();
-                        } else if self.analysis_modal.data_quality_editing
-                            && self.analysis_modal.data_quality_plan_field == 0
-                        {
-                            self.analysis_modal.data_quality_scope_input =
-                                crate::widgets::text_input::TextInput::new()
-                                    .with_theme(&self.theme);
-                            self.analysis_modal
-                                .data_quality_scope_input
-                                .set_value(self.analysis_modal.data_quality_plan.scope.command());
-                            self.analysis_modal
-                                .data_quality_scope_input
-                                .set_focused(true);
-                            self.analysis_modal.data_quality_scope_error = None;
-                            self.analysis_modal.data_quality_scope_file_offset = 0;
-                            self.analysis_modal.set_quality_page(QualityPage::Scope);
-                        } else if self.analysis_modal.data_quality_editing
-                            && self.analysis_modal.data_quality_plan_field == 4
-                        {
-                            self.analysis_modal.set_quality_page(QualityPage::TimeRoles);
-                            self.analysis_modal.data_quality_editing = true;
-                            self.analysis_modal.data_quality_plan_field = 0;
-                        } else if self.analysis_modal.data_quality_editing {
-                            self.analysis_modal.data_quality_editing = false;
-                            self.analysis_modal.data_quality_plan_before_edit = None;
-                            self.clear_quality_result_if_plan_changed();
-                        } else if self.analysis_modal.data_quality_page == QualityPage::Plan {
+                        if self.analysis_modal.data_quality_page == QualityPage::Plan {
+                            self.sync_quality_plan();
                             if self.analysis_modal.data_quality_results.is_some()
                                 && self.analysis_modal.data_quality_last_plan.as_ref()
                                     == Some(&self.analysis_modal.data_quality_plan)
@@ -14148,112 +14808,60 @@ impl App {
                                 Some(AnalysisProgress::new("Profiling data quality"));
                             self.busy = true;
                             return Some(AppEvent::AnalysisDataQualityCompute);
+                        } else if let Some(setup) = self.quality_page_setup() {
+                            // Straight to the setting that fills the page, on the plan.
+                            self.analysis_modal.show_quality_tab(QualityPage::Plan);
+                            self.analysis_modal.data_quality_plan_field = match setup {
+                                data_quality::QualitySetup::Grain => 1,
+                                data_quality::QualitySetup::TimeRoles => 4,
+                            };
+                            return self.open_plan_field();
                         } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
+                            let findings = self.analysis_modal.quality_row_count();
+                            self.analysis_modal.data_quality_checks_expanded = false;
+                            self.analysis_modal.data_quality_detail_scroll =
+                                analysis_modal::DetailScroll::default();
                             self.analysis_modal.data_quality_observation_detail = self
                                 .analysis_modal
-                                .data_quality_results
-                                .as_ref()
-                                .is_some_and(|results| {
-                                    self.analysis_modal
-                                        .data_quality_table_state
-                                        .selected()
-                                        .is_some_and(|index| index < results.observations.len())
-                                });
+                                .data_quality_table_state
+                                .selected()
+                                .is_some_and(|index| index < findings);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Columns {
                             self.analysis_modal
                                 .set_quality_column_page(QualityPage::Detail);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Detail {
                             self.analysis_modal
                                 .set_quality_column_page(QualityPage::Columns);
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Segments
+                            && self.analysis_modal.data_quality_results.is_some()
+                        {
+                            self.analysis_modal.open_segment_detail();
+                        } else if self.analysis_modal.data_quality_page
+                            == QualityPage::SegmentDetail
+                        {
+                            self.analysis_modal.close_segment_detail();
                         }
                         return None;
                     }
                     KeyCode::Down | KeyCode::Char('j')
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_editing {
-                            let max_field = if self.analysis_modal.data_quality_page
-                                == QualityPage::TimeRoles
-                            {
-                                crate::data_quality::TemporalRole::ALL.len() - 1
-                            } else {
-                                5
-                            };
-                            self.analysis_modal.data_quality_plan_field =
-                                (self.analysis_modal.data_quality_plan_field + 1).min(max_field);
-                        } else {
-                            let rows = self.analysis_modal.quality_row_count();
-                            self.analysis_modal.next_row(rows);
-                        }
+                        let rows = self.analysis_modal.quality_row_count();
+                        self.analysis_modal.next_row(rows);
                         return None;
                     }
                     KeyCode::Up | KeyCode::Char('k')
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
-                        if self.analysis_modal.data_quality_editing {
-                            self.analysis_modal.data_quality_plan_field = self
-                                .analysis_modal
-                                .data_quality_plan_field
-                                .saturating_sub(1);
-                        } else {
-                            self.analysis_modal.previous_row();
-                        }
+                        self.analysis_modal.previous_row();
                         return None;
                     }
-                    KeyCode::Left | KeyCode::Char('h')
-                        if self.analysis_modal.data_quality_editing =>
-                    {
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
-                            let columns = self
-                                .data_table_state
-                                .as_ref()
-                                .map(|state| {
-                                    state.quality_temporal_columns(
-                                        &self.analysis_modal.data_quality_plan.scope,
-                                    )
-                                })
-                                .unwrap_or_default();
-                            self.analysis_modal.cycle_quality_time_role(
-                                self.analysis_modal.data_quality_plan_field,
-                                &columns,
-                                false,
-                            );
-                        } else {
-                            let partitions = self
-                                .data_table_state
-                                .as_ref()
-                                .and_then(|state| state.partition_columns.clone())
-                                .unwrap_or_default();
-                            self.analysis_modal.adjust_quality_plan(false, &partitions);
-                        }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        self.analysis_modal.step_quality_tab(false);
                         return None;
                     }
-                    KeyCode::Right | KeyCode::Char('l')
-                        if self.analysis_modal.data_quality_editing =>
-                    {
-                        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles {
-                            let columns = self
-                                .data_table_state
-                                .as_ref()
-                                .map(|state| {
-                                    state.quality_temporal_columns(
-                                        &self.analysis_modal.data_quality_plan.scope,
-                                    )
-                                })
-                                .unwrap_or_default();
-                            self.analysis_modal.cycle_quality_time_role(
-                                self.analysis_modal.data_quality_plan_field,
-                                &columns,
-                                true,
-                            );
-                        } else {
-                            let partitions = self
-                                .data_table_state
-                                .as_ref()
-                                .and_then(|state| state.partition_columns.clone())
-                                .unwrap_or_default();
-                            self.analysis_modal.adjust_quality_plan(true, &partitions);
-                        }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        self.analysis_modal.step_quality_tab(true);
                         return None;
                     }
                     KeyCode::PageDown
@@ -14307,8 +14915,11 @@ impl App {
                 // sample, and only on the main view: inside a detail an undocumented
                 // `r` cleared the results out from under it.
                 KeyCode::Char('r') if self.analysis_results_are_sampled() => {
-                    self.analysis_modal.recalculate();
-                    return self.start_analysis_run();
+                    let sample = sampling::Sample {
+                        seed: sample_modal::new_seed(),
+                        ..self.analysis_modal.sample.clone()
+                    };
+                    return self.apply_sample(sample);
                 }
                 // Refused while a cancelled run is still reading: Polars cannot stop it,
                 // and a second full read beside it is how memory runs out.
@@ -14336,77 +14947,68 @@ impl App {
                     // The detail views have a single focusable thing, so it stays.
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
                         self.analysis_modal.switch_focus();
+                        self.sync_sample_form_focus();
                     }
                 }
                 KeyCode::Enter
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
+                        // Enter again on the tool whose Sample form is showing runs it
+                        // with the form as it stands: two Enters from the list take the
+                        // defaults, and the cursor never leaves it.
+                        if self.analysis_modal.sample_form.as_ref().is_some_and(|f| f.inline)
+                            && self.analysis_modal.highlighted_tool()
+                                == self.analysis_modal.selected_tool
+                        {
+                            return self.run_sample_form();
+                        }
                         // Select tool from sidebar
                         self.analysis_modal.select_tool();
-                        // Trigger computation for the selected tool when that tool has no cached results
-                        match self.analysis_modal.selected_tool {
-                            Some(analysis_modal::AnalysisTool::Describe)
-                                if self.analysis_modal.describe_results.is_none() =>
-                            {
-                                self.analysis_modal.computing = Some(AnalysisProgress::new("Describing data"));
-                                self.analysis_computation = Some(AnalysisComputationState {
-                                    df: None,
-                                    schema: None,
-                                    partial_stats: Vec::new(),
-                                    current: 0,
-                                    total: 0,
-                                    total_rows: 0,
-                                    sample_seed: self.analysis_modal.random_seed,
-                                    sample_size: None,
-                                });
-                                self.busy = true;
-                                return Some(AppEvent::AnalysisChunk);
+                        self.analysis_modal.sample_form = None;
+                        // A tool with a result shows it. One without shows the Sample
+                        // form in its pane, so the first run reads the rows asked for;
+                        // Enter runs it with the defaults as they stand.
+                        let has_result = match self.analysis_modal.selected_tool {
+                            Some(analysis_modal::AnalysisTool::Describe) => {
+                                self.analysis_modal.describe_results.is_some()
                             }
-                            Some(analysis_modal::AnalysisTool::DistributionAnalysis)
-                                if self.analysis_modal.distribution_results.is_none() =>
-                            {
-                                self.analysis_modal.computing = Some(AnalysisProgress::new("Analyzing distributions"));
-                                self.busy = true;
-                                return Some(AppEvent::AnalysisDistributionCompute);
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                self.analysis_modal.distribution_results.is_some()
                             }
-                            Some(analysis_modal::AnalysisTool::CorrelationMatrix)
-                                if self.analysis_modal.correlation_results.is_none() =>
-                            {
-                                self.analysis_modal.computing = Some(AnalysisProgress::new("Computing correlations"));
-                                self.busy = true;
-                                return Some(AppEvent::AnalysisCorrelationCompute);
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                self.analysis_modal.correlation_results.is_some()
                             }
                             Some(analysis_modal::AnalysisTool::DataQuality) => {
                                 self.restore_recent_quality_plan();
-                                if !self.restore_cached_quality()
-                                    && self.analysis_modal.data_quality_results.is_none()
-                                {
-                                    if !self
-                                        .analysis_modal
-                                        .data_quality_plan
-                                        .requires_confirmation()
-                                        && self
-                                            .data_table_state
-                                            .as_ref()
-                                            .is_some_and(|state| !state.is_remote_source())
-                                    {
-                                        // A local read costs nothing worth confirming:
-                                        // lead with the result. The plan stays one Esc
-                                        // (or e) away, echoed in the strip up top.
-                                        self.analysis_modal.computing = Some(AnalysisProgress::new("Profiling data quality"));
-                                        self.busy = true;
-                                        return Some(AppEvent::AnalysisDataQualityCompute);
-                                    }
-                                    // The plan ceremony: the pane is a form waiting
-                                    // for Enter, which only the main pane hears, so
-                                    // the cursor moves into it — from the sidebar,
-                                    // Enter would only reselect the tool.
-                                    self.analysis_modal.focus =
-                                        analysis_modal::AnalysisFocus::Main;
-                                }
+                                // The plan's rows are the shared sample's, whatever
+                                // the last plan here read.
+                                self.sync_quality_plan();
+                                self.restore_cached_quality()
+                                    || self.analysis_modal.data_quality_results.is_some()
                             }
-                            _ => {}
+                            None => true,
+                        };
+                        // Once a sample has been run on this dataset, every tool reads
+                        // it: a tool with no result runs at once, and s changes the
+                        // sample for all of them.
+                        let sample_run = self.analysis_modal.sample_run_for
+                            == Some(self.dataset_generation);
+                        if !has_result && sample_run {
+                            return match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::DataQuality) => {
+                                    self.run_quality_plan()
+                                }
+                                _ => self.start_analysis_run(),
+                            };
+                        }
+                        // Before the first, the form is what the pane is for, so the
+                        // cursor goes with it: Enter runs, the arrows change a setting,
+                        // Esc hands the cursor back to the list. A tool with a result
+                        // leaves the cursor on the list.
+                        if !has_result {
+                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+                            self.open_first_run_form();
                         }
                     } else {
                         // Enter in main area opens detail view if applicable
@@ -15624,9 +16226,12 @@ impl App {
                     && self.quality_evidence_return.is_none()
                 {
                     self.analysis_modal.open();
-                    // The configured default; the plan editor changes it per run.
-                    self.analysis_modal.data_quality_plan.sample_rows =
-                        self.app_config.performance.quality_sample_rows;
+                    // The sample outlives a close, but its scope names this
+                    // dataset's rows: another dataset starts from its current view.
+                    if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
+                        self.analysis_modal.sample.scope = data_quality::QualityScope::CurrentView;
+                        self.analysis_modal.sample_dataset = Some(self.dataset_generation);
+                    }
                 }
                 None
             }
@@ -16160,29 +16765,22 @@ impl App {
                 self.request_home_classifications();
                 None
             }
-            AppEvent::HomeMeasured {
-                generation,
-                measured,
-            } => {
-                self.home.measure_in_flight = false;
-                if *generation != self.home_generation {
-                    return None;
-                }
+            AppEvent::HomeMeasured { measured, done } => {
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }
                 self.home.apply_measurements();
-                self.request_home_measurements();
+                if *done {
+                    self.home.measure_in_flight = false;
+                    self.request_home_measurements();
+                }
                 None
             }
-            AppEvent::HomeClassified {
-                generation,
-                measured,
-            } => {
-                self.home.classify_in_flight = false;
-                if *generation != self.home_generation {
-                    return None;
-                }
+            AppEvent::HomeClassified { measured, done } => {
+                // Kept even when the listing has been rebuilt since it was asked for. A
+                // probe or a cloud peek landing rebuilds it, and a Recent section full of
+                // buckets lands several in a row: dropping the answer each time left a
+                // share's rows unlabeled for as long as the cloud kept answering.
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }
@@ -16195,7 +16793,10 @@ impl App {
                 // The next batch is chosen from the viewport as it is now, so a page
                 // that scrolled past four hundred rows while this one was out asks
                 // about the forty it landed on, not the four hundred it left behind.
-                self.request_home_classifications();
+                if *done {
+                    self.home.classify_in_flight = false;
+                    self.request_home_classifications();
+                }
                 None
             }
             AppEvent::HomePathCompleted {
@@ -16307,7 +16908,21 @@ impl App {
                 self.home_refresh();
                 None
             }
-            AppEvent::HomeProbeReady { root, rows } => {
+            AppEvent::HomeProbeProgress { root, rows } => {
+                // Only while that listing is still out: a late batch must not paint
+                // over the whole answer.
+                if self.home_probes_inflight.contains(root) && !self.home.probed.contains_key(root)
+                {
+                    self.home.listing_so_far.insert(root.clone(), rows.clone());
+                    self.home_refresh();
+                }
+                None
+            }
+            AppEvent::HomeProbeReady {
+                root,
+                rows,
+                cut_short,
+            } => {
                 // Give the slot back. The cap exists to bound threads wedged on a dead
                 // `hard` mount, which never send this event and so keep their slot for
                 // good — a probe that answered is not one of those. Without this the
@@ -16318,6 +16933,9 @@ impl App {
                 match rows {
                     Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
                     None => self.home.probe_failed(root.clone()),
+                }
+                if *cut_short {
+                    self.home.cut_short.insert(root.clone());
                 }
                 // An account read with its keys because the sign-in has no data role
                 // says so beside the account.
@@ -16748,10 +17366,10 @@ impl App {
                 self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
             AppEvent::AnalysisChunk => {
-                // Stub out binary columns: their blobs are never read for analysis (reading
-                // multi-GB blobs across partitions can exhaust memory and freeze the process).
-                let lf = match &self.data_table_state {
-                    Some(state) => state.analysis_lf().select(state.binary_stub_exprs()),
+                // Binary columns are stubbed by the source: their blobs are never read
+                // for analysis (multi-GB blobs across partitions can exhaust memory).
+                let (source, known_total) = match &self.data_table_state {
+                    Some(state) => self.sample_source(state),
                     None => {
                         self.analysis_computation = None;
                         self.analysis_modal.computing = None;
@@ -16761,33 +17379,29 @@ impl App {
                 };
                 let comp = self.analysis_computation.take()?;
                 if comp.df.is_none() {
-                    let cached_rows = self
-                        .data_table_state
-                        .as_ref()
-                        .and_then(|s| s.num_rows_if_valid());
-                    let sampling = self.analysis_sampling();
-                    let seed = comp.sample_seed;
+                    let sample = self.analysis_modal.sample.clone();
                     let streaming = self.app_config.performance.polars_streaming;
-                    self.spawn_bg("Computing statistics...", move |task_gen, tx| {
-                        match crate::statistics::compute_describe_from_lazy(
-                            &lf,
-                            cached_rows,
-                            sampling,
-                            seed,
-                            streaming,
-                        ) {
-                            Ok(results) => {
-                                let _ = tx.send(AppEvent::BackgroundDescribeReady {
-                                    generation: task_gen,
-                                    results,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!("{e}"),
-                                });
-                            }
+                    self.spawn_bg("Computing statistics...", move |task_gen, tx| match source
+                        .cut(&sample.scope)
+                        .and_then(|lf| {
+                            crate::statistics::compute_describe_from_lazy(
+                                &lf,
+                                known_total,
+                                &sample,
+                                streaming,
+                            )
+                        }) {
+                        Ok(results) => {
+                            let _ = tx.send(AppEvent::BackgroundDescribeReady {
+                                generation: task_gen,
+                                results,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: task_gen,
+                                message: format!("{e}"),
+                            });
                         }
                     });
                 }
@@ -16795,10 +17409,8 @@ impl App {
             }
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
-                    // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
-                    let lf = state.analysis_lf().select(state.binary_stub_exprs());
-                    let sampling = self.analysis_sampling();
-                    let seed = self.analysis_modal.random_seed;
+                    let (source, known_total) = self.sample_source(state);
+                    let sample = self.analysis_modal.sample.clone();
                     let streaming = self.app_config.performance.polars_streaming;
                     self.spawn_bg("Analyzing distributions...", move |task_gen, tx| {
                         let options = crate::statistics::ComputeOptions {
@@ -16808,9 +17420,14 @@ impl App {
                             include_skewness_kurtosis_outliers: true,
                             polars_streaming: streaming,
                         };
-                        match crate::statistics::compute_statistics_with_options(
-                            &lf, sampling, seed, options,
-                        ) {
+                        match source.cut(&sample.scope).and_then(|lf| {
+                            crate::statistics::compute_statistics_for_sample(
+                                &lf,
+                                &sample,
+                                known_total,
+                                options,
+                            )
+                        }) {
                             Ok(results) => {
                                 let _ = tx.send(AppEvent::BackgroundDistributionReady {
                                     generation: task_gen,
@@ -16833,39 +17450,42 @@ impl App {
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    // Only the numeric columns: nothing else is correlated, and on a wide
-                    // table the rest is most of what a full read would hold.
-                    let numeric: Vec<polars::prelude::Expr> = state
-                        .schema
-                        .iter()
-                        .filter(|(_, dtype)| dtype.is_numeric())
-                        .map(|(name, _)| col(name.clone()))
-                        .collect();
-                    let lf = state.analysis_lf().select(numeric);
+                    let (source, known_total) = self.sample_source(state);
                     let streaming = state.polars_streaming;
-                    let known_total = state.num_rows_if_valid();
-                    let seed = self.analysis_modal.random_seed;
-                    let sampling = self.analysis_sampling();
+                    let sample = self.analysis_modal.sample.clone();
+                    let seed = sample.seed;
                     self.spawn_bg("Computing correlation matrix...", move |task_gen, tx| {
-                        let result = crate::statistics::analysis_rows(
-                            &lf,
-                            sampling,
-                            known_total,
-                            seed,
-                            streaming,
-                        )
-                        .map(|rows| {
-                            let matrix =
-                                crate::statistics::compute_correlation_matrix(&rows.df).ok();
-                            crate::statistics::AnalysisResults {
-                                column_statistics: vec![],
-                                total_rows: rows.total_rows,
-                                sample_size: rows.sample_size,
-                                sample_seed: seed,
-                                correlation_matrix: matrix,
-                                distribution_analyses: vec![],
-                            }
-                        });
+                        // Only the numeric columns: nothing else is correlated, and on a
+                        // wide table the rest is most of what a full read would hold.
+                        let result = source
+                            .cut(&sample.scope)
+                            .and_then(|lf| {
+                                let schema = lf.clone().collect_schema()?;
+                                let numeric: Vec<polars::prelude::Expr> = schema
+                                    .iter()
+                                    .filter(|(_, dtype)| dtype.is_numeric())
+                                    .map(|(name, _)| col(name.clone()))
+                                    .collect();
+                                crate::sampling::read(
+                                    &lf.select(numeric),
+                                    &sample,
+                                    known_total,
+                                    streaming,
+                                )
+                            })
+                            .map(|rows| {
+                                let matrix =
+                                    crate::statistics::compute_correlation_matrix(&rows.df).ok();
+                                crate::statistics::AnalysisResults {
+                                    column_statistics: vec![],
+                                    total_rows: rows.total_rows,
+                                    sample_size: rows.sample_size,
+                                    per_value: rows.per_value.map(|per_value| per_value.kept),
+                                    sample_seed: seed,
+                                    correlation_matrix: matrix,
+                                    distribution_analyses: vec![],
+                                }
+                            });
                         match result {
                             Ok(results) => {
                                 let _ = tx.send(AppEvent::BackgroundCorrelationReady {
@@ -16888,6 +17508,8 @@ impl App {
                 None
             }
             AppEvent::AnalysisDataQualityCompute => {
+                // Whatever path asked for the run, it reads the shared sample.
+                self.sync_quality_plan();
                 if let Some(state) = &self.data_table_state {
                     let plan = self.analysis_modal.data_quality_plan.clone();
                     let source_scope = plan.scope.uses_source();
@@ -16895,7 +17517,12 @@ impl App {
                         let (lf, source) = state.data_quality_source_scan();
                         (lf, source, None)
                     } else {
-                        let (lf, source) = state.data_quality_scan();
+                        let ordered = matches!(
+                            plan.scope,
+                            data_quality::QualityScope::FirstRows(_)
+                                | data_quality::QualityScope::ViewRows { .. }
+                        );
+                        let (lf, source) = state.data_quality_scan(ordered);
                         let rows = state.num_rows_if_valid().map(|rows| match &plan.scope {
                             data_quality::QualityScope::CurrentView => rows,
                             data_quality::QualityScope::FirstRows(limit) => rows.min(*limit),
@@ -16907,6 +17534,9 @@ impl App {
                         (lf, source, rows)
                     };
                     let streaming = state.polars_streaming;
+                    let view_generation = state.len_generation();
+                    let dataset_generation = self.dataset_generation;
+                    let kept = self.kept_quality_sample(&plan.sample());
                     // Only a confirmed full scan pays to read the values a type
                     // conflict hides, and only its access plan promised the read.
                     let mut source = source;
@@ -16944,17 +17574,24 @@ impl App {
                                 return;
                             }
                         };
-                        match crate::data_quality::compute_data_quality(
+                        match crate::data_quality::compute_data_quality_kept(
                             &lf,
                             cached_rows,
                             &plan,
                             source.as_ref(),
                             streaming,
+                            kept.as_deref(),
                         ) {
-                            Ok(results) => {
+                            Ok((results, rows)) => {
                                 let _ = tx.send(AppEvent::BackgroundDataQualityReady {
                                     generation: task_gen,
                                     results,
+                                    kept: rows.map(|rows| KeptQualitySample {
+                                        dataset_generation,
+                                        view_generation,
+                                        sample: plan.sample(),
+                                        rows: std::sync::Arc::new(rows),
+                                    }),
                                 });
                             }
                             Err(error) => {
@@ -17201,6 +17838,20 @@ impl App {
                 // Stale message (generation mismatch) — ignore entirely.
                 None
             }
+            AppEvent::BackgroundSampleReady {
+                generation,
+                df,
+                label,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.computing = None;
+                    self.reading_sample = false;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.show_sample_view(df.clone(), label.clone());
+                }
+                None
+            }
             AppEvent::BackgroundDescribeReady {
                 generation,
                 results,
@@ -17240,13 +17891,24 @@ impl App {
             AppEvent::BackgroundDataQualityReady {
                 generation,
                 results,
+                kept,
             } => {
+                // Kept whatever became of the run's results: the rows are the rows the
+                // key names, and a read is not to be thrown away.
+                if let Some(kept) = kept
+                    && kept.dataset_generation == self.dataset_generation
+                {
+                    self.quality_sample = Some(kept.clone());
+                }
                 if *generation == self.task_generation
                     && self.analysis_modal.active
                     && self.analysis_modal.selected_tool
                         == Some(analysis_modal::AnalysisTool::DataQuality)
                 {
-                    self.cache_quality_result(results);
+                    self.cache_quality_result(
+                        results,
+                        self.analysis_modal.data_quality_plan.clone(),
+                    );
                     self.analysis_modal.data_quality_last_plan =
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal.data_quality_results = Some(results.clone());

@@ -234,6 +234,8 @@ pub struct AnalysisResults {
     pub column_statistics: Vec<ColumnStatistics>,
     pub total_rows: usize,
     pub sample_size: Option<usize>,
+    /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
+    pub per_value: Option<usize>,
     pub sample_seed: u64,
     pub correlation_matrix: Option<CorrelationMatrix>,
     pub distribution_analyses: Vec<DistributionAnalysis>,
@@ -299,12 +301,35 @@ pub fn compute_statistics_with_options(
     seed: u64,
     options: ComputeOptions,
 ) -> Result<AnalysisResults> {
+    let sample = crate::sampling::Sample {
+        method: if sample_size.is_some() {
+            crate::sampling::SampleMethod::Spread
+        } else {
+            crate::sampling::SampleMethod::EveryRow
+        },
+        rows: sample_size.unwrap_or(0),
+        seed,
+        ..crate::sampling::Sample::default()
+    };
+    compute_statistics_for_sample(lf, &sample, None, options)
+}
+
+/// [`compute_statistics_with_options`] over the rows a [`crate::sampling::Sample`]
+/// picks from `lf`, which is already cut to the sample's scope.
+pub fn compute_statistics_for_sample(
+    lf: &LazyFrame,
+    sample: &crate::sampling::Sample,
+    known_total: Option<usize>,
+    options: ComputeOptions,
+) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let use_streaming = options.polars_streaming;
-    let rows = analysis_rows(lf, sample_size, None, seed, use_streaming)?;
+    let seed = sample.seed;
+    let rows = crate::sampling::read(lf, sample, known_total, use_streaming)?;
     let total_rows = rows.total_rows;
     let actual_sample_size = rows.sample_size;
     let should_sample = actual_sample_size.is_some();
+    let per_value = rows.per_value.as_ref().map(|per_value| per_value.kept);
     let df = rows.df;
 
     let mut column_statistics = Vec::new();
@@ -393,6 +418,7 @@ pub fn compute_statistics_with_options(
         column_statistics,
         total_rows,
         sample_size: actual_sample_size,
+        per_value,
         sample_seed: seed,
         correlation_matrix,
         distribution_analyses,
@@ -471,6 +497,7 @@ pub fn analysis_results_from_describe(
         column_statistics,
         total_rows,
         sample_size,
+        per_value: None,
         sample_seed,
         correlation_matrix: None,
         distribution_analyses: Vec::new(),
@@ -606,21 +633,23 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
 pub fn compute_describe_from_lazy(
     lf: &LazyFrame,
     known_total: Option<usize>,
-    sample_size: Option<usize>,
-    seed: u64,
+    sample: &crate::sampling::Sample,
     polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
-    if sample_size.is_some() {
-        let rows = analysis_rows(lf, sample_size, known_total, seed, polars_streaming)?;
-        return compute_describe_single_aggregation(
+    let seed = sample.seed;
+    if sample.method != crate::sampling::SampleMethod::EveryRow {
+        let rows = crate::sampling::read(lf, sample, known_total, polars_streaming)?;
+        let mut results = compute_describe_single_aggregation(
             &rows.df,
             &schema,
             rows.total_rows,
             rows.sample_size,
             seed,
             polars_streaming,
-        );
+        )?;
+        results.per_value = rows.per_value.map(|per_value| per_value.kept);
+        return Ok(results);
     }
     let total_rows = match known_total {
         Some(total) => total,
@@ -691,17 +720,10 @@ fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
 pub fn compute_distribution_statistics(
     results: &mut AnalysisResults,
     lf: &LazyFrame,
-    sample_size: Option<usize>,
-    seed: u64,
+    sample: &crate::sampling::Sample,
     polars_streaming: bool,
 ) -> Result<()> {
-    let rows = analysis_rows(
-        lf,
-        sample_size,
-        Some(results.total_rows),
-        seed,
-        polars_streaming,
-    )?;
+    let rows = crate::sampling::read(lf, sample, Some(results.total_rows), polars_streaming)?;
     let actual_sample_size = rows.sample_size;
     let should_sample = actual_sample_size.is_some();
     let df = rows.df;
@@ -803,6 +825,8 @@ pub struct AnalysisRows {
     pub total_rows: usize,
     /// How many rows were sampled, when the table had more than the analysis reads.
     pub sample_size: Option<usize>,
+    /// What an equal-per-value sample kept and counted.
+    pub per_value: Option<crate::sampling::PerValue>,
 }
 
 /// How many places across the table a block sample reads from. Enough that no one
@@ -858,6 +882,7 @@ pub fn analysis_rows(
             df,
             total_rows,
             sample_size: None,
+            per_value: None,
         });
     };
     if !slices_reach_into_the_scan(lf) {
@@ -867,6 +892,7 @@ pub fn analysis_rows(
             df,
             total_rows,
             sample_size,
+            per_value: None,
         });
     }
     let total_rows = match known_total {
@@ -879,6 +905,7 @@ pub fn analysis_rows(
             df,
             total_rows,
             sample_size: None,
+            per_value: None,
         });
     }
     let df = block_sample(lf, total_rows, n, seed, polars_streaming)?;
@@ -886,6 +913,7 @@ pub fn analysis_rows(
         sample_size: Some(df.height()),
         df,
         total_rows,
+        per_value: None,
     })
 }
 
@@ -1120,6 +1148,9 @@ pub(crate) fn sample_rank(seed: u64, position: u64) -> u64 {
     value ^ (value >> 31)
 }
 
+/// Up to ten thousand of a column's values, spread across it, as `f64`. NaN and
+/// infinities are left out: no distribution has them, and one NaN is enough to leave
+/// a sort by `partial_cmp` out of order.
 fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
     let max_len = 10000;
     // Every k-th value, not the first ten thousand: a sample is spread across the
@@ -1134,7 +1165,12 @@ fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
     };
 
     if let Ok(f64_series) = limited_series.f64() {
-        f64_series.iter().flatten().take(max_len).collect()
+        f64_series
+            .iter()
+            .flatten()
+            .filter(|v| v.is_finite())
+            .take(max_len)
+            .collect()
     } else if let Ok(i64_series) = limited_series.i64() {
         i64_series
             .iter()
@@ -1162,14 +1198,21 @@ fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
     } else if let Ok(f32_series) = limited_series.f32() {
         f32_series
             .iter()
-            .filter_map(|v| v.map(|x| x as f64))
+            .flatten()
+            .filter(|v| v.is_finite())
+            .map(f64::from)
             .take(max_len)
             .collect()
     } else {
         match limited_series.cast(&DataType::Float64) {
             Ok(cast_series) => {
                 if let Ok(f64_series) = cast_series.f64() {
-                    f64_series.iter().flatten().take(max_len).collect()
+                    f64_series
+                        .iter()
+                        .flatten()
+                        .filter(|v| v.is_finite())
+                        .take(max_len)
+                        .collect()
                 } else {
                     Vec::new()
                 }
@@ -1740,27 +1783,29 @@ fn approximate_shapiro_wilk(values: &[f64]) -> (Option<f64>, Option<f64>) {
     };
 
     let sw_stat = sw_stat.clamp(0.0, 1.0);
+    (Some(sw_stat), shapiro_francia_pvalue(sw_stat, n))
+}
 
-    let skewness: f64 = values
-        .iter()
-        .map(|v| ((v - mean) / std).powi(3))
-        .sum::<f64>()
-        / n as f64;
-
-    let kurtosis: f64 = values
-        .iter()
-        .map(|v| ((v - mean) / std).powi(4))
-        .sum::<f64>()
-        / n as f64;
-
-    let skew_penalty = (skewness.abs() / 2.0).min(1.0);
-    let kurt_penalty = ((kurtosis - 3.0).abs() / 2.0).min(1.0);
-
-    let w_factor = sw_stat;
-    let penalty_factor = 1.0 - (skew_penalty + kurt_penalty) / 2.0;
-    let pvalue = (w_factor * 0.7 + penalty_factor * 0.3).clamp(0.0, 1.0);
-
-    (Some(sw_stat), Some(pvalue))
+/// The p-value of a normality statistic computed as above: the squared correlation of
+/// the sorted values with normal scores, which is the Shapiro-Francia form of the
+/// Shapiro-Wilk test. Royston's (1993) approximation, `ln(1 - W')` being close to
+/// normal, for 5 to 5,000 values; `None` outside them.
+///
+/// It replaces a blend of W with skew and kurtosis penalties that was not a p-value:
+/// 2,590 prices with W' = 0.929 read p = 0.855, "normal", where the test says p < 1e-20.
+fn shapiro_francia_pvalue(w: f64, n: usize) -> Option<f64> {
+    if !(5..=5_000).contains(&n) {
+        return None;
+    }
+    if w >= 1.0 {
+        return Some(1.0);
+    }
+    let u = (n as f64).ln();
+    let v = u.ln();
+    let mu = -1.2725 + 1.0521 * (v - u);
+    let sigma = 1.0308 - 0.26758 * (v + 2.0 / u);
+    let z = ((1.0 - w).ln() - mu) / sigma;
+    Some((1.0 - normal_cdf(z, 0.0, 1.0)).clamp(0.0, 1.0))
 }
 
 /// Calculates chi-square statistic for uniformity test.
@@ -2715,16 +2760,17 @@ fn compute_advanced_distribution_analysis(
     _sample_size: usize,
     is_sampled: bool,
 ) -> DistributionAnalysis {
-    let max_values = 5000.min(series.len());
-    let mut values: Vec<f64> = if series.len() > max_values {
-        let limited_series = series.slice(0, max_values);
-        get_numeric_values_as_f64(&limited_series)
-    } else {
-        get_numeric_values_as_f64(series)
-    };
+    // At most five thousand, spread across the rows: the head of a table sorted by
+    // date is its first few years.
+    const MAX_VALUES: usize = 5_000;
+    let mut values = get_numeric_values_as_f64(series);
+    if values.len() > MAX_VALUES {
+        let step = values.len().div_ceil(MAX_VALUES);
+        values = values.into_iter().step_by(step).collect();
+    }
 
     // Sort values for Q-Q plot (all data if not sampled, or sampled data if >= threshold)
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.sort_by(f64::total_cmp);
     let sorted_sample_values = values.clone();
     let actual_sample_size = sorted_sample_values.len();
 
@@ -2887,9 +2933,9 @@ fn calculate_normal_fit_quality(values: &[f64], mean: f64, std: f64) -> f64 {
     approximate_ks_pvalue(ks_stat, n)
 }
 
-fn normal_quantile(p: f64) -> f64 {
-    // Approximation of normal quantile function
-    // Using Beasley-Springer-Moro algorithm approximation
+/// The standard normal quantile: the z below which a share `p` of the distribution
+/// lies. Abramowitz and Stegun 26.2.23, accurate to about 4.5e-4.
+pub(crate) fn normal_quantile(p: f64) -> f64 {
     if p < 0.5 {
         -normal_quantile(1.0 - p)
     } else {
@@ -4664,5 +4710,32 @@ mod sampling_tests {
             "{:?}",
             info.distribution_type
         );
+    }
+}
+
+#[cfg(test)]
+mod normality_tests {
+    use super::*;
+
+    /// Shapiro-Francia's p-value is a p-value: a normal sample passes, and a price
+    /// series of two regimes, W' = 0.929 over 2,590 values, does not.
+    #[test]
+    fn the_normality_p_value_is_a_p_value() {
+        assert!(shapiro_francia_pvalue(0.929, 2_590).unwrap() < 1e-10);
+        assert!(shapiro_francia_pvalue(0.9995, 2_590).unwrap() > 0.05);
+        assert_eq!(shapiro_francia_pvalue(0.99, 4), None);
+        let normal: Vec<f64> = (1..=500)
+            .map(|i| normal_quantile(i as f64 / 501.0))
+            .collect();
+        let (_, p) = approximate_shapiro_wilk(&normal);
+        assert!(p.unwrap() > 0.5, "{p:?}");
+    }
+
+    /// NaN and infinities never reach a fit: one NaN left a `partial_cmp` sort out of
+    /// order and folded the Q-Q plot.
+    #[test]
+    fn non_finite_values_are_left_out() {
+        let series = Series::new("x".into(), &[3.0, f64::NAN, 1.0, f64::INFINITY, 2.0]);
+        assert_eq!(get_numeric_values_as_f64(&series), vec![3.0, 1.0, 2.0]);
     }
 }

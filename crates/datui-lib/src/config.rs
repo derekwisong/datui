@@ -1667,12 +1667,10 @@ pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    /// Rows Describe, Distribution and Correlation read from a table with more: a
-    /// sample spread across all of it. 0 reads every row of every table.
+    /// The analysis sample's starting size: the rows every tool (Describe,
+    /// Distribution, Correlation, Data Quality) reads from a table with more, spread
+    /// across all of it. 0 starts at every row.
     pub analysis_sample_rows: usize,
-    /// Rows per segment a Data Quality sample reads. The plan editor can
-    /// change it per run; this is where the default comes from.
-    pub quality_sample_rows: usize,
     pub event_poll_interval_ms: u64,
     /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
     pub polars_streaming: bool,
@@ -1681,12 +1679,8 @@ pub struct PerformanceConfig {
 // Field comments for PerformanceConfig
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
-        "quality_sample_rows",
-        "Rows per segment a Data Quality sample reads (default 10000, at most 50000).\nThe plan editor's Sample rows field changes it per run.",
-    ),
-    (
         "analysis_sample_rows",
-        "Rows Describe, Distribution and Correlation read from a larger table (default 100000),\nas a sample spread across the whole of it. A smaller table is read whole.\n0 reads every row of every table; `a` on the analysis screen does it for one run.",
+        "The analysis sample's starting size (default 100000): the rows every analysis tool\nreads from a larger table, spread across the whole of it. A smaller table is read whole.\n0 starts at every row. The Sample form (s) changes it, and the method, per session.",
     ),
     (
         "event_poll_interval_ms",
@@ -2425,7 +2419,6 @@ impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
             analysis_sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
-            quality_sample_rows: 10_000,
             event_poll_interval_ms: 25,
             polars_streaming: true,
         }
@@ -2872,11 +2865,6 @@ impl AppConfig {
         }
 
         // Validate performance settings
-        if self.performance.quality_sample_rows == 0
-            || self.performance.quality_sample_rows > 50_000
-        {
-            return Err(eyre!("quality_sample_rows must be between 1 and 50000"));
-        }
 
         if self.performance.event_poll_interval_ms == 0 {
             return Err(eyre!("event_poll_interval_ms must be greater than 0"));
@@ -3007,9 +2995,6 @@ impl PerformanceConfig {
         let default = PerformanceConfig::default();
         if other.analysis_sample_rows != default.analysis_sample_rows {
             self.analysis_sample_rows = other.analysis_sample_rows;
-        }
-        if other.quality_sample_rows != default.quality_sample_rows {
-            self.quality_sample_rows = other.quality_sample_rows;
         }
         if other.event_poll_interval_ms != default.event_poll_interval_ms {
             self.event_poll_interval_ms = other.event_poll_interval_ms;

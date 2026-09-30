@@ -36,6 +36,8 @@ pub struct AnalysisWidgetConfig<'a> {
     pub table_cell_padding: u16,
     /// Display-time number formatting, so counts here match the data table.
     pub number_format: &'a NumberFormatSettings,
+    /// The shared sample the results were read with, for the header.
+    pub sample: &'a crate::sampling::Sample,
 }
 
 pub struct AnalysisWidget<'a> {
@@ -57,6 +59,7 @@ pub struct AnalysisWidget<'a> {
     theme: &'a Theme,
     table_cell_padding: u16,
     number_format: &'a NumberFormatSettings,
+    sample: &'a crate::sampling::Sample,
 }
 
 impl<'a> AnalysisWidget<'a> {
@@ -87,6 +90,7 @@ impl<'a> AnalysisWidget<'a> {
             theme: config.theme,
             table_cell_padding: config.table_cell_padding,
             number_format: config.number_format,
+            sample: config.sample,
         }
     }
 }
@@ -105,7 +109,7 @@ impl<'a> AnalysisWidget<'a> {
     fn render_main_view(self, area: Rect, buf: &mut Buffer) {
         // The tool list never takes more than a third of the screen: the
         // results are what the screen is for.
-        let sidebar_width = 32u16.min(area.width / 3);
+        let sidebar_width = sidebar_width(area.width);
 
         // Full-screen layout: breadcrumb, main area (no separate keybind hints line)
         let layout = Layout::default()
@@ -125,16 +129,17 @@ impl<'a> AnalysisWidget<'a> {
             None => "Analysis",
         };
 
-        // What the numbers are of, stated rather than implied: a sample says how big
-        // and of how many, so a surprising figure can be told apart from a rare one.
-        let breadcrumb_text = match self.results.and_then(|r| r.sample_size.map(|n| (n, r))) {
-            Some((n, results)) => format!(
-                "{tool_name} {} sample of {} of {} rows",
+        // What the numbers are of, stated rather than implied: a sample says how big,
+        // of how many, and of which rows, so a surprising figure can be told apart
+        // from a rare one.
+        let breadcrumb_text = match self.results {
+            Some(results) if self.selected_tool.is_some() => format!(
+                "{tool_name} {} {}",
                 crate::glyphs::get().middot,
-                crate::numfmt::group_chrome(n),
-                crate::numfmt::group_chrome(results.total_rows)
+                self.sample
+                    .outcome(results.total_rows, results.sample_size, results.per_value)
             ),
-            None => tool_name.to_string(),
+            _ => tool_name.to_string(),
         };
 
         let header_row_style = header_style(self.theme, "controls_bg", "table_header");
@@ -210,11 +215,9 @@ impl<'a> AnalysisWidget<'a> {
                                 .render(main_layout[0], buf);
                         }
                     }
-                } else {
-                    Paragraph::new("Computing statistics...")
-                        .centered()
-                        .render(main_layout[0], buf);
                 }
+                // No result yet: the Sample form fills this pane until the first run,
+                // and the progress overlay covers it during one.
             }
         }
 
@@ -885,7 +888,7 @@ fn format_pvalue(p: f64) -> String {
 }
 
 /// Build header-style: bg+fg when bg_key is not Reset, else fg-only.
-fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
+pub(crate) fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
     let bg = theme.get(bg_key);
     let fg = theme.get(fg_key);
     if bg == Color::Reset {
@@ -963,7 +966,7 @@ fn render_distribution_table(
         let sw_pvalue_text = dist_analysis
             .characteristics
             .shapiro_wilk_pvalue
-            .map(|p| format!("{:.3}", p))
+            .map(format_pvalue)
             .unwrap_or_else(|| "N/A".to_string());
 
         // Phase 6: Add p-value to column values
@@ -1116,7 +1119,7 @@ fn render_distribution_table(
         let sw_pvalue_text = dist_analysis
             .characteristics
             .shapiro_wilk_pvalue
-            .map(|p| format!("{:.3}", p))
+            .map(format_pvalue)
             .unwrap_or_else(|| "N/A".to_string());
 
         // Color coding for SW p-value: same semantics as p-value column
@@ -1560,7 +1563,25 @@ fn render_distribution_settings(
     block.render(area, buf);
 }
 
-fn render_sidebar(
+/// The tool list's width beside a result: a third of the screen, at most 32.
+pub(crate) fn sidebar_width(width: u16) -> u16 {
+    32u16.min(width / 3)
+}
+
+/// Where a tool's result goes: under the one-line header, left of the tool list.
+/// The Sample form fills it before a tool's first run.
+pub(crate) fn main_pane(area: Rect) -> Rect {
+    Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        width: area.width.saturating_sub(sidebar_width(area.width)),
+        ..area
+    }
+}
+
+/// The Analysis Tools list, the same beside every tool: the cursor carries the
+/// rail and the tint, the tool on screen carries the accent.
+pub(crate) fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
     sidebar_state: &mut TableState,
@@ -1689,7 +1710,8 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
 
     // Calculate available width for bars - must match Chart widget's plot area exactly
     // Chart widget reserves space for Y-axis labels internally, using remaining width for plot
-    let available_width = area.width.saturating_sub(total_y_axis_space);
+    // Less the axis line itself, which the plot starts after.
+    let available_width = area.width.saturating_sub(total_y_axis_space + 1);
     let bar_gap = 1u16;
     let group_gap = 1u16;
     let gap_width = bar_gap + group_gap;
@@ -1870,22 +1892,15 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
         .saturating_sub(top_padding)
         .saturating_sub(x_axis_label_height); // Reserve space for title, padding, and x-axis labels
 
-    // Shift bar plot area right by 1.5 bar widths so bars align to the right side of their bins
-    // This ensures proper alignment with the theoretical distribution overlay
-    // BarChart renders bars starting from the left edge, so shifting the area right will
-    // make the bars' right edges align with the right edges of their bins
-    let bar_width_offset = final_bar_width + (final_bar_width / 2); // 1.5 bar widths
-    let bar_plot_left = area
-        .left()
-        .saturating_add(total_y_axis_space)
-        .saturating_add(bar_width_offset); // Shift right by 1.5 bar widths for right alignment
-    let bar_plot_width = available_width + bar_width_offset; // Extend width to accommodate shift
-
+    // Exactly the overlay's plot area: bar `i` starts where bin `i` does. Shifting the
+    // bars right to meet the overlay put the first bin's bar over the second bin and
+    // drew the last one past the axis, onto whatever sits beside the chart.
+    let bar_plot_left = area.left().saturating_add(total_y_axis_space + 1);
     let bar_plot_area = Rect::new(
-        bar_plot_left,      // Shifted right for right-aligned bars
-        chart_inner_top,    // Start below title
-        bar_plot_width,     // Extended width to accommodate shift
-        chart_inner_height, // Use calculated height that accounts for title
+        bar_plot_left,
+        chart_inner_top,
+        available_width.min(area.right().saturating_sub(bar_plot_left)),
+        chart_inner_height,
     );
 
     let barchart = BarChart::default()
@@ -1895,8 +1910,6 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
         .bar_gap(bar_gap)
         .group_gap(group_gap);
 
-    // Render bar chart to sub-area matching Chart's plot area (excluding x-axis label space)
-    // Bars are now right-aligned within their bins
     barchart.render(bar_plot_area, buf);
 
     // No border - chart renders without surrounding box
@@ -2519,7 +2532,11 @@ fn render_condensed_statistics(
     if let (Some(sw_stat), Some(sw_p)) = (chars.shapiro_wilk_stat, chars.shapiro_wilk_pvalue) {
         line_parts.push(Span::styled("SW: ", label_style));
         line_parts.push(Span::styled(
-            format!("{:.3} (p={:.3})", sw_stat, sw_p),
+            if sw_p < 0.001 {
+                format!("{sw_stat:.3} (p<0.001)")
+            } else {
+                format!("{sw_stat:.3} (p={sw_p:.3})")
+            },
             value_style,
         ));
         line_parts.push(Span::styled(" ", value_style));
@@ -2571,11 +2588,11 @@ pub fn calculate_theoretical_quantile_at_probability(
 
     match dist_type {
         DistributionType::Normal => {
-            let z = approximate_normal_quantile(p);
+            let z = crate::statistics::normal_quantile(p);
             chars.mean + chars.std_dev * z
         }
         DistributionType::LogNormal => {
-            let z = approximate_normal_quantile(p);
+            let z = crate::statistics::normal_quantile(p);
             // Convert from mean (m) and std dev (s) on original scale to lognormal parameters (μ, σ)
             // Where X ~ Lognormal(μ, σ²) means ln(X) ~ Normal(μ, σ)
             // Formulas: σ = sqrt(ln(1 + s²/m²)), μ = ln(m) - σ²/2
@@ -2630,7 +2647,7 @@ pub fn calculate_theoretical_quantile_at_probability(
                         let normal_std = ((alpha * beta)
                             / ((alpha + beta).powi(2) * (alpha + beta + 1.0)))
                             .sqrt();
-                        let z = approximate_normal_quantile(p);
+                        let z = crate::statistics::normal_quantile(p);
                         normal_mean + normal_std * z
                     } else {
                         // Use simple linear interpolation across [0, 1] range
@@ -2691,7 +2708,7 @@ pub fn calculate_theoretical_quantile_at_probability(
                     // Normal approximation
                     let normal_mean = df;
                     let normal_std = (2.0 * df).sqrt();
-                    let z = approximate_normal_quantile(p);
+                    let z = crate::statistics::normal_quantile(p);
                     (normal_mean + normal_std * z).max(0.0)
                 } else {
                     // Use gamma quantile with shape = df/2, scale = 2
@@ -2713,11 +2730,11 @@ pub fn calculate_theoretical_quantile_at_probability(
             };
             if df > 30.0 {
                 // Normal approximation
-                let z = approximate_normal_quantile(p);
+                let z = crate::statistics::normal_quantile(p);
                 chars.mean + chars.std_dev * z
             } else {
                 // For small df, use normal approximation anyway (better than constant)
-                let z = approximate_normal_quantile(p);
+                let z = crate::statistics::normal_quantile(p);
                 chars.mean + chars.std_dev * z
             }
         }
@@ -2728,19 +2745,19 @@ pub fn calculate_theoretical_quantile_at_probability(
             if lambda > 0.0 {
                 if lambda > 20.0 {
                     // Normal approximation for large lambda
-                    let z = approximate_normal_quantile(p);
+                    let z = crate::statistics::normal_quantile(p);
                     (lambda + z * lambda.sqrt()).max(0.0)
                 } else {
                     // For small lambda, use normal approximation anyway to get a range
                     // This ensures we still get quantiles even when lambda is small
-                    let z = approximate_normal_quantile(p);
+                    let z = crate::statistics::normal_quantile(p);
                     (lambda + z * lambda.sqrt()).max(0.0)
                 }
             } else {
                 // Data doesn't match Poisson (e.g., negative mean): use default lambda=10
                 // This ensures we still get a range of quantiles
                 let default_lambda: f64 = 10.0;
-                let z = approximate_normal_quantile(p);
+                let z = crate::statistics::normal_quantile(p);
                 (default_lambda + z * default_lambda.sqrt()).max(0.0)
             }
         }
@@ -2777,7 +2794,7 @@ pub fn calculate_theoretical_quantile_at_probability(
             let mean = chars.mean;
             let variance = chars.std_dev * chars.std_dev;
             if variance > 0.0 {
-                let z = approximate_normal_quantile(p);
+                let z = crate::statistics::normal_quantile(p);
                 (mean + z * variance.sqrt()).max(0.0)
             } else {
                 // No variance: use default parameters to still show a range
@@ -2786,7 +2803,7 @@ pub fn calculate_theoretical_quantile_at_probability(
                 let default_p = 0.5;
                 let default_mean = default_n * default_p;
                 let default_variance = default_n * default_p * (1.0 - default_p);
-                let z = approximate_normal_quantile(p);
+                let z = crate::statistics::normal_quantile(p);
                 (default_mean + z * default_variance.sqrt()).max(0.0)
             }
         }
@@ -2870,18 +2887,6 @@ fn interpolate_empirical_quantile(dist: &DistributionAnalysis, p: f64) -> f64 {
     }
 }
 
-fn approximate_normal_quantile(p: f64) -> f64 {
-    // Approximation of inverse CDF for standard normal distribution
-    // Beasley-Springer-Moro algorithm (simplified)
-    if p < 0.5 {
-        -approximate_normal_quantile(1.0 - p)
-    } else {
-        let t = ((p - 0.5).ln() * -2.0).sqrt();
-        t - (2.515517 + 0.802853 * t + 0.010328 * t * t)
-            / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2894,6 +2899,112 @@ mod tests {
             exclude: Vec::new(),
             align_numeric_right: true,
         }
+    }
+
+    fn analysis(mean: f64, std_dev: f64, sorted: Vec<f64>) -> DistributionAnalysis {
+        use crate::statistics::{
+            DistributionCharacteristics, OutlierAnalysis, PercentileBreakdown,
+        };
+        DistributionAnalysis {
+            column_name: "close".into(),
+            distribution_type: DistributionType::Normal,
+            confidence: 0.0,
+            fit_quality: 0.0,
+            characteristics: DistributionCharacteristics {
+                shapiro_wilk_stat: None,
+                shapiro_wilk_pvalue: None,
+                skewness: 0.0,
+                kurtosis: 3.0,
+                mean,
+                median: mean,
+                std_dev,
+                variance: std_dev * std_dev,
+                coefficient_of_variation: std_dev / mean,
+                mode: None,
+            },
+            outliers: OutlierAnalysis {
+                total_count: 0,
+                percentage: 0.0,
+                iqr_count: 0,
+                zscore_count: 0,
+                outlier_rows: Vec::new(),
+            },
+            percentiles: PercentileBreakdown {
+                p1: 0.0,
+                p5: 0.0,
+                p25: 0.0,
+                p50: 0.0,
+                p75: 0.0,
+                p95: 0.0,
+                p99: 0.0,
+            },
+            sample_size: sorted.len(),
+            sorted_sample_values: sorted,
+            is_sampled: false,
+            all_distribution_pvalues: Default::default(),
+        }
+    }
+
+    /// The histogram's bars sit on the axis they are drawn against: the first bin's
+    /// bar in the first plot column, and nothing past the chart's right edge. They were
+    /// shifted right by a bar and a half, onto the next bin and off the end.
+    #[test]
+    fn histogram_bars_stay_on_their_axis() {
+        // The low end is the busy one, so the first bin has a bar.
+        let mut values: Vec<f64> = (0..400).map(|i| 23.0 + (i % 20) as f64).collect();
+        values.extend((0..100).map(|i| 23.0 + 3.18 * i as f64));
+        values.sort_by(f64::total_cmp);
+        let dist = analysis(100.0, 80.0, values);
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
+        let label_width = 5;
+        render_distribution_histogram(
+            HistogramRenderConfig {
+                dist: &dist,
+                dist_type: DistributionType::Normal,
+                area,
+                shared_y_axis_label_width: label_width,
+                theme: &theme,
+                unified_x_range: Some((23.0, 341.1)),
+                histogram_scale: HistogramScale::Linear,
+            },
+            &mut buf,
+        );
+        let is_bar = |x: u16| (0..20).any(|y| buf[(x, y)].symbol() == "█");
+        // Labels, a space, the axis line: the plot's first column.
+        assert!(is_bar(label_width + 2), "the first bin starts at the axis");
+        assert!(
+            (area.right()..80).all(|x| !is_bar(x)),
+            "nothing is drawn past the chart"
+        );
+    }
+
+    /// A Q-Q plot's theoretical axis rises with the probability. The copy of the normal
+    /// quantile this file used took `ln(p - 0.5)` for `ln(1 - p)`, so each half of the
+    /// axis ran backwards and the plot folded over itself at the median.
+    #[test]
+    fn theoretical_quantiles_rise_with_the_probability() {
+        let dist = analysis(131.95, 81.75, Vec::new());
+        for dist_type in [DistributionType::Normal, DistributionType::LogNormal] {
+            let quantiles: Vec<f64> = (1..100)
+                .map(|i| {
+                    calculate_theoretical_quantile_at_probability(
+                        &dist,
+                        dist_type,
+                        i as f64 / 100.0,
+                    )
+                })
+                .collect();
+            assert!(
+                quantiles.windows(2).all(|pair| pair[0] < pair[1]),
+                "{dist_type:?}: {quantiles:?}"
+            );
+        }
+        let z =
+            calculate_theoretical_quantile_at_probability(&dist, DistributionType::Normal, 0.975);
+        assert!((z - (131.95 + 1.96 * 81.75)).abs() < 0.1, "{z}");
     }
 
     #[test]

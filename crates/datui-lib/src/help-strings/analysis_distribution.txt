@@ -37,6 +37,9 @@ Navigation:
                  histogram); with the sidebar focused, select a tool
   Esc:           Cancel a run in progress; otherwise close the analysis
                  view or this help
+  s:             Choose the sample every tool reads: which rows, how
+                 they are picked, how many, the seed
+  v:             View the sample's rows as a table; Esc comes back
   r:             Draw another sample (when the result is a sample)
   a:             Read every row instead, after confirming
 

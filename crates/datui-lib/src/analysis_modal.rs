@@ -1,10 +1,47 @@
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, QUALITY_WINDOW_WIDTHS, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
+    QualityGrain, QualityMetric, QualityPage, TemporalRole, TemporalRoleAssignment,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
-use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
+
+/// What a plan field's picker sets.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanChoice {
+    Grain(QualityGrain),
+    Values(QualityCompute),
+    Compare(QualityComparison),
+    Latency(Option<i64>),
+}
+
+impl PlanChoice {
+    fn is_current(&self, plan: &DataQualityPlan) -> bool {
+        match self {
+            Self::Grain(grain) => &plan.grain == grain,
+            Self::Values(QualityCompute::Metadata) => plan.compute == QualityCompute::Metadata,
+            Self::Values(_) => plan.compute != QualityCompute::Metadata,
+            Self::Compare(comparison) => &plan.comparison == comparison,
+            Self::Latency(seconds) => &plan.latency_threshold_seconds == seconds,
+        }
+    }
+}
+
+/// A plan field's choices, open as a list.
+#[derive(Debug, Clone)]
+pub struct PlanPicker {
+    pub field: usize,
+    pub choices: Vec<PlanChoice>,
+    pub state: crate::widgets::ui::PickerState,
+}
+
+/// What the data offers the plan's choices: partition columns, date columns
+/// (and whether they hold times of day), and whether there are files to split by.
+#[derive(Debug, Clone, Default)]
+pub struct PlanContext {
+    pub partitions: Vec<String>,
+    pub time_columns: Vec<(String, bool)>,
+    pub files: bool,
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AnalysisView {
@@ -49,6 +86,13 @@ pub enum AnalysisFocus {
     DistributionSelector, // Focus on distribution selector in detail view
 }
 
+/// A popup taller than the screen scrolls: the offset, and the most it can be.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DetailScroll {
+    pub offset: u16,
+    pub max: u16,
+}
+
 #[derive(Default)]
 pub struct AnalysisModal {
     pub active: bool,
@@ -57,10 +101,17 @@ pub struct AnalysisModal {
     pub describe_column_offset: usize, // For horizontal scrolling in describe table
     pub distribution_column_offset: usize, // For horizontal scrolling in distribution table
     pub correlation_column_offset: usize, // For horizontal scrolling in correlation matrix
-    pub random_seed: u64,
-    /// The run in flight, or the last one, reads every row rather than a sample: `a`
-    /// asked for it. Any other run clears it.
-    pub reads_all: bool,
+    /// The rows every tool reads: one scope, method, size and seed for all of them,
+    /// so switching tools compares like with like. Kept across opens; `s` edits it.
+    pub sample: crate::sampling::Sample,
+    /// The dataset the sample's scope was chosen for. A scope naming a partition or a
+    /// file of one dataset means nothing on the next.
+    pub sample_dataset: Option<u64>,
+    /// The dataset a sample was last run on. Once one has been, a tool picked with
+    /// no result runs on it at once; before, the Sample form asks first.
+    pub sample_run_for: Option<u64>,
+    /// The Sample form, while it is open.
+    pub sample_form: Option<crate::sample_modal::SampleForm>,
     pub table_state: TableState,              // For describe table
     pub distribution_table_state: TableState, // For distribution table
     pub correlation_table_state: TableState,  // For correlation matrix
@@ -85,13 +136,19 @@ pub struct AnalysisModal {
     pub data_quality_page: QualityPage,
     pub data_quality_plan: DataQualityPlan,
     pub data_quality_table_state: TableState,
-    pub data_quality_editing: bool,
+    /// The list a plan field's choices open in, while it is open.
+    pub data_quality_picker: Option<PlanPicker>,
     pub data_quality_plan_field: usize,
-    pub data_quality_scope_input: TextInput,
-    pub data_quality_scope_error: Option<String>,
-    pub data_quality_scope_file_offset: usize,
     pub data_quality_show_access: bool,
     pub data_quality_observation_detail: bool,
+    /// Where the finding popup is scrolled to, and how far it can go (set as it draws).
+    pub data_quality_detail_scroll: DetailScroll,
+    /// The segment a drill-in shows, and the one Segments selects on the way back.
+    pub data_quality_segment_index: usize,
+    /// Segments listed clearest change first rather than in their own order.
+    pub data_quality_segments_by_change: bool,
+    /// The clean entry's popup lists every check rather than the most important.
+    pub data_quality_checks_expanded: bool,
     pub data_quality_confirm_run: bool,
     pub data_quality_plan_before_edit: Option<DataQualityPlan>,
     pub data_quality_last_plan: Option<DataQualityPlan>,
@@ -110,6 +167,19 @@ pub enum HistogramScale {
 impl AnalysisModal {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A modal whose shared sample starts at the configured size: `[performance]
+    /// analysis_sample_rows`, where 0 means every row.
+    pub fn with_sample_rows(rows: usize) -> Self {
+        let mut modal = Self::default();
+        modal.sample.seed = crate::sample_modal::new_seed();
+        if rows == 0 {
+            modal.sample.method = crate::sampling::SampleMethod::EveryRow;
+        } else {
+            modal.sample.rows = rows;
+        }
+        modal
     }
 
     pub fn open(&mut self) {
@@ -136,11 +206,8 @@ impl AnalysisModal {
         self.data_quality_page = QualityPage::Plan;
         self.data_quality_plan = DataQualityPlan::default();
         self.data_quality_table_state.select(Some(0));
-        self.data_quality_editing = false;
+        self.data_quality_picker = None;
         self.data_quality_plan_field = 0;
-        self.data_quality_scope_input = TextInput::new();
-        self.data_quality_scope_error = None;
-        self.data_quality_scope_file_offset = 0;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
         self.data_quality_confirm_run = false;
@@ -149,11 +216,7 @@ impl AnalysisModal {
         self.data_quality_from_cache = false;
         self.data_quality_metric = QualityMetric::NullRate;
         self.data_quality_column_index = 0;
-        // Generate initial random seed (use 0 if system time is before UNIX_EPOCH)
-        self.random_seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        self.sample_form = None;
     }
 
     pub fn close(&mut self) {
@@ -174,10 +237,7 @@ impl AnalysisModal {
         self.correlation_results = None;
         self.data_quality_results = None;
         self.data_quality_page = QualityPage::Plan;
-        self.data_quality_editing = false;
-        self.data_quality_scope_input = TextInput::new();
-        self.data_quality_scope_error = None;
-        self.data_quality_scope_file_offset = 0;
+        self.data_quality_picker = None;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
         self.data_quality_confirm_run = false;
@@ -215,10 +275,20 @@ impl AnalysisModal {
         }
     }
 
+    /// The tool under the sidebar cursor.
+    pub fn highlighted_tool(&self) -> Option<AnalysisTool> {
+        Some(match self.sidebar_state.selected()? {
+            0 => AnalysisTool::Describe,
+            1 => AnalysisTool::DistributionAnalysis,
+            2 => AnalysisTool::CorrelationMatrix,
+            3 => AnalysisTool::DataQuality,
+            _ => return None,
+        })
+    }
+
     /// Select the tool under the sidebar cursor. Focus stays on the sidebar:
     /// it moves only when the user presses Tab, never as a side effect.
     pub fn select_tool(&mut self) {
-        self.reads_all = false;
         if let Some(idx) = self.sidebar_state.selected() {
             self.selected_tool = Some(match idx {
                 0 => AnalysisTool::Describe,
@@ -313,12 +383,9 @@ impl AnalysisModal {
         }
     }
 
+    /// Another sample: a new seed for the shared sample.
     pub fn recalculate(&mut self) {
-        self.reads_all = false;
-        self.random_seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        self.sample.seed = crate::sample_modal::new_seed();
     }
 
     pub fn quality_row_count(&self) -> usize {
@@ -326,27 +393,58 @@ impl AnalysisModal {
             return 0;
         };
         match self.data_quality_page {
-            QualityPage::Plan => 7,
-            QualityPage::Scope => 0,
+            QualityPage::Plan => 6,
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
-            QualityPage::Overview => results.observations.len(),
+            QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
-            QualityPage::Trends => results.temporal.len(),
+            QualityPage::SegmentDetail => {
+                crate::data_quality::segment_changes(results, self.data_quality_segment_index).len()
+            }
+            // The trend table's lines; the width only changes how many bars.
+            QualityPage::Trends => {
+                crate::data_quality::trend_rows(results, self.data_quality_metric, 1)
+                    .0
+                    .len()
+            }
         }
     }
 
-    /// Whether the Data Quality scope input owns typed characters. Mirrors the key
-    /// routing in `App::key`, so Ctrl-C and `?` stay ordinary text keys there.
-    pub fn quality_scope_typing(&self) -> bool {
+    /// Whether the highlighted Overview entry is the clean-columns entry, which opens
+    /// no rows and instead lists the checks.
+    pub fn quality_selected_is_clean(&self) -> bool {
+        self.data_quality_page == QualityPage::Overview
+            && self.data_quality_results.as_ref().is_some_and(|results| {
+                crate::quality_report::build_report(results)
+                    .findings
+                    .get(self.data_quality_table_state.selected().unwrap_or(0))
+                    .is_some_and(|finding| finding.kind.is_none())
+            })
+    }
+
+    /// Whether `s` opens the Sample form here: on a tool's main view, with nothing
+    /// else holding the keys — no run, no popup, no editor, no text field.
+    pub fn sample_key_opens_form(&self) -> bool {
         self.active
-            && self.selected_tool == Some(AnalysisTool::DataQuality)
             && self.view == AnalysisView::Main
-            && self.data_quality_page == QualityPage::Scope
-            && self.focus == AnalysisFocus::Main
+            && self.selected_tool.is_some()
+            && self.computing.is_none()
+            && !self.show_help
+            && self.data_quality_picker.is_none()
+            && self.data_quality_page != QualityPage::TimeRoles
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
+            && self.sample_form.is_none()
+    }
+
+    /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
+    /// are text there as in any field.
+    pub fn sample_scope_typing(&self) -> bool {
+        self.active
+            && self.sample_form.as_ref().is_some_and(|form| {
+                form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
+            })
     }
 
     pub fn set_quality_page(&mut self, page: QualityPage) {
@@ -371,6 +469,97 @@ impl AnalysisModal {
             .select(Some(self.data_quality_column_index));
     }
 
+    /// Open the highlighted segment's columns, or go back to the list with the
+    /// segment still selected.
+    pub fn open_segment_detail(&mut self) {
+        if let Some(segment) = self.selected_segment() {
+            self.data_quality_segment_index = segment;
+            self.set_quality_page(QualityPage::SegmentDetail);
+        }
+    }
+
+    pub fn close_segment_detail(&mut self) {
+        self.set_quality_page(QualityPage::Segments);
+        let position = self
+            .segment_order()
+            .iter()
+            .position(|segment| *segment == self.data_quality_segment_index);
+        self.data_quality_table_state
+            .select(Some(position.unwrap_or(0)));
+    }
+
+    /// The order Segments lists its rows in.
+    pub fn segment_order(&self) -> Vec<usize> {
+        self.data_quality_results
+            .as_ref()
+            .map(|results| {
+                crate::data_quality::segment_order(results, self.data_quality_segments_by_change)
+            })
+            .unwrap_or_default()
+    }
+
+    /// The segment under the cursor on Segments, whichever order it is listed in.
+    pub fn selected_segment(&self) -> Option<usize> {
+        let position = self.data_quality_table_state.selected()?;
+        self.segment_order().get(position).copied()
+    }
+
+    /// List segments in their own order or clearest change first, keeping the one
+    /// under the cursor under it.
+    pub fn toggle_segment_order(&mut self) {
+        let segment = self.selected_segment();
+        self.data_quality_segments_by_change = !self.data_quality_segments_by_change;
+        let position = segment
+            .and_then(|segment| self.segment_order().iter().position(|s| *s == segment))
+            .unwrap_or(0);
+        self.data_quality_table_state.select(Some(position));
+    }
+
+    /// Move the finding popup by `rows`, within what it last drew.
+    pub fn scroll_quality_detail(&mut self, rows: i32) {
+        let scroll = &mut self.data_quality_detail_scroll;
+        scroll.offset = (scroll.offset as i32 + rows).clamp(0, scroll.max as i32) as u16;
+    }
+
+    /// Show a tab, keeping the column in view across Columns, Segments and Trends.
+    /// The plan acts on Enter, which only the main pane hears, so it brings the
+    /// cursor along.
+    pub fn show_quality_tab(&mut self, page: QualityPage) {
+        if matches!(
+            self.data_quality_page,
+            QualityPage::Columns | QualityPage::Detail
+        ) {
+            self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
+        }
+        self.set_quality_page(page);
+        match page {
+            QualityPage::Columns => self
+                .data_quality_table_state
+                .select(Some(self.data_quality_column_index)),
+            QualityPage::Plan => self.focus = AnalysisFocus::Main,
+            _ => {}
+        }
+    }
+
+    /// The next or previous tab, stopping at either end.
+    pub fn step_quality_tab(&mut self, forward: bool) {
+        let tabs = QualityPage::TABS;
+        let Some(at) = tabs
+            .iter()
+            .position(|page| *page == self.data_quality_page.tab())
+        else {
+            return;
+        };
+        let next = if forward {
+            (at + 1).min(tabs.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        if next != at {
+            self.show_quality_tab(tabs[next]);
+        }
+    }
+
     pub fn cycle_quality_metric(&mut self) {
         let current = QualityMetric::ALL
             .iter()
@@ -379,154 +568,163 @@ impl AnalysisModal {
         self.data_quality_metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
     }
 
-    pub fn cycle_quality_column(&mut self, count: usize, forward: bool) {
-        if count == 0 {
-            self.data_quality_column_index = 0;
-        } else if forward {
-            self.data_quality_column_index = (self.data_quality_column_index + 1) % count;
+    /// The plan the result on screen was measured with; the working plan until a
+    /// run exists. Result pages read this one, so an edit not yet run never
+    /// relabels what was measured.
+    pub fn quality_result_plan(&self) -> &DataQualityPlan {
+        self.data_quality_last_plan
+            .as_ref()
+            .unwrap_or(&self.data_quality_plan)
+    }
+
+    /// The plan has been edited since the result on screen was measured.
+    pub fn quality_plan_pending(&self) -> bool {
+        self.data_quality_results.is_some()
+            && self.data_quality_last_plan.as_ref() != Some(&self.data_quality_plan)
+    }
+
+    /// Rows on the Plan page: the latency threshold only once two time roles give
+    /// it an interval to measure.
+    pub fn quality_plan_rows(&self) -> usize {
+        if self.data_quality_plan.temporal_roles.len() >= 2 {
+            6
         } else {
-            self.data_quality_column_index = (self.data_quality_column_index + count - 1) % count;
+            5
         }
     }
 
-    pub fn adjust_quality_plan(&mut self, forward: bool, partition_columns: &[String]) {
-        match self.data_quality_plan_field {
-            0 => {
-                let mut choices = vec![
-                    QualityScope::CurrentView,
-                    QualityScope::WholeSource,
-                    QualityScope::FirstRows(10_000),
-                    QualityScope::FirstRows(1_000_000),
-                ];
-                // A scope typed into the editor is not a preset. Keep it in the
-                // cycle so the arrows move from where the user is rather than
-                // silently jumping to the first preset.
-                if !choices.contains(&self.data_quality_plan.scope) {
-                    choices.insert(0, self.data_quality_plan.scope.clone());
-                }
-                let current = choices
-                    .iter()
-                    .position(|choice| choice == &self.data_quality_plan.scope)
-                    .unwrap_or(0);
-                let next = if forward {
-                    (current + 1) % choices.len()
-                } else {
-                    (current + choices.len() - 1) % choices.len()
-                };
-                self.data_quality_plan.scope = choices[next].clone();
-                self.data_quality_plan.baseline_segment = None;
-            }
+    /// The choices a plan field offers, in the words the header uses.
+    pub fn plan_choices(&self, field: usize, context: &PlanContext) -> Vec<(String, PlanChoice)> {
+        match field {
             1 => {
-                let mut choices = vec![QualityGrain::Dataset, QualityGrain::File];
-                choices.extend(
-                    partition_columns
+                let mut grains = vec![QualityGrain::Dataset];
+                if context.files {
+                    grains.push(QualityGrain::File);
+                }
+                grains.extend(
+                    context
+                        .partitions
                         .iter()
                         .cloned()
                         .map(QualityGrain::Partition),
                 );
-                choices.push(QualityGrain::RowChunks(1_000_000));
-                // Two roles can name one column; offering its widths twice would
-                // trap the forward cycle among the duplicates, so list it once.
-                let mut window_columns: Vec<String> = Vec::new();
-                for assignment in &self.data_quality_plan.temporal_roles {
-                    if !window_columns.contains(&assignment.column) {
-                        window_columns.push(assignment.column.clone());
+                // Any date column can split the rows by day, week or month; no role
+                // has to be invented for it first. Hours only where there are times.
+                for (column, has_time) in &context.time_columns {
+                    for every in QUALITY_WINDOW_WIDTHS {
+                        if every == "1h" && !has_time {
+                            continue;
+                        }
+                        grains.push(QualityGrain::TimeWindows {
+                            column: column.clone(),
+                            every: every.to_string(),
+                        });
                     }
                 }
-                choices.extend(window_columns.into_iter().flat_map(|column| {
-                    QUALITY_WINDOW_WIDTHS
-                        .iter()
-                        .map(move |every| QualityGrain::TimeWindows {
-                            column: column.clone(),
-                            every: (*every).to_string(),
-                        })
-                }));
-                // Likewise for a grain whose time role has since been unassigned.
-                if !choices.contains(&self.data_quality_plan.grain) {
-                    choices.insert(0, self.data_quality_plan.grain.clone());
+                grains.extend([100_000, 1_000_000].map(QualityGrain::RowChunks));
+                if !grains.contains(&self.data_quality_plan.grain) {
+                    grains.insert(0, self.data_quality_plan.grain.clone());
                 }
-                let current = choices
-                    .iter()
-                    .position(|choice| choice == &self.data_quality_plan.grain)
-                    .unwrap_or(0);
-                let next = if forward {
-                    (current + 1) % choices.len()
-                } else if current == 0 {
-                    choices.len() - 1
-                } else {
-                    current - 1
-                };
-                self.data_quality_plan.grain = choices[next].clone();
-                self.data_quality_plan.baseline_segment = None;
+                grains
+                    .into_iter()
+                    .map(|grain| (grain.label(), PlanChoice::Grain(grain)))
+                    .collect()
             }
             2 => {
-                // Forward is metadata to sample to full; backward is the same ring the
-                // other way, so each value's Left undoes its own Right.
-                self.data_quality_plan.compute = match (self.data_quality_plan.compute, forward) {
-                    (QualityCompute::Metadata, true) | (QualityCompute::Full, false) => {
-                        QualityCompute::Sample
-                    }
-                    (QualityCompute::Sample, true) | (QualityCompute::Metadata, false) => {
-                        QualityCompute::Full
-                    }
-                    (QualityCompute::Full, true) | (QualityCompute::Sample, false) => {
-                        QualityCompute::Metadata
-                    }
+                let read = if self.sample.method == crate::sampling::SampleMethod::EveryRow {
+                    QualityCompute::Full
+                } else {
+                    QualityCompute::Sample
                 };
+                vec![
+                    ("read".to_string(), PlanChoice::Values(read)),
+                    (
+                        "file metadata only".to_string(),
+                        PlanChoice::Values(QualityCompute::Metadata),
+                    ),
+                ]
             }
-            3 => {
-                self.data_quality_plan.comparison =
-                    match (self.data_quality_plan.comparison, forward) {
-                        (QualityComparison::None, true) | (QualityComparison::Baseline, false) => {
-                            QualityComparison::Previous
+            3 => [
+                QualityComparison::None,
+                QualityComparison::Previous,
+                QualityComparison::Baseline,
+            ]
+            .into_iter()
+            .map(|comparison| {
+                (
+                    comparison.choice_label().to_string(),
+                    PlanChoice::Compare(comparison),
+                )
+            })
+            .collect(),
+            5 => [None, Some(3_600), Some(86_400), Some(604_800)]
+                .into_iter()
+                .map(|seconds| {
+                    (
+                        match seconds {
+                            None => "none",
+                            Some(3_600) => "1 hour",
+                            Some(86_400) => "1 day",
+                            _ => "1 week",
                         }
-                        (QualityComparison::Previous, true) | (QualityComparison::None, false) => {
-                            QualityComparison::Baseline
-                        }
-                        (QualityComparison::Baseline, true)
-                        | (QualityComparison::Previous, false) => QualityComparison::None,
-                    };
-                if self.data_quality_plan.comparison != QualityComparison::Baseline {
-                    self.data_quality_plan.baseline_segment = None;
+                        .to_string(),
+                        PlanChoice::Latency(seconds),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Open the focused plan field's choices, the current one selected.
+    pub fn open_plan_picker(&mut self, field: usize, context: &PlanContext) {
+        let choices = self.plan_choices(field, context);
+        if choices.is_empty() {
+            return;
+        }
+        let current = choices
+            .iter()
+            .position(|(_, choice)| choice.is_current(&self.data_quality_plan))
+            .unwrap_or(0);
+        let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
+        let mut state = crate::widgets::ui::PickerState::new(labels);
+        state.select_original(current);
+        self.data_quality_plan_field = field;
+        self.data_quality_picker = Some(PlanPicker {
+            field,
+            choices,
+            state,
+        });
+    }
+
+    /// Take the picker's selection into the plan and close it.
+    pub fn choose_plan_picker(&mut self) {
+        let Some(picker) = self.data_quality_picker.take() else {
+            return;
+        };
+        let Some(choice) = picker
+            .state
+            .selected_original()
+            .and_then(|index| picker.choices.get(index))
+        else {
+            return;
+        };
+        let plan = &mut self.data_quality_plan;
+        match choice.clone() {
+            PlanChoice::Grain(grain) => {
+                if plan.grain != grain {
+                    plan.baseline_segment = None;
+                }
+                plan.grain = grain;
+            }
+            PlanChoice::Values(compute) => plan.compute = compute,
+            PlanChoice::Compare(comparison) => {
+                plan.comparison = comparison;
+                if comparison != QualityComparison::Baseline {
+                    plan.baseline_segment = None;
                 }
             }
-            5 => {
-                let choices = [None, Some(3_600), Some(86_400), Some(604_800)];
-                let current = choices
-                    .iter()
-                    .position(|choice| *choice == self.data_quality_plan.latency_threshold_seconds)
-                    .unwrap_or(0);
-                let next = if forward {
-                    (current + 1) % choices.len()
-                } else if current == 0 {
-                    choices.len() - 1
-                } else {
-                    current - 1
-                };
-                self.data_quality_plan.latency_threshold_seconds = choices[next];
-            }
-            6 => {
-                // The engine caps a sample at 50,000 rows per segment, so the
-                // ring stops where the cap starts. A configured value that is
-                // none of these stays in the cycle, like a typed scope does.
-                let mut choices = vec![1_000usize, 5_000, 10_000, 25_000, 50_000];
-                if !choices.contains(&self.data_quality_plan.sample_rows) {
-                    choices.insert(0, self.data_quality_plan.sample_rows);
-                }
-                let current = choices
-                    .iter()
-                    .position(|choice| *choice == self.data_quality_plan.sample_rows)
-                    .unwrap_or(0);
-                let next = if forward {
-                    (current + 1) % choices.len()
-                } else if current == 0 {
-                    choices.len() - 1
-                } else {
-                    current - 1
-                };
-                self.data_quality_plan.sample_rows = choices[next];
-            }
-            _ => {}
+            PlanChoice::Latency(seconds) => plan.latency_threshold_seconds = seconds,
         }
     }
 
@@ -835,97 +1033,76 @@ impl AnalysisModal {
 mod quality_scope_tests {
     use super::*;
 
+    /// Grain choices come from the data: files, partition columns, and a day, week
+    /// or month of any date column (hours only where there are times), then chunks.
     #[test]
-    fn scope_choices_wrap_without_changing_grain() {
+    fn grain_choices_come_from_the_data() {
         let mut modal = AnalysisModal::new();
-        modal.data_quality_plan_field = 0;
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.scope, QualityScope::WholeSource);
-        modal.adjust_quality_plan(false, &[]);
-        assert_eq!(modal.data_quality_plan.scope, QualityScope::CurrentView);
-        modal.adjust_quality_plan(false, &[]);
+        let context = PlanContext {
+            partitions: vec!["year".to_string()],
+            time_columns: vec![("date".to_string(), false), ("stamp".to_string(), true)],
+            files: true,
+        };
+        let labels = modal
+            .plan_choices(1, &context)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect::<Vec<_>>();
         assert_eq!(
-            modal.data_quality_plan.scope,
-            QualityScope::FirstRows(1_000_000)
+            labels,
+            [
+                "whole dataset",
+                "by file",
+                "by year",
+                "by day of date",
+                "by week of date",
+                "by month of date",
+                "by hour of stamp",
+                "by day of stamp",
+                "by week of stamp",
+                "by month of stamp",
+                "in chunks of 100,000 rows",
+                "in chunks of 1,000,000 rows",
+            ]
         );
-        assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
+        // Choosing opens the list on the current value and sets the one chosen.
+        modal.open_plan_picker(1, &context);
+        let picker = modal.data_quality_picker.as_mut().unwrap();
+        assert_eq!(picker.state.selected_original(), Some(0));
+        picker.state.move_down();
+        picker.state.move_down();
+        picker.state.move_down();
+        modal.choose_plan_picker();
+        assert!(modal.data_quality_picker.is_none());
+        assert_eq!(
+            modal.data_quality_plan.grain,
+            QualityGrain::TimeWindows {
+                column: "date".to_string(),
+                every: "1d".to_string()
+            }
+        );
     }
 
-    /// Left undoes Right on every plan field that cycles a fixed ring. A field whose
-    /// backward step lands on the value it started from is a dead key, and the hint
-    /// under the plan promises both directions.
+    /// Values: read or metadata only; which of sample and full scan a read is, the
+    /// shared sample says.
     #[test]
-    fn every_cycling_plan_field_steps_both_ways() {
+    fn a_read_is_the_samples_kind() {
         let mut modal = AnalysisModal::new();
-
-        modal.data_quality_plan_field = 2;
-        let computes = [
-            QualityCompute::Metadata,
-            QualityCompute::Sample,
-            QualityCompute::Full,
-        ];
-        modal.data_quality_plan.compute = computes[0];
-        for expected in computes.iter().skip(1).chain(computes.first()) {
-            modal.adjust_quality_plan(true, &[]);
-            assert_eq!(
-                modal.data_quality_plan.compute, *expected,
-                "compute forward"
-            );
-        }
-        for expected in computes.iter().rev() {
-            modal.adjust_quality_plan(false, &[]);
-            assert_eq!(modal.data_quality_plan.compute, *expected, "compute back");
-        }
-
-        modal.data_quality_plan_field = 3;
-        let comparisons = [
-            QualityComparison::None,
-            QualityComparison::Previous,
-            QualityComparison::Baseline,
-        ];
-        modal.data_quality_plan.comparison = comparisons[0];
-        for expected in comparisons.iter().skip(1).chain(comparisons.first()) {
-            modal.adjust_quality_plan(true, &[]);
-            assert_eq!(
-                modal.data_quality_plan.comparison, *expected,
-                "comparison forward"
-            );
-        }
-        for expected in comparisons.iter().rev() {
-            modal.adjust_quality_plan(false, &[]);
-            assert_eq!(
-                modal.data_quality_plan.comparison, *expected,
-                "comparison back"
-            );
-        }
-    }
-
-    /// The Sample rows field cycles the sample budget, keeps a configured
-    /// value that is none of the presets in its ring, and never leaves the
-    /// engine's 50,000-row cap.
-    #[test]
-    fn the_sample_rows_field_cycles_within_the_cap() {
-        let mut modal = AnalysisModal::new();
-        modal.data_quality_plan_field = 6;
-        assert_eq!(modal.data_quality_plan.sample_rows, 10_000);
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 25_000);
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 50_000);
-        modal.adjust_quality_plan(false, &[]);
-        modal.adjust_quality_plan(false, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 10_000);
-
-        // A configured odd value joins the ring while it is current — the
-        // arrows move from where the user is — and forward lands on the
-        // first preset.
-        modal.data_quality_plan.sample_rows = 7_500;
-        modal.adjust_quality_plan(true, &[]);
-        assert_eq!(modal.data_quality_plan.sample_rows, 1_000);
-        modal.adjust_quality_plan(false, &[]);
-        assert_eq!(
-            modal.data_quality_plan.sample_rows, 50_000,
-            "off the custom value, the ring is the presets"
-        );
+        let context = PlanContext::default();
+        modal.data_quality_plan.compute = QualityCompute::Metadata;
+        modal.open_plan_picker(2, &context);
+        modal
+            .data_quality_picker
+            .as_mut()
+            .unwrap()
+            .state
+            .select_original(0);
+        modal.choose_plan_picker();
+        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Sample);
+        modal.sample.method = crate::sampling::SampleMethod::EveryRow;
+        modal.open_plan_picker(2, &context);
+        modal.choose_plan_picker();
+        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Full);
+        assert_eq!(modal.quality_plan_rows(), 5, "no latency row without roles");
     }
 }

@@ -11,6 +11,15 @@ use std::sync::mpsc;
 
 mod common;
 
+/// Enter on a tool in the Analysis sidebar. A tool with no result yet shows its
+/// Sample form in the pane rather than running; the next Enter runs it.
+fn show_sample_form(app: &mut App) {
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+}
+
 /// Drains all pending events from the channel and processes them (for async operations).
 fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
     while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
@@ -20,6 +29,25 @@ fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
             app.event(&next2);
         }
     }
+}
+
+/// Handle events until the analysis run in flight has finished, then until the
+/// channel is quiet. Waits on the run rather than on a gap between events: a run
+/// that works for longer than [`drain_events`]'s five quiet seconds on a slow
+/// runner was left unfinished there.
+fn drain_until_analysis_done(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while (app.analysis_modal.computing.is_some() || app.is_busy())
+        && std::time::Instant::now() < deadline
+    {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100))
+            && let Some(next) = app.event(&ev)
+            && let Some(next2) = app.event(&next)
+        {
+            app.event(&next2);
+        }
+    }
+    drain_events(app, rx);
 }
 
 /// Pumps the load event chain until complete, including background task results from the channel.
@@ -911,6 +939,7 @@ fn test_stale_background_events_are_ignored() {
         column_statistics: vec![],
         total_rows: 999_999,
         sample_size: None,
+        per_value: None,
         sample_seed: 0,
         correlation_matrix: None,
         distribution_analyses: vec![],
@@ -961,7 +990,11 @@ fn test_stale_background_events_are_ignored() {
             temporal: vec![],
             identity: None,
             category_variants: vec![],
+            shared_nulls: vec![],
+            source_files: None,
+            per_value: None,
         },
+        kept: None,
     });
     assert!(
         app.analysis_modal.data_quality_results.is_none(),
@@ -988,6 +1021,7 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
 
     app.event(&key(KeyCode::Char('a')));
     app.analysis_modal.sidebar_state.select(Some(1));
+    show_sample_form(&mut app);
     let next = app.event(&key(KeyCode::Enter));
     assert!(matches!(next, Some(AppEvent::AnalysisDistributionCompute)));
     assert_eq!(
@@ -1039,6 +1073,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     // Choosing Data Quality on a local source auto-runs the default plan and
     // leads with the result.
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
@@ -1049,7 +1084,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
@@ -1059,7 +1094,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
 
     // A changed plan runs again from the Plan page, one Esc away. Esc brings the
     // cursor to the plan with it, so the Enter that runs needs no Tab first.
-    app.analysis_modal.data_quality_plan.sample_seed = 7_119;
+    app.analysis_modal.sample.seed = 7_119;
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
@@ -1072,7 +1107,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     )));
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
 
     assert!(app.analysis_modal.data_quality_results.is_some());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
@@ -1107,7 +1142,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-            .contains("Observation")
+            .contains("Check: clustered"),
+        "the finding says what to check, not only its formula"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -1143,14 +1179,22 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             app.render(area, &mut buffer);
             let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
             assert!(screen.contains("Data Quality"));
-            if page != QualityPage::Trends {
-                assert!(screen.contains("Null"));
+            match page {
+                QualityPage::Columns => assert!(screen.contains("Findings")),
+                // One segment is no comparison: the page says what makes one.
+                QualityPage::Segments => assert!(screen.contains("one segment")),
+                QualityPage::Trends => assert!(screen.contains("TIME BETWEEN DATES")),
+                _ => {}
             }
         }
     }
 
     // The largest measured move between segments is on the screen, not only in the
     // profile: #196 asks for it and nothing read it before.
+    // Result pages read the plan the result was measured with.
+    let measured = app.analysis_modal.data_quality_last_plan.as_mut().unwrap();
+    measured.grain = datui::data_quality::QualityGrain::RowChunks(5);
+    measured.comparison = datui::data_quality::QualityComparison::Previous;
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     let wide = Rect::new(0, 0, 160, 40);
     let mut buffer = Buffer::empty(wide);
@@ -1160,14 +1204,34 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         screen.contains("Largest change"),
         "Segments should name the column and measurement that moved"
     );
+    // Enter shows a segment's every column and measure; Esc goes back to it.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::SegmentDetail
+    );
+    let mut buffer = Buffer::empty(wide);
+    app.render(wide, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("current view"),
+        "the drill-in names its segment"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Segments);
 
     // Every remaining page and popup must say its own piece at each width, so a
     // clipped label or a screen that renders nothing at all fails here.
     for (page, expected) in [
-        (QualityPage::Plan, "Latency threshold"),
-        (QualityPage::Scope, "ELIGIBLE ROWS"),
-        (QualityPage::TimeRoles, "Semantic role"),
-        (QualityPage::Detail, "Provenance:"),
+        (QualityPage::Plan, "Time roles"),
+        (QualityPage::TimeRoles, "Date and time columns"),
+        (QualityPage::Detail, "Missing:"),
     ] {
         app.analysis_modal.set_quality_page(page);
         for area in [
@@ -1187,15 +1251,23 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         }
     }
 
-    // Once a run exists the sidebar reports what it measured, not a second copy
-    // of the planned access already on the plan strip.
+    // Once a run exists the header says what was measured on one line, as every
+    // tool's does, and the sidebar is the tool list every tool has.
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     let area = Rect::new(0, 0, 120, 32);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    assert!(screen.contains("Measured"), "sidebar should report the run");
-    assert!(screen.contains("eligible"));
+    let header = &screen[..area.width as usize];
+    assert!(
+        header.starts_with("Data Quality") && header.contains(" rows"),
+        "the header says what was measured: {header:?}"
+    );
+    assert!(
+        !screen.contains("Result"),
+        "no second verdict in the sidebar"
+    );
+    assert!(screen.contains("clean"));
 
     app.analysis_modal.set_quality_page(QualityPage::Plan);
     for (popup, expected) in [
@@ -1232,25 +1304,21 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .is_some()
     );
     assert!(!app.is_busy());
+    // Column and measure are the Trends chart's; Segments shows every column.
     app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('m'),
+        KeyCode::Char('4'),
         KeyModifiers::NONE,
     )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    // The measure the Trends table draws; every column is on it at once.
     app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char(']'),
+        KeyCode::Char('m'),
         KeyModifiers::NONE,
     )));
     assert_eq!(
         app.analysis_modal.data_quality_metric,
         datui::data_quality::QualityMetric::EmptyRate
     );
-    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('4'),
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
-    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
 
     // Enter on a highlighted column must open that column, not the first one.
     app.analysis_modal.set_quality_page(QualityPage::Columns);
@@ -1293,6 +1361,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1418,6 +1487,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1450,6 +1520,7 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1463,7 +1534,8 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
         Some(AnalysisTool::DataQuality)
     );
 
-    // Esc to the plan, e to edit, Enter on the Scope field opens the input.
+    // Esc to the plan, Space on the Sample row opens the Sample form, whose
+    // first row is the scope typed as text.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
@@ -1473,11 +1545,21 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
         KeyModifiers::NONE,
     )));
     app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
+        KeyCode::Char(' '),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    assert!(app.analysis_modal.sample_form.is_some());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    // Rows from is a choice; a row range brings rows that are typed into.
+    assert!(!app.text_field_focused());
+    for code in [KeyCode::Right, KeyCode::Down] {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+    assert_eq!(
+        app.analysis_modal.sample_form.as_ref().unwrap().field,
+        datui::sample_modal::SampleField::RangeFrom
+    );
     assert!(app.text_field_focused());
 
     let quit = app.event(&AppEvent::Key(KeyEvent::new(
@@ -1486,22 +1568,27 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     )));
     assert!(
         !matches!(quit, Some(AppEvent::Exit)),
-        "Ctrl-C in the scope input must not quit"
+        "Ctrl-C in a sample text row must not quit"
     );
 
-    let before = app
-        .analysis_modal
-        .data_quality_scope_input
-        .value()
-        .to_string();
+    let scope = |app: &App| {
+        app.analysis_modal
+            .sample_form
+            .as_ref()
+            .unwrap()
+            .range_from
+            .value()
+            .to_string()
+    };
+    let before = scope(&app);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        app.analysis_modal.data_quality_scope_input.value(),
+        scope(&app),
         format!("{before}?"),
-        "? in the scope input must type, not open help"
+        "? in a sample text row must type, not open help"
     );
 }
 
@@ -1624,7 +1711,25 @@ fn selecting_a_tool_keeps_the_sidebar_focus() {
     )));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
 
-    // Enter on Describe: the tool runs, the cursor stays on the sidebar.
+    // Enter on Describe shows its Sample form in the pane, and the cursor goes
+    // into it: the form is what the pane is for until the first run.
+    show_sample_form(&mut app);
+    assert!(app.analysis_modal.sample_form.is_some());
+    assert!(app.analysis_modal.describe_results.is_none());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    assert_eq!(
+        app.analysis_modal.sample_form.as_ref().unwrap().field,
+        datui::sample_modal::SampleField::Rows,
+        "the cursor lands on the first setting"
+    );
+    // Esc hands the cursor back to the list and leaves the form waiting; Enter
+    // there runs it as it stands.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    assert!(app.analysis_modal.sample_form.is_some());
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1668,6 +1773,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1691,13 +1797,15 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         QualityPage::Overview,
         "the result leads; the plan stays an Esc away"
     );
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
-
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+    // The run started from the form, so the cursor is on the result it made.
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    for expected in [AnalysisFocus::Sidebar, AnalysisFocus::Main] {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.analysis_modal.focus, expected, "Tab crosses both ways");
+    }
 
     // Esc from the result opens the plan, unchanged in meaning.
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -1717,9 +1825,641 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         "the dimmed prose line is gone"
     );
     assert!(
-        screen.contains("Run") && screen.contains("Edit"),
+        screen.contains("Run") && screen.contains("Space"),
         "the global bar names the plan page's keys"
     );
+}
+
+/// The overview is a report: a verdict first, problems ranked above notes, columns
+/// that go missing together said once, the clean columns named, and a grouped
+/// finding still opens exactly its rows.
+#[test]
+fn data_quality_reads_as_a_report() {
+    use datui::data_quality::QualityPage;
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_report.parquet");
+    let gap = |row: i64| row % 50 == 7;
+    let mut df = df!(
+        "id" => (0..200i64).collect::<Vec<_>>(),
+        "open" => (0..200i64).map(|row| (!gap(row)).then_some(row as f64)).collect::<Vec<_>>(),
+        "close" => (0..200i64).map(|row| (!gap(row)).then_some(row as f64 + 0.5)).collect::<Vec<_>>(),
+        "region" => (0..200i64).map(|row| ["West", "west ", "East"][row as usize % 3]).collect::<Vec<_>>(),
+        "market" => vec!["US"; 200],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    // Before the first run the pane is the Sample form and nothing else: no plan
+    // strip, plan table or planned access behind it.
+    let first = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(first);
+    app.render(first, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("Rows from:"));
+    for behind in ["grain", "Planned", "Latency threshold", "remote write"] {
+        assert!(
+            !screen.contains(behind),
+            "{behind:?} shows behind the first-run form"
+        );
+    }
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    // The run shows the progress every tool shows: the phase, the clock and what
+    // it reads, in place of the view. No plan page, no popup over it.
+    let mut buffer = Buffer::empty(first);
+    app.render(first, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("Profiling data quality") && screen.contains("random rows"),
+        "the shared progress view"
+    );
+    for gone in ["PROFILE PLAN", "Running", "Planned"] {
+        assert!(!screen.contains(gone), "{gone:?} shows during a run");
+    }
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    // The run started from the form, so the cursor is already on the report.
+    assert_eq!(
+        app.analysis_modal.focus,
+        datui::analysis_modal::AnalysisFocus::Main
+    );
+
+    let area = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    for expected in [
+        "1 problem  2 notes  1 of 5 columns clean",
+        "Data Quality",
+        "all 200 rows",
+        "Overview",
+        "Columns",
+        "Segments",
+        "Trends",
+        "Mixed spellings",
+        "Missing together",
+        "4 rows (2.0%)",
+        "Single value",
+        "No findings",
+    ] {
+        assert!(
+            screen.contains(expected),
+            "overview should show {expected:?}"
+        );
+    }
+    let problem = screen.find("Mixed spellings").unwrap();
+    assert!(
+        problem < screen.find("Missing together").unwrap(),
+        "problems rank above notes"
+    );
+    assert!(
+        !screen.contains("Measured fact"),
+        "no raw observation table on the overview"
+    );
+    for gone in ["Result", "checked", "seed"] {
+        assert!(!screen.contains(gone), "{gone:?} repeats the header");
+    }
+
+    // The arrows walk the tabs, and every page's bar has one shape: the way out,
+    // the page's own action, then the shared keys in one order.
+    let bar = |app: &mut App| {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let bar_row = (area.height as usize - 1) * area.width as usize;
+        buffer.content()[bar_row..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let shared = format!(
+        "s  Sample   {}  Page   v  View Rows   e  Plan",
+        datui::glyphs::get().updown_lr
+    );
+    for (page, own) in [
+        (QualityPage::Overview, "Enter  Details"),
+        (QualityPage::Columns, "Enter  Inspect"),
+        (QualityPage::Segments, "Enter  Set Grain"),
+        (QualityPage::Trends, "Enter  Set Grain"),
+    ] {
+        if page != QualityPage::Overview {
+            app.event(&AppEvent::Key(KeyEvent::new(
+                KeyCode::Right,
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.analysis_modal.data_quality_page, page);
+        assert!(
+            bar(&mut app).starts_with(&format!(" Esc  Back   {own}   {shared}")),
+            "{page:?}: {:?}",
+            bar(&mut app)
+        );
+    }
+    // An empty Trends page names the setting that fills it, and Enter opens it.
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("Set Grain") && !screen.contains("Metric"));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    // Straight to the Grain choices, on the plan, in the words the header uses.
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert_eq!(app.analysis_modal.data_quality_plan_field, 1, "on Grain");
+    assert!(app.analysis_modal.data_quality_picker.is_some());
+    let bar_now = |app: &mut App| {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let bar_row = (area.height as usize - 1) * area.width as usize;
+        buffer.content()[bar_row..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("whole dataset") && screen.contains("in chunks of"));
+    assert!(bar_now(&mut app).contains("Choose"));
+    // Choosing edits the plan; the report keeps the plan it was measured with.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_picker.is_none());
+    assert_ne!(
+        app.analysis_modal.data_quality_plan.grain,
+        datui::data_quality::QualityGrain::Dataset
+    );
+    assert!(app.analysis_modal.quality_plan_pending());
+    let bar = bar_now(&mut app);
+    assert!(
+        bar.contains("Discard") && bar.contains("Run") && bar.contains("Space  Choose"),
+        "{bar}"
+    );
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    assert!(rendered_text(&buffer).contains("Changed since the last run"));
+    // Esc puts back what the last run used.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.quality_plan_pending());
+    // Each field names what Space does with it.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert!(bar_now(&mut app).contains("Sample Form"));
+    for _ in 0..4 {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    assert_eq!(
+        app.analysis_modal.data_quality_plan_field, 4,
+        "on Time roles; no latency row without roles"
+    );
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("no date or time columns"));
+    assert!(!screen.contains("Latency threshold"));
+    let bar = bar_now(&mut app);
+    assert!(
+        !bar.contains("Time Roles") && !bar.contains("Space"),
+        "nothing to assign without a date column: {bar}"
+    );
+    // Enter runs from any field; the plan is the one measured, so the report opens.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('1'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    assert!(app.analysis_modal.data_quality_results.is_some());
+
+    // The clean entry lists what was checked: the most important few, then all.
+    for code in [KeyCode::End, KeyCode::Enter] {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("Checks"),
+        "the clean entry names its checks"
+    );
+    assert!(screen.contains("Duplicate rows"));
+    assert!(screen.contains("4 more checks"));
+    assert!(
+        screen.contains("All Checks"),
+        "the bar says Enter shows the rest"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        app.analysis_modal.data_quality_observation_detail,
+        "Enter on the clean entry expands, it does not close"
+    );
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(screen.contains("Nearly unique") && screen.contains("Fewer Checks"));
+    for code in [KeyCode::Esc, KeyCode::Home] {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    // The grouped finding opens every row it counts, and only those.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("null in both columns")
+            && screen.contains("No row misses one without the other"),
+        "the detail says the columns go missing together"
+    );
+    assert!(
+        !screen.contains("Why it matters"),
+        "facts and advice as a list, not a lecture"
+    );
+    assert!(
+        screen.contains("Show Rows"),
+        "the bar names what Enter does"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.active);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows, 4);
+}
+
+/// A finding with more evidence than the screen holds scrolls inside its popup,
+/// counts what is below, and lists the values with the most rows first.
+#[test]
+fn a_long_finding_scrolls() {
+    use datui::data_quality::QualityPage;
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_long_finding.parquet");
+    // Sixty names, each also written in capitals; name 0 has the most rows.
+    let names = (0..3_000usize)
+        .map(|row| {
+            let name = format!("Company {:02}", row % 60);
+            if row % 120 < 60 {
+                name
+            } else {
+                name.to_uppercase()
+            }
+        })
+        .chain(std::iter::repeat_n("Company 00".to_string(), 500))
+        .collect::<Vec<_>>();
+    let rows = names.len() as i64;
+    let mut df = df!("id" => (0..rows).collect::<Vec<_>>(), "name" => names).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let press = |app: &mut App, code| {
+        let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+    };
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_observation_detail);
+
+    let area = Rect::new(0, 0, 100, 20);
+    let render = |app: &mut App| {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let screen = render(&mut app);
+    assert!(screen.contains("Mixed spellings"));
+    assert!(
+        screen.contains("\"Company 00\" (525)  \"COMPANY 00\" (25)"),
+        "the value with the most rows leads, its commonest spelling first"
+    );
+    assert!(screen.contains(" more "), "the frame counts what is below");
+    assert!(screen.contains("Scroll"), "the bar says the popup scrolls");
+    press(&mut app, KeyCode::End);
+    let screen = render(&mut app);
+    assert!(!screen.contains(" more "), "nothing left below at the end");
+    assert!(screen.contains("Show Rows"), "the Enter line is reachable");
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.analysis_modal.data_quality_detail_scroll.offset, 0);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.data_quality_observation_detail);
+}
+
+/// A finding measured on a sample opens the sample's matching rows, drawn again
+/// from its seed: the count the popup promises is the count in the table.
+#[test]
+fn a_sampled_finding_opens_its_sampled_rows() {
+    use datui::data_quality::{QualityPage, QualityPrecision};
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_sampled_evidence.parquet");
+    let mut df = df!(
+        "id" => (0..5_000i64).collect::<Vec<_>>(),
+        "v" => (0..5_000i64).map(|row| (row % 10 != 3).then_some(row)).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    // A table sorted on screen: the sample is drawn from the unsorted rows, as
+    // every tool draws it, so the sort changes nothing about which rows it holds.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort(vec!["id".to_string()], false);
+    pump_until_idle(&mut app, &rx, &tx);
+    app.analysis_modal.sample.rows = 1_000;
+
+    let enter = || AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    let mut next = app.event(&enter());
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.precision, QualityPrecision::Sampled);
+    let report = datui::quality_report::build_report(results);
+    let index = report
+        .findings
+        .iter()
+        .position(|finding| finding.title == "Missing values")
+        .expect("v is missing in a tenth of the rows");
+    let expected = report.findings[index].affected_rows;
+    assert!(expected > 0 && expected < 1_000);
+
+    app.analysis_modal
+        .data_quality_table_state
+        .select(Some(index));
+    app.event(&enter());
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let area = Rect::new(0, 0, 110, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains(&format!("Enter shows the {expected} sampled rows.")),
+        "the popup says which rows open"
+    );
+    assert!(screen.contains("Show Rows"));
+    assert!(!screen.contains("full profile"));
+
+    let mut next = app.event(&enter());
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.num_rows, expected,
+        "exactly the rows the finding counted"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.active, "Esc goes back to the report");
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 5_000);
+}
+
+/// One sample for every tool: chosen once in Describe, it is the rows Data Quality
+/// reads too, and the header says which rows those are. Esc in the form discards.
+#[test]
+fn one_sample_serves_every_analysis_tool() {
+    use datui::analysis_modal::AnalysisTool;
+    use datui::data_quality::QualityScope;
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shared_sample.parquet");
+    let sizes = [("a", 900usize), ("b", 90), ("c", 10)];
+    let part: Vec<&str> = sizes
+        .iter()
+        .flat_map(|(name, size)| std::iter::repeat_n(*name, *size))
+        .collect();
+    let mut df = df!(
+        "part" => &part,
+        "value" => (0..part.len() as i64).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    let run = |app: &mut App, next: Option<AppEvent>| {
+        let mut next = next;
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+        drain_events(app, &rx);
+    };
+
+    key(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(0));
+    show_sample_form(&mut app);
+    let next = key(&mut app, KeyCode::Enter);
+    run(&mut app, next);
+    key(&mut app, KeyCode::Tab);
+
+    // The bar names the key at the baseline width, or the sample is a feature
+    // nobody finds.
+    let narrow = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(narrow);
+    app.render(narrow, &mut buffer);
+    let bar: String = (0..narrow.width)
+        .map(|x| buffer[(x, narrow.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Sample"),
+        "s Sample on the bar at 80 columns: {bar}"
+    );
+
+    // Esc discards the form's edits.
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.sample_form.is_none());
+    assert_eq!(
+        app.analysis_modal.sample.method,
+        datui::sampling::SampleMethod::Spread
+    );
+
+    key(&mut app, KeyCode::Char('s'));
+    app.analysis_modal
+        .sample_form
+        .as_mut()
+        .unwrap()
+        .set_scope(&QualityScope::parse_command("partition part=b,c").unwrap());
+    let next = key(&mut app, KeyCode::Enter);
+    run(&mut app, next);
+    let describe = app.analysis_modal.describe_results.as_ref().unwrap();
+    assert_eq!(describe.total_rows, 100, "only partitions b and c");
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("all 100 rows") && screen.contains("part=b,c"),
+        "the header names the rows read"
+    );
+
+    // v shows the sample itself in the table viewer; Esc brings back the table
+    // and the tool as they were.
+    let next = key(&mut app, KeyCode::Char('v'));
+    run(&mut app, next);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active, "the sample replaces the tool");
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = rendered_text(&buffer);
+    assert!(
+        screen.contains("Sample") && screen.contains("Esc goes back"),
+        "the view says what it is and the way out"
+    );
+    key(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 1_000);
+    assert!(app.analysis_modal.describe_results.is_some());
+
+    // Data Quality reads the same rows without being told again: once a sample
+    // has been run, picking another tool runs it on that sample, no form.
+    app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.sidebar_state.select(Some(3));
+    let next = key(&mut app, KeyCode::Enter);
+    assert!(
+        app.analysis_modal.sample_form.is_none(),
+        "the sample already chosen is not asked for again"
+    );
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    run(&mut app, next);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.scope,
+        QualityScope::SourcePartition {
+            column: "part".to_string(),
+            value: "b,c".to_string()
+        }
+    );
+    let quality = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(quality.total_rows, Some(100));
+    let mut buffer = Buffer::empty(narrow);
+    app.render(narrow, &mut buffer);
+    let bar: String = (0..narrow.width)
+        .map(|x| buffer[(x, narrow.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Sample"),
+        "s Sample on the Data Quality bar at 80 columns: {bar}"
+    );
+    // The seed is typed: arriving on it selects it, so one key makes it that key.
+    key(&mut app, KeyCode::Char('s'));
+    for _ in 0..8 {
+        if app.analysis_modal.sample_form.as_ref().unwrap().field
+            == datui::sample_modal::SampleField::Seed
+        {
+            break;
+        }
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(
+        app.analysis_modal.sample_form.as_ref().unwrap().field,
+        datui::sample_modal::SampleField::Seed
+    );
+    key(&mut app, KeyCode::Char('7'));
+    let next = key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.sample.seed, 7);
+    run(&mut app, next);
+
+    // The tool list is the same beside every tool: the active one carries the
+    // accent, not a dot only Data Quality drew.
+    let screen = rendered_text(&buffer);
+    assert!(!screen.contains(&format!("{} Data Quality", datui::glyphs::get().middot)));
 }
 
 /// A plan that needs a run is a form the user answers with Enter, which only the
@@ -1729,7 +2469,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
 #[test]
 fn the_data_quality_ceremony_takes_the_cursor_with_it() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::{QualityCompute, QualityPage};
+    use datui::data_quality::QualityPage;
 
     let (mut app, _rx, _tx) = open_query_filter_fixture("dq_ceremony_focus.csv");
 
@@ -1737,10 +2477,11 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
+    // A full-scan plan requires confirmation, so running the tool opens the
+    // ceremony instead of reading at once.
+    app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
     app.analysis_modal.sidebar_state.select(Some(3));
-    // A full-scan plan requires confirmation, so selecting the tool opens the
-    // ceremony instead of running at once.
-    app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
+    show_sample_form(&mut app);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1760,12 +2501,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
         "the ceremony owns the keys"
     );
 
-    // Enter asks for confirmation, and Enter again runs — no Tab required.
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    assert!(next.is_none());
+    // The run asked for confirmation, and Enter confirms — no Tab required.
     assert!(app.analysis_modal.data_quality_confirm_run);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -1788,6 +2524,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1797,18 +2534,22 @@ fn e_moves_the_cursor_into_the_plan_editor() {
     }
     drain_events(&mut app, &rx);
     assert!(app.analysis_modal.data_quality_results.is_some());
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    // From the tool list: the case where e has to bring the cursor along.
+    app.analysis_modal.focus = AnalysisFocus::Sidebar;
 
     let tool_row = app.analysis_modal.sidebar_state.selected();
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.analysis_modal.data_quality_editing);
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        datui::data_quality::QualityPage::Plan
+    );
     assert_eq!(
         app.analysis_modal.focus,
         AnalysisFocus::Main,
-        "e moves the cursor into the editor"
+        "e moves the cursor onto the plan"
     );
 
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -1836,7 +2577,6 @@ fn e_moves_the_cursor_into_the_plan_editor() {
 #[test]
 fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
     use datui::analysis_modal::AnalysisFocus;
-    use datui::data_quality::QualityCompute;
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_run_key_focus.csv");
 
@@ -1845,6 +2585,7 @@ fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1853,9 +2594,10 @@ fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
         next = app.event(&ev);
     }
     drain_events(&mut app, &rx);
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    // From the tool list, which is where r has to bring the cursor along from.
+    app.analysis_modal.focus = AnalysisFocus::Sidebar;
 
-    app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
+    app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::NONE,
@@ -1889,6 +2631,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     // The local auto-run of the default plan settles before the scope edit.
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -1897,41 +2640,48 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DataQuality)
     );
     app.analysis_modal.focus = AnalysisFocus::Main;
-    key(&mut app, KeyCode::Char('e'));
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
-    for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 50, 18)] {
+    // s opens the Sample form over the result; its scope row takes the rows.
+    key(&mut app, KeyCode::Char('s'));
+    assert!(app.analysis_modal.sample_form.is_some());
+    for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 60, 20)] {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
         let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-        assert!(screen.contains("ELIGIBLE ROWS"));
+        assert!(
+            screen.contains("Rows from:")
+                && screen.contains("All rows")
+                && screen.contains("Random"),
+            "the form's values name themselves"
+        );
     }
-    app.analysis_modal
-        .data_quality_scope_input
-        .set_value("rows 0..3");
+    let set_scope = |app: &mut App, text: &str| {
+        let (from, to) = text.trim_start_matches("rows ").split_once("..").unwrap();
+        let form = app.analysis_modal.sample_form.as_mut().unwrap();
+        form.kind = datui::sample_modal::RowsKind::Range;
+        form.range_from.set_value(from);
+        form.range_to.set_value(to);
+    };
+    set_scope(&mut app, "rows 0..3");
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
-    assert!(app.analysis_modal.data_quality_scope_error.is_some());
-    app.analysis_modal
-        .data_quality_scope_input
-        .set_value("rows 2..3");
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    let form = app.analysis_modal.sample_form.as_ref().unwrap();
+    assert!(form.error.is_some(), "a bad scope stays in the form");
+    set_scope(&mut app, "rows 2..3");
+    // Enter applies the sample and runs the tool on screen with it.
+    let next = key(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.sample_form.is_none());
     assert_eq!(
-        app.analysis_modal.data_quality_plan.scope,
+        app.analysis_modal.sample.scope,
         QualityScope::ViewRows { start: 2, end: 3 }
     );
-    assert!(!app.analysis_modal.data_quality_editing);
-    let next = key(&mut app, KeyCode::Enter);
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     app.event(&next.unwrap());
-    drain_events(&mut app, &rx);
+    drain_until_analysis_done(&mut app, &rx);
     assert_eq!(
         app.analysis_modal
             .data_quality_results
@@ -1940,36 +2690,35 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
             .total_rows,
         Some(2)
     );
+    // An edit waits for Enter; Esc puts back the plan the result was measured with.
     key(&mut app, KeyCode::Char('e'));
     key(&mut app, KeyCode::Down);
-    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Enter);
     assert_ne!(
         app.analysis_modal.data_quality_plan.grain,
         datui::data_quality::QualityGrain::Dataset
     );
-    key(&mut app, KeyCode::Char('1'));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert!(app.analysis_modal.quality_plan_pending());
     key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.data_quality_plan.grain,
         datui::data_quality::QualityGrain::Dataset
     );
     assert!(app.analysis_modal.data_quality_results.is_some());
-    key(&mut app, KeyCode::Char('e'));
-    key(&mut app, KeyCode::Enter);
-    app.analysis_modal
-        .data_quality_scope_input
-        .set_value("rows 1..1");
-    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('s'));
+    set_scope(&mut app, "rows 1..1");
+    let next = key(&mut app, KeyCode::Enter);
     assert!(app.analysis_modal.data_quality_results.is_none());
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_until_analysis_done(&mut app, &rx);
 
-    key(&mut app, KeyCode::Char('e'));
-    key(&mut app, KeyCode::Enter);
-    app.analysis_modal
-        .data_quality_scope_input
-        .set_value("rows 2..3");
-    key(&mut app, KeyCode::Enter);
+    // The earlier sample again is the session cache's, not another read.
+    key(&mut app, KeyCode::Char('s'));
+    set_scope(&mut app, "rows 2..3");
     assert!(key(&mut app, KeyCode::Enter).is_none());
     assert!(app.analysis_modal.data_quality_from_cache);
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
@@ -1989,6 +2738,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
     // The local auto-run of the default plan settles first.
     let mut next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -2008,7 +2758,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    app.analysis_modal.data_quality_plan.scope = QualityScope::SourceFiles(vec![2]);
+    app.analysis_modal.sample.scope = QualityScope::SourceFiles(vec![2]);
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -2027,38 +2777,50 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     assert_eq!(id.min.as_deref(), Some("3"));
     assert_eq!(id.max.as_deref(), Some("4"));
 
-    app.analysis_modal.data_quality_plan.scope = QualityScope::WholeSource;
-    app.analysis_modal.data_quality_plan.sample_rows = 1;
+    app.analysis_modal.sample.scope = QualityScope::WholeSource;
+    app.analysis_modal.sample.rows = 1;
     app.event(&AppEvent::AnalysisDataQualityCompute);
     drain_events(&mut app, &rx);
     let sampled = app.analysis_modal.data_quality_results.as_ref().unwrap();
-    assert_eq!(sampled.total_rows, None);
+    // The sampler counts the whole scope as it spreads the sample over it.
+    assert_eq!(sampled.total_rows, Some(4));
     assert_eq!(sampled.evaluated_rows, 1);
     assert_eq!(
         sampled.precision,
         datui::data_quality::QualityPrecision::Sampled
     );
 
-    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
+    app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
     app.event(&AppEvent::AnalysisDataQualityCompute);
     drain_events(&mut app, &rx);
     let full = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(full.total_rows, Some(4));
     assert_eq!(full.evaluated_rows, 4);
 
-    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Sample;
+    // By file, the segments are the shared sample's rows split by the file each
+    // came from; a file's size is its footer's, not a guess from the sample.
+    app.analysis_modal.sample.method = datui::sampling::SampleMethod::Spread;
+    app.analysis_modal.sample.rows = 3;
     app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::File;
     app.event(&AppEvent::AnalysisDataQualityCompute);
     drain_events(&mut app, &rx);
     let by_file = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(by_file.total_rows, Some(4));
-    assert_eq!(by_file.evaluated_rows, 2);
+    assert_eq!(by_file.evaluated_rows, 3);
     assert_eq!(by_file.segments.len(), 2);
     assert!(
         by_file
             .segments
             .iter()
-            .all(|segment| segment.total_rows == Some(2) && segment.evaluated_rows == 1)
+            .all(|segment| segment.total_rows == Some(2))
+    );
+    assert_eq!(
+        by_file
+            .segments
+            .iter()
+            .map(|segment| segment.evaluated_rows)
+            .sum::<usize>(),
+        3
     );
 }
 
@@ -5349,6 +6111,8 @@ fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
     };
     press(&mut pump, KeyCode::Char('a'));
     pump.app.analysis_modal.sidebar_state.select(Some(1));
+    // The first Enter shows the tool's Sample form; the second runs it.
+    press(&mut pump, KeyCode::Enter);
     press(&mut pump, KeyCode::Enter);
     pump.drain().unwrap();
     assert!(
@@ -6837,10 +7601,12 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
     let area = Rect::new(0, 0, 120, 30);
     let _ = painted(&mut app, &rx, &tx, area);
 
-    // `a` opens the analysis modal, Enter runs the tool the sidebar starts on, Describe.
+    // `a` opens the analysis modal; Enter on Describe, where the sidebar starts,
+    // shows its Sample form, and Enter again runs it.
     if let Some(next) = app.event(&key(KeyCode::Char('a'))) {
         let _ = tx.send(next);
     }
+    app.event(&key(KeyCode::Enter));
     if let Some(next) = app.event(&key(KeyCode::Enter)) {
         let _ = tx.send(next);
     }
@@ -7464,6 +8230,8 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
             browsing: None,
             probed: Default::default(),
             unreachable: Default::default(),
+            listing_so_far: Default::default(),
+            cut_short: Default::default(),
             probe_errors: Default::default(),
             network_check: app.home.network_check,
             cloud: Vec::new(),
@@ -8382,6 +9150,7 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
     app.event(&AppEvent::HomeProbeReady {
         root: PathBuf::from("/mnt/somewhere-else"),
         rows: Some(Vec::new()),
+        cut_short: false,
     });
 
     for _ in 0..50 {

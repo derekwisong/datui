@@ -86,7 +86,7 @@ pub fn render(
             } else {
                 evidence_label.map(|label| {
                     format!(
-                        "{} Data Quality / {label} (Esc goes back)",
+                        "{} {label} (Esc goes back)",
                         crate::glyphs::get().arrow_left
                     )
                 })

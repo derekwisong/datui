@@ -1,6 +1,6 @@
 //! The Sample form: which rows every analysis tool reads, and how they are picked.
 //!
-//! Only settings. A value names itself ("All rows (17.6M)", "Random", "100,000
+//! Only settings. A value names itself ("All rows (36.8M)", "Random", "100,000
 //! rows"), and a kind of rows that needs telling what to type (partitions, files, a
 //! time range) carries its context on the lines under it. The keys are on the
 //! control bar, like everywhere else.

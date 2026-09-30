@@ -12124,4 +12124,38 @@ mod tests {
         assert_eq!(buf[(sep + 1, 1)].bg, Color::Indexed(24));
         assert_eq!(buf[(sep + 1, 2)].bg, Color::Indexed(236));
     }
+
+    /// The gap is paid for in the width budget: at every width, the columns right of
+    /// the separator are whole or absent. Left out, the last column that fits exactly
+    /// comes out one cell short, and a number cut short reads as a different number.
+    #[test]
+    fn the_separator_gap_never_cuts_a_number_short() {
+        let values = ["-987", "654", "-32", "10"];
+        let lf = df!(
+            "k" => &["x"],
+            "a" => &[-987i64],
+            "b" => &[654i64],
+            "c" => &[-32i64],
+            "d" => &[10i64],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 1;
+        state.set_locked_columns(1);
+        let data_row = DataTable::default().header_height();
+        for width in 8..=30 {
+            let area = Rect::new(0, 0, width, data_row + 1);
+            let mut buf = Buffer::empty(area);
+            DataTable::default().render(area, &mut buf, &mut state);
+            let row = row_string(&buf, area, data_row);
+            let (_, scrolled) = row.split_once('│').expect("a separator");
+            for token in scrolled.split_whitespace() {
+                assert!(
+                    values.contains(&token),
+                    "width {width}: {token:?} is cut short in {row:?}"
+                );
+            }
+        }
+    }
 }

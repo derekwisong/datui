@@ -764,8 +764,8 @@ fn render_statistics_table(
     StatefulWidget::render(table, area, buf, table_state);
 }
 
-/// One Describe cell. A date or time column gets its range, quartiles and mean in
-/// its own format; the statistics it has no value for, and nulls, read `-`.
+/// One Describe cell. A date, time or duration column gets its range, quartiles
+/// and mean in its own format; the statistics it has no value for, and nulls, read `-`.
 fn describe_value(
     col_stat: &ColumnStatistics,
     stat_name: &str,

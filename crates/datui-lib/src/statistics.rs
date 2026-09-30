@@ -72,7 +72,7 @@ pub struct CategoricalStatistics {
     pub max: Option<String>, // Lexicographically largest string
 }
 
-/// Describe for a Date, Datetime or Time column: each statistic a value of the
+/// Describe for a Date, Datetime, Time or Duration column: each statistic a value of the
 /// column's own type, written as the table writes it; `None` for a null.
 #[derive(Clone, Default)]
 pub struct TemporalStatistics {
@@ -912,7 +912,7 @@ fn is_categorical_type(dtype: &DataType) -> bool {
 fn is_temporal_type(dtype: &DataType) -> bool {
     matches!(
         dtype,
-        DataType::Date | DataType::Datetime(..) | DataType::Time
+        DataType::Date | DataType::Datetime(..) | DataType::Time | DataType::Duration(_)
     )
 }
 
@@ -3002,7 +3002,8 @@ mod normality_tests {
 pub(crate) mod describe_tests {
     use super::*;
 
-    /// A frame with one column of each temporal type, five values and a null each.
+    /// A frame with one column of each temporal type, a zoned datetime too, five
+    /// values and a null each.
     pub(crate) fn temporal_frame() -> DataFrame {
         let day = 20_089i32; // 2025-01-01
         let dates = Series::new(
@@ -3047,7 +3048,45 @@ pub(crate) mod describe_tests {
         )
         .cast(&DataType::Time)
         .unwrap();
-        DataFrame::new_infer_height(vec![dates.into(), pickups.into(), times.into()]).unwrap()
+        // The same instants in New York, in milliseconds: the zone survives the cast back.
+        let local = Series::new(
+            "local".into(),
+            &[
+                Some(start / 1000 + 4 * hour / 1000),
+                Some(start / 1000),
+                None,
+                Some(start / 1000 + 2 * hour / 1000),
+                Some(start / 1000 + hour / 1000),
+                Some(start / 1000 + 3 * hour / 1000),
+            ],
+        )
+        .cast(&DataType::Datetime(
+            TimeUnit::Milliseconds,
+            TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
+        ))
+        .unwrap();
+        let minute = 60_000i64; // milliseconds
+        let waits = Series::new(
+            "wait".into(),
+            &[
+                Some(5 * minute),
+                Some(minute),
+                None,
+                Some(3 * minute),
+                Some(2 * minute),
+                Some(4 * minute),
+            ],
+        )
+        .cast(&DataType::Duration(TimeUnit::Milliseconds))
+        .unwrap();
+        DataFrame::new_infer_height(vec![
+            dates.into(),
+            pickups.into(),
+            times.into(),
+            local.into(),
+            waits.into(),
+        ])
+        .unwrap()
     }
 
     #[test]
@@ -3064,7 +3103,7 @@ pub(crate) mod describe_tests {
         let sampled = compute_describe_single_aggregation(&df, &schema, 6, None, 0, false)
             .unwrap()
             .column_statistics;
-        let per_column: Vec<ColumnStatistics> = (0..3)
+        let per_column: Vec<ColumnStatistics> = (0..df.width())
             .map(|i| {
                 compute_describe_column(&df, &schema, i, &ComputeOptions::default(), None, false)
                     .unwrap()
@@ -3090,8 +3129,18 @@ pub(crate) mod describe_tests {
             [
                 "09:00:20", "09:00:00", "09:00:10", "09:00:20", "09:00:30", "09:00:40",
             ],
+            [
+                "2024-12-31 17:47:55 EST",
+                "2024-12-31 15:47:55 EST",
+                "2024-12-31 16:47:55 EST",
+                "2024-12-31 17:47:55 EST",
+                "2024-12-31 18:47:55 EST",
+                "2024-12-31 19:47:55 EST",
+            ],
+            ["3m", "1m", "2m", "3m", "4m", "5m"],
         ];
         for stats in [&lazy, &sampled, &per_column] {
+            assert_eq!(stats.len(), expected.len());
             for (column, want) in stats.iter().zip(expected) {
                 assert!(column.numeric_stats.is_none(), "{}", column.name);
                 assert_eq!(column.null_count, 1);
@@ -3101,5 +3150,23 @@ pub(crate) mod describe_tests {
                 assert_eq!(got, want.map(String::from), "{}", column.name);
             }
         }
+    }
+
+    #[test]
+    fn describe_of_an_all_null_datetime_is_empty() {
+        let empty = Series::new("never".into(), &[None::<i64>, None])
+            .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+            .unwrap();
+        let df = DataFrame::new_infer_height(vec![empty.into()]).unwrap();
+        let schema = df.schema().clone();
+        let stats = compute_describe_single_aggregation(&df, &schema, 2, None, 0, false)
+            .unwrap()
+            .column_statistics;
+        let t = stats[0].temporal_stats.as_ref().expect("temporal stats");
+        assert!(
+            [&t.mean, &t.min, &t.q25, &t.median, &t.q75, &t.max]
+                .iter()
+                .all(|v| v.is_none())
+        );
     }
 }

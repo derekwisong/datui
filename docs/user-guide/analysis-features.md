@@ -13,9 +13,9 @@ the [sample](#sampling) is set to read the source.
 Summary statistics per column, like Polars'
 [`describe`](https://docs.pola.rs/api/python/stable/reference/dataframe/api/polars.DataFrame.describe.html):
 count, nulls, mean, standard deviation, min, 25th percentile, median, 75th
-percentile and max. Date, datetime and time columns get all of them but the
-standard deviation, written as the table writes them; text columns get min and
-max. Scroll with the arrow keys.
+percentile and max. Date, datetime, time and duration columns get all of them
+but the standard deviation, written as the table writes them; text columns get
+min and max. Scroll with the arrow keys.
 
 ## Distribution
 

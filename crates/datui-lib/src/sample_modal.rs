@@ -1,7 +1,7 @@
 //! The Sample form: the one place an analysis's rows are chosen, for every tool.
 //! It edits a copy of the shared [`Sample`]; Enter applies it, Esc discards it.
 //!
-//! Every row is a setting whose value names itself: which rows ("All rows (17.6M)",
+//! Every row is a setting whose value names itself: which rows ("All rows (36.8M)",
 //! "Partitions", "Files", ...), how they are picked, how many, and the seed. Picking
 //! a kind of rows shows only that kind's inputs, with the context they need (the
 //! partition values that exist, the numbered files) and nothing else.
@@ -652,15 +652,15 @@ mod tests {
         SampleForm::new(
             &Sample::default(),
             SampleContext {
-                view_rows: Some(17_600_000),
+                view_rows: Some(36_800_000),
                 filtered: false,
                 files: (2016..2019)
-                    .map(|year| format!("/data/prices/year={year}/0.parquet"))
+                    .map(|year| format!("/data/weather/year={year}/0.parquet"))
                     .collect(),
                 partition_columns: vec!["year".to_string()],
                 partition_values: Vec::new(),
                 time_columns: vec!["date".to_string()],
-                value_columns: vec!["ticker".to_string()],
+                value_columns: vec!["station".to_string()],
             },
             &crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
         )
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn each_kind_of_rows_shows_only_its_inputs() {
         let mut form = form();
-        assert_eq!(form.choice(SampleField::Rows), "All rows (17.6M)");
+        assert_eq!(form.choice(SampleField::Rows), "All rows (36.8M)");
         assert_eq!(form.fields()[1], SampleField::Method);
         form.adjust(true);
         assert_eq!(form.kind, RowsKind::Partitions);
@@ -686,7 +686,7 @@ mod tests {
         assert_eq!(form.kind, RowsKind::Range);
         assert_eq!(
             (form.range_from.value(), form.range_to.value()),
-            ("1", "17600000"),
+            ("1", "36800000"),
             "a range starts as the whole table"
         );
         form.adjust(false);
@@ -705,7 +705,7 @@ mod tests {
         assert_eq!(
             form.draft.method,
             SampleMethod::PerPartition {
-                column: "ticker".to_string()
+                column: "station".to_string()
             }
         );
         assert_eq!(form.choice(SampleField::Size), "1,000 rows per value");

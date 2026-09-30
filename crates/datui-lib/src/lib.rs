@@ -63,6 +63,7 @@ pub mod config;
 pub mod copy_modal;
 pub mod data_quality;
 pub mod discover;
+pub mod distribution_fit;
 pub mod error_display;
 pub mod event_pump;
 pub mod export_modal;

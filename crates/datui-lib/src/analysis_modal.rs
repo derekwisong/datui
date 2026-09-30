@@ -978,47 +978,11 @@ impl AnalysisModal {
         {
             let dist_analysis_idx = self.distribution_table_state.selected().unwrap_or(0);
             if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
-                // Use the same distribution list and p-value lookup as the widget
-                let distributions = [
-                    ("Normal", DistributionType::Normal),
-                    ("LogNormal", DistributionType::LogNormal),
-                    ("Uniform", DistributionType::Uniform),
-                    ("PowerLaw", DistributionType::PowerLaw),
-                    ("Exponential", DistributionType::Exponential),
-                    ("Beta", DistributionType::Beta),
-                    ("Gamma", DistributionType::Gamma),
-                    ("Chi-Squared", DistributionType::ChiSquared),
-                    ("Student's t", DistributionType::StudentsT),
-                    ("Poisson", DistributionType::Poisson),
-                    ("Bernoulli", DistributionType::Bernoulli),
-                    ("Binomial", DistributionType::Binomial),
-                    ("Geometric", DistributionType::Geometric),
-                    ("Weibull", DistributionType::Weibull),
-                ];
-
-                let mut distribution_scores: Vec<(DistributionType, f64)> = distributions
-                    .iter()
-                    .map(|(_, dist_type)| {
-                        let p_value = dist_analysis
-                            .all_distribution_pvalues
-                            .get(dist_type)
-                            .copied()
-                            .unwrap_or_else(|| {
-                                if *dist_type == DistributionType::Geometric {
-                                    0.01
-                                } else {
-                                    0.0
-                                }
-                            });
-                        (*dist_type, p_value)
-                    })
-                    .collect();
-
-                distribution_scores
-                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
+                // The order the selector lists them in.
+                let distribution_scores =
+                    crate::distribution_fit::listing_order(&dist_analysis.fits);
                 let valid_idx = idx.min(distribution_scores.len().saturating_sub(1));
-                if let Some((dist_type, _)) = distribution_scores.get(valid_idx) {
+                if let Some(dist_type) = distribution_scores.get(valid_idx) {
                     self.selected_theoretical_distribution = *dist_type;
                     if idx != valid_idx {
                         self.distribution_selector_state.select(Some(valid_idx));

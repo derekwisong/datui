@@ -602,7 +602,7 @@ fn ascii_width(text: &str) -> usize {
 /// two or more spaces after the indent, with text after it. `None` for a
 /// line without one (prose, a heading, a blank line). Help prose takes one
 /// space between sentences, so the first double space is always a key gap.
-fn key_gap(line: &str) -> Option<(usize, usize)> {
+pub(crate) fn key_gap(line: &str) -> Option<(usize, usize)> {
     let lead = line.len() - line.trim_start_matches(' ').len();
     let key_end = lead + line[lead..].find("  ")?;
     let desc_start = line.len() - line[key_end..].trim_start_matches(' ').len();

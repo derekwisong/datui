@@ -1,9 +1,10 @@
 //! The text entry field used everywhere in datui.
 //!
-//! One widget covers both shapes of input the app needs. A single-line input
+//! One widget covers every shape of input the app needs. A single-line input
 //! submits on Enter and recalls previous values with the arrow keys; a
 //! multi-line input inserts newlines instead and recalls with `Ctrl-P` /
-//! `Ctrl-N`. Everything else, including the editing keys, is shared, so the
+//! `Ctrl-N`; a statement submits on Enter, breaks lines on Alt+Enter and
+//! wraps. Everything else, including the editing keys, is shared, so the
 //! query bar, the modal filter boxes and the template description all behave
 //! the same way.
 //!
@@ -49,6 +50,10 @@ pub enum TextInputMode {
     SingleLine,
     /// Enter inserts a line break.
     MultiLine,
+    /// Enter submits and Alt+Enter breaks the line: a statement that is run,
+    /// long enough to want several lines. Long lines wrap instead of
+    /// scrolling, and ↑/↓ move between rows before they recall history.
+    Statement,
 }
 
 /// A themed, optionally history-backed text field.
@@ -85,6 +90,11 @@ impl TextInput {
         Self::with_mode(TextInputMode::MultiLine)
     }
 
+    /// A field for a statement: Enter runs it, Alt+Enter breaks the line.
+    pub fn statement() -> Self {
+        Self::with_mode(TextInputMode::Statement)
+    }
+
     fn with_mode(mode: TextInputMode) -> Self {
         let mut input = Self {
             mode,
@@ -97,6 +107,7 @@ impl TextInput {
             cursor_text: None,
             focused: false,
         };
+        input.textarea.set_wrap(mode == TextInputMode::Statement);
         input.apply_styles();
         input
     }
@@ -108,6 +119,11 @@ impl TextInput {
 
     fn is_single_line(&self) -> bool {
         self.mode == TextInputMode::SingleLine
+    }
+
+    /// Whether Enter hands the value to the caller rather than typing.
+    fn submits_on_enter(&self) -> bool {
+        self.mode != TextInputMode::MultiLine
     }
 
     /// Set the text colour.
@@ -271,6 +287,19 @@ impl TextInput {
         self.textarea.line(line)
     }
 
+    /// Rows the value takes when drawn `width` columns wide: its lines, or
+    /// for a statement, its lines as wrapped.
+    pub fn visual_rows(&self, width: u16) -> usize {
+        self.textarea.visual_rows(width)
+    }
+
+    /// Replace the `count` characters before the cursor with `text`.
+    pub fn replace_before_cursor(&mut self, count: usize, text: &str) {
+        self.textarea.replace_before_cursor(count, text);
+        self.history.reset_position();
+        self.sync();
+    }
+
     /// Scroll position of the last render, as `(row, column)`.
     pub fn scroll_offsets(&self) -> (usize, usize) {
         self.textarea.scroll_offsets()
@@ -316,14 +345,25 @@ impl TextInput {
     /// there is none or when the caller does not want disk access.
     pub fn handle_key(&mut self, event: &KeyEvent, cache: Option<&CacheManager>) -> TextInputEvent {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = event.modifiers.contains(KeyModifiers::ALT);
         let single_line = self.is_single_line();
+        let statement = self.mode == TextInputMode::Statement;
+        let submits = self.submits_on_enter();
         let recall = self.history.is_enabled();
 
         match event.code {
             KeyCode::Esc => TextInputEvent::Cancel,
-            KeyCode::Enter if single_line => self.submit(cache),
-            KeyCode::Char('m' | 'M') if ctrl && single_line => self.submit(cache),
-            // The save chord, in either mode. Without the keyboard-enhancement
+            // Alt, not Ctrl: legacy terminals send Ctrl+Enter as Ctrl+J, and both
+            // submit.
+            KeyCode::Enter if statement && alt => {
+                self.textarea.insert_newline();
+                self.history.reset_position();
+                self.sync();
+                TextInputEvent::None
+            }
+            KeyCode::Enter if submits => self.submit(cache),
+            KeyCode::Char('m' | 'M') if ctrl && submits => self.submit(cache),
+            // The save chord, in every mode. Without the keyboard-enhancement
             // protocol some terminals send Ctrl+Enter as Ctrl+J, so the two must
             // mean the same thing; in a multiline field plain Enter types.
             KeyCode::Enter | KeyCode::Char('j' | 'J') if ctrl => self.submit(cache),
@@ -333,6 +373,24 @@ impl TextInput {
             }
             KeyCode::Down if single_line && recall => {
                 self.navigate_history_down();
+                TextInputEvent::HistoryChanged
+            }
+            // A statement's rows come first; past the top or bottom row the
+            // arrows walk the history as they do in a one-line field.
+            KeyCode::Up | KeyCode::Down if statement && event.modifiers.is_empty() => {
+                let up = event.code == KeyCode::Up;
+                let moved =
+                    self.textarea
+                        .move_cursor(if up { CursorMove::Up } else { CursorMove::Down });
+                if moved || !recall {
+                    self.sync();
+                    return TextInputEvent::None;
+                }
+                if up {
+                    self.navigate_history_up(cache);
+                } else {
+                    self.navigate_history_down();
+                }
                 TextInputEvent::HistoryChanged
             }
             KeyCode::Char('p' | 'P') if ctrl && recall => {

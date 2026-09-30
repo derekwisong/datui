@@ -540,3 +540,55 @@ fn line_accessors_report_the_buffer() {
     assert_eq!(area.line(1), Some("two"));
     assert_eq!(area.line(2), None);
 }
+
+#[test]
+fn wrapping_breaks_long_lines_at_spaces() {
+    let mut area = TextArea::from_text("SELECT a, b FROM df WHERE a > 1");
+    area.set_wrap(true);
+    assert_eq!(area.visual_rows(12), 3);
+    let lines = render_to_lines(&area, 12, 3);
+    assert_eq!(lines[0].trim_end(), "SELECT a, b");
+    assert_eq!(lines[1].trim_end(), "FROM df");
+    assert_eq!(lines[2].trim_end(), "WHERE a > 1");
+    // Unwrapped, the same text is one row that scrolls.
+    area.set_wrap(false);
+    assert_eq!(area.visual_rows(12), 1);
+}
+
+#[test]
+fn a_word_wider_than_the_field_breaks_mid_word() {
+    let mut area = TextArea::from_text("abcdefghij");
+    area.set_wrap(true);
+    assert_eq!(area.visual_rows(4), 3);
+    let lines = render_to_lines(&area, 4, 3);
+    assert_eq!(lines, ["abcd", "efgh", "ij  "]);
+}
+
+#[test]
+fn a_line_that_fills_its_row_gets_one_for_the_cursor() {
+    let mut area = TextArea::from_text("abcd");
+    area.set_wrap(true);
+    assert_eq!(area.visual_rows(4), 2);
+    let lines = render_to_lines(&area, 4, 2);
+    assert_eq!(lines[0], "abcd");
+}
+
+#[test]
+fn up_and_down_move_between_wrapped_rows() {
+    let mut area = TextArea::from_text("SELECT a, b FROM df WHERE a > 1");
+    area.set_wrap(true);
+    // Drawn once, so the editor knows its width.
+    render_to_lines(&area, 12, 3);
+    assert_eq!(area.cursor(), (0, 31));
+    assert!(area.move_cursor(CursorMove::Up));
+    // Same display column, one row up: "FROM df" is shorter, so its end.
+    assert_eq!(area.cursor(), (0, 19));
+    assert!(area.move_cursor(CursorMove::Up));
+    assert_eq!(area.cursor(), (0, 7));
+    assert!(
+        !area.move_cursor(CursorMove::Up),
+        "the first row is the top"
+    );
+    assert!(area.move_cursor(CursorMove::Down));
+    assert_eq!(area.cursor(), (0, 19));
+}

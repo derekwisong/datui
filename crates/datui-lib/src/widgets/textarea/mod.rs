@@ -16,6 +16,7 @@ mod edit;
 mod history;
 mod input;
 mod render;
+mod wrap;
 
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,8 @@ pub struct TextArea {
     selection_style: Style,
     cursor_visible: bool,
     tab_len: usize,
+    /// Long lines break onto the rows below instead of scrolling sideways.
+    wrap: bool,
     viewport: Cell<Viewport>,
 }
 
@@ -83,6 +86,7 @@ impl TextArea {
             selection_style: Style::default().add_modifier(Modifier::REVERSED),
             cursor_visible: true,
             tab_len: 4,
+            wrap: false,
             viewport: Cell::new(Viewport::default()),
         }
     }
@@ -103,7 +107,13 @@ impl TextArea {
         self.cursor = (row, col);
         self.selection_anchor = None;
         self.history.clear();
-        self.viewport.set(Viewport::default());
+        // The scroll starts over; the size is the field's, and stays.
+        let size = self.viewport.get();
+        self.viewport.set(Viewport {
+            width: size.width,
+            height: size.height,
+            ..Viewport::default()
+        });
     }
 
     /// Empty the buffer.

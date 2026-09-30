@@ -514,3 +514,51 @@ fn seed_history(input: &mut TextInput, entries: &[&str]) {
         input.history.seed(entry.to_string());
     }
 }
+
+#[test]
+fn a_statement_submits_on_enter_and_breaks_lines_on_alt_enter() {
+    let mut input = TextInput::statement();
+    type_str(&mut input, "SELECT *");
+    assert_eq!(
+        press_with(&mut input, KeyCode::Enter, KeyModifiers::ALT),
+        TextInputEvent::None
+    );
+    type_str(&mut input, "FROM df");
+    assert_eq!(input.value(), "SELECT *\nFROM df");
+    assert_eq!(press(&mut input, KeyCode::Enter), TextInputEvent::Submit);
+    assert_eq!(
+        input.value(),
+        "SELECT *\nFROM df",
+        "submitting keeps the text"
+    );
+}
+
+#[test]
+fn a_statement_walks_its_rows_before_its_history() {
+    let mut input = TextInput::statement().with_history("sql".to_string());
+    input.history.seed("SELECT 1".to_string());
+    type_str(&mut input, "SELECT a");
+    press_with(&mut input, KeyCode::Enter, KeyModifiers::ALT);
+    type_str(&mut input, "FROM df");
+    assert_eq!(press(&mut input, KeyCode::Up), TextInputEvent::None);
+    assert_eq!(input.cursor_line(), 0);
+    assert_eq!(
+        press(&mut input, KeyCode::Up),
+        TextInputEvent::HistoryChanged
+    );
+    assert_eq!(input.value(), "SELECT 1");
+    assert_eq!(
+        press(&mut input, KeyCode::Down),
+        TextInputEvent::HistoryChanged
+    );
+    assert_eq!(input.value(), "SELECT a\nFROM df");
+}
+
+#[test]
+fn a_statement_wraps_where_a_line_would_scroll() {
+    let mut input = TextInput::statement();
+    input.set_value("SELECT a, b FROM df");
+    assert_eq!(input.visual_rows(12), 2);
+    let lines = rendered(&input, 12, 2);
+    assert_eq!(lines, ["SELECT a, b", "FROM df"]);
+}

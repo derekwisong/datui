@@ -114,6 +114,13 @@ impl TextArea {
         self.replace_range(start, end, text)
     }
 
+    /// Replace the `count` characters before the cursor, on its line, with
+    /// `text`: a completion taking over the word typed so far.
+    pub fn replace_before_cursor(&mut self, count: usize, text: &str) -> bool {
+        let (row, col) = self.cursor;
+        self.replace_range((row, col.saturating_sub(count)), (row, col), text)
+    }
+
     /// Split the current line at the cursor.
     pub fn insert_newline(&mut self) -> bool {
         let (start, end) = self.edit_range();
@@ -374,6 +381,8 @@ impl TextArea {
         Some(match movement {
             CursorMove::Forward => self.position_after((row, col))?,
             CursorMove::Back => self.position_before((row, col))?,
+            CursorMove::Up if self.wraps_now() => self.visual_step(false)?,
+            CursorMove::Down if self.wraps_now() => self.visual_step(true)?,
             CursorMove::Up => {
                 let target = row.checked_sub(1)?;
                 (target, col.min(self.line_len(target)))

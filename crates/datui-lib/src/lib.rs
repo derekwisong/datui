@@ -4269,6 +4269,51 @@ pub mod tests {
         );
     }
 
+    /// A server that compresses on request (GitHub Pages, where the public NYC flights
+    /// file lives) still gets its size read: asked for gzip, it answers with the
+    /// compressed length, which ureq strips, and the confirmation said "unknown".
+    #[cfg(feature = "http")]
+    #[test]
+    fn the_size_probe_reads_a_compressing_server() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/flights.csv",
+            listener.local_addr().expect("bound")
+        );
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let asks_for_gzip = String::from_utf8_lossy(&request)
+                .to_ascii_lowercase()
+                .lines()
+                .any(|l| l.starts_with("accept-encoding:") && l.contains("gzip"));
+            let headers = if asks_for_gzip {
+                "Content-Encoding: gzip\r\nContent-Length: 9404410"
+            } else {
+                "Content-Length: 33206996"
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n{headers}\r\nConnection: close\r\n\r\n"
+            );
+        });
+
+        assert_eq!(
+            crate::App::fetch_remote_size_http(&url).expect("the probe never fails"),
+            Some(33_206_996),
+            "the file's own length, not the compressed one and not none"
+        );
+    }
+
     /// The size probe is labeled as such, and once the confirmation is up nothing
     /// spins: datui is waiting on a key, and the bar names the modal's keys (#385).
     #[cfg(feature = "http")]
@@ -11590,7 +11635,10 @@ impl App {
     #[cfg(feature = "http")]
     fn fetch_remote_size_http(url: &str) -> Result<Option<u64>> {
         let agent = Self::http_agent(std::time::Duration::from_secs(15));
-        match agent.head(url).call() {
+        // ureq asks for gzip by default and strips Content-Length from a compressed
+        // answer, so a server that compresses (GitHub Pages does) reports no size.
+        // Identity asks for the file's own length, which is what lands on disk.
+        match agent.head(url).header("Accept-Encoding", "identity").call() {
             Ok(r) => Ok(r
                 .headers()
                 .get("Content-Length")

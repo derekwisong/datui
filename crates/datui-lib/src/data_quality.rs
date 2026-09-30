@@ -431,24 +431,37 @@ pub enum QualityPage {
     Detail,
     /// One segment's columns beside the segment it is compared with.
     SegmentDetail,
+    /// Each interval in each segment: the time between two roles.
+    Intervals,
+    /// One interval in one segment, every count it took and out of what.
+    IntervalDetail,
     TimeRoles,
+    /// Which starts and ends the intervals are, chosen from the assigned roles.
+    IntervalPairs,
 }
 
 impl QualityPage {
     /// The report's tabs, in the order ←→ walk them. A column's detail sits under
-    /// Columns and a segment's under Segments.
-    pub const TABS: [Self; 4] = [Self::Overview, Self::Columns, Self::Segments, Self::Trends];
+    /// Columns, a segment's under Segments and an interval's under Intervals.
+    pub const TABS: [Self; 5] = [
+        Self::Overview,
+        Self::Columns,
+        Self::Segments,
+        Self::Trends,
+        Self::Intervals,
+    ];
 
     pub fn tab(self) -> Self {
         match self {
             Self::Detail => Self::Columns,
             Self::SegmentDetail => Self::Segments,
-            Self::TimeRoles => Self::Setup,
+            Self::IntervalDetail => Self::Intervals,
+            Self::TimeRoles | Self::IntervalPairs => Self::Setup,
             page => page,
         }
     }
 
-    /// Setup and its time roles editor, which stage a run rather than show one.
+    /// Setup and its editors, which stage a run rather than show one.
     pub fn is_setup(self) -> bool {
         self.tab() == Self::Setup
     }
@@ -459,6 +472,7 @@ impl QualityPage {
             Self::Columns => "Columns",
             Self::Segments => "Segments",
             Self::Trends => "Trends",
+            Self::Intervals => "Intervals",
             _ => "Setup",
         }
     }
@@ -469,6 +483,7 @@ impl QualityPage {
 pub enum QualitySetup {
     Grain,
     TimeRoles,
+    Intervals,
 }
 
 impl QualitySetup {
@@ -476,6 +491,7 @@ impl QualitySetup {
         match self {
             Self::Grain => "Set Grain",
             Self::TimeRoles => "Time Roles",
+            Self::Intervals => "Intervals",
         }
     }
 }
@@ -596,7 +612,7 @@ pub fn trend_rows(
 }
 
 /// The plan setting a result page needs before it has anything to show, if any.
-/// Time roles come first on Trends, and only when there are dates to assign.
+/// Intervals need time roles, and ask only when there are dates to assign.
 pub fn page_setup(
     page: QualityPage,
     plan: &DataQualityPlan,
@@ -606,10 +622,15 @@ pub fn page_setup(
     let results = results?;
     match page {
         QualityPage::Segments if plan.grain == QualityGrain::Dataset => Some(QualitySetup::Grain),
-        QualityPage::Trends if results.temporal.is_empty() && has_time_columns => {
-            Some(QualitySetup::TimeRoles)
-        }
         QualityPage::Trends if !shows_trend(plan, results) => Some(QualitySetup::Grain),
+        // Roles that make no interval want a pair chosen; otherwise, roles.
+        QualityPage::Intervals if results.temporal.is_empty() && has_time_columns => {
+            Some(if plan.candidate_pairs().is_empty() {
+                QualitySetup::TimeRoles
+            } else {
+                QualitySetup::Intervals
+            })
+        }
         _ => None,
     }
 }
@@ -6105,14 +6126,28 @@ mod tests {
             Some(QualitySetup::Grain)
         );
         assert_eq!(
-            setup(QualityPage::Trends, &plan, true),
+            setup(QualityPage::Intervals, &plan, true),
             Some(QualitySetup::TimeRoles)
         );
+        assert_eq!(setup(QualityPage::Intervals, &plan, false), None);
         assert_eq!(
-            setup(QualityPage::Trends, &plan, false),
+            setup(QualityPage::Trends, &plan, true),
             Some(QualitySetup::Grain)
         );
         assert_eq!(setup(QualityPage::Overview, &plan, true), None);
+        // Two roles that make no interval want a pair chosen, not more roles.
+        let mut paired = plan.clone();
+        paired.temporal_roles = [TemporalRole::Created, TemporalRole::Processed]
+            .map(|role| TemporalRoleAssignment {
+                role,
+                column: "at".to_string(),
+                timezone: None,
+            })
+            .to_vec();
+        assert_eq!(
+            setup(QualityPage::Intervals, &paired, true),
+            Some(QualitySetup::Intervals)
+        );
         assert_eq!(
             page_setup(QualityPage::Segments, &plan, None, true),
             None,

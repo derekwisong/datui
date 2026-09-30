@@ -1234,6 +1234,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         QualityPage::Columns,
         QualityPage::Segments,
         QualityPage::Trends,
+        QualityPage::Intervals,
     ] {
         app.analysis_modal.set_quality_page(page);
         for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 50, 18)] {
@@ -1245,7 +1246,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
                 QualityPage::Columns => assert!(screen.contains("Findings")),
                 // One segment is no comparison: the page says what makes one.
                 QualityPage::Segments => assert!(screen.contains("one segment")),
-                QualityPage::Trends => assert!(screen.contains("Time between dates")),
+                QualityPage::Trends => assert!(screen.contains("Across segments")),
+                QualityPage::Intervals => assert!(screen.contains("Time between dates")),
                 _ => {}
             }
         }
@@ -3415,7 +3417,10 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
     let screen = render(&mut app);
     assert!(!screen.contains("is text: choose"), "{screen}");
     assert!(screen.contains("created read as datetime %m/%d/%Y %H:%M:%S"));
-    assert!(screen.contains("Intervals: event to received"));
+    assert!(
+        screen.contains("Intervals      event to received"),
+        "{screen}"
+    );
 
     // A day window of created, now that it reads as time.
     app.analysis_modal.data_quality_plan_field = SetupRow::Grain.index();
@@ -3462,6 +3467,211 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
         .find(|column| column.name == "created")
         .unwrap();
     assert_eq!(created.dtype, polars::prelude::DataType::String);
+}
+
+/// Intervals from Setup to a count's rows: a start and end the roles do not
+/// suggest is chosen in Setup, with the roles it leaves out named first; the
+/// window clock and threshold are set there too. The report's list and an
+/// interval's detail read nothing, and a count's rows open from the sample the
+/// run kept, even once the file is gone.
+#[test]
+fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
+    use datui::analysis_modal::SetupRow;
+    use datui::data_quality::{IntervalClock, IntervalFact, QualityPage, QualityPrecision};
+
+    let name = "dq_intervals_detail.parquet";
+    let (mut app, rx, tx) = open_text_times_fixture(name);
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    let render = |app: &mut App, width, height| {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+
+    for column in ["created", "sent"] {
+        app.analysis_modal.data_quality_plan_field = SetupRow::TextAsTime.index();
+        press(&mut app, KeyCode::Char(' '));
+        type_text(&mut app, column);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+    }
+    // Created on created, processed on sent: roles no suggested pair joins.
+    app.analysis_modal.data_quality_plan_field = SetupRow::TimeRoles.index();
+    press(&mut app, KeyCode::Char(' '));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Down);
+    }
+    press(&mut app, KeyCode::Right);
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Down);
+    }
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    let plan = &app.analysis_modal.data_quality_plan;
+    assert_eq!(
+        plan.role_column(datui::data_quality::TemporalRole::Created),
+        Some("created")
+    );
+    assert_eq!(
+        plan.role_column(datui::data_quality::TemporalRole::Processed),
+        Some("sent")
+    );
+    let screen = render(&mut app, 100, 30);
+    assert!(
+        screen.contains("In no interval: created, processed."),
+        "Setup names the roles that measure nothing: {screen}"
+    );
+
+    // The pair, chosen: Esc puts the list back, Enter keeps it.
+    app.analysis_modal.data_quality_plan_field = SetupRow::Intervals.index();
+    assert!(press(&mut app, KeyCode::Char(' ')).is_none());
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::IntervalPairs
+    );
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.interval_pairs().len(),
+        1
+    );
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.data_quality_plan.intervals, None);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    assert_eq!(app.analysis_modal.setup_row(), SetupRow::Intervals);
+    let screen = render(&mut app, 100, 30);
+    assert!(screen.contains("created to processed"), "{screen}");
+    assert!(!screen.contains("In no interval"), "{screen}");
+
+    // A threshold, a daily grain, and intervals by the day they ended.
+    app.analysis_modal.data_quality_plan_field = SetupRow::Latency.index();
+    press(&mut app, KeyCode::Right);
+    app.analysis_modal.data_quality_plan_field = SetupRow::Grain.index();
+    press(&mut app, KeyCode::Char(' '));
+    type_text(&mut app, "day of created");
+    press(&mut app, KeyCode::Enter);
+    app.analysis_modal.data_quality_plan_field = SetupRow::WindowBy.index();
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    let plan = &app.analysis_modal.data_quality_plan;
+    assert_eq!(plan.interval_clock, IntervalClock::End);
+    assert_eq!(plan.latency_threshold_seconds, Some(3_600));
+    assert!(!app.is_busy(), "nothing in Setup reads");
+
+    // A sample smaller than the file, so the rows a count opens are the sample's.
+    app.analysis_modal.data_quality_plan.dataset_rows = 300;
+    app.analysis_modal.data_quality_plan.sample_seed = 7;
+    let next = press(&mut app, KeyCode::Enter);
+    let (finished, _) = drain_quality(&mut app, &rx, next);
+    assert_eq!(finished, 1);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.precision, QualityPrecision::Sampled);
+    assert!(!results.temporal.is_empty());
+    assert!(
+        results
+            .temporal
+            .iter()
+            .all(|interval| interval.label() == "created to processed"
+                && interval.threshold_seconds == Some(3_600))
+    );
+
+    // Every sent is an hour after its created: exactly the threshold, never over it.
+    assert!(
+        results
+            .temporal
+            .iter()
+            .all(|interval| interval.above_threshold_count == Some(0))
+    );
+    // A count with rows behind it: a start missing or unread in some segment.
+    let plan = app.analysis_modal.quality_result_plan().clone();
+    let (index, fact, count) = results
+        .temporal
+        .iter()
+        .enumerate()
+        .find_map(|(index, interval)| {
+            [IntervalFact::MissingStart, IntervalFact::UnparsedStart]
+                .into_iter()
+                .find_map(|fact| {
+                    let (count, _) = interval.count(fact, &plan)?;
+                    (count > 0).then_some((index, fact, count))
+                })
+        })
+        .expect("the sample holds a missing or unread start");
+
+    // The list and the detail are the report's measurements: no read.
+    assert!(press(&mut app, KeyCode::Char('5')).is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Intervals);
+    let screen = render(&mut app, 80, 24);
+    assert!(screen.contains("Over: duration > 1 hour"), "{screen}");
+    assert!(screen.contains("created to processed"), "{screen}");
+    for _ in 0..index {
+        press(&mut app, KeyCode::Down);
+    }
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::IntervalDetail
+    );
+    assert!(!app.is_busy());
+    for (width, height) in [(80, 24), (60, 20)] {
+        let screen = render(&mut app, width, height);
+        for label in [
+            "Start",
+            "End",
+            "Segment",
+            "Rows",
+            "Both ends",
+            "Missing start",
+        ] {
+            assert!(
+                screen.contains(label),
+                "{label} at {width}x{height}: {screen}"
+            );
+        }
+    }
+
+    // The count under the cursor; Enter opens its rows from memory.
+    let position = app
+        .analysis_modal
+        .interval_facts()
+        .iter()
+        .position(|listed| *listed == fact)
+        .unwrap();
+    for _ in 0..position {
+        press(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.analysis_modal.selected_interval_fact(), Some(fact));
+    assert!(render(&mut app, 100, 30).contains("Show Rows"));
+    std::fs::remove_file(PathBuf::from("tests/sample-data").join(name)).unwrap();
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    // With the file gone, only the kept sample could have answered.
+    assert!(!app.analysis_modal.active);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, count);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active, "Esc goes back to the detail");
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::IntervalDetail
+    );
+    // Esc from the detail is the list, the interval still selected.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Intervals);
+    assert_eq!(
+        app.analysis_modal.data_quality_table_state.selected(),
+        Some(index)
+    );
 }
 
 #[test]
@@ -3550,7 +3760,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     );
     // An edit waits for Enter; Esc puts back the plan the result was measured with.
     key(&mut app, KeyCode::Char('e'));
-    for _ in 0..3 {
+    for _ in 0..4 {
         key(&mut app, KeyCode::Down);
     }
     assert_eq!(

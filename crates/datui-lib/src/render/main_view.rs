@@ -340,6 +340,14 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Cancel"),
         ];
     }
+    if modal.data_quality_page == QualityPage::IntervalPairs {
+        let mut keys = Vec::new();
+        if !modal.data_quality_plan.candidate_pairs().is_empty() {
+            keys.extend([("Space", "Toggle"), (g.updown, "Pair")]);
+        }
+        keys.extend([("Enter", "Done"), ("Esc", "Cancel")]);
+        return keys;
+    }
     // The tool list has the cursor, the narrow terminal's picker included: its keys
     // are the list's, not the page's. Sample stays second, as on every tool's bar.
     if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
@@ -390,6 +398,13 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         ]),
         QualityPage::SegmentDetail => own.push(("Enter", "Segments")),
         QualityPage::Trends if trend => own.push(("m", "Measure")),
+        QualityPage::Intervals if results.is_some_and(|results| !results.temporal.is_empty()) => {
+            own.push(("Enter", "Details"));
+        }
+        // Enter opens the rows behind the count under the cursor, when it has any.
+        QualityPage::IntervalDetail if modal.interval_evidence().is_some() => {
+            own.push(("Enter", "Show Rows"));
+        }
         _ => {}
     }
     let mut own = own.into_iter();
@@ -434,8 +449,17 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
             keys.push(("Space", "Time Roles"));
         }
         SetupRow::TimeRoles => {}
+        SetupRow::Intervals if !modal.data_quality_plan.candidate_pairs().is_empty() => {
+            keys.push(("Space", "Intervals"));
+        }
+        SetupRow::Intervals => {}
         SetupRow::Latency if !choices => {}
-        SetupRow::Grain | SetupRow::Compare | SetupRow::Values | SetupRow::Latency => {
+        SetupRow::WindowBy if !modal.data_quality_plan.windows_intervals() => {}
+        SetupRow::Grain
+        | SetupRow::Compare
+        | SetupRow::Values
+        | SetupRow::Latency
+        | SetupRow::WindowBy => {
             keys.extend([(g.updown_lr, "Change"), ("Space", "Choose")]);
         }
     }
@@ -647,11 +671,14 @@ mod tests {
         for page in [
             QualityPage::Setup,
             QualityPage::TimeRoles,
+            QualityPage::IntervalPairs,
             QualityPage::Overview,
             QualityPage::Columns,
             QualityPage::Detail,
             QualityPage::Segments,
             QualityPage::Trends,
+            QualityPage::Intervals,
+            QualityPage::IntervalDetail,
         ] {
             app.analysis_modal.data_quality_page = page;
             let keys = super::analysis_control_keys(&app);

@@ -1,7 +1,7 @@
 use crate::data_quality::{
-    DataQualityPlan, DataQualityResults, QUALITY_WINDOW_WIDTHS, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, TIME_FORMATS, TemporalRole, TemporalRoleAssignment,
-    TimeInterpretation, TimeKind,
+    DataQualityPlan, DataQualityResults, IntervalClock, IntervalFact, QUALITY_WINDOW_WIDTHS,
+    QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, TIME_FORMATS,
+    TemporalRole, TemporalRoleAssignment, TimeInterpretation, TimeKind,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
 use ratatui::widgets::TableState;
@@ -13,21 +13,25 @@ pub enum SetupRow {
     Sample,
     TextAsTime,
     TimeRoles,
+    Intervals,
     Grain,
     Compare,
     Values,
     Latency,
+    WindowBy,
 }
 
 impl SetupRow {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Sample,
         Self::TextAsTime,
         Self::TimeRoles,
+        Self::Intervals,
         Self::Grain,
         Self::Compare,
         Self::Values,
         Self::Latency,
+        Self::WindowBy,
     ];
 
     pub fn label(self) -> &'static str {
@@ -35,10 +39,12 @@ impl SetupRow {
             Self::Sample => "Sample",
             Self::TextAsTime => "Text as time",
             Self::TimeRoles => "Time roles",
+            Self::Intervals => "Intervals",
             Self::Grain => "Grain",
             Self::Compare => "Compare",
             Self::Values => "Values",
             Self::Latency => "Latency over",
+            Self::WindowBy => "Window by",
         }
     }
 
@@ -59,6 +65,8 @@ pub enum PlanChoice {
     Values(QualityCompute),
     Compare(QualityComparison),
     Latency(Option<i64>),
+    /// Which time puts an interval in a window.
+    Clock(IntervalClock),
     /// A text column to read as time; choosing it asks for the format next.
     TextColumn(String),
     /// How a text column is read as time, or `None` to read it as text again.
@@ -73,6 +81,7 @@ impl PlanChoice {
             Self::Values(_) => plan.compute != QualityCompute::Metadata,
             Self::Compare(comparison) => &plan.comparison == comparison,
             Self::Latency(seconds) => &plan.latency_threshold_seconds == seconds,
+            Self::Clock(clock) => plan.interval_clock == *clock,
             Self::TextColumn(column) => plan.time_format(column).is_some(),
             Self::Format(column, format) => {
                 plan.time_format(column)
@@ -300,6 +309,8 @@ pub struct AnalysisModal {
     pub data_quality_from_cache: bool,
     pub data_quality_metric: QualityMetric,
     pub data_quality_column_index: usize,
+    /// The interval a detail shows, and the one Intervals selects on the way back.
+    pub data_quality_interval_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -364,6 +375,7 @@ impl AnalysisModal {
         self.data_quality_from_cache = false;
         self.data_quality_metric = QualityMetric::NullRate;
         self.data_quality_column_index = 0;
+        self.data_quality_interval_index = 0;
         self.sample_form = None;
     }
 
@@ -396,6 +408,7 @@ impl AnalysisModal {
         self.data_quality_from_cache = false;
         self.data_quality_metric = QualityMetric::NullRate;
         self.data_quality_column_index = 0;
+        self.data_quality_interval_index = 0;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -534,6 +547,9 @@ impl AnalysisModal {
         match self.data_quality_page {
             QualityPage::Setup => SetupRow::ALL.len(),
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
+            QualityPage::IntervalPairs => self.data_quality_plan.candidate_pairs().len(),
+            QualityPage::Intervals => results.temporal.len(),
+            QualityPage::IntervalDetail => self.interval_facts().len(),
             QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
@@ -570,7 +586,10 @@ impl AnalysisModal {
             && self.computing.is_none()
             && !self.show_help
             && self.data_quality_picker.is_none()
-            && self.data_quality_page != QualityPage::TimeRoles
+            && !matches!(
+                self.data_quality_page,
+                QualityPage::TimeRoles | QualityPage::IntervalPairs
+            )
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
@@ -652,6 +671,83 @@ impl AnalysisModal {
             .and_then(|segment| self.segment_order().iter().position(|s| *s == segment))
             .unwrap_or(0);
         self.data_quality_table_state.select(Some(position));
+    }
+
+    /// Open the highlighted interval's detail, its first count under the cursor.
+    pub fn open_interval_detail(&mut self) {
+        let Some(index) = self.data_quality_table_state.selected() else {
+            return;
+        };
+        if self
+            .data_quality_results
+            .as_ref()
+            .is_some_and(|results| index < results.temporal.len())
+        {
+            self.data_quality_interval_index = index;
+            self.set_quality_page(QualityPage::IntervalDetail);
+        }
+    }
+
+    /// Back to the list, the interval still selected.
+    pub fn close_interval_detail(&mut self) {
+        self.set_quality_page(QualityPage::Intervals);
+        self.data_quality_table_state
+            .select(Some(self.data_quality_interval_index));
+    }
+
+    /// The counts an interval's detail lists, each with rows it can open: those
+    /// the interval measured, in the order the detail shows them.
+    pub fn interval_facts(&self) -> Vec<IntervalFact> {
+        let plan = self.quality_result_plan();
+        self.data_quality_results
+            .as_ref()
+            .and_then(|results| results.temporal.get(self.data_quality_interval_index))
+            .map(|profile| {
+                IntervalFact::ALL
+                    .into_iter()
+                    .filter(|fact| profile.count(*fact, plan).is_some())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The count under the cursor in an interval's detail.
+    pub fn selected_interval_fact(&self) -> Option<IntervalFact> {
+        let facts = self.interval_facts();
+        facts
+            .get(self.data_quality_table_state.selected().unwrap_or(0))
+            .copied()
+    }
+
+    /// The rows behind the count under the cursor in an interval's detail, when it
+    /// has any and they can be told by their values: a predicate over the rows the
+    /// run read, with what to call them.
+    pub fn interval_evidence(&self) -> Option<(polars::prelude::Expr, String)> {
+        let results = self.data_quality_results.as_ref()?;
+        if !matches!(
+            results.precision,
+            crate::data_quality::QualityPrecision::Exact
+                | crate::data_quality::QualityPrecision::Sampled
+        ) {
+            return None;
+        }
+        let plan = self.quality_result_plan();
+        let profile = results.temporal.get(self.data_quality_interval_index)?;
+        let fact = self.selected_interval_fact()?;
+        let (count, _) = profile.count(fact, plan)?;
+        if count == 0 {
+            return None;
+        }
+        let predicate = profile.evidence_predicate(fact, plan)?;
+        Some((
+            predicate,
+            format!(
+                "Data Quality / {} / {} / {}",
+                profile.label(),
+                profile.segment,
+                fact.short()
+            ),
+        ))
     }
 
     /// Move the finding popup by `rows`, within what it last drew.
@@ -795,6 +891,11 @@ impl AnalysisModal {
                 )
             })
             .collect(),
+            SetupRow::WindowBy if !self.data_quality_plan.windows_intervals() => Vec::new(),
+            SetupRow::WindowBy => IntervalClock::ALL
+                .into_iter()
+                .map(|clock| (clock.label().to_string(), PlanChoice::Clock(clock)))
+                .collect(),
             SetupRow::Latency if self.data_quality_plan.interval_pairs().is_empty() => Vec::new(),
             SetupRow::Latency => [None, Some(3_600), Some(86_400), Some(604_800)]
                 .into_iter()
@@ -820,7 +921,7 @@ impl AnalysisModal {
                     (label, PlanChoice::TextColumn(column.clone()))
                 })
                 .collect(),
-            SetupRow::Sample | SetupRow::TimeRoles => Vec::new(),
+            SetupRow::Sample | SetupRow::TimeRoles | SetupRow::Intervals => Vec::new(),
         }
     }
 
@@ -925,6 +1026,7 @@ impl AnalysisModal {
                 }
             }
             PlanChoice::Latency(seconds) => plan.latency_threshold_seconds = seconds,
+            PlanChoice::Clock(clock) => plan.interval_clock = clock,
             PlanChoice::TextColumn(column) => return Some(column),
             PlanChoice::Format(column, format) => set_time_format(plan, &column, format),
         }
@@ -932,7 +1034,7 @@ impl AnalysisModal {
     }
 
     /// The next or previous choice of a Setup row whose choices are a short list,
-    /// in place: ←→ on Grain, Compare, Values and Latency.
+    /// in place: ←→ on Grain, Compare, Values, Latency and Window by.
     pub fn cycle_setup_choice(&mut self, row: SetupRow, context: &PlanContext, forward: bool) {
         let choices = self.plan_choices(row, context);
         if choices.is_empty() || matches!(row, SetupRow::TextAsTime) {

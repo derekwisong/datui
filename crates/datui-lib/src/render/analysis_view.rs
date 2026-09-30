@@ -55,7 +55,9 @@ fn render_plan_picker(
         .map(|(_, item)| crate::glyphs::display_width(item))
         .max()
         .unwrap_or(0) as u16;
-    let width = (widest + 8).clamp(28, area.width.saturating_sub(4).max(28));
+    // A column's margin each side at most: an offset format is long, and its `z` is
+    // the part that says it is one.
+    let width = (widest + 8).clamp(28, area.width.saturating_sub(2).max(28));
     let height = (items.len() as u16 + 3)
         .min(area.height.saturating_sub(2))
         .max(5);
@@ -202,6 +204,7 @@ fn render_body(
                 metric: modal.data_quality_metric,
                 column_index: modal.data_quality_column_index,
                 segment_index: modal.data_quality_segment_index,
+                interval_index: modal.data_quality_interval_index,
                 segments_by_change: modal.data_quality_segments_by_change,
                 page: modal.data_quality_page,
                 setup,

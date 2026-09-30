@@ -48,6 +48,8 @@ pub fn x_axis_temporal_kind_for_column(schema: &Schema, x_column: &str) -> XAxis
 
 /// Decimal places past which an axis writes its numbers in scientific notation.
 const MAX_AXIS_PLACES: i32 = 6;
+/// The most decimals a scientific mantissa takes to tell ticks apart.
+const MAX_MANTISSA_PLACES: i32 = 12;
 /// Magnitude from which an axis writes its numbers in scientific notation.
 const SCIENTIFIC_FROM: f64 = 1e15;
 
@@ -123,6 +125,9 @@ pub struct AxisFormat {
     full: Notation,
     /// The shorter form a narrow axis steps down to, when there is one.
     short: Option<Notation>,
+    /// Below this a tick is zero: a stepped tick lands a hair off it, which
+    /// scientific notation would print as `1.32e-24`.
+    zero_below: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -164,15 +169,26 @@ impl AxisFormat {
                 },
                 short_notation(top, gap),
             ),
-            None => (
-                Notation::Scientific { places: 2 },
-                Some(Notation::Scientific { places: 0 }),
-            ),
+            None => {
+                // Every mantissa to the places that tell the closest ticks apart.
+                let apart = if gap.is_finite() && top > 0.0 {
+                    (magnitude(top) - magnitude(gap)).clamp(0, MAX_MANTISSA_PLACES) as usize
+                } else {
+                    0
+                };
+                (
+                    Notation::Scientific {
+                        places: apart.max(2),
+                    },
+                    Some(Notation::Scientific { places: apart }),
+                )
+            }
         };
         Self {
             format: numbers.format.clone(),
             full,
             short,
+            zero_below: if gap.is_finite() { gap * 1e-9 } else { 0.0 },
         }
     }
 
@@ -196,6 +212,7 @@ impl AxisFormat {
     fn write(&self, v: f64, notation: Notation) -> String {
         let (places, unit, suffix) = match notation {
             Notation::Scientific { places } => {
+                let v = if v.abs() < self.zero_below { 0.0 } else { v };
                 return scientific(v, places, self.format.decimal_sep);
             }
             Notation::Fixed { .. } if !v.is_finite() => return v.to_string(),
@@ -205,19 +222,20 @@ impl AxisFormat {
                 suffix,
             } => (places, unit, suffix),
         };
-        let scaled = v / unit;
-        // A value that rounds to zero is zero: no sign, and no unit to count it in.
-        let zero = (scaled * 10f64.powi(places as i32)).round() == 0.0;
-        if zero && unit > 1.0 {
-            return "0".to_string();
-        }
         let fixed = crate::numfmt::NumberFormat {
             float_precision: Some(places as u8),
             ..self.format.clone()
         };
         let mut out = String::new();
-        let scaled = if zero { 0.0 } else { scaled };
-        fixed.write_f64(scaled, &mut String::new(), &mut out);
+        fixed.write_f64(v / unit, &mut String::new(), &mut out);
+        // A value that rounds to zero is zero: no sign, and no unit to count it in.
+        // Checked on the text, since formatting rounds -0.5 to `-0` and `round` to -1.
+        if !out.chars().any(|c| matches!(c, '1'..='9')) {
+            if unit > 1.0 {
+                return "0".to_string();
+            }
+            out.retain(|c| c != '-');
+        }
         out.push_str(suffix);
         out
     }
@@ -225,14 +243,12 @@ impl AxisFormat {
 
 /// Decimal places for an axis whose largest tick is `top` and closest two are `gap`
 /// apart: three significant figures of the largest, and enough to tell the closest
-/// apart. `None` for numbers too small to write that way.
+/// apart. `None` for numbers too small to write that way, or ticks too close.
 fn fixed_places(top: f64, gap: f64) -> Option<usize> {
     let figures = if top > 0.0 { 2 - magnitude(top) } else { 0 };
-    if figures > MAX_AXIS_PLACES {
-        return None;
-    }
     let apart = if gap.is_finite() { -magnitude(gap) } else { 0 };
-    Some(figures.max(apart).clamp(0, MAX_AXIS_PLACES) as usize)
+    let places = figures.max(apart).max(0);
+    (places <= MAX_AXIS_PLACES).then_some(places as usize)
 }
 
 /// The short form of an axis whose largest tick is `top`: counted in the k, M, G or T
@@ -265,6 +281,8 @@ fn magnitude(v: f64) -> i32 {
 
 /// `v` in scientific notation, its mantissa to `places` decimals.
 fn scientific(v: f64, places: usize, decimal_sep: char) -> String {
+    // No `-0.00e0`.
+    let v = if v == 0.0 { 0.0 } else { v };
     let text = format!("{v:.places$e}");
     if decimal_sep == '.' {
         text
@@ -1716,12 +1734,36 @@ mod tests {
         );
         let close = tick_labels(&[1000.1, 1000.2, 1000.3], &plain, 0);
         assert_eq!(close, ["1000.1", "1000.2", "1000.3"]);
-        // Nothing reads as a negative zero.
+        // Nothing reads as a negative zero, not even a tie formatting rounds to it.
         assert_eq!(tick_labels(&[-0.0001, 1.0], &plain, 0), ["0.00", "1.00"]);
+        let padded = [-0.5, 249.75, 500.0];
+        assert_eq!(tick_labels(&padded, &plain, 0), ["0", "250", "500"]);
+        let padded = [-500.0, 24_750.0, 50_000.0];
+        assert_eq!(tick_labels(&padded, &plain, 1), ["0", "25k", "50k"]);
+        assert_eq!(tick_labels(&[-0.0, 5e-8], &plain, 0), ["0.00e0", "5.00e-8"]);
+        // A tick stepped a hair off zero is zero.
+        let stepped = [-2e-8, 1.3e-24, 2e-8];
+        assert_eq!(
+            tick_labels(&stepped, &plain, 0),
+            ["-2.00e-8", "0.00e0", "2.00e-8"]
+        );
+        // Ticks too close for places, or for three figures of scientific notation,
+        // take the figures that tell them apart.
+        let close = tick_labels(&[1.0, 1.000_000_1], &plain, 0);
+        assert_eq!(close, ["1.0000000e0", "1.0000001e0"]);
+        let nanoseconds = [1.727e18, 1.727_05e18, 1.7271e18];
+        let labels = tick_labels(&nanoseconds, &plain, 0);
+        assert_eq!(labels, ["1.72700e18", "1.72705e18", "1.72710e18"]);
+        assert_eq!(tick_labels(&nanoseconds, &plain, 1), labels);
         // Past what places can hold, scientific, and its short form too.
         let huge = [0.0, 5e15];
         assert_eq!(tick_labels(&huge, &plain, 0), ["0.00e0", "5.00e15"]);
         assert_eq!(tick_labels(&huge, &plain, 1), ["0e0", "5e15"]);
+        let huge = [1e15, 1.5e15, 2e15];
+        assert_eq!(
+            tick_labels(&huge, &plain, 1),
+            ["1.0e15", "1.5e15", "2.0e15"]
+        );
         // A whole-number axis prints whole numbers.
         let whole = AxisNumbers {
             whole: true,

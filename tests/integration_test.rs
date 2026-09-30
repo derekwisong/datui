@@ -12617,7 +12617,8 @@ fn screen_text(app: &mut App) -> String {
 /// follows, and Ctrl+Z puts it back: readline's bindings, in the query prompt.
 #[test]
 fn test_query_prompt_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
-    let (mut app, rx, tx) = open_query_filter_fixture("ctrl_u_query_prompt.csv");
+    let (mut app, rx, tx) =
+        open_query_filter_fixture_with("ctrl_u_query_prompt.csv", q_style_config());
 
     press(&mut app, KeyCode::Char('/'));
     assert_eq!(app.input_mode, InputMode::Editing);

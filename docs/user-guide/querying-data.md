@@ -17,6 +17,10 @@ walk the history of the current mode. Submit an empty query to return to the
 full table. Running a query — or clearing one — starts a fresh view: sidebar
 filters, sort, frozen columns and pivot/melt are dropped. Apply sidebar settings after the query.
 
+The prompt stays open until the query's first rows are in. A query that fails
+on the data is not applied: the reason shows under it, the table keeps what it
+showed, and the query is still there to fix.
+
 To open on another mode, set it in the [config](../reference/settings.md#query-views-debug):
 
 ```toml
@@ -54,10 +58,8 @@ It returns three species averages. Gentoo has the highest, about 5,076 g.
 - A long statement wraps onto up to four lines instead of scrolling sideways.
 - An empty input shows an example to start from: `SELECT * FROM df WHERE ...`.
 
-If a statement fails while it runs — a value that will not convert — the
-prompt stays open with the reason under the statement, and the table keeps
-what it showed. The reason names the column, the values that failed and SQL
-that gets past them:
+When a statement fails on a value that will not convert, the reason names
+the column, the values that failed and SQL that gets past them:
 
 | Failure | Try |
 |---|---|

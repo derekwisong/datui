@@ -11985,11 +11985,7 @@ fn a_compressed_csv_over_http_is_its_url() {
         app.template_modal.name_input.value(),
         "http_gz_location.csv"
     );
-    assert!(
-        app.template_modal.exact_path_input.value().ends_with(&url),
-        "the view is saved on the URL: {}",
-        app.template_modal.exact_path_input.value()
-    );
+    assert_eq!(app.template_modal.exact_path_input.value(), url);
 }
 
 // ---------------------------------------------------------------------------

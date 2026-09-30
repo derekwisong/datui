@@ -42,8 +42,8 @@ The format is taken from the extension, or from `--format` when there is none.
 |---|---|---|---|
 | Parquet | `.parquet` | yes | yes |
 | CSV and other delimited text | `.csv`, `.tsv`, `.psv` | yes | |
-| NDJSON | `.jsonl` | yes | |
 | Arrow IPC, Feather v2 | `.arrow`, `.ipc`, `.feather` | yes | |
+| NDJSON | `.jsonl` | | |
 | JSON | `.json` | | |
 | Avro | `.avro` | | |
 | Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | | |
@@ -51,7 +51,8 @@ The format is taken from the extension, or from `--format` when there is none.
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
 queries, sorting and analysis may read the full input. The other formats are
-loaded in full before the table appears.
+loaded in full before the table appears, except a directory of NDJSON files in
+a bucket, which is scanned.
 
 **Excel** opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).
@@ -59,7 +60,7 @@ loaded in full before the table appears.
 ### CSV options
 
 They apply to `.tsv` and `.psv` files too. A directory of CSVs in a bucket takes
-all of them except `--parse-strings`.
+all of them except `--parse-strings` and `--parse-dates`.
 
 | Option | Config key | What it does |
 |---|---|---|
@@ -86,12 +87,12 @@ turns this off.
 | `2024-01-31T10:00:00Z`, `2024-01-31T10:00:00.250+00:00`, `2024-01-31 05:00:00-05:00` | `datetime[μs, UTC]`, converted to UTC |
 
 A column whose values disagree, such as an offset on some and none on others,
-stays text. A later value that does not parse is null. JSON strings become
-dates or times, never numbers.
+stays text. A value past those rows that does not parse is null. JSON strings
+become dates or times, never numbers.
 
-With `--no-parse-strings`, and for a directory of CSVs in a bucket, Polars
-decides from the rows it reads for the schema, and a later value that does not
-parse fails the read.
+With `--no-parse-strings`, Polars decides from the rows it reads for the schema,
+and a value it cannot parse fails the read. A directory of CSV or NDJSON files
+in a bucket keeps them as text.
 
 ## Compression
 

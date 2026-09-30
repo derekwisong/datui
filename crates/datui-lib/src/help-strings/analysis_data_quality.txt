@@ -27,7 +27,8 @@ Keys:
   p:            Show the access plan: what a run reads
   r:            Rerun with a new sample seed
   Tab:          Move between the result and the tools
-  Esc:          Back one level; from the Plan, close
+  Esc:          Back one level; from the Plan, close.
+                While a run reads, cancel it
   ? / F1:       Show this help
 
 The Plan:
@@ -35,7 +36,8 @@ The Plan:
   Space:        Open the field: the Sample form, the
                 Time roles, or a list (type to narrow)
   Enter:        Run, from any field
-  Esc:          Put back the plan the report used
+  Esc:          Put back the plan the report used;
+                with no edits, close
   An edited plan waits for Enter. Until then the
   report keeps the plan it was measured with.
 
@@ -45,12 +47,14 @@ Time roles:
   Enter:        Done
   Esc:          Put back the roles as they were
 
-Segments and Trends:
+Segments:
   Enter:        A segment's columns beside the one it
                 is compared with, largest change first
   o:            Largest change first, or back in order
   b:            Compare with the highlighted segment
-  m:            Next measure on Trends
+
+Trends:
+  m:            Next measure
 
 What a sample can say:
   A rate, such as missing values, stands for the

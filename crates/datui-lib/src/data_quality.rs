@@ -1714,8 +1714,9 @@ pub struct QualitySample {
     /// the format its column was read through, when it is text read as time. Keyed as
     /// the key reads (`AnyValue::str_value`), `None` for null.
     counted: Vec<(SegmentKey, SegmentCounts)>,
-    /// A grain whose count stopped at [`crate::sampling::MAX_COUNTED_KEYS`].
-    too_many: Option<SegmentKey>,
+    /// Grains whose count stopped at [`crate::sampling::MAX_COUNTED_KEYS`], so a run
+    /// of one again says so rather than reading to find out.
+    too_many: Vec<SegmentKey>,
 }
 
 /// Rows by segment key, as a count read them.
@@ -1801,7 +1802,7 @@ impl QualitySample {
             return SegmentCount::PerValue;
         }
         let key = segment_key(plan);
-        if self.too_many.as_ref() == Some(&key) {
+        if self.too_many.contains(&key) {
             return SegmentCount::TooMany;
         }
         if self.counted.iter().any(|(counted, _)| *counted == key) {
@@ -2230,13 +2231,13 @@ fn read_quality_sample(
         total_rows: Some(sampled.rows.total_rows),
         per_value: sampled.rows.per_value,
         counted: Vec::new(),
-        too_many: None,
+        too_many: Vec::new(),
     };
     match sampled.counted {
         Some(crate::sampling::Counted::Totals(totals)) => {
             kept.counted.push((segment_key(plan), totals));
         }
-        Some(crate::sampling::Counted::TooMany) => kept.too_many = Some(segment_key(plan)),
+        Some(crate::sampling::Counted::TooMany) => kept.too_many.push(segment_key(plan)),
         None => {}
     }
     Ok(kept)
@@ -2272,7 +2273,7 @@ fn sampled_segment_totals(
         return Ok(labeled(&per_value.totals));
     }
     let key = segment_key(plan);
-    if kept.too_many.as_ref() == Some(&key) {
+    if kept.too_many.contains(&key) {
         return Err(too_many_segments(plan));
     }
     if let Some((_, counts)) = kept.counted.iter().find(|(counted, _)| *counted == key) {
@@ -2289,7 +2290,7 @@ fn sampled_segment_totals(
     watch.stage(QualityStage::CountingSegments, true)?;
     let counts = counted_segment_totals(lf, plan, polars_streaming)?;
     if counts.len() > crate::sampling::MAX_COUNTED_KEYS {
-        kept.too_many = Some(key);
+        kept.too_many.push(key);
         return Err(too_many_segments(plan));
     }
     let totals = labeled(&counts);
@@ -7023,8 +7024,15 @@ mod tests {
         assert_eq!(kept.segment_count(&chunks), SegmentCount::NotNeeded);
 
         // A grain whose count gave up names the remedy, and the rows stay.
-        kept.too_many = Some(segment_key(&grain("1h")));
+        // Each such grain is remembered, not only the last.
+        let by_region = DataQualityPlan {
+            grain: QualityGrain::Partition("region".into()),
+            ..daily.clone()
+        };
+        kept.too_many.push(segment_key(&grain("1h")));
+        kept.too_many.push(segment_key(&by_region));
         assert_eq!(kept.segment_count(&grain("1h")), SegmentCount::TooMany);
+        assert_eq!(kept.segment_count(&by_region), SegmentCount::TooMany);
         let error = compute_data_quality_kept(&lf, None, &grain("1h"), None, false, Some(&kept))
             .unwrap_err();
         assert!(

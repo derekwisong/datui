@@ -12,7 +12,7 @@ filters, sort, column layout, frozen columns and reshape settings.
 A view stores transformations, not a copy of the data. The next file produces
 its own results. Saving is unavailable until the current table has a change
 to store. In the description field, <kbd>Enter</kbd> inserts a newline;
-<kbd>Tab</kbd> out before saving.
+<kbd>Ctrl</kbd>+<kbd>J</kbd> saves from there, or <kbd>Tab</kbd> out and press <kbd>Enter</kbd>.
 
 ## Open the views list
 

@@ -11699,6 +11699,38 @@ fn test_filter_editor_keyboard_flow() {
     assert_eq!(current_rows(&app), 100);
 }
 
+/// Ctrl+J applies mid-edit on every terminal, committing the row in progress,
+/// and the editor's footer names it.
+#[test]
+fn test_ctrl_j_applies_from_the_filter_editor() {
+    let (mut app, rx, tx) = open_query_filter_fixture("filter_editor_ctrl_j.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right); // Columns -> Filters
+    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
+    press(&mut app, KeyCode::Enter); // open the editor
+    for ch in "na".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Enter); // the column
+    for ch in "co".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Enter); // the operator
+    for ch in "alpha".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    let screen = screen_text(&mut app);
+    assert!(screen.contains("^J") && screen.contains("Apply"));
+
+    if let Some(next) = press_ctrl(&mut app, 'j') {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.sort_filter_modal.active);
+    assert_eq!(current_rows(&app), 50, "the row in progress was applied");
+}
+
 /// In the filter editor's column and operator steps, Space chooses like
 /// Enter instead of typing into the narrow filter, where a space matches
 /// nothing and blanks the list. The value field below keeps Space for typing.
@@ -12275,4 +12307,170 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
     assert!(screen.contains("Copied 3 rows as TSV"), "no flash drawn");
+}
+
+/// Press `c` with Ctrl held, as a text field receives it.
+fn press_ctrl(app: &mut App, c: char) -> Option<AppEvent> {
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::CONTROL,
+    )))
+}
+
+fn screen_text(app: &mut App) -> String {
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    rendered_text(&buffer)
+}
+
+/// Ctrl+U kills from the cursor back to the start of the line, keeping what
+/// follows, and Ctrl+Z puts it back: readline's bindings, in the query prompt.
+#[test]
+fn test_query_prompt_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
+    let (mut app, rx, tx) = open_query_filter_fixture("ctrl_u_query_prompt.csv");
+
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(app.input_mode, InputMode::Editing);
+    for c in "select name where c = 1".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    for _ in 0.."where c = 1".len() {
+        press(&mut app, KeyCode::Left);
+    }
+
+    press_ctrl(&mut app, 'u');
+    let screen = screen_text(&mut app);
+    assert!(
+        screen.contains("where c = 1"),
+        "the text after the cursor stays"
+    );
+    assert!(
+        !screen.contains("select name"),
+        "the text before it is gone"
+    );
+
+    press_ctrl(&mut app, 'z');
+    assert!(screen_text(&mut app).contains("select name where c = 1"));
+
+    // What runs is what the field holds after the undo.
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().get_active_query(),
+        "select name where c = 1"
+    );
+    assert_eq!(current_rows(&app), 33);
+}
+
+/// The same bindings in a form field: the view save form's name.
+#[test]
+fn test_form_field_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("ctrl_u_form_field.csv");
+    // The save gate wants something to save.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["a".to_string()], vec![false]);
+
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(
+        app.template_modal.form_focus,
+        datui::widgets::template_modal::FormFocus::Name
+    );
+    let suggested = app.template_modal.name_input.value().to_string();
+    for c in " by a".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    for _ in 0.." by a".len() {
+        press(&mut app, KeyCode::Left);
+    }
+
+    press_ctrl(&mut app, 'u');
+    assert_eq!(app.template_modal.name_input.value(), " by a");
+    assert_eq!(app.template_modal.name_input.cursor(), 0);
+
+    press_ctrl(&mut app, 'z');
+    assert_eq!(
+        app.template_modal.name_input.value(),
+        format!("{suggested} by a")
+    );
+
+    // Esc discards the form, so the test saves nothing.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.template_modal.mode,
+        datui::widgets::template_modal::TemplateModalMode::List
+    );
+}
+
+/// `0` takes a column out of the sort and stages that as a change, so Apply
+/// has something to apply; a digit past the end of the order says why it did
+/// nothing, on the sidebar's own status line, until the next key.
+#[test]
+fn test_sort_digits_stage_zero_and_explain_out_of_range() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_digits.csv");
+
+    // Sort by the first column through its digit, and apply.
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab); // tab bar -> find
+    press(&mut app, KeyCode::Tab); // find -> column list
+    press(&mut app, KeyCode::Char('1'));
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().view_sort_columns(),
+        vec!["a".to_string()]
+    );
+
+    // Reopen: the applied sort arrives staged and nothing is pending.
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert!(!app.sort_filter_modal.sort.has_unapplied_changes);
+
+    // A digit past the end of the order does nothing and says so.
+    press(&mut app, KeyCode::Char('5'));
+    assert_eq!(
+        app.sort_filter_modal.sort.columns[0].sort_order,
+        Some(1),
+        "an out-of-range digit changes nothing"
+    );
+    assert!(!app.sort_filter_modal.sort.has_unapplied_changes);
+    assert!(
+        screen_text(&mut app).contains("Position 5 is past the end; use 1."),
+        "the status line says why"
+    );
+    assert!(!app.modal_showing(), "validation is not a modal");
+
+    // `0` removes it and stages the change.
+    press(&mut app, KeyCode::Char('0'));
+    assert!(
+        app.sort_filter_modal.sort.status.is_none(),
+        "the next key clears the status line"
+    );
+    assert!(!screen_text(&mut app).contains("past the end"));
+    assert_eq!(app.sort_filter_modal.sort.columns[0].sort_order, None);
+    assert!(
+        app.sort_filter_modal.sort.has_unapplied_changes,
+        "0 is a change to apply"
+    );
+
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .view_sort_columns()
+            .is_empty(),
+        "Apply took the column out of the sort"
+    );
 }

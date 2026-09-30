@@ -10,6 +10,7 @@ use datui::template::MatchReason;
 use datui::widgets::template_modal::{FormFocus, TemplateModalMode};
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -191,6 +192,47 @@ fn the_views_surface_saves_applies_and_deletes() {
         app.template_modal.rows.is_empty(),
         "Enter confirms the delete"
     );
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.template_modal.active);
+
+    // Ctrl+J saves from the description, the same as Ctrl+Enter: some
+    // terminals send one as the other, so it must never delete the line being
+    // typed. The footer names it.
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.template_modal.form_focus, FormFocus::Description);
+    for c in "first".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    for c in "second".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    assert!(
+        rows.iter().any(|r| r.contains("^J") && r.contains("Save")),
+        "the footer names the chord that saves from the description"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.template_modal.mode, TemplateModalMode::List, "saved");
+    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(
+        app.template_modal.rows[0].template.description.as_deref(),
+        Some("first\nsecond"),
+        "the description is saved whole"
+    );
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.template_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
     assert!(!app.template_modal.active);
 

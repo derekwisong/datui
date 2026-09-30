@@ -13441,11 +13441,17 @@ impl App {
                 on_body && sort_tab && self.sort_filter_modal.sort.focus == SortFocus::Filter;
             let on_column_list =
                 on_body && sort_tab && self.sort_filter_modal.sort.focus == SortFocus::ColumnList;
+            // The status line is about the last key; this one replaces it.
+            self.sort_filter_modal.sort.status = None;
+
+            // Ctrl+J is the apply chord beside Ctrl+Enter: it works on every
+            // terminal, and some send Ctrl+Enter as Ctrl+J.
+            let apply_chord = ctrl && matches!(event.code, KeyCode::Enter | KeyCode::Char('j'));
 
             // The inline filter editor owns the keys while it is up: a small form
             // within the form. Esc ends the edit and only the edit.
             if filter_tab && self.sort_filter_modal.filter.editor.is_some() {
-                if event.code == KeyCode::Enter && ctrl {
+                if apply_chord {
                     return self.apply_sort_filter();
                 }
                 let m = &mut self.sort_filter_modal.filter;
@@ -13523,7 +13529,7 @@ impl App {
                     self.sort_filter_modal.close();
                     self.input_mode = InputMode::Normal;
                 }
-                KeyCode::Enter if ctrl => return self.apply_sort_filter(),
+                _ if apply_chord => return self.apply_sort_filter(),
                 KeyCode::Tab => self.sort_filter_modal.next_focus(),
                 KeyCode::BackTab => self.sort_filter_modal.prev_focus(),
                 // The find field keeps its readline keys; Up/Down and the rest fall
@@ -13558,7 +13564,7 @@ impl App {
                 // On the Filters tab Enter means add/edit wherever focus sits — the
                 // sidebar opens on the tab bar, and Enter closing the dialog from
                 // there is how a first filter never gets added. The footer says
-                // ^Enter is the apply here.
+                // ^J is the apply here.
                 KeyCode::Enter if filter_tab => {
                     self.sort_filter_modal.focus = SortFilterFocus::Body;
                     let history_limit = self.history_limit;
@@ -15448,10 +15454,12 @@ impl App {
                 // The form.
                 KeyCode::Tab if form => self.template_modal.next_focus(),
                 KeyCode::BackTab if form => self.template_modal.prev_focus(),
-                KeyCode::Enter if form && ctrl => self.save_view_form(),
+                // Ctrl+J too: it works on every terminal, and some send
+                // Ctrl+Enter as Ctrl+J.
+                KeyCode::Enter | KeyCode::Char('j') if form && ctrl => self.save_view_form(),
                 KeyCode::Enter if form => {
                     // Enter saves from anywhere; inside the multiline
-                    // description it types, and the footer names Ctrl+Enter.
+                    // description it types, and the footer names Ctrl+J.
                     if self.template_modal.form_focus == FormFocus::Description {
                         let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
                         self.template_modal

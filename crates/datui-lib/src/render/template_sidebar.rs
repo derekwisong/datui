@@ -253,8 +253,9 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut TemplateModal, ctx: &Re
     let mut footer = HintBar::from_ctx(ctx);
     footer = match modal.form_focus {
         // Enter types inside the multiline description; the footer names the
-        // key that still saves from there.
-        FormFocus::Description => footer.hint_weighted("^Enter", "Save", 3),
+        // key that still saves from there on every terminal (Ctrl+Enter needs
+        // the keyboard-enhancement protocol).
+        FormFocus::Description => footer.hint_weighted("^J", "Save", 3),
         _ => footer.hint_weighted("Enter", "Save", 3),
     };
     footer = match modal.form_focus {

@@ -30,15 +30,22 @@ if [[ ! -f $REQUIREMENTS ]]; then
 fi
 
 # uv is dramatically faster and handles the interpreter itself; fall back to the
-# stdlib venv module so this works on a machine that only has Python.
-if command -v uv >/dev/null 2>&1; then
+# stdlib venv module so this works on a machine that only has Python. An existing
+# venv (or a symlink to one) is reused: uv refuses to create over it.
+if [[ -x $VENV/bin/python ]]; then
+  echo "==> Reusing $VENV"
+elif command -v uv >/dev/null 2>&1; then
   echo "==> Creating $VENV with uv"
   uv venv "$VENV"
-  echo "==> Installing $REQUIREMENTS"
-  VIRTUAL_ENV="$VENV" uv pip install -q -r "$REQUIREMENTS"
 else
   echo "==> Creating $VENV with python -m venv"
   python3 -m venv "$VENV"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  echo "==> Installing $REQUIREMENTS"
+  VIRTUAL_ENV="$VENV" uv pip install -q -r "$REQUIREMENTS"
+else
   echo "==> Installing $REQUIREMENTS (this is slow; install uv to speed it up)"
   "$VENV/bin/python" -m pip install --quiet --upgrade pip
   "$VENV/bin/pip" install --quiet -r "$REQUIREMENTS"

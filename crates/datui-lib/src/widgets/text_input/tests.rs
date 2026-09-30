@@ -125,6 +125,24 @@ fn enter_inserts_a_newline_in_a_multiline_input() {
     assert_eq!(input.cursor_col(), 3);
 }
 
+/// Ctrl+J is the save chord beside Ctrl+Enter, in both modes: some terminals
+/// send one as the other. It never edits the text.
+#[test]
+fn ctrl_j_and_ctrl_enter_submit_in_both_modes() {
+    for mut input in [TextInput::new(), TextInput::multiline()] {
+        type_str(&mut input, "keep this");
+        for code in [KeyCode::Char('j'), KeyCode::Enter] {
+            assert_eq!(
+                press_with(&mut input, code, KeyModifiers::CONTROL),
+                TextInputEvent::Submit,
+                "{code:?} in {:?}",
+                input.mode()
+            );
+            assert_eq!(input.value(), "keep this");
+        }
+    }
+}
+
 #[test]
 fn esc_cancels_in_both_modes() {
     for mut input in [TextInput::new(), TextInput::multiline()] {
@@ -431,10 +449,24 @@ fn readline_editing_shortcuts_are_available() {
 }
 
 #[test]
+fn ctrl_u_kills_to_the_start_of_the_line() {
+    let mut input = TextInput::new();
+    type_str(&mut input, "alpha beta");
+    for _ in 0..4 {
+        press(&mut input, KeyCode::Left);
+    }
+    press_with(&mut input, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(input.value(), "beta");
+    assert_eq!(input.cursor(), 0);
+    press_with(&mut input, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(input.value(), "alpha beta", "Ctrl+Y pastes what it killed");
+}
+
+#[test]
 fn undo_is_available_inside_the_field() {
     let mut input = TextInput::new();
     type_str(&mut input, "ab");
-    press_with(&mut input, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    press_with(&mut input, KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(input.value(), "a");
     press_with(&mut input, KeyCode::Char('r'), KeyModifiers::CONTROL);
     assert_eq!(input.value(), "ab");

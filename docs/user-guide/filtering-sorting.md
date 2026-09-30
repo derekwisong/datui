@@ -18,7 +18,7 @@ With the [quick-start penguin data](../getting-started/quick-start.md):
 | Key | Does |
 |---|---|
 | <kbd>Enter</kbd> | Apply everything staged and close (on the Filters tab it adds or edits; <kbd>a</kbd> applies there, outside the row editor) |
-| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. Needs a terminal that tells it from <kbd>Enter</kbd> |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or <kbd>Ctrl</kbd>+<kbd>J</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> needs a terminal that tells it from <kbd>Enter</kbd>; <kbd>Ctrl</kbd>+<kbd>J</kbd> works on every terminal |
 | <kbd>Esc</kbd> | Close without changing anything |
 | <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
 
@@ -43,7 +43,7 @@ list, then:
 |---|---|
 | <kbd>Space</kbd> | Cycle this column's sort: none, ascending, descending |
 | <kbd>Del</kbd> | Remove this column from the sort |
-| <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it |
+| <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it. A digit past the end of the order says so on the status line |
 | <kbd>[</kbd> <kbd>]</kbd> | Move this column earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move this column left or right in the table |
 | <kbd>L</kbd> | Freeze this column and every column above it on the left |

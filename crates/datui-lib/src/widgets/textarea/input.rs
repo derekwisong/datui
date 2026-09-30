@@ -140,9 +140,11 @@ pub(super) fn action_for(input: Input) -> Action {
         | (Key::Char('h'), false, true) => Action::DeletePrevWord,
         (Key::Delete, _, true) | (Key::Char('d'), false, true) => Action::DeleteNextWord,
         (Key::Char('k'), true, false) => Action::DeleteToLineEnd,
-        (Key::Char('j'), true, false) => Action::DeleteToLineStart,
-
-        (Key::Char('u'), true, false) => Action::Undo,
+        (Key::Char('u'), true, false) => Action::DeleteToLineStart,
+        // Ctrl+J is left unmapped: without the keyboard-enhancement protocol
+        // some terminals send Ctrl+Enter, the save chord, as Ctrl+J, and it must
+        // never delete. The field's owner decides what it does.
+        (Key::Char('z'), true, false) => Action::Undo,
         (Key::Char('r'), true, false) => Action::Redo,
         (Key::Char('c'), true, false) => Action::Copy,
         (Key::Char('x'), true, false) => Action::Cut,
@@ -270,6 +272,26 @@ mod tests {
                 "{emacs:?} vs {arrow:?}"
             );
         }
+    }
+
+    #[test]
+    fn ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
+        assert_eq!(
+            action_for(key(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+            Action::DeleteToLineStart
+        );
+        assert_eq!(
+            action_for(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            Action::Undo
+        );
+    }
+
+    #[test]
+    fn ctrl_j_never_edits() {
+        assert_eq!(
+            action_for(key(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+            Action::Nop
+        );
     }
 
     #[test]

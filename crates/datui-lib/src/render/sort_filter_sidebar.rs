@@ -22,8 +22,10 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
 
     // The footer names what Enter does right now: apply, or — while the
     // Filters list or its editor owns Enter — the apply key that still works.
+    // That is Ctrl+J, not Ctrl+Enter: without the keyboard-enhancement
+    // protocol many terminals send Ctrl+Enter as a plain Enter.
     let footer = if editing {
-        HintBar::from_ctx(ctx).hint_weighted("^Enter", "Apply", 2)
+        HintBar::from_ctx(ctx).hint_weighted("^J", "Apply", 2)
     } else if sort_tab {
         HintBar::from_ctx(ctx)
             .hint_weighted("Enter", "Apply", 3)
@@ -93,6 +95,14 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     };
     let hints = if sort_tab {
         render_columns_tab(body, buf, modal, ctx);
+        // Why the last key did nothing takes the hint line until the next key,
+        // so arriving and leaving move nothing.
+        if let Some(status) = &modal.sort.status {
+            Paragraph::new(status.as_str())
+                .style(Style::default().fg(ctx.warning))
+                .render(hints_area, buf);
+            return;
+        }
         HintBar::from_ctx(ctx)
             .hint_weighted("Space", "Sort", 5)
             .hint_weighted("1-9", "Jump", 4)

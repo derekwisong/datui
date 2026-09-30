@@ -6,6 +6,9 @@ Keys:
   ← / → (h/l):      On the tab bar: switch Query / Fuzzy / SQL
   ↑ / ↓:            Earlier and later queries from the history
                     (Ctrl+P / Ctrl+N too; each tab keeps its own)
+  Ctrl+U / Ctrl+K:  Delete to the start / end of the line
+  Ctrl+Z / Ctrl+R:  Undo / redo
+  Ctrl+J:           Run, the same as Enter
   F1:               Show this help (works from the input)
   Esc:              Close
 

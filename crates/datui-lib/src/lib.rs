@@ -1002,6 +1002,21 @@ mod chart_prepare_tests {
         *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
         app.event(&AppEvent::BackgroundChartReady);
         assert!(app.chart_cache.satisfies(&a), "a finished read is kept");
+
+        // A count is of the whole view: another order or sample size of the same
+        // category waits for the pass rather than starting it over.
+        app.chart_modal.chart_kind = ChartKind::Bar;
+        app.chart_modal.bar_category = Some("carrier".to_string());
+        app.chart_modal.bar_value = Some(chart_data::BarValue::Count);
+        let count = ChartRequest::from_modal(&app.chart_modal).unwrap();
+        app.chart_inflight = Some(inflight(&count));
+        app.chart_modal.bar_order = chart_data::BarOrder::Label;
+        app.chart_modal.row_limit = Some(100);
+        app.ensure_chart_data();
+        assert!(!cancelled(&app), "the same count");
+        app.chart_modal.bar_category = Some("origin".to_string());
+        app.ensure_chart_data();
+        assert!(cancelled(&app), "another category");
     }
 
     /// Two selections that alternate stay prepared: neither is collected again when
@@ -6941,6 +6956,26 @@ pub(crate) enum ChartRequest {
 }
 
 impl ChartRequest {
+    /// Whether preparing `other` reads what this needs. A count is of the whole view,
+    /// so another order or sample size of the same category is the same pass.
+    fn reads_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Bar {
+                    category: a,
+                    value: chart_data::BarValue::Count,
+                    ..
+                },
+                Self::Bar {
+                    category: b,
+                    value: chart_data::BarValue::Count,
+                    ..
+                },
+            ) => a == b,
+            _ => self == other,
+        }
+    }
+
     fn from_modal(modal: &ChartModal) -> Option<Self> {
         let row_limit = modal.row_limit;
         let range = modal.value_range;
@@ -17358,7 +17393,9 @@ impl App {
         }
         let request = ChartRequest::from_modal(&self.chart_modal);
         if let Some(inflight) = self.chart_inflight.as_ref()
-            && request.as_ref() != Some(&inflight.request)
+            && !request
+                .as_ref()
+                .is_some_and(|r| r.reads_as(&inflight.request))
         {
             // A count streaming a large view for a selection the cursor has moved
             // past would hold up the next chart for as long as it reads.

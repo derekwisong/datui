@@ -43,8 +43,25 @@ A null list or struct is an empty field; NaN and infinity inside one are
 `str.json_decode`. Binary data inside a list or struct has no JSON form, so
 CSV refuses that column: hide it or pick another format.
 
-Parquet, Arrow, JSON and NDJSON keep lists, arrays and structs as they are;
-Avro keeps lists and structs.
+Parquet, Arrow, JSON and NDJSON keep lists, arrays and structs as they are.
+
+## Avro types
+
+Avro keeps booleans, 32- and 64-bit integers and floats, strings, binary,
+decimals, dates, millisecond and microsecond datetimes, lists and structs.
+Other columns are converted, inside lists and structs too:
+
+| Column | Avro |
+|---|---|
+| Array | List |
+| Categorical, enum | String |
+| 8- and 16-bit integer | 32-bit integer |
+| Unsigned 32- and 64-bit integer | 64-bit integer; a value past its range fails the export |
+| 128-bit integer | Decimal |
+| Nanosecond datetime | Microsecond datetime |
+| Datetime with a time zone | The same instant in UTC, without the zone |
+| Time, duration | 64-bit integer of microseconds |
+| Null | String |
 
 ## Keys
 

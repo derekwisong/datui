@@ -1,4 +1,4 @@
-SW: The W statistic of a Shapiro-Wilk test ranges from 0 to 1, where 1 indicates perfect normality. The p-value reflects the probability of observing such a W value under the hypothesis of normality.
+SW: The W statistic of a Shapiro-Wilk test (its Shapiro-Francia form, on up to 5,000 values) ranges from 0 to 1, where 1 indicates perfect normality. The p-value is Royston's approximation: the probability of a W this low if the values were normal.
 Skew: Measures asymmetry of the data distribution (positive = right-tailed, negative = left-tailed).
 Kurt: Tail heaviness compared to normal distribution (high = heavy tails, low = light tails).
 Median: Middle value when data is sorted.

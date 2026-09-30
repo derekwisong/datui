@@ -440,6 +440,101 @@ mod export_format_tests {
 }
 
 #[cfg(test)]
+mod quality_memory_tests {
+    use super::*;
+    use polars::prelude::IntoLazy;
+    use std::sync::mpsc;
+
+    /// Past the budget a report that retained rows can remake goes first, then the
+    /// oldest rows, which Setup then names as released; the newest rows and the newest
+    /// report stay. Rows read again are no longer released.
+    #[test]
+    fn the_budget_releases_remakeable_reports_then_the_oldest_rows() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = polars::df!(
+            "id" => (0..2_000i64).collect::<Vec<_>>(),
+            "label" => (0..2_000).map(|row| format!("row {row}")).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        app.data_table_state = Some(
+            crate::widgets::datatable::DataTableState::new(
+                df.clone().lazy(),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        );
+        let view_generation = app.data_table_state.as_ref().unwrap().len_generation();
+        let plan = |seed: u64| data_quality::DataQualityPlan {
+            dataset_rows: 200,
+            sample_seed: seed,
+            ..data_quality::DataQualityPlan::default()
+        };
+        let dataset_generation = app.dataset_generation;
+        let read = |seed: u64| {
+            let (results, rows) = data_quality::compute_data_quality_kept(
+                &df.clone().lazy(),
+                None,
+                &plan(seed),
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+            let kept = KeptQualitySample {
+                dataset_generation,
+                view_generation,
+                sample: plan(seed).sample(),
+                rows: std::sync::Arc::new(rows.unwrap()),
+            };
+            (results, kept)
+        };
+        let (first_report, first) = read(1);
+        let (second_report, second) = read(2);
+        let rows = first.rows.estimated_bytes();
+        let report = first_report.estimated_bytes();
+        assert!(rows > 0 && report > 0);
+        // Room for two samples and one report and a half.
+        app.quality_memory_budget = 2 * rows + report + report / 2;
+
+        app.retain_quality_sample(&first);
+        app.cache_quality_result(&first_report, plan(1));
+        app.retain_quality_sample(&second);
+        app.cache_quality_result(&second_report, plan(2));
+        assert!(app.quality_cached(&plan(2)));
+        assert!(
+            !app.quality_cached(&plan(1)),
+            "the report its rows can remake goes first"
+        );
+        assert!(app.quality_kept_serves(&plan(1)) && app.quality_kept_serves(&plan(2)));
+
+        let (_, third) = read(3);
+        app.retain_quality_sample(&third);
+        assert!(
+            !app.quality_kept_serves(&plan(1)),
+            "the oldest rows go next"
+        );
+        assert!(app.quality_released(&plan(1)), "and Setup says so");
+        assert!(app.quality_kept_serves(&plan(2)) && app.quality_kept_serves(&plan(3)));
+        assert!(app.quality_cached(&plan(2)), "the newest report stays");
+
+        app.retain_quality_sample(&first);
+        assert!(
+            !app.quality_released(&plan(1)),
+            "read again, it is held again"
+        );
+        assert!(
+            !app.quality_kept_serves(&plan(2)),
+            "and the oldest held goes"
+        );
+    }
+}
+
+#[cfg(test)]
 mod probe_slot_tests {
     use super::*;
     use std::sync::mpsc;
@@ -8199,6 +8294,8 @@ pub struct App {
     quality_samples: Vec<KeptQualitySample>,
     /// Acquisitions the budget released, newest first: (dataset, view, sample).
     quality_released: Vec<(u64, u64, sampling::Sample)>,
+    /// [`QUALITY_MEMORY_BUDGET`], smaller in a test that fills it.
+    quality_memory_budget: usize,
     /// The table an analysis drill left behind: Data Quality's matching rows or the
     /// sample's, shown in its place until Esc brings it back.
     quality_evidence_return: Option<Box<DataTableState>>,
@@ -8765,7 +8862,7 @@ impl App {
                     .iter()
                     .map(|kept| kept.rows.estimated_bytes())
                     .sum::<usize>();
-            if used <= QUALITY_MEMORY_BUDGET {
+            if used <= self.quality_memory_budget {
                 return;
             }
             let remakeable = self
@@ -10765,6 +10862,7 @@ impl App {
             quality_cache: Vec::new(),
             quality_samples: Vec::new(),
             quality_released: Vec::new(),
+            quality_memory_budget: QUALITY_MEMORY_BUDGET,
             quality_evidence_return: None,
             quality_evidence_label: None,
             reading_sample: false,

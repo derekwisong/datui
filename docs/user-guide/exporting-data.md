@@ -26,6 +26,26 @@ Every format also offers **Source file** for a dataset whose files disagree; see
 
 Excel and ORC can be read but not written.
 
+## Lists and structs
+
+A `by` query, SQL `ARRAY_AGG` or a nested source file gives list, array or
+struct columns. CSV has no such types, so a CSV export writes each of those
+cells as JSON text; the dialog says so when the view has one.
+
+| Table shows | CSV cell |
+|---|---|
+| `[1, 2]` | `[1,2]` |
+| `["a", "b"]` | `["a","b"]` |
+| `{1,"a"}` | `{"x":1,"label":"a"}` |
+
+A null list or struct is an empty field; NaN and infinity inside one are
+`null`, which JSON has no other spelling for. Polars reads the text back with
+`str.json_decode`. Binary data inside a list or struct has no JSON form, so
+CSV refuses that column: hide it or pick another format.
+
+Parquet, Arrow, JSON and NDJSON keep lists, arrays and structs as they are;
+Avro keeps lists and structs.
+
 ## Keys
 
 | Key | Action |

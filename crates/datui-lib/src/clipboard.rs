@@ -181,6 +181,7 @@ impl CopyFormat {
 /// is `QuoteStyle::Necessary`, the writer's default. Raw values, like export;
 /// a null is an empty field, never the UI's `∅`.
 pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, String> {
+    crate::nested_json::ensure_delimitable(df.schema()).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     let mut df = df.clone();
     CsvWriter::new(&mut out)
@@ -327,11 +328,13 @@ pub fn html_table(df: &DataFrame, header: bool) -> Result<String, String> {
 /// The payload for a tabular copy: the chosen format as text, with the HTML
 /// flavor beside a TSV or CSV copy. A Markdown copy is the Markdown itself —
 /// pasting rich HTML where Markdown was asked for would defeat the choice.
+/// List and struct cells are JSON in every format, as in a CSV export.
 pub fn tabular_payload(
     df: &DataFrame,
     format: CopyFormat,
     header: bool,
 ) -> Result<Payload, String> {
+    let df = &crate::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
     let text = match format {
         CopyFormat::Tsv => delimited(df, b'\t', header)?,
         CopyFormat::Csv => delimited(df, b',', header)?,

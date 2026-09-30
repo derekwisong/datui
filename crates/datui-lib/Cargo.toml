@@ -121,6 +121,12 @@ features = [
 version = "0.55"
 default-features = false
 
+# Polars' JSON writer, for list and struct cells written into a CSV or a copy:
+# the same text NDJSON export produces, without a lazy round trip per copy.
+[dependencies.polars-json]
+version = "0.55"
+default-features = false
+
 [dev-dependencies]
 tempfile = "3.8"
 criterion = "0.8"

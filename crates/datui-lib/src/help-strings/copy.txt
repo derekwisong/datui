@@ -35,6 +35,7 @@ Formats:
   A TSV or CSV copy also carries an HTML table flavor, so pasting into a
   spreadsheet or an email keeps the columns. Values are raw, like an
   export: display formatting is not applied and a null is an empty field.
+  List and struct cells are JSON in every format, as in a CSV export.
 
 Clipboard:
   [clipboard] backend picks the mechanism: "native" talks to the display

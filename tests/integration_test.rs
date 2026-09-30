@@ -5294,6 +5294,78 @@ fn test_csv_export_writes_sql_arrays_and_structs_as_json() {
     );
 }
 
+/// JSON has no binary type: JSON and NDJSON write binary as base64 text, alone
+/// and inside a list or struct, and CSV spells it the same way.
+#[test]
+fn test_json_export_writes_binary_as_base64() {
+    use datui::export_modal::ExportFormat;
+    let dir = tempfile::tempdir().unwrap();
+    let blob = Series::new("blob".into(), [Some(b"hi\xff".as_slice()), None]);
+    let blobs = Series::new(
+        "blobs".into(),
+        [Some(Series::new("".into(), [b"x".as_slice()])), None],
+    );
+    let meta = StructChunked::from_series(
+        "meta".into(),
+        2,
+        [
+            Series::new("raw".into(), [b"ab".as_slice(), b"".as_slice()]),
+            Series::new("n".into(), [1i64, 2]),
+        ]
+        .iter(),
+    )
+    .unwrap()
+    .into_series();
+    let df = df!("id" => [1i64, 2])
+        .unwrap()
+        .hstack(&[blob.into(), blobs.into(), meta.into()])
+        .unwrap();
+    write_parquet(dir.path(), "src", df);
+    let (mut app, rx, tx) = open_local_dataset_with_channel(&dir.path().join("src"));
+
+    for (file, format, json) in [
+        ("out.json", ExportFormat::Json, JsonFormat::Json),
+        ("out.jsonl", ExportFormat::Ndjson, JsonFormat::JsonLines),
+    ] {
+        let out = dir.path().join(file);
+        export_as(&mut app, &rx, &tx, &out, format, false);
+        let back = JsonReader::new(File::open(&out).unwrap())
+            .with_json_format(json)
+            .finish()
+            .unwrap_or_else(|e| panic!("{file}: {e}"));
+        let blob = back.column("blob").unwrap().str().unwrap().clone();
+        assert_eq!((blob.get(0), blob.get(1)), (Some("aGn/"), None), "{file}");
+        let blobs = back.column("blobs").unwrap().list().unwrap().clone();
+        let first = blobs.get_as_series(0).unwrap();
+        assert_eq!(first.str().unwrap().get(0), Some("eA=="), "{file}");
+        assert!(blobs.get_as_series(1).is_none(), "{file}: a null list");
+        let raw = back
+            .column("meta")
+            .unwrap()
+            .struct_()
+            .unwrap()
+            .field_by_name("raw")
+            .unwrap();
+        assert_eq!(
+            (raw.str().unwrap().get(0), raw.str().unwrap().get(1)),
+            (Some("YWI="), Some("")),
+            "{file}"
+        );
+    }
+
+    let out = dir.path().join("out.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, false);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "id,blob,blobs,meta",
+            r#"1,aGn/,"[""eA==""]","{""raw"":""YWI="",""n"":1}""#,
+            r#"2,,,"{""raw"":"""",""n"":2}""#,
+        ]
+    );
+}
+
 /// Avro has no fixed-size array or categorical type: the export writes them as
 /// a list and as strings, inside a list too, and a view read from two files
 /// (two chunks) still makes one readable file.

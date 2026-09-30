@@ -12,7 +12,7 @@ Setup reads the data; <kbd>Enter</kbd> does, once.
 | **Rows & sample** | The [sample](analysis-features.md#sampling) every analysis tool reads: which rows, how they are picked, how many, the seed |
 | **Columns** | Text read as time, and time roles |
 | **Study** | Grain, comparison, values or file metadata only, latency threshold |
-| **Read** | What Run will read: a sampling pass, a count, the rows the last run read, or no read at all |
+| **Read** | What Run will read: a sampling pass, a count, rows a run already read, or no read at all |
 
 <kbd>s</kbd> opens the Sample form over Setup; its <kbd>Enter</kbd> applies the
 sample to Setup and returns there. <kbd>Esc</kbd> discards everything changed
@@ -92,9 +92,11 @@ grain on text with no format is named in Setup before you run.
 ## Check the read size
 
 Setup's **Read** section says what <kbd>Enter</kbd> will read before it reads:
-one sampling pass, a count of the grain's column for exact segment totals, the
-rows the last run read, or nothing when the report is already on screen or in
-the session cache. <kbd>p</kbd> shows the access plan in full. Reading every
+one sampling pass (which also counts the grain's segments when it streams), a
+count of the grain's column for exact segment totals, rows a run already read,
+or nothing when the report is already on screen or in the session cache.
+Changing roles, text formats, comparison, row chunks or a coarser window of a
+counted grain reads nothing; a new seed, size or scope reads a new sample. <kbd>p</kbd> shows the access plan in full. Reading every
 row asks for confirmation first; <kbd>Esc</kbd> there leaves the sample and the
 report as they were.
 

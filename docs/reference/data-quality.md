@@ -78,10 +78,15 @@ The Read section says what Run will do, before it does it:
 | Read | When |
 |---|---|
 | No read: the report is already here | The setup is the report's, or the session cache holds it |
-| Uses the rows the last run read | A sampled setup whose sample, dataset and view match the last run's, and whose grain those rows serve |
+| Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
 | Seeded runs of the file | A random sample of one Parquet or IPC file as loaded: a few dozen short reads |
 | One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
-| Plus one count of the grain's column | A sampled partition or time-window grain whose segment totals nothing has counted; kept for later runs |
+| Read before; released to free memory | Those rows were read this session and released to the memory budget: Run reads them again |
+| Counts every row by the grain's column in that pass | A partition or time-window grain on a streamed sample: exact segment totals from the one pass |
+| Segment totals from a count already read | The same grain was counted before, with these rows |
+| Segment totals summed from the hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
+| Plus one count of the grain's column | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
+| Too many segments to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
 | Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
 | File metadata only | Values set to metadata only |
 
@@ -216,19 +221,38 @@ to Every row) asks first: the **Full Scan** dialog, <kbd>Enter</kbd> to run,
 | | |
 |---|---|
 | Dataset grain | The whole sample is one segment |
-| File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. Choosing Equal per value sets the grain to that column when no grain is set. A segment's total comes from what is already known (a file's rows from its footer when whole files are in scope, a row chunk's size, the rows an Equal per value sample counted while it read), and otherwise from one count of the grain's column, kept for the session |
+| File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. Choosing Equal per value sets the grain to that column when no grain is set. A segment's total comes from what is already known (a file's rows from its footer when whole files are in scope, a row chunk's size, the rows an Equal per value sample counted while it read), from the count a streamed sample takes of the grain's column in its one pass, from a finer window's count summed, and otherwise from one count of the grain's column, kept with the rows |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
 | Time windows | By hour, day, week or month of a date or time column, starting on the calendar boundary for their width (weeks start on Monday) and named by where they start (`2024-01-31`, `week of 2024-01-29`, `2024-01`); a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
 | Remote sources | Read-only; the access plan always reports zero remote writes |
 
-Complete profiles are reused during the session when the dataset, current
-view, and full setup (including sample seed, time roles and text formats)
-match; the session keeps the four most recent. Reopening Data Quality then
-shows the cached result without reading values again; changing the view or the
-setup requires a new run. A sampled run that differs from the last only in how
-it cuts the rows, such as grain, roles or text formats, cuts the rows the last
-run read instead of reading them again.
+### What is reused
+
+A sampled run keeps the rows it read, every column of them and where each row
+sat in the scope. Those rows are keyed by what chose them: the dataset as
+opened, the view, and the sample's scope, method, size and seed. Everything
+else in Setup belongs to the report.
+
+| Edit | Reads |
+|---|---|
+| Time roles, text as time on a role, compare, latency threshold | Nothing: the retained rows are measured again |
+| Row chunks | Nothing: each row's position was kept |
+| A coarser window of a grain already counted | Nothing: hours sum into days, weeks and months, and days into weeks and months |
+| Another partition, a finer window, or a window on newly read text | One count of the grain's column, kept with the rows |
+| Scope, method, size or seed | A new sample, unless the rows for that sample are still held |
+| Nothing changed, or a report in the session cache | Nothing |
+
+Windows are cut on the stored clock with no time zone (UTC for a zoned
+column), where every hour lies in one day and every day in one week and one
+month, so a sum of the finer counts is exactly the coarser count. A week is
+not summed into months.
+
+Retained rows and reports share a 256 MiB budget for the session. Past it,
+reports that retained rows can remake go first, then the oldest rows; the newest
+rows and the newest report always stay. Setup names rows that were released and
+will be read again. The rows are a snapshot of the session: a file changed on
+disk is not noticed until it is opened again.
 
 ## Data-quality metric definitions
 

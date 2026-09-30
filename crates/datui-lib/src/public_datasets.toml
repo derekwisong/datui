@@ -2,9 +2,8 @@
 # login. These are remote links, not bundled data: object-store roots browse, HTTP(S)
 # files open directly, and nothing is fetched until an entry is opened.
 #
-# Hosted tabular equivalents are labeled with their actual scope; these are not the
-# locally prepared report tables. OpenAlex awaits a curated research dataset. Every
-# entry must be readable without credentials or requester-pays access.
+# Each entry is labeled with its actual scope, and must be readable without
+# credentials or requester-pays access.
 #
 # The weekly `Public datasets` workflow checks every entry.
 

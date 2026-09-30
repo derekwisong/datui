@@ -89,7 +89,7 @@ def main() -> int:
         for tag in version_tags:
             tag_sha = get_tag_sha(repo_root, tag)
             built_sha_file = book_dir / tag / ".built_sha"
-            if built_sha_file.exists() and built_sha_file.read_text().strip() == tag_sha:
+            if (book_dir / tag / "index.html").is_file() and built_sha_file.exists() and built_sha_file.read_text().strip() == tag_sha:
                 print(f"  Skipping {tag} (already built for this SHA)")
                 continue
 
@@ -104,8 +104,8 @@ def main() -> int:
 
             proc = run(["git", "worktree", "add", str(worktree_dir), tag], cwd=repo_root, check=False)
             if proc.returncode != 0:
-                print(f"    Warning: Could not create worktree for {tag}")
-                continue
+                print(f"    Error: Could not create worktree for {tag}", file=sys.stderr)
+                return 1
 
             env = os.environ.copy()
             env["DATUI_REPO_ROOT"] = str(repo_root)
@@ -114,6 +114,9 @@ def main() -> int:
                 cwd=worktree_dir,
                 env=env,
             )
+            if proc.returncode != 0 or not (book_dir / tag / "index.html").is_file():
+                print(f"    Error: Documentation build failed for {tag}", file=sys.stderr)
+                return 1
             (book_dir / tag).mkdir(parents=True, exist_ok=True)
             (book_dir / tag / ".built_sha").write_text(tag_sha)
 
@@ -121,10 +124,6 @@ def main() -> int:
             if worktree_dir.exists():
                 shutil.rmtree(worktree_dir, ignore_errors=True)
                 worktree_dir.mkdir()
-
-        print()
-        print("Rebuilding index page...")
-        run([sys.executable, str(rebuild_index)], cwd=repo_root)
 
         # Copy newest version to latest (stable URL for "current release")
         latest_tag = version_tags[-1]
@@ -134,12 +133,12 @@ def main() -> int:
         shutil.copytree(book_dir / latest_tag, latest_dir)
         print(f"  Updated latest -> {latest_tag}")
 
+        print("Rebuilding index page...")
+        run([sys.executable, str(rebuild_index)], cwd=repo_root)
+
         demos_global = book_dir / "demos"
         if demos_global.exists():
             shutil.rmtree(demos_global)
-
-        for f in book_dir.rglob(".built_sha"):
-            f.unlink()
 
         cleanup_worktree = False
     finally:

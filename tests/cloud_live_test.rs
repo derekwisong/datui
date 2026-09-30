@@ -1274,7 +1274,13 @@ fn every_public_dataset_lists_and_opens() {
     for dataset in datui::config::builtin_catalog().datasets {
         let started = std::time::Instant::now();
         let url = dataset.url.as_deref().expect("the catalog is remote");
-        let found = match first_openable(url, &config, &runtime) {
+        // A web file opens as itself; an object-store root is searched for a file.
+        let candidate = if datui::config::is_object_store_dataset(url) {
+            first_openable(url, &config, &runtime)
+        } else {
+            Ok(Some(url.to_string()))
+        };
+        let found = match candidate {
             Ok(Some(url)) => url,
             Ok(None) => {
                 failures.push(format!("{}: no data file found", dataset.name));
@@ -1299,9 +1305,9 @@ fn every_public_dataset_lists_and_opens() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The built-in catalog as the home screen shows it: a section of datasets by name, and
-/// a file opened from inside one. The trail names the dataset, and Backspace from the
-/// dataset's root returns to the listing.
+/// The built-in catalog as the home screen shows it: a section of datasets by name, a
+/// bucket browsed from one, and a web file opened through the download. The trail names
+/// the dataset, and Backspace from the dataset's root returns to the listing.
 #[test]
 #[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
 fn public_datasets_browse_and_open_from_the_home_screen() {
@@ -1309,6 +1315,13 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
         eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
         return;
     }
+    let listed = |name: &'static str| {
+        move |app: &datui::App| {
+            app.home.visible().iter().any(
+                |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name),
+            )
+        }
+    };
     let (mut app, rx) = live_app();
     assert!(pump_until(&mut app, &rx, 10, |app| section_named(
         app,
@@ -1319,48 +1332,37 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
     let text = screen_text(&mut app, 120, 30);
     assert!(text.contains("CC0"), "the details pane: {text}");
 
-    let listed = |name: &'static str| {
-        move |app: &datui::App| {
-            app.home.visible().iter().any(
-                |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name),
-            )
-        }
-    };
-    assert!(select_row(&mut app, "BigQuery sample data"));
     assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
-    assert!(pump_until(&mut app, &rx, 60, listed("us-states")));
+    assert!(pump_until(&mut app, &rx, 60, listed("by_year")));
     let sep = datui::glyphs::get().trail;
     let text = screen_text(&mut app, 120, 30);
     assert!(
-        text.contains(&format!("Public datasets {sep} BigQuery sample data")),
+        text.contains(&format!(
+            "Public datasets {sep} NOAA daily weather (GHCN-D)"
+        )),
         "{text}"
     );
-    assert!(select_row(&mut app, "us-states"));
-    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
-    assert!(pump_until(&mut app, &rx, 60, listed("us-states.parquet")));
-    // Up out of `us-states`, then out of the dataset's root: back to the listing, not up
-    // into a bucket that cannot be listed.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    // Out of the dataset's root: back to the listing, not up into a bucket that cannot
+    // be listed.
     app.event(&key(crossterm::event::KeyCode::Backspace));
     assert_eq!(app.home.browsing, None, "back to the listing");
 
-    let (mut app, rx) = live_app();
-    assert!(pump_until(&mut app, &rx, 10, |app| section_named(
-        app,
-        "Public datasets"
-    )
-    .is_some()));
-    for step in ["BigQuery sample data", "us-states", "us-states.parquet"] {
-        assert!(pump_until(&mut app, &rx, 60, listed(step)), "{step}");
-        assert!(select_row(&mut app, step), "{step}");
-        assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
-    }
+    assert!(pump_until(&mut app, &rx, 60, listed("Palmer penguins")));
+    assert!(select_row(&mut app, "Palmer penguins"));
+    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
+    assert!(pump_until(
+        &mut app,
+        &rx,
+        60,
+        datui::App::awaiting_download_confirmation
+    ));
+    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
     assert!(pump_until(&mut app, &rx, 120, |app| app
         .data_table_state
         .is_some()
         && !app.is_busy()));
     let headers = app.data_table_state.as_ref().unwrap().headers();
-    assert!(headers.iter().any(|h| h == "name"), "{headers:?}");
+    assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
 }
 
 /// The quirks the public list is chosen to exercise: a bucket in another region, Parquet
@@ -1380,6 +1382,16 @@ fn public_data_quirks() {
         cloud_browse::s3_bucket_region("aws-public-blockchain").as_deref(),
         Some("us-east-2")
     );
+
+    // A tiny GCS fixture still tests anonymous access without a default catalog entry.
+    let gcs = "gs://cloud-samples-data/bigquery/us-states/";
+    let rows = runtime
+        .block_on(cloud_browse::list_objects(gcs, &config))
+        .expect("the explicit GCS fixture lists anonymously");
+    assert!(rows.iter().any(|row| row.name == "us-states.parquet"));
+    let headers = open_url(&format!("{gcs}us-states.parquet"), &config)
+        .expect("the explicit GCS fixture opens anonymously");
+    assert!(headers.iter().any(|h| h == "name"), "{headers:?}");
 
     // GBIF: CC BY-NC, so not on the list, and Parquet part files with no extension.
     let snapshots = runtime

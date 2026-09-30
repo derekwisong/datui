@@ -2169,6 +2169,42 @@ fn collection_mistakes_are_named() {
 }
 
 #[test]
+fn collections_accept_web_files_but_not_web_directories_or_archives() {
+    for url in [
+        "https://example.com/data.csv",
+        "http://localhost:8080/data.parquet",
+        "https://example.com/data.csv.gz",
+    ] {
+        let text = format!(
+            "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Data\"\nurl = {url:?}\n"
+        );
+        cloud_config(&text)
+            .validate()
+            .unwrap_or_else(|e| panic!("{url}: {e}"));
+    }
+    for url in [
+        "https://example.com/",
+        "https://example.com/data/",
+        "https://example.com/data.zip",
+        "https://user:password@example.com/data.csv",
+        "https:///data.csv",
+        "https://example.com/bad path.csv",
+    ] {
+        let text = format!(
+            "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Data\"\nurl = {url:?}\n"
+        );
+        assert!(cloud_config(&text).validate().is_err(), "{url}");
+    }
+    let bucket = cloud_error(
+        "[[cloud.connections]]\nname = \"web\"\nkind = \"s3\"\nbuckets = [\"https://example.com/data.csv\"]\n",
+    );
+    assert!(
+        bucket.contains("[[sources.datasets]]"),
+        "web files belong in datasets: {bucket}"
+    );
+}
+
+#[test]
 fn a_later_layer_replaces_a_source_by_name() {
     let mut base = cloud_config(
         "[cloud]\nhide = [\"a\"]\n[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
@@ -2327,11 +2363,69 @@ fn the_generated_config_materializes_the_builtin_catalog() {
     let config: AppConfig = toml::from_str(&text).expect("generated config parses");
     config.validate().expect("generated config validates");
     assert_eq!(config.sources, [datui::config::builtin_catalog()]);
+    let names: Vec<_> = config.sources[0]
+        .datasets
+        .iter()
+        .map(|dataset| dataset.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "NYC flights (2013)",
+            "Food nutrition (fast food)",
+            "US baby names (1880-2017)",
+            "NOAA daily weather (GHCN-D)",
+            "Premier League (2020-21)",
+            "NYC yellow taxis (January 2025)",
+            "Earthquakes (past month)",
+            "Space launches (1957-2018)",
+            "Palmer penguins",
+            "Bitcoin and Ethereum",
+            "Overture Maps"
+        ],
+        "generated configs should ship the curated catalog"
+    );
     assert!(text.contains("snapshot"), "{text}");
     assert!(text.contains("[[sources.datasets]]"), "{text}");
     assert!(text.contains("# builtin_catalog = true"), "{text}");
     assert!(text.contains("# hide_sources = []"), "{text}");
     assert!(!text.contains("\nhide ="), "{text}");
+}
+
+#[test]
+fn a_saved_public_catalog_keeps_entries_retired_from_the_defaults() {
+    let text = r#"
+[[sources]]
+name = "public"
+label = "Public datasets"
+
+[[sources.datasets]]
+name = "OpenAlex"
+url = "s3://openalex/data/parquet/"
+auth = "anonymous"
+
+[[sources.datasets]]
+name = "Google Open Buildings"
+url = "gs://open-buildings-data/v3/"
+auth = "anonymous"
+
+[[sources.datasets]]
+name = "BigQuery sample data"
+url = "gs://cloud-samples-data/bigquery/"
+auth = "anonymous"
+"#;
+    let saved: AppConfig = toml::from_str(text).unwrap();
+    saved.validate().expect("an older snapshot stays valid");
+    let mut config = AppConfig::default();
+    config.merge(saved.clone());
+    assert_eq!(config.sources, saved.sources);
+    assert_eq!(
+        config.collections(),
+        saved.sources,
+        "the snapshot replaces the curated catalog whole"
+    );
+    let roundtrip: AppConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(roundtrip.sources, saved.sources);
 }
 
 #[test]

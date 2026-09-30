@@ -1622,8 +1622,12 @@ mod tests {
             let config = with_collections("", env);
             let catalog = crate::config::builtin_catalog();
             assert!(catalog.datasets.len() >= 6);
+            // Web files are fetched, not resolved against a store.
             for dataset in &catalog.datasets {
                 let url = dataset.url.as_deref().unwrap();
+                if !crate::config::is_object_store_dataset(url) {
+                    continue;
+                }
                 let resolved = resolve_with(url, &config, env).unwrap();
                 assert_eq!(resolved.signing, Signing::Unsigned, "{url}");
                 assert_eq!(resolved.source_id, crate::config::BUILTIN_CATALOG);

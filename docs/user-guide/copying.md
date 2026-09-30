@@ -1,8 +1,17 @@
-# Copying to the Clipboard
+# Copy to the clipboard
 
 Press <kbd>y</kbd> to copy from the current view to the system clipboard. The
 dialog picks a scope and a format; the last choices are kept, so repeating a
 copy is <kbd>y</kbd> <kbd>Enter</kbd>.
+
+## Copy a table into a note
+
+1. Apply the query or filters you want to copy.
+2. Press <kbd>y</kbd>, select **Table** scope and **Markdown** format.
+3. Press <kbd>Enter</kbd>, then paste into your note.
+
+For a spreadsheet, choose **TSV** instead. **Table** includes all matching
+rows; **View** includes only the rows on screen.
 
 | Scope | What it copies |
 |---|---|
@@ -25,7 +34,7 @@ and off for Row; a Markdown table always keeps its header.
 
 A large Table copy asks first — and so does one whose size is not known yet.
 Above 200 MiB the copy is refused with a pointer to
-[export](exporting-data.md) — a file is the medium at that size.
+[export](exporting-data.md).
 
 ## Keys
 
@@ -42,7 +51,7 @@ In a picker, typing narrows the list.
 
 ## How the copy reaches the clipboard
 
-`[clipboard] backend` in the [configuration](configuration.md#clipboard)
+`[clipboard] backend` in the [configuration](../reference/settings.md#clipboard)
 chooses the mechanism:
 
 | Backend | How |

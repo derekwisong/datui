@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 
 The script downloads the latest release for your platform and installs it: a
 `.deb` on Debian and Ubuntu, an `.rpm` on Fedora and RHEL, the binary elsewhere.
-Prefer not to pipe to a shell? Any method below does the same thing.
+Package-manager and binary-download options are below.
 
 ### Without root
 

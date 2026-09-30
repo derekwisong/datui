@@ -527,7 +527,88 @@ pub fn asciify_instructions(text: &str) -> std::borrow::Cow<'_, str> {
     if get().unicode || text.is_ascii() {
         return std::borrow::Cow::Borrowed(text);
     }
-    let mut out = String::with_capacity(text.len());
+    std::borrow::Cow::Owned(instructions_in_ascii(text))
+}
+
+/// `text` with every instructional character replaced by its ASCII twin,
+/// whatever the terminal. The twins are wider (`↑` is `Up`), so help rows
+/// laid out as key, two or more spaces, description are re-padded one
+/// section (a run of non-blank lines) at a time: descriptions stay at the
+/// columns they were authored at, and when an ASCII key no longer fits, the
+/// whole section moves right together rather than that one row.
+pub fn instructions_in_ascii(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
+    let mut section: Vec<&str> = Vec::new();
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            push_section(&section, &mut out);
+            section.clear();
+            push_ascii(line, &mut out);
+            out.push('\n');
+        } else {
+            section.push(line);
+        }
+    }
+    push_section(&section, &mut out);
+    // Every line was pushed with a newline; the last one never had it.
+    out.pop();
+    out
+}
+
+/// One section's lines, each followed by a newline. Continuation lines,
+/// indented to one of the section's description columns, move with it.
+fn push_section(lines: &[&str], out: &mut String) {
+    // (key end, description start, description column) per keyed row.
+    let rows: Vec<Option<(usize, usize, usize)>> = lines
+        .iter()
+        .map(|line| key_gap(line).map(|(key, desc)| (key, desc, display_width(&line[..desc]))))
+        .collect();
+    let shift = lines
+        .iter()
+        .zip(&rows)
+        .filter_map(|(line, row)| {
+            row.map(|(key, _, column)| (ascii_width(&line[..key]) + 2).saturating_sub(column))
+        })
+        .max()
+        .unwrap_or(0);
+    for (line, row) in lines.iter().zip(&rows) {
+        match *row {
+            Some((key, desc, column)) => {
+                push_ascii(&line[..key], out);
+                let pad = column + shift - ascii_width(&line[..key]);
+                out.extend(std::iter::repeat_n(' ', pad));
+                push_ascii(&line[desc..], out);
+            }
+            None => {
+                let indent = line.len() - line.trim_start_matches(' ').len();
+                if shift > 0 && rows.iter().flatten().any(|&(_, _, c)| c == indent) {
+                    out.extend(std::iter::repeat_n(' ', shift));
+                }
+                push_ascii(line, out);
+            }
+        }
+        out.push('\n');
+    }
+}
+
+/// Columns `text` takes once its instructional characters are ASCII.
+fn ascii_width(text: &str) -> usize {
+    text.chars()
+        .map(|c| ascii_twin(c).map_or(1, str::len))
+        .sum()
+}
+
+/// Where a help row's key ends and its description starts: the first run of
+/// two or more spaces after the indent, with text after it. `None` for a
+/// line without one (prose, a heading, a blank line).
+fn key_gap(line: &str) -> Option<(usize, usize)> {
+    let lead = line.len() - line.trim_start_matches(' ').len();
+    let key_end = lead + line[lead..].find("  ")?;
+    let desc_start = line.len() - line[key_end..].trim_start_matches(' ').len();
+    (desc_start < line.len()).then_some((key_end, desc_start))
+}
+
+fn push_ascii(text: &str, out: &mut String) {
     for c in text.chars() {
         match ascii_twin(c) {
             Some(twin) => out.push_str(twin),
@@ -538,7 +619,6 @@ pub fn asciify_instructions(text: &str) -> std::borrow::Cow<'_, str> {
             None => out.push('?'),
         }
     }
-    std::borrow::Cow::Owned(out)
 }
 
 /// Display columns `text` will occupy, as the terminal draws it. Scalar
@@ -826,6 +906,99 @@ mod tests {
         ] {
             assert!(piece.is_ascii(), "{piece:?}");
         }
+    }
+
+    /// A key whose arrows become words re-pads, so its description stays in
+    /// line with the rows around it.
+    #[test]
+    fn an_ascii_key_keeps_its_description_column() {
+        let text = "Keys:\n  ↑ / ↓:      Move\n  Enter:      Open, → on a folder\n";
+        assert_eq!(
+            instructions_in_ascii(text),
+            "Keys:\n  Up / Dn:    Move\n  Enter:      Open, Rt on a folder\n"
+        );
+    }
+
+    /// A key that no longer fits its column moves its whole section right,
+    /// continuation lines included; prose and other sections stay put.
+    #[test]
+    fn an_overlong_ascii_key_moves_its_section_together() {
+        let text = [
+            "Keys:",
+            "  ← / → (h/l):  Page",
+            "  e:            Plan, and",
+            "                more",
+            "  Prose → here.",
+            "",
+            "  q:  Quit",
+        ]
+        .join("\n");
+        let expected = [
+            "Keys:",
+            "  Lt / Rt (h/l):  Page",
+            "  e:              Plan, and",
+            "                  more",
+            "  Prose Rt here.",
+            "",
+            "  q:  Quit",
+        ]
+        .join("\n");
+        assert_eq!(instructions_in_ascii(&text), expected);
+    }
+
+    /// Every help file, rendered in ASCII, keeps each section's description
+    /// column aligned: every row and continuation line moves by the same
+    /// amount (none unless an ASCII key needs the room), and a section that
+    /// does not move comes through with its ASCII lines untouched.
+    #[test]
+    fn every_help_screen_keeps_its_columns_in_ascii() {
+        fn indent(line: &str) -> usize {
+            line.len() - line.trim_start_matches(' ').len()
+        }
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/help-strings");
+        let mut repadded = 0;
+        for entry in std::fs::read_dir(dir).expect("help-strings dir") {
+            let path = entry.expect("dir entry").path();
+            let text = std::fs::read_to_string(&path).expect("help file");
+            let ascii = instructions_in_ascii(&text);
+            assert!(ascii.is_ascii(), "{path:?}");
+            assert_eq!(ascii.lines().count(), text.lines().count(), "{path:?}");
+            let pairs: Vec<(&str, &str)> = text.lines().zip(ascii.lines()).collect();
+            for section in pairs.split(|(utf8, _)| utf8.trim().is_empty()) {
+                let mut shift = None;
+                let mut tight = false;
+                for (utf8, ascii) in section {
+                    let Some((key_end, desc)) = key_gap(utf8) else {
+                        continue;
+                    };
+                    let (ascii_key, ascii_desc) =
+                        key_gap(ascii).unwrap_or_else(|| panic!("{path:?}: gap lost in {ascii:?}"));
+                    let column = UnicodeWidthStr::width(&ascii[..ascii_desc]);
+                    let moved = column - UnicodeWidthStr::width(&utf8[..desc]);
+                    assert_eq!(
+                        *shift.get_or_insert(moved),
+                        moved,
+                        "{path:?}: out of line with its section\n  {utf8:?}\n  {ascii:?}"
+                    );
+                    tight |= ascii_key + 2 == ascii_desc;
+                    if !utf8[..key_end].is_ascii() {
+                        repadded += 1;
+                    }
+                }
+                let shift = shift.unwrap_or(0);
+                assert!(shift == 0 || tight, "{path:?}: moved further than needed");
+                for (utf8, ascii) in section {
+                    if shift == 0 && utf8.is_ascii() {
+                        assert_eq!(utf8, ascii, "{path:?}");
+                    }
+                    if key_gap(utf8).is_none() {
+                        let moved = indent(ascii) - indent(utf8);
+                        assert!(moved == 0 || moved == shift, "{path:?}: {ascii:?}");
+                    }
+                }
+            }
+        }
+        assert!(repadded > 10, "rows with arrows in their keys were checked");
     }
 
     /// Every locality marker has to be the same display width in a given set, or the

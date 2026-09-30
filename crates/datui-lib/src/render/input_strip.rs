@@ -12,7 +12,7 @@ use ratatui::widgets::{Paragraph, Tabs, Widget};
 fn mode_hint(mode: QueryMode) -> &'static str {
     match mode {
         QueryMode::Sql => "Table: df",
-        QueryMode::Search => "Rows containing all words, in any text column",
+        QueryMode::Search => "Every word's letters in order, in any text column",
         QueryMode::QStyle => "Subset of q, evaluated right to left; F1 syntax",
     }
 }

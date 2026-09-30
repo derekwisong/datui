@@ -76,7 +76,7 @@ asking to download it) and steps into a directory or object-store prefix.
 
 ## Query prompt
 
-<kbd>/</kbd> opens on SQL, or on the running query's mode when you edit one.
+<kbd>/</kbd> opens on SQL, or on the active query's mode when you edit one.
 `[query] default_mode` picks another starting mode.
 
 | Key | Action |

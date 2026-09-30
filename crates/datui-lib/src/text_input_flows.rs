@@ -525,7 +525,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
     }
     let drawn = screen(&mut h.app);
     assert!(drawn.contains(" 1 match "), "{drawn}");
-    assert!(drawn.contains("Rows containing all words, in any text column"));
+    assert!(drawn.contains("Every word's letters in order, in any text column"));
 
     h.press(KeyCode::End);
     h.type_str("x");

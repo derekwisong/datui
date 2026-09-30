@@ -6771,7 +6771,7 @@ impl DataTableState {
             .collect();
         if string_cols.is_empty() {
             self.error = Some(PolarsError::ComputeError(
-                "Fuzzy search requires at least one string column".into(),
+                "Search needs at least one text column".into(),
             ));
             return;
         }
@@ -9641,6 +9641,27 @@ mod tests {
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.fuzzy_search("x".to_string());
         assert!(state.error.is_some());
+    }
+
+    /// What the Search hint promises: every word's letters in order, in any text
+    /// column. Each word may match a different column; letters out of order do not.
+    #[test]
+    fn search_matches_every_words_letters_in_order_in_any_text_column() {
+        let rows = |query: &str| {
+            let lf = df!(
+                "name" => &["Smith", "Marion", "Smith"],
+                "city" => &["London", "London", "Paris"]
+            )
+            .unwrap()
+            .lazy();
+            let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+            state.fuzzy_search(query.to_string());
+            assert!(state.error.is_none(), "{:?}", state.error);
+            state.lf.clone().collect().unwrap().height()
+        };
+        assert_eq!(rows("smth"), 2, "letters in order, not adjacent, any case");
+        assert_eq!(rows("smth ldn"), 1, "every word, each in its own column");
+        assert_eq!(rows("htims"), 0, "letters out of order");
     }
 
     /// By-queries must produce results sorted by the group columns (age_group, then team)

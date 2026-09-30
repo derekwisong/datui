@@ -13,7 +13,7 @@ Keys:
   F1:               Show this help (works from the input)
   Esc:              Close
 
-/ opens on SQL, or on the mode of the query that is running.
+/ opens on SQL, or on the active query's mode.
 [query] default_mode in the config chooses another starting mode.
 
 Running a query — or clearing one — starts a fresh view: sidebar filters,
@@ -25,10 +25,11 @@ SQL:
   Example: SELECT city, count(*) FROM df GROUP BY city
 
 Search:
-  Rows containing all words, in any text column. A word matches when a
-  text column holds its characters in order, not necessarily adjacent, so
-  "smth" finds "Smith". Case-insensitive; needs at least one text column.
-  Reopened after a search, the prompt shows how many rows matched.
+  Every word's letters in order, in any text column. A row matches when,
+  for each word, one of its text columns holds that word's letters in
+  order, not necessarily adjacent, so "smth" finds "Smith". Matching is
+  case-insensitive and needs at least one text column. Reopened after a
+  search, the prompt shows how many rows matched.
 
 q-style:
   A subset of the q language, datui's own: it evaluates right to left and

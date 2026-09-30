@@ -1,14 +1,14 @@
 # Queries and search
 
 Press <kbd>/</kbd> to open the query prompt. It opens on **SQL**, or on the
-mode of the query that is running when you edit one.
+active query's mode when you edit one.
 <kbd>Ctrl</kbd>+<kbd>T</kbd> switches mode without leaving the input;
 <kbd>Tab</kbd> moves to the tab bar, where <kbd>←</kbd> <kbd>→</kbd> switch too.
 
 | Mode | What you type | Example |
 |---|---|---|
 | **SQL** | SQL over the table named `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
-| **Search** | Words; rows containing all of them, in any text column | `smith london` |
+| **Search** | Words; each word's letters in order, in any text column | `smth london` |
 | **q-style** | Datui's short language, a subset of q, described below | `select name, salary by dept where salary > 100000` |
 
 <kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>

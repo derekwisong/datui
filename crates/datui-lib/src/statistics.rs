@@ -834,24 +834,58 @@ pub(crate) fn analysis_rows_watched(
     polars_streaming: bool,
     watch: Option<&crate::sampling::ReadWatch>,
 ) -> Result<AnalysisRows> {
-    let Some(n) = sample_rows.filter(|n| *n > 0) else {
-        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
-        let total_rows = df.height();
-        return Ok(AnalysisRows {
+    sample_rows_counting(
+        lf,
+        sample_rows,
+        known_total,
+        seed,
+        polars_streaming,
+        watch,
+        None,
+    )
+    .map(|read| read.rows)
+}
+
+/// [`analysis_rows_watched`], keeping where each row sat, and counting every row by
+/// `count` when the read sees every row: a streamed pass, or a table read whole
+/// because it is under twice the sample. Seeded runs see too few rows to count, and
+/// a read of the whole scope is not a sample, so neither counts.
+pub(crate) fn sample_rows_counting(
+    lf: &LazyFrame,
+    sample_rows: Option<usize>,
+    known_total: Option<usize>,
+    seed: u64,
+    polars_streaming: bool,
+    watch: Option<&crate::sampling::ReadWatch>,
+    count: Option<&Expr>,
+) -> Result<crate::sampling::SampledRows> {
+    let whole = |df: DataFrame, total_rows: usize| crate::sampling::SampledRows {
+        positions: (0..df.height() as IdxSize).collect(),
+        rows: AnalysisRows {
             df,
             total_rows,
             sample_size: None,
             per_value: None,
-        });
+        },
+        counted: None,
+    };
+    let Some(n) = sample_rows.filter(|n| *n > 0) else {
+        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
+        let total_rows = df.height();
+        return Ok(whole(df, total_rows));
     };
     if !slices_reach_into_the_scan(lf) {
-        let (df, total_rows) = stream_sample(lf, n, seed, watch)?;
-        let sample_size = (total_rows > n).then_some(df.height());
-        return Ok(AnalysisRows {
-            df,
-            total_rows,
-            sample_size,
-            per_value: None,
+        let read = stream_sample(lf, n, seed, watch, count)?;
+        let sample_size = (read.seen > n).then_some(read.df.height());
+        return Ok(crate::sampling::SampledRows {
+            rows: AnalysisRows {
+                df: read.df,
+                total_rows: read.seen,
+                sample_size,
+                per_value: None,
+            },
+            positions: read.positions,
+            counted: read.counted,
         });
     }
     let total_rows = match known_total {
@@ -860,19 +894,18 @@ pub(crate) fn analysis_rows_watched(
     };
     if total_rows <= n {
         let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
-        return Ok(AnalysisRows {
-            df,
-            total_rows,
-            sample_size: None,
-            per_value: None,
-        });
+        return Ok(whole(df, total_rows));
     }
-    let df = block_sample(lf, total_rows, n, seed, polars_streaming, watch)?;
-    Ok(AnalysisRows {
-        sample_size: Some(df.height()),
-        df,
-        total_rows,
-        per_value: None,
+    let read = block_sample(lf, total_rows, n, seed, polars_streaming, watch, count)?;
+    Ok(crate::sampling::SampledRows {
+        rows: AnalysisRows {
+            sample_size: Some(read.df.height()),
+            df: read.df,
+            total_rows,
+            per_value: None,
+        },
+        positions: read.positions,
+        counted: read.counted,
     })
 }
 
@@ -917,19 +950,39 @@ fn block_sample(
     seed: u64,
     polars_streaming: bool,
     watch: Option<&crate::sampling::ReadWatch>,
-) -> Result<DataFrame> {
+    count: Option<&Expr>,
+) -> Result<StreamRead> {
     // Under twice the sample, reading the table is about as cheap as reading runs of
     // it, and runs that must fit side by side would crowd or overlap. Read it and keep
-    // a seeded uniform `n` of it instead.
+    // a seeded uniform `n` of it instead, counting `count`'s key from the rows read.
     if total_rows < 2 * n {
         let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
+        let counted = match count {
+            Some(key) => {
+                let mut keys = df
+                    .clone()
+                    .lazy()
+                    .select([key.clone().alias(crate::sampling::COUNT_KEY)])
+                    .collect()?;
+                let mut counter = crate::sampling::KeyCounter::default();
+                counter.observe(&mut keys)?;
+                Some(counter.finish())
+            }
+            None => None,
+        };
         let mut ranked: Vec<(u64, IdxSize)> = (0..df.height())
             .map(|i| (sample_rank(seed, i as u64), i as IdxSize))
             .collect();
         ranked.sort_unstable();
         let mut keep: Vec<IdxSize> = ranked.into_iter().take(n).map(|(_, i)| i).collect();
         keep.sort_unstable();
-        return Ok(df.take(&IdxCa::from_vec("sample".into(), keep))?);
+        let df = df.take(&IdxCa::from_vec("sample".into(), keep.clone()))?;
+        return Ok(StreamRead {
+            df,
+            seen: total_rows,
+            positions: keep,
+            counted,
+        });
     }
     let blocks = SAMPLE_BLOCKS.min(n).max(1);
     // Exactly `n` rows between the runs, so none is cut off the end, and each fits in
@@ -989,27 +1042,45 @@ fn block_sample(
     let mut read = read.into_iter().collect::<Result<Vec<_>>>()?;
     read.sort_by_key(|(block, _)| *block);
     let mut out: Option<DataFrame> = None;
-    for (_, rows) in read {
+    let mut positions = Vec::with_capacity(n);
+    for (block, rows) in read {
+        let offset = runs[block].0;
+        positions.extend((0..rows.height()).map(|row| (offset + row) as IdxSize));
         out = Some(match out {
             Some(frame) => frame.vstack(&rows)?,
             None => rows,
         });
     }
-    Ok(out.unwrap_or_default())
+    Ok(StreamRead {
+        df: out.unwrap_or_default(),
+        seen: total_rows,
+        positions,
+        counted: None,
+    })
 }
 
-/// A uniform sample of `n` rows from one streamed pass, and how many rows there were.
+/// What [`stream_sample`] or [`block_sample`] read.
+struct StreamRead {
+    df: DataFrame,
+    /// Rows in the scope.
+    seen: usize,
+    positions: Vec<IdxSize>,
+    counted: Option<crate::sampling::Counted>,
+}
+
+/// A uniform sample of `n` rows from one streamed pass, and how many rows there were,
+/// with every row counted by `count` on the way.
 fn stream_sample(
     lf: &LazyFrame,
     n: usize,
     seed: u64,
     watch: Option<&crate::sampling::ReadWatch>,
-) -> Result<(DataFrame, usize)> {
+    count: Option<&Expr>,
+) -> Result<StreamRead> {
     let state = std::sync::Arc::new(std::sync::Mutex::new(Reservoir::new(n, seed)));
     let callback_state = std::sync::Arc::clone(&state);
     let callback_watch = watch.cloned();
-    let sink = lf
-        .clone()
+    let sink = crate::sampling::with_count_key(lf.clone(), count)
         .with_row_index(SAMPLE_POSITION, None)
         .sink_batches(
             PlanCallback::new(move |batch: DataFrame| {
@@ -1034,18 +1105,29 @@ fn stream_sample(
     if let Some(watch) = watch {
         watch.check()?;
     }
-    let reservoir = std::mem::take(
+    let mut reservoir = std::mem::take(
         &mut *state
             .lock()
             .map_err(|_| Report::msg("sampler lock failed"))?,
     );
     let seen = reservoir.seen;
-    let df = match reservoir.finish()? {
-        Some(df) => df,
+    let counted = count
+        .is_some()
+        .then(|| std::mem::take(&mut reservoir.counter).finish());
+    let (df, positions) = match reservoir.finish()? {
+        Some(kept) => kept,
         // Nothing came through: an empty frame of the right shape.
-        None => collect_lazy(lf.clone().limit(0), true).map_err(Report::from)?,
+        None => (
+            collect_lazy(lf.clone().limit(0), true).map_err(Report::from)?,
+            Vec::new(),
+        ),
     };
-    Ok((df, seen))
+    Ok(StreamRead {
+        df,
+        seen,
+        positions,
+        counted,
+    })
 }
 
 /// The `n` rows with the lowest seeded rank seen so far. Held to at most twice `n`
@@ -1059,6 +1141,7 @@ struct Reservoir {
     ranks: Vec<u64>,
     /// Rows ranked at or above this cannot make the sample: `n` lower ones are held.
     bar: u64,
+    counter: crate::sampling::KeyCounter,
 }
 
 impl Reservoir {
@@ -1071,7 +1154,8 @@ impl Reservoir {
         }
     }
 
-    fn observe(&mut self, batch: DataFrame) -> PolarsResult<()> {
+    fn observe(&mut self, mut batch: DataFrame) -> PolarsResult<()> {
+        self.counter.observe(&mut batch)?;
         self.seen += batch.height();
         let positions = batch.column(SAMPLE_POSITION)?.idx()?;
         let mut picked = Vec::new();
@@ -1115,14 +1199,20 @@ impl Reservoir {
         Ok(())
     }
 
-    /// The sample, back in table order and without the position column.
-    fn finish(mut self) -> PolarsResult<Option<DataFrame>> {
+    /// The sample, back in table order without the position column, and where each
+    /// of its rows sat.
+    fn finish(mut self) -> PolarsResult<Option<(DataFrame, Vec<IdxSize>)>> {
         self.prune()?;
         let Some(kept) = self.kept else {
             return Ok(None);
         };
         let sorted = kept.sort([SAMPLE_POSITION], SortMultipleOptions::default())?;
-        Ok(Some(sorted.drop(SAMPLE_POSITION)?))
+        let positions = sorted
+            .column(SAMPLE_POSITION)?
+            .idx()?
+            .into_no_null_iter()
+            .collect();
+        Ok(Some((sorted.drop(SAMPLE_POSITION)?, positions)))
     }
 }
 
@@ -2627,6 +2717,42 @@ mod sampling_tests {
         assert!(rows.df.equals(&again.df));
         let other = analysis_rows(&lf, Some(5_000), None, 8, false).unwrap();
         assert!(!rows.df.equals(&other.df));
+    }
+
+    /// Seeded runs, and a table read whole because it is under twice the sample, say
+    /// where each kept row sat: the row's id, in a table whose id is its position.
+    /// The runs see too few rows to count; the whole read counts what it read.
+    #[test]
+    fn a_block_sample_says_where_its_rows_sat() {
+        let tens = (col("id") / lit(10_000i64)).alias("tens");
+        for (rows, n) in [(100_000, 5_000), (10_000, 6_000)] {
+            let dir = tempfile::tempdir().unwrap();
+            let lf = climbing(dir.path(), rows);
+            let read =
+                sample_rows_counting(&lf, Some(n), None, 7, false, None, Some(&tens)).unwrap();
+            let ids: Vec<IdxSize> = read
+                .rows
+                .df
+                .column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .map(|id| id as IdxSize)
+                .collect();
+            assert_eq!(ids.len(), n);
+            assert_eq!(ids, read.positions, "{rows} rows, n={n}");
+            if rows < 2 * n as i64 {
+                assert_eq!(
+                    read.counted,
+                    Some(crate::sampling::Counted::Totals(
+                        [(Some("0".to_string()), 10_000)].into()
+                    ))
+                );
+            } else {
+                assert_eq!(read.counted, None, "runs see too few rows to count");
+            }
+        }
     }
 
     /// Odd and small sizes: exactly `n` distinct rows, reaching the end of the table.

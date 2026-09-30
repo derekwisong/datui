@@ -29,6 +29,14 @@ Text as time:
   not read are counted as Unparsed times, never as
   missing.
 
+Reuse:
+  A run keeps the rows it read. Roles, text as time,
+  compare, row chunks and a coarser window of a
+  counted grain use them and read nothing; a new
+  partition or a finer window is counted once. A new
+  seed, size or scope reads a new sample. Read in
+  Setup says which, before Run.
+
 Time roles:
   ↑ / ↓:        Choose the role
   ← / →:        Choose its column

@@ -2913,6 +2913,302 @@ fn data_quality_reads_nothing_until_setup_runs() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
 }
 
+/// Run from Setup, handle events until the work is done, and return the stages
+/// that read the source, in order. Empty when the run read nothing.
+fn run_quality_reads(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+) -> Vec<datui::data_quality::QualityStage> {
+    let first = press(app, KeyCode::Enter);
+    assert!(
+        matches!(first, Some(AppEvent::AnalysisDataQualityCompute)),
+        "Enter runs"
+    );
+    let mut reads = Vec::new();
+    let mut handle = |app: &mut App, event: AppEvent| {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            if let AppEvent::BackgroundQualityPhase { generation, phase } = &event
+                && *generation == app.task_generation()
+                && phase.reads_source
+            {
+                reads.push(phase.stage);
+            }
+            next = app.event(&event);
+        }
+    };
+    handle(app, first.unwrap());
+    while let Some(event) = next_event(app, rx) {
+        handle(app, event);
+    }
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    reads
+}
+
+/// Each edit reads only what it must, counted by the stages of each run that read
+/// the source: #415's "What edits should cost", on a CSV the sampler streams. The
+/// first daily run counts its days in the pass that samples. Roles, a coarser window
+/// the days nest in, and row chunks read nothing. A partition is counted once. A new
+/// seed, size or scope is a new sample, and an earlier seed's rows are still here.
+/// Setup says each of these before Run.
+#[test]
+fn data_quality_edits_read_only_what_they_must() {
+    use datui::data_quality::{
+        QualityGrain, QualityScope, QualityStage, TemporalRole, TemporalRoleAssignment,
+    };
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_reuse_reads.csv");
+    // Every 97 minutes from 2024-01-01, across weeks and months.
+    let minute = 60_000_000i64;
+    let start = 1_704_067_200_000_000i64;
+    let micros = |offset: i64| {
+        (0..3_000i64)
+            .map(|row| start + row * 97 * minute + offset)
+            .collect::<Vec<_>>()
+    };
+    let datetime = DataType::Datetime(TimeUnit::Microseconds, None);
+    let mut df = df!(
+        "id" => (0..3_000i64).collect::<Vec<_>>(),
+        "at" => micros(0),
+        "sent" => micros(40_000_000),
+        "region" => (0..3_000).map(|row| ["North", "South", "East"][row % 3]).collect::<Vec<_>>(),
+    )
+    .unwrap()
+    .lazy()
+    .with_columns([col("at").cast(datetime.clone()), col("sent").cast(datetime)])
+    .collect()
+    .unwrap();
+    CsvWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    let setup = |app: &mut App| {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let window = |every: &str| QualityGrain::TimeWindows {
+        column: "at".into(),
+        every: every.into(),
+    };
+    let seed = app.analysis_modal.data_quality_plan.sample_seed;
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.dataset_rows = 300;
+        plan.grain = window("1d");
+    }
+    assert!(setup(&mut app).contains("Counts every row by at in that pass"));
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [QualityStage::ReadingSample],
+        "one pass samples and counts the days"
+    );
+
+    // Edits that change only the report.
+    let edit = |app: &mut App, change: &dyn Fn(&mut datui::data_quality::DataQualityPlan)| {
+        press(app, KeyCode::Char('e'));
+        change(&mut app.analysis_modal.data_quality_plan);
+    };
+    edit(&mut app, &|plan| {
+        plan.temporal_roles = vec![
+            TemporalRoleAssignment {
+                role: TemporalRole::Event,
+                column: "at".into(),
+                timezone: None,
+            },
+            TemporalRoleAssignment {
+                role: TemporalRole::Received,
+                column: "sent".into(),
+                timezone: None,
+            },
+        ]
+    });
+    let text = setup(&mut app);
+    assert!(text.contains("Uses the rows a run already read"), "{text}");
+    assert!(text.contains("Segment totals from a count already read"));
+    assert!(run_quality_reads(&mut app, &rx).is_empty(), "a role edit");
+    assert!(
+        !app.analysis_modal
+            .data_quality_results
+            .as_ref()
+            .unwrap()
+            .temporal
+            .is_empty()
+    );
+    edit(&mut app, &|plan| plan.grain = window("1w"));
+    assert!(setup(&mut app).contains("summed from the daily counts already read"));
+    assert!(
+        run_quality_reads(&mut app, &rx).is_empty(),
+        "weeks from days"
+    );
+    edit(&mut app, &|plan| plan.grain = QualityGrain::RowChunks(500));
+    assert!(run_quality_reads(&mut app, &rx).is_empty(), "row chunks");
+    edit(&mut app, &|plan| {
+        plan.grain = QualityGrain::Partition("region".into())
+    });
+    assert!(setup(&mut app).contains("Plus one count of region"));
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [QualityStage::CountingSegments],
+        "a partition is counted once"
+    );
+
+    // Other rows: a new sample, counted in its pass.
+    for change in [
+        &(|plan: &mut datui::data_quality::DataQualityPlan| plan.sample_seed = 7)
+            as &dyn Fn(&mut datui::data_quality::DataQualityPlan),
+        &|plan| plan.dataset_rows = 400,
+        &|plan| plan.scope = QualityScope::FirstRows(2_000),
+    ] {
+        edit(&mut app, change);
+        let text = setup(&mut app);
+        assert!(
+            text.contains("One pass that streams every eligible row"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Counts every row by region in that pass"),
+            "{text}"
+        );
+        assert_eq!(
+            run_quality_reads(&mut app, &rx),
+            [QualityStage::ReadingSample]
+        );
+    }
+
+    // The first sample's rows are still held, with their counts.
+    edit(&mut app, &|plan| {
+        plan.scope = QualityScope::CurrentView;
+        plan.dataset_rows = 300;
+        plan.sample_seed = seed;
+        plan.grain = window("1mo");
+    });
+    let text = setup(&mut app);
+    assert!(text.contains("Uses the rows a run already read"), "{text}");
+    assert!(
+        text.contains("summed from the daily counts already read"),
+        "{text}"
+    );
+    assert!(
+        run_quality_reads(&mut app, &rx).is_empty(),
+        "an earlier seed"
+    );
+}
+
+/// On one Parquet file the sampler reads seeded runs, which see too few rows to
+/// count segments, so the run counts them in a pass of its own, and Setup says so
+/// before Run: a sort leaves the unsorted scan the sample reads, and the whole
+/// source is read as loaded whatever the view shows. A filtered view streams, and
+/// counts in that pass.
+#[test]
+fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
+    use datui::data_quality::{QualityGrain, QualityScope, QualityStage};
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_reuse_blocks.parquet");
+    let minute = 60_000_000i64;
+    let start = 1_704_067_200_000_000i64;
+    let mut df = df!(
+        "id" => (0..20_000i64).collect::<Vec<_>>(),
+        "at" => (0..20_000i64).map(|row| start + row * 97 * minute).collect::<Vec<_>>(),
+    )
+    .unwrap()
+    .lazy()
+    .with_column(col("at").cast(DataType::Datetime(TimeUnit::Microseconds, None)))
+    .collect()
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let setup = |app: &mut App| {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
+    let filtered = || {
+        AppEvent::Filter(vec![FilterStatement {
+            column: "id".into(),
+            operator: FilterOperator::Gt,
+            value: "10".into(),
+            logical_op: LogicalOperator::And,
+        }])
+    };
+    for (name, view, scope, blocks) in [
+        ("as loaded", None, QualityScope::CurrentView, true),
+        ("sorted", Some(sorted()), QualityScope::CurrentView, true),
+        ("sorted", Some(sorted()), QualityScope::WholeSource, true),
+        (
+            "filtered",
+            Some(filtered()),
+            QualityScope::WholeSource,
+            true,
+        ),
+        (
+            "filtered",
+            Some(filtered()),
+            QualityScope::CurrentView,
+            false,
+        ),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        if let Some(view) = &view {
+            let mut next = app.event(view);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+            pump_until_idle(&mut app, &rx, &tx);
+        }
+        press(&mut app, KeyCode::Char('a'));
+        app.analysis_modal.sidebar_state.select(Some(3));
+        show_sample_form(&mut app);
+        {
+            let plan = &mut app.analysis_modal.data_quality_plan;
+            plan.dataset_rows = 300;
+            plan.scope = scope.clone();
+            plan.grain = QualityGrain::TimeWindows {
+                column: "at".into(),
+                every: "1d".into(),
+            };
+        }
+        let text = setup(&mut app);
+        let reads = run_quality_reads(&mut app, &rx);
+        if blocks {
+            assert!(
+                text.contains("Seeded runs of the file") && text.contains("Plus one count of at"),
+                "{name} {scope:?}: Setup said\n{text}"
+            );
+            assert_eq!(
+                reads,
+                [QualityStage::ReadingSample, QualityStage::CountingSegments],
+                "{name} {scope:?}"
+            );
+        } else {
+            assert!(
+                text.contains("One pass that streams")
+                    && text.contains("Counts every row by at in that pass"),
+                "{name} {scope:?}: Setup said\n{text}"
+            );
+            assert_eq!(reads, [QualityStage::ReadingSample], "{name} {scope:?}");
+        }
+    }
+}
+
 /// However Setup is reached, Esc discards what was staged in it: after Esc handed
 /// the cursor to the tools and Tab brought it back, and after a report tab key
 /// pressed in Setup, which does not leave it. A draft never rides out of Setup

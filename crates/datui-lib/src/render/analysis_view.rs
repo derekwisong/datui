@@ -170,8 +170,9 @@ fn render_body(
             let setup = data_quality::SetupView {
                 time_candidates: &candidates,
                 reuses_sample: app.quality_kept_serves(plan),
-                may_read_blocks: app.quality_may_read_blocks(plan),
-                counts_segments: app.quality_needs_segment_count(plan),
+                reads_blocks: app.quality_reads_blocks(plan),
+                segment_count: app.quality_segment_count(plan),
+                released: app.quality_released(plan),
                 cached: app.quality_cached(plan),
                 unchanged,
                 edited: app.analysis_modal.setup_edited(),

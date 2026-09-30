@@ -3,7 +3,7 @@ use crate::config::Theme;
 use crate::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison,
     QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityPrecision, QualityScope,
-    TemporalRole,
+    SegmentCount, TemporalRole, window_cadence,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -30,10 +30,13 @@ pub struct SetupView<'a> {
     pub time_candidates: &'a [String],
     /// A run would start from the rows the last run read.
     pub reuses_sample: bool,
-    /// A random sample may read seeded runs of one file instead of streaming it.
-    pub may_read_blocks: bool,
-    /// A run would count its segments' rows in a pass of its own.
-    pub counts_segments: bool,
+    /// A random sample reads seeded runs of one file instead of streaming it.
+    pub reads_blocks: bool,
+    /// Where a run gets exact segment totals: see [`SegmentCount`].
+    pub segment_count: SegmentCount,
+    /// The rows this draft's sample reads were read earlier and released to the
+    /// memory budget.
+    pub released: bool,
     /// The session cache holds this draft's report.
     pub cached: bool,
     /// The report on screen was measured with exactly this draft.
@@ -553,7 +556,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             full_passes(config)
         )),
         QualityCompute::Sample if view.reuses_sample => {
-            lines.push("Uses the rows the last run read: no source read".to_string());
+            lines.push("Uses the rows a run already read: no source read".to_string());
         }
         QualityCompute::Sample => lines.push(match &plan.method {
             crate::sampling::SampleMethod::FirstRows => {
@@ -565,23 +568,43 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
                 "Reads every row: the scope holds no more than the sample".to_string()
             }
-            _ if view.may_read_blocks => {
+            _ if view.reads_blocks => {
                 format!("Seeded runs of the file, about {n} rows, not a pass over it")
             }
             _ => format!("One pass that streams every eligible row, keeping a seeded {n}"),
         }),
     }
+    if plan.compute == QualityCompute::Sample && !view.reuses_sample && view.released {
+        lines.push("Read before; released to free memory, so read again".to_string());
+    }
     let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
-    if plan.compute == QualityCompute::Sample && view.counts_segments && !exact {
+    if plan.compute == QualityCompute::Sample && !exact {
         let column = match &plan.grain {
             QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => {
                 column.as_str()
             }
             _ => "",
         };
-        lines.push(format!(
-            "Plus one count of {column} for exact segment totals, kept for later runs"
-        ));
+        match &view.segment_count {
+            SegmentCount::CountPass => lines.push(format!(
+                "Plus one count of {column} for exact segment totals, kept for later runs"
+            )),
+            SegmentCount::InSamplePass => lines.push(format!(
+                "Counts every row by {column} in that pass: exact segment totals"
+            )),
+            SegmentCount::Retained => {
+                lines.push("Segment totals from a count already read: no read".to_string())
+            }
+            SegmentCount::RolledUp(finer) => lines.push(format!(
+                "Segment totals summed from the {} counts already read",
+                window_cadence(finer)
+            )),
+            SegmentCount::TooMany => lines.push(format!(
+                "Too many segments {} to count; choose a coarser grain",
+                plan.grain.label()
+            )),
+            SegmentCount::NotNeeded | SegmentCount::PerValue => {}
+        }
     }
     if plan.compute == QualityCompute::Sample {
         lines.push("Then measured in memory: no further reads".to_string());
@@ -590,14 +613,14 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         .map(numfmt::group_chrome)
         .unwrap_or_else(|| "unknown".to_string());
     let sampled = plan.compute == QualityCompute::Sample;
-    let read = if sampled && view.reuses_sample && view.counts_segments && !exact {
+    let read = if sampled && view.reuses_sample && view.segment_count.reads() && !exact {
         "the grain's column, for the count".to_string()
     } else if sampled && view.reuses_sample {
         "none".to_string()
     } else if state.is_remote_source() {
         "unknown".to_string()
     } else if sampled
-        && view.may_read_blocks
+        && view.reads_blocks
         && !exact
         && matches!(plan.method, crate::sampling::SampleMethod::Spread)
     {
@@ -2495,14 +2518,16 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
         QualityCompute::Full => format!("up to {}, one per check", full_passes(config)),
         QualityCompute::Sample => {
             let sample = if view.reuses_sample {
-                "none for the sample: the last run's rows"
+                "none for the sample: rows already read"
             } else {
                 "one sampling pass"
             };
-            if view.counts_segments {
-                format!("{sample}, then one count of the grain's column")
-            } else {
-                sample.to_string()
+            match view.segment_count {
+                SegmentCount::CountPass => {
+                    format!("{sample}, then one count of the grain's column")
+                }
+                SegmentCount::InSamplePass => format!("{sample}, counting the grain's rows"),
+                _ => sample.to_string(),
             }
         }
     }

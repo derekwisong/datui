@@ -469,7 +469,7 @@ pub fn percent(count: usize, of: usize) -> String {
     }
 }
 
-fn quoted(value: &str, width: usize) -> String {
+pub(crate) fn quoted(value: &str, width: usize) -> String {
     let text = format!("{value:?}");
     if crate::glyphs::display_width(&text) <= width {
         text

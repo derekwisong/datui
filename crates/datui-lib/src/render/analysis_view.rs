@@ -176,6 +176,7 @@ fn render_body(
                 confirm_run: modal.data_quality_confirm_run,
                 focus: modal.focus,
                 theme: &app.theme,
+                ctx,
             };
             Clear.render(area, buf);
             data_quality::render(

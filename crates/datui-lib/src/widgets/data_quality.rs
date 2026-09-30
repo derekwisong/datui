@@ -1,8 +1,9 @@
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll};
 use crate::config::Theme;
 use crate::data_quality::{
-    DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, QualityPrecision, QualityScope, TemporalRole,
+    ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison,
+    QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityPrecision, QualityScope,
+    TemporalRole,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -10,14 +11,15 @@ use crate::quality_report::{
     CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, advice, build_report, checks, describe,
     verdict,
 };
+use crate::render::context::RenderContext;
 use crate::widgets::datatable::DataTableState;
+use crate::widgets::ui::{Picker, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, StatefulWidget, Table, TableState,
-    Tabs, Widget, Wrap,
+    Cell, Paragraph, Row, StatefulWidget, Table, TableState, Tabs, Widget, Wrap,
 };
 
 pub struct DataQualityWidgetConfig<'a> {
@@ -46,6 +48,8 @@ pub struct DataQualityWidgetConfig<'a> {
     pub confirm_run: bool,
     pub focus: AnalysisFocus,
     pub theme: &'a Theme,
+    /// The dialogs' Surfaces and the table's number formatting.
+    pub ctx: &'a RenderContext,
 }
 
 /// The tool list's width: the width every analysis tool gives it, and none on a
@@ -847,39 +851,53 @@ fn render_finding_detail(
             lines.push(Line::styled(rows, dimmed));
         }
     }
-    // Grow with the text up to the screen, then scroll inside the frame; the
-    // bottom edge counts what is below.
+    // Grow with the text up to the screen, then scroll inside the frame; the last
+    // row counts what is below.
     let rows = lines
         .iter()
         .map(|line| crate::render::home_view::wrapped_rows(line, inner as usize))
         .sum::<usize>()
         .min(u16::MAX as usize) as u16;
     let height = (rows + 2).min(area.height.saturating_sub(2));
-    scroll.max = rows.saturating_sub(height.saturating_sub(2));
+    let room = height.saturating_sub(2);
+    scroll.max = rows.saturating_sub(room);
     scroll.offset = scroll.offset.min(scroll.max);
-    let below = scroll.max - scroll.offset;
+    // Short of the end, the last row counts what is below instead of showing text.
+    let shown = if scroll.offset < scroll.max {
+        room.saturating_sub(1)
+    } else {
+        room
+    };
+    let below = rows.saturating_sub(scroll.offset + shown);
     let popup = centered_rect(width, height, area);
-    Clear.render(popup, buf);
-    let mut block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_set(crate::glyphs::get().border)
-        .border_style(Style::default().fg(theme.get("modal_border_active")))
-        .padding(ratatui::widgets::Padding::horizontal(1));
-    if below > 0 {
-        block = block.title_bottom(
-            Line::styled(
-                format!(" {} {below} more ", glyphs::get().ellipsis),
-                Style::default().fg(theme.get("dimmed")),
-            )
-            .right_aligned(),
-        );
-    }
+    let content = Surface::new(&title)
+        .border_style(Style::default().fg(config.ctx.modal_border_active))
+        .render(popup, buf, config.ctx);
     Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((scroll.offset, 0))
-        .block(block)
-        .render(popup, buf);
+        .render(
+            Rect {
+                height: shown.min(content.height),
+                ..content
+            },
+            buf,
+        );
+    if below > 0 && content.height > shown {
+        Paragraph::new(Line::styled(
+            format!("{} {below} more", glyphs::get().ellipsis),
+            dimmed,
+        ))
+        .alignment(Alignment::Right)
+        .render(
+            Rect {
+                y: content.y + shown,
+                height: 1,
+                ..content
+            },
+            buf,
+        );
+    }
 }
 
 fn render_time_roles(
@@ -1151,7 +1169,8 @@ fn render_segments(
         .margin(1)
         .split(area);
     if config.plan.grain == QualityGrain::Dataset {
-        render_section_title("SEGMENTS", sections[0], theme, buf);
+        Paragraph::new(rule_line("Segments", Some("1"), sections[0].width, theme))
+            .render(sections[0], buf);
         Paragraph::new(
             "The rows are one segment. Set the plan's Grain to split them by file, \
              partition, row chunk or time window, and compare the parts.",
@@ -1384,8 +1403,9 @@ fn render_trends(
         return;
     };
     let show_trend = crate::data_quality::shows_trend(config.plan, results);
+    // The rule, a blank, and the note saying what fills it, wrapped.
     let latency_height = if results.temporal.is_empty() {
-        4
+        5
     } else {
         (results.temporal.len() as u16 + 4).min(12)
     };
@@ -1402,7 +1422,13 @@ fn render_trends(
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(2), Constraint::Fill(1)])
             .areas(parts[0]);
-        render_section_title("ACROSS SEGMENTS", title, config.theme, buf);
+        Paragraph::new(rule_line(
+            "Across segments",
+            None,
+            title.width,
+            config.theme,
+        ))
+        .render(title, buf);
         Paragraph::new(
             "Set the plan's Grain to a partition column, to days, weeks or months of a \
              date, or to chunks of rows, to follow each column from one to the next.",
@@ -1420,7 +1446,15 @@ fn render_trends(
             Constraint::Fill(1),
         ])
         .split(parts[1]);
-    render_section_title("TIME BETWEEN DATES", sections[2], config.theme, buf);
+    let intervals =
+        (!results.temporal.is_empty()).then(|| numfmt::group_chrome(results.temporal.len()));
+    Paragraph::new(rule_line(
+        "Time between dates",
+        intervals.as_deref(),
+        sections[2].width,
+        config.theme,
+    ))
+    .render(sections[2], buf);
     if results.temporal.is_empty() {
         let message = if config
             .state
@@ -1678,6 +1712,8 @@ fn duration_label(seconds: Option<i64>) -> String {
     }
 }
 
+/// One column's findings, then its measurements, as aligned label and value rows
+/// on the page, the way the Plan page lays out its fields.
 fn render_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -1695,92 +1731,243 @@ fn render_detail(
             .render(area, buf);
         return;
     };
+    let theme = config.theme;
+    let [title, body] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .margin(1)
+        .areas(area);
+    Paragraph::new(rule_line(&profile.name, None, title.width, theme)).render(title, buf);
+
     // The column's findings first, in the report's own words; the measurements
     // under them are the evidence.
     let report = build_report(results);
-    // The frame's title names the column.
-    let mut text = vec![Line::styled(
-        format!("Type: {}", profile.dtype),
-        Style::default().fg(config.theme.get("dimmed")),
-    )];
-    let findings = report
+    let mut findings = report
         .findings
         .iter()
         .filter(|finding| finding.kind.is_some() && finding.columns.contains(&profile.name))
+        .map(|finding| FieldRow {
+            mark: Some(severity_mark(finding.severity, theme)),
+            label: finding.title.to_string(),
+            value: finding.summary.clone(),
+        })
         .collect::<Vec<_>>();
     if findings.is_empty() {
-        text.push(Line::from(vec![
-            severity_mark(Severity::Clean, config.theme),
-            Span::raw(" No findings"),
-        ]));
+        findings.push(FieldRow {
+            mark: Some(severity_mark(Severity::Clean, theme)),
+            label: "No findings".to_string(),
+            value: String::new(),
+        });
     }
-    for finding in findings {
-        text.push(Line::from(vec![
-            severity_mark(finding.severity, config.theme),
-            Span::raw(format!(" {}: {}", finding.title, finding.summary)),
-        ]));
+    let measurements = detail_measurements(config.ctx, results, profile);
+    let label_width = findings
+        .iter()
+        .chain(&measurements)
+        .map(|row| glyphs::display_width(&row.label))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    // A reading surface: values wrap at a comfortable measure on a wide terminal.
+    let width = (body.width as usize).min(DETAIL_MEASURE);
+    let mut lines = field_lines(&findings, label_width, width, true);
+    lines.push(Line::raw(""));
+    lines.extend(field_lines(&measurements, label_width, width, true));
+    render_counted(lines, body, theme, buf);
+}
+
+/// The widest a reading surface's text runs, however wide the terminal.
+const DETAIL_MEASURE: usize = 100;
+
+/// The most of one value the Detail page shows: a range's end, the most common
+/// value, a spelling.
+const END_WIDTH: usize = 32;
+
+/// A label and its value on one row, with an optional mark in the lead.
+struct FieldRow {
+    mark: Option<Span<'static>>,
+    label: String,
+    value: String,
+}
+
+/// Rows in two aligned columns: the label padded to `label_width`, and the value
+/// in what is left, wrapped under itself; a value of several lines keeps each on
+/// its own. With `marks`, a two-column lead holds each row's mark, or nothing.
+fn field_lines(
+    rows: &[FieldRow],
+    label_width: usize,
+    width: usize,
+    marks: bool,
+) -> Vec<Line<'static>> {
+    let lead = if marks { 2 } else { 0 };
+    let value_width = width.saturating_sub(lead + label_width).max(8);
+    let mut lines = Vec::new();
+    for row in rows {
+        let mut values = row
+            .value
+            .lines()
+            // A value that fits is kept as written: wrapping splits on whitespace
+            // and would drop the leading, trailing or doubled spaces a value holds.
+            .flat_map(|line| {
+                if glyphs::display_width(line) <= value_width {
+                    vec![line.to_string()]
+                } else {
+                    crate::widgets::info::wrap_to(line, value_width)
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let mut spans = Vec::new();
+        if marks {
+            spans.push(row.mark.clone().unwrap_or_else(|| Span::raw(" ")));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(format!(
+            "{}{}",
+            row.label,
+            " ".repeat(label_width.saturating_sub(glyphs::display_width(&row.label)))
+        )));
+        spans.extend(
+            values
+                .next()
+                .map(|value| Span::raw(fit(&value, value_width))),
+        );
+        lines.push(Line::from(spans));
+        lines.extend(values.map(|value| {
+            Line::raw(format!(
+                "{}{}",
+                " ".repeat(lead + label_width),
+                fit(&value, value_width)
+            ))
+        }));
     }
-    text.push(Line::raw(""));
-    text.extend([
-        Line::raw(format!(
-            "Evaluated: {} ({})",
-            numfmt::group_chrome(profile.evaluated_rows),
-            results.precision.label()
-        )),
-        Line::raw(format!(
-            "Missing: {} / {} ({:.2}%)",
-            numfmt::group_chrome(profile.null_count),
-            numfmt::group_chrome(profile.evaluated_rows),
-            profile.null_rate() * 100.0
-        )),
-        Line::raw(format!(
-            "Distinct: {}",
-            profile
-                .distinct_count
-                .map(numfmt::group_chrome)
-                .unwrap_or_else(|| "-".to_string())
-        )),
-    ]);
-    // A measurement that does not apply to this type is left out rather than
-    // printed as a dash, so what is on screen was actually measured.
+    lines
+}
+
+/// `lines` in `area`; when they run past it, the last row counts what is below
+/// rather than showing half of it.
+fn render_counted(mut lines: Vec<Line<'static>>, area: Rect, theme: &Theme, buf: &mut Buffer) {
+    let height = area.height as usize;
+    if lines.len() > height && height > 0 {
+        let below = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(Line::styled(
+            format!("  {} {below} more", glyphs::get().ellipsis),
+            Style::default().fg(theme.get("dimmed")),
+        ));
+    }
+    Paragraph::new(lines).render(area, buf);
+}
+
+/// What was measured on a column, in the table's own formatting. A measurement
+/// that does not apply to its type is left out rather than shown as a dash, and
+/// what the header says (the rows checked, whether sampled) is not repeated.
+fn detail_measurements(
+    ctx: &RenderContext,
+    results: &DataQualityResults,
+    profile: &ColumnQualityProfile,
+) -> Vec<FieldRow> {
+    // Long text is cut, so both ends of a range and a count after a value stay
+    // in view.
+    let value = |text: &str| fit(&table_value(ctx, profile, text), END_WIDTH);
+    let row = |label: &str, value: String| FieldRow {
+        mark: None,
+        label: label.to_string(),
+        value,
+    };
+    let mut rows = vec![
+        row("Type", profile.dtype.to_string()),
+        row(
+            "Missing",
+            if profile.null_count == 0 {
+                "0".to_string()
+            } else {
+                format!(
+                    "{} ({})",
+                    numfmt::group_chrome(profile.null_count),
+                    crate::quality_report::percent(profile.null_count, profile.evaluated_rows)
+                )
+            },
+        ),
+    ];
+    for (label, measured) in [
+        ("Distinct", profile.distinct_count),
+        ("Empty text", profile.empty_count),
+        ("Blank text", profile.whitespace_count),
+        ("NaN", profile.nan_count),
+    ] {
+        if let Some(measured) = measured {
+            rows.push(row(label, numfmt::group_chrome(measured)));
+        }
+    }
+    if profile.positive_infinity_count.is_some() || profile.negative_infinity_count.is_some() {
+        rows.push(row(
+            "Infinite",
+            format!(
+                "{} positive, {} negative",
+                count_label(profile.positive_infinity_count),
+                count_label(profile.negative_infinity_count)
+            ),
+        ));
+    }
     if profile.min.is_some() || profile.max.is_some() {
-        text.push(Line::raw(format!(
-            "Range: {} .. {}",
-            profile.min.as_deref().unwrap_or("-"),
-            profile.max.as_deref().unwrap_or("-")
-        )));
+        rows.push(row(
+            "Range",
+            format!(
+                "{} to {}",
+                profile.min.as_deref().map(value).unwrap_or_default(),
+                profile.max.as_deref().map(value).unwrap_or_default()
+            ),
+        ));
     }
-    if let Some((value, count)) = profile.dominant_value.as_ref().zip(profile.dominant_count) {
-        text.push(Line::raw(format!(
-            "Most common: {value:?}, {} {}",
-            numfmt::group_chrome(count),
-            if count == 1 { "row" } else { "rows" }
-        )));
+    if let Some((dominant, count)) = profile.dominant_value.as_ref().zip(profile.dominant_count) {
+        rows.push(row(
+            "Most common",
+            format!(
+                "{}, {} {}",
+                value(dominant),
+                numfmt::group_chrome(count),
+                if count == 1 { "row" } else { "rows" }
+            ),
+        ));
     }
     if profile.min_length.is_some() || profile.max_length.is_some() {
-        text.push(Line::raw(format!(
-            "{} length: {} .. {}",
+        rows.push(row(
             if matches!(profile.dtype, polars::prelude::DataType::List(_)) {
-                "List"
+                "List length"
             } else {
-                "Text"
+                "Text length"
             },
-            count_label(profile.min_length),
-            count_label(profile.max_length)
-        )));
+            format!(
+                "{} to {}",
+                count_label(profile.min_length),
+                count_label(profile.max_length)
+            ),
+        ));
     }
-    if profile.integer_parse_count.is_some()
-        || profile.decimal_parse_count.is_some()
-        || profile.date_parse_count.is_some()
-        || profile.datetime_parse_count.is_some()
-    {
-        text.push(Line::raw(format!(
-            "Text parses: integer {}  decimal {}  date {}  datetime {}",
-            count_label(profile.integer_parse_count),
-            count_label(profile.decimal_parse_count),
-            count_label(profile.date_parse_count),
-            count_label(profile.datetime_parse_count),
-        )));
+    // Only the parsers that accepted something: four zeros say less than "none".
+    let parses = [
+        ("integer", profile.integer_parse_count),
+        ("decimal", profile.decimal_parse_count),
+        ("date", profile.date_parse_count),
+        ("datetime", profile.datetime_parse_count),
+    ];
+    if parses.iter().any(|(_, count)| count.is_some()) {
+        let found = parses
+            .iter()
+            .filter_map(|(parser, count)| {
+                count
+                    .filter(|count| *count > 0)
+                    .map(|count| format!("{parser} {}", numfmt::group_chrome(count)))
+            })
+            .collect::<Vec<_>>();
+        rows.push(row(
+            "Parses as",
+            if found.is_empty() {
+                "none".to_string()
+            } else {
+                found.join(", ")
+            },
+        ));
     }
     for group in results
         .category_variants
@@ -1788,26 +1975,49 @@ fn render_detail(
         .filter(|group| group.column == profile.name)
         .take(3)
     {
-        text.push(Line::raw(format!(
-            "Category {:?}: {}",
-            group.normalized,
+        // Spellings differ by case and by spaces the table does not show, so they are
+        // quoted as the finding quotes them: "West " and "West" read apart.
+        rows.push(row(
+            "Spellings",
             group
                 .variants
                 .iter()
-                .map(|(value, count)| format!("{value:?} ({count})"))
+                .map(|(variant, count)| {
+                    format!(
+                        "{} ({})",
+                        crate::quality_report::quoted(variant, END_WIDTH),
+                        numfmt::group_chrome(*count)
+                    )
+                })
                 .collect::<Vec<_>>()
-                .join(", ")
-        )));
+                .join("\n"),
+        ));
     }
-    Paragraph::new(text)
-        .block(
-            Block::default()
-                .title(profile.name.as_str())
-                .borders(Borders::ALL)
-                .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
-        )
-        .render(area, buf);
+    rows
+}
+
+/// A value the profile holds as text, formatted as the table formats its column:
+/// grouped, or to fixed places, when the number format says so; as-is otherwise.
+fn table_value(ctx: &RenderContext, profile: &ColumnQualityProfile, text: &str) -> String {
+    use polars::prelude::{AnyValue, DataType};
+    let formatter = ctx
+        .number_format
+        .formatter_for(&profile.name, &profile.dtype);
+    if formatter.is_passthrough() {
+        return text.to_string();
+    }
+    let parsed = match profile.dtype {
+        DataType::Float32 | DataType::Float64 => text.parse::<f64>().ok().map(AnyValue::Float64),
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+            text.parse::<u64>().ok().map(AnyValue::UInt64)
+        }
+        _ => text.parse::<i64>().ok().map(AnyValue::Int64),
+    };
+    parsed
+        .map(|parsed| {
+            numfmt::format_any_value(&formatter, &parsed, &mut String::new()).into_owned()
+        })
+        .unwrap_or_else(|| text.to_string())
 }
 
 fn count_label(value: Option<usize>) -> String {
@@ -1832,171 +2042,124 @@ fn render_sidebar(
     );
 }
 
+/// The tool list, on a terminal too narrow to keep it beside the result.
 fn render_narrow_tool_picker(
     config: &DataQualityWidgetConfig<'_>,
     sidebar_state: &mut TableState,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let popup = centered_rect(32, 8, area);
-    Clear.render(popup, buf);
-    let tools = [
+    let tools = vec![
         "Describe",
         "Distribution Analysis",
         "Correlation Matrix",
         "Data Quality",
     ];
-    let items = tools
-        .iter()
-        .enumerate()
-        .map(|(index, label)| {
-            ListItem::new(*label).style(if sidebar_state.selected() == Some(index) {
-                config.theme.highlight_style()
-            } else {
-                Style::default().fg(config.theme.get("text_primary"))
-            })
-        })
-        .collect::<Vec<_>>();
-    Widget::render(
-        List::new(items).block(
-            Block::default()
-                .title("Analysis Tools")
-                .borders(Borders::ALL)
-                .border_set(crate::glyphs::get().border)
-                .border_style(Style::default().fg(config.theme.get("accent"))),
-        ),
-        popup,
-        buf,
-    );
+    let popup = centered_rect(28, tools.len() as u16 + 2, area);
+    let content = Surface::new("Analysis Tools").render(popup, buf, config.ctx);
+    Picker::new(tools, sidebar_state.selected(), true).render(content, buf, config.ctx);
 }
 
+/// What a run of the plan will read and write, before it runs.
 fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let popup = centered_rect(72, 16, area);
-    Clear.render(popup, buf);
-    let rows = planned_rows(config.state, config.plan);
-    let bytes = planned_read_label(config.state, config.plan);
-    let rows_label = match rows {
-        Some(rows) => numfmt::group_chrome(rows),
-        None => "unknown".to_string(),
+    let state = config.state;
+    let plan = config.plan;
+    let remote = state.is_remote_source();
+    let row = |label: &str, value: String| FieldRow {
+        mark: None,
+        label: label.to_string(),
+        value,
     };
-    let source = if config.state.is_remote_source() {
-        "remote source"
+    let source_files = if plan.scope.uses_source() {
+        Some(state.quality_source_file_count())
+            .filter(|count| *count > 0)
+            .or_else(|| state.source_file_count())
     } else {
-        "local source"
+        state.source_file_count()
     };
-    let request_count = if config.state.is_remote_source() {
-        "unknown".to_string()
-    } else {
-        "none".to_string()
-    };
-    let table_rows = vec![
-        Row::new(vec![Cell::from("Source"), Cell::from(source)]),
-        Row::new(vec![
-            Cell::from("Scope"),
-            Cell::from(config.plan.scope.label()),
-        ]),
-        Row::new(vec![
-            Cell::from("Grain"),
-            Cell::from(config.plan.grain.label()),
-        ]),
-        Row::new(vec![
-            Cell::from("Compute"),
-            Cell::from(compute_label(config.plan)),
-        ]),
-        Row::new(vec![Cell::from("Rows evaluated"), Cell::from(rows_label)]),
-        Row::new(vec![
-            Cell::from("Value reads"),
-            Cell::from(if config.state.is_remote_source() {
-                "unknown".to_string()
-            } else {
-                bytes
-            }),
-        ]),
-        Row::new(vec![Cell::from("Requests"), Cell::from(request_count)]),
-        Row::new(vec![
-            Cell::from("Known source files"),
-            Cell::from(
-                (if config.plan.scope.uses_source() {
-                    let count = config.state.quality_source_file_count();
-                    if count > 0 {
-                        Some(count)
-                    } else {
-                        config.state.source_file_count()
-                    }
-                } else {
-                    config.state.source_file_count()
-                })
+    let rows = [
+        row(
+            "Source",
+            if remote { "remote" } else { "local" }.to_string(),
+        ),
+        row("Scope", plan.scope.label()),
+        row("Grain", plan.grain.label()),
+        row("Sample", compute_label(plan)),
+        row(
+            "Rows evaluated",
+            planned_rows(state, plan)
                 .map(numfmt::group_chrome)
                 .unwrap_or_else(|| "unknown".to_string()),
-            ),
-        ]),
-        Row::new(vec![
-            Cell::from("Conflict values"),
-            Cell::from(match config.state.quality_conflict_reads() {
+        ),
+        row(
+            "Value reads",
+            if remote {
+                "unknown".to_string()
+            } else {
+                planned_read_label(state, plan)
+            },
+        ),
+        row(
+            "Requests",
+            if remote { "unknown" } else { "none" }.to_string(),
+        ),
+        row(
+            "Known source files",
+            source_files
+                .map(numfmt::group_chrome)
+                .unwrap_or_else(|| "unknown".to_string()),
+        ),
+        row(
+            "Conflict values",
+            match state.quality_conflict_reads() {
                 0 => "none: no file holds a column in an unreadable type".to_string(),
-                reads if config.plan.compute == QualityCompute::Full => {
+                reads if plan.compute == QualityCompute::Full => {
                     format!("{reads} extra one-column file reads")
                 }
                 reads => format!("not read; a full scan would add {reads} one-column file reads"),
-            }),
-        ]),
-        Row::new(vec![Cell::from("Remote writes"), Cell::from("none")]),
-        Row::new(vec![Cell::from("Local file writes"), Cell::from("none")]),
-        Row::new(vec![
-            Cell::from("Estimate basis"),
-            Cell::from("the shared sample; at most one read of the scope"),
-        ]),
-    ];
-    let table = Table::new(table_rows, [Constraint::Length(20), Constraint::Fill(1)]).block(
-        Block::default()
-            .title("Access Plan")
-            .borders(Borders::ALL)
-            .border_set(crate::glyphs::get().border)
-            .border_style(Style::default().fg(config.theme.get("accent"))),
-    );
-    Widget::render(table, popup, buf);
-}
-
-fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let popup = centered_rect(72, 10, area);
-    Clear.render(popup, buf);
-    Paragraph::new(vec![
-        Line::styled(
-            "Full value scan",
-            Style::default()
-                .fg(config.theme.get("warning"))
-                .add_modifier(Modifier::BOLD),
+            },
         ),
-        Line::raw(""),
-        Line::raw("This plan evaluates every eligible row and may read the full source."),
-        Line::raw("The source remains read-only; remote writes are 0 B."),
-        Line::raw(""),
-        Line::raw("Enter run    Esc cancel"),
-    ])
-    // The warning is the whole point of the dialog, so wrap it rather than cut it.
-    .wrap(Wrap { trim: true })
-    .block(
-        Block::default()
-            .title("Confirm Access")
-            .borders(Borders::ALL)
-            .border_set(crate::glyphs::get().border)
-            .border_style(Style::default().fg(config.theme.get("warning"))),
-    )
-    .render(popup, buf);
+        row("Remote writes", "none".to_string()),
+        row("Local file writes", "none".to_string()),
+        row(
+            "Estimate basis",
+            "the shared sample; at most one read of the scope".to_string(),
+        ),
+    ];
+    let width = 72.min(area.width.saturating_sub(2));
+    let label_width = rows
+        .iter()
+        .map(|row| glyphs::display_width(&row.label))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    // The frame and its gutters take four columns of the width.
+    let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
+    let popup = centered_rect(width, lines.len() as u16 + 2, area);
+    let content = Surface::new("Access Plan").render(popup, buf, config.ctx);
+    render_counted(lines, content, config.theme, buf);
 }
 
-fn render_section_title(title: &str, area: Rect, theme: &Theme, buf: &mut Buffer) {
-    let line = format!(
-        "{title} {}",
-        glyphs::get().rule_h.repeat(area.width as usize)
+/// A full scan asks first: it may read the whole source.
+fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
+    let width = 60.min(area.width.saturating_sub(2));
+    let lines = [
+        "This plan reads every eligible row and may read the whole source.",
+        "The source stays read-only; remote writes are 0 B.",
+    ]
+    .iter()
+    .flat_map(|text| crate::widgets::info::wrap_to(text, width.saturating_sub(4) as usize))
+    .collect::<Vec<_>>();
+    let popup = centered_rect(width, lines.len() as u16 + 2, area);
+    let content = Surface::new("Full Scan")
+        .border_style(Style::default().fg(config.ctx.modal_border_active))
+        .render(popup, buf, config.ctx);
+    render_counted(
+        lines.into_iter().map(Line::raw).collect(),
+        content,
+        config.theme,
+        buf,
     );
-    Paragraph::new(line)
-        .style(
-            Style::default()
-                .fg(theme.get("accent"))
-                .add_modifier(Modifier::BOLD),
-        )
-        .render(area, buf);
 }
 
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
@@ -2140,5 +2303,278 @@ mod tests {
         assert_eq!(approximate_bytes(512), "about 512 B");
         assert_eq!(approximate_bytes(2 * 1024), "about 2.0 KiB");
         assert_eq!(approximate_bytes(3 * 1024 * 1024), "about 3.0 MiB");
+    }
+
+    /// Every frame on these pages is a Surface; none is drawn by hand here.
+    #[test]
+    fn draws_no_border_of_its_own() {
+        assert!(!include_str!("data_quality.rs").contains(concat!("Borders", "::ALL")));
+    }
+
+    /// A value that fits keeps its spaces; one that does not wraps under itself.
+    #[test]
+    fn field_values_keep_their_spaces_and_wrap_under_themselves() {
+        let row = |value: &str| FieldRow {
+            mark: None,
+            label: "Range".to_string(),
+            value: value.to_string(),
+        };
+        let text = |lines: Vec<Line<'static>>| {
+            lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            text(field_lines(&[row(" South to New  York")], 7, 40, false)),
+            ["Range   South to New  York"]
+        );
+        assert_eq!(
+            text(field_lines(&[row("one two three four")], 7, 17, false)),
+            ["Range  one two", "       three four"]
+        );
+    }
+
+    use crate::data_quality::compute_data_quality;
+    use polars::prelude::*;
+
+    fn fixture() -> LazyFrame {
+        df!(
+            "id" => &[1i64, 2, 3, 4, 5, 6, 7, 8],
+            "region" => &[
+                Some("West"), Some("west"), Some("West"), Some("West "),
+                Some("East"), None, Some("North"), Some("West"),
+            ],
+            "amount" => &[1.5f64, 2.0, 3.25, 4.0, 5.0, 6.0, 7.0, 8.0],
+        )
+        .unwrap()
+        .lazy()
+    }
+
+    struct Screen {
+        state: DataTableState,
+        plan: DataQualityPlan,
+        results: DataQualityResults,
+        theme: Theme,
+        ctx: RenderContext,
+    }
+
+    impl Screen {
+        fn new() -> Self {
+            let lf = fixture();
+            let schema = Arc::new((*lf.clone().collect_schema().unwrap()).clone());
+            let state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                lf.clone(),
+                &crate::OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            let plan = DataQualityPlan {
+                compute: QualityCompute::Full,
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&lf, Some(8), &plan, None, false).unwrap();
+            Self {
+                state,
+                plan,
+                results,
+                theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
+                ctx: RenderContext::for_test(),
+            }
+        }
+
+        fn config(&self, page: QualityPage) -> DataQualityWidgetConfig<'_> {
+            DataQualityWidgetConfig {
+                first_run: false,
+                checks_expanded: false,
+                state: &self.state,
+                plan: &self.plan,
+                measured: &self.plan,
+                results: Some(&self.results),
+                from_cache: false,
+                metric: QualityMetric::NullRate,
+                column_index: 0,
+                segment_index: 0,
+                segments_by_change: false,
+                page,
+                pending: false,
+                plan_field: 0,
+                show_access: false,
+                observation_detail: false,
+                confirm_run: false,
+                focus: AnalysisFocus::Main,
+                theme: &self.theme,
+                ctx: &self.ctx,
+            }
+        }
+
+        fn draw(
+            &self,
+            config: DataQualityWidgetConfig<'_>,
+            selected: usize,
+            width: u16,
+            height: u16,
+        ) -> Vec<String> {
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            let mut table = TableState::default();
+            table.select(Some(selected));
+            let mut sidebar = TableState::default();
+            sidebar.select(Some(3));
+            render(
+                config,
+                &mut table,
+                &mut sidebar,
+                &mut DetailScroll::default(),
+                area,
+                &mut buf,
+            );
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect()
+        }
+    }
+
+    /// The column Detail page: the column on a rule, its findings, then its
+    /// measurements as label and value rows whose values start in one column.
+    /// No frame, no Rust debug quotes, nothing the header already says.
+    #[test]
+    fn column_detail_is_aligned_rows_without_a_box() {
+        let screen = Screen::new();
+        let region = screen
+            .results
+            .columns
+            .iter()
+            .position(|column| column.name == "region")
+            .unwrap();
+        // Narrow enough that the tool list gives way; the page is the whole width.
+        let rows = screen.draw(screen.config(QualityPage::Detail), region, 70, 24);
+        let text = rows.join("\n");
+        for corner in ['╭', '╮', '╰', '╯', '│'] {
+            assert!(!text.contains(corner), "no box on the page:\n{text}");
+        }
+        assert!(
+            rows.iter()
+                .any(|row| row.trim_start().starts_with("region ─")),
+            "the column is named on a rule:\n{text}"
+        );
+        assert!(
+            text.contains("Mixed spellings"),
+            "the column's findings are on the page:\n{text}"
+        );
+        let findings_end = rows
+            .iter()
+            .position(|row| row.contains("Mixed spellings"))
+            .unwrap();
+        let type_row = rows.iter().position(|row| row.contains("Type")).unwrap();
+        assert!(findings_end < type_row, "findings first:\n{text}");
+
+        // Every measurement's value starts where the first one's does.
+        let value_column = |label: &str| {
+            let row = rows
+                .iter()
+                .find(|row| row.trim_start().starts_with(label))
+                .unwrap_or_else(|| panic!("{label} row:\n{text}"));
+            let after = row.find(label).unwrap() + label.len();
+            after + row[after..].len() - row[after..].trim_start().len()
+        };
+        let column = value_column("Type");
+        for label in ["Missing", "Distinct", "Range", "Most common", "Spellings"] {
+            assert_eq!(value_column(label), column, "{label} aligned:\n{text}");
+        }
+
+        let spellings = rows
+            .iter()
+            .position(|row| row.contains("Spellings"))
+            .unwrap();
+        let measurements = rows[type_row..spellings].join("\n");
+        assert!(
+            !measurements.contains('"'),
+            "values as the table shows them, not debug quoted:\n{text}"
+        );
+        assert!(measurements.contains("West, 3 rows"), "{text}");
+        // Spellings differ by what the table cannot show; quoted, they read apart.
+        let spellings = rows[spellings..].join("\n");
+        for spelling in ["\"West\" (3)", "\"West \" (1)", "\"west\" (1)"] {
+            assert!(spellings.contains(spelling), "{spelling}:\n{text}");
+        }
+        assert!(
+            !text.contains("Evaluated") && !text.contains("sampled"),
+            "the header says what was evaluated:\n{text}"
+        );
+    }
+
+    /// Section titles are words on a rule, never SCREAMING.
+    #[test]
+    fn no_page_has_an_uppercase_title() {
+        let screen = Screen::new();
+        for page in [
+            QualityPage::Plan,
+            QualityPage::Overview,
+            QualityPage::Columns,
+            QualityPage::Segments,
+            QualityPage::Trends,
+            QualityPage::Detail,
+        ] {
+            for (width, height) in [(120, 32), (80, 24), (60, 20)] {
+                let rows = screen.draw(screen.config(page), 1, width, height);
+                for row in &rows {
+                    let shouting = row.split(|c: char| !c.is_alphabetic()).find(|word| {
+                        word.chars().count() >= 4 && word.chars().all(|c| c.is_uppercase())
+                    });
+                    assert!(
+                        shouting.is_none(),
+                        "{page:?} at {width}x{height} shouts {shouting:?}: {row:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each dialog is one Surface: one frame, its title on it, nothing boxed
+    /// inside, at the smallest size datui supports.
+    #[test]
+    fn dialogs_are_one_surface() {
+        let screen = Screen::new();
+        for title in [
+            "Access Plan",
+            "Full Scan",
+            "Mixed spellings",
+            "Analysis Tools",
+        ] {
+            for (width, height) in [(80, 24), (60, 20)] {
+                let mut config = screen.config(QualityPage::Plan);
+                match title {
+                    "Access Plan" => config.show_access = true,
+                    "Full Scan" => config.confirm_run = true,
+                    // The first finding on the Overview.
+                    "Mixed spellings" => {
+                        config.page = QualityPage::Overview;
+                        config.observation_detail = true;
+                    }
+                    _ => config.focus = AnalysisFocus::Sidebar,
+                }
+                let rows = screen.draw(config, 0, width, height);
+                let text = rows.join("\n");
+                let corners = text.matches('╭').count();
+                // At 80 columns the tool list keeps its own frame beside the page.
+                let expected = if width >= 76 && title != "Analysis Tools" {
+                    2
+                } else {
+                    1
+                };
+                assert_eq!(corners, expected, "{title} at {width}x{height}:\n{text}");
+                let frame = rows
+                    .iter()
+                    .find(|row| row.contains(&format!("╭{title}")))
+                    .unwrap_or_else(|| panic!("{title} on its frame:\n{text}"));
+                assert!(frame.contains('╮'), "{title}:\n{text}");
+            }
+        }
     }
 }

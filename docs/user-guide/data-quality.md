@@ -71,4 +71,4 @@ Missing-column and type-conflict findings describe the loaded source's
 footers, whatever rows the sample covers.
 
 See the [reference](../reference/data-quality.md) for the plan, keys, metric
-formulas and budgets, or the [key list](../reference/keyboard-shortcuts.md#analysis).
+formulas and sampling, or the [key list](../reference/keyboard-shortcuts.md#analysis).

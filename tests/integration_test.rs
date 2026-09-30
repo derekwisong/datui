@@ -1183,7 +1183,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
                 QualityPage::Columns => assert!(screen.contains("Findings")),
                 // One segment is no comparison: the page says what makes one.
                 QualityPage::Segments => assert!(screen.contains("one segment")),
-                QualityPage::Trends => assert!(screen.contains("TIME BETWEEN DATES")),
+                QualityPage::Trends => assert!(screen.contains("Time between dates")),
                 _ => {}
             }
         }
@@ -1231,7 +1231,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     for (page, expected) in [
         (QualityPage::Plan, "Time roles"),
         (QualityPage::TimeRoles, "Date and time columns"),
-        (QualityPage::Detail, "Missing:"),
+        (QualityPage::Detail, "Missing"),
     ] {
         app.analysis_modal.set_quality_page(page);
         for area in [
@@ -2066,6 +2066,13 @@ fn data_quality_reads_as_a_report() {
     )));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
     assert!(app.analysis_modal.data_quality_results.is_some());
+    // With the tool list focused the bar names its keys, not the page's.
+    let tab = AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.event(&tab);
+    let bar = bar_now(&mut app);
+    assert!(bar.contains("Select") && !bar.contains("Details"), "{bar}");
+    app.event(&tab);
+    assert!(bar_now(&mut app).contains("Details"));
 
     // The clean entry lists what was checked: the most important few, then all.
     for code in [KeyCode::End, KeyCode::Enter] {
@@ -5886,9 +5893,18 @@ fn test_abandoned_load_never_installs_itself_afterwards() {
         let mut steps = 0usize;
         let mut abandoned_at: Option<(Option<PathBuf>, bool)> = None;
         let mut ticks_since_abandon = 0usize;
+        // The loop waits on the chain and on the abandoned work, never on a tick
+        // count a loaded machine can outrun; the clock is only a safety net.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
 
-        for _tick in 0..200 {
-            steps += drain_like_main_loop(&mut app, &tx, &rx);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "abandon_after {abandon_after}: timed out, abandoned: {}",
+                abandoned_at.is_some()
+            );
+            let drained = drain_like_main_loop(&mut app, &tx, &rx);
+            steps += drained;
 
             // Abandon once the chain has taken `abandon_after` steps, or as soon as it
             // has finished if it was shorter than that — going home after a completed
@@ -5905,11 +5921,12 @@ fn test_abandoned_load_never_installs_itself_afterwards() {
             let mut buf = Buffer::empty(area);
             app.render(area, &mut buf);
 
-            // Long enough for the abandoned scan, schema and count to finish and be
-            // dropped; running the full 200 ticks on a million rows is pure wall clock.
+            // Done when the abandoned scan and schema have reported back and their
+            // results were handled: they had every chance to install themselves.
+            // A few ticks more give the unleased row count its chance too.
             if abandoned_at.is_some() {
                 ticks_since_abandon += 1;
-                if ticks_since_abandon >= 40 {
+                if ticks_since_abandon >= 40 && drained == 0 && !app.background_work_in_flight() {
                     break;
                 }
             }
@@ -5967,8 +5984,15 @@ fn test_abandoned_load_does_not_corrupt_the_next_open() {
     tx.send(AppEvent::Open(vec![small.clone()], OpenOptions::default()))
         .unwrap();
 
-    for _tick in 0..200 {
-        drain_like_main_loop(&mut app, &tx, &rx);
+    // Until the second open has settled and the abandoned work has reported back,
+    // however long a loaded machine takes; the clock is only a safety net.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    for tick in 0.. {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second open never settled"
+        );
+        let drained = drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         let needs = app
@@ -5982,6 +6006,15 @@ fn test_abandoned_load_does_not_corrupt_the_next_open() {
             .unwrap_or(false);
         if needs {
             app.spawn_async_collect("Loading buffer...");
+        }
+        let settled = drained == 0
+            && !needs
+            && !app.is_busy()
+            && !app.background_work_in_flight()
+            && !app.row_count_pending()
+            && app.data_table_state.is_some();
+        if tick >= 40 && settled {
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

@@ -250,19 +250,17 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     }
     if modal.data_quality_observation_detail {
         if modal.quality_selected_is_clean() {
-            return vec![
-                (
-                    "Enter",
-                    if modal.data_quality_checks_expanded {
-                        "Fewer Checks"
-                    } else {
-                        "All Checks"
-                    },
-                ),
-                ("Esc", "Back"),
-            ]
+            return vec![(
+                "Enter",
+                if modal.data_quality_checks_expanded {
+                    "Fewer Checks"
+                } else {
+                    "All Checks"
+                },
+            )]
             .into_iter()
             .chain((modal.data_quality_detail_scroll.max > 0).then_some((g.updown, "Scroll")))
+            .chain([("Esc", "Back")])
             .collect();
         }
         // Enter opens the rows when there are exact rows to open, and otherwise
@@ -275,14 +273,11 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
                 .and_then(|index| report.findings.get(index))
                 .is_some_and(|finding| finding.can_open_rows(results))
         });
-        let mut keys = if opens {
-            vec![("Enter", "Show Rows"), ("Esc", "Back")]
-        } else {
-            vec![("Enter", "Close"), ("Esc", "Back")]
-        };
+        let mut keys = vec![("Enter", if opens { "Show Rows" } else { "Close" })];
         if modal.data_quality_detail_scroll.max > 0 {
             keys.push((g.updown, "Scroll"));
         }
+        keys.push(("Esc", "Back"));
         return keys;
     }
     if modal.data_quality_picker.is_some() {
@@ -299,6 +294,18 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             (g.updown_lr, "Column"),
             ("Enter", "Done"),
             ("Esc", "Cancel"),
+        ];
+    }
+    // The tool list has the cursor, the narrow terminal's picker included: its keys
+    // are the list's, not the page's. Sample stays second, as on every tool's bar.
+    if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
+        return vec![
+            ("Esc", "Back"),
+            ("s", "Sample"),
+            ("Enter", "Select"),
+            (g.updown, "Tools"),
+            ("Tab", "Focus"),
+            ("?", "Help"),
         ];
     }
     // One shape on every page: the way out, then what this page is for, then the

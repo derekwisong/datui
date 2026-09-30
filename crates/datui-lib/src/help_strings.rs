@@ -100,4 +100,43 @@ mod tests {
             "the F toggle needs a description a user can search for"
         );
     }
+
+    /// Data Quality's help is short keyed tables: at 80 columns every line fits
+    /// the overlay as written, with no line folded under itself.
+    #[test]
+    fn data_quality_help_fits_the_overlay_at_80_columns() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let help = analysis_data_quality();
+        let ctx = crate::render::context::RenderContext::for_test();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut shown = Vec::new();
+        for scroll in 0..help.lines().count() {
+            let mut buf = Buffer::empty(area);
+            let mut at = scroll;
+            crate::render::overlays::render_help_overlay(
+                area,
+                &mut buf,
+                "Data Quality Help",
+                help,
+                &mut at,
+                &ctx,
+            );
+            shown.extend((0..area.height).map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            }));
+        }
+        for line in help.lines().filter(|line| !line.trim().is_empty()) {
+            assert!(
+                shown.iter().any(|row| row.contains(line.trim_end())),
+                "folded or cut at 80 columns: {line:?}"
+            );
+        }
+        assert!(
+            !help.to_lowercase().contains("budget"),
+            "there is no compute budget any more"
+        );
+    }
 }

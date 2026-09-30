@@ -14,7 +14,10 @@ use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView, Histogram
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::numfmt::{self, NumberFormatSettings};
-use crate::statistics::{AnalysisContext, AnalysisResults, DistributionAnalysis, DistributionType};
+use crate::statistics::{
+    AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics,
+    DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
+};
 use crate::widgets::datatable::DataTableState;
 use polars::prelude::{AnyValue, DataType};
 
@@ -631,54 +634,7 @@ fn render_statistics_table(
     // Scan all data to find maximum width needed for each column
     for col_stat in &results.column_statistics {
         for (stat_idx, stat_name) in stat_names.iter().enumerate() {
-            let value_str = match *stat_name {
-                "count" => format_count(col_stat.count, number_format),
-                "null_count" => format_count(col_stat.null_count, number_format),
-                "mean" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.mean))
-                    .unwrap_or_else(|| "-".to_string()),
-                "std" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.std))
-                    .unwrap_or_else(|| "-".to_string()),
-                "min" => {
-                    if let Some(ref num_stats) = col_stat.numeric_stats {
-                        format_num(num_stats.min)
-                    } else if let Some(ref cat_stats) = col_stat.categorical_stats {
-                        cat_stats.min.clone().unwrap_or_else(|| "-".to_string())
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                "25%" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.q25))
-                    .unwrap_or_else(|| "-".to_string()),
-                "50%" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.median))
-                    .unwrap_or_else(|| "-".to_string()),
-                "75%" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.q75))
-                    .unwrap_or_else(|| "-".to_string()),
-                "max" => {
-                    if let Some(ref num_stats) = col_stat.numeric_stats {
-                        format_num(num_stats.max)
-                    } else if let Some(ref cat_stats) = col_stat.categorical_stats {
-                        cat_stats.max.clone().unwrap_or_else(|| "-".to_string())
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                _ => "-".to_string(),
-            };
+            let value_str = describe_value(col_stat, stat_name, number_format);
             let value_len = value_str.chars().count() as u16;
             // Ensure width is at least the header length (already initialized) AND value length
             // This preserves header widths even if all data values are shorter
@@ -785,54 +741,7 @@ fn render_statistics_table(
         ];
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
-            let value = match stat_name {
-                "count" => format_count(col_stat.count, number_format),
-                "null_count" => format_count(col_stat.null_count, number_format),
-                "mean" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.mean))
-                    .unwrap_or_else(|| "-".to_string()),
-                "std" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.std))
-                    .unwrap_or_else(|| "-".to_string()),
-                "min" => {
-                    if let Some(ref num_stats) = col_stat.numeric_stats {
-                        format_num(num_stats.min)
-                    } else if let Some(ref cat_stats) = col_stat.categorical_stats {
-                        cat_stats.min.clone().unwrap_or_else(|| "-".to_string())
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                "25%" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.q25))
-                    .unwrap_or_else(|| "-".to_string()),
-                "50%" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.median))
-                    .unwrap_or_else(|| "-".to_string()),
-                "75%" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.q75))
-                    .unwrap_or_else(|| "-".to_string()),
-                "max" => {
-                    if let Some(ref num_stats) = col_stat.numeric_stats {
-                        format_num(num_stats.max)
-                    } else if let Some(ref cat_stats) = col_stat.categorical_stats {
-                        cat_stats.max.clone().unwrap_or_else(|| "-".to_string())
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                _ => "-".to_string(),
-            };
+            let value = describe_value(col_stat, stat_name, number_format);
 
             cells.push(Cell::from(value));
         }
@@ -853,6 +762,44 @@ fn render_statistics_table(
 
     // Use StatefulWidget for row selection
     StatefulWidget::render(table, area, buf, table_state);
+}
+
+/// One Describe cell. A date, time or duration column gets its range, quartiles
+/// and mean in its own format; the statistics it has no value for, and nulls, read `-`.
+fn describe_value(
+    col_stat: &ColumnStatistics,
+    stat_name: &str,
+    number_format: &NumberFormatSettings,
+) -> String {
+    let numeric = |f: fn(&NumericStatistics) -> f64| {
+        col_stat.numeric_stats.as_ref().map(|n| format_num(f(n)))
+    };
+    let temporal = |f: fn(&TemporalStatistics) -> &Option<String>| {
+        col_stat.temporal_stats.as_ref().and_then(|t| f(t).clone())
+    };
+    let categorical = |f: fn(&CategoricalStatistics) -> &Option<String>| {
+        col_stat
+            .categorical_stats
+            .as_ref()
+            .and_then(|c| f(c).clone())
+    };
+    match stat_name {
+        "count" => Some(format_count(col_stat.count, number_format)),
+        "null_count" => Some(format_count(col_stat.null_count, number_format)),
+        "mean" => numeric(|n| n.mean).or_else(|| temporal(|t| &t.mean)),
+        "std" => numeric(|n| n.std),
+        "min" => numeric(|n| n.min)
+            .or_else(|| temporal(|t| &t.min))
+            .or_else(|| categorical(|c| &c.min)),
+        "25%" => numeric(|n| n.q25).or_else(|| temporal(|t| &t.q25)),
+        "50%" => numeric(|n| n.median).or_else(|| temporal(|t| &t.median)),
+        "75%" => numeric(|n| n.q75).or_else(|| temporal(|t| &t.q75)),
+        "max" => numeric(|n| n.max)
+            .or_else(|| temporal(|t| &t.max))
+            .or_else(|| categorical(|c| &c.max)),
+        _ => None,
+    }
+    .unwrap_or_else(|| "-".to_string())
 }
 
 /// Format a row/null count, following the same grouping setting as the data
@@ -2526,6 +2473,54 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    #[test]
+    fn describe_shows_a_datetime_range_and_leaves_std_blank() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let results = crate::statistics::compute_describe_single_aggregation(
+            &crate::statistics::describe_tests::temporal_frame(),
+            &crate::statistics::describe_tests::temporal_frame()
+                .schema()
+                .clone(),
+            6,
+            None,
+            0,
+            false,
+        )
+        .unwrap();
+        let area = Rect::new(0, 0, 220, 6);
+        let mut buf = Buffer::empty(area);
+        render_statistics_table(
+            &results,
+            &mut TableState::default(),
+            0,
+            area,
+            &mut buf,
+            &theme,
+            1,
+            &settings("thousands", false),
+        );
+        let text = rendered_text(&buf);
+        let mut lines = text.lines();
+        let header = lines.next().unwrap();
+        let pickup = lines
+            .find(|l| l.starts_with("pickup"))
+            .unwrap_or_else(|| panic!("{text}"));
+        // Each value sits under its own header.
+        for (stat, value) in [
+            ("Mean", "2024-12-31 22:47:55"),
+            ("Std", "- "),
+            ("Min", "2024-12-31 20:47:55"),
+            ("25%", "2024-12-31 21:47:55"),
+            ("50%", "2024-12-31 22:47:55"),
+            ("75%", "2024-12-31 23:47:55"),
+            ("Max", "2025-01-01 00:47:55"),
+        ] {
+            let x = header.find(stat).unwrap();
+            assert!(pickup[x..].starts_with(value), "{stat}:\n{text}");
+        }
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub struct ColumnStatistics {
     pub null_count: usize,
     pub numeric_stats: Option<NumericStatistics>,
     pub categorical_stats: Option<CategoricalStatistics>,
+    pub temporal_stats: Option<TemporalStatistics>,
     pub distribution_info: Option<DistributionInfo>,
 }
 
@@ -69,6 +70,18 @@ pub struct CategoricalStatistics {
     pub top_values: Vec<(String, usize)>,
     pub min: Option<String>, // Lexicographically smallest string
     pub max: Option<String>, // Lexicographically largest string
+}
+
+/// Describe for a Date, Datetime, Time or Duration column: each statistic a value of the
+/// column's own type, written as the table writes it; `None` for a null.
+#[derive(Clone, Default)]
+pub struct TemporalStatistics {
+    pub mean: Option<String>,
+    pub min: Option<String>,
+    pub q25: Option<String>,
+    pub median: Option<String>,
+    pub q75: Option<String>,
+    pub max: Option<String>,
 }
 
 #[derive(Clone)]
@@ -396,6 +409,7 @@ pub fn compute_statistics_for_sample(
             null_count,
             numeric_stats,
             categorical_stats,
+            temporal_stats: temporal_stats_of(series)?,
             distribution_info,
         });
     }
@@ -501,6 +515,7 @@ pub fn compute_describe_column(
         null_count,
         numeric_stats,
         categorical_stats,
+        temporal_stats: temporal_stats_of(series)?,
         distribution_info,
     })
 }
@@ -561,6 +576,23 @@ fn build_describe_aggregation_exprs(schema: &Schema) -> Vec<Expr> {
             exprs.push(c.max().alias(format!("{}max", prefix)));
         } else if is_categorical_type(dtype) {
             exprs.push(col(name).min().alias(format!("{}min", prefix)));
+            exprs.push(col(name).max().alias(format!("{}max", prefix)));
+        } else if is_temporal_type(dtype) {
+            // Mean and quantiles run on the physical integers and are cast back, so
+            // each is a value of the column's own type, as in Polars' describe.
+            let physical = dtype.to_physical();
+            let back = |e: Expr| e.cast(physical.clone()).cast(dtype.clone());
+            let p = col(name).cast(physical.clone());
+            exprs.push(
+                back(p.clone().cast(DataType::Float64).mean()).alias(format!("{}mean", prefix)),
+            );
+            exprs.push(col(name).min().alias(format!("{}min", prefix)));
+            for (q, stat) in [(0.25, "q25"), (0.5, "median"), (0.75, "q75")] {
+                exprs.push(
+                    back(p.clone().quantile(lit(q), QuantileMethod::Nearest))
+                        .alias(format!("{}{}", prefix, stat)),
+                );
+            }
             exprs.push(col(name).max().alias(format!("{}max", prefix)));
         }
     }
@@ -632,6 +664,17 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
         } else {
             None
         };
+        let temporal_stats = is_temporal_type(dtype).then(|| {
+            let value = |stat: &str| get_value_str(agg_df, &format!("{}{}", prefix, stat), row);
+            TemporalStatistics {
+                mean: value("mean"),
+                min: value("min"),
+                q25: value("q25"),
+                median: value("median"),
+                q75: value("q75"),
+                max: value("max"),
+            }
+        });
         column_statistics.push(ColumnStatistics {
             name: name_str.to_string(),
             dtype: dtype.clone(),
@@ -639,6 +682,7 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
             null_count,
             numeric_stats,
             categorical_stats,
+            temporal_stats,
             distribution_info: None,
         });
     }
@@ -731,6 +775,31 @@ fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
     df.column(col_name)
         .ok()
         .and_then(|s| s.get(row).ok().map(|v| v.str_value().to_string()))
+}
+
+/// A value as the table writes it; `None` for a null.
+fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
+    match df.column(col_name).ok()?.get(row).ok()? {
+        AnyValue::Null => None,
+        v => Some(v.str_value().to_string()),
+    }
+}
+
+/// Describe's temporal statistics for one collected column, through the same
+/// aggregation the lazy path runs.
+fn temporal_stats_of(series: &Series) -> Result<Option<TemporalStatistics>> {
+    if !is_temporal_type(series.dtype()) {
+        return Ok(None);
+    }
+    let frame = DataFrame::new_infer_height(vec![series.clone().into()])?;
+    let schema = frame.schema().clone();
+    let agg_df = frame
+        .lazy()
+        .select(build_describe_aggregation_exprs(&schema))
+        .collect()?;
+    Ok(parse_describe_agg_row(&agg_df, &schema)
+        .pop()
+        .and_then(|stats| stats.temporal_stats))
 }
 
 /// Computes distribution statistics for numeric columns.
@@ -838,6 +907,13 @@ fn is_numeric_type(dtype: &DataType) -> bool {
 
 fn is_categorical_type(dtype: &DataType) -> bool {
     matches!(dtype, DataType::String | DataType::Categorical(..))
+}
+
+fn is_temporal_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Date | DataType::Datetime(..) | DataType::Time | DataType::Duration(_)
+    )
 }
 
 /// The rows an analysis reads, and how many the table has.
@@ -2919,5 +2995,178 @@ mod normality_tests {
     fn non_finite_values_are_left_out() {
         let series = Series::new("x".into(), &[3.0, f64::NAN, 1.0, f64::INFINITY, 2.0]);
         assert_eq!(get_numeric_values_as_f64(&series), vec![3.0, 1.0, 2.0]);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod describe_tests {
+    use super::*;
+
+    /// A frame with one column of each temporal type, a zoned datetime too, five
+    /// values and a null each.
+    pub(crate) fn temporal_frame() -> DataFrame {
+        let day = 20_089i32; // 2025-01-01
+        let dates = Series::new(
+            "day".into(),
+            &[
+                Some(day + 4),
+                Some(day),
+                None,
+                Some(day + 2),
+                Some(day + 1),
+                Some(day + 3),
+            ],
+        )
+        .cast(&DataType::Date)
+        .unwrap();
+        let hour = 3_600_000_000i64; // microseconds
+        let start = 1_735_678_075_000_000i64; // 2024-12-31 20:47:55
+        let pickups = Series::new(
+            "pickup".into(),
+            &[
+                Some(start + 4 * hour),
+                Some(start),
+                None,
+                Some(start + 2 * hour),
+                Some(start + hour),
+                Some(start + 3 * hour),
+            ],
+        )
+        .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+        .unwrap();
+        let second = 1_000_000_000i64; // nanoseconds
+        let times = Series::new(
+            "at".into(),
+            &[
+                Some(9 * 3600 * second + 40 * second),
+                Some(9 * 3600 * second),
+                None,
+                Some(9 * 3600 * second + 20 * second),
+                Some(9 * 3600 * second + 10 * second),
+                Some(9 * 3600 * second + 30 * second),
+            ],
+        )
+        .cast(&DataType::Time)
+        .unwrap();
+        // The same instants in New York, in milliseconds: the zone survives the cast back.
+        let local = Series::new(
+            "local".into(),
+            &[
+                Some(start / 1000 + 4 * hour / 1000),
+                Some(start / 1000),
+                None,
+                Some(start / 1000 + 2 * hour / 1000),
+                Some(start / 1000 + hour / 1000),
+                Some(start / 1000 + 3 * hour / 1000),
+            ],
+        )
+        .cast(&DataType::Datetime(
+            TimeUnit::Milliseconds,
+            TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
+        ))
+        .unwrap();
+        let minute = 60_000i64; // milliseconds
+        let waits = Series::new(
+            "wait".into(),
+            &[
+                Some(5 * minute),
+                Some(minute),
+                None,
+                Some(3 * minute),
+                Some(2 * minute),
+                Some(4 * minute),
+            ],
+        )
+        .cast(&DataType::Duration(TimeUnit::Milliseconds))
+        .unwrap();
+        DataFrame::new_infer_height(vec![
+            dates.into(),
+            pickups.into(),
+            times.into(),
+            local.into(),
+            waits.into(),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn describe_gives_dates_and_times_their_range_in_their_own_format() {
+        let df = temporal_frame();
+        let every_row = crate::sampling::Sample {
+            method: crate::sampling::SampleMethod::EveryRow,
+            ..crate::sampling::Sample::default()
+        };
+        let lazy = compute_describe_from_lazy(&df.clone().lazy(), Some(6), &every_row, false)
+            .unwrap()
+            .column_statistics;
+        let schema = df.schema().clone();
+        let sampled = compute_describe_single_aggregation(&df, &schema, 6, None, 0, false)
+            .unwrap()
+            .column_statistics;
+        let per_column: Vec<ColumnStatistics> = (0..df.width())
+            .map(|i| {
+                compute_describe_column(&df, &schema, i, &ComputeOptions::default(), None, false)
+                    .unwrap()
+            })
+            .collect();
+        let expected = [
+            [
+                "2025-01-03",
+                "2025-01-01",
+                "2025-01-02",
+                "2025-01-03",
+                "2025-01-04",
+                "2025-01-05",
+            ],
+            [
+                "2024-12-31 22:47:55",
+                "2024-12-31 20:47:55",
+                "2024-12-31 21:47:55",
+                "2024-12-31 22:47:55",
+                "2024-12-31 23:47:55",
+                "2025-01-01 00:47:55",
+            ],
+            [
+                "09:00:20", "09:00:00", "09:00:10", "09:00:20", "09:00:30", "09:00:40",
+            ],
+            [
+                "2024-12-31 17:47:55 EST",
+                "2024-12-31 15:47:55 EST",
+                "2024-12-31 16:47:55 EST",
+                "2024-12-31 17:47:55 EST",
+                "2024-12-31 18:47:55 EST",
+                "2024-12-31 19:47:55 EST",
+            ],
+            ["3m", "1m", "2m", "3m", "4m", "5m"],
+        ];
+        for stats in [&lazy, &sampled, &per_column] {
+            assert_eq!(stats.len(), expected.len());
+            for (column, want) in stats.iter().zip(expected) {
+                assert!(column.numeric_stats.is_none(), "{}", column.name);
+                assert_eq!(column.null_count, 1);
+                let t = column.temporal_stats.as_ref().expect("temporal stats");
+                let got = [&t.mean, &t.min, &t.q25, &t.median, &t.q75, &t.max]
+                    .map(|v| v.clone().unwrap_or_default());
+                assert_eq!(got, want.map(String::from), "{}", column.name);
+            }
+        }
+    }
+
+    #[test]
+    fn describe_of_an_all_null_datetime_is_empty() {
+        let empty = Series::new("never".into(), &[None::<i64>, None])
+            .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+            .unwrap();
+        let df = DataFrame::new_infer_height(vec![empty.into()]).unwrap();
+        let schema = df.schema().clone();
+        let stats = compute_describe_single_aggregation(&df, &schema, 2, None, 0, false)
+            .unwrap()
+            .column_statistics;
+        let t = stats[0].temporal_stats.as_ref().expect("temporal stats");
+        assert!(
+            [&t.mean, &t.min, &t.q25, &t.median, &t.q75, &t.max]
+                .iter()
+                .all(|v| v.is_none())
+        );
     }
 }

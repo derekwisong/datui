@@ -292,6 +292,24 @@ struct GroupSource {
     keys: Vec<(PlSmallStr, Expr)>,
 }
 
+/// The row a drill into a group reads, from [`DataTableState::drill_row`].
+pub enum DrillRow {
+    /// Taken from the rows on screen.
+    Buffered(DataFrame),
+    /// Not on hand: the one-row frame to collect, off the UI thread.
+    Read(Box<LazyFrame>),
+}
+
+/// A group's rows, drilled from its row of a grouped view.
+struct GroupRows {
+    lf: LazyFrame,
+    /// The key columns of the grouped view and the row's values in them, as text.
+    key_columns: Vec<String>,
+    key_values: Vec<String>,
+    /// Columns of `lf` that hold the keys as they stand, to lead the view.
+    lead: Vec<String>,
+}
+
 /// The query bar a result came from, with its text. At most one is active at a time.
 enum ActiveQuery {
     Dsl(String),
@@ -6217,31 +6235,94 @@ impl DataTableState {
         !self.is_drilled_down() && (self.is_grouped() || self.group_source.is_some())
     }
 
-    /// Show the rows of the group on row `group_index` of the view. A result that holds
-    /// each group as lists shows those lists as rows; one that holds only aggregates
-    /// shows the source rows sharing the group's keys.
+    /// The columns of a row that a drill into its group reads: every column of a result
+    /// holding its groups as lists, the keys of one holding aggregates.
+    fn drill_columns(&self) -> Vec<String> {
+        if self.is_grouped() {
+            return self.schema.iter_names().map(|n| n.to_string()).collect();
+        }
+        self.group_source
+            .iter()
+            .flat_map(|source| source.keys.iter().map(|(name, _)| name.to_string()))
+            .collect()
+    }
+
+    /// What drilling into the group on row `group_index` of the view reads, or `None`
+    /// when the view is not grouped. The row is on screen, so the buffer holds it and
+    /// nothing is computed again. A column the buffer lacks (hidden, or a binary stub)
+    /// means reading the row, and one row of an aggregate is the whole aggregate, so the
+    /// caller reads it off the UI thread.
+    pub fn drill_row(&self, group_index: usize) -> Option<DrillRow> {
+        if !self.can_drill_down() {
+            return None;
+        }
+        let columns = self.drill_columns();
+        let buffered = self
+            .buffered_df
+            .as_ref()
+            .filter(|_| (self.buffered_start_row..self.buffered_end_row).contains(&group_index))
+            .filter(|_| {
+                columns
+                    .iter()
+                    .all(|c| !matches!(self.schema.get(c.as_str()), Some(DataType::Binary)))
+            })
+            .and_then(|df| df.select(columns.iter().map(|c| c.as_str())).ok())
+            .map(|df| df.slice((group_index - self.buffered_start_row) as i64, 1))
+            .filter(|row| row.height() == 1);
+        Some(match buffered {
+            Some(row) => DrillRow::Buffered(row),
+            None => DrillRow::Read(Box::new(
+                self.visible_lf()
+                    .select(columns.iter().map(|c| col(c.as_str())).collect::<Vec<_>>())
+                    .slice(group_index as i64, 1),
+            )),
+        })
+    }
+
+    /// Show the rows of the group on row `group_index` of the view, reading the row on
+    /// this thread if the buffer does not hold it. The app goes through
+    /// [`Self::drill_row`] instead, so that read never holds up a key.
     pub fn drill_down_into_group(&mut self, group_index: usize) -> Result<()> {
+        let row = match self.drill_row(group_index) {
+            None => return Ok(()),
+            Some(DrillRow::Buffered(row)) => row,
+            Some(DrillRow::Read(lf)) => collect_lazy(*lf, self.polars_streaming)?,
+        };
+        self.drill_down_with_row(group_index, &row)
+    }
+
+    /// Show the rows of the group whose row `group_index` of the view is `row`, as
+    /// [`Self::drill_row`] gave it. A result that holds each group as lists shows those
+    /// lists as rows; one that holds only aggregates shows the source rows sharing the
+    /// group's keys, key columns first.
+    pub fn drill_down_with_row(&mut self, group_index: usize, row: &DataFrame) -> Result<()> {
         if !self.can_drill_down() {
             return Ok(());
         }
-        // The one row, not the whole result: its list columns hold the entire dataset.
-        let row = collect_lazy(
-            self.visible_lf().slice(group_index as i64, 1),
-            self.polars_streaming,
-        )?;
         if row.height() == 0 {
             return Err(color_eyre::eyre::eyre!("Group index out of bounds"));
         }
-        let (lf, key_columns, key_values) = if self.is_grouped() {
-            Self::group_from_lists(&row, self.group_key_columns(), self.group_value_columns())?
+        let mut group = if self.is_grouped() {
+            Self::group_from_lists(row, self.group_key_columns(), self.group_value_columns())?
         } else if let Some(source) = &self.group_source {
-            Self::group_from_source(source, &row)?
+            Self::group_from_source(source, row)?
         } else {
             return Ok(());
         };
-        let schema = lf.clone().collect_schema()?;
-        self.drilled_down_group_key = Some(key_values);
-        self.drilled_down_group_key_columns = Some(key_columns);
+        // A list form that also aggregates (`select a, n: count a by k`) holds its
+        // aggregates beside the keys; the query knows which columns are keys.
+        if let Some(source) = self.group_source.as_ref().filter(|_| self.is_grouped()) {
+            let keys: Vec<&str> = source.keys.iter().map(|(n, _)| n.as_str()).collect();
+            (group.key_columns, group.key_values) = group
+                .key_columns
+                .into_iter()
+                .zip(group.key_values)
+                .filter(|(name, _)| keys.contains(&name.as_str()))
+                .unzip();
+        }
+        let schema = group.lf.clone().collect_schema()?;
+        self.drilled_down_group_key = Some(group.key_values);
+        self.drilled_down_group_key_columns = Some(group.key_columns);
 
         // The group becomes the pipeline root while drilled in, so a sidebar filter or
         // sort applies within it instead of rebuilding the grouped view underneath.
@@ -6263,7 +6344,13 @@ impl DataTableState {
             selected: self.table_state.selected(),
         });
         self.sort_ascending = true;
-        self.install_base(lf, schema);
+        self.install_base(group.lf, schema);
+        // Led by the keys, as a group drilled from lists is.
+        let rest: Vec<String> = std::mem::take(&mut self.column_order)
+            .into_iter()
+            .filter(|c| !group.lead.contains(c))
+            .collect();
+        self.column_order = group.lead.into_iter().chain(rest).collect();
         self.drilled_down_group_index = Some(group_index);
         self.start_row = 0;
         self.termcol_index = 0;
@@ -6275,12 +6362,11 @@ impl DataTableState {
     }
 
     /// A group held as lists in `row`: the keys repeated beside the lists as columns.
-    /// Returns the frame, the key column names and the key values as text.
     fn group_from_lists(
         row: &DataFrame,
         key_columns: Vec<String>,
         value_columns: Vec<String>,
-    ) -> Result<(LazyFrame, Vec<String>, Vec<String>)> {
+    ) -> Result<GroupRows> {
         if value_columns.is_empty() {
             return Err(color_eyre::eyre::eyre!("No value columns in grouped data"));
         }
@@ -6292,45 +6378,32 @@ impl DataTableState {
         let mut columns = Vec::new();
         let mut key_values = Vec::new();
         for col_name in &key_columns {
-            let value = row.column(col_name)?.get(0)?;
-            key_values.push(value.str_value().to_string());
-            let constant_series = match value {
-                AnyValue::Int32(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                AnyValue::Int64(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                AnyValue::UInt32(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                AnyValue::UInt64(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                AnyValue::Float32(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                AnyValue::Float64(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                AnyValue::String(v) => {
-                    Series::new(col_name.as_str().into(), vec![v.to_string(); row_count])
-                }
-                AnyValue::Boolean(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
-                _ => {
-                    let str_val = value.str_value().to_string();
-                    Series::new(col_name.as_str().into(), vec![str_val; row_count])
-                }
-            };
-            columns.push(constant_series.into());
+            let key = row.column(col_name)?;
+            key_values.push(key.get(0)?.str_value().to_string());
+            // Repeated in its own type, so a date stays a date and a null key null.
+            columns.push(key.new_from_index(0, row_count));
         }
         for col_name in &value_columns {
             if let AnyValue::List(list_series) = row.column(col_name)?.get(0)? {
                 columns.push(list_series.with_name(col_name.as_str().into()).into());
             }
         }
-        let lf = DataFrame::new_infer_height(columns)?.lazy();
-        Ok((lf, key_columns, key_values))
+        Ok(GroupRows {
+            lf: DataFrame::new_infer_height(columns)?.lazy(),
+            key_columns,
+            key_values,
+            // Already first.
+            lead: Vec::new(),
+        })
     }
 
     /// A group of an aggregated result in `row`: the source rows whose keys equal the
-    /// row's, a null key matching nulls. Returns the frame, the key column names and the
-    /// key values as text.
-    fn group_from_source(
-        source: &GroupSource,
-        row: &DataFrame,
-    ) -> Result<(LazyFrame, Vec<String>, Vec<String>)> {
+    /// row's, a null key matching nulls.
+    fn group_from_source(source: &GroupSource, row: &DataFrame) -> Result<GroupRows> {
         let mut predicate: Option<Expr> = None;
         let mut key_columns = Vec::new();
         let mut key_values = Vec::new();
+        let mut lead = Vec::new();
         for (name, expr) in &source.keys {
             let column = row.column(name)?;
             let value = column.get(0)?.into_static();
@@ -6338,11 +6411,11 @@ impl DataTableState {
             key_values.push(value.str_value().to_string());
             // The key as the query computed it, against the value it produced; the alias
             // only named the result's column.
-            let matches = expr
-                .clone()
-                .meta()
-                .undo_aliases()
-                .eq_missing(lit(Scalar::new(column.dtype().clone(), value)));
+            let key = expr.clone().meta().undo_aliases();
+            if let Expr::Column(source_column) = &key {
+                lead.push(source_column.to_string());
+            }
+            let matches = key.eq_missing(lit(Scalar::new(column.dtype().clone(), value)));
             predicate = Some(match predicate {
                 Some(all) => all.and(matches),
                 None => matches,
@@ -6353,7 +6426,12 @@ impl DataTableState {
             Some(predicate) => rows.filter(predicate),
             None => rows,
         };
-        Ok((lf, key_columns, key_values))
+        Ok(GroupRows {
+            lf,
+            key_columns,
+            key_values,
+            lead,
+        })
     }
 
     pub fn drill_up(&mut self) -> Result<()> {

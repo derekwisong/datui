@@ -7819,7 +7819,11 @@ fn test_enter_drills_from_an_aggregated_result() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
     assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
-    assert_eq!(state.headers(), ["a", "c", "name"], "the source's columns");
+    assert_eq!(
+        state.headers(),
+        ["c", "a", "name"],
+        "the source's columns, key first"
+    );
     assert_eq!(
         on_screen(&app, "a"),
         ["1", "4", "7", "10", "13", "16", "19", "22", "25", "28"],
@@ -7872,6 +7876,202 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
         .into_no_null_iter()
         .collect();
     assert_eq!(v, [4, 5, 6], "big = true");
+}
+
+/// Every group of an aggregate drills into as many rows as it counted, whatever the
+/// key's type: floats with NaN and signed zeros, dates, zoned datetimes, categoricals,
+/// and nulls of each.
+#[test]
+fn test_drill_from_an_aggregate_by_typed_keys() {
+    let dir = PathBuf::from("tests/sample-data/drill_typed_keys");
+    let _ = std::fs::remove_dir_all(&dir);
+    let tz = TimeZone::opt_try_new(Some("America/New_York")).unwrap();
+    let df = df!(
+        "f" => [Some(1.5), Some(1.5), Some(f64::NAN), Some(f64::NAN), None, Some(-0.0), Some(0.0), Some(0.1 + 0.2)],
+        "d" => [Some(19000), Some(19000), Some(19001), None, None, Some(19001), Some(19002), Some(19000)],
+        "t" => [Some(1_700_000_000_000_000i64), Some(1_700_000_000_000_000), None, Some(1_700_000_000_000_001), None, Some(1), Some(1), Some(1)],
+        "s" => [Some("a"), Some("b"), Some("a"), None, Some("b"), Some("a"), None, Some("c")],
+        "v" => [1i64, 2, 3, 4, 5, 6, 7, 8],
+    )
+    .unwrap()
+    .lazy()
+    .with_columns([
+        col("d").cast(DataType::Date),
+        col("t").cast(DataType::Datetime(TimeUnit::Microseconds, tz)),
+        col("s").cast(DataType::from_categories(Categories::global())),
+    ])
+    .collect()
+    .unwrap();
+    write_parquet(&dir, "", df);
+    let path = dir.join("data.parquet");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let schema = app.data_table_state.as_ref().unwrap().schema.clone();
+    assert!(matches!(schema.get("s"), Some(DataType::Categorical(..))));
+    assert!(matches!(
+        schema.get("t"),
+        Some(DataType::Datetime(_, Some(_)))
+    ));
+
+    for key in ["f", "d", "t", "s", "f, s", "day: d, late: t > 5"] {
+        app.event(&AppEvent::Search(format!("select n: count v by {key}")));
+        pump_until_idle(&mut app, &rx, &tx);
+        let state = app.data_table_state.as_mut().unwrap();
+        assert!(state.error.is_none(), "{key}: {:?}", state.error);
+        let counts: Vec<u32> = state
+            .lf
+            .clone()
+            .collect()
+            .unwrap()
+            .column("n")
+            .unwrap()
+            .u32()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        for (group, counted) in counts.into_iter().enumerate() {
+            state.drill_down_into_group(group).unwrap();
+            let rows = state.lf.clone().collect().unwrap().height();
+            assert_eq!(rows as u32, counted, "by {key}, group {group}");
+            state.drill_up().unwrap();
+        }
+    }
+}
+
+/// Enter on an aggregate reads the row's keys from the rows on screen, so the drill
+/// happens at once without computing the aggregate again. With a key column hidden
+/// the row is read off the UI thread, and the drill lands when it comes back.
+#[test]
+fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_from_buffer.csv");
+    let area = Rect::new(0, 0, 100, 30);
+    app.event(&AppEvent::Search(
+        "select n: count a, total: sum a by c".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+
+    press(&mut app, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        state.is_drilled_down(),
+        "drilled before any event is pumped"
+    );
+    assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
+    pump_until_idle(&mut app, &rx, &tx);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+
+    // Hide the key: the buffer no longer holds it.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .set_column_order(vec!["n".to_string(), "total".to_string()]);
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert!(app.is_busy(), "reading the row");
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
+    assert!(on_screen(&app, "c").iter().all(|c| c == "1"));
+}
+
+/// A sort on the aggregate reorders its rows; Enter drills into the row on screen, not
+/// the one that was there before the sort.
+#[test]
+fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_sorted_aggregate.csv");
+    let area = Rect::new(0, 0, 100, 30);
+    app.event(&AppEvent::Search("select n: count a by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "c"), ["2", "1", "0"]);
+
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.drilled_down_group_key, Some(vec!["2".to_string()]));
+    assert!(on_screen(&app, "c").iter().all(|c| c == "2"));
+}
+
+/// Columns hidden and frozen inside a drill belong to the drill: Esc puts back the
+/// grouped view's own column order and frozen key.
+#[test]
+fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_columns_restored.csv");
+    let area = Rect::new(0, 0, 100, 30);
+    app.event(&AppEvent::Search(
+        "select n: count a, total: sum a by c".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.set_column_order(vec!["name".to_string(), "a".to_string()]);
+    state.set_locked_columns(2);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.headers(), ["c", "n", "total"]);
+    assert_eq!(state.locked_columns_count(), 1);
+    assert_eq!(on_screen(&app, "total"), ["1683", "1617", "1650"]);
+}
+
+/// A list-form group whose key is null drills into rows whose key is null, not the
+/// text "null"; a list form that also aggregates names only its keys in the breadcrumb.
+#[test]
+fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
+    let csv = "k,v\nx,1\n,2\ny,3\n,4\n";
+    let (mut app, rx, tx) = open_csv_with("drill_list_null_key.csv", csv, OpenOptions::default());
+    app.event(&AppEvent::Search("select v, n: count v by k".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_mut().unwrap();
+    assert!(state.is_grouped());
+    // Nulls sort last.
+    state.drill_down_into_group(2).unwrap();
+    assert_eq!(
+        state.drilled_down_group_key_columns,
+        Some(vec!["k".to_string()])
+    );
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 2);
+    assert_eq!(df.column("k").unwrap().null_count(), 2);
+    assert_eq!(df.column("k").unwrap().dtype(), &DataType::String);
+}
+
+/// Enter where there is nothing to drill into says so on the control bar.
+#[test]
+fn test_enter_with_nothing_to_drill_into_flashes() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_nothing.csv");
+    let area = Rect::new(0, 0, 100, 30);
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(app.flash_message(), Some("Nothing to drill into"));
+
+    app.event(&AppEvent::Search("select n: count a by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(
+        app.flash_message(),
+        Some("Already in a group; Esc goes back")
+    );
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
 /// SQL inside a drill-down runs on the group, like the sidebar does, not on the whole

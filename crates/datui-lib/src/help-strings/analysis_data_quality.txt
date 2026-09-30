@@ -4,10 +4,10 @@ setting a run takes, staged until Enter runs it.
 Nothing in Setup reads the data; only Run does.
 
 Setup:
-  Rows & sample: The sample every tool reads
-  Columns:      Text read as time, and time roles
-  Study:        Grain, comparison, values, latency
-  Read:         What Run will read, before it reads
+  Rows & sample:  The sample every tool reads
+  Columns:        Text read as time, and time roles
+  Study:          Grain, comparison, values, latency
+  Read:           What Run will read, before it reads
 
   ↑ / ↓, Tab:   Move between rows
   ← / →:        Change a short list's choice

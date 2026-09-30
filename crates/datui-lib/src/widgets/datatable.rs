@@ -2203,9 +2203,9 @@ impl DataTableState {
         (files, read, footers, skipped)
     }
 
-    /// One local Parquet file's columns, row count and row-group sizes, from its
-    /// footer. The metadata is already read for the row count; the sizes come off the
-    /// same object.
+    /// One local Parquet file's columns, row count, row-group sizes and column sizes,
+    /// from its footer. The metadata is already read for the row count; the sizes come
+    /// off the same object.
     fn footer_of(path: &Path) -> Option<FileSchema> {
         let file = File::open(path).ok()?;
         // Asked of the open handle, so it is the file the footer was read from and not
@@ -2214,8 +2214,10 @@ impl DataTableState {
         let mut reader = ParquetReader::new(file);
         let arrow_schema = reader.schema().ok()?;
         let metadata = reader.get_metadata().ok()?;
+        let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
         Some(FileSchema {
-            schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
+            column_bytes: crate::schema_union::parquet_column_bytes(&schema, metadata),
+            schema: Arc::new(schema),
             rows: metadata.num_rows,
             file_bytes,
             row_group_bytes: metadata
@@ -8686,6 +8688,7 @@ mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8751,6 +8754,7 @@ mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8811,6 +8815,7 @@ mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8886,6 +8891,7 @@ mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8956,6 +8962,7 @@ mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             FootersFound {
                 dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
@@ -9129,6 +9136,7 @@ mod tests {
             rows,
             file_bytes: 0,
             row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
         })
     }
 

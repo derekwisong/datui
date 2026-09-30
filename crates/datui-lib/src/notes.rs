@@ -889,6 +889,7 @@ mod tests {
             rows,
             file_bytes: 0,
             row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
         })
     }
 

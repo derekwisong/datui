@@ -3478,6 +3478,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -3695,6 +3696,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -3784,6 +3786,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -3991,6 +3994,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -4149,6 +4153,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5397,6 +5402,58 @@ pub mod tests {
         assert!(app.pending_copy.is_some() && next.is_none());
     }
 
+    /// A local directory's footers, read to open it, give its binary columns their
+    /// width as a cloud object's do, so a Table copy is sized rather than asked about.
+    #[test]
+    fn a_local_directorys_footers_size_its_binary_columns() {
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+
+        let copy = |blob: usize| {
+            let dir = tempfile::tempdir().unwrap();
+            // Two files, three rows, every blob distinct.
+            for (file, rows) in [(0u8, 2u8), (1, 1)] {
+                let blobs: Vec<Vec<u8>> = (0..rows).map(|i| vec![file * 10 + i; blob]).collect();
+                let mut df = df!(
+                    "id" => (0..rows as i64).collect::<Vec<_>>(),
+                    "blob" => blobs.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                )
+                .unwrap();
+                let f = std::fs::File::create(dir.path().join(format!("{file}.parquet"))).unwrap();
+                ParquetWriter::new(f).finish(&mut df).unwrap();
+            }
+            let options = OpenOptions {
+                hive: true,
+                ..OpenOptions::default()
+            };
+            let state = App::schema_state_from_local_hive(
+                Some(dir.path()),
+                &options,
+                &Default::default(),
+                &Default::default(),
+            )
+            .expect("the local footer route");
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.load_active = true;
+            app.apply_schema_ready(state, None, &options, None);
+            app.data_table_state.as_mut().unwrap().set_num_rows(3);
+            app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+            let next = app.perform_copy();
+            (app, next)
+        };
+
+        // Three rows of 3 MiB are 12 MiB of base64, past the 10 MiB that asks.
+        let (app, next) = copy(3 * 1024 * 1024);
+        assert!(next.is_none());
+        let message = &app.confirmation_modal.message;
+        assert!(message.starts_with("This copies about 12"), "{message}");
+
+        let (app, next) = copy(100);
+        assert!(!app.confirmation_modal.active, "small blobs copy");
+        assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    }
+
     /// A confirmation takes every key until it is answered, so the bar names its keys
     /// rather than the table's, which do nothing meanwhile.
     #[test]
@@ -5676,6 +5733,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5759,6 +5817,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5846,6 +5905,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5962,6 +6022,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -6040,6 +6101,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -6110,6 +6172,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::widgets::datatable::FootersFound {
                 dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
@@ -6182,6 +6245,7 @@ pub mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -6279,6 +6343,7 @@ pub mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -13697,6 +13762,9 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
+        // The footers just read say how wide each column is, as the cloud object's do:
+        // a binary column's width is known nowhere else.
+        state.set_column_widths(crate::schema_union::column_bytes_per_row(&footers));
         state.set_dataset_schema(
             dataset
                 .with_partition_layouts(&p.to_string_lossy(), &paths)

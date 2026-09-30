@@ -54,18 +54,14 @@ fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<ParquetFooter> {
     let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
     let row_group_rows: Vec<usize> = metadata.row_groups.iter().map(|rg| rg.num_rows()).collect();
     let rows: usize = row_group_rows.iter().sum();
-    let column_bytes_per_row = schema
-        .iter_names()
-        .filter_map(|name| {
-            let bytes: i64 = metadata
-                .row_groups
-                .iter()
-                .flat_map(|rg| rg.columns_under_root_iter(name).into_iter().flatten())
-                .map(|chunk| chunk.uncompressed_size())
-                .sum();
-            (rows > 0).then(|| (name.to_string(), (bytes.max(0) as usize) / rows))
-        })
-        .collect();
+    let column_bytes_per_row = if rows > 0 {
+        crate::schema_union::parquet_column_bytes(&schema, metadata)
+            .into_iter()
+            .map(|(name, bytes)| (name, bytes / rows))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(ParquetFooter {
         schema: Arc::new(schema),
         row_group_rows,
@@ -307,6 +303,7 @@ pub fn dataset_schema_from_footers(
                 rows: f.row_group_rows.iter().sum(),
                 file_bytes: files.get(*index).map(|f| f.size as usize).unwrap_or(0),
                 row_group_bytes: f.row_group_bytes.clone(),
+                column_bytes: Vec::new(),
             })
         })
         .collect();

@@ -13,7 +13,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
+        Block, Borders, Cell, HighlightSpacing, Padding, Paragraph, Row, StatefulWidget, Table,
+        TableState, Widget,
     },
 };
 
@@ -7482,13 +7483,16 @@ impl DataTable {
     /// Render the dataframe into `area`, returning the number of columns that were actually
     /// shown (which may be fewer than `df`'s column count when they don't all fit). The caller
     /// uses this to decide whether to draw an "more columns off-screen" indicator.
+    ///
+    /// `leading_gap` keeps the first column one cell off the left edge: the columns right
+    /// of the frozen separator, which would otherwise touch it.
     fn render_dataframe(
         &self,
         df: &DataFrame,
         area: Rect,
         buf: &mut Buffer,
         state: &mut TableState,
-        _row_numbers: bool,
+        leading_gap: bool,
         _start_row_offset: usize,
     ) -> usize {
         // make each column as wide as it needs to be to fit the content
@@ -7528,7 +7532,7 @@ impl DataTable {
             })
             .collect();
 
-        let mut used_width = 0;
+        let mut used_width = u16::from(leading_gap);
 
         // rows is a vector initialized to a vector of lenth "height" empty rows
         let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
@@ -7719,15 +7723,19 @@ impl DataTable {
             })
             .collect();
 
-        StatefulWidget::render(
-            Table::new(rows, widths)
-                .column_spacing(self.table_cell_padding)
-                .header(Row::new(headers).style(header_row_style).height(header_h))
-                .row_highlight_style(self.highlight_style()),
-            area,
-            buf,
-            state,
-        );
+        let mut table = Table::new(rows, widths)
+            .column_spacing(self.table_cell_padding)
+            .header(Row::new(headers).style(header_row_style).height(header_h))
+            .row_highlight_style(self.highlight_style());
+        if leading_gap {
+            // A blank selection column on every row: the Table offsets the header and
+            // the cells past it and paints each row's tint across it, so the gap
+            // stripes and highlights like the rest of the row.
+            table = table
+                .highlight_symbol(" ")
+                .highlight_spacing(HighlightSpacing::Always);
+        }
+        StatefulWidget::render(table, area, buf, state);
 
         visible_columns
     }
@@ -7898,13 +7906,22 @@ impl StatefulWidget for DataTable {
             // This pass only needs widths, so integers take numfmt's arithmetic
             // path instead of building a string per cell and throwing it away.
             let mut scratch = String::new();
+            let drifting = self.drifting_columns();
             for col_index in 0..cols {
                 let col_name = locked_df.get_column_names()[col_index];
-                // A locked column can be sorted too; its area must fit the mark.
-                let mut max_len = (col_name.chars().count()
-                    + self.sort_mark_for(col_name.as_str()).chars().count())
-                    as u16;
                 let col_data = &locked_df[col_index];
+                // The heading as `render_dataframe` sizes it: both marks, and the type
+                // row under it. Narrower, and the column overran its area onto the
+                // separator (`i64│`), or was dropped outright.
+                let mut max_len = (col_name.chars().count()
+                    + self.sort_mark_for(col_name.as_str()).chars().count()
+                    + self
+                        .drift_mark_for(col_name.as_str(), &drifting)
+                        .chars()
+                        .count()) as u16;
+                if self.dtype_row {
+                    max_len = max_len.max(dtype_label(col_data.dtype()).chars().count() as u16);
+                }
                 let col_fmt = if self.binary_cols.contains(col_name.as_str()) {
                     CellFormatter::Passthrough
                 } else {
@@ -7995,9 +8012,10 @@ impl StatefulWidget for DataTable {
             } else {
                 separator_x
             };
+            let rule = crate::glyphs::get().rule;
             for y in area.y..area.y + area.height {
                 let cell = &mut buf[(separator_x_adjusted, y)];
-                cell.set_char('│');
+                cell.set_symbol(rule);
                 cell.set_style(Style::default().fg(self.separator_fg));
             }
 
@@ -8026,7 +8044,7 @@ impl StatefulWidget for DataTable {
                         adjusted_scrollable_area,
                         buf,
                         &mut state.table_state,
-                        false,
+                        true,
                         start_row,
                     );
                     scroll_indicator = Some((
@@ -8227,19 +8245,25 @@ impl StatefulWidget for DataTable {
                 cell.set_style(hint_style);
             }
             if more_right {
-                // The count when there is room for it, the arrow alone when not.
+                let y = if header_h > 1 {
+                    scroll_area.y + 1
+                } else {
+                    scroll_area.y
+                };
+                // The count when the blank run at the end of the row holds it, the arrow
+                // alone when not, so the count never covers a heading or a type.
+                let right = scroll_area.x + scroll_area.width;
+                let free = (scroll_area.x..right)
+                    .rev()
+                    .take_while(|&x| buf[(x, y)].symbol() == " ")
+                    .count();
                 let mut text = format!(" +{hidden} {}", g.arrow_right);
-                if scroll_area.width <= text.chars().count() as u16 {
+                if text.chars().count() > free {
                     text = g.arrow_right.to_string();
                 }
                 let w = text.chars().count() as u16;
                 if scroll_area.width >= w {
-                    let x0 = scroll_area.x + scroll_area.width - w;
-                    let y = if header_h > 1 {
-                        scroll_area.y + 1
-                    } else {
-                        scroll_area.y
-                    };
+                    let x0 = right - w;
                     for (i, ch) in text.chars().enumerate() {
                         let cell = &mut buf[(x0 + i as u16, y)];
                         cell.set_char(ch);
@@ -12066,5 +12090,170 @@ mod tests {
             !header2.contains(g.sort_asc),
             "the old direction is gone: {header2:?}"
         );
+    }
+
+    /// Every cell right of the frozen separator sits one cell off it, as the cells
+    /// left of it do, and the gap takes its row's tint. A right-aligned number as
+    /// wide as its column, a negative one most often, used to touch the line:
+    /// `│-9.930889` (#386).
+    #[test]
+    fn the_frozen_separator_has_a_gap_on_both_sides() {
+        let lf = df!(
+            "carrier" => &["AA", "UA", "9E"],
+            "delay" => &[-9.930889f64, 3.5, 12.25],
+            "name" => &["American", "United", "Endeavor"],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.set_locked_columns(1);
+        state.table_state.select(Some(0));
+
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        let table = DataTable {
+            header_bg: Color::Indexed(238),
+            alternate_row_bg: Some(Color::Indexed(236)),
+            selection_style: Style::default().bg(Color::Indexed(24)),
+            ..DataTable::default()
+        };
+        table.render(area, &mut buf, &mut state);
+
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| row_string(&buf, area, y))
+            .collect();
+        assert!(
+            rows[1].contains(&format!("{} -9.930889", crate::glyphs::get().rule)),
+            "{rows:#?}"
+        );
+        let rule = crate::glyphs::get().rule;
+        let sep = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == rule)
+            .expect("a separator");
+        for y in 0..area.height {
+            let row = &rows[y as usize];
+            assert_eq!(buf[(sep - 1, y)].symbol(), " ", "row {y}: {row:?}");
+            assert_eq!(buf[(sep + 1, y)].symbol(), " ", "row {y}: {row:?}");
+            assert_eq!(
+                buf[(sep + 1, y)].bg,
+                buf[(sep + 2, y)].bg,
+                "row {y}'s gap takes the row's tint: {row:?}"
+            );
+        }
+        // The header, the highlight and the stripe, not only unstyled rows.
+        assert_eq!(buf[(sep + 1, 0)].bg, Color::Indexed(238));
+        assert_eq!(buf[(sep + 1, 1)].bg, Color::Indexed(24));
+        assert_eq!(buf[(sep + 1, 2)].bg, Color::Indexed(236));
+    }
+
+    /// A frozen column whose type is wider than its name and values still gets its
+    /// whole width and the gap before the separator. The width pass left the type row
+    /// out, so `id` over `i64` ran onto the line (`i64│`) and a one-letter string
+    /// column did not fit at all.
+    #[test]
+    fn a_frozen_column_is_as_wide_as_its_type() {
+        let lf = df!(
+            "id" => &[1i64, 2],
+            "k" => &["x", "y"],
+            "v" => &[-3.5f64, 4.25],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 2;
+        state.set_locked_columns(2);
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        DataTable {
+            dtype_row: true,
+            ..DataTable::default()
+        }
+        .render(area, &mut buf, &mut state);
+
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| row_string(&buf, area, y))
+            .collect();
+        let rule = crate::glyphs::get().rule;
+        assert!(rows[0].contains(&format!(" id k   {rule}")), "{rows:#?}");
+        assert!(rows[1].contains(&format!("i64 str {rule}")), "{rows:#?}");
+        assert!(rows[2].contains(&format!("  1 x   {rule}")), "{rows:#?}");
+    }
+
+    /// The hidden-columns count goes in the blank run after the last column, or not
+    /// at all: at no width does it cover the type under a heading. The separator's gap
+    /// took the one cell of slack that used to keep `+2 >` clear of `str` at 60
+    /// columns, and the count then wrote over the `r`.
+    #[test]
+    fn the_hidden_count_never_covers_a_type() {
+        let lf = df!(
+            "k" => &["x"],
+            "origin" => &["JFK"],
+            "dest" => &["LAX"],
+            "tail" => &["N1"],
+            "name" => &["Endeavor"],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 1;
+        state.set_locked_columns(1);
+        let table = || DataTable {
+            dtype_row: true,
+            ..DataTable::default()
+        };
+        assert_eq!(table().header_height(), 2, "the count goes on the type row");
+        for width in 8..=40 {
+            let area = Rect::new(0, 0, width, 3);
+            let mut buf = Buffer::empty(area);
+            table().render(area, &mut buf, &mut state);
+            let names = row_string(&buf, area, 0);
+            let types = row_string(&buf, area, 1);
+            // Every heading shown whole has its whole type under it; these are all
+            // strings, so each starts where its name does.
+            for name in ["origin", "dest", "tail", "name"] {
+                if let Some(at) = names.find(&format!(" {name}")) {
+                    let x = names[..at].chars().count() + 1;
+                    let under: String = types.chars().skip(x).take(3).collect();
+                    assert_eq!(under, "str", "width {width}:\n{names}\n{types}");
+                }
+            }
+        }
+    }
+
+    /// The gap is paid for in the width budget: at every width, the columns right of
+    /// the separator are whole or absent. Left out, the last column that fits exactly
+    /// comes out one cell short, and a number cut short reads as a different number.
+    #[test]
+    fn the_separator_gap_never_cuts_a_number_short() {
+        let values = ["-987", "654", "-32", "10"];
+        let lf = df!(
+            "k" => &["x"],
+            "a" => &[-987i64],
+            "b" => &[654i64],
+            "c" => &[-32i64],
+            "d" => &[10i64],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 1;
+        state.set_locked_columns(1);
+        let data_row = DataTable::default().header_height();
+        for width in 8..=30 {
+            let area = Rect::new(0, 0, width, data_row + 1);
+            let mut buf = Buffer::empty(area);
+            DataTable::default().render(area, &mut buf, &mut state);
+            let row = row_string(&buf, area, data_row);
+            let (_, scrolled) = row
+                .split_once(crate::glyphs::get().rule)
+                .expect("a separator");
+            for token in scrolled.split_whitespace() {
+                assert!(
+                    values.contains(&token),
+                    "width {width}: {token:?} is cut short in {row:?}"
+                );
+            }
+        }
     }
 }

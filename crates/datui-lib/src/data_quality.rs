@@ -8,7 +8,6 @@ use std::sync::Arc;
 // A dataset-grain sample is spread across the whole scope (see `statistics::analysis_rows`).
 const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
-const QUALITY_SAMPLE_POSITION: &str = "__datui_quality_sample_position";
 const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
 /// How nearly unique a column's values must be before its repeats are worth naming.
@@ -1606,6 +1605,42 @@ pub struct DataQualityResults {
 }
 
 impl DataQualityResults {
+    /// Memory the report holds, near enough to budget by: a profile per column, and
+    /// another per column of every segment, which is what grows.
+    pub fn estimated_bytes(&self) -> usize {
+        let profile = |column: &ColumnQualityProfile| {
+            std::mem::size_of::<ColumnQualityProfile>()
+                + column.name.len()
+                + column.min.as_ref().map_or(0, String::len)
+                + column.max.as_ref().map_or(0, String::len)
+                + column.dominant_value.as_ref().map_or(0, String::len)
+        };
+        let segments = self
+            .segments
+            .iter()
+            .map(|segment| {
+                std::mem::size_of::<SegmentQualityProfile>()
+                    + segment.label.len()
+                    + segment.columns.iter().map(profile).sum::<usize>()
+            })
+            .sum::<usize>();
+        let observations = self
+            .observations
+            .iter()
+            .map(|observation| {
+                std::mem::size_of::<QualityObservation>()
+                    + observation.fact.len()
+                    + observation.column.len()
+            })
+            .sum::<usize>();
+        std::mem::size_of::<Self>()
+            + self.columns.iter().map(profile).sum::<usize>()
+            + segments
+            + observations
+            + self.temporal.len() * std::mem::size_of::<TemporalLatencyProfile>()
+            + self.category_variants.len() * std::mem::size_of::<CategoryVariantGroup>()
+    }
+
     pub fn compare_segments(&mut self, plan: &DataQualityPlan) {
         apply_comparisons(
             &mut self.segments,
@@ -1659,24 +1694,32 @@ impl DataQualityResults {
     }
 }
 
-/// The rows a sampled run read, kept beside its results.
+/// The rows a sampled run read, kept beside its results: an acquisition.
 ///
-/// A run that differs from the last only in how it cuts the rows — grain, comparison,
-/// time roles — cuts these again rather than reading the source again, and a grain it
-/// has already counted segments for is not counted twice. The caller keys it by what
-/// decides which rows were read: the dataset, the view, and the plan's sample.
+/// What decides these rows is the acquisition's identity — the dataset, the view, the
+/// scope, the method, the size and the seed — which the caller keys it by. Everything
+/// else a plan says (grain, comparison, time roles, text read as time, the latency
+/// threshold) is the report's, and a run that changes only those cuts these rows
+/// again rather than reading the source. Every column of the scope is kept, and where
+/// each row sat, so any role, format or row-chunk grain finds what it needs here.
 #[derive(Debug, Clone)]
 pub struct QualitySample {
     df: DataFrame,
-    /// Where each row sat in the scope, when it was read for row chunks.
-    positions: Option<Vec<u32>>,
+    /// Where each row sat in the scope, in the order of `df`.
+    positions: Vec<IdxSize>,
     precision: QualityPrecision,
     total_rows: Option<usize>,
     per_value: Option<crate::sampling::PerValue>,
-    /// Segment row counts already read, by the grain they were counted for and the
-    /// format its column was read through, when it is text read as time.
-    counted: Vec<(SegmentKey, BTreeMap<String, usize>)>,
+    /// Rows of the whole scope by segment key, by the grain they were counted for and
+    /// the format its column was read through, when it is text read as time. Keyed as
+    /// the key reads (`AnyValue::str_value`), `None` for null.
+    counted: Vec<(SegmentKey, SegmentCounts)>,
+    /// A grain whose count stopped at [`crate::sampling::MAX_COUNTED_KEYS`].
+    too_many: Option<SegmentKey>,
 }
+
+/// Rows by segment key, as a count read them.
+type SegmentCounts = BTreeMap<Option<String>, usize>;
 
 /// What decides a segment count: the grain, and how its column was read as time.
 type SegmentKey = (QualityGrain, Option<TimeInterpretation>);
@@ -1689,29 +1732,129 @@ fn segment_key(plan: &DataQualityPlan) -> SegmentKey {
     (plan.grain.clone(), format)
 }
 
-impl QualitySample {
-    /// Whether this sample can serve `plan` without a read: it was read for row
-    /// positions when the grain needs them.
-    pub fn serves(&self, plan: &DataQualityPlan) -> bool {
-        !matches!(plan.grain, QualityGrain::RowChunks(_)) || self.positions.is_some()
-    }
+/// Where a run's exact segment totals come from, as Setup says before Run.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SegmentCount {
+    /// Nothing to count: the grain's sizes are known (files, row chunks, the whole
+    /// scope), the run reads every row, or it reads no values.
+    #[default]
+    NotNeeded,
+    /// An equal-per-value sample by the grain's column counts every value as it reads.
+    PerValue,
+    /// The pass that reads the sample counts the grain's key as it streams.
+    InSamplePass,
+    /// Counted by an earlier run of the rows being reused.
+    Retained,
+    /// Summed from a finer window's count of the same column, which it nests in
+    /// exactly. Holds the finer width.
+    RolledUp(String),
+    /// A read of the grain's column of its own, after the sample.
+    CountPass,
+    /// The grain had more keys than a count holds: a coarser grain is needed.
+    TooMany,
+}
 
+impl SegmentCount {
+    /// Whether the count reads the source in a pass of its own.
+    pub fn reads(&self) -> bool {
+        *self == Self::CountPass
+    }
+}
+
+/// A window width as a cadence: `1d` is daily.
+pub fn window_cadence(every: &str) -> &str {
+    match every {
+        "1h" => "hourly",
+        "1d" => "daily",
+        "1w" => "weekly",
+        "1mo" => "monthly",
+        other => other,
+    }
+}
+
+/// Whether windows of width `fine` nest exactly in windows of `coarse`: every hour in
+/// one day, every day in one week (weeks start on Monday) and one month. Windows are
+/// cut on the stored clock with no time zone (UTC for a zoned column; see
+/// [`time_window_start`]), where no day has 23 or 25 hours, so a sum of the finer
+/// counts is the coarser count. A week does not nest in a month.
+pub fn window_nests(fine: &str, coarse: &str) -> bool {
+    matches!(
+        (fine, coarse),
+        ("1h", "1d" | "1w" | "1mo") | ("1d", "1w" | "1mo")
+    )
+}
+
+impl QualitySample {
     /// Whether `plan`'s segments need a count this sample does not hold: a partition
     /// or time-window grain on a sample, counted neither while sampling nor by an
-    /// earlier run.
+    /// earlier run, nor summed from a finer count.
     pub fn needs_segment_count(&self, plan: &DataQualityPlan) -> bool {
-        self.precision == QualityPrecision::Sampled
-            && segments_need_count(plan)
-            && !per_value_counts(plan, self.per_value.as_ref())
-            && !self
-                .counted
-                .iter()
-                .any(|(key, _)| *key == segment_key(plan))
+        self.segment_count(plan).reads()
+    }
+
+    /// Where a run of `plan` over these rows gets its segment totals.
+    pub fn segment_count(&self, plan: &DataQualityPlan) -> SegmentCount {
+        if self.precision != QualityPrecision::Sampled || !segments_need_count(plan) {
+            return SegmentCount::NotNeeded;
+        }
+        if per_value_counts(plan, self.per_value.as_ref()) {
+            return SegmentCount::PerValue;
+        }
+        let key = segment_key(plan);
+        if self.too_many.as_ref() == Some(&key) {
+            return SegmentCount::TooMany;
+        }
+        if self.counted.iter().any(|(counted, _)| *counted == key) {
+            return SegmentCount::Retained;
+        }
+        match self.finer_count(&key) {
+            Some(((QualityGrain::TimeWindows { every, .. }, _), _)) => {
+                SegmentCount::RolledUp(every.clone())
+            }
+            _ => SegmentCount::CountPass,
+        }
+    }
+
+    /// A count of a finer window of the same column, read the same way, that `key`'s
+    /// windows nest in exactly.
+    fn finer_count(&self, key: &SegmentKey) -> Option<&(SegmentKey, SegmentCounts)> {
+        let (QualityGrain::TimeWindows { column, every }, format) = key else {
+            return None;
+        };
+        self.counted.iter().find(|((grain, counted_format), _)| {
+            matches!(
+                grain,
+                QualityGrain::TimeWindows { column: counted, every: fine }
+                    if counted == column && window_nests(fine, every)
+            ) && counted_format == format
+        })
     }
 
     /// The rows themselves, as the sample every tool reads.
     pub fn df(&self) -> &DataFrame {
         &self.df
+    }
+
+    /// Memory the rows, their positions and their counts hold, near enough to budget
+    /// by.
+    pub fn estimated_bytes(&self) -> usize {
+        let counts = self
+            .counted
+            .iter()
+            .flat_map(|(_, counts)| counts.keys())
+            .map(|key| key.as_ref().map_or(0, String::len) + 64)
+            .sum::<usize>();
+        let per_value = self.per_value.as_ref().map_or(0, |per_value| {
+            per_value
+                .totals
+                .keys()
+                .map(|key| key.as_ref().map_or(0, String::len) + 64)
+                .sum()
+        });
+        self.df.estimated_size()
+            + self.positions.len() * std::mem::size_of::<IdxSize>()
+            + counts
+            + per_value
     }
 
     /// `df`, cut from these rows, described as the sampler described them.
@@ -1735,8 +1878,8 @@ pub fn segments_need_count(plan: &DataQualityPlan) -> bool {
 }
 
 /// Whether the pass that samples `plan`'s rows also counts its segments: an
-/// equal-per-value sample by the column the grain splits by counts every value as
-/// it streams.
+/// equal-per-value sample by the column the grain splits by counts every value as it
+/// streams.
 pub fn sampler_counts_segments(plan: &DataQualityPlan) -> bool {
     matches!(
         (&plan.grain, &plan.method),
@@ -1745,6 +1888,36 @@ pub fn sampler_counts_segments(plan: &DataQualityPlan) -> bool {
             crate::sampling::SampleMethod::PerPartition { column: sampled },
         ) if column == sampled
     )
+}
+
+/// Where a run of `plan` that reads a new sample gets its segment totals.
+/// `may_read_blocks` is whether the sample may be seeded runs of one file, which see
+/// too few rows to count; the head sees too few as well. Every other sample is one
+/// streamed pass over the scope, which counts the grain's key as it goes.
+pub fn fresh_segment_count(plan: &DataQualityPlan, may_read_blocks: bool) -> SegmentCount {
+    if plan.compute != QualityCompute::Sample || !segments_need_count(plan) {
+        return SegmentCount::NotNeeded;
+    }
+    if sampler_counts_segments(plan) {
+        return SegmentCount::PerValue;
+    }
+    match plan.method {
+        crate::sampling::SampleMethod::FirstRows => SegmentCount::CountPass,
+        crate::sampling::SampleMethod::Spread if may_read_blocks => SegmentCount::CountPass,
+        _ => SegmentCount::InSamplePass,
+    }
+}
+
+/// The key a partition or time-window grain splits rows by, as both the count and
+/// the segments read it.
+fn segment_count_key(plan: &DataQualityPlan) -> Option<Expr> {
+    match &plan.grain {
+        QualityGrain::Partition(column) => Some(col(column.as_str())),
+        QualityGrain::TimeWindows { column, every } => {
+            Some(time_window_start(plan.time_value(column), every))
+        }
+        _ => None,
+    }
 }
 
 /// Whether a sample's own counts are `plan`'s segment totals: the sampler counted
@@ -1909,7 +2082,7 @@ fn profile_quality(
     // across the whole scope, so a file sorted by date is not judged by its first
     // stretch. Every grain cuts its segments from this one sample, so a segmented
     // run reads no more than the sample says and measures the rows every tool reads.
-    let kept = acquired.insert(match kept.filter(|kept| kept.serves(plan)) {
+    let kept = acquired.insert(match kept {
         Some(kept) => {
             watch.stage(QualityStage::ReusingSample, false)?;
             kept.clone()
@@ -1987,13 +2160,13 @@ fn profile_quality(
         precision,
         &schema,
         SegmentSampleProvenance {
-            positions: sample_positions.as_deref(),
+            positions: Some(sample_positions.as_slice()),
             totals: &totals,
         },
         polars_streaming,
     )?;
     watch.stage(QualityStage::ComputingIntervals, false)?;
-    let temporal = profile_temporal(&profile_df, plan, sample_positions.as_deref())?;
+    let temporal = profile_temporal(&profile_df, plan, Some(sample_positions.as_slice()))?;
     watch.stage(QualityStage::CheckingSharedNulls, false)?;
     let shared_nulls = profile_shared_nulls(&profile_df.lazy(), &columns, polars_streaming)?;
     let per_value = kept.per_value.as_ref().map(|per_value| per_value.kept);
@@ -2017,7 +2190,8 @@ fn profile_quality(
     Ok(results)
 }
 
-/// Read the rows a sampled run measures.
+/// Read the rows a sampled run measures, counting the grain's segments in the same
+/// pass when the sampler streams every row.
 fn read_quality_sample(
     lf: &LazyFrame,
     total_rows: Option<usize>,
@@ -2031,54 +2205,51 @@ fn read_quality_sample(
         rows: plan.dataset_rows,
         seed: plan.sample_seed,
     };
-    // A row chunk is a stretch of the scope's order, so a sampled row has to
-    // remember where it sat.
-    let chunked = matches!(plan.grain, QualityGrain::RowChunks(_));
-    let read_from = if chunked {
-        lf.clone().with_row_index(QUALITY_SAMPLE_POSITION, None)
+    let count = if sampler_counts_segments(plan) {
+        None
     } else {
-        lf.clone()
+        segment_count_key(plan)
     };
-    let sampled = crate::sampling::read_rows_watched(
-        &read_from,
+    let sampled = crate::sampling::acquire(
+        lf,
         &sample,
         total_rows,
         polars_streaming,
         Some(watch.read()),
+        count.as_ref(),
     )?;
-    let (df, positions) = if chunked {
-        let positions = sampled
-            .df
-            .column(QUALITY_SAMPLE_POSITION)?
-            .cast(&DataType::UInt32)?
-            .u32()?
-            .into_no_null_iter()
-            .collect::<Vec<_>>();
-        (sampled.df.drop(QUALITY_SAMPLE_POSITION)?, Some(positions))
-    } else {
-        (sampled.df, None)
-    };
-    let precision = if sampled.sample_size.is_some() {
+    let precision = if sampled.rows.sample_size.is_some() {
         QualityPrecision::Sampled
     } else {
         QualityPrecision::Exact
     };
-    Ok(QualitySample {
-        df,
-        positions,
+    let mut kept = QualitySample {
+        df: sampled.rows.df,
+        positions: sampled.positions,
         precision,
-        total_rows: Some(sampled.total_rows),
-        per_value: sampled.per_value,
+        total_rows: Some(sampled.rows.total_rows),
+        per_value: sampled.rows.per_value,
         counted: Vec::new(),
-    })
+        too_many: None,
+    };
+    match sampled.counted {
+        Some(crate::sampling::Counted::Totals(totals)) => {
+            kept.counted.push((segment_key(plan), totals));
+        }
+        Some(crate::sampling::Counted::TooMany) => kept.too_many = Some(segment_key(plan)),
+        None => {}
+    }
+    Ok(kept)
 }
 
 /// How many rows each segment of a sampled run holds, reading only what nothing has
 /// counted yet.
 ///
 /// An equal-per-value sample counted every value as it streamed, so a grain by the
-/// same column is already counted. Another grain is counted by a read of its key, once:
-/// the count is kept with the sample for the next run to cut it.
+/// same column is already counted, and a streamed sample counted the grain it was read
+/// for. A coarser window is summed from a finer window's count when it nests in it
+/// exactly. Anything else is counted by a read of its key, once: the count is kept with
+/// the sample for the next run.
 fn sampled_segment_totals(
     lf: &LazyFrame,
     plan: &DataQualityPlan,
@@ -2089,23 +2260,89 @@ fn sampled_segment_totals(
     if !segments_need_count(plan) {
         return Ok(BTreeMap::new());
     }
+    let labeled = |counts: &SegmentCounts| {
+        counts
+            .iter()
+            .map(|(raw, rows)| (segment_label(&plan.grain, raw.as_deref()), *rows))
+            .collect::<BTreeMap<_, _>>()
+    };
     if per_value_counts(plan, kept.per_value.as_ref())
         && let Some(per_value) = &kept.per_value
     {
-        return Ok(per_value
-            .totals
-            .iter()
-            .map(|(raw, rows)| (segment_label(&plan.grain, raw.as_deref()), *rows))
-            .collect());
+        return Ok(labeled(&per_value.totals));
     }
     let key = segment_key(plan);
-    if let Some((_, totals)) = kept.counted.iter().find(|(counted, _)| *counted == key) {
-        return Ok(totals.clone());
+    if kept.too_many.as_ref() == Some(&key) {
+        return Err(too_many_segments(plan));
+    }
+    if let Some((_, counts)) = kept.counted.iter().find(|(counted, _)| *counted == key) {
+        return Ok(labeled(counts));
+    }
+    if let Some((_, finer)) = kept.finer_count(&key)
+        && let QualityGrain::TimeWindows { every, .. } = &plan.grain
+    {
+        let counts = roll_up_windows(finer, every)?;
+        let totals = labeled(&counts);
+        kept.counted.push((key, counts));
+        return Ok(totals);
     }
     watch.stage(QualityStage::CountingSegments, true)?;
-    let totals = counted_segment_totals(lf, plan, polars_streaming)?;
-    kept.counted.push((key, totals.clone()));
+    let counts = counted_segment_totals(lf, plan, polars_streaming)?;
+    if counts.len() > crate::sampling::MAX_COUNTED_KEYS {
+        kept.too_many = Some(key);
+        return Err(too_many_segments(plan));
+    }
+    let totals = labeled(&counts);
+    kept.counted.push((key, counts));
     Ok(totals)
+}
+
+fn too_many_segments(plan: &DataQualityPlan) -> Report {
+    Report::msg(format!(
+        "More than {} segments {}; choose a coarser grain",
+        crate::numfmt::group_chrome(crate::sampling::MAX_COUNTED_KEYS),
+        plan.grain.label()
+    ))
+}
+
+/// A finer window's counts summed into `every`'s windows, through the expression
+/// that cuts every window, so the sum lands where a count by `every` would. Exact only
+/// where [`window_nests`] says so; the caller asks it first.
+fn roll_up_windows(finer: &SegmentCounts, every: &str) -> Result<SegmentCounts> {
+    let mut rolled = SegmentCounts::new();
+    let mut starts = Vec::with_capacity(finer.len());
+    let mut rows = Vec::with_capacity(finer.len());
+    for (raw, count) in finer {
+        match raw {
+            Some(raw) => {
+                let start = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f")
+                    .map_err(|_| Report::msg(format!("Window start {raw:?} is not a time")))?;
+                starts.push(start.and_utc().timestamp_micros());
+                rows.push(*count as u64);
+            }
+            // A row with no time is in no window at any width.
+            None => *rolled.entry(None).or_default() += count,
+        }
+    }
+    let finer = DataFrame::new(
+        starts.len(),
+        vec![
+            Column::new("start".into(), starts)
+                .cast(&DataType::Datetime(TimeUnit::Microseconds, None))?,
+            Column::new("rows".into(), rows),
+        ],
+    )?;
+    let coarse = finer
+        .lazy()
+        .select([time_window_start(col("start"), every), col("rows")])
+        .collect()?;
+    let (starts, rows) = (coarse.column("start")?, coarse.column("rows")?.u64()?);
+    for (row, count) in rows.into_no_null_iter().enumerate() {
+        let start = starts.get(row)?;
+        let key = (!start.is_null()).then(|| start.str_value().into_owned());
+        *rolled.entry(key).or_default() += count as usize;
+    }
+    Ok(rolled)
 }
 
 fn compute_full_quality(
@@ -2483,7 +2720,7 @@ struct SegmentRows {
 fn segment_rows(
     df: &DataFrame,
     plan: &DataQualityPlan,
-    sample_positions: Option<&[u32]>,
+    sample_positions: Option<&[IdxSize]>,
 ) -> Result<Vec<SegmentRows>> {
     let all_rows = || SegmentRows {
         label: "current view".to_string(),
@@ -2498,7 +2735,7 @@ fn segment_rows(
                 let position = sample_positions
                     .and_then(|positions| positions.get(row))
                     .copied()
-                    .unwrap_or(row as u32) as usize;
+                    .unwrap_or(row as IdxSize) as usize;
                 chunks.entry(position / size).or_default().push(row as u32);
             }
             chunks
@@ -2645,7 +2882,7 @@ fn take_rows(df: &DataFrame, indices: &[u32]) -> PolarsResult<DataFrame> {
 }
 
 struct SegmentSampleProvenance<'a> {
-    positions: Option<&'a [u32]>,
+    positions: Option<&'a [IdxSize]>,
     totals: &'a BTreeMap<String, usize>,
 }
 
@@ -2660,15 +2897,11 @@ fn counted_segment_totals(
     lf: &LazyFrame,
     plan: &DataQualityPlan,
     polars_streaming: bool,
-) -> Result<BTreeMap<String, usize>> {
+) -> Result<SegmentCounts> {
     const KEY: &str = "__quality_count_key";
     const ROWS: &str = "__quality_count_rows";
-    let key = match &plan.grain {
-        QualityGrain::Partition(column) => col(column.as_str()),
-        QualityGrain::TimeWindows { column, every } => {
-            time_window_start(plan.time_value(column), every)
-        }
-        _ => return Ok(BTreeMap::new()),
+    let Some(key) = segment_count_key(plan) else {
+        return Ok(SegmentCounts::new());
     };
     let counts = collect_lazy(
         lf.clone()
@@ -2682,12 +2915,10 @@ fn counted_segment_totals(
     let mut totals = BTreeMap::new();
     for row in 0..counts.height() {
         let raw = keys.get(row)?;
+        // Keyed as the key reads, as a streamed count keys it: named as a segment only
+        // when a run asks, so a finer window's count can be summed into a coarser one.
         let raw = (!raw.is_null()).then(|| raw.str_value().into_owned());
-        // Named as the sample's segments are, so each count finds its segment.
-        totals.insert(
-            segment_label(&plan.grain, raw.as_deref()),
-            usize_value_at(&counts, ROWS, row),
-        );
+        totals.insert(raw, usize_value_at(&counts, ROWS, row));
     }
     Ok(totals)
 }
@@ -3235,7 +3466,7 @@ fn resolved_intervals(
 fn profile_temporal(
     df: &DataFrame,
     plan: &DataQualityPlan,
-    sample_positions: Option<&[u32]>,
+    sample_positions: Option<&[IdxSize]>,
 ) -> Result<Vec<TemporalLatencyProfile>> {
     // Resolved before the rows are grouped, as the lazy path does: the default plan
     // assigns no roles at all, and splitting the sample into ten thousand segments to
@@ -6380,6 +6611,344 @@ mod tests {
             compute_data_quality_watched(&fixture(), Some(4), &plan, None, false, None, &late);
         assert!(results.is_err());
         assert!(kept.is_some(), "the sample it read comes back");
+    }
+
+    /// A table that counts the rows read from it. Every pass over it runs its rows
+    /// through the filter, whatever the pass selects, so a test counts reads rather
+    /// than inferring them from the stages a run names.
+    fn counting_table(rows: usize) -> (DataFrame, LazyFrame, Arc<std::sync::atomic::AtomicUsize>) {
+        let start = chrono::NaiveDate::from_ymd_opt(2023, 12, 18)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        // Every 97 minutes: a stride that lands in every hour of the day, across
+        // week and month boundaries.
+        let at: Vec<chrono::NaiveDateTime> = (0..rows)
+            .map(|row| start + chrono::Duration::minutes(row as i64 * 97))
+            .collect();
+        let micros = |times: &[chrono::NaiveDateTime]| {
+            times
+                .iter()
+                .map(|time| time.and_utc().timestamp_micros())
+                .collect::<Vec<_>>()
+        };
+        let sent: Vec<chrono::NaiveDateTime> = at
+            .iter()
+            .enumerate()
+            .map(|(row, time)| *time + chrono::Duration::seconds(30 + (row % 7) as i64))
+            .collect();
+        let datetime = DataType::Datetime(TimeUnit::Microseconds, None);
+        let df = DataFrame::new(
+            rows,
+            vec![
+                Column::new("id".into(), (0..rows as i64).collect::<Vec<_>>()),
+                Column::new("at".into(), micros(&at))
+                    .cast(&datetime)
+                    .unwrap(),
+                Column::new("sent".into(), micros(&sent))
+                    .cast(&datetime)
+                    .unwrap(),
+                Column::new(
+                    "sent_text".into(),
+                    sent.iter()
+                        .map(|time| time.format("%m/%d/%Y %H:%M:%S").to_string())
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "region".into(),
+                    (0..rows)
+                        .map(|row| ["North", "South", "East"][row % 3])
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&read);
+        let lf = df.clone().lazy().filter(col("id").map(
+            move |column| {
+                counter.fetch_add(column.len(), std::sync::atomic::Ordering::Relaxed);
+                Ok(column.is_not_null().into_column())
+            },
+            |_, field| Ok(Field::new(field.name().clone(), DataType::Boolean)),
+        ));
+        (df, lf, read)
+    }
+
+    fn segment_totals(results: &DataQualityResults) -> BTreeMap<String, Option<usize>> {
+        results
+            .segments
+            .iter()
+            .map(|segment| (segment.label.clone(), segment.total_rows))
+            .collect()
+    }
+
+    /// Every sampled segment's total is its rows in a full scan of the plain table.
+    fn assert_exact(results: &DataQualityResults, df: &DataFrame, plan: &DataQualityPlan) {
+        let full = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..plan.clone()
+        };
+        let exact = segment_totals(
+            &compute_data_quality(&df.clone().lazy(), None, &full, None, false).unwrap(),
+        );
+        assert!(!results.segments.is_empty());
+        for (label, total) in segment_totals(results) {
+            assert_eq!(total, exact[&label], "{label} of {:?}", plan.grain);
+        }
+    }
+
+    /// The rows each edit reads, counted at the table: the "What edits should cost"
+    /// table of #415 for a streamed sample. The first run counts its daily segments
+    /// in the pass that samples; roles, text read as time on a role, a coarser window
+    /// the daily counts nest in, and row chunks read nothing; a finer window, a
+    /// partition and a grain on newly interpreted text each read their key once; a
+    /// new seed is a new sample. Every total is the exact one a full scan finds.
+    #[test]
+    fn each_edit_reads_only_what_it_needs() {
+        let rows = 3_000;
+        let (df, lf, read) = counting_table(rows);
+        let daily = DataQualityPlan {
+            dataset_rows: 300,
+            sample_seed: 5,
+            grain: QualityGrain::TimeWindows {
+                column: "at".into(),
+                every: "1d".into(),
+            },
+            ..DataQualityPlan::default()
+        };
+        let roles = vec![
+            TemporalRoleAssignment {
+                role: TemporalRole::Event,
+                column: "at".into(),
+                timezone: None,
+            },
+            TemporalRoleAssignment {
+                role: TemporalRole::Received,
+                column: "sent_text".into(),
+                timezone: None,
+            },
+        ];
+        let sent_format = TimeInterpretation {
+            column: "sent_text".into(),
+            kind: TimeKind::Datetime,
+            format: "%m/%d/%Y %H:%M:%S".into(),
+        };
+        let window = |column: &str, every: &str| QualityGrain::TimeWindows {
+            column: column.into(),
+            every: every.into(),
+        };
+        let with = |grain: QualityGrain| DataQualityPlan {
+            grain,
+            temporal_roles: roles.clone(),
+            time_formats: vec![sent_format.clone()],
+            ..daily.clone()
+        };
+        let mut kept: Option<QualitySample> = None;
+        let mut run = |plan: &DataQualityPlan, reuse: bool| {
+            read.store(0, std::sync::atomic::Ordering::Relaxed);
+            let (results, acquired) = compute_data_quality_kept(
+                &lf,
+                None,
+                plan,
+                None,
+                false,
+                if reuse { kept.as_ref() } else { None },
+            )
+            .unwrap();
+            kept = acquired;
+            (results, read.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let passes = |read: usize| read as f64 / rows as f64;
+
+        let (first, reads) = run(&daily, false);
+        assert_eq!(passes(reads), 1.0, "sampled and counted in one pass");
+        assert_eq!(first.precision, QualityPrecision::Sampled);
+        assert_exact(&first, &df, &daily);
+
+        // A role: the rows are all here. Text read as time for a role, the same.
+        let roled = DataQualityPlan {
+            temporal_roles: roles.clone(),
+            ..daily.clone()
+        };
+        let (_, reads) = run(&roled, true);
+        assert_eq!(reads, 0, "a role edit reads nothing");
+        let interpreted = with(daily.grain.clone());
+        let (results, reads) = run(&interpreted, true);
+        assert_eq!(reads, 0, "an interpretation edit reads nothing");
+        assert!(!results.temporal.is_empty(), "and measures the interval");
+
+        // Days nest in weeks and months: summed, not read.
+        for every in ["1w", "1mo"] {
+            let plan = with(window("at", every));
+            let (results, reads) = run(&plan, true);
+            assert_eq!(reads, 0, "{every} from the daily counts");
+            assert_exact(&results, &df, &plan);
+        }
+        // An hour does not come from a day, nor a region from time: one count each.
+        for grain in [window("at", "1h"), QualityGrain::Partition("region".into())] {
+            let plan = with(grain.clone());
+            let (results, reads) = run(&plan, true);
+            assert_eq!(passes(reads), 1.0, "{grain:?} is counted");
+            assert_exact(&results, &df, &plan);
+            let (_, reads) = run(&plan, true);
+            assert_eq!(reads, 0, "{grain:?} is counted once");
+        }
+        // A grain on text read as time is a new key: counted once, through its format.
+        let plan = with(window("sent_text", "1d"));
+        let (results, reads) = run(&plan, true);
+        assert_eq!(passes(reads), 1.0);
+        assert_exact(&results, &df, &plan);
+
+        // Row chunks: every row's position was kept by the first read.
+        let chunks = with(QualityGrain::RowChunks(500));
+        let (results, reads) = run(&chunks, true);
+        assert_eq!(reads, 0, "row chunks after a first run read nothing");
+        let (fresh, _) = run(&chunks, false);
+        assert_eq!(
+            format!("{:?}", results.segments),
+            format!("{:?}", fresh.segments),
+            "the chunks a chunked read cuts"
+        );
+
+        // Another seed, size or scope is other rows: the caller keys the sample by
+        // them and hands none over, and the run reads, counting in the same pass.
+        for plan in [
+            DataQualityPlan {
+                sample_seed: 6,
+                ..daily.clone()
+            },
+            DataQualityPlan {
+                dataset_rows: 400,
+                ..daily.clone()
+            },
+            DataQualityPlan {
+                scope: QualityScope::FirstRows(2_000),
+                ..daily.clone()
+            },
+        ] {
+            let scoped = apply_quality_scope(lf.clone(), &plan.scope, None).unwrap();
+            read.store(0, std::sync::atomic::Ordering::Relaxed);
+            let (results, _) =
+                compute_data_quality_kept(&scoped, None, &plan, None, false, None).unwrap();
+            assert_eq!(passes(read.load(std::sync::atomic::Ordering::Relaxed)), 1.0);
+            let scoped = apply_quality_scope(df.clone().lazy(), &plan.scope, None)
+                .unwrap()
+                .collect()
+                .unwrap();
+            assert_exact(&results, &scoped, &plan);
+        }
+    }
+
+    /// Hours sum into days, weeks and months, and days into weeks and months, to the
+    /// counts a read of the coarser window gives: on a plain, a zoned and a date
+    /// column, across month ends, week starts and a daylight saving change. A week
+    /// is not summed into months.
+    #[test]
+    fn finer_windows_sum_to_coarser_ones_exactly() {
+        let (df, _, _) = counting_table(4_000);
+        let df = df
+            .lazy()
+            .with_columns([
+                col("at")
+                    .dt()
+                    .replace_time_zone(
+                        TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
+                        lit("earliest"),
+                        NonExistent::Null,
+                    )
+                    .alias("zoned"),
+                col("at").cast(DataType::Date).alias("day"),
+            ])
+            .collect()
+            .unwrap();
+        let count = |column: &str, every: &str| {
+            counted_segment_totals(
+                &df.clone().lazy(),
+                &DataQualityPlan {
+                    grain: QualityGrain::TimeWindows {
+                        column: column.into(),
+                        every: every.into(),
+                    },
+                    ..DataQualityPlan::default()
+                },
+                false,
+            )
+            .unwrap()
+        };
+        let widths = ["1h", "1d", "1w", "1mo"];
+        for column in ["at", "zoned", "day"] {
+            for fine in widths {
+                for coarse in widths
+                    .into_iter()
+                    .filter(|coarse| window_nests(fine, coarse))
+                {
+                    assert_eq!(
+                        roll_up_windows(&count(column, fine), coarse).unwrap(),
+                        count(column, coarse),
+                        "{column}: {fine} into {coarse}"
+                    );
+                }
+            }
+        }
+        assert!(!window_nests("1w", "1mo"));
+        assert!(!window_nests("1d", "1h"));
+        assert!(!window_nests("1d", "1d"));
+    }
+
+    /// Setup's account of where totals come from matches what the run does: a
+    /// retained count, a finer count summed, a count pass, or too many to count.
+    #[test]
+    fn a_sample_says_where_its_segment_totals_come_from() {
+        let (_, lf, _) = counting_table(2_000);
+        let daily = DataQualityPlan {
+            dataset_rows: 100,
+            grain: QualityGrain::TimeWindows {
+                column: "at".into(),
+                every: "1d".into(),
+            },
+            ..DataQualityPlan::default()
+        };
+        assert_eq!(
+            fresh_segment_count(&daily, false),
+            SegmentCount::InSamplePass
+        );
+        assert_eq!(fresh_segment_count(&daily, true), SegmentCount::CountPass);
+        let head = DataQualityPlan {
+            method: crate::sampling::SampleMethod::FirstRows,
+            ..daily.clone()
+        };
+        assert_eq!(fresh_segment_count(&head, false), SegmentCount::CountPass);
+        let (_, kept) = compute_data_quality_kept(&lf, None, &daily, None, false, None).unwrap();
+        let mut kept = kept.unwrap();
+        let grain = |every: &str| DataQualityPlan {
+            grain: QualityGrain::TimeWindows {
+                column: "at".into(),
+                every: every.into(),
+            },
+            ..daily.clone()
+        };
+        assert_eq!(kept.segment_count(&daily), SegmentCount::Retained);
+        assert_eq!(
+            kept.segment_count(&grain("1w")),
+            SegmentCount::RolledUp("1d".into())
+        );
+        assert_eq!(kept.segment_count(&grain("1h")), SegmentCount::CountPass);
+        let chunks = DataQualityPlan {
+            grain: QualityGrain::RowChunks(100),
+            ..daily.clone()
+        };
+        assert_eq!(kept.segment_count(&chunks), SegmentCount::NotNeeded);
+
+        // A grain whose count gave up names the remedy, and the rows stay.
+        kept.too_many = Some(segment_key(&grain("1h")));
+        assert_eq!(kept.segment_count(&grain("1h")), SegmentCount::TooMany);
+        let error = compute_data_quality_kept(&lf, None, &grain("1h"), None, false, Some(&kept))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("choose a coarser grain"),
+            "{error}"
+        );
     }
 
     /// A stop reaches into a streamed read: the sampler ends at its next batch and

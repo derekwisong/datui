@@ -28,6 +28,97 @@ const MAX_GROUP_ROWS: usize = 2_000_000;
 /// The row index the per-partition sampler ranks rows by, dropped before anyone sees it.
 const GROUP_POSITION: &str = "__datui_group_sample_position";
 
+/// The key a streamed pass counts rows by, computed beside the rows and taken off
+/// each batch before the sampler keeps any of it.
+pub(crate) const COUNT_KEY: &str = "__datui_count_key";
+
+/// Distinct keys a pass counts before it gives up counting. Past this the grain is
+/// finer than a report can show, and the map would grow with the table.
+pub const MAX_COUNTED_KEYS: usize = 1_000_000;
+
+/// What a streamed pass counted beside its sample.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Counted {
+    /// Every row of the scope by its key, named as a segment names its value
+    /// (`AnyValue::str_value`), `None` for null.
+    Totals(std::collections::BTreeMap<Option<String>, usize>),
+    /// More than [`MAX_COUNTED_KEYS`] keys: the count was dropped, the sample kept.
+    TooMany,
+}
+
+/// Rows by [`COUNT_KEY`], a batch at a time, bounded by [`MAX_COUNTED_KEYS`].
+#[derive(Debug)]
+pub(crate) struct KeyCounter {
+    totals: HashMap<Option<String>, usize>,
+    limit: usize,
+    too_many: bool,
+}
+
+impl Default for KeyCounter {
+    fn default() -> Self {
+        Self::with_limit(MAX_COUNTED_KEYS)
+    }
+}
+
+impl KeyCounter {
+    fn with_limit(limit: usize) -> Self {
+        Self {
+            totals: HashMap::new(),
+            limit,
+            too_many: false,
+        }
+    }
+
+    /// Count `batch`'s keys and take the key off it, so the rows kept are the
+    /// table's own. A batch without the key is left as it is.
+    pub(crate) fn observe(&mut self, batch: &mut DataFrame) -> PolarsResult<()> {
+        if batch.column(COUNT_KEY).is_err() {
+            return Ok(());
+        }
+        let key = batch.drop_in_place(COUNT_KEY)?;
+        if self.too_many {
+            return Ok(());
+        }
+        // Grouped in Polars first, so a key is turned into text once per batch
+        // rather than once per row.
+        let counts = key.as_materialized_series().value_counts(
+            false,
+            false,
+            "__datui_count_rows".into(),
+            false,
+        )?;
+        let keys = counts.column(COUNT_KEY)?;
+        let rows = counts.column("__datui_count_rows")?;
+        for row in 0..counts.height() {
+            let value = keys.get(row)?;
+            let key = (!value.is_null()).then(|| value.str_value().into_owned());
+            let n = rows.get(row)?.extract::<usize>().unwrap_or(0);
+            *self.totals.entry(key).or_default() += n;
+        }
+        if self.totals.len() > self.limit {
+            self.too_many = true;
+            self.totals = HashMap::new();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Counted {
+        if self.too_many {
+            Counted::TooMany
+        } else {
+            Counted::Totals(self.totals.into_iter().collect())
+        }
+    }
+}
+
+/// `lf` with `count`'s key beside its rows, for a pass that counts as it samples.
+pub(crate) fn with_count_key(lf: LazyFrame, count: Option<&Expr>) -> LazyFrame {
+    match count {
+        Some(key) => lf.with_column(key.clone().alias(COUNT_KEY)),
+        None => lf,
+    }
+}
+
 /// What a read that was stopped says. Its work is dropped, never shown as a result.
 pub const CANCELLED: &str = "Cancelled";
 
@@ -315,23 +406,50 @@ pub(crate) fn read_rows_watched(
     polars_streaming: bool,
     watch: Option<&ReadWatch>,
 ) -> Result<AnalysisRows> {
+    acquire(lf, sample, known_total, polars_streaming, watch, None).map(|read| read.rows)
+}
+
+/// The rows a sample kept, where each sat in the frame, and what its pass counted.
+pub(crate) struct SampledRows {
+    pub rows: AnalysisRows,
+    /// Each kept row's position in the frame read, in the order of `rows.df`: what
+    /// cuts a sample into row chunks without reading it again.
+    pub positions: Vec<IdxSize>,
+    /// Rows by `count`'s key, when the pass that read the sample saw every row.
+    /// `None` when it did not (seeded runs, the head) or nothing was asked.
+    pub counted: Option<Counted>,
+}
+
+/// [`read_rows_watched`], keeping each row's position, and counting every row by
+/// `count` when the read is one streamed pass over all of them: the pass is being
+/// paid for anyway, and a second read of the key is what this saves.
+pub(crate) fn acquire(
+    lf: &LazyFrame,
+    sample: &Sample,
+    known_total: Option<usize>,
+    polars_streaming: bool,
+    watch: Option<&ReadWatch>,
+    count: Option<&Expr>,
+) -> Result<SampledRows> {
     let n = sample.rows.max(1);
     match &sample.method {
-        SampleMethod::EveryRow => crate::statistics::analysis_rows_watched(
+        SampleMethod::EveryRow => crate::statistics::sample_rows_counting(
             lf,
             None,
             known_total,
             sample.seed,
             polars_streaming,
             watch,
+            count,
         ),
-        SampleMethod::Spread => crate::statistics::analysis_rows_watched(
+        SampleMethod::Spread => crate::statistics::sample_rows_counting(
             lf,
             Some(n),
             known_total,
             sample.seed,
             polars_streaming,
             watch,
+            count,
         ),
         SampleMethod::FirstRows => {
             let df = collect_lazy(lf.clone().limit(n as IdxSize), polars_streaming)
@@ -342,22 +460,30 @@ pub(crate) fn read_rows_watched(
                 Some(total) => total > height,
                 None => height == n,
             };
-            Ok(AnalysisRows {
-                df,
-                total_rows: known_total.unwrap_or(height),
-                sample_size: sampled.then_some(height),
-                per_value: None,
+            Ok(SampledRows {
+                positions: (0..height as IdxSize).collect(),
+                rows: AnalysisRows {
+                    df,
+                    total_rows: known_total.unwrap_or(height),
+                    sample_size: sampled.then_some(height),
+                    per_value: None,
+                },
+                counted: None,
             })
         }
         SampleMethod::PerPartition { column } => {
-            let (df, total_rows, per_value) =
-                per_group_sample_within(lf, column, n, sample.seed, MAX_GROUP_ROWS, watch)?;
-            let sample_size = (total_rows > df.height()).then_some(df.height());
-            Ok(AnalysisRows {
-                df,
-                total_rows,
-                sample_size,
-                per_value: Some(per_value),
+            let read =
+                per_group_sample_within(lf, column, n, sample.seed, MAX_GROUP_ROWS, watch, count)?;
+            let sample_size = (read.seen > read.df.height()).then_some(read.df.height());
+            Ok(SampledRows {
+                rows: AnalysisRows {
+                    df: read.df,
+                    total_rows: read.seen,
+                    sample_size,
+                    per_value: Some(read.per_value),
+                },
+                positions: read.positions,
+                counted: read.counted,
             })
         }
     }
@@ -373,6 +499,15 @@ pub struct PerValue {
     /// segment names a value (`AnyValue::str_value`), `None` for null, so a segment
     /// by the same column finds its count here instead of in a second read.
     pub totals: std::collections::BTreeMap<Option<String>, usize>,
+}
+
+/// What [`per_group_sample_within`] read.
+struct GroupRead {
+    df: DataFrame,
+    seen: usize,
+    per_value: PerValue,
+    positions: Vec<IdxSize>,
+    counted: Option<Counted>,
 }
 
 /// Up to `n` seeded rows from each value of `column`, from one streamed pass, in table
@@ -391,7 +526,8 @@ fn per_group_sample_within(
     seed: u64,
     limit: usize,
     watch: Option<&ReadWatch>,
-) -> Result<(DataFrame, usize, PerValue)> {
+    count: Option<&Expr>,
+) -> Result<GroupRead> {
     let schema = lf.clone().collect_schema()?;
     if schema.get(column).is_none() {
         return Err(Report::msg(format!(
@@ -407,8 +543,7 @@ fn per_group_sample_within(
     }));
     let callback_state = std::sync::Arc::clone(&state);
     let callback_watch = watch.cloned();
-    let sink = lf
-        .clone()
+    let sink = with_count_key(lf.clone(), count)
         .with_row_index(GROUP_POSITION, None)
         .sink_batches(
             PlanCallback::new(move |batch: DataFrame| {
@@ -457,13 +592,28 @@ fn per_group_sample_within(
             None => rows,
         });
     }
-    let df = match out {
-        Some(df) => df
-            .sort([GROUP_POSITION], SortMultipleOptions::default())?
-            .drop(GROUP_POSITION)?,
-        None => collect_lazy(lf.clone().limit(0), true).map_err(Report::from)?,
+    let (df, positions) = match out {
+        Some(df) => {
+            let df = df.sort([GROUP_POSITION], SortMultipleOptions::default())?;
+            let positions = df
+                .column(GROUP_POSITION)?
+                .idx()?
+                .into_no_null_iter()
+                .collect();
+            (df.drop(GROUP_POSITION)?, positions)
+        }
+        None => (
+            collect_lazy(lf.clone().limit(0), true).map_err(Report::from)?,
+            Vec::new(),
+        ),
     };
-    Ok((df, seen, PerValue { kept: cap, totals }))
+    Ok(GroupRead {
+        df,
+        seen,
+        per_value: PerValue { kept: cap, totals },
+        positions,
+        counted: count.is_some().then(|| state.counter.finish()),
+    })
 }
 
 #[derive(Default)]
@@ -479,6 +629,7 @@ struct GroupState {
     /// Rows held across every value.
     held: usize,
     groups: HashMap<Option<String>, GroupSample>,
+    counter: KeyCounter,
 }
 
 #[derive(Default)]
@@ -510,7 +661,8 @@ impl GroupSample {
 }
 
 impl GroupState {
-    fn observe(&mut self, batch: DataFrame) -> PolarsResult<()> {
+    fn observe(&mut self, mut batch: DataFrame) -> PolarsResult<()> {
+        self.counter.observe(&mut batch)?;
         self.seen += batch.height();
         let positions = batch.column(GROUP_POSITION)?.idx()?.clone();
         let keys = batch.column(&self.column)?.as_materialized_series().clone();
@@ -633,8 +785,12 @@ mod tests {
     /// keeps, and every value's rows counted on the way.
     #[test]
     fn per_partition_past_the_limit_keeps_fewer_of_each_value() {
-        let (df, seen, per_value) =
-            per_group_sample_within(&table(), "part", 500, 42_891, 999, None).unwrap();
+        let GroupRead {
+            df,
+            seen,
+            per_value,
+            ..
+        } = per_group_sample_within(&table(), "part", 500, 42_891, 999, None, None).unwrap();
         assert_eq!(seen, 10_000);
         assert_eq!(per_value.kept, 333);
         assert_eq!(df.height(), 333 + 333 + 100);
@@ -645,9 +801,9 @@ mod tests {
                 .map(|(part, rows)| (Some(part.to_string()), rows))
                 .collect()
         );
-        let (asked, _, _) =
-            per_group_sample_within(&table(), "part", 333, 42_891, usize::MAX, None).unwrap();
-        assert!(df.equals(&asked), "the rows a sample of 333 each keeps");
+        let asked =
+            per_group_sample_within(&table(), "part", 333, 42_891, usize::MAX, None, None).unwrap();
+        assert!(df.equals(&asked.df), "the rows a sample of 333 each keeps");
 
         let lowered = Sample {
             method: SampleMethod::PerPartition {
@@ -660,6 +816,70 @@ mod tests {
             lowered.outcome(10_000, Some(766), Some(333)),
             "766 rows, up to 333 per part (lowered from 500), of 10,000"
         );
+    }
+
+    /// Every sampler says where each kept row sat, which is what cuts a sample into
+    /// row chunks later without a read. A streamed pass counts every row by the key
+    /// it is given while it samples, the counts a read of the key would give; the head
+    /// does not see every row, so it counts nothing.
+    #[test]
+    fn a_sample_says_where_its_rows_sat_and_a_stream_counts_on_the_way() {
+        // Sampled per one column and counted by another.
+        let lf = table()
+            .with_column((col("value") % lit(4)).alias("quarter"))
+            .with_row_index("row", None);
+        let totals: std::collections::BTreeMap<_, _> = [("a", 9_000), ("b", 900), ("c", 100)]
+            .into_iter()
+            .map(|(part, rows)| (Some(part.to_string()), rows))
+            .collect();
+        for method in [
+            SampleMethod::Spread,
+            SampleMethod::PerPartition {
+                column: "quarter".to_string(),
+            },
+            SampleMethod::FirstRows,
+        ] {
+            let read = acquire(
+                &lf,
+                &sample(method.clone(), 50),
+                None,
+                false,
+                None,
+                Some(&col("part")),
+            )
+            .unwrap();
+            let rows: Vec<IdxSize> = read
+                .rows
+                .df
+                .column("row")
+                .unwrap()
+                .idx()
+                .unwrap()
+                .into_no_null_iter()
+                .collect();
+            assert_eq!(rows, read.positions, "{method:?}");
+            assert!(read.rows.df.column(COUNT_KEY).is_err(), "{method:?}");
+            if method == SampleMethod::FirstRows {
+                assert_eq!(read.counted, None);
+            } else {
+                assert_eq!(
+                    read.counted,
+                    Some(Counted::Totals(totals.clone())),
+                    "{method:?}"
+                );
+            }
+        }
+    }
+
+    /// Past its limit a count stops counting and says so; the batch it saw still
+    /// loses its key, so the rows the sampler keeps are the table's.
+    #[test]
+    fn a_count_past_its_limit_gives_up_and_says_so() {
+        let mut counter = KeyCounter::with_limit(2);
+        let mut batch = df!(COUNT_KEY => ["a", "b", "c"], "value" => [1, 2, 3]).unwrap();
+        counter.observe(&mut batch).unwrap();
+        assert_eq!(batch.get_column_names(), ["value"]);
+        assert_eq!(counter.finish(), Counted::TooMany);
     }
 
     #[test]

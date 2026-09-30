@@ -8044,15 +8044,23 @@ impl LenCount {
     }
 }
 
+/// A Data Quality report, by everything its plan says: the acquisition it measured
+/// and the report's own choices.
 struct QualityCacheEntry {
     dataset_generation: u64,
     view_generation: u64,
     plan: data_quality::DataQualityPlan,
     results: data_quality::DataQualityResults,
+    bytes: usize,
 }
 
-/// The rows the last sampled Data Quality run read, and what decided which rows they
-/// were. A run or a drill that names the same rows cuts these instead of reading.
+/// Rows a sampled Data Quality run read, and what decided which rows they were: its
+/// acquisition identity. A run or a drill that names the same rows cuts these instead
+/// of reading.
+///
+/// The dataset and view generations stand for the source: a session snapshot of
+/// the dataset as opened and the view as it was. A file changed on disk since is not
+/// noticed; opening it again starts a new dataset generation, and reads it again.
 #[derive(Debug, Clone)]
 pub struct KeptQualitySample {
     dataset_generation: u64,
@@ -8060,6 +8068,23 @@ pub struct KeptQualitySample {
     sample: sampling::Sample,
     rows: std::sync::Arc<data_quality::QualitySample>,
 }
+
+impl KeptQualitySample {
+    fn same_rows(&self, other: &Self) -> bool {
+        self.dataset_generation == other.dataset_generation
+            && self.view_generation == other.view_generation
+            && self.sample == other.sample
+    }
+}
+
+/// Memory Data Quality keeps for the session: the rows its sampled runs read and the
+/// reports they made. Past it, reports that retained rows can remake go first, then
+/// the oldest rows, then the oldest other reports; the newest of each always stays.
+pub const QUALITY_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+
+/// Acquisitions released to the budget that Setup still names, so a Run that reads
+/// them again says why.
+const QUALITY_RELEASED_REMEMBERED: usize = 16;
 
 /// Why Data Quality's Run did not start: a cancelled read is still finishing. Said
 /// on Setup's line until that read ends.
@@ -8168,9 +8193,12 @@ pub struct App {
     /// Taken on the first install, so datasets opened later are not re-dressed.
     startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
+    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
     quality_cache: Vec<QualityCacheEntry>,
-    /// See [`KeptQualitySample`]. One, the last: a sample is up to two million rows.
-    quality_sample: Option<KeptQualitySample>,
+    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
+    quality_samples: Vec<KeptQualitySample>,
+    /// Acquisitions the budget released, newest first: (dataset, view, sample).
+    quality_released: Vec<(u64, u64, sampling::Sample)>,
     /// The table an analysis drill left behind: Data Quality's matching rows or the
     /// sample's, shown in its place until Esc brings it back.
     quality_evidence_return: Option<Box<DataTableState>>,
@@ -8587,40 +8615,67 @@ impl App {
             })
     }
 
-    /// Whether Data Quality's retained rows are the rows `plan` reads and serve its
-    /// grain, so a run starts from them rather than from the source.
+    /// Whether Data Quality's retained rows are the rows `plan` reads, so a run
+    /// starts from them rather than from the source. They serve any grain: every
+    /// column is kept, and where each row sat.
     pub(crate) fn quality_kept_serves(&self, plan: &data_quality::DataQualityPlan) -> bool {
         plan.compute == data_quality::QualityCompute::Sample
-            && self
-                .kept_quality_sample(&plan.sample())
-                .is_some_and(|kept| kept.serves(plan))
+            && self.kept_quality_sample(&plan.sample()).is_some()
     }
 
-    /// Whether a run of `plan` counts its segments' rows in a pass of its own: a
-    /// sampled partition or time-window grain that neither the sampler nor an earlier
-    /// run has counted.
-    pub(crate) fn quality_needs_segment_count(&self, plan: &data_quality::DataQualityPlan) -> bool {
-        if plan.compute != data_quality::QualityCompute::Sample
-            || !data_quality::segments_need_count(plan)
-        {
-            return false;
+    /// Where a run of `plan` gets its exact segment totals: from the retained rows'
+    /// counts, from the pass that reads a new sample, or from a read of their own.
+    pub(crate) fn quality_segment_count(
+        &self,
+        plan: &data_quality::DataQualityPlan,
+    ) -> data_quality::SegmentCount {
+        if plan.compute != data_quality::QualityCompute::Sample {
+            return data_quality::SegmentCount::NotNeeded;
         }
         match self.kept_quality_sample(&plan.sample()) {
-            Some(kept) if kept.serves(plan) => kept.needs_segment_count(plan),
-            // A fresh sample: an equal-per-value one counts its column as it reads.
-            _ => !data_quality::sampler_counts_segments(plan),
+            Some(kept) => kept.segment_count(plan),
+            None => data_quality::fresh_segment_count(plan, self.quality_may_read_blocks(plan)),
         }
+    }
+
+    /// Whether the rows `plan` reads were read this session and released to the
+    /// memory budget, so a Run reads them again.
+    pub(crate) fn quality_released(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return false;
+        };
+        let sample = plan.sample();
+        plan.compute == data_quality::QualityCompute::Sample
+            && self
+                .quality_released
+                .iter()
+                .any(|(dataset, view, released)| {
+                    *dataset == self.dataset_generation
+                        && *view == view_generation
+                        && *released == sample
+                })
     }
 
     /// Whether a random sample of `plan` may read seeded runs of one file rather
     /// than stream every row: one Parquet or IPC file, its rows as loaded. Told from
     /// the path and the view, since the sampler's own test needs the plan built; a
     /// false yes only means Setup says a pass may be shorter than it is.
+    ///
+    /// Leans to yes: seeded runs see too few rows to count segments, so a yes is what
+    /// makes Setup name a count pass, and a run that streams after all counts in its
+    /// one pass and reads less than Setup said, never more.
     pub(crate) fn quality_may_read_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(state) = self.data_table_state.as_ref() else {
             return false;
         };
-        let one_file = self.path.as_ref().is_some_and(|path| {
+        let columnar = matches!(
+            self.original_file_format,
+            Some(ExportFormat::Parquet | ExportFormat::Ipc)
+        ) || self.path.as_ref().is_some_and(|path| {
             path.extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| {
@@ -8629,12 +8684,16 @@ impl App {
                         "parquet" | "pq" | "arrow" | "ipc" | "feather"
                     )
                 })
-        }) && state.source_file_count() == Some(1);
-        one_file
+        });
+        columnar
+            && state.source_file_count() == Some(1)
             && !state.changes_rows()
             && matches!(
                 plan.scope,
-                data_quality::QualityScope::CurrentView | data_quality::QualityScope::WholeSource
+                data_quality::QualityScope::CurrentView
+                    | data_quality::QualityScope::WholeSource
+                    | data_quality::QualityScope::FirstRows(_)
+                    | data_quality::QualityScope::ViewRows { .. }
             )
     }
 
@@ -8654,18 +8713,96 @@ impl App {
         })
     }
 
-    /// The rows the last sampled Data Quality run read, when they are the rows
-    /// `sample` names now: same dataset, same view, same sample.
+    /// Rows a sampled Data Quality run read, when they are the rows `sample` names
+    /// now: same dataset, same view, same sample.
     fn kept_quality_sample(
         &self,
         sample: &sampling::Sample,
     ) -> Option<std::sync::Arc<data_quality::QualitySample>> {
-        let kept = self.quality_sample.as_ref()?;
         let view_generation = self.data_table_state.as_ref()?.len_generation();
-        (kept.dataset_generation == self.dataset_generation
-            && kept.view_generation == view_generation
-            && &kept.sample == sample)
-            .then(|| kept.rows.clone())
+        self.quality_samples
+            .iter()
+            .find(|kept| {
+                kept.dataset_generation == self.dataset_generation
+                    && kept.view_generation == view_generation
+                    && &kept.sample == sample
+            })
+            .map(|kept| kept.rows.clone())
+    }
+
+    /// Keep what a run read, newest first, in place of any earlier copy of the same
+    /// rows: a later run returns them with the counts it added.
+    fn retain_quality_sample(&mut self, kept: &KeptQualitySample) {
+        if kept.dataset_generation != self.dataset_generation {
+            return;
+        }
+        self.quality_samples.retain(|entry| !entry.same_rows(kept));
+        self.quality_released.retain(|(dataset, view, sample)| {
+            !(*dataset == kept.dataset_generation
+                && *view == kept.view_generation
+                && *sample == kept.sample)
+        });
+        self.quality_samples.insert(0, kept.clone());
+        self.trim_quality_memory();
+    }
+
+    /// Hold Data Quality's reports and retained rows to [`QUALITY_MEMORY_BUDGET`].
+    ///
+    /// A report whose rows are still retained goes first: remaking it reads nothing.
+    /// Then the oldest rows, whose next run reads them again, which Setup says. A
+    /// report with no rows behind it, a full scan's, goes last: it is the dearest to
+    /// remake. The newest report and the newest rows always stay, whatever their size,
+    /// so a finished read is never thrown away to make room for itself.
+    fn trim_quality_memory(&mut self) {
+        loop {
+            let used = self
+                .quality_cache
+                .iter()
+                .map(|entry| entry.bytes)
+                .sum::<usize>()
+                + self
+                    .quality_samples
+                    .iter()
+                    .map(|kept| kept.rows.estimated_bytes())
+                    .sum::<usize>();
+            if used <= QUALITY_MEMORY_BUDGET {
+                return;
+            }
+            let remakeable = self
+                .quality_cache
+                .iter()
+                .enumerate()
+                .skip(1)
+                .rev()
+                .find(|(_, entry)| {
+                    entry.plan.compute == data_quality::QualityCompute::Sample
+                        && self.quality_samples.iter().any(|kept| {
+                            kept.dataset_generation == entry.dataset_generation
+                                && kept.view_generation == entry.view_generation
+                                && kept.sample == entry.plan.sample()
+                        })
+                })
+                .map(|(index, _)| index);
+            if let Some(index) = remakeable {
+                self.quality_cache.remove(index);
+            } else if self.quality_samples.len() > 1 {
+                if let Some(released) = self.quality_samples.pop() {
+                    self.quality_released.insert(
+                        0,
+                        (
+                            released.dataset_generation,
+                            released.view_generation,
+                            released.sample,
+                        ),
+                    );
+                    self.quality_released.truncate(QUALITY_RELEASED_REMEMBERED);
+                }
+            } else if self.quality_cache.len() > 1 {
+                self.quality_cache.pop();
+            } else {
+                return;
+            }
+        }
     }
 
     fn restore_cached_quality(&mut self) -> bool {
@@ -8715,10 +8852,11 @@ impl App {
                 dataset_generation: self.dataset_generation,
                 view_generation,
                 plan,
+                bytes: results.estimated_bytes(),
                 results: results.clone(),
             },
         );
-        self.quality_cache.truncate(4);
+        self.trim_quality_memory();
     }
 
     /// Returns true when the app is busy (background work in progress).
@@ -9207,7 +9345,7 @@ impl App {
         self.analysis_modal.data_quality_from_cache = false;
         let mut progress = AnalysisProgress::new("Preparing the plan");
         if self.quality_kept_serves(&self.analysis_modal.data_quality_plan) {
-            progress.reuse = Some("Starts from the rows the last run read".to_string());
+            progress.reuse = Some("Starts from rows a run already read".to_string());
         }
         self.analysis_modal.computing = Some(progress);
         self.busy = true;
@@ -9994,7 +10132,8 @@ impl App {
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
         self.quality_cache.clear();
-        self.quality_sample = None;
+        self.quality_samples.clear();
+        self.quality_released.clear();
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
         // A query still running was over the dataset being replaced; its rollback
@@ -10624,7 +10763,8 @@ impl App {
                 app_config.performance.analysis_sample_rows,
             ),
             quality_cache: Vec::new(),
-            quality_sample: None,
+            quality_samples: Vec::new(),
+            quality_released: Vec::new(),
             quality_evidence_return: None,
             quality_evidence_label: None,
             reading_sample: false,
@@ -19762,10 +19902,8 @@ impl App {
             } => {
                 // Kept whatever became of the run's results: the rows are the rows the
                 // key names, and a read is not to be thrown away.
-                if let Some(kept) = kept
-                    && kept.dataset_generation == self.dataset_generation
-                {
-                    self.quality_sample = Some(kept.clone());
+                if let Some(kept) = kept {
+                    self.retain_quality_sample(kept);
                 }
                 if *generation == self.task_generation
                     && self.analysis_modal.active
@@ -19798,9 +19936,7 @@ impl App {
                 None
             }
             AppEvent::BackgroundQualitySampleKept { kept } => {
-                if kept.dataset_generation == self.dataset_generation {
-                    self.quality_sample = Some(kept.clone());
-                }
+                self.retain_quality_sample(kept);
                 None
             }
             AppEvent::BackgroundExportCollected {

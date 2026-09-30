@@ -1515,7 +1515,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-            .contains("Esc goes back")
+            .contains("Back")
     );
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
@@ -2459,7 +2459,7 @@ fn one_sample_serves_every_analysis_tool() {
     app.render(area, &mut buffer);
     let screen = rendered_text(&buffer);
     assert!(
-        screen.contains("Sample") && screen.contains("Esc goes back"),
+        screen.contains("Sample") && screen.contains("Esc") && screen.contains("Back"),
         "the view says what it is and the way out"
     );
     key(&mut app, KeyCode::Esc);
@@ -8613,6 +8613,76 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
         Some("1"),
         "the third file was written without `extra`, and that absence counts as a null \
          in the aggregate; row was {extra:?}"
+    );
+}
+
+/// Describe scrolls its statistics as far as the last one and no further. → past
+/// the end does nothing, so the first ← always moves back, however many times →
+/// was pressed. The bound is what the table drew, not a count kept beside it.
+#[test]
+fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
+    use datui::analysis_modal::AnalysisFocus;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/people.parquet")],
+        OpenOptions::default(),
+    );
+    app.event(&key(KeyCode::Char('a')));
+    show_sample_form(&mut app);
+    let mut next = app.event(&key(KeyCode::Enter));
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.analysis_modal.describe_results.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+
+    // 80 columns fit a handful of the nine statistics beside the tool list.
+    let area = Rect::new(0, 0, 80, 24);
+    let header = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, 1)].symbol().to_string())
+            .collect::<String>()
+    };
+    let first = header(&mut app);
+    assert!(first.contains("Count"), "{first:?}");
+    assert!(!first.contains("Max"), "not everything fits: {first:?}");
+    assert!(
+        first.contains('+'),
+        "the hidden statistics are counted: {first:?}"
+    );
+    let max = app.analysis_modal.describe_columns.max;
+    assert!(max > 0);
+
+    for _ in 0..20 {
+        app.event(&key(KeyCode::Right));
+        header(&mut app);
+    }
+    assert_eq!(app.analysis_modal.describe_columns.offset, max);
+    let end = header(&mut app);
+    assert!(
+        end.contains("Max"),
+        "the last statistic is reached: {end:?}"
+    );
+    assert!(
+        !end.contains('+'),
+        "and nothing is counted past it: {end:?}"
+    );
+
+    app.event(&key(KeyCode::Left));
+    let back = header(&mut app);
+    assert_eq!(app.analysis_modal.describe_columns.offset, max - 1);
+    assert_ne!(back, end, "one press back moves the table");
+    assert!(
+        back.contains("+1"),
+        "the last statistic is out of view: {back:?}"
     );
 }
 

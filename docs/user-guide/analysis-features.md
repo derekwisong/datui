@@ -15,7 +15,9 @@ Summary statistics per column, like Polars'
 count, nulls, mean, standard deviation, min, 25th percentile, median, 75th
 percentile and max. Date, datetime, time and duration columns get all of them
 but the standard deviation, written as the table writes them; text columns get
-min and max. Scroll with the arrow keys.
+min and max. When they do not all fit, the header counts those out of view
+(`+4 →`) and <kbd>←</kbd> <kbd>→</kbd> scroll to the last. Distribution scrolls
+its columns the same way.
 
 ## Distribution
 

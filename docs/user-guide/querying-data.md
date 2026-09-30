@@ -153,7 +153,8 @@ summary row per group. Brackets around the argument are optional. An unaliased
 aggregate of a column is named `fn_column` (`avg salary` → `avg_salary`); name
 it yourself with `:`.
 
-Press <kbd>Enter</kbd> on a group to see its rows, <kbd>Esc</kbd> to come back.
+Press <kbd>Enter</kbd> on a group to see its rows; a line above the table names
+the group, and <kbd>Esc</kbd> comes back.
 A group without aggregates shows the columns you selected; an aggregated one shows
 every column of the rows behind it, after the query's `where`, key columns first.
 The cursor, frozen columns and column order come back with <kbd>Esc</kbd>.

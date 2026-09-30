@@ -4,21 +4,25 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, GraphType, List,
-        ListItem, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
+        Axis, Bar, BarChart, BarGroup, Block, Cell, Chart, Dataset, GraphType, HighlightSpacing,
+        Paragraph, Row, StatefulWidget, Table, TableState, Widget,
     },
 };
 
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView, HistogramScale};
+use crate::analysis_modal::{
+    AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
+};
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::glyphs::PlotMarks;
 use crate::numfmt::{self, NumberFormatSettings};
+use crate::render::context::RenderContext;
 use crate::statistics::{
     AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics,
     DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
 };
 use crate::widgets::datatable::DataTableState;
+use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
 
 pub struct AnalysisWidgetConfig<'a> {
@@ -27,7 +31,6 @@ pub struct AnalysisWidgetConfig<'a> {
     pub context: &'a AnalysisContext,
     pub view: AnalysisView,
     pub selected_tool: Option<AnalysisTool>,
-    pub column_offset: usize,
     pub selected_correlation: Option<(usize, usize)>,
     pub focus: AnalysisFocus,
     pub selected_theoretical_distribution: DistributionType,
@@ -38,6 +41,7 @@ pub struct AnalysisWidgetConfig<'a> {
     pub number_format: &'a NumberFormatSettings,
     /// The shared sample the results were read with, for the header.
     pub sample: &'a crate::sampling::Sample,
+    pub ctx: &'a RenderContext,
 }
 
 pub struct AnalysisWidget<'a> {
@@ -50,7 +54,6 @@ pub struct AnalysisWidget<'a> {
     distribution_table_state: &'a mut TableState,
     correlation_table_state: &'a mut TableState,
     sidebar_state: &'a mut TableState,
-    column_offset: usize,
     selected_correlation: Option<(usize, usize)>,
     focus: AnalysisFocus,
     selected_theoretical_distribution: DistributionType,
@@ -60,6 +63,9 @@ pub struct AnalysisWidget<'a> {
     table_cell_padding: u16,
     number_format: &'a NumberFormatSettings,
     sample: &'a crate::sampling::Sample,
+    ctx: &'a RenderContext,
+    /// The selected tool's statistic scroll; the table sets how far it goes.
+    column_scroll: &'a mut ColumnScroll,
 }
 
 impl<'a> AnalysisWidget<'a> {
@@ -70,6 +76,7 @@ impl<'a> AnalysisWidget<'a> {
         correlation_table_state: &'a mut TableState,
         sidebar_state: &'a mut TableState,
         distribution_selector_state: &'a mut TableState,
+        column_scroll: &'a mut ColumnScroll,
     ) -> Self {
         Self {
             _state: config.state,
@@ -81,7 +88,6 @@ impl<'a> AnalysisWidget<'a> {
             distribution_table_state,
             correlation_table_state,
             sidebar_state,
-            column_offset: config.column_offset,
             selected_correlation: config.selected_correlation,
             focus: config.focus,
             selected_theoretical_distribution: config.selected_theoretical_distribution,
@@ -91,6 +97,8 @@ impl<'a> AnalysisWidget<'a> {
             table_cell_padding: config.table_cell_padding,
             number_format: config.number_format,
             sample: config.sample,
+            ctx: config.ctx,
+            column_scroll,
         }
     }
 }
@@ -180,7 +188,8 @@ impl<'a> AnalysisWidget<'a> {
                             render_statistics_table(
                                 results,
                                 self.table_state,
-                                self.column_offset,
+                                self.column_scroll,
+                                self.focus == AnalysisFocus::Main,
                                 main_layout[0],
                                 buf,
                                 self.theme,
@@ -192,7 +201,8 @@ impl<'a> AnalysisWidget<'a> {
                             render_distribution_table(
                                 results,
                                 self.distribution_table_state,
-                                self.column_offset,
+                                self.column_scroll,
+                                self.focus == AnalysisFocus::Main,
                                 main_layout[0],
                                 buf,
                                 self.theme,
@@ -203,7 +213,7 @@ impl<'a> AnalysisWidget<'a> {
                                 results,
                                 self.correlation_table_state,
                                 &self.selected_correlation,
-                                self.column_offset,
+                                self.column_scroll,
                                 main_layout[0],
                                 buf,
                                 self.theme,
@@ -258,43 +268,29 @@ impl<'a> AnalysisWidget<'a> {
                 .style(header_row_style)
                 .render(layout[0], buf);
 
-            // Main content area - optimized layout
-            // Split into: condensed stats header, charts and selector area
-            let main_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Condensed stats header (single line)
-                    Constraint::Fill(1),   // Charts and selector
-                ])
-                .split(layout[1]);
-
-            // Condensed header: Key statistics in one or two lines
-            // Use selected theoretical distribution type (dynamic)
-            render_condensed_statistics(
-                dist,
-                self.selected_theoretical_distribution,
-                main_layout[0],
-                buf,
+            // The key figures over the charts, wrapped rather than cut: at 60
+            // columns they take three lines.
+            let stats = condensed_statistics_lines(
+                &condensed_statistics(dist),
+                layout[1].width,
                 self.theme,
             );
+            let stats_height = (stats.len() as u16).clamp(1, 3);
+            let main_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(stats_height), Constraint::Fill(1)])
+                .split(layout[1]);
+            Paragraph::new(stats).render(main_layout[0], buf);
 
-            // Split charts and selector horizontally
+            // Charts on the left; the family list on the right, never narrower than
+            // its longest name and p-value.
             let content_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Percentage(75), // Q-Q plot and histogram
-                    Constraint::Percentage(25), // Distribution selector and settings
+                    Constraint::Fill(1),
+                    Constraint::Length(SELECTOR_WIDTH.max(main_layout[1].width / 4)),
                 ])
                 .split(main_layout[1]);
-
-            // Right side: Split into distribution selector and settings
-            let right_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Fill(1),   // Distribution selector (takes remaining space)
-                    Constraint::Length(4), // Settings box (4 lines: border + 2 content + border)
-                ])
-                .split(content_layout[1]);
 
             // Left side: Q-Q plot and histogram with spacing
             let charts_layout = Layout::default()
@@ -415,24 +411,18 @@ impl<'a> AnalysisWidget<'a> {
                 buf,
             );
 
-            // Right side: Distribution selector
             render_distribution_selector(
-                dist,
-                self.selected_theoretical_distribution,
+                SelectorConfig {
+                    dist,
+                    selected: self.selected_theoretical_distribution,
+                    histogram_scale: self.histogram_scale,
+                    log_scale_unavailable: log_scale_requested_but_unavailable,
+                    theme: self.theme,
+                    ctx: self.ctx,
+                },
                 self.distribution_selector_state,
-                self.focus,
-                right_layout[0],
+                content_layout[1],
                 buf,
-                self.theme,
-            );
-
-            // Settings box below distribution selector
-            render_distribution_settings(
-                self.histogram_scale,
-                log_scale_requested_but_unavailable,
-                right_layout[1],
-                buf,
-                self.theme,
             );
 
         // No keybind hints line - removed
@@ -586,7 +576,8 @@ fn render_correlation_pair_summary(
 fn render_statistics_table(
     results: &AnalysisResults,
     table_state: &mut TableState,
-    column_offset: usize,
+    columns: &mut ColumnScroll,
+    focused: bool,
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
@@ -651,70 +642,14 @@ fn render_statistics_table(
         .unwrap_or(header_len);
     let locked_col_width = max_col_name_len.max(header_len).max(10); // min 10, must fit both header and data (no padding - table handles spacing)
 
-    // Calculate which columns can fit using same cell padding as main datatable
     let column_spacing = table_cell_padding;
-
-    // Available width for stat columns = total width - locked column - spacing between locked and first stat
+    // The rail's column comes first, then the locked names.
     let available_width = area
         .width
-        .saturating_sub(locked_col_width)
+        .saturating_sub(RAIL_WIDTH + locked_col_width)
         .saturating_sub(column_spacing);
-
-    let mut used_width_from_zero = 0u16;
-    let mut max_visible_from_zero = 0;
-
-    for width in min_col_widths.iter() {
-        let spacing_needed = if max_visible_from_zero > 0 {
-            column_spacing
-        } else {
-            0
-        };
-        let total_needed = spacing_needed + width;
-
-        if used_width_from_zero + total_needed <= available_width {
-            used_width_from_zero += total_needed;
-            max_visible_from_zero += 1;
-        } else {
-            break;
-        }
-    }
-
-    max_visible_from_zero = max_visible_from_zero.max(1);
-
-    let effective_offset = if max_visible_from_zero >= num_stats {
-        0
-    } else {
-        column_offset.min(num_stats.saturating_sub(1))
-    };
-
-    let start_stat = effective_offset;
-
-    let mut used_width = 0u16;
-    let mut max_visible_stats = 0;
-
-    for width in min_col_widths
-        .iter()
-        .skip(start_stat)
-        .take(num_stats - start_stat)
-    {
-        let spacing_needed = if max_visible_stats > 0 {
-            column_spacing
-        } else {
-            0
-        };
-        let total_needed = spacing_needed + width;
-
-        if used_width + total_needed <= available_width {
-            used_width += total_needed;
-            max_visible_stats += 1;
-        } else {
-            break;
-        }
-    }
-
-    max_visible_stats = max_visible_stats.max(1); // At least show 1 column
-
-    let end_stat = (start_stat + max_visible_stats).min(num_stats);
+    let (start_stat, end_stat) =
+        stat_window(&min_col_widths, available_width, column_spacing, columns);
     let visible_stats: Vec<usize> = (start_stat..end_stat).collect();
 
     if visible_stats.is_empty() {
@@ -754,10 +689,18 @@ fn render_statistics_table(
     let table = Table::new(rows, constraints)
         .header(header_row)
         .column_spacing(table_cell_padding)
-        .row_highlight_style(theme.highlight_style());
+        .row_highlight_style(cursor_style(focused, theme))
+        .highlight_symbol(cursor_rail(focused, theme))
+        .highlight_spacing(HighlightSpacing::Always);
 
-    // Use StatefulWidget for row selection
     StatefulWidget::render(table, area, buf, table_state);
+    draw_scroll_marks(
+        area,
+        buf,
+        RAIL_WIDTH + locked_col_width,
+        (start_stat, end_stat, num_stats),
+        theme,
+    );
 }
 
 /// One Describe cell. A date, time or duration column gets its range, quartiles
@@ -878,7 +821,8 @@ pub(crate) fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
 fn render_distribution_table(
     results: &AnalysisResults,
     table_state: &mut TableState,
-    column_offset: usize,
+    columns: &mut ColumnScroll,
+    focused: bool,
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
@@ -970,42 +914,14 @@ fn render_distribution_table(
         }
     }
 
-    // Calculate which columns can fit (similar to describe table)
     let column_spacing = 1u16;
+    // The rail's column comes first, then the locked names.
     let available_width = area
         .width
-        .saturating_sub(locked_col_width)
-        .saturating_sub(column_spacing); // Space between locked column and first stat column
-
-    // Determine which statistics to show (column_offset refers to stat columns, not column name)
-    let start_stat = column_offset.min(num_stats.saturating_sub(1));
-
-    // Calculate how many stat columns can fit starting from start_stat
-    let mut used_width = 0u16;
-    let mut max_visible_stats = 0;
-
-    for width in min_col_widths
-        .iter()
-        .skip(start_stat)
-        .take(num_stats - start_stat)
-    {
-        let spacing_needed = if max_visible_stats > 0 {
-            column_spacing
-        } else {
-            0
-        };
-        let total_needed = spacing_needed + width;
-
-        if used_width + total_needed <= available_width {
-            used_width += total_needed;
-            max_visible_stats += 1;
-        } else {
-            break;
-        }
-    }
-
-    max_visible_stats = max_visible_stats.max(1); // At least show 1 column
-    let end_stat = (start_stat + max_visible_stats).min(num_stats);
+        .saturating_sub(RAIL_WIDTH + locked_col_width)
+        .saturating_sub(column_spacing);
+    let (start_stat, end_stat) =
+        stat_window(&min_col_widths, available_width, column_spacing, columns);
     let visible_stats: Vec<usize> = (start_stat..end_stat).collect();
 
     if visible_stats.is_empty() {
@@ -1156,16 +1072,146 @@ fn render_distribution_table(
 
     let table = Table::new(rows, constraints)
         .header(header_row)
-        .row_highlight_style(theme.highlight_style());
+        .row_highlight_style(cursor_style(focused, theme))
+        .highlight_symbol(cursor_rail(focused, theme))
+        .highlight_spacing(HighlightSpacing::Always);
 
     StatefulWidget::render(table, area, buf, table_state);
+    draw_scroll_marks(
+        area,
+        buf,
+        RAIL_WIDTH + locked_col_width,
+        (start_stat, end_stat, num_stats),
+        theme,
+    );
+}
+
+/// The column the cursor's rail sits in, kept whether or not the table has focus
+/// so focus arriving moves nothing.
+const RAIL_WIDTH: u16 = 1;
+
+/// The rail beside the row the cursor is on while the table has focus: the
+/// tint alone vanishes on a 16-color terminal whose black is the background.
+fn cursor_rail(focused: bool, theme: &Theme) -> Span<'static> {
+    let g = crate::glyphs::get();
+    Span::styled(
+        if focused { g.rail } else { " " },
+        Style::default().fg(theme.get("accent")),
+    )
+}
+
+/// The row the cursor is on: the tint while the table has focus, the accent
+/// alone while the tool list has it, so the cursor stays visible without
+/// claiming focus.
+fn cursor_style(focused: bool, theme: &Theme) -> Style {
+    if focused {
+        theme.highlight_style()
+    } else {
+        Style::default().fg(theme.get("accent"))
+    }
+}
+
+/// The mark that counts statistics hidden to the right, as the data table's does.
+fn more_mark(hidden: usize) -> String {
+    format!(" +{hidden} {}", crate::glyphs::get().arrow_right)
+}
+
+/// Which statistics fit beside the locked name column, as `start..end`, from the
+/// scroll's offset. Sets the scroll's `max` to the first start that brings the
+/// last statistic into view, and clamps the offset to it, so a key press past the
+/// end does nothing and the first press back always moves. A window that leaves
+/// statistics out to the right keeps room for the mark that counts them.
+fn stat_window(
+    widths: &[u16],
+    available: u16,
+    spacing: u16,
+    columns: &mut ColumnScroll,
+) -> (usize, usize) {
+    let n = widths.len();
+    if n == 0 {
+        *columns = ColumnScroll::default();
+        return (0, 0);
+    }
+    let fits = |from: usize, room: u16| {
+        let mut used = 0u16;
+        let mut count = 0usize;
+        for width in &widths[from..] {
+            let needed = width + if count > 0 { spacing } else { 0 };
+            if used + needed > room {
+                break;
+            }
+            used += needed;
+            count += 1;
+        }
+        count.max(1)
+    };
+    let mark = crate::glyphs::display_width(&more_mark(n)) as u16;
+    let shown = |from: usize| {
+        let all = fits(from, available);
+        if from + all >= n {
+            all
+        } else {
+            fits(from, available.saturating_sub(mark))
+        }
+    };
+    let max = (0..n)
+        .find(|&from| from + shown(from) >= n)
+        .unwrap_or(n - 1);
+    columns.max = max;
+    columns.offset = columns.offset.min(max);
+    let start = columns.offset;
+    (start, (start + shown(start)).min(n))
+}
+
+/// Say that statistics are out of view: an arrow at the end of the locked
+/// column's header when some are to the left, and the count at the right edge of
+/// the header when some are to the right.
+fn draw_scroll_marks(
+    area: Rect,
+    buf: &mut Buffer,
+    locked_width: u16,
+    (start, end, total): (usize, usize, usize),
+    theme: &Theme,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let style = header_style(theme, "controls_bg", "accent").add_modifier(Modifier::BOLD);
+    if start > 0 && locked_width > 0 && locked_width <= area.width {
+        Paragraph::new(crate::glyphs::get().arrow_left)
+            .style(style)
+            .render(
+                Rect {
+                    x: area.x + locked_width - 1,
+                    width: 1,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+    }
+    if end < total {
+        let mark = more_mark(total - end);
+        let width = crate::glyphs::display_width(&mark) as u16;
+        if width <= area.width {
+            Paragraph::new(mark).style(style).render(
+                Rect {
+                    x: area.x + area.width - width,
+                    width,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+        }
+    }
 }
 
 fn render_correlation_matrix(
     results: &AnalysisResults,
     table_state: &mut TableState,
     selected_cell: &Option<(usize, usize)>,
-    column_offset: usize,
+    columns: &mut ColumnScroll,
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
@@ -1194,31 +1240,26 @@ fn render_correlation_matrix(
     let cell_width = 12u16; // Wide enough for "-1.00" format
     let column_spacing = 1u16; // Table widget adds 1 space between columns
 
-    // Calculate how many columns can fit
-    let available_width = area.width.saturating_sub(row_header_width);
-    let mut used_width = 0u16;
-    let mut visible_cols = 0usize;
-
-    // Start from column_offset
-    let start_col = column_offset.min(n.saturating_sub(1));
-
-    for _col_idx in start_col..n {
-        let needed = if visible_cols > 0 {
-            column_spacing + cell_width
-        } else {
-            cell_width
-        };
-
-        if used_width + needed <= available_width {
-            used_width += needed;
-            visible_cols += 1;
-        } else {
-            break;
+    let available_width = area
+        .width
+        .saturating_sub(row_header_width)
+        .saturating_sub(column_spacing);
+    let widths = vec![cell_width; n];
+    let (mut start_col, mut end_col) =
+        stat_window(&widths, available_width, column_spacing, columns);
+    // Scroll to the selected cell, whatever moved it: a key, or a resize.
+    if let Some((_, col)) = *selected_cell {
+        let col = col.min(n - 1);
+        while col < start_col || (col >= end_col && columns.offset < columns.max) {
+            columns.offset = if col < start_col {
+                col
+            } else {
+                columns.offset + 1
+            };
+            (start_col, end_col) = stat_window(&widths, available_width, column_spacing, columns);
         }
     }
-
-    visible_cols = visible_cols.max(1);
-    let end_col = (start_col + visible_cols).min(n);
+    let visible_cols = end_col - start_col;
 
     let (selected_row, selected_col) = selected_cell.unwrap_or((n, n));
 
@@ -1308,9 +1349,10 @@ fn render_correlation_matrix(
 
     let table = Table::new(rows, constraints)
         .header(header_row)
-        .column_spacing(1);
+        .column_spacing(column_spacing);
 
     StatefulWidget::render(table, area, buf, table_state);
+    draw_scroll_marks(area, buf, row_header_width, (start_col, end_col, n), theme);
 }
 
 fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
@@ -1331,15 +1373,35 @@ fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
     }
 }
 
+/// What the family list shows: the column's fits, the family on the plots, and
+/// the scale the histogram is drawn in.
+struct SelectorConfig<'a> {
+    dist: &'a DistributionAnalysis,
+    selected: DistributionType,
+    histogram_scale: HistogramScale,
+    /// Log was asked for on values that cannot take it, so the histogram is linear.
+    log_scale_unavailable: bool,
+    theme: &'a Theme,
+    ctx: &'a RenderContext,
+}
+
+/// The families to compare with, one Surface on the right of the detail: each
+/// family and its p-value, the one on the plots on the rail, and the scale the
+/// histogram is drawn in on the last row.
 fn render_distribution_selector(
-    dist: &DistributionAnalysis,
-    selected_dist: DistributionType,
+    config: SelectorConfig,
     selector_state: &mut TableState,
-    focus: AnalysisFocus,
     area: Rect,
     buf: &mut Buffer,
-    theme: &Theme,
 ) {
+    let SelectorConfig {
+        dist,
+        selected: selected_dist,
+        histogram_scale,
+        log_scale_unavailable,
+        theme,
+        ctx,
+    } = config;
     // Tested families by p-value, then the ones that do not apply; the same order
     // the modal's ↑↓ walks.
     let distribution_scores: Vec<(DistributionType, Option<&FitOutcome>)> =
@@ -1348,80 +1410,103 @@ fn render_distribution_selector(
             .map(|family| (family, dist.fit(family)))
             .collect();
 
-    // Find position of selected distribution in sorted list
     let selected_pos = distribution_scores
         .iter()
         .position(|(family, _)| *family == selected_dist)
         .unwrap_or(0);
-
-    // Only sync selector state when absolutely necessary to prevent jumping during navigation
-    // Trust the user's navigation state - only fix if selection is uninitialized or out of bounds
-    let current_selection = selector_state.selected();
-    if current_selection.is_none() {
-        // Initial state: set to selected distribution position
-        selector_state.select(Some(selected_pos));
-    } else if let Some(current_idx) = current_selection {
-        // Only fix if index is out of bounds - otherwise trust the current selection
-        // This prevents the sync logic from interfering with user navigation
-        if current_idx >= distribution_scores.len() {
-            selector_state.select(Some(selected_pos));
-        }
-        // Otherwise, keep current selection (user is navigating or selection is valid)
+    // Trust the cursor while it is on the list; place it only when it is unset or
+    // has fallen off the end.
+    match selector_state.selected() {
+        Some(idx) if idx < distribution_scores.len() => {}
+        _ => selector_state.select(Some(selected_pos)),
     }
+    let selected = selector_state.selected().unwrap_or(0);
 
-    // Create table rows from sorted list
-    let rows: Vec<Row> = distribution_scores
+    let content = Surface::new("Distribution").render(area, buf, ctx);
+    if content.height < 3 || content.width < 8 {
+        return;
+    }
+    let g = crate::glyphs::get();
+    // The p-value column is as wide as its widest value, "<0.005" or "n/a".
+    const PVALUE_WIDTH: u16 = 7;
+    let name_width = content.width.saturating_sub(1 + PVALUE_WIDTH);
+    let line = |rail: &str, name: &str, pvalue: &str| {
+        format!(
+            "{rail}{name:<w$}{pvalue:>p$}",
+            name = crate::render::loading_view::truncate(name, name_width as usize),
+            w = name_width as usize,
+            p = PVALUE_WIDTH as usize,
+        )
+    };
+    let row = |y: u16| Rect {
+        y,
+        height: 1,
+        ..content
+    };
+
+    Paragraph::new(line(" ", "Name", "P-value"))
+        .style(Style::default().fg(ctx.text_secondary))
+        .render(row(content.y), buf);
+
+    // The last row is the scale; the list scrolls in what is between, and counts
+    // what it cannot show rather than cutting a family in half.
+    let scale_y = content.y + content.height - 1;
+    let list_height = (content.height - 2) as usize;
+    let total = distribution_scores.len();
+    let (offset, shown) = list_window(selected, total, list_height);
+    let below = total - offset - shown;
+    if below > 0 && shown < list_height {
+        Paragraph::new(format!(" {} {below} more", g.ellipsis))
+            .style(Style::default().fg(ctx.dimmed))
+            .render(row(content.y + 1 + shown as u16), buf);
+    }
+    for (i, (family, outcome)) in distribution_scores
         .iter()
         .enumerate()
-        .map(|(sorted_idx, (family, outcome))| {
-            let is_focused = focus == AnalysisFocus::DistributionSelector
-                && selector_state.selected() == Some(sorted_idx);
+        .skip(offset)
+        .take(shown)
+    {
+        let y = content.y + 1 + (i - offset) as u16;
+        // A family that does not apply has no p-value, and says so rather than
+        // ranking a placeholder.
+        let (p_text, p_style) = match outcome.and_then(|outcome| outcome.test()) {
+            Some(test) => (format_fit_pvalue(test), pvalue_style(test.p_value, theme)),
+            None => ("n/a".to_string(), Style::default().fg(ctx.dimmed)),
+        };
+        let is_cursor = i == selected;
+        let name = crate::render::loading_view::truncate(&family.to_string(), name_width as usize);
+        let spans = vec![
+            Span::styled(
+                if is_cursor { g.rail } else { " " },
+                Style::default().fg(ctx.accent),
+            ),
+            Span::styled(
+                format!("{name:<w$}", w = name_width as usize),
+                Style::default().fg(ctx.text_primary),
+            ),
+            Span::styled(format!("{p_text:>p$}", p = PVALUE_WIDTH as usize), p_style),
+        ];
+        let mut paragraph = Paragraph::new(Line::from(spans));
+        if is_cursor {
+            paragraph = paragraph.style(ctx.highlight_style());
+        }
+        paragraph.render(row(y), buf);
+    }
 
-            let name_style = if is_focused {
-                header_style(theme, "controls_bg", "table_header")
-            } else {
-                Style::default().fg(theme.get("text_primary"))
-            };
-
-            // A family that does not apply has no p-value, and says so rather than
-            // ranking a placeholder.
-            let (p_text, pvalue_style) = match outcome.and_then(|outcome| outcome.test()) {
-                Some(test) => (format_fit_pvalue(test), pvalue_style(test.p_value, theme)),
-                None => ("n/a".to_string(), Style::default().fg(theme.get("dimmed"))),
-            };
-
-            Row::new(vec![
-                Cell::from(family.to_string()).style(name_style),
-                Cell::from(p_text).style(pvalue_style),
-            ])
-        })
-        .collect();
-
-    let h = header_style(theme, "controls_bg", "table_header");
-    let header = Row::new(vec![
-        Cell::from("Name").style(h),
-        Cell::from("P-value").style(h),
-    ]);
-
-    let table = Table::new(
-        rows,
-        vec![
-            Constraint::Fill(1),   // Name column takes remaining space
-            Constraint::Length(7), // P-value column: "<0.001" or "0.000" = 7 chars max
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .title("Distribution")
-            .title_style(ratatui::style::Style::reset())
-            .borders(Borders::ALL)
-            .border_set(crate::glyphs::get().border)
-            .border_style(Style::default().fg(theme.get("sidebar_border"))),
-    )
-    .row_highlight_style(theme.highlight_style());
-
-    StatefulWidget::render(table, area, buf, selector_state);
+    // Log asked for on values that cannot take it falls back to linear, in the
+    // warning color so the fallback is not mistaken for the choice.
+    let (scale, scale_style) = match (histogram_scale, log_scale_unavailable) {
+        (_, true) => ("Linear", Style::default().fg(ctx.warning)),
+        (HistogramScale::Linear, false) => ("Linear", Style::default().fg(ctx.text_primary)),
+        (HistogramScale::Log, false) => ("Log", Style::default().fg(ctx.text_primary)),
+    };
+    if scale_y > content.y + 1 {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Scale: ", Style::default().fg(ctx.label)),
+            Span::styled(scale, scale_style),
+        ]))
+        .render(row(scale_y), buf);
+    }
 }
 
 /// What the Distribution detail's two plots draw: the Q-Q plot and the histogram.
@@ -1437,63 +1522,37 @@ struct DistributionPlotConfig<'a> {
     glyphs: &'a crate::glyphs::Glyphs,
 }
 
-fn render_distribution_settings(
-    histogram_scale: HistogramScale,
-    log_scale_unavailable: bool,
-    area: Rect,
-    buf: &mut Buffer,
-    theme: &Theme,
-) {
-    let block = Block::default()
-        .title("Settings")
-        .title_style(ratatui::style::Style::reset())
-        .borders(Borders::ALL)
-        .border_set(crate::glyphs::get().border)
-        .border_style(Style::default().fg(theme.get("sidebar_border")));
+/// A chart's min, middle and max x labels, without the middle one where the
+/// plot is too narrow for it to sit clear of the ends. The chart draws the ends
+/// flush with the plot's edges and centers the middle.
+fn fit_x_labels(mut labels: Vec<Span<'_>>, area: Rect, y_label_width: u16) -> Vec<Span<'_>> {
+    // The block's left padding and the y axis line.
+    let plot = area.width.saturating_sub(y_label_width + 2) as usize;
+    if let [first, middle, last] = labels.as_slice()
+        && 2 * first.width().max(last.width()) + middle.width() + 2 > plot
+    {
+        labels.remove(1);
+    }
+    labels
+}
 
-    // Settings content: Scale option
-    let scale_label = "Scale:";
-    let (scale_value, scale_value_style) = if log_scale_unavailable {
-        // Log scale requested but can't be used (e.g., negative values)
-        // Show "Linear" in warning color to indicate fallback
-        ("Linear", Style::default().fg(theme.get("warning")))
+/// The family list's least width: the frame, the rail, "Exponential" and a p-value.
+const SELECTOR_WIDTH: u16 = 24;
+
+/// Which of `total` items a list of `rows` shows around the cursor, as the
+/// first and how many. While some are out of view below, the last row is kept
+/// to count them, so the cursor never sits on it.
+fn list_window(selected: usize, total: usize, rows: usize) -> (usize, usize) {
+    if total <= rows || rows == 0 {
+        return (0, total.min(rows));
+    }
+    let room = rows.saturating_sub(1).max(1);
+    let offset = selected.saturating_sub(room - 1);
+    if offset + rows >= total {
+        (total - rows, rows)
     } else {
-        match histogram_scale {
-            HistogramScale::Linear => ("Linear", Style::default().fg(theme.get("text_primary"))),
-            HistogramScale::Log => ("Log", Style::default().fg(theme.get("text_primary"))),
-        }
-    };
-
-    // Layout for settings content (inside block)
-    let inner_area = block.inner(area);
-    let settings_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Scale setting line
-            Constraint::Fill(1),   // Remaining space
-        ])
-        .split(inner_area);
-
-    // Scale setting: label on left, value on right
-    let scale_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(scale_label.chars().count() as u16 + 1), // Label + spacing
-            Constraint::Fill(1),                                        // Value
-        ])
-        .split(settings_layout[0]);
-
-    let scale_label_style = Style::default().fg(theme.get("text_secondary"));
-
-    Paragraph::new(scale_label)
-        .style(scale_label_style)
-        .render(scale_layout[0], buf);
-
-    Paragraph::new(scale_value)
-        .style(scale_value_style)
-        .render(scale_layout[1], buf);
-
-    block.render(area, buf);
+        (offset, room)
+    }
 }
 
 /// The tool list's width beside a result: a third of the screen, at most 32.
@@ -1512,8 +1571,9 @@ pub(crate) fn main_pane(area: Rect) -> Rect {
     }
 }
 
-/// The Analysis Tools list, the same beside every tool: the cursor carries the
-/// rail and the tint, the tool on screen carries the accent.
+/// The Analysis Tools list, the same beside every tool: one Surface, the
+/// cursor carrying the rail and the tint while the list has focus, and the tool
+/// on screen carrying the accent.
 pub(crate) fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
@@ -1528,61 +1588,48 @@ pub(crate) fn render_sidebar(
         ("Correlation Matrix", AnalysisTool::CorrelationMatrix),
         ("Data Quality", AnalysisTool::DataQuality),
     ];
-
-    let text_primary = theme.get("text_primary");
-    // The focused row takes the theme's highlight, like the main table,
-    // even when controls_bg is "default"/none.
-    let focused_style = theme.highlight_style();
-
-    // The one selection idiom: the cursor carries the rail and the tint,
-    // and the tool whose results are on screen carries the accent, the way
-    // an active tab does.
+    // Built here rather than passed: Data Quality draws this list too, from its
+    // theme.
+    let ctx =
+        RenderContext::from_theme_and_config(theme, 0, false, NumberFormatSettings::default());
+    let content = Surface::new("Analysis Tools").render(area, buf, &ctx);
     let g = crate::glyphs::get();
-    let accent = theme.get("accent_bright");
-    let rail_color = theme.get("accent");
-    let items: Vec<ListItem> = tools
-        .iter()
-        .enumerate()
-        .map(|(idx, (name, tool))| {
-            let is_selected = selected_tool == Some(*tool);
-            let is_focused =
-                focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(idx);
-            let rail = if is_focused { g.rail } else { " " };
-            let name_style = if is_selected {
-                Style::default()
-                    .fg(accent)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                Style::default().fg(text_primary)
-            };
-            let line = ratatui::text::Line::from(vec![
-                ratatui::text::Span::styled(rail, Style::default().fg(rail_color)),
-                ratatui::text::Span::styled(format!(" {}", name), name_style),
-            ]);
-            let style = if is_focused {
-                focused_style
-            } else {
-                Style::default()
-            };
-            ListItem::new(line).style(style)
-        })
-        .collect();
-
-    let border_color = if focus == AnalysisFocus::Sidebar {
-        theme.get("modal_border_active")
-    } else {
-        theme.get("modal_border")
-    };
-    let block = Block::default()
-        .title("Analysis Tools")
-        .title_style(ratatui::style::Style::reset())
-        .borders(Borders::ALL)
-        .border_set(crate::glyphs::get().border)
-        .border_style(Style::default().fg(border_color));
-
-    let list = List::new(items).block(block);
-
-    Widget::render(list, area, buf);
+    let list_focused = focus == AnalysisFocus::Sidebar;
+    for (idx, (name, tool)) in tools.iter().enumerate().take(content.height as usize) {
+        let is_cursor = list_focused && sidebar_state.selected() == Some(idx);
+        let name_style = if selected_tool == Some(*tool) {
+            Style::default()
+                .fg(ctx.accent_bright)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        let mut line = Paragraph::new(Line::from(vec![
+            Span::styled(
+                if is_cursor { g.rail } else { " " },
+                Style::default().fg(ctx.accent),
+            ),
+            // Cut with a mark on a narrow screen, never silently.
+            Span::styled(
+                crate::render::loading_view::truncate(
+                    name,
+                    content.width.saturating_sub(1) as usize,
+                ),
+                name_style,
+            ),
+        ]));
+        if is_cursor {
+            line = line.style(ctx.highlight_style());
+        }
+        line.render(
+            Rect {
+                y: content.y + idx as u16,
+                height: 1,
+                ..content
+            },
+            buf,
+        );
+    }
 }
 
 fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffer) {
@@ -1937,7 +1984,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             Axis::default()
                 .bounds([hist_min, hist_max]) // Use histogram range to align with bars (hist_min already clamped for non-negative data)
                 .style(Style::default().fg(theme.get("text_secondary")))
-                .labels(x_labels), // Show x-axis labels with histogram range
+                .labels(fit_x_labels(x_labels, area, shared_y_axis_label_width)),
         )
         .y_axis(
             Axis::default()
@@ -2030,7 +2077,10 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
             Some(FitOutcome::NotApplicable(reason)) => format!("{dist_type} {reason}"),
             _ => format!("{dist_type} was not fitted"),
         };
-        Paragraph::new(reason).centered().render(area, buf);
+        Paragraph::new(reason)
+            .centered()
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .render(area, buf);
         return;
     };
     let qq_data: Vec<(f64, f64)> = theoretical
@@ -2202,7 +2252,7 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
                 .title("Theoretical Values")
                 .style(Style::default().fg(theme.get("text_secondary")))
                 .bounds([theory_min_plot, theory_max_plot])
-                .labels(x_labels),
+                .labels(fit_x_labels(x_labels, area, shared_y_axis_label_width)),
         )
         .y_axis(
             Axis::default()
@@ -2217,81 +2267,71 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
     g.plot.redraw_axes(area, buf);
 }
 
-fn render_condensed_statistics(
-    dist: &DistributionAnalysis,
-    _selected_dist_type: DistributionType,
-    area: Rect,
-    buf: &mut Buffer,
-    theme: &Theme,
-) {
-    // One line: the fit found, Shapiro-Francia, skew, kurtosis, median, mean, std, CV
-    // Use explicit theme colors so text is always visible (avoids black-on-black for some themes)
+/// The detail's key figures, label and value: the fit found, Shapiro-Francia,
+/// skew, kurtosis, median, mean, std and CV.
+fn condensed_statistics(dist: &DistributionAnalysis) -> Vec<(&'static str, String)> {
     let chars = &dist.characteristics;
-    let label_style = Style::default().fg(theme.get("text_primary"));
-    let value_style = Style::default().fg(theme.get("text_primary"));
-
-    let mut line_parts = Vec::new();
-
     // What the values were found to fit, before anything about the family the plots
     // compare them with: choosing a family below is a comparison, not a finding.
-    line_parts.push(Span::styled("Fit: ", label_style));
-    line_parts.push(Span::styled(
+    let mut figures = vec![(
+        "Fit",
         match dist.distribution_type {
             DistributionType::Unknown | DistributionType::Constant => {
                 dist.distribution_type.to_string()
             }
             family => format!("{family} (p {})", verdict_pvalue(dist)),
         },
-        value_style,
-    ));
-    line_parts.push(Span::styled(" ", value_style));
-
+    )];
     if let (Some(sw_stat), Some(sw_p)) = (chars.shapiro_wilk_stat, chars.shapiro_wilk_pvalue) {
-        line_parts.push(Span::styled("SF: ", label_style));
-        line_parts.push(Span::styled(
+        figures.push((
+            "SF",
             if sw_p < 0.001 {
                 format!("{sw_stat:.3} (p<0.001)")
             } else {
                 format!("{sw_stat:.3} (p={sw_p:.3})")
             },
-            value_style,
         ));
-        line_parts.push(Span::styled(" ", value_style));
     }
+    figures.extend([
+        ("Skew", format!("{:.2}", chars.skewness)),
+        ("Kurt", format!("{:.2}", chars.kurtosis)),
+        ("Median", format!("{:.2}", dist.percentiles.p50)),
+        ("Mean", format!("{:.2}", chars.mean)),
+        ("Std", format!("{:.2}", chars.std_dev)),
+        ("CV", format!("{:.3}", chars.coefficient_of_variation)),
+    ]);
+    figures
+}
 
-    line_parts.push(Span::styled("Skew: ", label_style));
-    line_parts.push(Span::styled(format!("{:.2}", chars.skewness), value_style));
-    line_parts.push(Span::styled(" ", value_style));
-
-    line_parts.push(Span::styled("Kurt: ", label_style));
-    line_parts.push(Span::styled(format!("{:.2}", chars.kurtosis), value_style));
-    line_parts.push(Span::styled(" ", value_style));
-
-    line_parts.push(Span::styled("Median: ", label_style));
-    line_parts.push(Span::styled(
-        format!("{:.2}", dist.percentiles.p50),
-        value_style,
-    ));
-    line_parts.push(Span::styled(" ", value_style));
-
-    line_parts.push(Span::styled("Mean: ", label_style));
-    line_parts.push(Span::styled(format!("{:.2}", chars.mean), value_style));
-    line_parts.push(Span::styled(" ", value_style));
-
-    line_parts.push(Span::styled("Std: ", label_style));
-    line_parts.push(Span::styled(format!("{:.2}", chars.std_dev), value_style));
-    line_parts.push(Span::styled(" ", value_style));
-
-    line_parts.push(Span::styled("CV: ", label_style));
-    line_parts.push(Span::styled(
-        format!("{:.3}", chars.coefficient_of_variation),
-        value_style,
-    ));
-
-    let line = Line::from(line_parts);
-    let lines = vec![line];
-
-    Paragraph::new(lines).render(area, buf);
+/// The figures packed into lines of `width`, never splitting a label from its
+/// value, so a narrow terminal wraps them rather than cutting the last ones off.
+fn condensed_statistics_lines(
+    figures: &[(&'static str, String)],
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let style = Style::default().fg(theme.get("text_primary"));
+    let mut lines = Vec::new();
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for (label, value) in figures {
+        let figure = format!("{label}: {value}");
+        let w = crate::glyphs::display_width(&figure);
+        if used > 0 && used + 1 + w > width as usize {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            used = 0;
+        }
+        if used > 0 {
+            spans.push(Span::styled(" ", style));
+            used += 1;
+        }
+        spans.push(Span::styled(figure, style));
+        used += w;
+    }
+    if !spans.is_empty() {
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -2513,6 +2553,113 @@ mod tests {
         text
     }
 
+    /// The furthest scroll is the first that shows the last statistic: one short
+    /// of it leaves the last out, and nothing scrolls past it.
+    #[test]
+    fn the_statistics_scroll_stops_where_the_last_comes_into_view() {
+        let widths = [5, 5, 6, 3, 10, 6, 6, 6, 6];
+        for available in [12u16, 20, 30, 45, 80] {
+            let mut columns = ColumnScroll {
+                offset: usize::MAX,
+                max: 0,
+            };
+            let (start, end) = stat_window(&widths, available, 2, &mut columns);
+            assert_eq!(start, columns.max, "clamped to the furthest start");
+            assert_eq!(end, widths.len(), "the last is in view at {available}");
+            if columns.max > 0 {
+                columns.offset = columns.max - 1;
+                let (_, end) = stat_window(&widths, available, 2, &mut columns);
+                assert!(end < widths.len(), "one short leaves it out at {available}");
+            }
+        }
+        let mut columns = ColumnScroll::default();
+        assert_eq!(stat_window(&widths, 200, 2, &mut columns), (0, 9));
+        assert_eq!(columns.max, 0, "everything fits, so nothing scrolls");
+    }
+
+    /// The family list keeps its cursor in view and, while families are out of
+    /// view below, a row to count them: the cursor never takes that row.
+    #[test]
+    fn the_family_list_counts_what_is_below_the_cursor() {
+        assert_eq!(list_window(3, 5, 8), (0, 5), "everything fits");
+        for selected in 0..14 {
+            let (offset, shown) = list_window(selected, 14, 12);
+            assert!(
+                (offset..offset + shown).contains(&selected),
+                "{selected} is drawn"
+            );
+            let below = 14 - offset - shown;
+            if below > 0 {
+                assert_eq!(shown, 11, "a row is left to count {below} at {selected}");
+            } else {
+                assert_eq!(shown, 12);
+            }
+        }
+        assert_eq!(list_window(11, 14, 12), (1, 11), "not the last row");
+        assert_eq!(list_window(13, 14, 12), (2, 12), "the end needs no count");
+        assert_eq!(list_window(4, 14, 1), (4, 1), "one row is the cursor's");
+    }
+
+    /// The matrix scrolls to the selected cell however it got there, and counts
+    /// the columns it cannot show.
+    #[test]
+    fn the_correlation_matrix_keeps_the_selected_column_in_view() {
+        let names: Vec<String> = (0..6).map(|i| format!("col_{i}")).collect();
+        let n = names.len();
+        let matrix = crate::statistics::CorrelationMatrix {
+            columns: names,
+            correlations: vec![vec![0.5; n]; n],
+            p_values: None,
+            sample_sizes: vec![vec![10; n]; n],
+        };
+        let results = AnalysisResults {
+            column_statistics: vec![],
+            total_rows: 10,
+            sample_size: None,
+            per_value: None,
+            sample_seed: 0,
+            correlation_matrix: Some(matrix),
+            distribution_analyses: vec![],
+        };
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 60, 10);
+        let mut columns = ColumnScroll::default();
+        let mut state = TableState::default();
+        let mut header = |selected: (usize, usize), columns: &mut ColumnScroll| {
+            let mut buf = Buffer::empty(area);
+            state.select(Some(selected.0));
+            render_correlation_matrix(
+                &results,
+                &mut state,
+                &Some(selected),
+                columns,
+                area,
+                &mut buf,
+                &theme,
+            );
+            rendered_text(&buf).lines().next().unwrap().to_string()
+        };
+        let first = header((0, 0), &mut columns);
+        assert!(
+            first.contains("col_0") && !first.contains("col_5"),
+            "{first:?}"
+        );
+        assert!(
+            first.contains('+'),
+            "the hidden columns are counted: {first:?}"
+        );
+        let last = header((0, 5), &mut columns);
+        assert!(
+            last.contains("col_5"),
+            "the selected column is drawn: {last:?}"
+        );
+        let back = header((0, 0), &mut columns);
+        assert!(
+            back.contains("col_0"),
+            "and so is the first again: {back:?}"
+        );
+    }
+
     #[test]
     fn describe_shows_a_datetime_range_and_leaves_std_blank() {
         let theme =
@@ -2533,7 +2680,8 @@ mod tests {
         render_statistics_table(
             &results,
             &mut TableState::default(),
-            0,
+            &mut crate::analysis_modal::ColumnScroll::default(),
+            false,
             area,
             &mut buf,
             &theme,
@@ -2544,7 +2692,7 @@ mod tests {
         let mut lines = text.lines();
         let header = lines.next().unwrap();
         let pickup = lines
-            .find(|l| l.starts_with("pickup"))
+            .find(|l| l.trim_start().starts_with("pickup"))
             .unwrap_or_else(|| panic!("{text}"));
         // Each value sits under its own header.
         for (stat, value) in [

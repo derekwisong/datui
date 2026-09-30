@@ -10,7 +10,6 @@ pub mod export;
 pub mod info;
 pub mod pivot_melt;
 pub mod sample_form;
-pub mod schema;
 pub mod template_modal;
 pub mod text_input;
 pub mod textarea;

@@ -212,32 +212,44 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     if modal.computing.is_some() {
         return vec![("Esc", "Cancel")];
     }
-    // The bar is cut from the right: while the tool list owns the keys, the
-    // action that advances (Enter) must outlive column scrolling.
-    let mut pairs = if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
-        vec![
-            ("Esc", "Back"),
-            ("Enter", "Select"),
-            (g.updown, "Navigate"),
-            ("Tab", "Focus"),
-            (g.updown_lr, "Scroll Columns"),
-        ]
-    } else {
-        vec![
-            ("Esc", "Back"),
-            (g.updown, "Navigate"),
-            (g.updown_lr, "Scroll Columns"),
-            ("Tab", "Focus"),
-            ("Enter", "Select"),
-        ]
-    };
-    // Which rows: the shared sample, for any tool on its main view. Second, right
-    // after the way out: the bar keeps its leading chips, and a sample the bar
-    // never names is a feature nobody finds.
-    if modal.view == crate::analysis_modal::AnalysisView::Main && modal.selected_tool.is_some() {
-        pairs.insert(1, ("s", "Sample"));
-        pairs.insert(2, ("v", "View Rows"));
+    // Only keys that act right now. The bar is cut from the right, so the way out
+    // leads, then what the focused pane is for, then the shared sample: the bar
+    // keeps its leading chips, and a sample it never names is a feature nobody
+    // finds.
+    let mut pairs = vec![("Esc", "Back")];
+    let mut rest = Vec::new();
+    if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
+        pairs.push(("Enter", "Select"));
+        rest.push((g.updown, "Tools"));
+    } else if let Some(tool) = modal.selected_tool {
+        // Enter opens a detail only where the tool has one: a column's
+        // distribution, or a pair off the diagonal.
+        let detail = match tool {
+            AnalysisTool::DistributionAnalysis => true,
+            AnalysisTool::CorrelationMatrix => modal
+                .selected_correlation
+                .is_some_and(|(row, col)| row != col),
+            _ => false,
+        };
+        if detail {
+            pairs.push(("Enter", "Detail"));
+        }
+        rest.push((g.updown, "Rows"));
+        // Describe and Distribution scroll only when the statistics do not all fit.
+        let columns = match tool {
+            AnalysisTool::CorrelationMatrix => true,
+            _ => modal.column_scroll().is_some_and(|columns| columns.max > 0),
+        };
+        if columns {
+            rest.push((g.updown_lr, "Columns"));
+        }
     }
+    if modal.selected_tool.is_some() {
+        rest.push(("Tab", "Focus"));
+        pairs.push(("s", "Sample"));
+        pairs.push(("v", "View Rows"));
+    }
+    pairs.extend(rest);
     // On a sample: another one, or every row.
     if modal.view == crate::analysis_modal::AnalysisView::Main
         && app
@@ -246,7 +258,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             .is_some_and(|results| results.sample_size.is_some())
     {
         pairs.push(("r", "Resample"));
-        pairs.push(("a", "All rows"));
+        pairs.push(("a", "All Rows"));
     }
     pairs.push(("?", "Help"));
     pairs
@@ -612,6 +624,51 @@ mod tests {
                 "{page:?} offers no way out"
             );
         }
+    }
+
+    /// The analysis bar offers only keys that act: Enter where a tool has a
+    /// detail, ←→ where there is something to scroll to, Tab once a tool is
+    /// chosen.
+    #[test]
+    fn the_analysis_bar_offers_only_keys_that_act() {
+        use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
+        app.analysis_modal.active = true;
+        let g = crate::glyphs::get();
+        let has = |app: &crate::App, key: &str| {
+            super::analysis_control_keys(app)
+                .iter()
+                .any(|(k, _)| *k == key)
+        };
+        let label = |app: &crate::App, key: &str| {
+            super::analysis_control_keys(app)
+                .into_iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, label)| label)
+        };
+
+        app.analysis_modal.focus = AnalysisFocus::Sidebar;
+        assert_eq!(label(&app, "Enter"), Some("Select"));
+        assert!(!has(&app, "Tab"), "no tool, nothing beside the list");
+
+        app.analysis_modal.selected_tool = Some(AnalysisTool::Describe);
+        app.analysis_modal.focus = AnalysisFocus::Main;
+        assert!(has(&app, "Tab"));
+        assert!(!has(&app, "Enter"), "Describe has no detail");
+        assert!(!has(&app, g.updown_lr), "every statistic fits");
+        app.analysis_modal.describe_columns.max = 2;
+        assert_eq!(label(&app, g.updown_lr), Some("Columns"));
+
+        app.analysis_modal.selected_tool = Some(AnalysisTool::DistributionAnalysis);
+        assert_eq!(label(&app, "Enter"), Some("Detail"));
+
+        app.analysis_modal.selected_tool = Some(AnalysisTool::CorrelationMatrix);
+        app.analysis_modal.selected_correlation = Some((1, 1));
+        assert!(!has(&app, "Enter"), "a column with itself has no detail");
+        app.analysis_modal.selected_correlation = Some((1, 2));
+        assert_eq!(label(&app, "Enter"), Some("Detail"));
     }
 
     /// Every combination of home-screen state the control bar can be drawn in.

@@ -5,11 +5,12 @@ use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
 use crate::render::main_view::MainViewContent;
 use crate::widgets::datatable::DataTable;
 use crate::widgets::info::{DataTableInfo, InfoContext};
+use crate::widgets::ui::HintBar;
 use crate::widgets::{copy, export, pivot_melt};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::prelude::StatefulWidget;
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Clear, Paragraph, Widget};
 
 /// Renders the datatable main view: layout, table content, input strip, sidebars, export modal.
 pub fn render(
@@ -71,53 +72,40 @@ pub fn render(
             let mut table_area = data_area;
             let breadcrumb_text = if state.is_drilled_down() {
                 state.drilled_down_group_key.as_ref().map(|key_values| {
-                    let empty_vec = Vec::new();
                     let key_columns = state
                         .drilled_down_group_key_columns
-                        .as_ref()
-                        .unwrap_or(&empty_vec);
-                    let breadcrumb_parts: Vec<String> = key_columns
+                        .as_deref()
+                        .unwrap_or_default();
+                    let parts: Vec<String> = key_columns
                         .iter()
                         .zip(key_values.iter())
-                        .map(|(col, val)| format!("{}={}", col, val))
+                        .map(|(col, val)| format!("{col}={val}"))
                         .collect();
+                    let g = crate::glyphs::get();
                     format!(
-                        "{} Group: {} (Esc goes back)",
-                        crate::glyphs::get().arrow_left,
-                        breadcrumb_parts.join(" | ")
+                        "{} Group: {}",
+                        g.arrow_left,
+                        parts.join(&format!(" {} ", g.middot))
                     )
                 })
             } else {
-                evidence_label.map(|label| {
-                    format!(
-                        "{} {label} (Esc goes back)",
-                        crate::glyphs::get().arrow_left
-                    )
-                })
+                evidence_label.map(|label| format!("{} {label}", crate::glyphs::get().arrow_left))
             };
-            if let Some(breadcrumb_text) = breadcrumb_text {
-                let breadcrumb_layout = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Fill(1)])
-                    .split(data_area);
-
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_set(crate::glyphs::get().border)
-                    .border_style(Style::default().fg(ctx.keybind_hints))
-                    .render(breadcrumb_layout[0], buf);
-
-                let inner = Block::default().inner(breadcrumb_layout[0]);
-                Paragraph::new(breadcrumb_text)
-                    .style(
-                        Style::default()
-                            .fg(ctx.keybind_hints)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .render(inner, buf);
-
-                table_area = breadcrumb_layout[1];
+            if let Some(text) = breadcrumb_text {
+                render_breadcrumb(
+                    Rect {
+                        height: 1.min(data_area.height),
+                        ..data_area
+                    },
+                    buf,
+                    &text,
+                    ctx,
+                );
+                table_area = Rect {
+                    y: data_area.y + 1.min(data_area.height),
+                    height: data_area.height.saturating_sub(1),
+                    ..data_area
+                };
             }
 
             Clear.render(table_area, buf);
@@ -160,15 +148,7 @@ pub fn render(
                     format: app.original_file_format,
                     parquet_metadata: app.parquet_metadata_cache.as_ref(),
                 };
-                let mut info_widget = DataTableInfo::new(
-                    state,
-                    info_ctx,
-                    &mut app.info_modal,
-                    ctx.modal_border,
-                    ctx.modal_border_active,
-                    ctx.text_primary,
-                    ctx.highlight_style(),
-                );
+                let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.render(sort_area, buf);
             }
         }
@@ -246,5 +226,110 @@ pub fn render(
             height: modal_height,
         };
         copy::render_copy_modal(modal_area, buf, &mut app.copy_modal, ctx);
+    }
+}
+
+/// The drill-down breadcrumb: one line in the header tier above the table,
+/// saying which rows these are, with the way back as a chip on the right.
+pub(crate) fn render_breadcrumb(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    text: &str,
+    ctx: &RenderContext,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    // The analysis header's tier, so a drill-down reads like the header over a
+    // tool's result.
+    let style = Style::default().bg(ctx.controls_bg).fg(ctx.table_header);
+    buf.set_style(area, style);
+    let back = HintBar::from_ctx(ctx).hint("Esc", "Back");
+    let chip_w = back.flush_width_in(area.width.saturating_sub(12));
+    let text_w = area.width.saturating_sub(chip_w + 1);
+    Paragraph::new(crate::render::loading_view::truncate(text, text_w as usize))
+        .style(style.add_modifier(Modifier::BOLD))
+        .render(
+            Rect {
+                width: text_w,
+                ..area
+            },
+            buf,
+        );
+    if chip_w > 0 {
+        back.render_flush(
+            Rect {
+                x: area.x + area.width - chip_w,
+                width: chip_w,
+                ..area
+            },
+            buf,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        let area = buf.area;
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// One line, no box: the text on the left, the way back on the right, and
+    /// nothing drawn on the row below it.
+    #[test]
+    fn the_breadcrumb_is_one_plain_line() {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 60, 3);
+        let mut buf = Buffer::empty(area);
+        render_breadcrumb(
+            Rect { height: 1, ..area },
+            &mut buf,
+            "<- Group: department=Engineering",
+            &ctx,
+        );
+        let rows = rows(&buf);
+        assert!(
+            rows[0].starts_with("<- Group: department=Engineering"),
+            "{rows:?}"
+        );
+        assert!(rows[0].trim_end().ends_with("Back"), "{rows:?}");
+        assert!(rows[0].contains("Esc"), "{rows:?}");
+        for row in &rows[1..] {
+            assert!(row.trim().is_empty(), "a second row was drawn: {rows:?}");
+        }
+        let g = crate::glyphs::get();
+        for glyph in [
+            g.border.top_left,
+            g.border.bottom_left,
+            g.border.vertical_left,
+        ] {
+            assert!(
+                !rows[0].contains(glyph),
+                "a border around one line: {rows:?}"
+            );
+        }
+    }
+
+    /// Too long for the row, the text is cut with a mark and the way back stays.
+    #[test]
+    fn a_long_breadcrumb_is_cut_and_keeps_the_way_back() {
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let long = format!("<- Group: {}", "x".repeat(80));
+        render_breadcrumb(area, &mut buf, &long, &ctx);
+        let row = &rows(&buf)[0];
+        assert!(row.contains(crate::glyphs::get().ellipsis), "{row:?}");
+        assert!(row.contains("Esc") && row.contains("Back"), "{row:?}");
     }
 }

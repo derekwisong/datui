@@ -16105,44 +16105,8 @@ impl App {
                                             }
                                         }
                                         Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                            if let Some(results) =
-                                                self.analysis_modal.current_results()
-                                                && let Some(corr) = &results.correlation_matrix {
-                                                    let max_rows = corr.columns.len();
-                                                    // Calculate visible columns (same logic as horizontal moves)
-                                                    let row_header_width = 20u16;
-                                                    let cell_width = 12u16;
-                                                    let column_spacing = 1u16;
-                                                    let estimated_width = 80u16;
-                                                    let available_width = estimated_width
-                                                        .saturating_sub(row_header_width);
-                                                    let mut calculated_visible = 0usize;
-                                                    let mut used = 0u16;
-                                                    let max_cols = corr.columns.len();
-                                                    loop {
-                                                        let needed = if calculated_visible == 0 {
-                                                            cell_width
-                                                        } else {
-                                                            column_spacing + cell_width
-                                                        };
-                                                        if used + needed <= available_width
-                                                            && calculated_visible < max_cols
-                                                        {
-                                                            used += needed;
-                                                            calculated_visible += 1;
-                                                        } else {
-                                                            break;
-                                                        }
-                                                    }
-                                                    let visible_cols =
-                                                        calculated_visible.max(1).min(max_cols);
-                                                    self.analysis_modal.move_correlation_cell(
-                                                        (1, 0),
-                                                        max_rows,
-                                                        max_rows,
-                                                        visible_cols,
-                                                    );
-                                                }
+                                            // The matrix keeps the cell in view as it draws.
+                                            self.analysis_modal.move_correlation_cell((1, 0));
                                         }
                                         Some(analysis_modal::AnalysisTool::DataQuality) => {}
                                         None => {}
@@ -16194,54 +16158,15 @@ impl App {
                         }
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
-                                Some(analysis_modal::AnalysisTool::Describe) => {
-                                    self.analysis_modal.scroll_left();
-                                }
-                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                Some(
+                                    analysis_modal::AnalysisTool::Describe
+                                    | analysis_modal::AnalysisTool::DistributionAnalysis,
+                                ) => {
                                     self.analysis_modal.scroll_left();
                                 }
                                 Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                    if let Some(results) = self.analysis_modal.current_results()
-                                        && let Some(corr) = &results.correlation_matrix {
-                                            let max_cols = corr.columns.len();
-                                            // Calculate visible columns using same logic as render function
-                                            // This matches the render_correlation_matrix calculation
-                                            let row_header_width = 20u16;
-                                            let cell_width = 12u16;
-                                            let column_spacing = 1u16;
-                                            // Use a conservative estimate for available width
-                                            // In practice, main_area.width would be available, but we don't have access here
-                                            // Using a reasonable default that works for most terminals
-                                            let estimated_width = 80u16; // Conservative estimate (most terminals are 80+ wide)
-                                            let available_width =
-                                                estimated_width.saturating_sub(row_header_width);
-                                            // Match render logic: first column has no spacing, subsequent ones do
-                                            let mut calculated_visible = 0usize;
-                                            let mut used = 0u16;
-                                            loop {
-                                                let needed = if calculated_visible == 0 {
-                                                    cell_width
-                                                } else {
-                                                    column_spacing + cell_width
-                                                };
-                                                if used + needed <= available_width
-                                                    && calculated_visible < max_cols
-                                                {
-                                                    used += needed;
-                                                    calculated_visible += 1;
-                                                } else {
-                                                    break;
-                                                }
-                                            }
-                                            let visible_cols =
-                                                calculated_visible.max(1).min(max_cols);
-                                            self.analysis_modal.move_correlation_cell(
-                                                (0, -1),
-                                                max_cols,
-                                                max_cols,
-                                                visible_cols,
-                                            );
-                                        }
+                                    // The matrix keeps the cell in view as it draws.
+                                    self.analysis_modal.move_correlation_cell((0, -1));
                                 }
                                 Some(analysis_modal::AnalysisTool::DataQuality) => {}
                                 None => {}
@@ -16261,57 +16186,16 @@ impl App {
                         }
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
-                                Some(analysis_modal::AnalysisTool::Describe) => {
-                                    // Number of statistics: count, null_count, mean, std, min, 25%, 50%, 75%, max, skewness, kurtosis, distribution
-                                    let max_stats = 12;
-                                    // Estimate visible stats based on terminal width (rough estimate)
-                                    let visible_stats = 8; // Will be calculated more accurately in widget
-                                    self.analysis_modal.scroll_right(max_stats, visible_stats);
-                                }
-                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                    // Number of statistics: Distribution, P-value, Shapiro-Wilk, SW p-value, CV, Outliers, Skewness, Kurtosis
-                                    let max_stats = 8;
-                                    // Estimate visible stats based on terminal width (rough estimate)
-                                    let visible_stats = 6; // Will be calculated more accurately in widget
-                                    self.analysis_modal.scroll_right(max_stats, visible_stats);
+                                // The table set how far it scrolls as it drew.
+                                Some(
+                                    analysis_modal::AnalysisTool::Describe
+                                    | analysis_modal::AnalysisTool::DistributionAnalysis,
+                                ) => {
+                                    self.analysis_modal.scroll_right();
                                 }
                                 Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                    if let Some(results) = self.analysis_modal.current_results()
-                                        && let Some(corr) = &results.correlation_matrix {
-                                            let max_cols = corr.columns.len();
-                                            // Calculate visible columns using same logic as render function
-                                            let row_header_width = 20u16;
-                                            let cell_width = 12u16;
-                                            let column_spacing = 1u16;
-                                            let estimated_width = 80u16; // Conservative estimate
-                                            let available_width =
-                                                estimated_width.saturating_sub(row_header_width);
-                                            let mut calculated_visible = 0usize;
-                                            let mut used = 0u16;
-                                            loop {
-                                                let needed = if calculated_visible == 0 {
-                                                    cell_width
-                                                } else {
-                                                    column_spacing + cell_width
-                                                };
-                                                if used + needed <= available_width
-                                                    && calculated_visible < max_cols
-                                                {
-                                                    used += needed;
-                                                    calculated_visible += 1;
-                                                } else {
-                                                    break;
-                                                }
-                                            }
-                                            let visible_cols =
-                                                calculated_visible.max(1).min(max_cols);
-                                            self.analysis_modal.move_correlation_cell(
-                                                (0, 1),
-                                                max_cols,
-                                                max_cols,
-                                                visible_cols,
-                                            );
-                                        }
+                                    // The matrix keeps the cell in view as it draws.
+                                    self.analysis_modal.move_correlation_cell((0, 1));
                                 }
                                 Some(analysis_modal::AnalysisTool::DataQuality) => {}
                                 None => {}

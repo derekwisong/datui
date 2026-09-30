@@ -27,8 +27,6 @@ s:           Toggle histogram scale (Linear ↔ Log)
 ?:           Toggle this help
 Esc:         Return to distribution table
 
-Settings:
+Scale:
 
-Scale:       Toggle between Linear and Log scale for histogram
-             (Log scale requires positive values only)
-             Warning color indicates scale fallback (e.g., Log selected but Linear used due to negative values)
+The last row of the list names the histogram's scale; s toggles it. Log needs positive values: asked for on others, the histogram stays linear and the scale reads Linear in the warning color.

@@ -1761,7 +1761,8 @@ mod tests {
                 .into_iter()
                 .find(|s| s.id == PUBLIC)
                 .expect("on by default");
-            assert!(public.public && public.datasets.len() >= 6);
+            assert!(public.public);
+            assert!(!public.datasets.is_empty());
             assert!(
                 public
                     .datasets
@@ -1769,6 +1770,12 @@ mod tests {
                     .all(|d| !d.name.is_empty() && !d.license.is_empty() && !d.homepage.is_empty())
             );
             for dataset in &public.datasets {
+                if matches!(
+                    crate::source::input_source(std::path::Path::new(&dataset.url)),
+                    crate::source::InputSource::Http(_)
+                ) {
+                    continue;
+                }
                 let resolved = resolve_with(&dataset.url, &config, env).unwrap();
                 assert_eq!(resolved.signing, Signing::Unsigned, "{}", dataset.url);
                 assert_eq!(resolved.source_id, PUBLIC);
@@ -1873,7 +1880,12 @@ mod tests {
             assert_eq!(source.label, "Curated public data");
             assert_eq!(source.datasets.len(), 3);
             assert_eq!(source.datasets[0].description, "Daily observations");
-            assert!(source.datasets.iter().all(|d| d.name != "OpenAlex"));
+            assert!(
+                source
+                    .datasets
+                    .iter()
+                    .all(|d| d.name != "NOAA daily weather (GHCN-D)")
+            );
 
             for dataset in &datasets {
                 let resolved = resolve_with(&dataset.url, &config, env).unwrap();

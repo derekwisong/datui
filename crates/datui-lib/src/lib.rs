@@ -20117,7 +20117,7 @@ fn public_home_source(source: &crate::cloud_sources::Source) -> home::CloudSourc
         asked: true,
         details: vec![
             ("source".to_string(), source.id.clone()),
-            ("api".to_string(), "s3, gcs, azure".to_string()),
+            ("api".to_string(), "s3, gcs, azure, http".to_string()),
             ("login".to_string(), "none: public data".to_string()),
             ("from".to_string(), source.origin.clone()),
         ],

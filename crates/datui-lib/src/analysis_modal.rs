@@ -163,6 +163,9 @@ pub struct AnalysisProgress {
     /// Whether the stage now running reads the source or works on rows already
     /// read. `None` until a Data Quality run names its first stage.
     pub reads_source: Option<bool>,
+    /// Whether a cancel stops the stage now running partway. `None` until a Data
+    /// Quality run names its first stage.
+    pub interruptible: Option<bool>,
     /// The sampler's count of rows seen, where the read can count them.
     pub read: Option<crate::sampling::ReadWatch>,
     /// What the run starts from, when it reuses something: said before it starts.
@@ -175,9 +178,16 @@ impl AnalysisProgress {
             phase: phase.to_string(),
             started: std::time::Instant::now(),
             reads_source: None,
+            interruptible: None,
             read: None,
             reuse: None,
         }
+    }
+
+    /// The stage now running reads the source in one collect nothing can stop: a
+    /// cancel waits for its end.
+    pub fn read_runs_out(&self) -> bool {
+        self.reads_source == Some(true) && self.interruptible == Some(false)
     }
 }
 

@@ -890,12 +890,11 @@ mod quality_sample_tests {
         buffer.content().iter().map(|cell| cell.symbol()).collect()
     }
 
-    /// Esc on a Data Quality run whose read cannot stop at once: the last report is
-    /// kept, Setup comes back, and until the worker exits the header and Setup say
-    /// the read is finishing and Run does not start another beside it. The stages
-    /// the stopped worker still sends are dropped.
-    #[test]
-    fn a_cancelled_run_says_so_until_its_worker_exits() {
+    /// A Data Quality report on screen and a run under way in `stage`, whose worker
+    /// holds a lease on the generation it began on.
+    fn quality_run_under_way(
+        stage: data_quality::QualityPhase,
+    ) -> (App, mpsc::Receiver<AppEvent>, GenerationLease) {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
@@ -920,11 +919,28 @@ mod quality_sample_tests {
         ));
         modal.data_quality_last_plan = Some(plan.clone());
         modal.set_quality_page(data_quality::QualityPage::Overview);
-        // A run under way: its worker holds a lease on the generation it began on.
         modal.data_quality_plan.sample_seed = 7;
-        modal.computing = Some(AnalysisProgress::new("Reading the sample"));
+        let mut progress = AnalysisProgress::new(stage.stage.label());
+        progress.reads_source = Some(stage.reads_source);
+        progress.interruptible = Some(stage.interruptible);
+        modal.computing = Some(progress);
+        app.quality_watch = Some(data_quality::QualityWatch::default());
         app.busy = true;
         let worker = app.lease_for_tests();
+        (app, rx, worker)
+    }
+
+    /// Esc on a Data Quality run whose read cannot stop at once: the last report is
+    /// kept, Setup comes back, and until the worker exits the header and Setup say
+    /// the read is finishing and Run does not start another beside it. The stages
+    /// the stopped worker still sends are dropped.
+    #[test]
+    fn a_cancelled_run_says_so_until_its_worker_exits() {
+        let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: data_quality::QualityStage::CountingRows,
+            reads_source: true,
+            interruptible: false,
+        });
         let stopped = app.task_generation;
 
         assert!(app.hard_escape_while_busy(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -1000,6 +1016,59 @@ mod quality_sample_tests {
         let progress = app.analysis_modal.computing.as_ref().unwrap();
         assert_eq!(progress.phase, "Profiling columns");
         assert_eq!(progress.reads_source, Some(false));
+    }
+
+    /// Esc on a stage that stops within a batch: the watch is told, a flash says the
+    /// run is cancelled, and nothing claims a read is finishing. Run still waits for
+    /// the worker to exit; should it outlast its batch, the screen says it is
+    /// stopping rather than leave Run refused without a reason.
+    #[test]
+    fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
+        let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: data_quality::QualityStage::ProfilingColumns,
+            reads_source: true,
+            interruptible: true,
+        });
+        let watch = app.quality_watch.clone().unwrap();
+
+        assert!(app.hard_escape_while_busy(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(key(&mut app, KeyCode::Esc).is_none());
+        assert!(watch.cancelled(), "the worker's reads were told to stop");
+        assert_eq!(app.flash_message(), Some("Run cancelled"));
+        assert_eq!(
+            app.analysis_modal.data_quality_page,
+            data_quality::QualityPage::Setup
+        );
+        assert!(app.cancelled_run_shown().is_none());
+        let text = screen(&mut app);
+        assert!(!text.contains("Cancellation requested"), "{text}");
+
+        // Run waits for the worker all the same, and says why.
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        assert!(!app.is_busy());
+        assert!(
+            screen(&mut app).contains(QUALITY_RUN_WAITS),
+            "{}",
+            screen(&mut app)
+        );
+
+        // Past its batch and still going: now the screen says so.
+        if let Some((_, since, _)) = app.analysis_cancelled.as_mut() {
+            *since -= CANCEL_GRACE;
+        }
+        let text = screen(&mut app);
+        assert!(
+            text.contains("Cancellation requested; run stopping"),
+            "{text}"
+        );
+        assert!(!text.contains("source read finishing"), "{text}");
+
+        drop(worker);
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
+        assert!(app.cancelled_analysis_running().is_none());
+        assert!(!screen(&mut app).contains("Run waits"));
     }
 }
 
@@ -8227,9 +8296,13 @@ pub const QUALITY_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
 /// them again says why.
 const QUALITY_RELEASED_REMEMBERED: usize = 16;
 
-/// Why Data Quality's Run did not start: a cancelled read is still finishing. Said
-/// on Setup's line until that read ends.
-const QUALITY_RUN_WAITS: &str = "Run waits: a cancelled read is still finishing";
+/// Why Data Quality's Run did not start: a cancelled run has not exited yet. Said
+/// on Setup's line until it has.
+const QUALITY_RUN_WAITS: &str = "Run waits: the cancelled run is still stopping";
+
+/// How long a cancelled run that stops within a batch may take before the screen
+/// says it is still going: time for a batch to finish, and no longer.
+const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
@@ -8355,8 +8428,9 @@ pub struct App {
     /// The Data Quality run in flight's line to its worker: Esc stops it through this.
     quality_watch: Option<data_quality::QualityWatch>,
     /// An analysis Esc cancelled, whose worker may still be reading: its generation,
-    /// and when the cancel came. See [`App::cancelled_analysis_running`].
-    analysis_cancelled: Option<(u64, std::time::Instant)>,
+    /// when the cancel came, and whether it came during a read nothing can stop.
+    /// See [`App::cancelled_analysis_running`].
+    analysis_cancelled: Option<(u64, std::time::Instant, bool)>,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -9084,15 +9158,30 @@ impl App {
                 .is_some_and(|r| r.sample_size.is_some())
     }
 
-    /// An analysis Esc cancelled whose worker has not exited: a read Polars cannot
-    /// stop partway, still running. While it does, Data Quality does not start
-    /// another beside it, and says so.
+    /// An analysis Esc cancelled whose worker has not exited. While it has not, Data
+    /// Quality does not start another beside it, and says so.
     pub(crate) fn cancelled_analysis_running(&self) -> Option<std::time::Instant> {
-        let (generation, since) = self.analysis_cancelled?;
+        let (generation, since, _) = self.analysis_cancelled?;
         self.leases
             .get(&generation)
             .is_some_and(|n| *n > 0)
             .then_some(since)
+    }
+
+    /// A cancelled run still going that the screen should say is: at once when the
+    /// cancel came during a read nothing can stop, and otherwise only once it has
+    /// outlasted the batch it was to stop after.
+    pub(crate) fn cancelled_run_shown(&self) -> Option<crate::widgets::data_quality::Cancelling> {
+        let since = self.cancelled_analysis_running()?;
+        let read_runs_out = self
+            .analysis_cancelled
+            .is_some_and(|(_, _, runs_out)| runs_out);
+        (read_runs_out || since.elapsed() >= CANCEL_GRACE).then_some(
+            crate::widgets::data_quality::Cancelling {
+                since,
+                read_runs_out,
+            },
+        )
     }
 
     /// Work a cancel passed that is still running: leased on a generation since left.
@@ -9608,15 +9697,28 @@ impl App {
 
     /// Stop waiting for the analysis in flight.
     ///
-    /// Polars cannot stop a query partway, so the worker runs to the end and its answer
-    /// is dropped: the bump makes it stale, and its lease no longer holds the table up.
-    /// The tool is put back unchosen, so its view does not sit on a spinner for a run
-    /// that is not coming; Enter on it runs it again.
+    /// The worker's answer is dropped: the bump makes it stale, and its lease no longer
+    /// holds the table up. A Data Quality run stops at its next batch or stage; a
+    /// collect nothing watches runs to its end. The tool is put back unchosen, so its
+    /// view does not sit on a spinner for a run that is not coming; Enter on it runs
+    /// it again.
     fn cancel_analysis(&mut self) {
         // The worker holds a lease on the generation it was spawned on; while it does,
-        // its read is still running.
-        self.analysis_cancelled = Some((self.task_generation, std::time::Instant::now()));
-        if let Some(watch) = self.quality_watch.take() {
+        // it is still running. Only a Data Quality run has a watch to stop it by, and
+        // only its stages say whether they stop partway.
+        let watch = self.quality_watch.take();
+        let read_runs_out = watch.is_none()
+            || self
+                .analysis_modal
+                .computing
+                .as_ref()
+                .is_some_and(AnalysisProgress::read_runs_out);
+        self.analysis_cancelled = Some((
+            self.task_generation,
+            std::time::Instant::now(),
+            read_runs_out,
+        ));
+        if let Some(watch) = watch {
             watch.cancel();
         }
         self.task_generation = self.task_generation.wrapping_add(1);
@@ -9633,10 +9735,14 @@ impl App {
             return;
         }
         // Data Quality keeps its last report and goes back to Setup, where the plan
-        // can be edited while the read winds down; the header and Setup say it is
-        // still running until the worker exits, which a flash could not.
+        // can be edited while the run winds down. A read that runs to its end is
+        // state the header and Setup hold until the worker exits, which a flash could
+        // not; a run that stops at its next batch is done, and a flash says so.
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             self.open_quality_setup();
+            if !read_runs_out {
+                self.flash_note("Run cancelled".to_string());
+            }
             return;
         }
         self.analysis_modal.selected_tool = None;
@@ -20112,6 +20218,7 @@ impl App {
                 {
                     progress.phase = phase.stage.label().to_string();
                     progress.reads_source = Some(phase.reads_source);
+                    progress.interruptible = Some(phase.interruptible);
                 }
                 None
             }
@@ -20433,7 +20540,7 @@ impl App {
                 // The cancelled analysis's worker has exited: its read is over.
                 if self
                     .analysis_cancelled
-                    .is_some_and(|(cancelled, _)| !self.leases.contains_key(&cancelled))
+                    .is_some_and(|(cancelled, _, _)| !self.leases.contains_key(&cancelled))
                 {
                     self.analysis_cancelled = None;
                     // Run can run again, so Setup no longer says it waits.

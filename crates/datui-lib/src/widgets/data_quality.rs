@@ -45,8 +45,29 @@ pub struct SetupView<'a> {
     pub edited: bool,
     /// Why Enter did not run.
     pub note: Option<&'a str>,
-    /// When a cancelled read began winding down, while it still is.
-    pub cancelling: Option<std::time::Instant>,
+    /// A cancelled run still going, while the screen should say so.
+    pub cancelling: Option<Cancelling>,
+}
+
+/// A cancelled run that has not exited yet.
+#[derive(Debug, Clone, Copy)]
+pub struct Cancelling {
+    /// When the cancel came.
+    pub since: std::time::Instant,
+    /// The cancel came during a read of the source nothing can stop, which runs to
+    /// its end; otherwise the run is stopping and has outlasted its batch.
+    pub read_runs_out: bool,
+}
+
+impl Cancelling {
+    /// What is still going, after "Cancellation requested; " or "Run waits: ".
+    fn what(self) -> &'static str {
+        if self.read_runs_out {
+            "source read finishing"
+        } else {
+            "run stopping"
+        }
+    }
 }
 
 pub struct DataQualityWidgetConfig<'a> {
@@ -180,12 +201,13 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
         ));
     }
     // State, not a message: it holds until the worker exits, on every page.
-    if let Some(since) = config.setup.cancelling {
+    if let Some(cancelling) = config.setup.cancelling {
         spans.push(Span::styled(
             format!(
-                "  Cancellation requested; source read finishing {} {}",
+                "  Cancellation requested; {} {} {}",
+                cancelling.what(),
                 glyphs::get().middot,
-                crate::render::analysis_view::elapsed(since.elapsed())
+                crate::render::analysis_view::elapsed(cancelling.since.elapsed())
             ),
             Style::default().fg(config.theme.get("warning")),
         ));
@@ -670,19 +692,20 @@ fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
 /// that the draft differs from the report it would replace.
 fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> {
     let view = &config.setup;
-    if let Some(since) = view.cancelling {
+    if let Some(cancelling) = view.cancelling {
         // Said as a reason once Enter has been refused for it, short enough to keep
         // its clock beside the tool list at 80 columns.
         return Some((
             format!(
-                "{} {} {}",
+                "{}{} {} {}",
                 if view.note.is_some() {
-                    "Run waits: source read finishing"
+                    "Run waits: "
                 } else {
-                    "Cancellation requested; source read finishing"
+                    "Cancellation requested; "
                 },
+                cancelling.what(),
                 glyphs::get().middot,
-                crate::render::analysis_view::elapsed(since.elapsed())
+                crate::render::analysis_view::elapsed(cancelling.since.elapsed())
             ),
             true,
         ));
@@ -3030,8 +3053,11 @@ mod tests {
         assert!(text.contains("passes over the scope"), "{text}");
 
         let mut config = screen.config(QualityPage::Setup);
-        config.setup.cancelling = Some(std::time::Instant::now());
-        config.setup.note = Some("Run waits: a cancelled read is still finishing");
+        config.setup.cancelling = Some(Cancelling {
+            since: std::time::Instant::now(),
+            read_runs_out: true,
+        });
+        config.setup.note = Some("Run waits: the cancelled run is still stopping");
         let rows = screen.draw(config, 0, 100, 30);
         let text = rows.join("\n");
         assert!(
@@ -3042,5 +3068,20 @@ mod tests {
             text.contains("Run waits: source read finishing"),
             "Setup says why Enter did not run: {text}"
         );
+
+        // A run that should have stopped at its next batch and has not says so,
+        // without claiming a read it cannot stop.
+        let mut config = screen.config(QualityPage::Setup);
+        config.setup.cancelling = Some(Cancelling {
+            since: std::time::Instant::now(),
+            read_runs_out: false,
+        });
+        let rows = screen.draw(config, 0, 100, 30);
+        assert!(
+            rows[0].contains("Cancellation requested; run stopping"),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(!rows.join("\n").contains("source read finishing"));
     }
 }

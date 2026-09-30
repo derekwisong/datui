@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -31,21 +30,46 @@ pub fn test_runtime() -> tokio::runtime::Handle {
 /// several tests running at once corrupt it, since they all rewrite the same file.
 ///
 /// The variable is process-wide, so this is done once and as early as possible.
+///
+/// The directories are named at random, not by process id: ids are reused, and a run
+/// that landed on a finished run's id inherited its recents and templates. They are
+/// removed when the process exits.
 #[allow(dead_code)]
 pub fn isolate_cache() {
+    // Held for the life of the process. A static is never dropped, so they are removed
+    // by an exit handler instead.
+    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_scratch_dirs() {
+        if let Ok(mut held) = SCRATCH.lock() {
+            held.clear();
+        }
+    }
+    let scratch_dir = |prefix: &str| {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("a scratch directory for the test process")
+    };
+
     static ISOLATE: Once = Once::new();
     ISOLATE.call_once(|| {
-        let dir = std::env::temp_dir().join(format!("datui-test-cache-{}", std::process::id()));
-        let _ = fs::create_dir_all(&dir);
+        let dir = scratch_dir("datui-test-cache-");
         // The config directory holds templates, so a test App saving one without this
         // override writes it into the developer's own template list.
-        let config_dir =
-            std::env::temp_dir().join(format!("datui-test-config-{}", std::process::id()));
-        let _ = fs::create_dir_all(&config_dir);
+        let config_dir = scratch_dir("datui-test-config-");
         // SAFETY: test-only. Tests run on parallel threads, so this can race another test
         // reading the environment; accepted in tests and never done outside them.
-        unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
-        unsafe { std::env::set_var("DATUI_CONFIG_DIR", &config_dir) };
+        unsafe { std::env::set_var("DATUI_CACHE_DIR", dir.path()) };
+        unsafe { std::env::set_var("DATUI_CONFIG_DIR", config_dir.path()) };
+        let mut held = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
+        held.push(dir);
+        held.push(config_dir);
+        // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
+        // callback only drops the directories above.
+        unsafe { atexit(remove_scratch_dirs) };
     });
 }
 

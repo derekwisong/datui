@@ -8899,6 +8899,9 @@ mod tests {
         use crate::AppEvent;
         let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
         let mut saw_crash = false;
+        // Done once nothing is chained, queued or still owed; the deadline is only a
+        // hang guard.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
             match next.take() {
                 Some(ev) => {
@@ -8908,11 +8911,16 @@ mod tests {
                     }
                     next = app.event(&ev);
                 }
-                _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-                    Ok(ev) => {
-                        next = Some(ev);
+                _ => match rx.try_recv() {
+                    Ok(ev) => next = Some(ev),
+                    Err(_) if !crate::tests::work_pending(app) => break,
+                    Err(_) => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "background work never reported back"
+                        );
+                        next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
                     }
-                    Err(_) => break,
                 },
             }
         }

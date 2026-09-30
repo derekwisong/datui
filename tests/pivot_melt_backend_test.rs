@@ -13,6 +13,14 @@ use std::sync::mpsc;
 
 mod common;
 
+/// Whether the app is still waiting on background work: `busy` or the row count. What
+/// these tests wait on rather than a quiet spell on the channel, which on a loaded
+/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
+/// for minutes.
+fn work_pending(app: &App) -> bool {
+    app.is_busy() || app.row_count_pending()
+}
+
 fn ensure_sample_data() {
     common::ensure_sample_data();
 }
@@ -33,12 +41,32 @@ fn load_file_with(
                 }
                 next = app.event(&ev);
             }
-            _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-                Ok(ev) => {
-                    next = Some(ev);
-                }
-                Err(_) => return,
+            _ => match next_event(app, rx) {
+                Some(ev) => next = Some(ev),
+                None => return,
             },
+        }
+    }
+}
+
+/// The next event on the channel: one already there, or one background work still
+/// owes. `None` once nothing is there and nothing is owed.
+fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
+    // Only a hang guard; nothing here is timed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        if let Ok(event) = rx.try_recv() {
+            return Some(event);
+        }
+        if !work_pending(app) {
+            return None;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background work never reported back"
+        );
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            return Some(event);
         }
     }
 }
@@ -130,7 +158,7 @@ fn test_pivot_date_index_render_simulation() {
         next = app.event(&ev);
     }
     // Drain async collect events from background buffer load.
-    while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+    while let Some(ev) = next_event(&app, &rx) {
         if let Some(n) = app.event(&ev) {
             app.event(&n);
         }

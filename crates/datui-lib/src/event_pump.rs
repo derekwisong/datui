@@ -394,12 +394,23 @@ mod tests {
     }
 
     /// Run the loop the way `run()` does, without a terminal, until the app is idle
-    /// with nothing held and nothing on the channel, or it exits.
+    /// with nothing held, nothing on the channel and no background work still to
+    /// report, or it exits.
+    ///
+    /// Waits on the work rather than on a quiet spell: a result slower than the spell
+    /// on a loaded machine is not a result that never comes, and a row count left
+    /// running lands in the middle of whatever the test does next.
     fn settle(pump: &mut EventPump) -> Drained {
-        for _ in 0..10_000 {
+        // Only a hang guard; nothing here is timed.
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop did not settle"
+            );
             let replayed = pump.replay_one().unwrap();
-            let drained = if pump.app.is_busy() && !replayed {
-                pump.wait_and_drain(Duration::from_secs(10))
+            let drained = if crate::tests::work_pending(&pump.app) && !replayed {
+                pump.wait_and_drain(Duration::from_millis(50))
             } else {
                 pump.drain()
             }
@@ -408,18 +419,13 @@ mod tests {
                 Drained::Continue { updated } => *updated,
                 _ => return drained,
             };
-            if replayed || updated {
+            if replayed || updated || crate::tests::work_pending(&pump.app) {
                 continue;
             }
-            assert!(
-                !pump.app.is_busy(),
-                "the app stayed busy with no background result"
-            );
             if pump.held_keys().next().is_none() {
                 return drained;
             }
         }
-        panic!("the loop did not settle");
     }
 
     /// A pump with a three-row CSV loaded, the way `run()` loads one.
@@ -647,16 +653,15 @@ mod tests {
         // A lease is released through the channel, so the last one can still be in
         // flight when the loop above runs out of work to do — `busy` is cleared by the
         // handler that consumed the result, one event ahead of the release behind it.
-        for _ in 0..200 {
-            if !p.app.work_a_bump_would_strand() {
-                break;
-            }
+        // Waits on the release itself; the deadline is only a hang guard.
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while p.app.work_a_bump_would_strand() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the generation was never freed once the export was done"
+            );
             let _ = p.wait_and_drain(Duration::from_millis(50));
         }
-        assert!(
-            !p.app.work_a_bump_would_strand(),
-            "with the generation free once it is done"
-        );
     }
 
     /// A deferred collect that turns out to have nothing to do still takes the loading
@@ -1385,12 +1390,7 @@ mod tests {
         assert!(!p.app.is_busy(), "and nothing waits on it");
         assert_eq!(p.app.status_message, None);
 
-        for _ in 0..100 {
-            p.wait_and_drain(Duration::from_millis(100)).unwrap();
-            if p.app.collect_inflight.is_none() {
-                break;
-            }
-        }
+        settle(&mut p);
         assert!(
             table(&p).buffered_end() > end,
             "the buffer grew ahead of the view"

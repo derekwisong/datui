@@ -25,20 +25,45 @@ use crate::{App, AppEvent, InputMode, OpenOptions};
 /// a recent that no longer exists and a dead root derived from it. Fifty runs fills the
 /// list. `DATUI_CACHE_DIR` is process-wide, so this is done once and as early as
 /// possible.
+///
+/// The directories are named at random, not by process id: ids are reused, and a run
+/// that landed on a finished run's id inherited its recents and templates. They are
+/// removed when the process exits.
 pub(crate) fn isolate_cache() {
+    // Held for the life of the process. A static is never dropped, so they are removed
+    // by an exit handler instead.
+    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_scratch_dirs() {
+        if let Ok(mut held) = SCRATCH.lock() {
+            held.clear();
+        }
+    }
+    let scratch_dir = |prefix: &str| {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("a scratch directory for the test process")
+    };
+
     static ISOLATE: std::sync::Once = std::sync::Once::new();
     ISOLATE.call_once(|| {
-        let dir = std::env::temp_dir().join(format!("datui-flow-cache-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = scratch_dir("datui-flow-cache-");
         // The config directory holds templates; see `ConfigManager::new` for why a
         // test must never reach the real one.
-        let config_dir =
-            std::env::temp_dir().join(format!("datui-flow-config-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&config_dir);
+        let config_dir = scratch_dir("datui-flow-config-");
         // SAFETY: test-only. Tests run on parallel threads, so this can race another test
         // reading the environment; accepted in tests and never done outside them.
-        unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
-        unsafe { std::env::set_var("DATUI_CONFIG_DIR", &config_dir) };
+        unsafe { std::env::set_var("DATUI_CACHE_DIR", dir.path()) };
+        unsafe { std::env::set_var("DATUI_CONFIG_DIR", config_dir.path()) };
+        let mut held = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
+        held.push(dir);
+        held.push(config_dir);
+        // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
+        // callback only drops the directories above.
+        unsafe { atexit(remove_scratch_dirs) };
     });
 }
 
@@ -97,6 +122,8 @@ impl Harness {
     /// Run `event` and everything that follows from it.
     fn run(&mut self, event: AppEvent) {
         let mut next = Some(event);
+        // Waits on the work, not on a quiet spell; the deadline is only a hang guard.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
             if let Some(event) = next.take() {
                 if let AppEvent::Crash(message) = &event {
@@ -109,14 +136,16 @@ impl Harness {
                 next = Some(event);
                 continue;
             }
-            if self.app.busy {
-                match self.rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                    Ok(event) => {
-                        next = Some(event);
-                        continue;
-                    }
-                    Err(_) => panic!("the app stayed busy with no background result"),
-                }
+            if crate::tests::work_pending(&self.app) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "background work never reported back"
+                );
+                next = self
+                    .rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                    .ok();
+                continue;
             }
             break;
         }

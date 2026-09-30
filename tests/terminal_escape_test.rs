@@ -22,6 +22,14 @@ use std::sync::mpsc;
 
 mod common;
 
+/// Whether the app is still waiting on background work: `busy` or the row count. What
+/// these tests wait on rather than a quiet spell on the channel, which on a loaded
+/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
+/// for minutes.
+fn work_pending(app: &App) -> bool {
+    app.is_busy() || app.row_count_pending()
+}
+
 /// Sequences worth trying, and what each would do if it escaped.
 ///
 /// The names matter more than the bytes: a future reader should be able to see
@@ -51,6 +59,8 @@ fn pump_open_until_loaded(
     options: OpenOptions,
 ) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
+    // Only a hang guard; nothing here is timed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         match next.take() {
             Some(ev) => {
@@ -60,9 +70,17 @@ fn pump_open_until_loaded(
                 }
                 next = app.event(&ev);
             }
-            _ => match rx.recv_timeout(std::time::Duration::from_millis(2000)) {
+            // Done once nothing is chained, queued or still owed.
+            _ => match rx.try_recv() {
                 Ok(ev) => next = Some(ev),
-                Err(_) => return,
+                Err(_) if !work_pending(app) => return,
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "background work never reported back"
+                    );
+                    next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+                }
             },
         }
     }
@@ -86,10 +104,8 @@ fn offending_chars(s: &str) -> Vec<char> {
         .collect()
 }
 
-fn write_csv(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("datui-escape-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    let path = dir.join(name);
+fn write_csv(dir: &tempfile::TempDir, name: &str, contents: &str) -> PathBuf {
+    let path = dir.path().join(name);
     std::fs::write(&path, contents).expect("write fixture");
     path
 }
@@ -119,7 +135,8 @@ fn cell_values_cannot_emit_escape_sequences() {
     for (i, (_, payload)) in PAYLOADS.iter().enumerate() {
         csv.push_str(&format!("{},{}\n", i, quoted(payload)));
     }
-    let path = write_csv("cells.csv", &csv);
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = write_csv(&dir, "cells.csv", &csv);
 
     let text = render_file(path, 120);
     let offenders = offending_chars(&text);
@@ -139,7 +156,8 @@ fn column_names_cannot_emit_escape_sequences() {
     let headers: Vec<String> = PAYLOADS.iter().map(|(_, p)| quoted(p)).collect();
     let values: Vec<&str> = PAYLOADS.iter().map(|_| "x").collect();
     let csv = format!("{}\n{}\n", headers.join(","), values.join(","));
-    let path = write_csv("headers.csv", &csv);
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = write_csv(&dir, "headers.csv", &csv);
 
     let text = render_file(path, 400);
     let offenders = offending_chars(&text);
@@ -161,7 +179,8 @@ fn filenames_cannot_emit_escape_sequences() {
     // The filename is shown in the header bar, and lands in the recent-files
     // list on the home screen. It is attacker-influenced whenever someone opens
     // a file they were sent.
-    let path = write_csv("na\x1b[31mme.csv", "id,note\n1,x\n");
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = write_csv(&dir, "na\x1b[31mme.csv", "id,note\n1,x\n");
 
     let text = render_file(path, 120);
     let offenders = offending_chars(&text);
@@ -176,9 +195,8 @@ fn filenames_cannot_emit_escape_sequences() {
 fn error_messages_cannot_emit_escape_sequences() {
     // Error paths are where raw untrusted strings usually leak through, since
     // they tend to interpolate a filename or a parser message directly.
-    let dir = std::env::temp_dir().join(format!("datui-escape-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    let missing = dir.join("no\x1b]0;pwned\x07such.csv");
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let missing = dir.path().join("no\x1b]0;pwned\x07such.csv");
 
     let text = render_file(missing, 120);
     let offenders = offending_chars(&text);

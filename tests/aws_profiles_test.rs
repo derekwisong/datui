@@ -132,15 +132,25 @@ fn listing_and_opening_sign_with_the_active_profile() {
         done(app)
     };
 
+    // Both listings answered: the default source's, and the `default` profile's own,
+    // which runs alongside it and can land after it.
+    let default_profile = datui::cloud_sources::profile_source_id("default");
     let listed = pump(&mut app, 20, &|app| {
+        let answered = |id: &str| {
+            app.home
+                .cloud
+                .iter()
+                .any(|s| s.id == id && s.status != datui::home::CloudStatus::Listing)
+        };
         app.home
             .cloud
             .iter()
             .any(|s| s.id == "s3-default" && !s.buckets.is_empty())
+            && answered(&default_profile)
     });
     assert!(
         listed,
-        "the default source should list: {:?}",
+        "the default source and the default profile should list: {:?}",
         app.home.cloud
     );
 

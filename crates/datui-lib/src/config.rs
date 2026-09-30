@@ -1453,7 +1453,7 @@ impl CloudConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FileLoadingConfig {
-    /// When true, CSV reader tries to parse string columns as dates (YYYY-MM-DD, ISO datetime). Default: true.
+    /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime. Default: true.
     pub parse_dates: Option<bool>,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
     pub decompress_in_memory: Option<bool>,
@@ -1504,7 +1504,7 @@ fn removed_file_loading_keys(content: &str) -> Vec<(&'static str, &'static str)>
 const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "parse_dates",
-        "When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)",
+        "When true (default), CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime",
     ),
     (
         "decompress_in_memory",

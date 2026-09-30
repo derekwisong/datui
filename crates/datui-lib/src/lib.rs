@@ -4964,7 +4964,7 @@ pub struct OpenOptions {
     /// line, once it is on screen. Applied to that open only; what later opens get
     /// is `[templates] auto_apply`'s business.
     pub template: Option<String>,
-    /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
+    /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime.
     pub parse_dates: bool,
     /// When set, trim and parse CSV string columns: None = off, Some(true) = all columns, Some(cols) = those columns only.
     pub parse_strings: Option<ParseStringsTarget>,
@@ -12090,6 +12090,10 @@ impl App {
                     Ok(nv) => nv,
                     Err(e) => return Some(Err(e)),
                 };
+                // No `--parse-strings` here: its sample would be a second read of
+                // the bucket. Nor Polars' `try_parse_dates`, which fails the whole
+                // read on a value it cannot parse, even one like those it inferred
+                // the type from. Timestamps stay text.
                 DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
                     .finish()
                     .map_err(named)
@@ -12804,6 +12808,13 @@ impl App {
                 }
             }
         };
+        // JSON is read into memory whole, so its sample costs no read of the file.
+        if matches!(
+            effective_format,
+            Some(FileFormat::Json) | Some(FileFormat::Jsonl)
+        ) {
+            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.lf, options);
+        }
         Ok(lf.lf)
     }
 
@@ -20530,6 +20541,36 @@ mod cloud_csv_prefix_tests {
         .unwrap();
         assert_eq!(df.column("name").unwrap().null_count(), 1);
         assert_eq!(df.column("id").unwrap().null_count(), 0);
+    }
+
+    /// A CSV prefix keeps timestamps as text rather than risk a read that fails on
+    /// them: Polars' date inference takes `2024-01-01 10:00:00 UTC`, as BigQuery
+    /// exports it, for a datetime and then cannot parse it.
+    #[test]
+    fn a_csv_prefix_keeps_timestamps_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = "z,bq\n2013-01-01T10:00:00Z,2024-01-01 10:00:00 UTC\n\
+                   2013-01-01T11:00:00.5Z,2024-01-02 11:30:15 UTC\n";
+        std::fs::write(dir.path().join("a.csv"), csv).unwrap();
+        let glob = format!("{}/*.csv", dir.path().display());
+        let options = OpenOptions {
+            parse_strings: Some(ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        let df = App::scan_cloud_prefix(
+            &glob,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &options,
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect()
+        .expect("the read succeeds");
+        assert_eq!(df.height(), 2);
+        assert_eq!(df.column("z").unwrap().dtype(), &DataType::String);
+        assert_eq!(df.column("bq").unwrap().dtype(), &DataType::String);
     }
 
     /// With one source, `local`, whose endpoint refuses every connection: a browse

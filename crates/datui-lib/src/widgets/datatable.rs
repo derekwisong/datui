@@ -232,6 +232,15 @@ pub struct DataTableState {
     pub needs_recollect: bool,
 }
 
+/// What string-column inference may turn a column into, besides Time.
+#[derive(Clone, Copy)]
+struct StringTypes {
+    /// Date and Datetime.
+    dates: bool,
+    /// Duration, Int64 and Float64, and trimming the columns that stay text.
+    numbers: bool,
+}
+
 /// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).
 #[derive(Clone, Copy)]
 enum ExcelColType {
@@ -2603,8 +2612,14 @@ impl DataTableState {
     /// Try to detect a datetime format from a sample string.
     fn infer_datetime_format_from_sample(sample: &str) -> Option<&'static str> {
         const DATETIME_FMTS: &[&str] = &[
+            // ISO 8601 with an offset. `%#z` takes `Z`, `+05:00`, `-0500` and `+05`;
+            // a format with an offset makes Polars read the column into UTC.
+            "%Y-%m-%dT%H:%M:%S%.f%#z",
+            "%Y-%m-%d %H:%M:%S%.f%#z",
+            "%Y-%m-%dT%H:%M%#z",
             "%Y-%m-%dT%H:%M:%S%.f",
             "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
             "%Y-%m-%d %H:%M:%S%.f",
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%d %H:%M",
@@ -2664,13 +2679,69 @@ impl DataTableState {
         lf: LazyFrame,
         options: &OpenOptions,
     ) -> Result<LazyFrame> {
-        let target = match &options.parse_strings {
-            None => return Ok(lf),
-            Some(t) => t,
+        let Some(target) = &options.parse_strings else {
+            return Ok(lf);
         };
-        let sample_rows = options.parse_strings_sample_rows;
-        let sample_df = lf.clone().limit(sample_rows as u32).collect()?;
-        let schema = sample_df.schema();
+        Self::type_string_columns(
+            lf,
+            target,
+            options.parse_strings_sample_rows,
+            StringTypes {
+                dates: options.parse_dates,
+                numbers: true,
+            },
+        )
+    }
+
+    /// Dates and timestamps a JSON file holds as strings, typed the way a CSV's are.
+    /// JSON already says which values are numbers, so a string only ever becomes a
+    /// date, datetime or time, and one that is none of those is left as it was read.
+    pub(crate) fn apply_parse_dates_to_json_lazyframe(
+        lf: LazyFrame,
+        options: &OpenOptions,
+    ) -> Result<LazyFrame> {
+        if !options.parse_dates {
+            return Ok(lf);
+        }
+        Self::type_string_columns(
+            lf,
+            &ParseStringsTarget::All,
+            options.parse_strings_sample_rows,
+            StringTypes {
+                dates: true,
+                numbers: false,
+            },
+        )
+    }
+
+    /// A string column read as a microsecond Datetime with `format`. Exact, so a naive
+    /// format cannot match the front of a value that carries an offset and drop it; not
+    /// strict, so a value past the sample that does not parse is null.
+    fn datetime_from_str(expr: Expr, format: &str) -> Expr {
+        expr.str().to_datetime(
+            Some(TimeUnit::Microseconds),
+            None,
+            StrptimeOptions {
+                format: Some(PlSmallStr::from(format)),
+                strict: false,
+                exact: true,
+                cache: true,
+            },
+            lit(PlSmallStr::from_static("raise")),
+        )
+    }
+
+    /// Type string columns from the first `sample_rows` rows: trim, then keep the first
+    /// of Date, Datetime, Time, Duration, Int64 and Float64 (as `types` allows) that
+    /// parses every sampled value, as lazy expressions over `lf`.
+    fn type_string_columns(
+        lf: LazyFrame,
+        target: &ParseStringsTarget,
+        sample_rows: usize,
+        types: StringTypes,
+    ) -> Result<LazyFrame> {
+        // The scan already inferred the schema; the sample below is the one read.
+        let schema = lf.clone().collect_schema()?;
         let string_cols: Vec<String> = schema
             .iter()
             .filter(|(_name, dtype)| **dtype == DataType::String)
@@ -2718,6 +2789,7 @@ impl DataTableState {
             .collect()?;
         let mut exprs = Vec::with_capacity(target_cols.len());
         for col_name in &target_cols {
+            let name = PlSmallStr::from(col_name.as_str());
             let s = sample_df.column(col_name.as_str())?;
             let null_before = s.null_count();
             let len = s.len();
@@ -2746,7 +2818,7 @@ impl DataTableState {
                         let (mut t, mut date_fmt, mut datetime_fmt, mut time_fmt) = match str_ca
                             .as_date(None, true)
                         {
-                            Ok(as_date) if accept_type(as_date.null_count()) => {
+                            Ok(as_date) if types.dates && accept_type(as_date.null_count()) => {
                                 let fmt = first_val.and_then(Self::infer_date_format_from_sample);
                                 if fmt.is_some() {
                                     (InferredType::Date, fmt.map(String::from), None, None)
@@ -2756,33 +2828,23 @@ impl DataTableState {
                             }
                             _ => (InferredType::String, None, None, None),
                         };
-                        if matches!(t, InferredType::String) {
-                            let amb_name: &str = str_ca.name().as_ref();
-                            let amb_series = Series::new(
-                                PlSmallStr::from(amb_name),
-                                vec!["raise"; str_ca.len()],
-                            );
-                            let amb_ca =
-                                amb_series.str().map_err(color_eyre::eyre::Report::from)?;
-                            (t, date_fmt, datetime_fmt, time_fmt) = match str_ca.as_datetime(
-                                None,
-                                TimeUnit::Microseconds,
-                                true,
-                                false,
-                                None,
-                                amb_ca,
-                            ) {
-                                Ok(as_dt) if accept_type(as_dt.null_count()) => {
-                                    let fmt =
-                                        first_val.and_then(Self::infer_datetime_format_from_sample);
-                                    if fmt.is_some() {
-                                        (InferredType::Datetime, None, fmt.map(String::from), None)
-                                    } else {
-                                        (InferredType::String, None, None, None)
-                                    }
-                                }
-                                _ => (InferredType::String, None, None, None),
-                            };
+                        if matches!(t, InferredType::String)
+                            && types.dates
+                            && let Some(fmt) =
+                                first_val.and_then(Self::infer_datetime_format_from_sample)
+                        {
+                            // Judged by the expression the table will run, so a column
+                            // whose values disagree (an offset on some, none on others)
+                            // fails here and stays text.
+                            let parsed = sample_df
+                                .clone()
+                                .lazy()
+                                .select([Self::datetime_from_str(col(name.clone()), fmt)])
+                                .collect()?;
+                            if accept_type(parsed.column(col_name.as_str())?.null_count()) {
+                                (t, date_fmt, datetime_fmt, time_fmt) =
+                                    (InferredType::Datetime, None, Some(fmt.to_string()), None);
+                            }
                         }
                         if matches!(t, InferredType::String) {
                             (t, date_fmt, datetime_fmt, time_fmt) = match str_ca.as_time(None, true)
@@ -2799,7 +2861,7 @@ impl DataTableState {
                                 _ => (InferredType::String, None, None, None),
                             };
                         }
-                        if matches!(t, InferredType::String) {
+                        if matches!(t, InferredType::String) && types.numbers {
                             let duration_ca = Self::string_chunked_to_duration_ns(str_ca);
                             (t, date_fmt, datetime_fmt, time_fmt) =
                                 if accept_type(duration_ca.null_count()) {
@@ -2808,7 +2870,7 @@ impl DataTableState {
                                     (InferredType::String, None, None, None)
                                 };
                         }
-                        if matches!(t, InferredType::String) {
+                        if matches!(t, InferredType::String) && types.numbers {
                             (t, date_fmt, datetime_fmt, time_fmt) =
                                 match s.strict_cast(&DataType::Int64) {
                                     Ok(as_int) if accept_type(as_int.null_count()) => {
@@ -2817,7 +2879,7 @@ impl DataTableState {
                                     _ => (InferredType::String, None, None, None),
                                 };
                         }
-                        if matches!(t, InferredType::String) {
+                        if matches!(t, InferredType::String) && types.numbers {
                             (t, date_fmt, datetime_fmt, time_fmt) =
                                 match s.strict_cast(&DataType::Float64) {
                                     Ok(as_float) if accept_type(as_float.null_count()) => {
@@ -2851,24 +2913,11 @@ impl DataTableState {
                         .to_date(opts)
                         .alias(PlSmallStr::from(col_name.as_str()))
                 }
-                InferredType::Datetime => {
-                    let opts = StrptimeOptions {
-                        format: datetime_fmt.as_deref().map(PlSmallStr::from),
-                        strict: false,
-                        exact: false,
-                        cache: true,
-                    };
-                    base_with_nulls
-                        .clone()
-                        .str()
-                        .to_datetime(
-                            Some(TimeUnit::Microseconds),
-                            None,
-                            opts,
-                            lit(PlSmallStr::from_static("raise")),
-                        )
-                        .alias(PlSmallStr::from(col_name.as_str()))
-                }
+                InferredType::Datetime => Self::datetime_from_str(
+                    base_with_nulls.clone(),
+                    datetime_fmt.as_deref().unwrap_or_default(),
+                )
+                .alias(name),
                 InferredType::Time => {
                     let opts = StrptimeOptions {
                         format: time_fmt.as_deref().map(PlSmallStr::from),
@@ -2906,7 +2955,10 @@ impl DataTableState {
                 InferredType::Float64 => base_with_nulls
                     .cast(DataType::Float64)
                     .alias(PlSmallStr::from(col_name.as_str())),
-                InferredType::String => base.alias(PlSmallStr::from(col_name.as_str())),
+                // Trimmed where every column is text; left as read where the
+                // writer chose a string.
+                InferredType::String if types.numbers => base.alias(name),
+                InferredType::String => continue,
             };
             exprs.push(expr);
         }
@@ -3133,74 +3185,6 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
-        Ok(state)
-    }
-
-    pub fn from_ndjson(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
-        let pl_path = PlRefPath::try_from_path(path)?;
-        let lf = LazyJsonLineReader::new(pl_path).finish()?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
-    }
-
-    /// Load multiple NDJSON files and concatenate into one LazyFrame.
-    pub fn from_ndjson_paths(
-        paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
-        if paths.is_empty() {
-            return Err(color_eyre::eyre::eyre!("No paths provided"));
-        }
-        if paths.len() == 1 {
-            return Self::from_ndjson(
-                paths[0].as_ref(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                row_numbers,
-                row_start_index,
-            );
-        }
-        let mut lazy_frames = Vec::with_capacity(paths.len());
-        for p in paths {
-            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
-            let lf = LazyJsonLineReader::new(pl_path).finish()?;
-            lazy_frames.push(lf);
-        }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
         Ok(state)
     }
 

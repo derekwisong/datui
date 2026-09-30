@@ -341,8 +341,9 @@ key, if present, must start with `0.2`.
 **Something failed and the screen said little.** Read the log: `datui.log` in
 the cache directory (`~/.cache/datui` on Linux, `~/Library/Caches/datui` on
 macOS, `%LOCALAPPDATA%\datui` on Windows). It holds Polars warnings, the errors
-datui showed, cache and history failures, and anything else written to stderr
-while the UI was up, with credentials masked. It is capped at 1 MB, with the
+datui showed, internal errors with their backtraces, cache and history
+failures, and anything else written to stderr while the UI was up, with
+credentials masked. It is capped at 1 MB, with the
 previous file kept as `datui.log.1`; `datui --clear-cache` deletes both.
 
 | Set | How |

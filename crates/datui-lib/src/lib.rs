@@ -1613,6 +1613,17 @@ mod template_rollback_tests {
         state.schema.iter_names().map(|s| s.to_string()).collect()
     }
 
+    /// The bottom line of a rendered App.
+    fn control_bar(app: &mut App) -> String {
+        use ratatui::widgets::Widget;
+        let area = ratatui::layout::Rect::new(0, 0, 120, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+            .collect()
+    }
+
     /// Applying a view plans its steps and returns: the pivot is read by a worker,
     /// with the table as it was and busy meanwhile, and installed when it is in.
     #[test]
@@ -1721,6 +1732,28 @@ mod template_rollback_tests {
         assert!(state.last_pivot_spec().is_none());
         assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
         assert!(app.active_template_id.is_none());
+    }
+
+    /// While a view's pivot or rows are read, the bar says Esc stops it.
+    #[test]
+    fn the_bar_offers_esc_while_a_view_applies() {
+        for pivot in [true, false] {
+            let (mut app, rx, tx, _dir) = long_csv_app();
+            let mut template = pivot_view(&mut app, "view");
+            if !pivot {
+                template.settings.pivot = None;
+                template.settings.column_order = vec!["id".to_string(), "val".to_string()];
+            }
+            let bar = control_bar(&mut app);
+            assert!(!bar.contains("Cancel"), "nothing to stop yet: {bar}");
+            assert!(app.apply_template(&template).is_ok());
+            let bar = control_bar(&mut app);
+            assert!(
+                bar.contains("Applying view") && bar.contains("Esc") && bar.contains("Cancel"),
+                "pivot {pivot}: {bar}"
+            );
+            super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        }
     }
 
     /// Esc while a view's pivot is read acts at once, even with keys held, and keeps
@@ -20398,12 +20431,8 @@ impl App {
 
     /// Whether a view is being applied at the table: its pivot or its first rows are
     /// being read.
-    fn view_applying(&self) -> bool {
-        if !self.busy
-            || self.input_mode != InputMode::Normal
-            || self.error_modal.active
-            || self.show_help
-        {
+    pub(crate) fn view_applying(&self) -> bool {
+        if !self.busy || !self.in_normal_table_view() {
             return false;
         }
         let pivot = self

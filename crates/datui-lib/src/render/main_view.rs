@@ -107,6 +107,15 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             {
                 return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
             }
+            // Esc stops a view being applied, like any other cancellable wait.
+            if app.view_applying() {
+                return ControlBarSpec::Custom(vec![
+                    ("Esc", "Cancel"),
+                    ("^O", "Home"),
+                    ("?", "Help"),
+                    ("q", if app.opened_from_home { "Home" } else { "Quit" }),
+                ]);
+            }
             let query_active = app
                 .data_table_state
                 .as_ref()

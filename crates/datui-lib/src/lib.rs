@@ -1899,6 +1899,110 @@ mod template_rollback_tests {
         );
         assert!(state.error.is_none(), "and the rollback clears the error");
     }
+
+    fn words_csv(dir: &tempfile::TempDir) -> PathBuf {
+        let path = dir.path().join("words.csv");
+        let mut csv = String::from("id,name\n");
+        for i in 0..40 {
+            csv.push_str(&format!("{i},word_{i}\n"));
+        }
+        std::fs::write(&path, csv).unwrap();
+        path
+    }
+
+    /// #400 through a view: a view whose SQL plans but fails on the data is not
+    /// left installed. The error is a dialog, over the view as it was.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_view_whose_query_fails_on_the_data_is_not_applied() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = words_csv(&dir);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "cast the words".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("SELECT CAST(name AS INT) AS n FROM df".to_string());
+        template.settings.column_order.clear();
+        let applied = app.apply_template(&template);
+        assert!(applied.is_ok(), "it plans: {applied:?}");
+        // As the event loop does: the frame drawn asks for its rows.
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        app.render(area, &mut ratatui::buffer::Buffer::empty(area));
+        let state = app.data_table_state.as_mut().unwrap();
+        assert!(std::mem::take(&mut state.needs_recollect));
+        app.spawn_async_collect(App::LOADING_BUFFER);
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+
+        assert!(app.error_modal.active, "the failure is said");
+        let state = app.data_table_state.as_ref().unwrap();
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["id", "name"],
+            "the frame is the one before the view"
+        );
+        assert!(state.active_sql_query.is_empty());
+        assert!(state.is_num_rows_valid());
+        assert_eq!(state.num_rows, 40);
+        assert_ne!(
+            app.active_template_id.as_deref(),
+            Some(template.id.as_str()),
+            "the view that failed is not marked applied"
+        );
+    }
+
+    /// The count of the view a query replaced can land while the query runs. If the
+    /// query then fails, the view comes back with that count rather than with a
+    /// marker saying it is still being counted, which nothing would ever clear.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = words_csv(&dir);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        // As if the view's count were still running when the query was sent.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.invalidate_num_rows();
+        let counting = state.len_generation();
+        app.len_count_inflight = Some(counting);
+
+        app.event(&AppEvent::SqlSearch(
+            "SELECT CAST(name AS INT) AS n FROM df".to_string(),
+        ));
+        assert!(app.query_running.is_some());
+        app.event(&AppEvent::BackgroundLenReady {
+            len_generation: counting,
+            num_rows: 40,
+            file_row_groups: None,
+        });
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+
+        assert!(app.query_running.is_none());
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.len_generation(), counting, "the view is back");
+        assert!(state.is_num_rows_valid(), "with its count");
+        assert_eq!(state.num_rows, 40);
+        assert_ne!(app.len_count_inflight, Some(counting), "not left counting");
+    }
 }
 
 #[cfg(all(test, feature = "sql"))]
@@ -6067,13 +6171,29 @@ pub enum InputType {
 /// data — a value that will not cast — and until the rows are in, the view it
 /// replaced is kept to go back to.
 struct QueryRun {
-    mode: QueryMode,
+    origin: RunOrigin,
+    /// The `len_generation` of the frame the query installed. Once that frame is gone
+    /// (a sort, a filter, another dataset) the rollback no longer applies.
+    frame: u64,
     rollback: crate::widgets::datatable::ViewRollback,
     /// The App's count markers as they were, for the frame the rollback restores.
+    /// A count of that frame still running when the query began lands while the
+    /// query's frame is installed, so its answer is kept here to go back with it.
     len_count_inflight: Option<u64>,
     len_count_failed: Option<u64>,
+    len_counted: Option<(usize, Option<Vec<Vec<usize>>>)>,
     /// Rows `df` holds, when known, so a failure can say "of N".
     rows: Option<usize>,
+}
+
+/// Where a running query came from, which decides where its failure is said.
+enum RunOrigin {
+    /// The query prompt, or its event sent directly: inline under the prompt while
+    /// it is open in this mode, else a dialog.
+    Query(QueryMode),
+    /// A view applied. Its failure is a dialog, and the view marked applied before
+    /// it is marked again.
+    View { previous: Option<String> },
 }
 
 /// Focus within the query prompt: the tab bar or the current mode's input.
@@ -8574,6 +8694,9 @@ impl App {
         self.quality_sample = None;
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
+        // A query still running was over the dataset being replaced; its rollback
+        // is that dataset's view.
+        self.query_running = None;
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -17973,6 +18096,12 @@ impl App {
                 if self.len_count_failed == Some(*len_generation) {
                     self.len_count_failed = None;
                 }
+                if let Some(run) = self.query_running.as_mut()
+                    && run.len_count_inflight == Some(*len_generation)
+                {
+                    run.len_count_inflight = None;
+                    run.len_counted = Some((*num_rows, file_row_groups.clone()));
+                }
                 // Apply the exact total only if the data hasn't changed since the count
                 // was spawned. This runs independently of the buffer paint (which has
                 // usually already rendered), so it just corrects the scrollbar/total —
@@ -18012,6 +18141,12 @@ impl App {
             AppEvent::BackgroundLenFailed { len_generation } => {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
+                }
+                if let Some(run) = self.query_running.as_mut()
+                    && run.len_count_inflight == Some(*len_generation)
+                {
+                    run.len_count_inflight = None;
+                    run.len_count_failed = Some(*len_generation);
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
@@ -18084,12 +18219,14 @@ impl App {
                     {
                         state.apply_async_collect(result);
                     }
+                    // The query's first rows are in: it stands.
+                    let ran = self.take_query_run();
                     if waited_on {
                         self.loading_state = LoadingState::Idle;
                         self.status_message = None;
                         self.busy = false;
-                        if let Some(run) = self.query_running.take()
-                            && self.query_prompt_mode() == Some(run.mode)
+                        if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
+                            && self.query_prompt_mode() == Some(mode)
                         {
                             self.leave_query_prompt_after_run();
                         }
@@ -18109,10 +18246,15 @@ impl App {
                 }
                 // A query that failed on its first rows is not applied: the table,
                 // its schema and its row count go back to what they were (#400).
-                if let Some(run) = self.query_running.take()
+                if let Some(run) = self.take_query_run()
                     && let Some(state) = self.data_table_state.as_mut()
                 {
                     state.roll_back(run.rollback);
+                    match run.len_counted {
+                        Some((_, Some(groups))) => state.set_file_row_groups(&groups),
+                        Some((rows, None)) => state.set_num_rows(rows),
+                        None => {}
+                    }
                     self.len_count_inflight = run.len_count_inflight;
                     self.len_count_failed = run.len_count_failed;
                     self.collect_inflight = None;
@@ -18122,11 +18264,20 @@ impl App {
                     // Run from the prompt, the reason goes under the query, which
                     // stays open to be fixed. Sent any other way — a view applied —
                     // there is nothing to edit, and the error modal says why.
-                    if self.query_prompt_mode() != Some(run.mode) {
-                        self.error_modal.show(message.clone());
-                        return None;
-                    }
-                    let sql = run.mode == QueryMode::Sql;
+                    let mode = match run.origin {
+                        RunOrigin::View { previous } => {
+                            self.active_template_id = previous;
+                            self.error_modal
+                                .show(format!("Error applying view: {message}"));
+                            return None;
+                        }
+                        RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
+                        RunOrigin::Query(_) => {
+                            self.error_modal.show(message.clone());
+                            return None;
+                        }
+                    };
+                    let sql = mode == QueryMode::Sql;
                     self.query_run_error = Some(match conversion {
                         Some(failure) if sql => failure.sql_message(run.rows),
                         _ => message.clone(),
@@ -19424,6 +19575,17 @@ impl App {
         // Save state before applying template so we can restore on failure
         let saved_state = self.snapshot_state();
         let saved_active_template_id = self.active_template_id.clone();
+        // A query in the view can still fail on the data once its rows are read,
+        // after this returns; then the view as it is now comes back (#400).
+        let settings = &template.settings;
+        let has_query = [&settings.sql_query, &settings.query, &settings.fuzzy_query]
+            .iter()
+            .any(|q| q.as_deref().is_some_and(|q| !q.trim().is_empty()));
+        let rollback = self
+            .data_table_state
+            .as_ref()
+            .filter(|_| has_query)
+            .map(|state| state.rollback_point());
 
         if let Some(state) = &mut self.data_table_state {
             state.error = None;
@@ -19565,6 +19727,22 @@ impl App {
 
             // Save updated template
             let _ = self.template_manager.save_template(&updated_template);
+        }
+
+        if let Some(rollback) = rollback
+            && let Some(state) = self.data_table_state.as_ref()
+        {
+            self.query_running = Some(QueryRun {
+                origin: RunOrigin::View {
+                    previous: saved_active_template_id,
+                },
+                frame: state.len_generation(),
+                rollback,
+                len_count_inflight: self.len_count_inflight,
+                len_count_failed: self.len_count_failed,
+                len_counted: None,
+                rows: None,
+            });
         }
 
         // Track active template
@@ -20110,10 +20288,12 @@ impl App {
             return;
         }
         self.query_running = Some(QueryRun {
-            mode,
+            origin: RunOrigin::Query(mode),
+            frame: state.len_generation(),
             rollback,
             len_count_inflight: self.len_count_inflight,
             len_count_failed: self.len_count_failed,
+            len_counted: None,
             rows,
         });
         if !self.spawn_async_collect(status) {
@@ -20123,6 +20303,14 @@ impl App {
                 self.leave_query_prompt_after_run();
             }
         }
+    }
+
+    /// The query still running over the frame on screen, taken. One whose frame has
+    /// since been replaced is dropped: its rollback would undo what replaced it.
+    fn take_query_run(&mut self) -> Option<QueryRun> {
+        let run = self.query_running.take()?;
+        let frame = self.data_table_state.as_ref()?.len_generation();
+        (run.frame == frame).then_some(run)
     }
 
     /// A query ran and its rows are in: the prompt closes on them.

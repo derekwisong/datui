@@ -311,7 +311,7 @@ struct GroupRows {
     lead: Vec<String>,
 }
 
-/// The view as it stood before a SQL statement replaced it. A statement plans
+/// The view as it stood before a query replaced it. A query plans
 /// without reading anything and can still fail once it runs — a value that will not
 /// cast — and then the table goes back to this, rows and all, rather than keep a
 /// frame that fails on every scroll. Frames and buffers are shared, not copied.
@@ -338,6 +338,9 @@ pub struct ViewRollback {
     column_order: Vec<String>,
     locked_columns_count: usize,
     grouped: Option<GroupedView>,
+    reshaped_lf: Option<LazyFrame>,
+    last_pivot_spec: Option<PivotSpec>,
+    last_melt_spec: Option<MeltSpec>,
     drilled_down_group_index: Option<usize>,
     drilled_down_group_key: Option<Vec<String>>,
     drilled_down_group_key_columns: Option<Vec<String>>,
@@ -6040,7 +6043,7 @@ impl DataTableState {
         &self.active_sql_query
     }
 
-    /// The view as it is now, to go back to if a SQL statement fails while running.
+    /// The view as it is now, to go back to if a query fails while running.
     pub fn rollback_point(&self) -> ViewRollback {
         ViewRollback {
             lf: self.lf.clone(),
@@ -6065,6 +6068,9 @@ impl DataTableState {
             column_order: self.column_order.clone(),
             locked_columns_count: self.locked_columns_count,
             grouped: self.grouped.clone(),
+            reshaped_lf: self.reshaped_lf.clone(),
+            last_pivot_spec: self.last_pivot_spec.clone(),
+            last_melt_spec: self.last_melt_spec.clone(),
             drilled_down_group_index: self.drilled_down_group_index,
             drilled_down_group_key: self.drilled_down_group_key.clone(),
             drilled_down_group_key_columns: self.drilled_down_group_key_columns.clone(),
@@ -6104,6 +6110,10 @@ impl DataTableState {
         self.column_order = saved.column_order;
         self.locked_columns_count = saved.locked_columns_count;
         self.grouped = saved.grouped;
+        // A q-style query or a search forgets the pivot or melt it replaces.
+        self.reshaped_lf = saved.reshaped_lf;
+        self.last_pivot_spec = saved.last_pivot_spec;
+        self.last_melt_spec = saved.last_melt_spec;
         self.drilled_down_group_index = saved.drilled_down_group_index;
         self.drilled_down_group_key = saved.drilled_down_group_key;
         self.drilled_down_group_key_columns = saved.drilled_down_group_key_columns;
@@ -9757,6 +9767,27 @@ mod tests {
         assert!(names.contains(&"value"));
         assert!(names.contains(&"id"));
         assert!(names.contains(&"date"));
+    }
+
+    /// A q-style query forgets the melt it replaces; rolled back, the melt is
+    /// what SQL runs against again, not only what the table shows.
+    #[test]
+    fn a_rollback_brings_back_the_melt_a_query_forgot() {
+        let lf = create_melt_wide_lf();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        let spec = MeltSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        };
+        state.melt(&spec).unwrap();
+        let saved = state.rollback_point();
+        state.query("select id".to_string());
+        assert!(state.last_melt_spec().is_none());
+        state.roll_back(saved);
+        assert!(state.last_melt_spec().is_some());
+        assert_eq!(state.query_root().collect().unwrap().height(), 9);
     }
 
     #[test]

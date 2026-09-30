@@ -18,15 +18,28 @@ percentile and max. Scroll with the arrow keys.
 
 Fits each numeric column against fourteen distributions — Normal, Log-Normal,
 Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
-Poisson, Bernoulli, Binomial, Geometric and Weibull — and reports the best
-fit, along with the Shapiro-Wilk statistic and p-value, coefficient of
-variation, outlier count (IQR method), skewness and kurtosis. Color marks fit quality: green is good, yellow is moderate, red is a
-poor fit or a column with many outliers or extreme shape.
+Poisson, Bernoulli, Binomial, Geometric and Weibull — and names the one the
+values are consistent with, along with the Shapiro-Francia normality statistic
+and p-value, coefficient of variation, outlier count (IQR method), skewness
+and kurtosis.
 
-Press <kbd>Enter</kbd> on a column for the detail view: a Q-Q plot against the
-chosen distribution and a histogram with the theoretical curve overlaid.
-<kbd>↑</kbd> <kbd>↓</kbd> switch the distribution being compared, <kbd>s</kbd>
-toggles the histogram between linear and log scale, <kbd>Esc</kbd> returns to
+| What | How |
+|---|---|
+| Parameters | Maximum likelihood for normal, log-normal, uniform, exponential, gamma (Minka's approximation), beta, Weibull, power law (from the smallest value), Poisson, Bernoulli and geometric; moments for chi-squared, Student's t and binomial |
+| P-value | Kolmogorov-Smirnov on up to 500 values, calibrated by 199 samples drawn from the fit and refitted, so estimating the parameters from the data is accounted for. `<0.005` when none of the samples came close |
+| Verdict | Among the families not rejected (p of 0.01 or more), the lowest AIC; a simpler family that holds is named instead unless the richer one is decisively better (AIC 10 or more lower). `No clear fit` when every family is rejected |
+| `n/a` | The family cannot describe the values: a log-normal of negative values, a Poisson of fractions |
+
+A p-value is how surprising the values would be if they came from the fitted
+distribution, not the probability that they did. The tests assume independent
+draws: a time series such as a price over years is dependent, and its
+histogram need not match any family.
+
+Press <kbd>Enter</kbd> on a column for the detail view: the verdict, then a Q-Q
+plot and a histogram comparing the values with the family chosen in the list,
+drawn with that family's fitted parameters. <kbd>↑</kbd> <kbd>↓</kbd> choose
+another family to compare with, which does not change the verdict; <kbd>s</kbd>
+toggles the histogram between linear and log scale; <kbd>Esc</kbd> returns to
 the table.
 
 ## Correlation matrix

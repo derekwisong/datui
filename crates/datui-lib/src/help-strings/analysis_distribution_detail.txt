@@ -1,4 +1,5 @@
-SW: The W statistic of a Shapiro-Wilk test (its Shapiro-Francia form, on up to 5,000 values) ranges from 0 to 1, where 1 indicates perfect normality. The p-value is Royston's approximation: the probability of a W this low if the values were normal.
+Fit: The distribution the values were found consistent with, and its p-value, or "No clear fit" when every family is rejected. It does not change as you move through the list below.
+SF: The Shapiro-Francia normality statistic W' on up to 5,000 values, from 0 to 1, where 1 indicates perfect normality. The p-value is Royston's approximation: how likely a W' this low is if the values were normal.
 Skew: Measures asymmetry of the data distribution (positive = right-tailed, negative = left-tailed).
 Kurt: Tail heaviness compared to normal distribution (high = heavy tails, low = light tails).
 Median: Middle value when data is sorted.
@@ -8,7 +9,7 @@ CV: Coefficient of variation (std/mean, relative variability independent of scal
 
 Q-Q Plot:
 
-Compares your data against a theoretical distribution. Points following the diagonal reference line indicate a good match. Deviations show where your data differs from the theoretical model.
+Compares your data against the distribution chosen in the list, with the parameters fitted to it. Points following the diagonal reference line indicate a good match. Deviations show where your data differs from the theoretical model.
 
 Histogram:
 
@@ -17,11 +18,11 @@ Shows the frequency distribution of your data as bars, with a theoretical distri
 
 Distributions:
 
-Select different theoretical distributions from the list to overlay them for comparison with your data. This helps identify which distribution type best fits your data.
+Each family with its p-value, highest first: a Kolmogorov-Smirnov test calibrated by 199 samples drawn from the fit and refitted. "<0.005" when none came close. "n/a" when the family cannot describe the values at all (a log-normal of negative values); choosing one says why. Choosing a family compares the values with it; it does not claim they fit.
 
 Navigation:
 
-↑↓ / j/k:    Scroll through distributions to compare different overlays
+↑↓ / j/k:    Compare the values with another family
 s:           Toggle histogram scale (Linear ↔ Log)
 ?:           Toggle this help
 Esc:         Return to distribution table

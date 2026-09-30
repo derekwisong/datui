@@ -282,11 +282,12 @@ impl AnalysisModal {
     }
 
     /// Tab on the main view: the tool list and the result trade focus. The detail
-    /// views have one focusable thing, so Tab is not offered there.
+    /// views have one focusable thing, so Tab is not offered there; nor is it
+    /// before a tool is chosen, when the pane beside the list is empty.
     pub fn switch_focus(&mut self) {
         self.focus = match self.focus {
-            AnalysisFocus::Main => AnalysisFocus::Sidebar,
-            _ => AnalysisFocus::Main,
+            AnalysisFocus::Sidebar if self.selected_tool.is_some() => AnalysisFocus::Main,
+            _ => AnalysisFocus::Sidebar,
         };
     }
 

@@ -244,8 +244,8 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             rest.push((g.updown_lr, "Columns"));
         }
     }
-    rest.push(("Tab", "Focus"));
     if modal.selected_tool.is_some() {
+        rest.push(("Tab", "Focus"));
         pairs.push(("s", "Sample"));
         pairs.push(("v", "View Rows"));
     }
@@ -624,6 +624,51 @@ mod tests {
                 "{page:?} offers no way out"
             );
         }
+    }
+
+    /// The analysis bar offers only keys that act: Enter where a tool has a
+    /// detail, ←→ where there is something to scroll to, Tab once a tool is
+    /// chosen.
+    #[test]
+    fn the_analysis_bar_offers_only_keys_that_act() {
+        use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
+        app.analysis_modal.active = true;
+        let g = crate::glyphs::get();
+        let has = |app: &crate::App, key: &str| {
+            super::analysis_control_keys(app)
+                .iter()
+                .any(|(k, _)| *k == key)
+        };
+        let label = |app: &crate::App, key: &str| {
+            super::analysis_control_keys(app)
+                .into_iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, label)| label)
+        };
+
+        app.analysis_modal.focus = AnalysisFocus::Sidebar;
+        assert_eq!(label(&app, "Enter"), Some("Select"));
+        assert!(!has(&app, "Tab"), "no tool, nothing beside the list");
+
+        app.analysis_modal.selected_tool = Some(AnalysisTool::Describe);
+        app.analysis_modal.focus = AnalysisFocus::Main;
+        assert!(has(&app, "Tab"));
+        assert!(!has(&app, "Enter"), "Describe has no detail");
+        assert!(!has(&app, g.updown_lr), "every statistic fits");
+        app.analysis_modal.describe_columns.max = 2;
+        assert_eq!(label(&app, g.updown_lr), Some("Columns"));
+
+        app.analysis_modal.selected_tool = Some(AnalysisTool::DistributionAnalysis);
+        assert_eq!(label(&app, "Enter"), Some("Detail"));
+
+        app.analysis_modal.selected_tool = Some(AnalysisTool::CorrelationMatrix);
+        app.analysis_modal.selected_correlation = Some((1, 1));
+        assert!(!has(&app, "Enter"), "a column with itself has no detail");
+        app.analysis_modal.selected_correlation = Some((1, 2));
+        assert_eq!(label(&app, "Enter"), Some("Detail"));
     }
 
     /// Every combination of home-screen state the control bar can be drawn in.

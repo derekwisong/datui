@@ -123,7 +123,8 @@ it yourself with `:`.
 
 Press <kbd>Enter</kbd> on a group to see its rows, <kbd>Esc</kbd> to come back.
 A group without aggregates shows the columns you selected; an aggregated one shows
-every column of the rows behind it, after the query's `where`.
+every column of the rows behind it, after the query's `where`, key columns first.
+The cursor, frozen columns and column order come back with <kbd>Esc</kbd>.
 
 ## Saving a query
 

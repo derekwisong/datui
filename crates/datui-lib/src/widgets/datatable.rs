@@ -9957,6 +9957,109 @@ mod tests {
         assert_eq!(id_col.get(0).unwrap(), AnyValue::Int32(1));
     }
 
+    /// The one-pass pivot gives what the lazy pivot over the whole view gave, for every
+    /// aggregation, with nulls in the index, the pivot column and the values, pairs with
+    /// no rows, and more rows than one streaming morsel, so `first` and `last` are
+    /// checked for order across batches.
+    #[test]
+    fn a_pivot_in_one_pass_matches_the_lazy_pivot() {
+        let n = 250_000usize;
+        let view = df!(
+            "g" => (0..n)
+                .map(|i| (i % 13 != 0).then_some((i % 97) as i64))
+                .collect::<Vec<_>>(),
+            "key" => (0..n)
+                .map(|i| (i % 17 != 0).then(|| format!("k{}", (i * 7) % 11)))
+                .collect::<Vec<_>>(),
+            "v" => (0..n)
+                .map(|i| (i % 7 != 0).then_some((i % 1_000) as f64))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy()
+        // Pairs with no rows at all: `k3` never meets a `g` divisible by five.
+        .filter(
+            (col("g") % lit(5i64))
+                .neq(lit(0i64))
+                .or(col("key").neq(lit("k3")))
+                .fill_null(lit(true)),
+        );
+
+        // The pivot as it ran before: the new columns read first, then the lazy pivot.
+        let lazy_pivot = |spec: &PivotSpec| {
+            let on = spec.pivot_column.as_str();
+            let value = spec.value_column.as_str();
+            let on_columns = view
+                .clone()
+                .select([col(on)])
+                .unique(None, UniqueKeepStrategy::Any)
+                .sort([on], SortMultipleOptions::default().with_nulls_last(true))
+                .collect()
+                .unwrap();
+            let index = if spec.index.is_empty() {
+                all() - by_name([on, value], true, false)
+            } else {
+                by_name(spec.index.iter().map(String::as_str), true, false)
+            };
+            view.clone()
+                .pivot(
+                    by_name([on], true, false),
+                    Arc::new(on_columns),
+                    index,
+                    by_name([value], true, false),
+                    pivot_agg_expr(spec.aggregation, element()),
+                    true,
+                    PlSmallStr::from_static("_"),
+                    PivotColumnNaming::Auto,
+                )
+                .collect()
+                .unwrap()
+        };
+        let close = |a: &DataFrame, b: &DataFrame| {
+            a.get_column_names() == b.get_column_names()
+                && a.height() == b.height()
+                && a.columns().iter().zip(b.columns()).all(|(x, y)| {
+                    if x.dtype().is_float() {
+                        let (x, y) = (x.f64().unwrap(), y.f64().unwrap());
+                        x.iter().zip(y.iter()).all(|pair| match pair {
+                            (Some(x), Some(y)) => (x - y).abs() <= 1e-9 * x.abs().max(1.0),
+                            (x, y) => x.is_none() && y.is_none(),
+                        })
+                    } else {
+                        x.as_materialized_series()
+                            .equals_missing(y.as_materialized_series())
+                    }
+                })
+        };
+
+        for index in [vec!["g".to_string()], Vec::new()] {
+            for aggregation in PivotAggregation::ALL {
+                let spec = PivotSpec {
+                    index: index.clone(),
+                    pivot_column: "key".to_string(),
+                    value_column: "v".to_string(),
+                    aggregation,
+                    sort_columns: None,
+                };
+                let expected = lazy_pivot(&spec);
+                for streaming in [false, true] {
+                    let pivoted = PivotJob {
+                        view: view.clone(),
+                        spec: spec.clone(),
+                        streaming,
+                    }
+                    .run()
+                    .unwrap();
+                    assert!(
+                        close(&pivoted, &expected),
+                        "{aggregation:?}, index {index:?}, streaming {streaming}:\n\
+                         {pivoted:?}\n{expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_fuzzy_token_regex() {
         assert_eq!(fuzzy_token_regex("foo"), "(?i).*f.*o.*o.*");

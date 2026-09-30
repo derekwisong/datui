@@ -743,3 +743,65 @@ fn test_a_stale_pivot_result_is_dropped() {
     assert!(state.last_pivot_spec().is_none());
     assert!(state.schema.contains("key"));
 }
+
+/// Esc while the pivot is read stops waiting for it, at once rather than behind the
+/// keys held meanwhile: the form stays open with its spec, the table as it was, and the
+/// answer that lands later is dropped. A second Esc closes the form.
+#[test]
+fn test_esc_stops_a_pivot_being_read() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    load_file(
+        &mut app,
+        &rx,
+        PathBuf::from("tests/sample-data/pivot_long.parquet"),
+    );
+    pump_until_idle(&mut app, &rx);
+    send_key(&mut app, KeyCode::Char('p'));
+
+    let spec = PivotSpec {
+        index: vec!["date".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "value".to_string(),
+        aggregation: PivotAggregation::Last,
+        sort_columns: None,
+    };
+    app.event(&AppEvent::Pivot(spec));
+    assert!(app.is_busy());
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(
+        app.hard_escape_while_busy(&esc),
+        "not held behind the pivot"
+    );
+    send_key(&mut app, KeyCode::Esc);
+    assert!(!app.is_busy());
+    assert!(
+        app.pivot_melt_modal.active,
+        "the spec is still there to change"
+    );
+    assert_eq!(app.input_mode, InputMode::PivotMelt);
+
+    // The worker finishes regardless; what it sends is stale.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while app.background_work_in_flight() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never ended"
+        );
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.event(&ev);
+        }
+    }
+    while let Ok(ev) = rx.try_recv() {
+        app.event(&ev);
+    }
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.last_pivot_spec().is_none());
+    assert!(state.schema.contains("key"));
+    assert!(app.pivot_melt_modal.active);
+
+    send_key(&mut app, KeyCode::Esc);
+    assert!(!app.pivot_melt_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}

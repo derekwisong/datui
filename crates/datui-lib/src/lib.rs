@@ -16561,6 +16561,12 @@ impl App {
                     && !self.analysis_modal.data_quality_show_access
                 {
                     use analysis_modal::SetupRow;
+                    // Setup can hold the cursor without having been opened: after Esc
+                    // handed it to the tools and Tab brought it back, or after a run
+                    // that failed. Whatever is edited now is still a draft.
+                    if self.analysis_modal.data_quality_setup_before.is_none() {
+                        self.open_quality_setup();
+                    }
                     let rows = SetupRow::ALL.len();
                     let field = self.analysis_modal.data_quality_plan_field.min(rows - 1);
                     match event.code {
@@ -16676,7 +16682,11 @@ impl App {
                         self.open_quality_setup();
                         return None;
                     }
-                    KeyCode::Char(digit @ '1'..='4') => {
+                    // The report's tabs; Setup is left with Enter or Esc, so a draft is
+                    // never left staged behind a report page.
+                    KeyCode::Char(digit @ '1'..='4')
+                        if !self.analysis_modal.data_quality_page.is_setup() =>
+                    {
                         let tab = digit as usize - '1' as usize;
                         self.analysis_modal.show_quality_tab(QualityPage::TABS[tab]);
                         return None;

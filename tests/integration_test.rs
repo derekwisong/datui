@@ -2913,6 +2913,68 @@ fn data_quality_reads_nothing_until_setup_runs() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
 }
 
+/// However Setup is reached, Esc discards what was staged in it: after Esc handed
+/// the cursor to the tools and Tab brought it back, and after a report tab key
+/// pressed in Setup, which does not leave it. A draft never rides out of Setup
+/// into `r`.
+#[test]
+fn data_quality_setup_edits_never_outlive_esc() {
+    use datui::analysis_modal::{AnalysisFocus, SetupRow};
+    use datui::data_quality::{QualityComparison, QualityPage};
+
+    let (mut app, rx, _tx) = open_text_times_fixture("dq_setup_esc_discards.parquet");
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+
+    // No report yet: Esc goes to the tools, Tab comes back, and an edit there is
+    // still a staged one.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    app.analysis_modal.data_quality_plan_field = SetupRow::Compare.index();
+    press(&mut app, KeyCode::Right);
+    assert_ne!(
+        app.analysis_modal.data_quality_plan.comparison,
+        QualityComparison::None
+    );
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.comparison,
+        QualityComparison::None,
+        "Esc discards an edit made after Tab"
+    );
+
+    // A report, then a staged edit and a report tab's key: Setup stays, and so does
+    // the draft, until Esc takes it away.
+    press(&mut app, KeyCode::Tab);
+    let next = press(&mut app, KeyCode::Enter);
+    drain_quality(&mut app, &rx, next);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    let seed = app.analysis_modal.data_quality_plan.sample_seed;
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan_field = SetupRow::Compare.index();
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.comparison,
+        QualityComparison::None
+    );
+
+    // r on the report runs the plan the report was measured with, a new seed aside.
+    let next = press(&mut app, KeyCode::Char('r'));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    drain_quality(&mut app, &rx, next);
+    let plan = &app.analysis_modal.data_quality_plan;
+    assert_ne!(plan.sample_seed, seed);
+    assert_eq!(plan.comparison, QualityComparison::None);
+}
+
 /// Time stored as text: a role on it says, before Run, that it needs a format;
 /// Text as time offers the formats that read the values on screen; and the run
 /// then windows by it and measures the time between two of them, counting what

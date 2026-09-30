@@ -678,7 +678,7 @@ fn the_cloud_section_renders_legibly() {
 }
 
 /// Two S3-compatible servers, each with a bucket called `data` holding a different
-/// `table.parquet`, named in `[[cloud.sources]]` as `lab` and `corp`.
+/// `table.parquet`, named in `[[cloud.connections]]` as `lab` and `corp`.
 ///
 /// ```bash
 /// DATUI_LIVE_S3_PAIR=http://127.0.0.1:9101,http://127.0.0.1:9102 \
@@ -777,7 +777,7 @@ fn two_servers_with_the_same_bucket_open_their_own_objects() {
     assert_eq!(corp, local_headers("sales.parquet"));
 }
 
-/// `[[cloud.sources]]` for the two servers in `DATUI_LIVE_S3_PAIR`, `lab` and `corp`.
+/// `[[cloud.connections]]` for the two servers in `DATUI_LIVE_S3_PAIR`, `lab` and `corp`.
 fn pair_config(pair: &str) -> CloudConfig {
     let (lab_endpoint, corp_endpoint) = pair.split_once(',').expect("two endpoints");
     // SAFETY: set before the runtime or any worker starts reading the environment, and
@@ -789,7 +789,7 @@ fn pair_config(pair: &str) -> CloudConfig {
         std::env::set_var("CORP_SECRET", "secret9102");
     }
     let source =
-        |name: &str, label: Option<&str>, endpoint: &str| datui::config::CloudSourceConfig {
+        |name: &str, label: Option<&str>, endpoint: &str| datui::config::CloudConnectionConfig {
             name: name.to_string(),
             label: label.map(str::to_string),
             kind: Some("s3".to_string()),
@@ -800,7 +800,7 @@ fn pair_config(pair: &str) -> CloudConfig {
             ..Default::default()
         };
     let cloud = CloudConfig {
-        sources: vec![
+        connections: vec![
             source("lab", Some("Lab MinIO"), lab_endpoint),
             source("corp", None, corp_endpoint),
         ],
@@ -1267,19 +1267,18 @@ fn every_public_dataset_lists_and_opens() {
         eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
         return;
     }
-    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let config =
+        datui::OpenOptions::default().effective_cloud(&datui::config::AppConfig::default().cloud);
     let runtime = common::test_runtime();
     let mut failures = Vec::new();
-    for dataset in cloud_sources::builtin_datasets() {
+    for dataset in datui::config::builtin_catalog().datasets {
         let started = std::time::Instant::now();
-        let direct_file = matches!(
-            datui::source::input_source(std::path::Path::new(&dataset.url)),
-            datui::source::InputSource::Http(_)
-        );
-        let candidate = if direct_file {
-            Ok(Some(dataset.url.clone()))
+        let url = dataset.url.as_deref().expect("the catalog is remote");
+        // A web file opens as itself; an object-store root is searched for a file.
+        let candidate = if datui::config::is_object_store_dataset(url) {
+            first_openable(url, &config, &runtime)
         } else {
-            first_openable(&dataset.url, &config, &runtime)
+            Ok(Some(url.to_string()))
         };
         let found = match candidate {
             Ok(Some(url)) => url,
@@ -1306,9 +1305,9 @@ fn every_public_dataset_lists_and_opens() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The public datasets as the home screen shows them: a row under CLOUD, datasets by
-/// name, and a file opened from inside one. The trail names the dataset, and Backspace
-/// from the dataset's root returns to the datasets.
+/// The built-in catalog as the home screen shows it: a section of datasets by name, a
+/// bucket browsed from one, and a web file opened through the download. The trail names
+/// the dataset, and Backspace from the dataset's root returns to the listing.
 #[test]
 #[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
 fn public_datasets_browse_and_open_from_the_home_screen() {
@@ -1316,22 +1315,25 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
         eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
         return;
     }
+    let listed = |name: &'static str| {
+        move |app: &datui::App| {
+            app.home.visible().iter().any(
+                |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name),
+            )
+        }
+    };
     let (mut app, rx) = live_app();
-    assert!(enter_source(&mut app, &rx, "public"));
-    let text = screen_text(&mut app, 120, 30);
-    assert!(
-        text.contains("NOAA daily weather") && text.contains("CC0"),
-        "{text}"
-    );
+    assert!(pump_until(&mut app, &rx, 10, |app| section_named(
+        app,
+        "Public datasets"
+    )
+    .is_some_and(|s| !s.rows.is_empty())));
     assert!(select_row(&mut app, "NOAA daily weather (GHCN-D)"));
-    app.event(&key(crossterm::event::KeyCode::Enter));
-    assert!(pump_until(&mut app, &rx, 60, |app| app
-        .home
-        .visible()
-        .iter()
-        .any(
-            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "by_year")
-        )));
+    let text = screen_text(&mut app, 120, 30);
+    assert!(text.contains("CC0"), "the details pane: {text}");
+
+    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
+    assert!(pump_until(&mut app, &rx, 60, listed("by_year")));
     let sep = datui::glyphs::get().trail;
     let text = screen_text(&mut app, 120, 30);
     assert!(
@@ -1340,18 +1342,12 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
         )),
         "{text}"
     );
+    // Out of the dataset's root: back to the listing, not up into a bucket that cannot
+    // be listed.
     app.event(&key(crossterm::event::KeyCode::Backspace));
-    assert_eq!(
-        app.home.browsing,
-        Some(std::path::PathBuf::from("cloud://public")),
-        "back to the datasets"
-    );
+    assert_eq!(app.home.browsing, None, "back to the listing");
 
-    assert!(pump_until(&mut app, &rx, 60, |app| {
-        app.home.visible().iter().any(
-            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Palmer penguins")
-        )
-    }));
+    assert!(pump_until(&mut app, &rx, 60, listed("Palmer penguins")));
     assert!(select_row(&mut app, "Palmer penguins"));
     assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
     assert!(pump_until(
@@ -1361,7 +1357,7 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
         datui::App::awaiting_download_confirmation
     ));
     assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
-    assert!(pump_until(&mut app, &rx, 60, |app| app
+    assert!(pump_until(&mut app, &rx, 120, |app| app
         .data_table_state
         .is_some()
         && !app.is_busy()));
@@ -1422,8 +1418,6 @@ fn public_data_quirks() {
         .expect("a part file with no extension");
     let headers = open_url(&part.path.to_string_lossy(), &config).expect("the part file opens");
     assert!(headers.iter().any(|h| h == "gbifid"), "{headers:?}");
-    let places = cloud_sources::take_public_places();
-    println!("public places found: {places:?}");
 
     // Azure Open Datasets: hive directories with marker blobs beside them.
     let yellow = runtime
@@ -1687,7 +1681,7 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
     // SAFETY: run with --test-threads=1.
     unsafe { std::env::set_var("DATUI_LIVE_CONNECTION", &connection) };
     let config = CloudConfig {
-        sources: vec![datui::config::CloudSourceConfig {
+        connections: vec![datui::config::CloudConnectionConfig {
             name: "connstr".to_string(),
             kind: Some("azure".to_string()),
             connection_string_env: Some("DATUI_LIVE_CONNECTION".to_string()),
@@ -1705,7 +1699,7 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
     if let Ok(sas) = std::env::var("DATUI_LIVE_AZURE_SAS") {
         unsafe { std::env::set_var("DATUI_LIVE_SAS", &sas) };
         let config = CloudConfig {
-            sources: vec![datui::config::CloudSourceConfig {
+            connections: vec![datui::config::CloudConnectionConfig {
                 name: "sas".to_string(),
                 kind: Some("azure".to_string()),
                 account: Some(account.clone()),
@@ -1812,7 +1806,7 @@ fn secret_commands_env_files_and_credentials_files() {
     .unwrap();
     let file_config = CloudConfig {
         env_files: vec![".env".to_string()],
-        sources: vec![datui::config::CloudSourceConfig {
+        connections: vec![datui::config::CloudConnectionConfig {
             name: "lab".to_string(),
             kind: Some("s3".to_string()),
             endpoint_url: Some(first.to_string()),
@@ -1836,7 +1830,7 @@ fn secret_commands_env_files_and_credentials_files() {
 
     if std::env::var("DATUI_LIVE_GCS").is_ok() {
         let google = CloudConfig {
-            sources: vec![datui::config::CloudSourceConfig {
+            connections: vec![datui::config::CloudConnectionConfig {
                 name: "adc-file".to_string(),
                 kind: Some("gcs".to_string()),
                 credentials_file: Some(
@@ -1871,7 +1865,12 @@ fn partitioned_cloud_directories_are_hive_datasets() {
         return;
     }
     let (mut app, rx) = live_app();
-    assert!(enter_source(&mut app, &rx, "public"));
+    // The built-in catalog is a collection on the home screen, its datasets its rows.
+    assert!(pump_until(&mut app, &rx, 10, |app| section_named(
+        app,
+        "Public datasets"
+    )
+    .is_some_and(|s| !s.rows.is_empty())));
     let row_kind = |app: &datui::App, name: &str| {
         app.home.visible().iter().find_map(|row| match row {
             datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. }

@@ -47,6 +47,7 @@
 - [Query syntax](reference/query-syntax.md)
 - [Command-line options](reference/command-line-options.md)
 - [Settings](reference/settings.md)
+- [Dataset collections](reference/sources.md)
 - [Cloud sources](reference/cloud-sources.md)
 - [Data quality](reference/data-quality.md)
 

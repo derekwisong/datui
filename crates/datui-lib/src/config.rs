@@ -77,7 +77,7 @@ impl ConfigManager {
     /// Generate the default configuration template.
     ///
     /// Ordinary settings are commented out so defaults continue to apply. The built-in
-    /// public catalog is active: deleting one of its dataset tables must remove that dataset.
+    /// catalog is active: deleting one of its dataset tables must remove that dataset.
     pub fn generate_default_config(&self) -> String {
         // Serialize default config to TOML
         let config = AppConfig::default();
@@ -87,17 +87,23 @@ impl ConfigManager {
         // Build comment map from all struct comment constants
         let comments = Self::collect_all_comments();
 
-        // Comment out ordinary fields, then append the public catalog as live TOML. Keeping
-        // the catalog separate also avoids teaching the generic formatter about arrays of
+        // Comment out ordinary fields, then append the built-in catalog as live TOML.
+        // Keeping it separate also avoids teaching the generic formatter about arrays of
         // tables and their nested arrays.
         let mut result = Self::comment_all_fields(toml_str, comments);
         result.push_str(
-            "\n# Built-in public datasets\n\
+            "\n# ============================================================================\n\
+             # Sources\n\
+             # ============================================================================\n\
+             # Named collections of datasets, local (path) or remote (url), each listed under\n\
+             # its label on the home screen. A collection named \"public\" replaces the\n\
+             # built-in catalog below; [data] builtin_catalog = false drops it, and\n\
+             # [data] hide_sources hides any collection by name.\n\
              #\n\
              # This active catalog is a snapshot. Delete or edit a dataset table to curate it;\n\
              # configs generated today do not automatically receive future catalog updates.\n",
         );
-        result.push_str(&serialize_public_catalog());
+        result.push_str(&serialize_builtin_catalog());
         result
     }
 
@@ -405,6 +411,9 @@ pub struct AppConfig {
     pub import: Vec<String>,
     /// Configuration format version (for future compatibility)
     pub version: String,
+    /// Named collections of datasets, `[[sources]]`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceConfig>,
     pub cloud: CloudConfig,
     pub file_loading: FileLoadingConfig,
     pub display: DisplayConfig,
@@ -506,15 +515,12 @@ pub struct CloudConfig {
     pub s3_secret_access_key: Option<String>,
     /// Region (e.g. us-east-1). Often required when using a custom endpoint (MinIO uses us-east-1).
     pub s3_region: Option<String>,
-    /// Stores named in `[[cloud.sources]]`, beside the ones found on the machine.
+    /// Stores named in `[[cloud.connections]]`, beside the ones found on the machine.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<CloudSourceConfig>,
+    pub connections: Vec<CloudConnectionConfig>,
     /// Source IDs never shown on the home screen.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
-    /// The built-in `Public datasets` source. On unless set to `false`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub public_datasets: Option<bool>,
     /// Read an Azure account with its access keys when a sign-in has no data role, as
     /// the Portal does. On unless set to `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -534,6 +540,30 @@ pub struct CloudConfig {
     /// when it is entered or on Ctrl+R, and its credential command runs only then.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list_on_start: Option<bool>,
+    /// How the object-store datasets in `[[sources]]` are read. Not a key: derived from
+    /// the collections by [`AppConfig`], so resolving a URL needs only this section.
+    #[serde(skip)]
+    pub dataset_access: Vec<DatasetAccess>,
+}
+
+/// How a `[[sources.datasets]]` URL in an object store is read, when it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetAccess {
+    /// The dataset's URL: everything under it is read the same way.
+    pub url: String,
+    /// The collection it is listed in.
+    pub collection: String,
+    pub auth: DatasetAuth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetAuth {
+    /// As any URL is read: the login found for it, unsigned when there is none.
+    Auto,
+    /// No credentials and no signature.
+    Anonymous,
+    /// Signed with the `[[cloud.connections]]` entry of this name.
+    Connection(String),
 }
 
 /// The kinds of source `[cloud] discover` can name.
@@ -629,29 +659,22 @@ impl From<CloudDiscover> for CloudDiscoverValue {
     }
 }
 
-/// One store in `[[cloud.sources]]`. Names and pointers only: a secret comes from the
+/// One store in `[[cloud.connections]]`. Names and pointers only: a secret comes from the
 /// environment variable named here, never from the config file itself.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
-pub struct CloudSourceConfig {
+pub struct CloudConnectionConfig {
     /// The source's ID: used in `s3://<name>@bucket/key`, `hide` and cache keys.
     pub name: String,
     /// Shown instead of the name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// `s3` or `gcs`.
+    /// `s3`, `gcs` or `azure`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// Data anyone can read: `buckets` are URLs of any kind, read with no signature.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub public: Option<bool>,
-    /// Buckets to show when the credentials can read but not list. For a public
-    /// source, URLs of buckets, containers or directories.
+    /// Buckets to show when the credentials can read but not list.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub buckets: Vec<String>,
-    /// Named public datasets with optional descriptive metadata.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub datasets: Vec<PublicDatasetConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -696,27 +719,8 @@ pub struct CloudSourceConfig {
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
 
-/// One entry in a public source's `[[cloud.sources.datasets]]` catalog.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(default)]
-pub struct PublicDatasetConfig {
-    pub name: String,
-    pub url: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub publisher: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub license: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub homepage: String,
-    /// Keys that are not recognised, kept so validation can name them.
-    #[serde(flatten)]
-    pub unknown: std::collections::BTreeMap<String, toml::Value>,
-}
-
-/// Field names accepted in `[[cloud.sources]]`, for error messages.
-const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, datasets, endpoint_url, region, \
+/// Field names accepted in `[[cloud.connections]]`, for error messages.
+const CLOUD_SOURCE_KEYS: &str = "name, label, kind, buckets, endpoint_url, region, \
      addressing, access_key_id_env, secret_access_key_env, session_token_env, profile, \
      configuration, project, account, account_key_env, sas_env, connection_string_env, \
      secret_command, credentials_file";
@@ -734,15 +738,15 @@ pub fn is_valid_source_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-impl CloudSourceConfig {
+impl CloudConnectionConfig {
     fn validate(&self) -> Result<()> {
         let name = &self.name;
         if name.is_empty() {
-            return Err(eyre!("cloud.sources: every source needs a name"));
+            return Err(eyre!("cloud.connections: every source needs a name"));
         }
         if !is_valid_source_id(name) {
             return Err(eyre!(
-                "cloud.sources: \"{name}\" is not a valid name. Use lowercase letters, digits \
+                "cloud.connections: \"{name}\" is not a valid name. Use lowercase letters, digits \
                  and '-', up to 40 characters"
             ));
         }
@@ -751,7 +755,7 @@ impl CloudSourceConfig {
         for secret in ["access_key_id", "secret_access_key", "session_token"] {
             if self.unknown.contains_key(secret) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": {secret} cannot be written in the config. Put it \
+                    "cloud.connections \"{name}\": {secret} cannot be written in the config. Put it \
                      in an environment variable and name that with {secret}_env"
                 ));
             }
@@ -759,24 +763,16 @@ impl CloudSourceConfig {
         if !self.unknown.is_empty() {
             let keys: Vec<String> = self.unknown.keys().map(|k| format!("'{k}'")).collect();
             return Err(eyre!(
-                "cloud.sources \"{name}\": unknown key{} {}. Expected one of: {}",
+                "cloud.connections \"{name}\": unknown key{} {}. Expected one of: {}",
                 if keys.len() > 1 { "s" } else { "" },
                 keys.join(", "),
                 CLOUD_SOURCE_KEYS
             ));
         }
-        if self.public == Some(true) {
-            return self.validate_public();
-        }
-        if !self.datasets.is_empty() {
-            return Err(eyre!(
-                "cloud.sources \"{name}\": datasets applies only to a public source"
-            ));
-        }
         for secret in ["account_key", "sas", "sas_token", "connection_string"] {
             if self.unknown.contains_key(secret) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": {secret} cannot be written in the config. Put it \
+                    "cloud.connections \"{name}\": {secret} cannot be written in the config. Put it \
                      in an environment variable and name that with {}_env",
                     secret.trim_end_matches("_token")
                 ));
@@ -786,24 +782,24 @@ impl CloudSourceConfig {
             Some(kind @ ("s3" | "gcs" | "azure")) => kind,
             Some(other) => {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": kind \"{other}\" is not supported. Expected s3, gcs or azure"
+                    "cloud.connections \"{name}\": kind \"{other}\" is not supported. Expected s3, gcs or azure"
                 ));
             }
             None => {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": kind is required (s3, gcs or azure)"
+                    "cloud.connections \"{name}\": kind is required (s3, gcs or azure)"
                 ));
             }
         };
         if let Some(command) = &self.secret_command {
             if !matches!(kind, "s3" | "azure") {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": secret_command applies only to kind = \"s3\" or \"azure\""
+                    "cloud.connections \"{name}\": secret_command applies only to kind = \"s3\" or \"azure\""
                 ));
             }
             if command.trim().is_empty() {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": secret_command is not a command line"
+                    "cloud.connections \"{name}\": secret_command is not a command line"
                 ));
             }
             let clash = if kind == "s3" {
@@ -827,13 +823,13 @@ impl CloudSourceConfig {
             };
             if let Some((field, _)) = clash.iter().find(|(_, set)| *set) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": secret_command and {field} both say where the \
+                    "cloud.connections \"{name}\": secret_command and {field} both say where the \
                      secret comes from. Use one"
                 ));
             }
             if kind == "s3" && self.access_key_id_env.is_none() {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": secret_command prints the secret; name the key \
+                    "cloud.connections \"{name}\": secret_command prints the secret; name the key \
                      ID with access_key_id_env"
                 ));
             }
@@ -841,12 +837,12 @@ impl CloudSourceConfig {
         if let Some(_file) = &self.credentials_file {
             if kind != "gcs" {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": credentials_file applies only to kind = \"gcs\""
+                    "cloud.connections \"{name}\": credentials_file applies only to kind = \"gcs\""
                 ));
             }
             if self.configuration.is_some() {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": credentials_file and configuration both say how \
+                    "cloud.connections \"{name}\": credentials_file and configuration both say how \
                      to log in. Use one"
                 ));
             }
@@ -863,7 +859,7 @@ impl CloudSourceConfig {
             ];
             if let Some((field, _)) = azure_only.iter().find(|(_, set)| *set) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": {field} applies only to kind = \"azure\""
+                    "cloud.connections \"{name}\": {field} applies only to kind = \"azure\""
                 ));
             }
         } else {
@@ -874,19 +870,19 @@ impl CloudSourceConfig {
             ];
             if secrets.iter().filter(|set| **set).count() > 1 {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": account_key_env, sas_env and \
+                    "cloud.connections \"{name}\": account_key_env, sas_env and \
                      connection_string_env each say how to sign in. Use one"
                 ));
             }
             if self.account.is_none() && self.connection_string_env.is_none() {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": an azure source needs account, or \
+                    "cloud.connections \"{name}\": an azure source needs account, or \
                      connection_string_env"
                 ));
             }
             if !self.buckets.is_empty() {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": buckets does not apply to kind = \"azure\""
+                    "cloud.connections \"{name}\": buckets does not apply to kind = \"azure\""
                 ));
             }
         }
@@ -905,7 +901,7 @@ impl CloudSourceConfig {
             ];
             if let Some((field, _)) = s3_only.iter().find(|(_, set)| *set) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": {field} applies only to kind = \"s3\""
+                    "cloud.connections \"{name}\": {field} applies only to kind = \"s3\""
                 ));
             }
         }
@@ -916,7 +912,7 @@ impl CloudSourceConfig {
             ];
             if let Some((field, _)) = gcs_only.iter().find(|(_, set)| *set) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": {field} applies only to kind = \"gcs\""
+                    "cloud.connections \"{name}\": {field} applies only to kind = \"gcs\""
                 ));
             }
         }
@@ -926,7 +922,7 @@ impl CloudSourceConfig {
                 || self.session_token_env.is_some())
         {
             return Err(eyre!(
-                "cloud.sources \"{name}\": profile and the *_env keys both say where the keys \
+                "cloud.connections \"{name}\": profile and the *_env keys both say where the keys \
                  come from. Use one"
             ));
         }
@@ -934,15 +930,15 @@ impl CloudSourceConfig {
             && !matches!(addressing, "path" | "virtual")
         {
             return Err(eyre!(
-                "cloud.sources \"{name}\": addressing \"{addressing}\" is not valid. Expected path \
+                "cloud.connections \"{name}\": addressing \"{addressing}\" is not valid. Expected path \
                  or virtual"
             ));
         }
         if let Some(bucket) = self.buckets.iter().find(|b| b.contains(['/', '@'])) {
             return Err(eyre!(
-                "cloud.sources \"{name}\": \"{bucket}\" is not a bucket name{}",
+                "cloud.connections \"{name}\": \"{bucket}\" is not a bucket name{}",
                 if bucket.contains("://") {
-                    ". For public data, add public = true"
+                    ". A dataset URL goes in [[sources.datasets]]"
                 } else {
                     ""
                 }
@@ -950,191 +946,355 @@ impl CloudSourceConfig {
         }
         Ok(())
     }
+}
 
-    /// A `public = true` source: URLs, and nothing that signs.
-    fn validate_public(&self) -> Result<()> {
+/// The ID of the built-in catalog. A configured collection with this name replaces it.
+pub const BUILTIN_CATALOG: &str = "public";
+
+/// Two collections of one name in one file.
+fn check_source_names(sources: &[SourceConfig]) -> Result<()> {
+    for (i, source) in sources.iter().enumerate() {
+        if sources[..i].iter().any(|s| s.name == source.name) {
+            return Err(eyre!("sources: the name \"{}\" is used twice", source.name));
+        }
+    }
+    Ok(())
+}
+
+/// One named collection in `[[sources]]`: datasets wherever they live, on this machine
+/// or remote, listed under one heading on the home screen. Only references: nothing is
+/// read until a dataset is opened.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct SourceConfig {
+    /// The collection's ID: what `[data] hide_sources` names, and what a later file
+    /// uses to replace it.
+    pub name: String,
+    /// Shown instead of the name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<DatasetConfig>,
+    /// Keys that are not recognized, kept so validation can name them.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// One dataset in a collection: a local `path` or a remote `url`, never both.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct DatasetConfig {
+    pub name: String,
+    /// A file or directory on this machine. `~` and `$VAR` expand, and a relative path
+    /// is relative to the config file that names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A file or directory in an object store, or a data file on an HTTP(S) server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// How an object-store URL is read: `auto` (the default) or `anonymous`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    /// The `[[cloud.connections]]` entry whose login reads an object-store URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub publisher: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub license: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub homepage: String,
+    /// Keys that are not recognized, kept so validation can name them.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+const SOURCE_KEYS: &str = "name, label, datasets";
+const DATASET_KEYS: &str =
+    "name, path, url, auth, connection, description, publisher, license, homepage";
+const AUTH_VALUES: &str = "auto or anonymous";
+
+/// Where a dataset URL lives, as far as reading it is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UrlPlace {
+    /// S3, Google Cloud or Azure, with its connection kind.
+    ObjectStore(&'static str),
+    Http,
+}
+
+impl SourceConfig {
+    /// The heading the home screen shows.
+    pub fn label(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+
+    fn validate(&self, connections: &[CloudConnectionConfig]) -> Result<()> {
         let name = &self.name;
-        let signing = [
-            ("kind", self.kind.is_some()),
-            ("endpoint_url", self.endpoint_url.is_some()),
-            ("region", self.region.is_some()),
-            ("addressing", self.addressing.is_some()),
-            ("access_key_id_env", self.access_key_id_env.is_some()),
-            (
-                "secret_access_key_env",
-                self.secret_access_key_env.is_some(),
-            ),
-            ("session_token_env", self.session_token_env.is_some()),
-            ("profile", self.profile.is_some()),
-            ("configuration", self.configuration.is_some()),
-            ("project", self.project.is_some()),
-            ("account", self.account.is_some()),
-            ("account_key_env", self.account_key_env.is_some()),
-            ("sas_env", self.sas_env.is_some()),
-            (
-                "connection_string_env",
-                self.connection_string_env.is_some(),
-            ),
-            ("secret_command", self.secret_command.is_some()),
-            ("credentials_file", self.credentials_file.is_some()),
-        ];
-        if let Some((field, _)) = signing.iter().find(|(_, set)| *set) {
+        if name.is_empty() {
+            return Err(eyre!("sources: every collection needs a name"));
+        }
+        if !is_valid_source_id(name) {
             return Err(eyre!(
-                "cloud.sources \"{name}\": {field} does not apply to a public source, whose \
-                 datasets are URLs read with no login"
+                "sources: \"{name}\" is not a valid name. Use lowercase letters, digits and \
+                 '-', up to 40 characters"
             ));
         }
-        if self.buckets.is_empty() && self.datasets.is_empty() {
+        if !self.unknown.is_empty() {
+            return Err(unknown_keys(
+                &format!("sources \"{name}\""),
+                &self.unknown,
+                SOURCE_KEYS,
+            ));
+        }
+        if self.label.as_deref().is_some_and(|l| l.trim().is_empty()) {
+            return Err(eyre!("sources \"{name}\": label is blank"));
+        }
+        if self.datasets.is_empty() {
             return Err(eyre!(
-                "cloud.sources \"{name}\": a public source lists its data in buckets or datasets"
+                "sources \"{name}\": no datasets. Add [[sources.datasets]] tables after it"
             ));
         }
         let mut names = std::collections::HashSet::new();
-        let mut urls = std::collections::HashSet::new();
-        for url in &self.buckets {
-            if !public_url_is_valid(url) {
-                return Err(eyre!(
-                    "cloud.sources \"{name}\": \"{url}\" is not an s3://, gs:// or Azure URL"
-                ));
-            }
-            if !urls.insert(crate::source::canonical_cloud_place(url)) {
-                return Err(eyre!(
-                    "cloud.sources \"{name}\": dataset URL \"{url}\" is used twice"
-                ));
-            }
-            let dataset_name = public_dataset_name(url);
-            if !names.insert(dataset_name.clone()) {
-                return Err(eyre!(
-                    "cloud.sources \"{name}\": dataset name \"{dataset_name}\" is used twice"
-                ));
-            }
-        }
+        let mut places = std::collections::HashSet::new();
         for dataset in &self.datasets {
-            if !dataset.unknown.is_empty() {
-                let keys: Vec<String> = dataset
-                    .unknown
-                    .keys()
-                    .map(|key| format!("'{key}'"))
-                    .collect();
+            dataset.validate(name, connections)?;
+            if !names.insert(dataset.name.as_str()) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\" dataset: unknown key{} {}. Expected one of: \
-                     name, url, description, publisher, license, homepage",
-                    if keys.len() > 1 { "s" } else { "" },
-                    keys.join(", ")
-                ));
-            }
-            if dataset.name.trim().is_empty() {
-                return Err(eyre!(
-                    "cloud.sources \"{name}\": every dataset needs a nonempty name"
-                ));
-            }
-            if !public_url_is_valid(&dataset.url) && !public_file_url_is_valid(&dataset.url) {
-                return Err(eyre!(
-                    "cloud.sources \"{name}\" dataset \"{}\": \"{}\" is not an s3://, \
-                     gs://, Azure URL or HTTP(S) data-file URL",
-                    dataset.name,
-                    dataset.url
-                ));
-            }
-            if !names.insert(dataset.name.clone()) {
-                return Err(eyre!(
-                    "cloud.sources \"{name}\": dataset name \"{}\" is used twice",
+                    "sources \"{name}\": dataset name \"{}\" is used twice",
                     dataset.name
                 ));
             }
-            if !urls.insert(crate::source::canonical_cloud_place(&dataset.url)) {
+            if !places.insert(dataset.place_key()) {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": dataset URL \"{}\" is used twice",
-                    dataset.url
+                    "sources \"{name}\": \"{}\" is listed twice",
+                    dataset
+                        .path
+                        .as_deref()
+                        .or(dataset.url.as_deref())
+                        .unwrap_or("")
                 ));
             }
         }
         Ok(())
     }
-}
 
-/// The built-in catalog in the same shape accepted from a user config.
-pub fn builtin_public_source() -> CloudSourceConfig {
-    #[derive(Deserialize)]
-    struct Catalog {
-        cloud: CloudConfig,
-    }
-
-    let mut sources = toml::from_str::<Catalog>(include_str!("public_datasets.toml"))
-        .expect("built-in public dataset catalog must be valid TOML")
-        .cloud
-        .sources;
-    assert_eq!(sources.len(), 1, "built-in catalog must contain one source");
-    let source = sources.remove(0);
-    assert_eq!(
-        source.name, "public",
-        "built-in catalog must preserve the public source ID"
-    );
-    source
-        .validate()
-        .expect("built-in public dataset catalog must validate");
-    source
-}
-
-fn serialize_public_catalog() -> String {
-    #[derive(Serialize)]
-    struct Catalog {
-        cloud: CatalogCloud,
-    }
-    #[derive(Serialize)]
-    struct CatalogCloud {
-        sources: Vec<CloudSourceConfig>,
-    }
-
-    toml::to_string_pretty(&Catalog {
-        cloud: CatalogCloud {
-            sources: vec![builtin_public_source()],
-        },
-    })
-    .expect("built-in public dataset catalog must serialize")
-}
-
-fn public_dataset_name(url: &str) -> String {
-    let name = match crate::source::azure_parts(url) {
-        Some((account, container, path)) => {
-            format!("{account}/{container}/{}", path.trim_matches('/'))
+    /// Resolve relative `path`s against `dir`, the directory of the file that named them.
+    fn anchor_paths(&mut self, dir: &Path) {
+        for dataset in &mut self.datasets {
+            if let Some(path) = &mut dataset.path
+                && !path.trim().is_empty()
+                && expand_path(path).is_relative()
+            {
+                *path = dir.join(expand_path(path)).to_string_lossy().into_owned();
+            }
         }
-        None => url
-            .split_once("://")
-            .map_or(url, |(_, rest)| rest)
-            .to_string(),
-    };
-    name.trim_end_matches('/').to_string()
-}
-
-/// Whether a public source's entry is a URL datui can read without a login: a bucket,
-/// container or directory on S3, Google Cloud or Azure. A source ID has no place in it.
-fn public_url_is_valid(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return false;
-    };
-    let host = rest.split('/').next().unwrap_or("");
-    match scheme {
-        "s3" | "gs" => !host.is_empty() && !host.contains('@'),
-        _ => crate::source::azure_parts(url).is_some(),
     }
 }
 
-/// Direct web files are opened, never treated as listable buckets.
-fn public_file_url_is_valid(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return false;
-    };
-    if !matches!(scheme, "http" | "https") || url.chars().any(char::is_whitespace) {
-        return false;
+impl DatasetConfig {
+    /// The local path with `~` and `$VAR` expanded, when this is a local dataset.
+    pub fn local_path(&self) -> Option<PathBuf> {
+        self.path.as_deref().map(expand_path)
     }
-    let Some((host, _)) = rest.split_once('/') else {
-        return false;
-    };
-    let (path, _) = crate::source::url_path_extension(url);
-    !host.is_empty()
-        && !host.contains(['@', '?', '#'])
-        && crate::discover::is_data_file(Path::new(&path))
+
+    /// What two entries naming the same data have in common.
+    fn place_key(&self) -> String {
+        match (&self.path, &self.url) {
+            (Some(path), _) => format!("path:{}", expand_path(path).display()),
+            (None, Some(url)) => format!("url:{}", crate::source::canonical_cloud_place(url)),
+            (None, None) => String::new(),
+        }
+    }
+
+    fn validate(&self, collection: &str, connections: &[CloudConnectionConfig]) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(eyre!(
+                "sources \"{collection}\": every dataset needs a nonempty name"
+            ));
+        }
+        let what = format!("sources \"{collection}\" dataset \"{}\"", self.name);
+        if !self.unknown.is_empty() {
+            return Err(unknown_keys(&what, &self.unknown, DATASET_KEYS));
+        }
+        let url = match (&self.path, &self.url) {
+            (None, None) => return Err(eyre!("{what}: say where it is with path or url")),
+            (Some(_), Some(_)) => {
+                return Err(eyre!("{what}: path and url both say where it is. Use one"));
+            }
+            (Some(path), None) => {
+                if path.trim().is_empty() {
+                    return Err(eyre!("{what}: path is blank"));
+                }
+                if path.contains("://") {
+                    return Err(eyre!("{what}: \"{path}\" is a URL. Use url = \"{path}\""));
+                }
+                for (field, set) in [
+                    ("auth", self.auth.is_some()),
+                    ("connection", self.connection.is_some()),
+                ] {
+                    if set {
+                        return Err(eyre!(
+                            "{what}: {field} applies only to a url; a path is read as a file"
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            (None, Some(url)) => url,
+        };
+        let place = dataset_url_place(url).ok_or_else(|| {
+            if crate::source::split_source_id(url).0.is_some() {
+                eyre!(
+                    "{what}: name the connection with connection = \"...\" rather than in \
+                     the URL"
+                )
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                eyre!(
+                    "{what}: \"{url}\" is not a data file. An HTTP server has no listing, so \
+                     a web URL must name a file datui reads, such as .csv or .parquet"
+                )
+            } else {
+                eyre!("{what}: \"{url}\" is not an s3://, gs://, Azure or HTTP(S) URL")
+            }
+        })?;
+        if let Some(auth) = self.auth.as_deref()
+            && !matches!(auth, "auto" | "anonymous")
+        {
+            return Err(eyre!(
+                "{what}: auth \"{auth}\" is not valid. Expected {AUTH_VALUES}"
+            ));
+        }
+        let Some(connection) = self.connection.as_deref() else {
+            return Ok(());
+        };
+        let UrlPlace::ObjectStore(kind) = place else {
+            return Err(eyre!(
+                "{what}: connection applies only to s3://, gs:// and Azure URLs. A web URL is \
+                 read with no login"
+            ));
+        };
+        if self.auth.is_some() {
+            return Err(eyre!(
+                "{what}: auth and connection both say how to read it. Use one"
+            ));
+        }
+        let Some(configured) = connections.iter().find(|c| c.name == connection) else {
+            let names: Vec<&str> = connections.iter().map(|c| c.name.as_str()).collect();
+            return Err(eyre!(
+                "{what}: no [[cloud.connections]] entry is named \"{connection}\"{}",
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(". Connections: {}", names.join(", "))
+                }
+            ));
+        };
+        let connection_kind = configured.kind.as_deref().unwrap_or("");
+        if connection_kind != kind {
+            return Err(eyre!(
+                "{what}: connection \"{connection}\" is kind = \"{connection_kind}\", which \
+                 does not read {kind} URLs"
+            ));
+        }
+        if let (Some(account), Some((url_account, _, _))) = (
+            configured.account.as_deref(),
+            crate::source::azure_parts(url),
+        ) && !account.eq_ignore_ascii_case(&url_account)
+        {
+            return Err(eyre!(
+                "{what}: connection \"{connection}\" signs in to account \"{account}\", but \
+                 the URL is in \"{url_account}\""
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn unknown_keys(
+    what: &str,
+    unknown: &std::collections::BTreeMap<String, toml::Value>,
+    expected: &str,
+) -> color_eyre::Report {
+    let keys: Vec<String> = unknown.keys().map(|k| format!("'{k}'")).collect();
+    eyre!(
+        "{what}: unknown key{} {}. Expected one of: {expected}",
+        if keys.len() > 1 { "s" } else { "" },
+        keys.join(", ")
+    )
+}
+
+/// Where a dataset URL is, when datui can read it: a place in S3, Google Cloud or Azure
+/// (a file or a directory), or a data file on a web server, which has no listing.
+fn dataset_url_place(url: &str) -> Option<UrlPlace> {
+    if url.chars().any(char::is_whitespace) {
+        return None;
+    }
+    match crate::source::input_source(Path::new(url)) {
+        crate::source::InputSource::Azure(_) => Some(UrlPlace::ObjectStore("azure")),
+        crate::source::InputSource::S3(rest) | crate::source::InputSource::Gcs(rest) => {
+            let host = rest.split('/').next().unwrap_or("");
+            let kind = if url.to_ascii_lowercase().starts_with("s3") {
+                "s3"
+            } else {
+                "gcs"
+            };
+            (!host.is_empty() && !host.contains('@')).then_some(UrlPlace::ObjectStore(kind))
+        }
+        crate::source::InputSource::Http(_) => {
+            let (_, rest) = url.split_once("://")?;
+            let (host, path) = rest.split_once('/')?;
+            let path = path.split(['?', '#']).next().unwrap_or("");
+            (!host.is_empty()
+                && !host.contains('@')
+                && crate::discover::is_data_file(Path::new(path)))
+            .then_some(UrlPlace::Http)
+        }
+        crate::source::InputSource::Local(_) => None,
+    }
+}
+
+/// Whether a dataset URL is in an object store, and so browsed as well as opened.
+pub fn is_object_store_dataset(url: &str) -> bool {
+    matches!(dataset_url_place(url), Some(UrlPlace::ObjectStore(_)))
+}
+
+/// The built-in catalog, in the shape a `[[sources]]` entry takes.
+pub fn builtin_catalog() -> SourceConfig {
+    static CATALOG: std::sync::OnceLock<SourceConfig> = std::sync::OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            #[derive(Deserialize)]
+            struct Catalog {
+                sources: Vec<SourceConfig>,
+            }
+            let mut sources = toml::from_str::<Catalog>(include_str!("public_datasets.toml"))
+                .expect("built-in catalog must be valid TOML")
+                .sources;
+            assert_eq!(sources.len(), 1, "built-in catalog must be one collection");
+            let catalog = sources.remove(0);
+            assert_eq!(
+                catalog.name, BUILTIN_CATALOG,
+                "built-in catalog keeps its ID"
+            );
+            catalog
+                .validate(&[])
+                .expect("built-in catalog must validate");
+            catalog
+        })
+        .clone()
+}
+
+fn serialize_builtin_catalog() -> String {
+    #[derive(Serialize)]
+    struct Catalog {
+        sources: Vec<SourceConfig>,
+    }
+    toml::to_string_pretty(&Catalog {
+        sources: vec![builtin_catalog()],
+    })
+    .expect("built-in catalog must serialize")
 }
 
 /// Write `contents` to `path`, readable only by the owner.
@@ -1235,10 +1395,14 @@ impl CloudConfig {
                 *slot = Some(value);
             }
         }
-        for source in other.sources {
-            match self.sources.iter_mut().find(|s| s.name == source.name) {
-                Some(existing) => *existing = source,
-                None => self.sources.push(source),
+        for connection in other.connections {
+            match self
+                .connections
+                .iter_mut()
+                .find(|c| c.name == connection.name)
+            {
+                Some(existing) => *existing = connection,
+                None => self.connections.push(connection),
             }
         }
         for id in other.hide {
@@ -1246,8 +1410,8 @@ impl CloudConfig {
                 self.hide.push(id);
             }
         }
-        if other.public_datasets.is_some() {
-            self.public_datasets = other.public_datasets;
+        if !other.dataset_access.is_empty() {
+            self.dataset_access = other.dataset_access;
         }
         if other.azure_account_keys.is_some() {
             self.azure_account_keys = other.azure_account_keys;
@@ -1268,14 +1432,17 @@ impl CloudConfig {
         }
     }
 
-    /// Reject `[[cloud.sources]]` entries that would be silently wrong.
+    /// Reject `[[cloud.connections]]` entries that would be silently wrong.
     pub fn validate(&self) -> Result<()> {
-        for (i, source) in self.sources.iter().enumerate() {
-            source.validate()?;
-            if self.sources[..i].iter().any(|s| s.name == source.name) {
+        for (i, connection) in self.connections.iter().enumerate() {
+            connection.validate()?;
+            if self.connections[..i]
+                .iter()
+                .any(|c| c.name == connection.name)
+            {
                 return Err(eyre!(
-                    "cloud.sources: the name \"{}\" is used twice",
-                    source.name
+                    "cloud.connections: the name \"{}\" is used twice",
+                    connection.name
                 ));
             }
         }
@@ -1807,6 +1974,10 @@ pub struct DataConfig {
     /// Whether the home screen lists files datui has no reader for, dimmed, from the
     /// start. `Ctrl+A` flips it for the session either way.
     pub show_unreadable_files: bool,
+    /// Whether the built-in `public` collection exists. Off in any layer turns it off.
+    pub builtin_catalog: bool,
+    /// Collection names never shown on the home screen, built-in or configured.
+    pub hide_sources: Vec<String>,
     /// Recursive search of the working directory from the home screen's filter.
     pub search: SearchConfig,
 }
@@ -1936,6 +2107,8 @@ impl Default for DataConfig {
             // thing that gives a fresh install somewhere to point you.
             use_desktop_recents: true,
             show_unreadable_files: false,
+            builtin_catalog: true,
+            hide_sources: Vec::new(),
             search: SearchConfig::default(),
         }
     }
@@ -1951,6 +2124,14 @@ impl DataConfig {
         }
         if other.show_unreadable_files != DataConfig::default().show_unreadable_files {
             self.show_unreadable_files = other.show_unreadable_files;
+        }
+        if other.builtin_catalog != DataConfig::default().builtin_catalog {
+            self.builtin_catalog = other.builtin_catalog;
+        }
+        for name in other.hide_sources {
+            if !self.hide_sources.contains(&name) {
+                self.hide_sources.push(name);
+            }
         }
         self.search.merge(other.search);
     }
@@ -1990,6 +2171,17 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
         "show_unreadable_files",
         "List files datui has no reader for (README.md, model.onnx) on the home screen,\n\
          dimmed, instead of hiding them. Ctrl+A shows or hides them for the session.",
+    ),
+    (
+        "builtin_catalog",
+        "Offer the built-in \"public\" collection of datasets on the home screen.\n\
+         false in any config file turns it off. A [[sources]] entry named \"public\"\n\
+         replaces it instead.",
+    ),
+    (
+        "hide_sources",
+        "[[sources]] collections not to show, by name, the built-in \"public\" included.\n\
+         Names add up across imported files. Example: hide_sources = [\"public\"]",
     ),
 ];
 
@@ -2391,9 +2583,10 @@ impl GlyphsConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self {
+        let mut config = Self {
             import: Vec::new(),
             version: "0.2".to_string(),
+            sources: Vec::new(),
             cloud: CloudConfig::default(),
             file_loading: FileLoadingConfig::default(),
             display: DisplayConfig::default(),
@@ -2407,7 +2600,9 @@ impl Default for AppConfig {
             query: QueryConfig::default(),
             templates: TemplateConfig::default(),
             debug: DebugConfig::default(),
-        }
+        };
+        config.sync_dataset_access();
+        config
     }
 }
 
@@ -2841,8 +3036,13 @@ impl AppConfig {
             );
         }
 
-        toml::from_str(&content)
-            .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))
+        let mut layer: AppConfig = toml::from_str(&content)
+            .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))?;
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        for source in &mut layer.sources {
+            source.anchor_paths(dir);
+        }
+        Ok(layer)
     }
 
     /// Merge another config into this one (other takes precedence)
@@ -2853,6 +3053,18 @@ impl AppConfig {
         // Version: take other's version if present and different from default
         if other.version != AppConfig::default().version {
             self.version = other.version;
+        }
+
+        // A collection replaces the one of the same name whole: datasets are never
+        // merged across files, so a later file says exactly what the collection holds.
+        // Two of one name in one file are both kept, for validation to name.
+        let mut seen = std::collections::HashSet::new();
+        for source in other.sources {
+            let first = seen.insert(source.name.clone());
+            match self.sources.iter_mut().find(|s| s.name == source.name) {
+                Some(existing) if first => *existing = source,
+                _ => self.sources.push(source),
+            }
         }
 
         // Merge each section
@@ -2869,6 +3081,54 @@ impl AppConfig {
         self.query.merge(other.query);
         self.templates.merge(other.templates);
         self.debug.merge(other.debug);
+        self.sync_dataset_access();
+    }
+
+    /// Every collection: the configured ones in the order defined, imports first, then
+    /// the built-in catalog, unless a configured collection named `public` replaces it
+    /// or `[data] builtin_catalog = false` drops it. Hidden ones included.
+    pub fn collections(&self) -> Vec<SourceConfig> {
+        let mut all = self.sources.clone();
+        if self.data.builtin_catalog && !all.iter().any(|s| s.name == BUILTIN_CATALOG) {
+            all.push(builtin_catalog());
+        }
+        all
+    }
+
+    /// The collections the home screen shows: [`Self::collections`] less
+    /// `[data] hide_sources`.
+    pub fn shown_collections(&self) -> Vec<SourceConfig> {
+        self.collections()
+            .into_iter()
+            .filter(|s| !self.data.hide_sources.contains(&s.name))
+            .collect()
+    }
+
+    /// Derive `[cloud]`'s view of how collection URLs are read. Called by `merge` and
+    /// `default`; call it after changing `sources` or `data` by hand.
+    pub fn sync_dataset_access(&mut self) {
+        self.cloud.dataset_access = self
+            .collections()
+            .iter()
+            .flat_map(|collection| {
+                collection.datasets.iter().filter_map(|dataset| {
+                    let url = dataset.url.as_deref()?;
+                    if !is_object_store_dataset(url) {
+                        return None;
+                    }
+                    let auth = match (dataset.connection.as_deref(), dataset.auth.as_deref()) {
+                        (Some(connection), _) => DatasetAuth::Connection(connection.to_string()),
+                        (None, Some("anonymous")) => DatasetAuth::Anonymous,
+                        _ => DatasetAuth::Auto,
+                    };
+                    Some(DatasetAccess {
+                        url: url.to_string(),
+                        collection: collection.name.clone(),
+                        auth,
+                    })
+                })
+            })
+            .collect();
     }
 
     /// Validate configuration values
@@ -2904,6 +3164,21 @@ impl AppConfig {
             .resolve(self.display.align_numeric_right)?;
 
         self.cloud.validate()?;
+        check_source_names(&self.sources)?;
+        for source in &self.sources {
+            source.validate(&self.cloud.connections)?;
+        }
+        if let Some(name) = self
+            .data
+            .hide_sources
+            .iter()
+            .find(|name| !is_valid_source_id(name))
+        {
+            return Err(eyre!(
+                "data.hide_sources: \"{name}\" is not a collection name. Use the name, not \
+                 the label"
+            ));
+        }
 
         // Validate all colors can be parsed
         let parser = ColorParser::new();

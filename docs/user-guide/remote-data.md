@@ -9,7 +9,7 @@ The examples below use placeholder bucket/account names; substitute your own.
 | Google Cloud | [gcloud or service account](#google-cloud-storage) | `gs://bucket/file.parquet` |
 | Azure | [Azure CLI or PowerShell](#azure-blob-storage) | `abfss://container@account.dfs.core.windows.net/file.parquet` |
 | MinIO, R2, Ceph | [Custom endpoint](#s3-compatible-storage-minio-r2-ceph) | `s3://bucket/file.parquet` |
-| Public data | [No login](#public-data) | Select **Public datasets** on home |
+| Public data | [No login](#public-data) | The **Public datasets** section on home |
 | HTTP(S) | [Direct download](#http-and-https) | `https://example.com/data.csv` |
 
 One remote path can be opened per run. A supported directory or prefix can
@@ -91,17 +91,17 @@ taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
 ## Several stores at once
 
 Name each store in the config, with the environment variables that hold its keys.
-These source entries name environment variables rather than storing their values.
+These connections name environment variables rather than storing their values.
 
 ```toml
-[[cloud.sources]]
+[[cloud.connections]]
 name = "lab"                                  # lowercase letters, digits and -
 kind = "s3"
 endpoint_url = "http://localhost:9000"
 access_key_id_env = "LAB_KEY"
 secret_access_key_env = "LAB_SECRET"
 
-[[cloud.sources]]
+[[cloud.connections]]
 name = "onprem"
 label = "On-prem MinIO"
 kind = "s3"
@@ -112,6 +112,9 @@ secret_access_key_env = "ONPREM_SECRET"
 
 Servers already set up in the MinIO client (`mc alias set`, or `MC_HOST_<alias>`)
 or in s3cmd need no config: they are the sources `mc-<alias>` and `s3cfg`.
+
+To keep a dataset in one of these stores on the home screen by name, list it in a
+[collection](../reference/sources.md) with `connection = "onprem"`.
 
 Open an object from a named S3-compatible store by putting its name before the
 bucket. Two servers can have a bucket with the same name, and the name says which
@@ -221,13 +224,26 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 | A login | Signs with it. If the place refuses, datui tries once more unsigned, and remembers for the session which one worked |
 
 The retry matters most on Azure, which refuses a public container to a login from
-another tenant. A public bucket or container read this way is listed with the
-[public datasets](cloud-browser.md#public-datasets) from then on.
+another tenant.
 
-For public data without a URL, run `datui` and select **CLOUD → Public datasets**.
-The [catalog](cloud-browser.md#public-datasets) lists publishers and licenses.
-To add your own collection, use a source with `public = true`; see the
-[public-source example](../reference/cloud-sources.md#public-datasets).
+For public data without a URL, run `datui` and open a dataset under
+[**Public datasets**](home-screen.md#public-datasets), which lists publishers and
+licenses. For a list of your own, name the datasets in a
+[collection](../reference/sources.md) with `auth = "anonymous"`, which reads them
+with no login even on a machine that has one:
+
+```toml
+# GBIF occurrence snapshots: CC BY-NC 4.0, see https://www.gbif.org/terms
+[[sources]]
+name = "gbif"
+label = "GBIF"
+
+[[sources.datasets]]
+name = "Occurrences"
+url = "s3://gbif-open-data-us-east-1/occurrence/"
+auth = "anonymous"
+license = "CC BY-NC 4.0"
+```
 
 Parquet part files with no extension, like GBIF's `occurrence.parquet/000001`,
 open as Parquet. So does a local file with no extension that starts and ends with

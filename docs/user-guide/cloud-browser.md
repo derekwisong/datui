@@ -6,7 +6,8 @@ Run `datui` and select a source under **CLOUD**.
 2. Select a bucket or container and press <kbd>Enter</kbd>.
 3. Open a directory to browse, or a file to load its table.
 
-For a first try, choose **Public datasets**; it needs no credentials.
+For a first try with no credentials, open a dataset under
+[**Public datasets**](home-screen.md#public-datasets), further down the home screen.
 <kbd>Backspace</kbd> goes up a level and <kbd>Esc</kbd> returns to the previous screen.
 For private storage, [sign in first](remote-data.md).
 
@@ -15,7 +16,6 @@ For private storage, [sign in first](remote-data.md).
 | S3 and S3-compatible | source › bucket › directory › object |
 | Google Cloud | source › project › bucket › directory › object |
 | Azure | source › account › container › directory › blob |
-| Public datasets | source › dataset › directory › object |
 
 ```
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
@@ -23,14 +23,13 @@ For private storage, [sign in first](remote-data.md).
   ≈ Google Cloud      gcs     4 projects    project: example-project · gcloud
   ≈ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
   ≈ onprem            s3      403           minio.corp.example:9000 · datui config
-  ≈ Public datasets   public  11 datasets    built in
 ```
 
 | Column | Shows |
 |---|---|
 | Name | The source's `label`, or its name |
-| API | `s3`, `gcs`, `azure`, or `public` |
-| Count | How many buckets (projects for Google Cloud, accounts for Azure, datasets for public data), a spinner while listing, `not listed` before the first listing, or why there are none |
+| API | `s3`, `gcs` or `azure` |
+| Count | How many buckets (projects for Google Cloud, accounts for Azure), a spinner while listing, `not listed` before the first listing, or why there are none |
 | Note | The endpoint, project or profile, and where the login was found |
 
 The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
@@ -49,7 +48,7 @@ gives the whole message:
 | `unsupported login` | An application-default login datui cannot use itself (workload identity federation, impersonation), and no `gcloud` to ask |
 | `needs gcloud` | A login through `gcloud`, which is not installed |
 | `not signed in` | Azure tools are installed but nobody is signed in; the pane names `az login` or `Connect-AzAccount` |
-| `not configured` | A variable named in `[[cloud.sources]]` is not set |
+| `not configured` | A variable named in `[[cloud.connections]]` is not set |
 | `unavailable` | The endpoint did not answer |
 | `not found` | The source was removed or hidden since its row was drawn; <kbd>Ctrl</kbd>+<kbd>R</kbd> at the top looks again |
 
@@ -90,36 +89,9 @@ Listing a bucket does not guarantee permission to read its objects.
 See [detected sources](../reference/cloud-sources.md#detected-sources) for
 credential locations, source IDs and the `discover` setting.
 
-## Public datasets
-
-`Public datasets` lists data its publishers host and keep up to date, readable with
-no login. Nothing is requested until you open one. HTTP(S) files open as tables; object-store
-roots open for browsing. Datui bundles no dataset files. Hosted CSV extracts have
-the coverage shown below; they are not the separately prepared demo tables.
-
-| Dataset | Data | License |
-|---|---|---|
-| NYC flights (2013) | Departures from JFK, LaGuardia and Newark; delays in minutes | CC0 (nycflights13) |
-| Food nutrition (fast food) | 515 menu items; nutrients per item, not per 100 g | GPL-3 (OpenIntro package) |
-| US baby names (1880-2017) | Published name counts by year and sex; counts below five are suppressed | CC0 / public domain |
-| NOAA daily weather (GHCN-D) | Worldwide weather station observations, by year and by station | CC0 |
-| Premier League (2020-21) | Match rounds, dates, teams and full-time scores | CC0 |
-| NYC yellow taxis (January 2025) | One original monthly trip file; fares, distances and congestion fees | NYC Open Data terms |
-| Earthquakes (past month) | Rolling month of worldwide earthquakes; magnitudes, depth and location | Public domain |
-| Space launches (1957-2018) | Historical launch records and agencies; includes failed attempts | MIT (The Economist extract); credit Jonathan McDowell |
-| Palmer penguins | 344 penguins: species, island, bill, flipper length and body mass | CC0; credit Horst, Hill and Gorman (2020) |
-| Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
-| Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
-
-The details pane gives each one's publisher, license and homepage. Each entry links to the publisher’s terms. <kbd>Backspace</kbd> at a
-dataset's top returns to the list. A public bucket or container you have browsed or
-opened unsigned is added to the list. For a list of your own, see
-[Loading Data](remote-data.md#public-data).
-
-`datui --generate-config` writes this catalog as active
-`[[cloud.sources.datasets]]` tables to edit; see
-[Configuration](../reference/cloud-sources.md) for the fields and how the snapshot
-behaves.
+Public datasets and your own named datasets are
+[collections](home-screen.md#collections), listed in sections of their own rather
+than under `CLOUD`.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
 objects some tools leave to stand for folders.

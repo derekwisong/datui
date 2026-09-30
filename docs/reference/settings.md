@@ -106,6 +106,8 @@ row_limit = 10000   # Rows used to build a chart, 1 to 10_000_000. Adjustable in
 directories = ["/mnt/data", "~/datasets"]   # Places the home screen always lists
 use_desktop_recents = true                  # Offer directories from the desktop's recent-files list
 show_unreadable_files = false               # List files datui cannot read, dimmed; Ctrl+A flips it
+builtin_catalog = true                      # Offer the built-in "public" collection
+hide_sources = []                           # Collections not to show, by name
 
 [data.search]                               # The recursive search typing starts
 enabled           = true
@@ -119,7 +121,13 @@ extensions        = []                      # Empty means every format datui ope
 ```
 
 See [The Home Screen](../user-guide/home-screen.md#searching-below-the-current-directory)
-for what each does.
+for what each does, and [Dataset collections](sources.md) for `builtin_catalog` and
+`hide_sources`.
+
+## Sources
+
+`[[sources]]` names collections of datasets, local or remote, each shown as a
+section on the home screen. See [Dataset collections](sources.md).
 
 ## Cloud
 

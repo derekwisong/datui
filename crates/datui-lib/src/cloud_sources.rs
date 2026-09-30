@@ -1,7 +1,7 @@
 //! Every object store datui can read, as a list of sources rather than one of each kind.
 //!
 //! A source is a store plus the login that reaches it: the default S3 settings, a
-//! Google login, or an entry in `[[cloud.sources]]`. Each has an ID, and the ID is what
+//! Google login, or an entry in `[[cloud.connections]]`. Each has an ID, and the ID is what
 //! keeps two stores apart when their bucket names collide: two MinIO servers can both
 //! have a bucket called `data`, so a URL from an S3-compatible source names it,
 //! `s3://<id>@bucket/key`. Everywhere else the location is unambiguous and URLs stay the
@@ -11,7 +11,7 @@
 //! touches the network: listing is `cloud_browse`'s job, and it runs on a worker.
 
 use crate::cloud_browse::{Environment, ProviderKind};
-use crate::config::{CloudConfig, CloudSourceConfig, PublicDatasetConfig};
+use crate::config::{CloudConfig, CloudConnectionConfig, DatasetAccess, DatasetAuth};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -25,63 +25,6 @@ pub const DEFAULT_AZURE_LOGIN: &str = "az";
 /// An Azure account named in the environment: a connection string, or an account with a
 /// key or SAS token.
 pub const DEFAULT_AZURE_ENV: &str = "azure-env";
-/// The built-in `Public datasets` source.
-pub const PUBLIC: &str = "public";
-
-/// Data anyone can read: a bucket, container or directory, with what the details pane
-/// says about it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(default)]
-pub struct Dataset {
-    pub name: String,
-    pub url: String,
-    pub description: String,
-    pub publisher: String,
-    pub license: String,
-    pub homepage: String,
-}
-
-/// The datasets of the built-in source, from `public_datasets.toml`.
-pub fn builtin_datasets() -> Vec<Dataset> {
-    crate::config::builtin_public_source()
-        .datasets
-        .iter()
-        .map(Dataset::from)
-        .collect()
-}
-
-impl From<&PublicDatasetConfig> for Dataset {
-    fn from(dataset: &PublicDatasetConfig) -> Self {
-        Self {
-            name: dataset.name.clone(),
-            url: dataset.url.clone(),
-            description: dataset.description.clone(),
-            publisher: dataset.publisher.clone(),
-            license: dataset.license.clone(),
-            homepage: dataset.homepage.clone(),
-        }
-    }
-}
-
-/// A dataset for a URL someone named or opened, with nothing known about it but where
-/// it is: named by its bucket or container and the path inside.
-pub fn dataset_for_url(url: &str) -> Dataset {
-    let name = match crate::source::azure_parts(url) {
-        Some((account, container, path)) => {
-            format!("{account}/{container}/{}", path.trim_matches('/'))
-        }
-        None => url
-            .split_once("://")
-            .map_or(url, |(_, rest)| rest)
-            .to_string(),
-    };
-    Dataset {
-        name: name.trim_end_matches('/').to_string(),
-        url: url.to_string(),
-        ..Default::default()
-    }
-}
-
 /// Whether `url` is `root` or somewhere inside it. Azure URLs are compared in their
 /// canonical form, and a trailing slash does not matter.
 pub fn is_within(url: &str, root: &str) -> bool {
@@ -97,14 +40,12 @@ pub fn is_within(url: &str, root: &str) -> bool {
 /// are listed in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
-    /// `[[cloud.sources]]`, or `[cloud] s3_*` for the default source.
+    /// `[[cloud.connections]]`, or `[cloud] s3_*` for the default source.
     Config,
     /// Environment variables.
     Environment,
     /// Files other tools keep: `~/.aws`, the `gcloud` login.
     Tools,
-    /// Shipped with datui: the public datasets.
-    BuiltIn,
 }
 
 /// How to reach one S3 or S3-compatible store.
@@ -172,10 +113,6 @@ pub struct Source {
     pub buckets: Vec<String>,
     /// Why this source cannot be used, when something in its own definition says so.
     pub problem: Option<String>,
-    /// Public data, read with no login. Its first level is `datasets`, which may be on
-    /// any provider; `kind` means nothing for it.
-    pub public: bool,
-    pub datasets: Vec<Dataset>,
     /// The `gcloud` configuration whose token a Google source signs with. `None` is
     /// object_store's own login: the environment or the application-default file.
     pub gcloud: Option<String>,
@@ -189,19 +126,12 @@ impl Source {
     /// Whether URLs from this source carry its ID. Only an S3-compatible server other
     /// than the default one needs to: its buckets are named only within its endpoint.
     pub fn named_in_urls(&self) -> bool {
-        !self.public
-            && self.kind == ProviderKind::S3
-            && self.id != DEFAULT_S3
-            && self.s3.endpoint.is_some()
+        self.kind == ProviderKind::S3 && self.id != DEFAULT_S3 && self.s3.endpoint.is_some()
     }
 
     /// The URL of one of this source's buckets. For Azure, the first level is storage
     /// accounts, and an account has no URL of its own, so it is a home-screen place.
     pub fn bucket_url(&self, bucket: &str) -> String {
-        // A public source's datasets are URLs already.
-        if self.public {
-            return bucket.to_string();
-        }
         // Azure's first level is storage accounts and Google's is projects; neither
         // has a URL of its own.
         if matches!(self.kind, ProviderKind::Azure | ProviderKind::Gcs) {
@@ -241,12 +171,6 @@ impl Source {
             self.project.as_deref().unwrap_or(""),
             self.profile.as_deref().unwrap_or(""),
             self.azure.account.as_deref().unwrap_or(""),
-            &self
-                .datasets
-                .iter()
-                .map(|d| d.url.as_str())
-                .collect::<Vec<_>>()
-                .join(","),
         ]
         .join("|")
     }
@@ -300,8 +224,6 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 profile: None,
                 buckets: Vec::new(),
                 problem: None,
-                public: false,
-                datasets: Vec::new(),
                 gcloud: None,
                 secret_command: None,
                 google_credentials: None,
@@ -382,8 +304,6 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                     profile: None,
                     buckets: Vec::new(),
                     problem: None,
-                    public: false,
-                    datasets: Vec::new(),
                     gcloud: Some(configuration.name.clone()),
                     secret_command: None,
                     google_credentials: None,
@@ -413,8 +333,6 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: None,
             buckets: Vec::new(),
             problem: None,
-            public: false,
-            datasets: Vec::new(),
             gcloud: Some(configuration.name.clone()),
             secret_command: None,
             google_credentials: None,
@@ -440,8 +358,6 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: Some(profile.name.clone()),
             buckets: Vec::new(),
             problem: None,
-            public: false,
-            datasets: Vec::new(),
             gcloud: None,
             secret_command: None,
             google_credentials: None,
@@ -508,8 +424,6 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: None,
             buckets: Vec::new(),
             problem: None,
-            public: false,
-            datasets: Vec::new(),
             gcloud: None,
             secret_command: None,
             google_credentials: None,
@@ -540,8 +454,6 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: None,
             buckets: Vec::new(),
             problem: not_signed_in,
-            public: false,
-            datasets: Vec::new(),
             gcloud: None,
             secret_command: None,
             google_credentials: None,
@@ -552,14 +464,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
         });
     }
 
-    if config.public_datasets != Some(false) {
-        let mut source = configured_source(&crate::config::builtin_public_source(), env);
-        source.tier = Tier::BuiltIn;
-        source.origin = "built in".to_string();
-        sources.push(source);
-    }
-
-    for configured in &config.sources {
+    for configured in &config.connections {
         let source = configured_source(configured, env);
         match sources.iter_mut().find(|s| s.id == source.id) {
             Some(existing) => *existing = source,
@@ -642,8 +547,6 @@ fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
         profile: None,
         buckets: Vec::new(),
         problem: None,
-        public: false,
-        datasets: Vec::new(),
         gcloud: None,
         secret_command: None,
         google_credentials: None,
@@ -724,9 +627,9 @@ impl Source {
     }
 }
 
-/// A `[[cloud.sources]]` entry as a source. The config has been validated, so the kind
+/// A `[[cloud.connections]]` entry as a source. The config has been validated, so the kind
 /// is one datui knows.
-fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) -> Source {
     if configured.kind.as_deref() == Some("azure") {
         return configured_azure_source(configured, env);
     }
@@ -762,39 +665,9 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
             profile: None,
             buckets: configured.buckets.clone(),
             problem,
-            public: false,
-            datasets: Vec::new(),
             gcloud: configured.configuration.clone(),
             secret_command: None,
             google_credentials,
-        };
-    }
-    if configured.public == Some(true) {
-        return Source {
-            id: configured.name.clone(),
-            label: configured
-                .label
-                .clone()
-                .unwrap_or_else(|| configured.name.clone()),
-            kind: ProviderKind::S3,
-            tier: Tier::Config,
-            origin: "datui config".to_string(),
-            s3: S3Settings::default(),
-            azure: Default::default(),
-            project: None,
-            profile: None,
-            buckets: Vec::new(),
-            problem: None,
-            public: true,
-            datasets: configured
-                .datasets
-                .iter()
-                .map(Dataset::from)
-                .chain(configured.buckets.iter().map(|url| dataset_for_url(url)))
-                .collect(),
-            gcloud: None,
-            secret_command: None,
-            google_credentials: None,
         };
     }
     let var = env.var;
@@ -851,8 +724,6 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         buckets: configured.buckets.clone(),
         problem,
         azure: Default::default(),
-        public: false,
-        datasets: Vec::new(),
         gcloud: None,
         secret_command: configured.secret_command.clone(),
         google_credentials: None,
@@ -882,7 +753,7 @@ fn google_file_project(text: &str) -> Option<String> {
 
 /// A `kind = "azure"` source: one account, signed in with the named key, SAS or
 /// connection string, or else through `az` or Azure PowerShell.
-fn configured_azure_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+fn configured_azure_source(configured: &CloudConnectionConfig, env: &Environment<'_>) -> Source {
     use crate::azure::{AzureAuth, AzureSettings};
     let named = |name: &Option<String>| -> Option<Result<String, String>> {
         let name = name.as_deref()?;
@@ -943,8 +814,6 @@ fn configured_azure_source(configured: &CloudSourceConfig, env: &Environment<'_>
         profile: None,
         buckets: Vec::new(),
         problem,
-        public: false,
-        datasets: Vec::new(),
         gcloud: None,
         secret_command: None,
         google_credentials: None,
@@ -1030,41 +899,6 @@ pub fn remember_access(place: &str, unsigned: bool) {
     if let Ok(mut map) = access().lock() {
         map.insert(place.to_string(), unsigned);
     }
-    if unsigned {
-        found_public(place);
-    }
-}
-
-fn public_places() -> &'static Mutex<Vec<String>> {
-    static PLACES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-    PLACES.get_or_init(Default::default)
-}
-
-/// Note that the place (an [`access_key`]) was read with no signature, for the public
-/// source to list from now on.
-pub fn found_public(place: &str) {
-    if let Ok(mut places) = public_places().lock()
-        && !places.iter().any(|p| p == place)
-    {
-        places.push(place.to_string());
-    }
-}
-
-/// The public places found since the last call, as URLs of their roots.
-pub fn take_public_places() -> Vec<String> {
-    let places = public_places()
-        .lock()
-        .map(|mut places| std::mem::take(&mut *places))
-        .unwrap_or_default();
-    places
-        .into_iter()
-        .map(
-            |place| match crate::source::azure_parts(&format!("{place}.dfs.core.windows.net/")) {
-                Some((account, container, _)) => crate::source::azure_url(&account, &container, ""),
-                None => format!("{place}/"),
-            },
-        )
-        .collect()
 }
 
 /// What this session learned about signing requests to the place `url` is in: `true`
@@ -1083,11 +917,7 @@ fn bucket_sources() -> &'static Mutex<HashMap<String, String>> {
 
 /// Remember that `source` reaches `bucket`, for URLs that do not name their source.
 pub fn remember_bucket(source: &Source, bucket: &str) {
-    if source.public
-        || source.named_in_urls()
-        || source.id == DEFAULT_S3
-        || source.id == DEFAULT_GCS
-    {
+    if source.named_in_urls() || source.id == DEFAULT_S3 || source.id == DEFAULT_GCS {
         return;
     }
     let key = format!("{}://{bucket}", source.kind.scheme());
@@ -1108,8 +938,8 @@ pub fn remember_listed(source: &Source, buckets: &[String]) {
     }
 }
 
-/// The sources the home screen shows: every `[[cloud.sources]]` entry and public data,
-/// and of the logins found on the machine, the kinds `[cloud] discover` allows.
+/// The sources the home screen shows: every `[[cloud.connections]]` entry, and of the
+/// logins found on the machine, the kinds `[cloud] discover` allows.
 pub fn on_home(sources: Vec<Source>, config: &CloudConfig) -> Vec<Source> {
     let Some(discover) = &config.discover else {
         return sources;
@@ -1117,8 +947,7 @@ pub fn on_home(sources: Vec<Source>, config: &CloudConfig) -> Vec<Source> {
     sources
         .into_iter()
         .filter(|source| {
-            source.public
-                || config.sources.iter().any(|c| c.name == source.id)
+            config.connections.iter().any(|c| c.name == source.id)
                 || discover.allows(match source.kind {
                     ProviderKind::S3 => "s3",
                     ProviderKind::Gcs => "gcs",
@@ -1257,7 +1086,7 @@ pub fn expand_azure_short_url(
             .or_else(|| crate::source::azure_parts(&place.to_string_lossy()).map(|(a, _, _)| a))
     });
     let configured: Vec<&str> = config
-        .sources
+        .connections
         .iter()
         .filter(|s| s.kind.as_deref() == Some("azure"))
         .filter_map(|s| s.account.as_deref())
@@ -1279,16 +1108,20 @@ pub fn expand_azure_short_url(
     )))
 }
 
-/// The public source whose datasets hold `url`.
-fn public_source_for<'a>(url: &str, sources: &'a [Source]) -> Option<&'a Source> {
+/// How `[[sources]]` says to read `url`: the innermost dataset URL holding it, and of
+/// two that are the same place, the one in the collection listed first, so a configured
+/// collection outranks the built-in catalog. A URL naming its own source has said.
+fn configured_access<'a>(url: &str, config: &'a CloudConfig) -> Option<&'a DatasetAccess> {
     let (id, plain) = crate::source::split_source_id(url);
     if id.is_some() {
         return None;
     }
-    sources
+    config
+        .dataset_access
         .iter()
-        .filter(|s| s.public)
-        .find(|s| s.datasets.iter().any(|d| is_within(&plain, &d.url)))
+        .filter(|access| is_within(&plain, &access.url))
+        .rev()
+        .max_by_key(|access| crate::source::canonical_cloud_place(&access.url).len())
 }
 
 /// As [`resolve`], with the environment supplied.
@@ -1299,12 +1132,20 @@ pub fn resolve_with(
 ) -> Result<Resolved, String> {
     let sources = discover(config, env);
     let place = access_key(url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    if let Some(public) = public_source_for(url, &sources) {
+    let configured = configured_access(url, config);
+    // A dataset read anonymously is read that way whoever is logged in: no login is
+    // asked for, so none can fail or be refused in its place.
+    if let Some(DatasetAccess {
+        auth: DatasetAuth::Anonymous,
+        collection,
+        ..
+    }) = configured
+    {
         let resolved = match crate::source::azure_parts(url) {
             Some((account, container, path)) => Resolved {
                 url: crate::source::azure_url(&account, &container, &path),
                 kind: ProviderKind::Azure,
-                source_id: public.id.clone(),
+                source_id: collection.clone(),
                 s3: S3Settings::default(),
                 azure: Default::default(),
                 signing: Signing::Unsigned,
@@ -1319,7 +1160,7 @@ pub fn resolve_with(
                 Resolved {
                     url: url.to_string(),
                     kind,
-                    source_id: public.id.clone(),
+                    source_id: collection.clone(),
                     s3: S3Settings::default(),
                     azure: Default::default(),
                     signing: Signing::Unsigned,
@@ -1332,12 +1173,24 @@ pub fn resolve_with(
         };
         return Ok(resolved.unsigned());
     }
+    // Signed with the connection the dataset names, whatever an earlier read found.
+    let connection = match configured {
+        Some(DatasetAccess {
+            auth: DatasetAuth::Connection(name),
+            ..
+        }) => match sources.iter().find(|s| &s.id == name) {
+            Some(source) => Some(source.clone()),
+            None => return Err(format!("no connection is named \"{name}\"")),
+        },
+        _ => None,
+    };
     let known = access()
         .lock()
         .ok()
-        .and_then(|map| map.get(&place).copied());
-    if let Some((account, container, path)) = crate::source::azure_parts(url) {
-        return resolve_azure(&account, &container, &path, &sources, known, place, env);
+        .and_then(|map| map.get(&place).copied())
+        .filter(|_| connection.is_none());
+    if let Some(parts) = crate::source::azure_parts(url) {
+        return resolve_azure(&parts, &sources, connection.as_ref(), known, place, env);
     }
     let (id, plain) = crate::source::split_source_id(url);
     let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(&plain)
@@ -1348,8 +1201,9 @@ pub fn resolve_with(
     let mut owned = true;
     let mut no_login = false;
 
-    let source = match id {
-        Some(id) => {
+    let source = match (id, connection) {
+        (None, Some(source)) => source,
+        (Some(id), _) => {
             let Some(source) = find(id) else {
                 return Err(unknown_source(id, config, env));
             };
@@ -1361,7 +1215,7 @@ pub fn resolve_with(
             }
             source
         }
-        None => match remembered(kind, &bucket)
+        (None, None) => match remembered(kind, &bucket)
             .and_then(|id| find(&id))
             .filter(|s| s.kind == kind)
         {
@@ -1391,8 +1245,6 @@ pub fn resolve_with(
                     profile: None,
                     buckets: Vec::new(),
                     problem: None,
-                    public: false,
-                    datasets: Vec::new(),
                     gcloud: None,
                     secret_command: None,
                     google_credentials: None,
@@ -1466,18 +1318,20 @@ fn login_failed(resolved: Resolved, error: String) -> Result<Resolved, String> {
 
 /// An Azure URL: the account named in the environment when it is this one, else a
 /// signed-in `az`, else no signature at all, which is how public containers are read.
+/// `parts` are the URL's account, container and path.
 fn resolve_azure(
-    account: &str,
-    container: &str,
-    path: &str,
+    (account, container, path): &(String, String, String),
     sources: &[Source],
+    connection: Option<&Source>,
     known: Option<bool>,
     place: String,
     env: &Environment<'_>,
 ) -> Result<Resolved, String> {
-    let named = sources
-        .iter()
-        .find(|s| s.kind == ProviderKind::Azure && s.azure.account.as_deref() == Some(account));
+    let named = connection.or_else(|| {
+        sources
+            .iter()
+            .find(|s| s.kind == ProviderKind::Azure && s.azure.account.as_ref() == Some(account))
+    });
     // A sign-in that reaches any account: `az` or PowerShell, else an identity from the
     // environment that names no account. Never one known not to be signed in.
     let login = sources
@@ -1564,8 +1418,8 @@ mod tests {
     use crate::cloud_command::CommandError;
     use std::path::{Path, PathBuf};
 
-    fn minio(name: &str, endpoint: &str) -> CloudSourceConfig {
-        CloudSourceConfig {
+    fn minio(name: &str, endpoint: &str) -> CloudConnectionConfig {
+        CloudConnectionConfig {
             name: name.to_string(),
             kind: Some("s3".to_string()),
             endpoint_url: Some(endpoint.to_string()),
@@ -1633,7 +1487,7 @@ mod tests {
     #[test]
     fn two_servers_with_the_same_bucket_resolve_to_their_own_endpoints() {
         let config = CloudConfig {
-            sources: vec![
+            connections: vec![
                 minio("lab", "http://127.0.0.1:9000"),
                 minio("onprem", "https://minio.corp.example:9000"),
             ],
@@ -1669,7 +1523,7 @@ mod tests {
         let config = CloudConfig {
             s3_endpoint_url: Some("http://localhost:9000".to_string()),
             s3_access_key_id: Some("key".to_string()),
-            sources: vec![minio("lab", "http://127.0.0.1:9000")],
+            connections: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
         with_machine(&Machine::new(&[], &[]), |env| {
@@ -1738,7 +1592,6 @@ mod tests {
             remember_access("s3://tries-bucket", true);
             let again = resolve_with("s3://tries-bucket/b/c.parquet", &config, env).unwrap();
             assert_eq!(again.signing, Signing::Unsigned);
-            assert!(take_public_places().contains(&"s3://tries-bucket/".to_string()));
 
             remember_access("s3://signed-bucket", false);
             let signed = resolve_with("s3://signed-bucket/x", &config, env).unwrap();
@@ -1746,8 +1599,18 @@ mod tests {
         });
     }
 
+    /// The cloud settings of a config built from `toml`, with the machine's environment.
+    fn with_collections(toml: &str, env: &Environment<'_>) -> CloudConfig {
+        let mut app: crate::config::AppConfig = toml::from_str(toml).unwrap();
+        app.sync_dataset_access();
+        app.validate().unwrap();
+        let mut cloud = app.cloud.clone();
+        cloud.merge(CloudConfig::from_env(env.var));
+        cloud
+    }
+
     #[test]
-    fn public_datasets_are_built_in_and_read_unsigned() {
+    fn the_builtin_catalog_is_read_anonymously_whoever_is_logged_in() {
         let machine = Machine::new(
             &[
                 ("AWS_ACCESS_KEY_ID", "AKIA"),
@@ -1756,29 +1619,18 @@ mod tests {
             &[],
         );
         with_machine(&machine, |env| {
-            let config = CloudConfig::from_env(env.var);
-            let public = discover(&config, env)
-                .into_iter()
-                .find(|s| s.id == PUBLIC)
-                .expect("on by default");
-            assert!(public.public);
-            assert!(!public.datasets.is_empty());
-            assert!(
-                public
-                    .datasets
-                    .iter()
-                    .all(|d| !d.name.is_empty() && !d.license.is_empty() && !d.homepage.is_empty())
-            );
-            for dataset in &public.datasets {
-                if matches!(
-                    crate::source::input_source(std::path::Path::new(&dataset.url)),
-                    crate::source::InputSource::Http(_)
-                ) {
+            let config = with_collections("", env);
+            let catalog = crate::config::builtin_catalog();
+            assert!(catalog.datasets.len() >= 6);
+            // Web files are fetched, not resolved against a store.
+            for dataset in &catalog.datasets {
+                let url = dataset.url.as_deref().unwrap();
+                if !crate::config::is_object_store_dataset(url) {
                     continue;
                 }
-                let resolved = resolve_with(&dataset.url, &config, env).unwrap();
-                assert_eq!(resolved.signing, Signing::Unsigned, "{}", dataset.url);
-                assert_eq!(resolved.source_id, PUBLIC);
+                let resolved = resolve_with(url, &config, env).unwrap();
+                assert_eq!(resolved.signing, Signing::Unsigned, "{url}");
+                assert_eq!(resolved.source_id, crate::config::BUILTIN_CATALOG);
                 assert_eq!(resolved.s3.access_key_id, None);
             }
             let inside = resolve_with(
@@ -1792,42 +1644,34 @@ mod tests {
             let beside = resolve_with("s3://noaa-ghcn-pds/csv/", &config, env).unwrap();
             assert_eq!(beside.signing, Signing::Try);
 
-            let off = CloudConfig {
-                public_datasets: Some(false),
-                ..config.clone()
-            };
-            assert!(discover(&off, env).iter().all(|s| s.id != PUBLIC));
+            let off = with_collections("[data]\nbuiltin_catalog = false\n", env);
+            let resolved = resolve_with("s3://noaa-ghcn-pds/parquet/", &off, env).unwrap();
+            assert_eq!(resolved.signing, Signing::Try, "no catalog, no claim on it");
+            // No home-screen row stands for a collection: they are sections.
+            assert!(discover(&config, env).iter().all(|s| s.id != "public"));
         });
     }
 
     #[test]
-    fn a_configured_public_source_mixes_providers() {
+    fn anonymous_datasets_on_any_provider_are_read_unsigned() {
         with_machine(&Machine::new(&[], &[]), |env| {
-            let config = CloudConfig {
-                sources: vec![CloudSourceConfig {
-                    name: "open-data".to_string(),
-                    public: Some(true),
-                    buckets: vec![
-                        "s3://gbif-open-data-us-east-1/occurrence/".to_string(),
-                        "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/".to_string(),
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            };
-            let source = discover(&config, env)
-                .into_iter()
-                .find(|s| s.id == "open-data")
-                .unwrap();
-            assert!(source.public && !source.named_in_urls());
-            assert_eq!(
-                source.datasets[0].name,
-                "gbif-open-data-us-east-1/occurrence"
-            );
-            assert_eq!(source.datasets[1].name, "azureopendatastorage/nyctlc");
-            assert_eq!(
-                source.bucket_url(&source.datasets[0].url),
-                "s3://gbif-open-data-us-east-1/occurrence/"
+            let config = with_collections(
+                r#"
+[[sources]]
+name = "open"
+[[sources.datasets]]
+name = "GBIF"
+url = "s3://gbif-open-data-us-east-1/occurrence/"
+auth = "anonymous"
+[[sources.datasets]]
+name = "Taxis"
+url = "https://azureopendatastorage.blob.core.windows.net/nyctlc/"
+auth = "anonymous"
+[[sources.datasets]]
+name = "Samples"
+url = "gs://cloud-samples-data/bigquery/"
+"#,
+                env,
             );
             let azure = resolve_with(
                 "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/yellow/",
@@ -1835,89 +1679,61 @@ mod tests {
                 env,
             )
             .unwrap();
-            assert_eq!(azure.source_id, "open-data");
+            assert_eq!(azure.source_id, "open");
             assert_eq!(azure.signing, Signing::Unsigned);
+            let s3 =
+                resolve_with("s3://gbif-open-data-us-east-1/occurrence/x", &config, env).unwrap();
+            assert_eq!(
+                (s3.source_id.as_str(), s3.signing),
+                ("open", Signing::Unsigned)
+            );
+            // `auth` unset reads as any URL typed at the prompt would be.
+            let auto = resolve_with("gs://cloud-samples-data/bigquery/x", &config, env).unwrap();
+            assert_eq!(auto.source_id, DEFAULT_GCS);
         });
     }
 
     #[test]
-    fn a_structured_public_source_replaces_the_builtin_catalog() {
-        with_machine(&Machine::new(&[], &[]), |env| {
-            let datasets = [
-                ("Weather", "s3://weather/parquet/", "Daily observations"),
-                ("Buildings", "gs://buildings/v1/", "Footprints"),
-                (
-                    "Maps",
-                    "abfss://release@maps.dfs.core.windows.net/",
-                    "Map data",
-                ),
-            ]
-            .map(|(name, url, description)| PublicDatasetConfig {
-                name: name.to_string(),
-                url: url.to_string(),
-                description: description.to_string(),
-                publisher: "Publisher".to_string(),
-                license: "CC0".to_string(),
-                homepage: "https://example.com".to_string(),
-                ..Default::default()
-            })
-            .to_vec();
-            let config = CloudConfig {
-                sources: vec![CloudSourceConfig {
-                    name: PUBLIC.to_string(),
-                    label: Some("Curated public data".to_string()),
-                    public: Some(true),
-                    datasets: datasets.clone(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            };
-            let sources = discover(&config, env);
-            let matching: Vec<&Source> = sources.iter().filter(|s| s.id == PUBLIC).collect();
-            assert_eq!(matching.len(), 1, "configured source replaces the fallback");
-            let source = matching[0];
-            assert_eq!(source.tier, Tier::Config);
-            assert_eq!(source.label, "Curated public data");
-            assert_eq!(source.datasets.len(), 3);
-            assert_eq!(source.datasets[0].description, "Daily observations");
-            assert!(
-                source
-                    .datasets
-                    .iter()
-                    .all(|d| d.name != "NOAA daily weather (GHCN-D)")
+    fn a_dataset_names_the_connection_that_signs_it() {
+        let machine = Machine::new(
+            &[
+                ("AWS_ACCESS_KEY_ID", "env-key"),
+                ("AWS_SECRET_ACCESS_KEY", "env-secret"),
+                ("LAB_KEY", "lab-key"),
+                ("LAB_SECRET", "lab-secret"),
+            ],
+            &[],
+        );
+        with_machine(&machine, |env| {
+            let config = with_collections(
+                r#"
+[[cloud.connections]]
+name = "lab"
+kind = "s3"
+endpoint_url = "http://127.0.0.1:9000"
+access_key_id_env = "LAB_KEY"
+secret_access_key_env = "LAB_SECRET"
+
+[[sources]]
+name = "team"
+[[sources.datasets]]
+name = "Sales"
+url = "s3://connection-sales/2024/"
+connection = "lab"
+"#,
+                env,
             );
-
-            for dataset in &datasets {
-                let resolved = resolve_with(&dataset.url, &config, env).unwrap();
-                assert_eq!(resolved.signing, Signing::Unsigned, "{}", dataset.url);
-                assert_eq!(resolved.source_id, PUBLIC);
-            }
-        });
-    }
-
-    #[test]
-    fn one_dataset_removed_from_the_generated_catalog_stays_removed() {
-        with_machine(&Machine::new(&[], &[]), |env| {
-            let mut configured = crate::config::builtin_public_source();
-            let removed = configured.datasets.remove(0);
-            let expected_len = configured.datasets.len();
-            let config = CloudConfig {
-                sources: vec![configured],
-                ..Default::default()
-            };
-
-            let public = discover(&config, env)
-                .into_iter()
-                .find(|source| source.id == PUBLIC)
-                .expect("configured public source");
-
-            assert_eq!(public.datasets.len(), expected_len);
-            assert!(
-                public
-                    .datasets
-                    .iter()
-                    .all(|dataset| dataset.name != removed.name)
-            );
+            // An earlier unsigned read does not overrule the connection the config names.
+            remember_access("s3://connection-sales", true);
+            let sales =
+                resolve_with("s3://connection-sales/2024/q1.parquet", &config, env).unwrap();
+            assert_eq!(sales.source_id, "lab");
+            assert_eq!(sales.signing, Signing::Signed);
+            assert_eq!(sales.s3.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
+            assert_eq!(sales.s3.access_key_id.as_deref(), Some("lab-key"));
+            // Beside the dataset, the bucket is anybody's.
+            let beside = resolve_with("s3://connection-sales/2023/", &config, env).unwrap();
+            assert_eq!(beside.source_id, DEFAULT_S3);
         });
     }
 
@@ -2009,7 +1825,7 @@ mod tests {
     fn a_configured_google_source_names_its_configuration_and_project() {
         with_machine(&Machine::new(&[], &[]), |env| {
             let config = CloudConfig {
-                sources: vec![CloudSourceConfig {
+                connections: vec![CloudConnectionConfig {
                     name: "research".to_string(),
                     kind: Some("gcs".to_string()),
                     configuration: Some("research".to_string()),
@@ -2033,29 +1849,29 @@ mod tests {
 
     #[test]
     fn configured_azure_sources() {
-        let azure = |name: &str| CloudSourceConfig {
+        let azure = |name: &str| CloudConnectionConfig {
             name: name.to_string(),
             kind: Some("azure".to_string()),
             account: Some(format!("{name}acct")),
             ..Default::default()
         };
         let config = CloudConfig {
-            sources: vec![
-                CloudSourceConfig {
+            connections: vec![
+                CloudConnectionConfig {
                     account_key_env: Some("RESEARCH_KEY".to_string()),
                     ..azure("research")
                 },
-                CloudSourceConfig {
+                CloudConnectionConfig {
                     sas_env: Some("SHARED_SAS".to_string()),
                     ..azure("shared")
                 },
-                CloudSourceConfig {
+                CloudConnectionConfig {
                     account: None,
                     connection_string_env: Some("APP_STORAGE".to_string()),
                     ..azure("app")
                 },
                 azure("signin"),
-                CloudSourceConfig {
+                CloudConnectionConfig {
                     account_key_env: Some("UNSET_KEY".to_string()),
                     ..azure("broken")
                 },
@@ -2134,10 +1950,7 @@ mod tests {
         with_machine(&expired, |env| {
             let resolved = resolve_with(
                 "abfss://release@overturemapswestus2.dfs.core.windows.net/x/",
-                &CloudConfig {
-                    public_datasets: Some(false),
-                    ..Default::default()
-                },
+                &CloudConfig::default(),
                 env,
             )
             .unwrap();
@@ -2148,7 +1961,7 @@ mod tests {
     #[test]
     fn azure_urls_without_an_account() {
         let config = CloudConfig {
-            sources: vec![CloudSourceConfig {
+            connections: vec![CloudConnectionConfig {
                 name: "research".to_string(),
                 kind: Some("azure".to_string()),
                 account: Some("datuiresearch".to_string()),
@@ -2215,18 +2028,18 @@ mod tests {
     #[test]
     fn secret_commands_supply_the_secret() {
         let config = CloudConfig {
-            sources: vec![
-                CloudSourceConfig {
+            connections: vec![
+                CloudConnectionConfig {
                     secret_access_key_env: None,
                     secret_command: Some("pass show minio/onprem".to_string()),
                     ..minio("onprem", "https://minio.corp.example:9000")
                 },
-                CloudSourceConfig {
+                CloudConnectionConfig {
                     secret_access_key_env: None,
                     secret_command: Some("pass show minio/missing".to_string()),
                     ..minio("broken", "https://minio.corp.example:9000")
                 },
-                CloudSourceConfig {
+                CloudConnectionConfig {
                     name: "research".to_string(),
                     kind: Some("azure".to_string()),
                     account: Some("research".to_string()),
@@ -2269,14 +2082,14 @@ mod tests {
     #[test]
     fn a_credentials_file_logs_a_google_source_in() {
         let config = CloudConfig {
-            sources: vec![
-                CloudSourceConfig {
+            connections: vec![
+                CloudConnectionConfig {
                     name: "analytics".to_string(),
                     kind: Some("gcs".to_string()),
                     credentials_file: Some("~/keys/analytics-sa.json".to_string()),
                     ..Default::default()
                 },
-                CloudSourceConfig {
+                CloudConnectionConfig {
                     name: "gone".to_string(),
                     kind: Some("gcs".to_string()),
                     credentials_file: Some("/nowhere/sa.json".to_string()),
@@ -2311,7 +2124,6 @@ mod tests {
             with_machine(&Machine::new(vars, &[]), |env| {
                 discover(config, env)
                     .into_iter()
-                    .filter(|s| !s.public)
                     .map(|s| (s.id, s.origin))
                     .collect()
             })
@@ -2424,7 +2236,7 @@ mod tests {
     #[test]
     fn an_unknown_source_names_the_ones_that_exist() {
         let config = CloudConfig {
-            sources: vec![minio("lab", "http://127.0.0.1:9000")],
+            connections: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
         with_machine(&Machine::new(&[], &[]), |env| {
@@ -2436,7 +2248,7 @@ mod tests {
     #[test]
     fn an_aws_source_cannot_be_named_in_a_url() {
         let config = CloudConfig {
-            sources: vec![CloudSourceConfig {
+            connections: vec![CloudConnectionConfig {
                 name: "second-account".to_string(),
                 kind: Some("s3".to_string()),
                 ..Default::default()
@@ -2452,7 +2264,7 @@ mod tests {
     #[test]
     fn a_named_variable_that_is_unset_is_reported_not_borrowed() {
         let config = CloudConfig {
-            sources: vec![minio("lab", "http://127.0.0.1:9000")],
+            connections: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
         with_machine(&Machine::new(&[("LAB_KEY", "k")], &[]), |env| {
@@ -2464,7 +2276,7 @@ mod tests {
     #[test]
     fn a_bucket_listed_by_an_aws_source_opens_with_that_login() {
         let config = CloudConfig {
-            sources: vec![CloudSourceConfig {
+            connections: vec![CloudConnectionConfig {
                 name: "second-account".to_string(),
                 kind: Some("s3".to_string()),
                 access_key_id_env: Some("SECOND_KEY".to_string()),
@@ -2475,7 +2287,7 @@ mod tests {
         };
         let machine = Machine::new(&[("SECOND_KEY", "k2"), ("SECOND_SECRET", "s2")], &[]);
         with_machine(&machine, |env| {
-            let source = configured_source(&config.sources[0], env);
+            let source = configured_source(&config.connections[0], env);
             remember_bucket(&source, "only-in-second-account");
             let resolved =
                 resolve_with("s3://only-in-second-account/x.parquet", &config, env).unwrap();
@@ -2488,7 +2300,7 @@ mod tests {
     #[test]
     fn a_bucket_an_earlier_run_listed_opens_with_that_login() {
         let config = CloudConfig {
-            sources: vec![CloudSourceConfig {
+            connections: vec![CloudConnectionConfig {
                 name: "cached-account".to_string(),
                 kind: Some("s3".to_string()),
                 access_key_id_env: Some("CACHED_KEY".to_string()),
@@ -2499,7 +2311,7 @@ mod tests {
         };
         let machine = Machine::new(&[("CACHED_KEY", "k3"), ("CACHED_SECRET", "s3")], &[]);
         with_machine(&machine, |env| {
-            let source = configured_source(&config.sources[0], env);
+            let source = configured_source(&config.connections[0], env);
             remember_listed(&source, &["only-in-cached-account".to_string()]);
             let resolved =
                 resolve_with("s3://only-in-cached-account/x.parquet", &config, env).unwrap();
@@ -2524,7 +2336,7 @@ mod tests {
         with_machine(&machine, |env| {
             let shown = |which: Option<CloudDiscover>| {
                 let config = CloudConfig {
-                    sources: vec![minio("lab", "http://127.0.0.1:9000")],
+                    connections: vec![minio("lab", "http://127.0.0.1:9000")],
                     discover: which,
                     ..Default::default()
                 };
@@ -2537,20 +2349,20 @@ mod tests {
             };
             assert_eq!(
                 shown(None),
-                [DEFAULT_GCS, "lab", PUBLIC, DEFAULT_S3],
+                [DEFAULT_GCS, "lab", DEFAULT_S3],
                 "unset shows every kind"
             );
             assert_eq!(shown(Some(CloudDiscover::All)), shown(None));
             assert_eq!(
                 shown(Some(CloudDiscover::Kinds(vec!["gcs".to_string()]))),
-                [DEFAULT_GCS, "lab", PUBLIC],
+                [DEFAULT_GCS, "lab"],
                 "the configured S3 source stays; the found one goes"
             );
             assert_eq!(
                 shown(Some(CloudDiscover::Kinds(vec!["s3".to_string()]))),
-                ["lab", PUBLIC, DEFAULT_S3]
+                ["lab", DEFAULT_S3]
             );
-            assert_eq!(shown(Some(CloudDiscover::None)), ["lab", PUBLIC]);
+            assert_eq!(shown(Some(CloudDiscover::None)), ["lab"]);
         });
     }
 
@@ -2566,17 +2378,17 @@ mod tests {
         );
         with_machine(&machine, |env| {
             let config = CloudConfig {
-                sources: vec![minio("lab", "http://127.0.0.1:9000")],
+                connections: vec![minio("lab", "http://127.0.0.1:9000")],
                 ..Default::default()
             };
             let found = discover(&config, env);
             let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-            assert_eq!(ids, ["lab", DEFAULT_S3, PUBLIC]);
+            assert_eq!(ids, ["lab", DEFAULT_S3]);
             assert_eq!(found[0].bucket_url("data"), "s3://lab@data");
             assert_eq!(found[1].label, "Amazon S3");
 
             let replacing = CloudConfig {
-                sources: vec![CloudSourceConfig {
+                connections: vec![CloudConnectionConfig {
                     name: DEFAULT_S3.to_string(),
                     label: Some("Work AWS".to_string()),
                     kind: Some("s3".to_string()),
@@ -2585,11 +2397,7 @@ mod tests {
                 ..Default::default()
             };
             let found = discover(&replacing, env);
-            assert_eq!(
-                found.len(),
-                2,
-                "the replaced source and the public datasets"
-            );
+            assert_eq!(found.len(), 1, "the replaced source");
             assert_eq!(found[0].label, "Work AWS");
             assert_eq!(found[0].tier, Tier::Config);
         });
@@ -2689,7 +2497,7 @@ aws_secret_access_key = minioadmin
             let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
             // The active profile is the default source; a profile with only a region
             // cannot log in and is not listed.
-            assert_eq!(ids, [DEFAULT_S3, "aws-default", "aws-lab", PUBLIC]);
+            assert_eq!(ids, [DEFAULT_S3, "aws-default", "aws-lab"]);
             let lab = found.iter().find(|s| s.id == "aws-lab").unwrap();
             assert!(
                 lab.named_in_urls(),
@@ -2709,7 +2517,7 @@ aws_secret_access_key = minioadmin
     #[test]
     fn a_configured_source_can_log_in_through_a_profile() {
         let config = CloudConfig {
-            sources: vec![CloudSourceConfig {
+            connections: vec![CloudConnectionConfig {
                 name: "minio".to_string(),
                 kind: Some("s3".to_string()),
                 profile: Some("lab".to_string()),
@@ -2726,7 +2534,7 @@ aws_secret_access_key = minioadmin
             assert_eq!(resolved.s3.access_key_id.as_deref(), Some("minioadmin"));
         });
         let missing = CloudConfig {
-            sources: vec![CloudSourceConfig {
+            connections: vec![CloudConnectionConfig {
                 name: "minio".to_string(),
                 kind: Some("s3".to_string()),
                 endpoint_url: Some("http://x".to_string()),
@@ -2760,7 +2568,7 @@ aws_secret_access_key = minioadmin
             let found = discover(&config, env);
             let mut ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
             ids.sort();
-            assert_eq!(ids, ["mc-corp-minio", "mc-lab", PUBLIC, "s3cfg"]);
+            assert_eq!(ids, ["mc-corp-minio", "mc-lab", "s3cfg"]);
             let lab = found.iter().find(|s| s.id == "mc-lab").unwrap();
             assert_eq!(
                 lab.origin, "MC_HOST_lab",
@@ -2792,7 +2600,7 @@ aws_secret_access_key = minioadmin
         );
         with_machine(&machine, |env| {
             let config = CloudConfig {
-                sources: vec![CloudSourceConfig {
+                connections: vec![CloudConnectionConfig {
                     name: "lab".to_string(),
                     kind: Some("s3".to_string()),
                     endpoint_url: Some("http://127.0.0.1:9000".to_string()),
@@ -2804,7 +2612,7 @@ aws_secret_access_key = minioadmin
             };
             let found = discover(&config, env);
             let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-            assert_eq!(ids, ["lab", PUBLIC], "the config's source stays");
+            assert_eq!(ids, ["lab"], "the config's source stays");
             assert_eq!(found[0].origin, "datui config, mc alias");
         });
     }

@@ -1,6 +1,6 @@
 name: Public datasets
 
-# The built-in `Public datasets` cloud source points at data other organisations host.
+# The built-in `public` collection points at data other organisations host.
 # datui hosts none of it, so nothing tells us when a publisher moves or retires a
 # dataset except checking. Once a week, and on pull requests that touch the cloud code
 # or the list, list and open every entry with no credentials at all, the way a new

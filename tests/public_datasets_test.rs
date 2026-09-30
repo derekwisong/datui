@@ -1,4 +1,4 @@
-//! Named web files in the public catalog use the normal download/open path.
+//! A named web file in a collection uses the normal download and open path.
 
 #![cfg(all(feature = "cloud", feature = "http"))]
 
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::config::{AppConfig, CloudSourceConfig, PublicDatasetConfig};
+use datui::config::AppConfig;
 use datui::{App, AppEvent};
 
 fn key(code: KeyCode) -> AppEvent {
@@ -48,7 +48,7 @@ fn pump(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, done: impl Fn(&
 }
 
 #[test]
-fn a_public_web_file_is_fetched_only_when_opened_and_returns_to_its_catalog() {
+fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
     common::isolate_cache();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/foods.csv", listener.local_addr().unwrap());
@@ -75,16 +75,12 @@ fn a_public_web_file_is_fetched_only_when_opened_and_returns_to_its_catalog() {
     let mut config = AppConfig::default();
     config.data.use_desktop_recents = false;
     config.cloud.discover = Some(datui::config::CloudDiscover::None);
-    config.cloud.sources = vec![CloudSourceConfig {
-        name: "public".into(),
-        public: Some(true),
-        datasets: vec![PublicDatasetConfig {
-            name: "Foods".into(),
-            url: url.clone(),
-            ..Default::default()
-        }],
-        ..Default::default()
-    }];
+    config.merge(
+        toml::from_str(&format!(
+            "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Foods\"\nurl = {url:?}\n"
+        ))
+        .unwrap(),
+    );
     config.validate().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new_with_config(
@@ -96,15 +92,6 @@ fn a_public_web_file_is_fetched_only_when_opened_and_returns_to_its_catalog() {
         config,
     );
     app.enter_home();
-    pump(&mut app, &rx, |app| {
-        app.home.visible().iter().any(|row| {
-        matches!(row, datui::home::Row::Entry { entry, .. } if entry.path == std::path::Path::new("cloud://public"))
-    })
-    });
-    app.home.selected = app.home.visible().iter().position(|row| {
-        matches!(row, datui::home::Row::Entry { entry, .. } if entry.path == std::path::Path::new("cloud://public"))
-    }).unwrap();
-    drive(&mut app, key(KeyCode::Enter));
     pump(&mut app, &rx, |app| {
         app.home.visible().iter().any(
             |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Foods"),
@@ -125,10 +112,7 @@ fn a_public_web_file_is_fetched_only_when_opened_and_returns_to_its_catalog() {
         "listing does not fetch a file"
     );
     drive(&mut app, key(KeyCode::Right));
-    assert_eq!(
-        app.home.browsing.as_deref(),
-        Some(std::path::Path::new("cloud://public"))
-    );
+    assert_eq!(app.home.browsing, None, "a web file has no inside");
     assert_eq!(
         requests.load(Ordering::SeqCst),
         0,
@@ -146,7 +130,7 @@ fn a_public_web_file_is_fetched_only_when_opened_and_returns_to_its_catalog() {
     drive(&mut app, key(KeyCode::Char('q')));
     assert_eq!(app.input_mode, datui::InputMode::Home);
     assert_eq!(
-        app.home.browsing.as_deref(),
-        Some(std::path::Path::new("cloud://public"))
+        app.home.browsing, None,
+        "back to the listing it was opened from"
     );
 }

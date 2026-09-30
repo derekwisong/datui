@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 /// Variables datui itself reads. `MC_HOST_<alias>` is matched by prefix, and the names
-/// `[[cloud.sources]]` point at with `*_env` are added to these.
+/// `[[cloud.connections]]` point at with `*_env` are added to these.
 pub const KNOWN: &[&str] = &[
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -48,7 +48,7 @@ fn store() -> &'static RwLock<HashMap<String, String>> {
 /// variables for [`var`]. Returns a note for each file that could not be read.
 pub fn load(cloud: &CloudConfig, dir: &Path) -> Vec<String> {
     let named: Vec<&str> = cloud
-        .sources
+        .connections
         .iter()
         .flat_map(|s| {
             [
@@ -177,7 +177,7 @@ mod tests {
         .unwrap();
         let cloud = CloudConfig {
             env_files: vec![".env".to_string(), "missing.env".to_string()],
-            sources: vec![crate::config::CloudSourceConfig {
+            connections: vec![crate::config::CloudConnectionConfig {
                 name: "onprem".to_string(),
                 secret_access_key_env: Some("ONPREM_SECRET_FOR_ENV_FILE_TEST".to_string()),
                 ..Default::default()

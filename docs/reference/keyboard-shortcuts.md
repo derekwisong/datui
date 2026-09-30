@@ -58,7 +58,7 @@ Letters type into the filter here, so none of them is a key.
 | type | Filter by name or column name, and search below the directory you are inside |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes, <kbd>Enter</kbd> opens, <kbd>Esc</kbd> closes |
 | <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows — the control bar names the order in effect |
-| <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level |
+| <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
@@ -70,8 +70,9 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
-In Public datasets, Enter opens an HTTP(S) data file or browses an object-store
-location. Right browses directories; it does not open a web file.
+In a collection, including Public datasets, Enter opens a file (a web file after
+asking to download it) and steps into a directory or object-store prefix.
+<kbd>→</kbd> steps into directories only; it does not open a web file.
 
 ## Query prompt
 

@@ -23,8 +23,10 @@ To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
 | `RECENT` | Opened datasets, grouped by their parent directory or cloud location |
 | Current directory | Files where you launched datui |
 | `CLOUD` | Detected and configured cloud sources; open one to list its contents |
+| Collections | Each [`[[sources]]`](#collections) collection under its label, in configured order |
 | Configured directories | Paths from `[data] directories`, in configured order |
 | Remembered directories | Paths saved with <kbd>Ctrl</kbd>+<kbd>D</kbd> |
+| `PUBLIC DATASETS` | The built-in [public datasets](#public-datasets) |
 | `ELSEWHERE` | Directories from the desktop's recent-files list; folded initially |
 | `Found` | Recursive search results while you type |
 
@@ -188,15 +190,70 @@ the result may contain deleted rows or superseded versions.
 | `≈` | `@` | Object store or URL |
 | `◌` | `?` | Unknown |
 
+## Collections
+
+A collection is a list of datasets you named in the config, local and remote
+alike, shown as a section under its label. See
+[Dataset collections](../reference/sources.md) for `[[sources]]`.
+
+```
+▾ MY DATASETS  5   configured  ────────────────────────────────────
+  ▪ Sales                                          6.8 KB   now
+  ▪ Archive/ 1 csv                                          now
+  ◦ Gone missing
+  ≈ Weather/ dataset
+  ≈ Penguins
+```
+
+| Row | <kbd>Enter</kbd> | Label |
+|---|---|---|
+| Local file | Opens it | Measured like any file |
+| Local directory | Steps inside | What is inside (`1 csv`, `hive`) |
+| Local path with nothing there | Says it does not exist | `missing` |
+| Directory in an object store | Steps inside; <kbd>Backspace</kbd> at its top comes back here | `dataset` |
+| File in an object store or on the web | Opens it; a web file is downloaded after asking | |
+
+Nothing remote is asked for until you open or enter a dataset. Inside one, the
+title bar's trail starts with the collection and the dataset's name:
+`My datasets › Weather › by_year`. The details pane shows the dataset's
+description, publisher, license and homepage, its path or URL, and `login`: `none`,
+`auto`, or the connection that reads it.
+
+### Public datasets
+
+`Public datasets` is the built-in collection: data its publishers host and keep up
+to date, readable with no login. It comes after everything of your own. HTTP(S)
+files open as tables and object-store roots open for browsing; datui bundles no
+dataset files, and hosted CSV extracts have the coverage shown.
+
+| Dataset | Data | License |
+|---|---|---|
+| NYC flights (2013) | Departures from JFK, LaGuardia and Newark; delays in minutes | CC0 (nycflights13) |
+| Food nutrition (fast food) | 515 menu items; nutrients per item, not per 100 g | GPL-3 (OpenIntro package) |
+| US baby names (1880-2017) | Published name counts by year and sex; counts below five are suppressed | CC0 / public domain |
+| NOAA daily weather (GHCN-D) | Worldwide weather station observations, by year and by station | CC0 |
+| Premier League (2020-21) | Match rounds, dates, teams and full-time scores | CC0 |
+| NYC yellow taxis (January 2025) | One original monthly trip file; fares, distances and congestion fees | NYC Open Data terms |
+| Earthquakes (past month) | Rolling month of worldwide earthquakes; magnitudes, depth and location | Public domain |
+| Space launches (1957-2018) | Historical launch records and agencies; includes failed attempts | MIT (The Economist extract); credit Jonathan McDowell |
+| Palmer penguins | 344 penguins: species, island, bill, flipper length and body mass | CC0; credit Horst, Hill and Gorman (2020) |
+| Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
+| Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
+
+The details pane gives each one's publisher, license and homepage. The license is
+the publisher's: check it before you use the data. A collection named `public`
+replaces this one, `[data] builtin_catalog = false` drops it, and
+`[data] hide_sources = ["public"]` hides it; see
+[Dataset collections](../reference/sources.md).
+
 ## Cloud storage
 
 Open a source under `CLOUD` to browse buckets, projects or containers.
-**Public datasets** needs no login. See [Cloud browser](cloud-browser.md)
+See [Cloud browser](cloud-browser.md)
 for discovery, refresh behavior and listing errors, or
 [Remote data](remote-data.md) for credentials and URLs.
 
 <a id="which-sources-appear"></a>
-<a id="public-datasets"></a>
 <a id="what-a-cloud-row-shows"></a>
 
 ## Network locations
@@ -238,7 +295,7 @@ These commands do not delete data files.
 | type | Filter names and known column names |
 | <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths |
 | <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
-| <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory |
+| <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |

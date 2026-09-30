@@ -29,7 +29,7 @@ mode = "light"
 This shows row numbers, groups digits, adds a directory to the home screen,
 and selects the light palette. Remove any setting you do not want.
 Most generated settings are commented examples; remove the leading `#` to
-activate one. The generated public-dataset catalog is already active.
+activate one. The generated public-dataset collection is already active.
 
 ## Find a setting
 
@@ -39,7 +39,8 @@ activate one. The generated public-dataset catalog is already active.
 | Number formatting, columns and row buffers | [Display](../reference/settings.md#display) |
 | Analysis sample size or chart row limit | [Performance](../reference/settings.md#performance) · [Charts](../reference/settings.md#charts) |
 | Home directories and search | [Data](../reference/settings.md#data) |
-| Cloud accounts and public datasets | [Cloud sources](../reference/cloud-sources.md) |
+| Named datasets, local or remote, and the public catalog | [Dataset collections](../reference/sources.md) |
+| Cloud accounts and connections | [Cloud sources](../reference/cloud-sources.md) |
 | Clipboard over SSH | [Clipboard](../reference/settings.md#clipboard) |
 | Colors and symbols | [Theme](../reference/settings.md#theme) · [Glyphs](../reference/settings.md#glyphs) |
 | Desktop theme integration | [System theming](system-theming.md) |

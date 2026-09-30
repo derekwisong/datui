@@ -1126,13 +1126,8 @@ pub async fn list_objects(
             Ok(rows)
         }
         Ok(rows) => {
-            match signing {
-                Signing::Try => crate::cloud_sources::remember_access(&place, false),
-                // Read with no login, and not one of the public datasets already.
-                Signing::Unsigned if !is_public_source(&resolved.source_id, config) => {
-                    crate::cloud_sources::found_public(&place)
-                }
-                _ => {}
+            if signing == Signing::Try {
+                crate::cloud_sources::remember_access(&place, false);
             }
             Ok(rows)
         }
@@ -1142,15 +1137,6 @@ pub async fn list_objects(
         }
         Err(e) => Err(e),
     }
-}
-
-/// Whether `id` names a source of public datasets, whose places are listed already.
-fn is_public_source(id: &str, config: &CloudConfig) -> bool {
-    id == crate::cloud_sources::PUBLIC
-        || config
-            .sources
-            .iter()
-            .any(|s| s.name == id && s.public == Some(true))
 }
 
 /// Whether an error is the service refusing the request, rather than failing to answer.
@@ -1388,18 +1374,6 @@ pub struct Listed {
 
 /// Everything at the top of a source.
 pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
-    // Known in advance: nothing to ask anyone.
-    if source.public {
-        return Ok(source
-            .datasets
-            .iter()
-            .map(|dataset| Listed {
-                name: dataset.name.clone(),
-                place: PathBuf::from(&dataset.url),
-                details: dataset_details(dataset),
-            })
-            .collect());
-    }
     if source.kind == ProviderKind::Gcs {
         let source = source.clone();
         return tokio::task::spawn_blocking(move || {
@@ -1474,21 +1448,6 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
     })
     .await
     .map_err(|e| format!("{e}"))?
-}
-
-/// Details-pane lines for a public dataset.
-pub fn dataset_details(dataset: &crate::cloud_sources::Dataset) -> Vec<(String, String)> {
-    [
-        ("about", &dataset.description),
-        ("publisher", &dataset.publisher),
-        ("license", &dataset.license),
-        ("homepage", &dataset.homepage),
-        ("url", &dataset.url),
-    ]
-    .into_iter()
-    .filter(|(_, value)| !value.is_empty())
-    .map(|(key, value)| (key.to_string(), value.clone()))
-    .collect()
 }
 
 /// Where Amazon S3 keeps `bucket`, from the `x-amz-bucket-region` header S3 sends with

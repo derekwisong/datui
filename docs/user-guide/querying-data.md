@@ -97,6 +97,7 @@ select a, b, c              # these columns
 select                      # every column
 select total: price * qty   # a computed column, named with :
 select col["First Name"]    # a name with spaces
+select distinct a, b        # each combination once
 ```
 
 ### Filtering rows
@@ -110,17 +111,21 @@ select where name = "Smith"              # strings in double quotes
 select where null email                  # null tests
 select where not null email
 select where city.contains["York"]       # string accessors
+select where name in ["Emma", "Olivia"]  # one of a list
+select where item like "*Chicken*"       # * any text, ? one character
 ```
 
 ### Arithmetic
 
-`+`, `-`, `*` and `/` for divide; `%` also divides. Expressions bind **right to left**:
+`+`, `-`, `*` and `/` for divide; `%` also divides and `mod` is the remainder.
+Expressions bind **right to left**:
 `a * b + c` is `a * (b + c)`. Use parentheses when in doubt. Comparisons bind
 the same way, so `(a + b) * 2 > 100` parses as `(a + b) * (2 > 100)` — put
 the comparison first: `100 < (a + b) * 2`.
 
 ```
 select margin: (price - cost) / price where qty > 0
+select mean_delay: (avg dep_delay).round[1] by hour
 ```
 
 ### Dates and times
@@ -132,12 +137,26 @@ Date and Datetime columns have dot accessors, and date literals are written
 select order_date.year, order_date.month, total
 select where created_at.date >= 2024.01.01, created_at.dow = 1
 select day: ts.format["%Y-%m-%d"]
+select trips: count VendorID by tpep_pickup_datetime.hour
+select day: DATE.to_date["%Y%m%d"]       # parse text as a date
 ```
 
-Accessors include `date`, `time`, `year`, `month`, `week`, `day`, `dow`,
-`month_start`, `month_end` and `format["..."]`. The
+Accessors include `date`, `time`, `year`, `quarter`, `month`, `week`, `day`,
+`doy`, `dow`, `hour`, `minute`, `second`, `month_start`, `month_end` and
+`format["..."]`. The
 [reference](../reference/query-syntax.md#date-and-datetime-accessors) has the
 full list.
+
+### Text
+
+```
+select home: FT.part["–", 0].int         # split on – and take the first piece as a number
+select d: Date.replace["(P)", ""].strip
+select country: ID.slice[0, 2]
+```
+
+The [reference](../reference/query-syntax.md#string-accessors) lists every
+string accessor and the `int`, `float`, `str` and `round[n]` conversions.
 
 ### Grouping and aggregating
 
@@ -145,11 +164,13 @@ full list.
 select name, salary by department                         # group
 select avg salary, max salary, count name by department   # aggregate
 select total: sum[price * qty] by region, year            # computed aggregates
+select trips: count fare_amount by b: 5 xbar fare_amount  # buckets of 5
 ```
 
 A `by` clause without aggregates gives one row per group. With aggregates
-(`avg`, `sum`, `min`, `max`, `count`, `std`, `med`, `first`, `last`) you get one
-summary row per group. Brackets around the argument are optional. An unaliased
+(`avg`, `sum`, `min`, `max`, `count`, `std`, `med`, `first`, `last`, `nunique`,
+`var`, `dev`, and `w wavg x`) you get one summary row per group. Brackets around
+the argument are optional. An unaliased
 aggregate of a column is named `fn_column` (`avg salary` → `avg_salary`); name
 it yourself with `:`.
 

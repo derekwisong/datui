@@ -8638,7 +8638,7 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
     while let Some(ev) = next {
         next = app.event(&ev);
     }
-    drain_until_analysis_done(&mut app, &rx);
+    drain_events(&mut app, &rx);
     assert!(app.analysis_modal.describe_results.is_some());
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
 

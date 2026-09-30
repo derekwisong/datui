@@ -2680,7 +2680,8 @@ mod tests {
         render_statistics_table(
             &results,
             &mut TableState::default(),
-            0,
+            &mut crate::analysis_modal::ColumnScroll::default(),
+            false,
             area,
             &mut buf,
             &theme,
@@ -2691,7 +2692,7 @@ mod tests {
         let mut lines = text.lines();
         let header = lines.next().unwrap();
         let pickup = lines
-            .find(|l| l.starts_with("pickup"))
+            .find(|l| l.trim_start().starts_with("pickup"))
             .unwrap_or_else(|| panic!("{text}"));
         // Each value sits under its own header.
         for (stat, value) in [

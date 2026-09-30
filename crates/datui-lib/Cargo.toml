@@ -19,7 +19,7 @@ path = "src/lib.rs"
 default = ["cloud", "http", "sql", "streaming"]
 cloud = ["polars/aws", "polars/azure", "polars/gcp", "dep:object_store", "dep:quick-xml", "dep:ureq", "dep:http", "dep:futures"]
 http = ["dep:ureq"]
-sql = ["polars/sql", "dep:polars-sql"]
+sql = ["polars/sql", "dep:polars-sql", "dep:sqlparser"]
 streaming = ["polars/streaming"]
 
 [dependencies]
@@ -68,6 +68,8 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 # OSC 52 payloads; already in the tree transitively.
 base64 = "0.23"
 polars-sql = { version = "0.55", optional = true }
+# The parser polars-sql uses, at its version: reads a GROUP BY statement to drill into.
+sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 ignore = "0.4.33"
 # The log facade, for the log file. Already in the tree through Polars and ureq.
 log = "0.4"
@@ -117,7 +119,7 @@ features = [
     "log",
     "strings",
 ]
-# "sql" enabled via optional feature sql = ["polars/sql", "dep:polars-sql"]
+# "sql" enabled via optional feature sql = ["polars/sql", "dep:polars-sql", "dep:sqlparser"]
 
 [dependencies.polars-parquet]
 version = "0.55"

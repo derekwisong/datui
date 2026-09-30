@@ -1307,6 +1307,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sqlparser",
  "supports-color",
  "tempfile",
  "tokio",

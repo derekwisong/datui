@@ -358,10 +358,25 @@ fn infix_op_at(tokens: &[Token], i: usize) -> Option<&str> {
 /// integer column keeps its type: `5 xbar passenger_count` stays Int64 instead of
 /// becoming 5.0, 10.0.
 fn int_or_expr(tokens: &[Token]) -> Result<Expr, String> {
+    let whole = |n: f64| n.fract() == 0.0 && n.abs() < i64::MAX as f64;
     match tokens {
-        [Token::Number(n)] if n.fract() == 0.0 && n.abs() < i64::MAX as f64 => Ok(lit(*n as i64)),
+        [Token::Number(n)] if whole(*n) => Ok(lit(*n as i64)),
+        [Token::Op(minus), Token::Number(n)] if minus == "-" && whole(*n) => Ok(lit(-(*n as i64))),
         _ => parse_expr(tokens),
     }
+}
+
+/// True when no `]` in `tokens` closes a `[` from outside them.
+fn brackets_balanced(tokens: &[Token]) -> bool {
+    let mut depth = 0usize;
+    tokens.iter().all(|t| match t {
+        Token::LBracket => {
+            depth += 1;
+            true
+        }
+        Token::RBracket => depth.checked_sub(1).map(|d| depth = d).is_some(),
+        _ => true,
+    })
 }
 
 /// OR of the conditions as a balanced tree, so a long `in` list nests
@@ -395,7 +410,8 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
     match op {
         "in" => {
             let list = match right_tokens {
-                [Token::LBracket, inner @ .., Token::RBracket] => inner,
+                // One list: the first `[` closes at the last token, so `[1] + [2]` is not.
+                [Token::LBracket, inner @ .., Token::RBracket] if brackets_balanced(inner) => inner,
                 _ => {
                     return Err(
                         "in takes a list on its right, e.g. name in [\"Emma\", \"Olivia\"]"
@@ -509,6 +525,8 @@ fn simple_column_name(tokens: &[Token]) -> Option<String> {
     }
 }
 
+const WAVG_USAGE: &str = "wavg goes between weights and values, e.g. passengers wavg fare";
+
 /// Aggregation function names, lowercase.
 const AGG_FUNCTIONS: [&str; 16] = [
     "avg", "mean", "min", "max", "count", "std", "stddev", "dev", "var", "med", "median", "sum",
@@ -553,7 +571,7 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     }
     let fn_name = name.to_lowercase();
     if fn_name == "wavg" {
-        return Err("wavg goes between weights and values, e.g. passengers wavg fare".to_string());
+        return Err(WAVG_USAGE.to_string());
     }
     let expr = parse_expr(args)?;
     let expr = match fn_name.as_str() {
@@ -1122,6 +1140,9 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
         // here used to make `where x > 1 by dept` silently ignore `by dept`.
         let (expr, remaining) = parse_term(tokens)?;
         if let Some(extra) = remaining.first() {
+            if matches!(&tokens[0], Token::Identifier(w) if w == "wavg") {
+                return Err(WAVG_USAGE.to_string());
+            }
             return Err(format!(
                 "Unexpected '{}' after the expression",
                 token_text(extra)
@@ -1168,9 +1189,14 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
     if tokens.is_empty() || tokens[0] != Token::Select {
         return Err("Query must start with 'select'".to_string());
     }
-    // `distinct` right after `select` is always the keyword; a column of that
-    // name is still reachable as col["distinct"].
-    let distinct = tokens.get(1) == Some(&Token::Identifier("distinct".to_string()));
+    // `distinct` right after `select` is the keyword unless what follows makes it
+    // a column or an alias (`select distinct: x`, `select distinct, a`, `distinct + 1`);
+    // col["distinct"] always names the column.
+    let distinct = tokens.get(1) == Some(&Token::Identifier("distinct".to_string()))
+        && !matches!(
+            tokens.get(2),
+            Some(Token::Colon | Token::Comma | Token::Dot | Token::Op(_))
+        );
     let body = &tokens[if distinct { 2 } else { 1 }..];
 
     // Split by "where" first
@@ -2406,6 +2432,8 @@ mod tests {
         assert!(err.contains("in needs a list of values"), "{err}");
         let err = parse_err("select where x in [1] = y");
         assert!(err.contains("in takes a list"), "{err}");
+        let err = parse_err("select where x in [1] + [2]");
+        assert!(err.contains("in takes a list"), "{err}");
     }
 
     #[test]
@@ -2473,6 +2501,10 @@ mod tests {
         assert_eq!(values(&out, "a"), ["2", "1", "0"]);
         assert_eq!(values(&out, "b"), ["1.5", "1.5", "0.0"]);
         assert_eq!(values(&out, "c"), ["2", "2", "2"]);
+        // A negative whole divisor is an integer too.
+        let out = eval("select a: n mod -3", &df);
+        assert_eq!(values(&out, "a"), ["-1", "-2", "0"]);
+        assert_eq!(out.column("a").unwrap().dtype(), &DataType::Int64);
     }
 
     #[test]
@@ -2558,11 +2590,13 @@ mod tests {
         let out = eval("select w wavg x by g", &df);
         // The null value's weight stays out of the total: (10 + 60) / 4.
         assert_eq!(values(&out, "wavg_x"), ["17.5", "4.0"]);
-        let err = parse_err("select wavg[x]");
-        assert!(
-            err.contains("wavg goes between weights and values"),
-            "{err}"
-        );
+        for query in ["select wavg[x]", "select wavg x"] {
+            let err = parse_err(query);
+            assert!(
+                err.contains("wavg goes between weights and values"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -2606,6 +2640,13 @@ mod tests {
         let (cols, _, _, _, distinct) = parse_query("select col[\"distinct\"]").unwrap();
         assert!(!distinct);
         assert_eq!(cols, vec![col("distinct")]);
+        // So is a bare `distinct` that is plainly a column or an alias.
+        let (cols, _, _, _, distinct) = parse_query("select distinct, n").unwrap();
+        assert!(!distinct);
+        assert_eq!(cols, vec![col("distinct"), col("n")]);
+        let (cols, _, _, _, distinct) = parse_query("select distinct: n").unwrap();
+        assert!(!distinct);
+        assert_eq!(cols, vec![col("n").alias("distinct")]);
     }
 
     #[test]

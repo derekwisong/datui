@@ -6437,10 +6437,40 @@ impl DataTableState {
         Some(self.start_row + self.table_state.selected()? + self.row_start_index)
     }
 
-    /// Rows times estimated row width: what collecting the whole view would
-    /// hold in memory, for the copy guard. None until the count has run.
-    pub fn estimated_total_bytes(&self) -> Option<usize> {
-        Some(self.num_rows_if_valid()? * self.bytes_per_row())
+    /// Rows times estimated row width, for the copy guard: what collecting the whole
+    /// view would hold, with binary at the base64 size a copy writes. None until the
+    /// count has run, and while a binary column's width is unknown: the buffer holds a
+    /// stub for it, so only a footer says how wide it is.
+    pub fn estimated_copy_bytes(&self) -> Option<usize> {
+        let rows = self.num_rows_if_valid()?;
+        if rows == 0 {
+            return Some(0);
+        }
+        let base64 = |bytes: usize| bytes.div_ceil(3) * 4;
+        let footer_width = |name: &str| {
+            self.column_widths
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, w)| *w)
+        };
+        let mut row = self.bytes_per_row();
+        for name in &self.column_order {
+            match self.schema.get(name.as_str()) {
+                Some(DataType::Binary) => row += base64(footer_width(name)?),
+                // Buffered whole, so the buffer measured it with the row; base64 adds
+                // a third on top.
+                Some(dtype) if crate::nested_json::has_binary(dtype) => {
+                    let buffered = self.buffered_df.as_ref().and_then(|df| {
+                        let column = df.column(name).ok()?;
+                        (df.height() > 0)
+                            .then(|| column.as_materialized_series().estimated_size() / df.height())
+                    });
+                    row += buffered.or_else(|| footer_width(name)).unwrap_or(0) / 3;
+                }
+                _ => {}
+            }
+        }
+        Some(rows.saturating_mul(row))
     }
 
     /// The drift group of each row from the top of the view down, for a frame

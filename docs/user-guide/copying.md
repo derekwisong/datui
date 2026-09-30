@@ -36,7 +36,10 @@ hold the `‹binary›` placeholder, since the screen never reads the bytes. The
 toggle is on for View and Table and off for Row; a Markdown table always keeps
 its header.
 
-A large Table copy asks first — and so does one whose size is not known yet.
+A large Table copy asks first, counting binary at its base64 size. So does one
+whose size is not known: the row count is still being read, or a binary
+column's size is not in the file's footer (only a single Parquet object in
+cloud storage gives it).
 Above 200 MiB the copy is refused with a pointer to
 [export](exporting-data.md).
 

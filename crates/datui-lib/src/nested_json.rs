@@ -26,7 +26,7 @@ fn is_binary(dtype: &DataType) -> bool {
 }
 
 /// Whether `dtype` is binary or has binary anywhere inside.
-fn has_binary(dtype: &DataType) -> bool {
+pub fn has_binary(dtype: &DataType) -> bool {
     match dtype {
         DataType::List(inner) | DataType::Array(inner, _) => has_binary(inner),
         DataType::Struct(fields) => fields.iter().any(|f| has_binary(f.dtype())),

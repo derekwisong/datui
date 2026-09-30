@@ -127,7 +127,7 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
                 .hint_weighted("Esc", "Back", 2),
         }
     };
-    hints.render(hints_area, buf);
+    hints.render_flush(hints_area, buf);
 }
 
 /// The Columns tab: find row, header, one row per column.

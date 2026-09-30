@@ -245,7 +245,7 @@ pub(crate) fn render_breadcrumb(
     let style = Style::default().bg(ctx.controls_bg).fg(ctx.table_header);
     buf.set_style(area, style);
     let back = HintBar::from_ctx(ctx).hint("Esc", "Back");
-    let chip_w = back.width_in(area.width.saturating_sub(12));
+    let chip_w = back.flush_width_in(area.width.saturating_sub(12));
     let text_w = area.width.saturating_sub(chip_w + 1);
     Paragraph::new(crate::render::loading_view::truncate(text, text_w as usize))
         .style(style.add_modifier(Modifier::BOLD))
@@ -257,7 +257,7 @@ pub(crate) fn render_breadcrumb(
             buf,
         );
     if chip_w > 0 {
-        back.render(
+        back.render_flush(
             Rect {
                 x: area.x + area.width - chip_w,
                 width: chip_w,

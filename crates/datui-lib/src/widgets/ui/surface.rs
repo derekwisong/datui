@@ -66,7 +66,7 @@ impl<'a> Surface<'a> {
                     height: 1,
                     ..padded
                 };
-                footer.render(footer_area, buf);
+                footer.render_flush(footer_area, buf);
             }
             return Rect {
                 height: padded.height.saturating_sub(1),

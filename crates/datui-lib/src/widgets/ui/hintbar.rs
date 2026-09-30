@@ -7,6 +7,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+/// Blank cells after a chip's label, before the next chip.
+const GAP: u16 = 2;
+
 /// One key chip: the key on the accent, the label beside it.
 #[derive(Debug, Clone, Copy)]
 pub struct Hint<'a> {
@@ -97,7 +100,7 @@ impl<'a> HintBar<'a> {
     }
 
     /// A chip's cost in columns: the key padded one cell each side, a space,
-    /// the label, then two cells before the next chip. Measured in display
+    /// the label, then [`GAP`] cells before the next chip. Measured in display
     /// columns — a `[glyphs]` override may be wide.
     fn chip_width(hint: &Hint) -> u16 {
         (crate::glyphs::display_width(hint.key) as u16 + 2)
@@ -105,13 +108,19 @@ impl<'a> HintBar<'a> {
     }
 
     /// Which chips a row of `width` shows: chips are dropped whole, lightest
-    /// first, until the rest fit. Display order never changes.
-    fn kept(&self, width: u16) -> Vec<bool> {
+    /// first, until the rest fit. Display order never changes. A bar that ends
+    /// its row (`flush`) needs no gap after its last chip.
+    fn kept(&self, width: u16, flush: bool) -> Vec<bool> {
         let n = self.hints.len();
         let mut keep = vec![true; n];
         let weight = |i: usize| self.hints[i].weight.unwrap_or((n - i) as i32);
+        let budget = if flush {
+            width.saturating_add(GAP)
+        } else {
+            width
+        };
         let mut used: u16 = self.hints.iter().map(Self::chip_width).sum();
-        while used > width {
+        while used > budget {
             // Lightest chip goes; on a tie, the rightmost.
             let Some(drop) = (0..n)
                 .filter(|&i| keep[i])
@@ -125,20 +134,33 @@ impl<'a> HintBar<'a> {
         keep
     }
 
-    /// The columns the bar will actually use in a row of `width`.
-    pub fn width_in(&self, width: u16) -> u16 {
-        self.kept(width)
-            .iter()
+    fn used(&self, keep: &[bool]) -> u16 {
+        keep.iter()
             .zip(&self.hints)
             .filter(|(keep, _)| **keep)
             .map(|(_, hint)| Self::chip_width(hint))
             .sum()
     }
-}
 
-impl Widget for &HintBar<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let kept = self.kept(area.width);
+    /// The columns the bar will actually use in a row of `width`.
+    pub fn width_in(&self, width: u16) -> u16 {
+        self.used(&self.kept(width, false))
+    }
+
+    /// [`Self::width_in`] for a bar drawn with [`Self::render_flush`]: the last
+    /// chip's trailing gap is not counted.
+    pub fn flush_width_in(&self, width: u16) -> u16 {
+        self.used(&self.kept(width, true)).saturating_sub(GAP)
+    }
+
+    /// Draw a bar that nothing follows on its row, such as a Surface footer: a
+    /// chip fits when its label does, without the gap a next chip would need.
+    pub fn render_flush(&self, area: Rect, buf: &mut Buffer) {
+        self.draw(area, buf, true);
+    }
+
+    fn draw(&self, area: Rect, buf: &mut Buffer, flush: bool) {
+        let kept = self.kept(area.width, flush);
         let mut spans = Vec::new();
         for (hint, keep) in self.hints.iter().zip(kept) {
             if !keep {
@@ -153,6 +175,12 @@ impl Widget for &HintBar<'_> {
             spans.push(Span::styled(format!(" {}  ", hint.label), style));
         }
         Paragraph::new(Line::from(spans)).render(area, buf);
+    }
+}
+
+impl Widget for &HintBar<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.draw(area, buf, false);
     }
 }
 
@@ -239,6 +267,27 @@ mod tests {
             narrow.contains("Cancel") && !narrow.contains("Export"),
             "Esc goes last: {narrow:?}"
         );
+    }
+
+    /// A bar that ends its row keeps a chip whose label reaches the edge: the
+    /// gap after the last chip is for a next one, and there is none.
+    #[test]
+    fn a_flush_bar_keeps_a_chip_that_ends_at_the_edge() {
+        let full = bar().width_in(u16::MAX);
+        let tight = full - 2;
+        assert!(!render_to_string(&bar(), tight).contains("Cancel"));
+        let area = Rect::new(0, 0, tight, 1);
+        let mut buf = Buffer::empty(area);
+        bar().render_flush(area, &mut buf);
+        let out: String = (0..tight).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(out.ends_with("Cancel"), "{out:?}");
+        assert_eq!(bar().flush_width_in(tight), tight);
+        // One column less and the chip goes whole, as ever.
+        let area = Rect::new(0, 0, tight - 1, 1);
+        let mut buf = Buffer::empty(area);
+        bar().render_flush(area, &mut buf);
+        let out: String = (0..tight - 1).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(!out.contains("Esc") && !out.contains("Cancel"), "{out:?}");
     }
 
     /// The key sits on the accent; the label does not.

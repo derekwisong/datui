@@ -54,6 +54,7 @@ fn test_template_creation() -> Result<()> {
         locked_columns_count: 1,
         pivot: None,
         melt: None,
+        reshape_source: None,
     };
 
     let template = manager.create_template(
@@ -110,6 +111,7 @@ fn test_template_serialization() -> Result<()> {
         locked_columns_count: 0,
         pivot: None,
         melt: None,
+        reshape_source: None,
     };
 
     let template = manager.create_template(
@@ -167,6 +169,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
         locked_columns_count: 0,
         pivot: None,
         melt: None,
+        reshape_source: None,
     };
     let criteria = MatchCriteria {
         exact_path: None,
@@ -215,6 +218,7 @@ fn test_template_relevance_exact_path() -> Result<()> {
         locked_columns_count: 0,
         pivot: None,
         melt: None,
+        reshape_source: None,
     };
 
     let mut manager = manager;
@@ -266,6 +270,7 @@ fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
         locked_columns_count: 0,
         pivot: None,
         melt: None,
+        reshape_source: None,
     };
 
     let template =

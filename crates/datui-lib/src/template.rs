@@ -12,7 +12,7 @@ use polars::prelude::Schema;
 
 use crate::config::ConfigManager;
 use crate::filter_modal::FilterStatement;
-use crate::pivot_melt_modal::{MeltSpec, PivotSpec};
+use crate::pivot_melt_modal::{MeltSpec, PivotSpec, ReshapeSource};
 
 // Custom serialization for SystemTime (convert to/from seconds since epoch)
 mod time_serde {
@@ -150,6 +150,12 @@ pub struct TemplateSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub melt: Option<MeltSpec>,
+    /// The query, filters and sort the pivot or melt ran over, replayed before it. With
+    /// a reshape, `query`, `filters` and the sort are what ran on its result. Views
+    /// saved before this existed have none: their reshape ran over the data as loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub reshape_source: Option<ReshapeSource>,
 }
 
 impl TemplateSettings {
@@ -754,6 +760,7 @@ mod tests {
         assert_eq!(settings.query, Some("select a".to_string()));
         assert_eq!(settings.sql_query, None);
         assert_eq!(settings.fuzzy_query, None);
+        assert!(settings.reshape_source.is_none());
     }
 
     fn a_template(name: &str, criteria: MatchCriteria) -> Template {
@@ -778,6 +785,7 @@ mod tests {
                 locked_columns_count: 0,
                 pivot: None,
                 melt: None,
+                reshape_source: None,
             },
         }
     }

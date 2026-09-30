@@ -13609,3 +13609,157 @@ fn test_sort_digits_stage_zero_and_explain_out_of_range() {
         "Apply took the column out of the sort"
     );
 }
+
+/// `id,key,val` in long form: ten ids, each with a `k1` and a `k2` row, values scaled by
+/// `scale` so two files with the same columns give different results.
+fn long_csv(scale: i64) -> String {
+    let mut csv = String::from("id,key,val\n");
+    for id in 0..10 {
+        csv.push_str(&format!(
+            "{id},k1,{}\n{id},k2,{}\n",
+            id * scale,
+            id * 10 * scale
+        ));
+    }
+    csv
+}
+
+/// Run `steps` on one file and save a view matching a second; then apply the view to
+/// the second file and, in another app, run the same steps on it by hand. Returns the
+/// view, what applying it showed, and what the steps showed.
+fn view_and_steps_on_the_next_file(
+    name: &str,
+    steps: &[AppEvent],
+) -> (datui::Template, DataFrame, DataFrame) {
+    let next_name = format!("{name}_next.csv");
+    let next_path = PathBuf::from("tests/sample-data").join(&next_name);
+    let run = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>| {
+        for step in steps {
+            app.event(step);
+            pump_until_idle(app, rx, tx);
+            let state = app.data_table_state.as_ref().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+        }
+    };
+    let shown = |app: &App| {
+        let state = app.data_table_state.as_ref().unwrap();
+        state.visible_lf().collect().unwrap()
+    };
+
+    let (mut by_hand, rx, tx) = open_csv_with(&next_name, &long_csv(3), OpenOptions::default());
+    run(&mut by_hand, &rx, &tx);
+    let expected = shown(&by_hand);
+
+    let (mut app, rx, tx) = open_csv_with(
+        &format!("{name}_first.csv"),
+        &long_csv(1),
+        OpenOptions::default(),
+    );
+    run(&mut app, &rx, &tx);
+    let template = app
+        .create_template_from_current_state(
+            name.to_string(),
+            None,
+            datui::template::MatchCriteria {
+                exact_path: Some(next_path.clone()),
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+            },
+        )
+        .unwrap();
+    pump_open_until_loaded(&mut app, &rx, vec![next_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&key(KeyCode::Char('V')));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    (template, shown(&app), expected)
+}
+
+/// A view saved after a query, a filter and then a pivot replays all three: the pivot
+/// clears the query bar, but the view keeps what the pivot ran over and runs it first.
+#[test]
+fn test_a_view_replays_the_query_before_the_pivot() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let steps = [
+        AppEvent::SqlSearch("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
+        AppEvent::Filter(vec![filter_stmt(
+            "id",
+            datui::filter_modal::FilterOperator::Lt,
+            "8",
+        )]),
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        }),
+    ];
+    let (template, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
+
+    let source = template
+        .settings
+        .reshape_source
+        .as_ref()
+        .expect("the source");
+    assert!(source.sql_query.is_some());
+    assert_eq!(source.filters.len(), 1);
+    assert_eq!(template.settings.sql_query, None);
+    assert_eq!(expected.height(), 4, "ids 4..7");
+    assert!(
+        applied.equals_missing(&expected),
+        "{applied:?}\n{expected:?}"
+    );
+}
+
+/// SQL after a pivot runs on the pivot's result, so the view replays it after the
+/// pivot.
+#[test]
+fn test_a_view_replays_sql_on_the_pivot_after_it() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let steps = [
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        }),
+        AppEvent::SqlSearch("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
+    ];
+    let (template, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
+
+    assert!(template.settings.reshape_source.is_none());
+    assert_eq!(expected.height(), 5, "ids 5..9");
+    assert!(
+        applied.equals_missing(&expected),
+        "{applied:?}\n{expected:?}"
+    );
+}
+
+/// The same for a melt: the query it ran over comes first.
+#[test]
+fn test_a_view_replays_the_query_before_the_melt() {
+    use datui::pivot_melt_modal::MeltSpec;
+    let steps = [
+        AppEvent::SqlSearch("SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string()),
+        AppEvent::Melt(MeltSpec {
+            index: vec!["id".to_string()],
+            value_columns: vec!["val".to_string(), "doubled".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        }),
+    ];
+    let (template, applied, expected) = view_and_steps_on_the_next_file("view_query_melt", &steps);
+
+    assert!(template.settings.reshape_source.is_some());
+    assert_eq!(expected.height(), 12, "six rows, two columns each");
+    assert!(
+        applied.equals_missing(&expected),
+        "{applied:?}\n{expected:?}"
+    );
+}

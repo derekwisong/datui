@@ -6631,6 +6631,7 @@ struct TemplateApplicationState {
     reshaped_lf: Option<LazyFrame>,
     pivot: Option<PivotSpec>,
     melt: Option<MeltSpec>,
+    reshape_source: Option<pivot_melt_modal::ReshapeSource>,
     schema: Arc<Schema>,
     active_query: String,
     active_sql_query: String,
@@ -13823,6 +13824,7 @@ impl App {
                     locked_columns_count: state.locked_columns_count(),
                     pivot: state.last_pivot_spec().cloned(),
                     melt: state.last_melt_spec().cloned(),
+                    reshape_source: state.reshape_source().cloned(),
                 };
             }
             self.template_manager.update_template(&template).is_ok()
@@ -19868,6 +19870,7 @@ impl App {
                 reshaped_lf: state.reshaped_lf_clone(),
                 pivot: state.last_pivot_spec().cloned(),
                 melt: state.last_melt_spec().cloned(),
+                reshape_source: state.reshape_source().cloned(),
                 schema: state.schema.clone(),
                 active_query: state.active_query.clone(),
                 active_sql_query: state.get_active_sql_query().to_string(),
@@ -19894,8 +19897,13 @@ impl App {
         // A query in the view can still fail on the data once its rows are read,
         // after this returns; then the view as it is now comes back (#400).
         let settings = &template.settings;
-        let has_query = [&settings.sql_query, &settings.query, &settings.fuzzy_query]
+        let source_queries = settings
+            .reshape_source
             .iter()
+            .flat_map(|source| [&source.sql_query, &source.query, &source.fuzzy_query]);
+        let has_query = [&settings.sql_query, &settings.query, &settings.fuzzy_query]
+            .into_iter()
+            .chain(source_queries)
             .any(|q| q.as_deref().is_some_and(|q| !q.trim().is_empty()));
         let rollback = self
             .data_table_state
@@ -19905,129 +19913,12 @@ impl App {
 
         if let Some(state) = &mut self.data_table_state {
             state.error = None;
-
-            // At most one of SQL or DSL query is stored per template; then fuzzy. Apply in that order.
-            let sql_trimmed = template.settings.sql_query.as_deref().unwrap_or("").trim();
-            let query_opt = template.settings.query.as_deref().filter(|s| !s.is_empty());
-            let fuzzy_trimmed = template
-                .settings
-                .fuzzy_query
-                .as_deref()
-                .unwrap_or("")
-                .trim();
-
-            if !sql_trimmed.is_empty() {
-                state.sql_query(template.settings.sql_query.clone().unwrap_or_default());
-            } else if let Some(q) = query_opt {
-                state.query(q.to_string());
-            }
-            if let Some(error) = state.error.clone() {
+            if let Err(e) = Self::replay_view(state, &template.settings) {
                 if let Some(saved) = saved_state {
                     self.restore_state(saved);
                 }
                 self.active_template_id = saved_active_template_id;
-                return Err(color_eyre::eyre::eyre!(
-                    "{}",
-                    crate::error_display::user_message_from_polars(&error)
-                ));
-            }
-
-            if !fuzzy_trimmed.is_empty() {
-                state.fuzzy_search(template.settings.fuzzy_query.clone().unwrap_or_default());
-                if let Some(error) = state.error.clone() {
-                    if let Some(saved) = saved_state {
-                        self.restore_state(saved);
-                    }
-                    self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!(
-                        "{}",
-                        crate::error_display::user_message_from_polars(&error)
-                    ));
-                }
-            }
-
-            // Apply filters
-            if !template.settings.filters.is_empty() {
-                state.filter(template.settings.filters.clone());
-                // Check for errors after filter
-                let error_opt = state.error.clone();
-                if let Some(error) = error_opt {
-                    // End the if let block to drop the borrow
-                    if let Some(saved) = saved_state {
-                        self.restore_state(saved);
-                    }
-                    self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!("{}", error));
-                }
-            }
-
-            // Apply sort
-            if !template.settings.sort_columns.is_empty() {
-                state.sort_by(
-                    template.settings.sort_columns.clone(),
-                    template.settings.sort_directions(),
-                );
-                // Check for errors after sort
-                let error_opt = state.error.clone();
-                if let Some(error) = error_opt {
-                    // End the if let block to drop the borrow
-                    if let Some(saved) = saved_state {
-                        self.restore_state(saved);
-                    }
-                    self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!("{}", error));
-                }
-            }
-
-            // Apply pivot or melt (reshape) if present. Order: query → filters → sort → reshape → column_order.
-            if let Some(ref spec) = template.settings.pivot {
-                if let Err(e) = state.pivot(spec) {
-                    if let Some(saved) = saved_state {
-                        self.restore_state(saved);
-                    }
-                    self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!(
-                        "{}",
-                        crate::error_display::user_message_from_report(&e, None)
-                    ));
-                }
-            } else if let Some(ref spec) = template.settings.melt
-                && let Err(e) = state.melt(spec)
-            {
-                if let Some(saved) = saved_state {
-                    self.restore_state(saved);
-                }
-                self.active_template_id = saved_active_template_id;
-                return Err(color_eyre::eyre::eyre!(
-                    "{}",
-                    crate::error_display::user_message_from_report(&e, None)
-                ));
-            }
-
-            // Apply column order and locks
-            if !template.settings.column_order.is_empty() {
-                state.set_column_order(template.settings.column_order.clone());
-                // Check for errors after set_column_order
-                let error_opt = state.error.clone();
-                if let Some(error) = error_opt {
-                    // End the if let block to drop the borrow
-                    if let Some(saved) = saved_state {
-                        self.restore_state(saved);
-                    }
-                    self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!("{}", error));
-                }
-                state.set_locked_columns(template.settings.locked_columns_count);
-                // Check for errors after set_locked_columns
-                let error_opt = state.error.clone();
-                if let Some(error) = error_opt {
-                    // End the if let block to drop the borrow
-                    if let Some(saved) = saved_state {
-                        self.restore_state(saved);
-                    }
-                    self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!("{}", error));
-                }
+                return Err(e);
             }
         }
 
@@ -20064,6 +19955,115 @@ impl App {
         // Track active template
         self.active_template_id = Some(template.id.clone());
 
+        Ok(())
+    }
+
+    /// Run a view's steps on `state` in the order they were built. With a pivot or melt:
+    /// the query, filters and sort it ran over, the reshape, then the query, filters and
+    /// sort on its result. Without one: the query, filters and sort. Column order last.
+    /// Stops at the first step that fails.
+    fn replay_view(
+        state: &mut DataTableState,
+        settings: &template::TemplateSettings,
+    ) -> Result<()> {
+        if settings.pivot.is_some() || settings.melt.is_some() {
+            if let Some(source) = &settings.reshape_source {
+                Self::replay_query(
+                    state,
+                    source.sql_query.as_deref(),
+                    source.query.as_deref(),
+                    source.fuzzy_query.as_deref(),
+                )?;
+                Self::replay_filters_and_sort(
+                    state,
+                    &source.filters,
+                    &source.sort_columns,
+                    source.sort_directions(),
+                )?;
+            }
+            let reshaped = match (&settings.pivot, &settings.melt) {
+                (Some(spec), _) => state.pivot(spec),
+                (None, Some(spec)) => state.melt(spec),
+                (None, None) => Ok(()),
+            };
+            reshaped.map_err(|e| {
+                color_eyre::eyre::eyre!(
+                    "{}",
+                    crate::error_display::user_message_from_report(&e, None)
+                )
+            })?;
+        }
+        Self::replay_query(
+            state,
+            settings.sql_query.as_deref(),
+            settings.query.as_deref(),
+            settings.fuzzy_query.as_deref(),
+        )?;
+        Self::replay_filters_and_sort(
+            state,
+            &settings.filters,
+            &settings.sort_columns,
+            settings.sort_directions(),
+        )?;
+        if !settings.column_order.is_empty() {
+            state.set_column_order(settings.column_order.clone());
+            if let Some(error) = state.error.clone() {
+                return Err(color_eyre::eyre::eyre!("{}", error));
+            }
+            state.set_locked_columns(settings.locked_columns_count);
+            if let Some(error) = state.error.clone() {
+                return Err(color_eyre::eyre::eyre!("{}", error));
+            }
+        }
+        Ok(())
+    }
+
+    /// A view's query: SQL or q-style (at most one is stored), then a search.
+    fn replay_query(
+        state: &mut DataTableState,
+        sql: Option<&str>,
+        dsl: Option<&str>,
+        fuzzy: Option<&str>,
+    ) -> Result<()> {
+        let stated = |q: Option<&str>| q.filter(|q| !q.trim().is_empty()).map(str::to_string);
+        if let Some(sql) = stated(sql) {
+            state.sql_query(sql);
+        } else if let Some(query) = stated(dsl) {
+            state.query(query);
+        }
+        if state.error.is_none()
+            && let Some(fuzzy) = stated(fuzzy)
+        {
+            state.fuzzy_search(fuzzy);
+        }
+        match state.error.clone() {
+            Some(error) => Err(color_eyre::eyre::eyre!(
+                "{}",
+                crate::error_display::user_message_from_polars(&error)
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// A view's sidebar filters, then its sort.
+    fn replay_filters_and_sort(
+        state: &mut DataTableState,
+        filters: &[FilterStatement],
+        sort_columns: &[String],
+        descending: Vec<bool>,
+    ) -> Result<()> {
+        if !filters.is_empty() {
+            state.filter(filters.to_vec());
+            if let Some(error) = state.error.clone() {
+                return Err(color_eyre::eyre::eyre!("{}", error));
+            }
+        }
+        if !sort_columns.is_empty() {
+            state.sort_by(sort_columns.to_vec(), descending);
+            if let Some(error) = state.error.clone() {
+                return Err(color_eyre::eyre::eyre!("{}", error));
+            }
+        }
         Ok(())
     }
 
@@ -20388,7 +20388,12 @@ impl App {
             state.restore_drift(saved.drift, saved.drift_groups, saved.notes);
             // Without this a template that pivoted and then failed would leave the
             // pivot as the root SQL runs against while the view shows none.
-            state.restore_reshape(saved.reshaped_lf, saved.pivot, saved.melt);
+            state.restore_reshape(
+                saved.reshaped_lf,
+                saved.pivot,
+                saved.melt,
+                saved.reshape_source,
+            );
             state.schema = saved.schema;
             state.active_query = saved.active_query;
             state.active_sql_query = saved.active_sql_query;
@@ -20455,6 +20460,7 @@ impl App {
                 locked_columns_count: state.locked_columns_count(),
                 pivot: state.last_pivot_spec().cloned(),
                 melt: state.last_melt_spec().cloned(),
+                reshape_source: state.reshape_source().cloned(),
             }
         } else {
             template::TemplateSettings {
@@ -20469,6 +20475,7 @@ impl App {
                 locked_columns_count: 0,
                 pivot: None,
                 melt: None,
+                reshape_source: None,
             }
         };
 

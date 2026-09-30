@@ -75,6 +75,7 @@ pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
 pub mod locality;
+pub mod logging;
 pub mod measurements;
 pub mod notes;
 pub mod numfmt;
@@ -6241,6 +6242,9 @@ impl ErrorModal {
     }
 
     pub fn show(&mut self, message: String) {
+        // Every failure the user is shown, background work's included, so a bug
+        // report has the message after the modal is gone.
+        log::error!(target: "datui", "{message}");
         self.active = true;
         self.message = message;
         self.scroll = 0;
@@ -7049,7 +7053,7 @@ impl LenCount {
         match &self.count_dir {
             Some(dir) => DataTableState::count_rows_from_parquet_dir(dir, &self.meter)
                 .map(Counted::from)
-                .map_err(|_| ()),
+                .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
             None => {
                 match crate::statistics::collect_lazy(
                     crate::widgets::datatable::row_count_lf(&self.lf),
@@ -7063,7 +7067,10 @@ impl LenCount {
                         None => 0,
                     }
                     .into()),
-                    Err(_) => Err(()),
+                    Err(e) => {
+                        log::warn!(target: "datui", "row count failed: {e}");
+                        Err(())
+                    }
                 }
             }
         }
@@ -8163,6 +8170,22 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// Show the next Polars user warning on the control bar, once per session, when the
+    /// bar is free: a busy message outranks a flash and would hide it. Returns true when
+    /// the frame must redraw.
+    pub fn flash_polars_warning(&mut self) -> bool {
+        if self.busy || self.flash.is_some() {
+            return false;
+        }
+        match logging::next_polars_warning() {
+            Some(warning) => {
+                self.flash_note(format!("Polars: {warning}"));
+                true
+            }
+            None => false,
+        }
     }
 
     /// See the `input_dropped` field.
@@ -9540,6 +9563,11 @@ impl App {
                             });
                         }
                         Some(Err(message)) => {
+                            log::warn!(
+                                target: "datui::cloud",
+                                "listing {} failed: {message}",
+                                root.display()
+                            );
                             let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                         }
                         None => {
@@ -9564,6 +9592,11 @@ impl App {
                     // stopped answering.
                     match listed {
                         Some(Err(message)) => {
+                            log::warn!(
+                                target: "datui::cloud",
+                                "listing {} failed: {message}",
+                                root.display()
+                            );
                             let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                         }
                         other => {
@@ -9775,7 +9808,10 @@ impl App {
                         );
                         None
                     }
-                    Err(e) => Some(summarize_cloud_failure(&e)),
+                    Err(e) => {
+                        log::warn!(target: "datui::cloud", "listing {} failed: {e}", source.id);
+                        Some(summarize_cloud_failure(&e))
+                    }
                 };
                 let _ = tx.send(AppEvent::HomeCloudListed {
                     id: source.id.clone(),
@@ -20997,6 +21033,23 @@ fn run_impl(
     }
     config.cloud = opts.effective_cloud(&config.cloud);
 
+    // Open the log before the terminal is taken, so stray stderr has a destination.
+    let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
+    logging::init(&logging::LogSettings::resolve(
+        config.debug.log_file.as_deref(),
+        std::env::var("DATUI_LOG").ok().as_deref(),
+        cache_dir.as_ref().map(|c| c.cache_dir()),
+    ));
+    for secret in [
+        &config.cloud.s3_access_key_id,
+        &config.cloud.s3_secret_access_key,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        logging::keep_out_of_log(secret);
+    }
+
     let theme = Theme::from_config(&config.theme)
         .or_else(|e| Theme::from_config(&AppConfig::default().theme).map_err(|_| e))?;
 
@@ -21069,6 +21122,9 @@ fn run_impl(
             e
         )
     })?;
+    // Anything written to stderr from here on would be drawn over the screen; it goes
+    // to the log until this drops, on every way out of this function.
+    let _session = logging::TuiSession::begin(restore_terminal);
     // Without the kitty keyboard protocol, Ctrl+Enter is byte-identical to Enter and
     // the Ctrl never reaches the app. Disambiguation alone fixes that — plain Enter,
     // Tab and Backspace keep their legacy encodings — and the terminal keeps a
@@ -21183,6 +21239,7 @@ fn run_impl(
         // A completion flash times out on its own; the idle poll interval is the
         // clock, so no extra wake-up machinery is needed.
         updated |= app.tick_flash();
+        updated |= app.flash_polars_warning();
 
         app.request_what_the_frame_needs();
 

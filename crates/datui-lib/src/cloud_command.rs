@@ -68,6 +68,7 @@ pub fn secret(command: &str, env: &crate::cloud_browse::Environment<'_>) -> Resu
     if secret.is_empty() {
         return Err("secret_command printed nothing".to_string());
     }
+    crate::logging::keep_out_of_log(&secret);
     if let Ok(mut secrets) = secrets.lock() {
         secrets.insert(command.to_string(), secret.clone());
     }

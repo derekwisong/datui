@@ -139,6 +139,10 @@ fn main() -> Result<()> {
         config.performance.polars_streaming = ps;
     }
 
+    if let Some(path) = &args.log_file {
+        config.debug.log_file = Some(path.to_string_lossy().into_owned());
+    }
+
     let opts = OpenOptions::from_args_and_config(&args, &config);
     let input = RunInput::Paths(args.paths.clone(), opts);
 
@@ -167,6 +171,7 @@ mod tests {
             compression: None,
             format: None,
             debug: false,
+            log_file: None,
             excel_sheet: None,
             clear_cache: false,
             clear_recents: false,
@@ -226,6 +231,16 @@ mod tests {
         let args = result.unwrap();
         assert!(args.paths.is_empty());
         assert!(args.generate_config);
+    }
+
+    #[test]
+    fn test_log_file_flag() {
+        use clap::Parser;
+
+        let args = Args::try_parse_from(vec!["datui", "--log-file", "/tmp/x.log", "a.csv"])
+            .expect("--log-file takes a path");
+        assert_eq!(args.log_file, Some(PathBuf::from("/tmp/x.log")));
+        assert_eq!(Args::try_parse_from(vec!["datui"]).unwrap().log_file, None);
     }
 
     #[test]

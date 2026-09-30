@@ -76,7 +76,7 @@ See [Where clause](#where-clause--and-).
 
 - `by col1, col2` — group by those columns; non-group columns become list columns, and the UI supports drill-down
 - `by region, total: sales + tax` — group by a column and a computed expression
-- `select avg salary, min id by department` — aggregations per group
+- `select avg salary, min id by department` — aggregations per group; <kbd>Enter</kbd> on a row drills into the rows behind it
 
 By uses the same comma-separated list and `name : expression` rules as
 select. Aggregation functions (`avg`, `min`, `max`, `count`, `sum`, `std`,

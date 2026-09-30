@@ -123,6 +123,8 @@ pub struct DataTableState {
     locked_columns_count: usize, // Number of locked columns (from left)
     /// The grouped view a drill-down left, restored exactly by `drill_up`.
     grouped: Option<GroupedView>,
+    /// The rows behind a grouped query result, so Enter can drill from an aggregate.
+    group_source: Option<GroupSource>,
     /// The last pivot/melt result, while one is in effect. SQL runs against it rather
     /// than the data as loaded (see `query_root`).
     reshaped_lf: Option<LazyFrame>,
@@ -268,6 +270,26 @@ struct GroupedView {
     drift: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     notes: Vec<crate::notes::Note>,
+    group_source: Option<GroupSource>,
+    /// Where the user was, so coming back puts the cursor on the group drilled into
+    /// with the key columns still frozen.
+    column_order: Vec<String>,
+    locked_columns_count: usize,
+    start_row: usize,
+    termcol_index: usize,
+    selected: Option<usize>,
+}
+
+/// The rows a grouped result was computed from and how its keys were computed, so a
+/// drill-down can find a group's rows even when the result holds only aggregates.
+/// Recorded by the query that grouped rather than inferred from the result's columns,
+/// which may be renamed or computed.
+#[derive(Clone)]
+struct GroupSource {
+    /// The rows before grouping, after any filter the query applied first.
+    rows: LazyFrame,
+    /// Each key's column in the result, with the expression that computes it from `rows`.
+    keys: Vec<(PlSmallStr, Expr)>,
 }
 
 /// The query bar a result came from, with its text. At most one is active at a time.
@@ -629,6 +651,7 @@ impl DataTableState {
             column_order,
             locked_columns_count: 0,
             grouped: None,
+            group_source: None,
             reshaped_lf: None,
             drilled_down_group_index: None,
             drilled_down_group_key: None,
@@ -744,6 +767,7 @@ impl DataTableState {
             column_order,
             locked_columns_count: 0,
             grouped: None,
+            group_source: None,
             reshaped_lf: None,
             drilled_down_group_index: None,
             drilled_down_group_key: None,
@@ -831,6 +855,17 @@ impl DataTableState {
         self.unsorted_lf = None;
         self.schema = schema;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        // A query that groups records its source after installing its result.
+        self.group_source = None;
+        self.drop_buffer();
+    }
+
+    /// Forget the rows read through the frame being replaced, so the next collect reads
+    /// the new one. Without this a view that fits in the old buffer keeps drawing it.
+    fn drop_buffer(&mut self) {
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.buffered_df = None;
     }
 
     /// The view state for a new pipeline root: no query bar text, no sidebar filters or
@@ -851,9 +886,7 @@ impl DataTableState {
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
         self.grouped = None;
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.drop_buffer();
         self.table_state.select(Some(0));
     }
 
@@ -6178,61 +6211,89 @@ impl DataTableState {
         self.max_buffered_mb
     }
 
+    /// Whether Enter on a row drills into its group: the view is a grouped result and
+    /// not already a group's rows.
+    pub fn can_drill_down(&self) -> bool {
+        !self.is_drilled_down() && (self.is_grouped() || self.group_source.is_some())
+    }
+
+    /// Show the rows of the group on row `group_index` of the view. A result that holds
+    /// each group as lists shows those lists as rows; one that holds only aggregates
+    /// shows the source rows sharing the group's keys.
     pub fn drill_down_into_group(&mut self, group_index: usize) -> Result<()> {
-        if !self.is_grouped() {
+        if !self.can_drill_down() {
             return Ok(());
         }
-
-        let grouped_df = collect_lazy(self.visible_lf(), self.polars_streaming)?;
-
-        if group_index >= grouped_df.height() {
+        // The one row, not the whole result: its list columns hold the entire dataset.
+        let row = collect_lazy(
+            self.visible_lf().slice(group_index as i64, 1),
+            self.polars_streaming,
+        )?;
+        if row.height() == 0 {
             return Err(color_eyre::eyre::eyre!("Group index out of bounds"));
         }
+        let (lf, key_columns, key_values) = if self.is_grouped() {
+            Self::group_from_lists(&row, self.group_key_columns(), self.group_value_columns())?
+        } else if let Some(source) = &self.group_source {
+            Self::group_from_source(source, &row)?
+        } else {
+            return Ok(());
+        };
+        let schema = lf.clone().collect_schema()?;
+        self.drilled_down_group_key = Some(key_values);
+        self.drilled_down_group_key_columns = Some(key_columns);
 
-        let key_columns = self.group_key_columns();
-        let mut key_values = Vec::new();
-        for col_name in &key_columns {
-            let col = grouped_df.column(col_name)?;
-            let value = col.get(group_index).map_err(|e| {
-                color_eyre::eyre::eyre!(
-                    "Group index {} out of bounds for column {}: {}",
-                    group_index,
-                    col_name,
-                    e
-                )
-            })?;
-            key_values.push(value.str_value().to_string());
-        }
-        self.drilled_down_group_key = Some(key_values.clone());
-        self.drilled_down_group_key_columns = Some(key_columns.clone());
+        // The group becomes the pipeline root while drilled in, so a sidebar filter or
+        // sort applies within it instead of rebuilding the grouped view underneath.
+        self.grouped = Some(GroupedView {
+            lf: self.lf.clone(),
+            base_lf: self.base_lf.clone(),
+            filters: std::mem::take(&mut self.filters),
+            sort_columns: std::mem::take(&mut self.sort_columns),
+            sort_descending: std::mem::take(&mut self.sort_descending),
+            sort_ascending: self.sort_ascending,
+            drift: self.drift_column_present,
+            drift_groups: self.drift_groups.clone(),
+            notes: self.notes.clone(),
+            group_source: self.group_source.take(),
+            column_order: self.column_order.clone(),
+            locked_columns_count: self.locked_columns_count,
+            start_row: self.start_row,
+            termcol_index: self.termcol_index,
+            selected: self.table_state.selected(),
+        });
+        self.sort_ascending = true;
+        self.install_base(lf, schema);
+        self.drilled_down_group_index = Some(group_index);
+        self.start_row = 0;
+        self.termcol_index = 0;
+        self.locked_columns_count = 0;
+        self.table_state.select(Some(0));
+        self.collect();
 
-        let value_columns = self.group_value_columns();
+        Ok(())
+    }
+
+    /// A group held as lists in `row`: the keys repeated beside the lists as columns.
+    /// Returns the frame, the key column names and the key values as text.
+    fn group_from_lists(
+        row: &DataFrame,
+        key_columns: Vec<String>,
+        value_columns: Vec<String>,
+    ) -> Result<(LazyFrame, Vec<String>, Vec<String>)> {
         if value_columns.is_empty() {
             return Err(color_eyre::eyre::eyre!("No value columns in grouped data"));
         }
-
-        let mut columns = Vec::new();
-
-        let first_value_col = grouped_df.column(&value_columns[0])?;
-        let first_list_value = first_value_col.get(group_index).map_err(|e| {
-            color_eyre::eyre::eyre!("Group index {} out of bounds: {}", group_index, e)
-        })?;
-        let row_count = if let AnyValue::List(list_series) = first_list_value {
-            list_series.len()
-        } else {
-            0
+        let row_count = match row.column(&value_columns[0])?.get(0)? {
+            AnyValue::List(list_series) => list_series.len(),
+            _ => 0,
         };
 
+        let mut columns = Vec::new();
+        let mut key_values = Vec::new();
         for col_name in &key_columns {
-            let col = grouped_df.column(col_name)?;
-            let value = col.get(group_index).map_err(|e| {
-                color_eyre::eyre::eyre!(
-                    "Group index {} out of bounds for column {}: {}",
-                    group_index,
-                    col_name,
-                    e
-                )
-            })?;
+            let value = row.column(col_name)?.get(0)?;
+            key_values.push(value.str_value().to_string());
             let constant_series = match value {
                 AnyValue::Int32(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
                 AnyValue::Int64(v) => Series::new(col_name.as_str().into(), vec![v; row_count]),
@@ -6251,85 +6312,87 @@ impl DataTableState {
             };
             columns.push(constant_series.into());
         }
-
         for col_name in &value_columns {
-            let col = grouped_df.column(col_name)?;
-            let value = col.get(group_index).map_err(|e| {
-                color_eyre::eyre::eyre!(
-                    "Group index {} out of bounds for column {}: {}",
-                    group_index,
-                    col_name,
-                    e
-                )
-            })?;
-            if let AnyValue::List(list_series) = value {
-                let named_series = list_series.with_name(col_name.as_str().into());
-                columns.push(named_series.into());
+            if let AnyValue::List(list_series) = row.column(col_name)?.get(0)? {
+                columns.push(list_series.with_name(col_name.as_str().into()).into());
             }
         }
+        let lf = DataFrame::new_infer_height(columns)?.lazy();
+        Ok((lf, key_columns, key_values))
+    }
 
-        let group_df = DataFrame::new_infer_height(columns)?;
-
-        // The group becomes the pipeline root while drilled in, so a sidebar filter or
-        // sort applies within it instead of rebuilding the grouped view underneath.
-        self.grouped = Some(GroupedView {
-            lf: self.lf.clone(),
-            base_lf: self.base_lf.clone(),
-            filters: std::mem::take(&mut self.filters),
-            sort_columns: std::mem::take(&mut self.sort_columns),
-            sort_descending: std::mem::take(&mut self.sort_descending),
-            sort_ascending: self.sort_ascending,
-            drift: self.drift_column_present,
-            drift_groups: self.drift_groups.clone(),
-            notes: self.notes.clone(),
-        });
-        self.sort_ascending = true;
-        let lf = group_df.lazy();
-        let schema = lf.clone().collect_schema()?;
-        self.install_base(lf, schema);
-        self.drilled_down_group_index = Some(group_index);
-        self.start_row = 0;
-        self.termcol_index = 0;
-        self.locked_columns_count = 0;
-        self.table_state.select(Some(0));
-        self.collect();
-
-        Ok(())
+    /// A group of an aggregated result in `row`: the source rows whose keys equal the
+    /// row's, a null key matching nulls. Returns the frame, the key column names and the
+    /// key values as text.
+    fn group_from_source(
+        source: &GroupSource,
+        row: &DataFrame,
+    ) -> Result<(LazyFrame, Vec<String>, Vec<String>)> {
+        let mut predicate: Option<Expr> = None;
+        let mut key_columns = Vec::new();
+        let mut key_values = Vec::new();
+        for (name, expr) in &source.keys {
+            let column = row.column(name)?;
+            let value = column.get(0)?.into_static();
+            key_columns.push(name.to_string());
+            key_values.push(value.str_value().to_string());
+            // The key as the query computed it, against the value it produced; the alias
+            // only named the result's column.
+            let matches = expr
+                .clone()
+                .meta()
+                .undo_aliases()
+                .eq_missing(lit(Scalar::new(column.dtype().clone(), value)));
+            predicate = Some(match predicate {
+                Some(all) => all.and(matches),
+                None => matches,
+            });
+        }
+        let rows = source.rows.clone();
+        let lf = match predicate {
+            Some(predicate) => rows.filter(predicate),
+            None => rows,
+        };
+        Ok((lf, key_columns, key_values))
     }
 
     pub fn drill_up(&mut self) -> Result<()> {
-        match self.grouped.take() {
-            Some(view) => {
-                self.invalidate_num_rows();
-                self.lf = view.lf;
-                self.unsorted_lf = None;
-                self.base_lf = view.base_lf;
-                self.filters = view.filters;
-                self.sort_columns = view.sort_columns;
-                self.sort_descending = view.sort_descending;
-                self.sort_ascending = view.sort_ascending;
-                self.drift_column_present = view.drift;
-                self.drift_groups = view.drift_groups;
-                self.notes = view.notes;
-                // The frame put back here already leaves out whatever its filter and
-                // sort left out, so the notes saying so have to come back with it.
-                // They are derived rather than saved, so they cannot go stale against
-                // a frame that changed while it was drilled into.
-                self.view_notes = self.view_notes_only();
-                self.schema = self.visible_lf().collect_schema()?;
-                self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-                self.drilled_down_group_index = None;
-                self.drilled_down_group_key = None;
-                self.drilled_down_group_key_columns = None;
-                self.start_row = 0;
-                self.termcol_index = 0;
-                self.locked_columns_count = 0;
-                self.table_state.select(Some(0));
-                self.collect();
-                Ok(())
-            }
-            _ => Err(color_eyre::eyre::eyre!("Not in drill-down mode")),
-        }
+        let Some(view) = self.grouped.take() else {
+            return Err(color_eyre::eyre::eyre!("Not in drill-down mode"));
+        };
+        let schema = Self::without_drift(view.lf.clone()).collect_schema()?;
+        self.invalidate_num_rows();
+        // The buffer holds the group's rows; kept, it would stand in for the grouped
+        // view wherever the view fits inside it.
+        self.drop_buffer();
+        self.observed_bytes_per_row = None;
+        self.lf = view.lf;
+        self.unsorted_lf = None;
+        self.base_lf = view.base_lf;
+        self.filters = view.filters;
+        self.sort_columns = view.sort_columns;
+        self.sort_descending = view.sort_descending;
+        self.sort_ascending = view.sort_ascending;
+        self.drift_column_present = view.drift;
+        self.drift_groups = view.drift_groups;
+        self.notes = view.notes;
+        self.group_source = view.group_source;
+        // The frame put back here already leaves out whatever its filter and sort left
+        // out, so the notes saying so have to come back with it. They are derived rather
+        // than saved, so they cannot go stale against a frame that changed while it was
+        // drilled into.
+        self.view_notes = self.view_notes_only();
+        self.schema = schema;
+        self.column_order = view.column_order;
+        self.locked_columns_count = view.locked_columns_count;
+        self.drilled_down_group_index = None;
+        self.drilled_down_group_key = None;
+        self.drilled_down_group_key_columns = None;
+        self.start_row = view.start_row;
+        self.termcol_index = view.termcol_index;
+        self.table_state.select(view.selected);
+        self.collect();
+        Ok(())
     }
 
     pub fn get_analysis_dataframe(&self) -> Result<DataFrame> {
@@ -6603,6 +6666,8 @@ impl DataTableState {
                 if let Some(f) = filter {
                     lf = lf.filter(f);
                 }
+                // What a drill-down into one of the groups shows.
+                let group_rows = lf.clone();
 
                 if !group_by_cols.is_empty() {
                     if !cols.is_empty() {
@@ -6667,7 +6732,16 @@ impl DataTableState {
                     .iter_names()
                     .take_while(|c| group_by_col_names.iter().any(|g| g.as_str() == c.as_str()))
                     .count();
+                // The keys lead the result in `by` order, whatever they were named.
+                let keys: Vec<(PlSmallStr, Expr)> =
+                    schema.iter_names().cloned().zip(group_by_cols).collect();
                 self.install_query_result(lf, schema, ActiveQuery::Dsl(query), locked);
+                if !keys.is_empty() {
+                    self.group_source = Some(GroupSource {
+                        rows: group_rows,
+                        keys,
+                    });
+                }
                 self.forget_reshape();
                 // Collect will clamp start_row to valid range, but we want to ensure it's 0
                 // So we set it to 0, collect (which may clamp it), then ensure it's 0 again

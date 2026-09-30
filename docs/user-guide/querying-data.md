@@ -110,17 +110,20 @@ full list.
 ### Grouping and aggregating
 
 ```
-select name, salary by department                         # group: drill into a row with Enter
+select name, salary by department                         # group
 select avg salary, max salary, count name by department   # aggregate
 select total: sum[price * qty] by region, year            # computed aggregates
 ```
 
-A `by` clause without aggregates gives one row per group. Press <kbd>Enter</kbd>
-on a group to see its rows, <kbd>Esc</kbd> to come back. With aggregates
+A `by` clause without aggregates gives one row per group. With aggregates
 (`avg`, `sum`, `min`, `max`, `count`, `std`, `med`, `first`, `last`) you get one
 summary row per group. Brackets around the argument are optional. An unaliased
 aggregate of a column is named `fn_column` (`avg salary` → `avg_salary`); name
 it yourself with `:`.
+
+Press <kbd>Enter</kbd> on a group to see its rows, <kbd>Esc</kbd> to come back.
+A group without aggregates shows the columns you selected; an aggregated one shows
+every column of the rows behind it, after the query's `where`.
 
 ## Saving a query
 

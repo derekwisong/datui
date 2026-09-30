@@ -7706,6 +7706,174 @@ fn test_template_getters_describe_the_grouped_view_while_drilled() {
     assert_eq!(state.get_sort_columns(), ["c".to_string()]);
 }
 
+/// One key press, with whatever it asks for sent on as the event loop would.
+fn press_and_send(app: &mut App, tx: &mpsc::Sender<AppEvent>, code: KeyCode) {
+    if let Some(next) = press(app, code) {
+        tx.send(next).unwrap();
+    }
+}
+
+/// One column of the rows on screen, as text.
+fn on_screen(app: &App, column: &str) -> Vec<String> {
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .copy_view_df()
+        .unwrap();
+    let series = df.column(column).unwrap().as_materialized_series().clone();
+    series
+        .iter()
+        .map(|v| match v {
+            AnyValue::Null => "null".to_string(),
+            v => v.str_value().into_owned(),
+        })
+        .collect()
+}
+
+/// Esc from a group taller than the screen draws the grouped rows again, not the
+/// group's: the group's buffer covered the view, so it used to be kept. The cursor
+/// comes back to the group drilled into, and the key column is frozen again.
+#[test]
+fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
+    let mut csv = String::from("a,c\n");
+    for i in 0..1200 {
+        csv.push_str(&format!("{i},{}\n", i % 3));
+    }
+    let (mut app, rx, tx) = open_csv_with("drill_esc_rows.csv", &csv, OpenOptions::default());
+    let area = Rect::new(0, 0, 100, 30);
+    painted(&mut app, &rx, &tx, area);
+
+    app.event(&AppEvent::Search("select a by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "c"), ["0", "1", "2"]);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .locked_columns_count(),
+        1
+    );
+
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert!(on_screen(&app, "c").iter().all(|c| c == "2"));
+    assert_eq!(on_screen(&app, "a")[..2], ["2", "5"]);
+
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_drilled_down());
+    assert_eq!(on_screen(&app, "c"), ["0", "1", "2"]);
+    assert_eq!(
+        state.table_state.selected(),
+        Some(2),
+        "on the group drilled into"
+    );
+    assert_eq!(state.locked_columns_count(), 1, "the key stays frozen");
+}
+
+/// Drilling from a grouped view taller than the screen into a small group draws the
+/// group, not the grouped rows the buffer held.
+#[test]
+fn test_drill_into_a_small_group_shows_its_rows() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_small_group.csv");
+    let area = Rect::new(0, 0, 100, 30);
+    app.event(&AppEvent::Search("select name by a".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "a").len(), 27, "a screen of the 100 groups");
+
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "name"), ["beta_1"]);
+}
+
+/// Enter on an aggregated `by` result, which holds no rows of its groups, drills into
+/// the source rows of the group, after the query's `where`; Esc brings the aggregate
+/// back.
+#[test]
+fn test_enter_drills_from_an_aggregated_result() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_aggregate.csv");
+    let area = Rect::new(0, 0, 100, 30);
+
+    app.event(&AppEvent::Search(
+        "select n: count a, total: sum a by c where a < 30".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "n"), ["10", "10", "10"]);
+
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
+    assert_eq!(state.headers(), ["a", "c", "name"], "the source's columns");
+    assert_eq!(
+        on_screen(&app, "a"),
+        ["1", "4", "7", "10", "13", "16", "19", "22", "25", "28"],
+        "c = 1 and a < 30"
+    );
+
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_drilled_down());
+    assert_eq!(on_screen(&app, "total"), ["135", "145", "155"]);
+    assert_eq!(state.table_state.selected(), Some(1));
+}
+
+/// A computed, renamed key drills by the expression that computed it, and a null key
+/// drills into the rows whose key is null.
+#[test]
+fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
+    let csv = "k,v\nx,1\n,2\ny,3\n,4\nx,5\n,6\n";
+    let (mut app, rx, tx) = open_csv_with("drill_null_key.csv", csv, OpenOptions::default());
+
+    app.event(&AppEvent::Search("select n: count v by key: k".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    // Nulls sort last.
+    let state = app.data_table_state.as_mut().unwrap();
+    state.drill_down_into_group(2).unwrap();
+    assert_eq!(state.headers(), ["k", "v"]);
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.column("k").unwrap().null_count(), 3);
+    assert_eq!(df.column("v").unwrap().i64().unwrap().sum(), Some(12));
+    state.drill_up().unwrap();
+
+    app.event(&AppEvent::Search(
+        "select n: count v by big: v > 3".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_mut().unwrap();
+    state.drill_down_into_group(1).unwrap();
+    assert_eq!(
+        state.drilled_down_group_key_columns,
+        Some(vec!["big".to_string()])
+    );
+    let df = state.lf.clone().collect().unwrap();
+    let v: Vec<i64> = df
+        .column("v")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(v, [4, 5, 6], "big = true");
+}
+
 /// SQL inside a drill-down runs on the group, like the sidebar does, not on the whole
 /// loaded table.
 #[test]

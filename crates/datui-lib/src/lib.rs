@@ -15998,7 +15998,7 @@ impl App {
                 // Only drill down if not in a modal and viewing grouped data
                 let drilled = if self.input_mode == InputMode::Normal {
                     if let Some(ref mut state) = self.data_table_state {
-                        if state.is_grouped() && !state.is_drilled_down() {
+                        if state.can_drill_down() {
                             if let Some(selected) = state.table_state.selected() {
                                 let group_index = state.start_row + selected;
                                 state.defer_collect = true;

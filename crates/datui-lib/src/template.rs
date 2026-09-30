@@ -505,16 +505,25 @@ pub fn relative_location(path: &Path) -> Option<String> {
 }
 
 /// Whether the view's exact path names the dataset at `file_path`. A URL compares as
-/// text less any trailing slash, which is how a directory's URL may or may not end.
+/// text less any trailing slash, which is how a directory's URL may or may not end,
+/// and with its scheme in either case, as datui opens it.
 pub fn exact_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
     let Some(stored) = criteria.exact_path.as_deref() else {
         return false;
     };
     if crate::source::is_remote_url(stored) || crate::source::is_remote_url(file_path) {
-        let url = |p: &Path| p.to_string_lossy().trim_end_matches('/').to_string();
-        return url(stored) == url(file_path);
+        return url_key(stored) == url_key(file_path);
     }
     stored == file_path || stored == exact_location(file_path)
+}
+
+fn url_key(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let text = text.trim_end_matches('/');
+    match text.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
+        None => text.to_string(),
+    }
 }
 
 /// Whether the view's relative path names the dataset at `file_path`.
@@ -923,6 +932,13 @@ mod tests {
             match_reason(&view, unslashed, &schema),
             Some(MatchReason::SameFile)
         );
+        let upper = Path::new("S3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX");
+        assert_eq!(
+            match_reason(&view, upper, &schema),
+            Some(MatchReason::SameFile)
+        );
+        let key_case = Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/element=TMAX/");
+        assert_eq!(match_reason(&view, key_case, &schema), None);
         let other_year = Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2023/ELEMENT=TMAX/");
         assert_eq!(match_reason(&view, other_year, &schema), None);
         assert!(calculate_relevance(&view, url, &schema) >= 1000.0);

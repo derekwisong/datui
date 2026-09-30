@@ -98,8 +98,10 @@ pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
 mod sql_assist;
+// Public so the fuzz target `sql_group_plan` can reach `plan`, which reads every SQL
+// statement the prompt runs.
 #[cfg(feature = "sql")]
-mod sql_group;
+pub mod sql_group;
 pub mod statistics;
 pub mod template;
 pub mod widgets;

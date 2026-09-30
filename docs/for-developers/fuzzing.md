@@ -8,6 +8,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | Target | Surface | What it checks |
 | --- | --- | --- |
 | `parse_query` | `query::parse_query` | A tokenizer and recursive-descent parser that slices token vectors by index. Malformed input must return `Err`, never panic. |
+| `sql_group_plan` | `sql_group::plan` | Reads every SQL statement to decide whether a `GROUP BY` result drills: resolves keys by ordinal, alias and expression and writes a statement of its own. Any text must give a plan or `None`, never panic. |
 | `number_format` | `numfmt::NumberFormat` | `width_*` computes a display width arithmetically, `write_*` renders into a fixed 64-byte stack buffer and returns the width it produced. The two must agree, and both must equal the characters actually appended. Table columns are sized from these numbers, so a disagreement corrupts the layout instead of failing visibly. |
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights matches by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
@@ -53,9 +54,10 @@ new inputs even when a target crashes.
 
 `fuzz/corpus/` is committed, but it is a *seed* corpus, not the full coverage corpus.
 
-The two targets that take text are seeded with inputs a person can read: `parse_query`
+The three targets that take text are seeded with inputs a person can read: `parse_query`
 from the parser's own unit tests and the query examples throughout `docs/`,
-`config_parse` from the TOML blocks in `docs/`. Anything named `regression-*` is an
+`sql_group_plan` from the planner's unit tests, `config_parse` from the TOML blocks in
+`docs/`. Anything named `regression-*` is an
 input that once crashed a target, kept so the replay job notices if it ever crashes
 again.
 

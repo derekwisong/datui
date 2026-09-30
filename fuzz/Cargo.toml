@@ -48,6 +48,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "sql_group_plan"
+path = "fuzz_targets/sql_group_plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "number_format"
 path = "fuzz_targets/number_format.rs"
 test = false

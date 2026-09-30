@@ -1,0 +1,1 @@
+SELECT dept, AVG(salary) AS avg_salary FROM df WHERE salary > 100000 GROUP BY dept

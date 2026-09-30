@@ -1,0 +1,1 @@
+SELECT dept, RANK() OVER (ORDER BY COUNT(*)) FROM df GROUP BY dept

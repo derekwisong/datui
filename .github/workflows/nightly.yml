@@ -440,6 +440,7 @@ jobs:
       matrix:
         target:
           - parse_query
+          - sql_group_plan
           - number_format
           - fuzzy_match
           - glob_match

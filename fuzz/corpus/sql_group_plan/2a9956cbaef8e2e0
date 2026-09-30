@@ -1,0 +1,1 @@
+SELECT COUNT(*) AS n, dept AS d FROM df GROUP BY dept

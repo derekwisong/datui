@@ -8245,19 +8245,25 @@ impl StatefulWidget for DataTable {
                 cell.set_style(hint_style);
             }
             if more_right {
-                // The count when there is room for it, the arrow alone when not.
+                let y = if header_h > 1 {
+                    scroll_area.y + 1
+                } else {
+                    scroll_area.y
+                };
+                // The count when the blank run at the end of the row holds it, the arrow
+                // alone when not, so the count never covers a heading or a type.
+                let right = scroll_area.x + scroll_area.width;
+                let free = (scroll_area.x..right)
+                    .rev()
+                    .take_while(|&x| buf[(x, y)].symbol() == " ")
+                    .count();
                 let mut text = format!(" +{hidden} {}", g.arrow_right);
-                if scroll_area.width <= text.chars().count() as u16 {
+                if text.chars().count() > free {
                     text = g.arrow_right.to_string();
                 }
                 let w = text.chars().count() as u16;
                 if scroll_area.width >= w {
-                    let x0 = scroll_area.x + scroll_area.width - w;
-                    let y = if header_h > 1 {
-                        scroll_area.y + 1
-                    } else {
-                        scroll_area.y
-                    };
+                    let x0 = right - w;
                     for (i, ch) in text.chars().enumerate() {
                         let cell = &mut buf[(x0 + i as u16, y)];
                         cell.set_char(ch);
@@ -12172,6 +12178,47 @@ mod tests {
         assert!(rows[0].contains(&format!(" id k   {rule}")), "{rows:#?}");
         assert!(rows[1].contains(&format!("i64 str {rule}")), "{rows:#?}");
         assert!(rows[2].contains(&format!("  1 x   {rule}")), "{rows:#?}");
+    }
+
+    /// The hidden-columns count goes in the blank run after the last column, or not
+    /// at all: at no width does it cover the type under a heading. The separator's gap
+    /// took the one cell of slack that used to keep `+2 >` clear of `str` at 60
+    /// columns, and the count then wrote over the `r`.
+    #[test]
+    fn the_hidden_count_never_covers_a_type() {
+        let lf = df!(
+            "k" => &["x"],
+            "origin" => &["JFK"],
+            "dest" => &["LAX"],
+            "tail" => &["N1"],
+            "name" => &["Endeavor"],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 1;
+        state.set_locked_columns(1);
+        let table = || DataTable {
+            dtype_row: true,
+            ..DataTable::default()
+        };
+        assert_eq!(table().header_height(), 2, "the count goes on the type row");
+        for width in 8..=40 {
+            let area = Rect::new(0, 0, width, 3);
+            let mut buf = Buffer::empty(area);
+            table().render(area, &mut buf, &mut state);
+            let names = row_string(&buf, area, 0);
+            let types = row_string(&buf, area, 1);
+            // Every heading shown whole has its whole type under it; these are all
+            // strings, so each starts where its name does.
+            for name in ["origin", "dest", "tail", "name"] {
+                if let Some(at) = names.find(&format!(" {name}")) {
+                    let x = names[..at].chars().count() + 1;
+                    let under: String = types.chars().skip(x).take(3).collect();
+                    assert_eq!(under, "str", "width {width}:\n{names}\n{types}");
+                }
+            }
+        }
     }
 
     /// The gap is paid for in the width budget: at every width, the columns right of

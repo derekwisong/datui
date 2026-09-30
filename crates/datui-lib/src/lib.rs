@@ -564,7 +564,6 @@ mod classify_batch_tests {
 
         // It lands, and what follows it is about where the viewport is now.
         app.event(&AppEvent::HomeClassified {
-            generation: app.home_generation,
             measured: Vec::new(),
         });
         let next = app.home.unclassified_visible(CLASSIFY_BATCH);
@@ -585,25 +584,27 @@ mod classify_batch_tests {
         app.home.classify_in_flight = true;
 
         app.event(&AppEvent::HomeClassified {
-            generation: app.home_generation,
             measured: Vec::new(),
         });
 
         assert!(!app.home.classify_in_flight);
     }
 
-    /// A pass belonging to a listing the user has moved on from is dropped, which is
-    /// what keeps a stale kind from being written into a row that is not the row it
-    /// was asked about.
+    /// A pass that lands after the listing was rebuilt still labels its row. A probe
+    /// or a cloud peek landing rebuilds the listing, and a Recent section with a few
+    /// buckets in it lands several in a row: dropping the answer each time left a share
+    /// dataset unlabeled for half a minute.
     #[test]
-    fn a_stale_pass_is_dropped() {
+    fn a_pass_that_outlives_its_listing_still_counts() {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.home.apply_listing(unlooked_at(4));
         let path = PathBuf::from("/pretend/share/d0000");
+        app.home.classify_in_flight = true;
 
+        // What a rebuild does to the generation while the pass is out.
+        app.home_generation = app.home_generation.wrapping_add(1);
         app.event(&AppEvent::HomeClassified {
-            generation: app.home_generation.wrapping_sub(1),
             measured: vec![(
                 path.clone(),
                 home::Measured {
@@ -613,10 +614,11 @@ mod classify_batch_tests {
             )],
         });
 
-        assert!(
-            !app.home.enriched.contains_key(&path),
-            "a result from a listing that is gone should not be kept"
-        );
+        let kind = app.home.visible().iter().find_map(|row| match row {
+            home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
+            _ => None,
+        });
+        assert_eq!(kind, Some(discover::EntryKind::Hive));
     }
 }
 
@@ -5063,15 +5065,17 @@ pub enum AppEvent {
         preview: Option<crate::discover::SchemaPreview>,
     },
     /// Measurements for rows the home screen asked about.
+    ///
+    /// No generation, unlike its neighbors: what a look found is keyed by path and
+    /// true of that path whichever listing asked, so an answer that outlives its
+    /// listing is still the answer.
     HomeMeasured {
-        generation: u64,
         measured: Vec<(PathBuf, crate::home::Measured)>,
     },
     /// What the rows on screen turned out to be. The same payload as
     /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
     /// things a look into a row produces.
     HomeClassified {
-        generation: u64,
         measured: Vec<(PathBuf, crate::home::Measured)>,
     },
     /// A batch of datasets found by the background search below the working
@@ -9106,12 +9110,10 @@ impl App {
         }
 
         self.home.measure_in_flight = true;
-        let generation = self.home_generation;
         let tx = self.events.clone();
         let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
             let _ = tx.send(AppEvent::HomeMeasured {
-                generation,
                 measured: home::look_into_batch(wanted, &cache),
             });
         });
@@ -9171,12 +9173,10 @@ impl App {
         }
 
         self.home.classify_in_flight = true;
-        let generation = self.home_generation;
         let tx = self.events.clone();
         let cache = self.cache.clone();
         std::thread::spawn(move || {
             let _ = tx.send(AppEvent::HomeClassified {
-                generation,
                 measured: home::look_into_batch(wanted, &cache),
             });
         });
@@ -16481,14 +16481,8 @@ impl App {
                 self.request_home_classifications();
                 None
             }
-            AppEvent::HomeMeasured {
-                generation,
-                measured,
-            } => {
+            AppEvent::HomeMeasured { measured } => {
                 self.home.measure_in_flight = false;
-                if *generation != self.home_generation {
-                    return None;
-                }
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }
@@ -16496,14 +16490,12 @@ impl App {
                 self.request_home_measurements();
                 None
             }
-            AppEvent::HomeClassified {
-                generation,
-                measured,
-            } => {
+            AppEvent::HomeClassified { measured } => {
                 self.home.classify_in_flight = false;
-                if *generation != self.home_generation {
-                    return None;
-                }
+                // Kept even when the listing has been rebuilt since it was asked for. A
+                // probe or a cloud peek landing rebuilds it, and a Recent section full of
+                // buckets lands several in a row: dropping the answer each time left a
+                // share's rows unlabeled for as long as the cloud kept answering.
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }

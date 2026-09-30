@@ -58,17 +58,17 @@ def get_git_date(ref: str, timezone: str = "UTC") -> Optional[str]:
 def check_git_ref_exists(ref: str) -> bool:
     """Check if a git reference exists."""
     try:
-        subprocess.run(
-            ["git", "rev-parse", ref],
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
             capture_output=True,
             check=False
         )
-        return True
+        return result.returncode == 0
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
 
-# Match vX.Y.Z or vX.Y (patch 0) or vX (minor/patch 0). No leading zeros in numbers.
+# Match vX.Y.Z or vX.Y (patch 0) or vX (minor/patch 0).
 _VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$|^v(\d+)\.(\d+)$|^v(\d+)$")
 
 # Directory name used as a stable URL for the latest release (copy of newest v* tag). Not listed as its own version.
@@ -103,7 +103,7 @@ def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
 
 def _is_release_tag(name: str) -> bool:
     """True if name is a release tag (v*)."""
-    return bool(name) and name.startswith("v") and len(name) > 1 and name[1].isdigit()
+    return parse_version(name) is not None
 
 
 def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional[str]]:
@@ -123,16 +123,24 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional
     if not output_dir.exists():
         return (recent, older, latest_stable_path)
 
-    all_dirs = [d for d in output_dir.iterdir() if d.is_dir()]
-    tag_dirs = [d for d in all_dirs if _is_release_tag(d.name)]
-    # Development = any dir that is not a release tag and not the "latest" alias
-    dev_dirs = [d for d in all_dirs if d.name != LATEST_RELEASE_DIR and not _is_release_tag(d.name)]
+    # A built book has an index; asset folders and incomplete builds do not.
+    # Branch names may contain slashes (book/docs/revision/index.html).
+    all_dirs = []
+    for index in sorted(output_dir.rglob("index.html"), key=lambda p: len(p.parts)):
+        directory = index.parent
+        if directory == output_dir or LATEST_RELEASE_DIR in directory.relative_to(output_dir).parts:
+            continue
+        if any(parent in all_dirs for parent in directory.parents):
+            continue  # A chapter or asset inside an already discovered book.
+        all_dirs.append(directory)
+    tag_dirs = [d for d in all_dirs if d.parent == output_dir and _is_release_tag(d.name)]
+    dev_dirs = [d for d in all_dirs if d not in tag_dirs]
     sorted_tag_dirs = sort_version_dirs(tag_dirs)
     if sorted_tag_dirs:
         latest_stable_path = sorted_tag_dirs[0].name
 
     # Development entries: main first (if present), then the rest alphabetically
-    dev_names = sorted(d.name for d in dev_dirs)
+    dev_names = sorted(d.relative_to(output_dir).as_posix() for d in dev_dirs)
     if "main" in dev_names:
         dev_names = ["main"] + [n for n in dev_names if n != "main"]
     dev_entries: List[Dict] = []
@@ -191,7 +199,7 @@ def main():
     # Set up Jinja2 environment
     env = Environment(
         loader=FileSystemLoader(str(script_dir)),
-        autoescape=False
+        autoescape=True
     )
 
     try:
@@ -204,24 +212,24 @@ def main():
     print("Rebuilding index page...")
     recent_versions, older_versions, latest_stable_path = collect_versions(output_dir)
 
-    # Permanent URL path for "latest" (e.g. "latest") so links like /latest/... always point to current release.
-    # CI copies the current release to book/latest so this link works on GitHub Pages.
-    latest_permanent_path = "latest"
+    # Link to an existing book. CI creates latest after rendering the index,
+    # while a local build may contain only a tag or one development branch.
+    alias_exists = (output_dir / LATEST_RELEASE_DIR / "index.html").is_file()
+    docs_path = LATEST_RELEASE_DIR if alias_exists else latest_stable_path
+    if docs_path is None and recent_versions:
+        docs_path = recent_versions[0]["path"]
+    demo_path = None
+    if docs_path:
+        candidate = Path(docs_path) / "demos" / "02-querying.gif"
+        if (output_dir / candidate).is_file():
+            demo_path = candidate.as_posix()
 
-    # The index redirects straight to the latest release when there is one. CI
-    # copies the newest tag to book/latest right after this script runs, so a
-    # newest tag on disk is as good as the alias itself. A local build of only a
-    # branch has neither and keeps the plain version picker.
-    latest_exists = (output_dir / LATEST_RELEASE_DIR).is_dir() or latest_stable_path is not None
-    redirect_path = latest_permanent_path if latest_exists else None
-
-    # Render the template
     output_html = template.render(
         recent_versions=recent_versions,
         older_versions=older_versions,
-        latest_stable_path=latest_stable_path,
-        latest_permanent_path=latest_permanent_path,
-        redirect_path=redirect_path,
+        docs_path=docs_path,
+        has_stable=alias_exists or latest_stable_path is not None,
+        demo_path=demo_path,
     )
 
     # Write the output file

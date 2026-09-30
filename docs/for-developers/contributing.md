@@ -1,8 +1,19 @@
-# Contributing
+# Set up and contribute
 
-Contributions are welcome. Clone [the repository](https://github.com/derekwisong/datui),
-run the [setup script](setup-script.md), and you are ready to build, test and
-commit. This page describes what the script does, for doing it by hand.
+## Setup
+
+From a checkout with Rust and Python installed, run:
+
+```bash
+python scripts/setup_dev.py
+```
+
+The script creates `.venv`, installs script and wheel-building dependencies,
+installs pre-commit hooks, prepares test data and builds the documentation.
+It can be rerun. To prepare only the fixtures needed by Rust tests, use
+`./scripts/dev/setup-test-data.sh` instead.
+
+For manual setup, use the commands below.
 
 ## Python environment
 
@@ -22,7 +33,7 @@ own, so activating is optional after this.
 
 CI rejects code that is not formatted or that has clippy warnings. The
 [pre-commit](https://pre-commit.com/) hooks run the same checks before each
-commit, so CI never fails on them:
+commit to catch those problems locally:
 
 ```bash
 pre-commit install          # pre-commit is in scripts/requirements.txt
@@ -31,10 +42,10 @@ pre-commit run --all-files  # run them by hand
 
 | Hook | Runs | On failure |
 |---|---|---|
-| `cargo-fmt` | `cargo fmt` | Formats the files; stage them and commit again |
+| `cargo-fmt` | `cargo fmt --check` | Run `cargo fmt`, then stage the changes |
 | `cargo-clippy` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Fix the warnings and commit again |
 
-`git commit --no-verify` skips them; `pre-commit autoupdate` updates them.
+The hooks also check trailing whitespace and unexpectedly large files.
 
 ## Before opening a pull request
 

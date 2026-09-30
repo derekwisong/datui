@@ -1,58 +1,32 @@
-# Datui
+# datui documentation
 
-Datui is a terminal UI for looking at tabular data: Parquet, CSV, JSON, Arrow
-and more, on disk or in S3, GCS and HTTP, from a few rows to a few billion.
+Open, query, chart and export tabular data in your terminal. datui reads local
+files and cloud storage, and works with Polars frames in Python.
 
-![Home and Cloud Demo](demos/14-cloud-home.gif)
+**Start here:** [Install datui](getting-started/installation.md), then follow the
+[quick start](getting-started/quick-start.md) with a small public dataset.
 
-```bash
-datui data.parquet                    # open a file
-datui --hive s3://bucket/warehouse/   # or a partitioned dataset in the cloud
-datui                                 # or pick one from the home screen
-```
+## Find a task
 
-Press <kbd>?</kbd> for the keys. <kbd>/</kbd> queries, <kbd>s</kbd> sorts and
-filters, <kbd>c</kbd> charts, <kbd>a</kbd> analyzes, <kbd>q</kbd> backs out
-or quits.
-
-## Where to go
-
-| I want to... | Read |
+| I want to… | Go to |
 |---|---|
-| Install it | [Installation](getting-started/installation.md) |
-| Learn the basics in five minutes | [Quick Start](getting-started/quick-start.md) |
-| See every key | [Keyboard Shortcuts](reference/keyboard-shortcuts.md) |
-| Write a query | [Querying Data](user-guide/querying-data.md), [Query Syntax](reference/query-syntax.md) |
-| Open something in S3, GCS or over HTTP | [Loading Data](user-guide/loading-data.md#remote-data) |
-| View a Polars frame from Python | [Python Module](user-guide/python-module.md) |
-| Change colors or defaults | [Configuration](user-guide/configuration.md) |
-| Watch it work | [Demos](demos.md) |
-| Build or contribute | [For Developers](for-developers.md) |
+| Open a file, a directory, or a compressed export | [Loading data](user-guide/loading-data.md) |
+| Connect to S3, GCS, Azure or an HTTP URL | [Remote data](user-guide/remote-data.md) |
+| Find recent files or browse buckets | [Home screen](user-guide/home-screen.md) · [Cloud browser](user-guide/cloud-browser.md) |
+| Filter rows or write SQL | [Querying](user-guide/querying-data.md) · [Sort and filter](user-guide/filtering-sorting.md) |
+| Make a chart or reshape a table | [Charting](user-guide/charting.md) · [Pivot and melt](user-guide/reshaping.md) |
+| Check missing values or schema changes | [Data quality](user-guide/data-quality.md) · [Dataset info](user-guide/dataset-info.md) |
+| Copy, export, or reuse a result | [Clipboard](user-guide/copying.md) · [Export](user-guide/exporting-data.md) · [Views](user-guide/views.md) |
+| Explore a DataFrame in Python | [Python module](user-guide/python-module.md) |
+| Change defaults or colors | [Configure datui](user-guide/configuration.md) · [Settings reference](reference/settings.md) |
+| Look up a key, expression, or flag | [Keyboard](reference/keyboard-shortcuts.md) · [Query syntax](reference/query-syntax.md) · [CLI](reference/command-line-options.md) |
+| Build or contribute | [Developer guide](for-developers.md) |
 
-## What it does
+## Help while you work
 
-- **Opens the file where it is.** Local paths, `s3://` and `gs://` URLs, and
-  hive-partitioned directories; HTTP URLs are fetched first. Parquet is read
-  lazily through [Polars](https://pola.rs), one row group at a time, so a
-  dataset larger than memory scrolls like a small one.
-- **Shows you what is around you.** The [home screen](user-guide/home-screen.md)
-  lists recent datasets, the current directory, your data directories and the
-  buckets your credentials reach, with rows, columns and size before you open
-  anything.
-- **Answers questions.** SQL, a short query language
-  (`select a, b by region where c > 10`), and fuzzy text search across every
-  column. Sort, filter, freeze and hide columns from a sidebar.
-- **Summarizes.** Describe, distribution fitting with Q-Q plots, and a
-  correlation matrix, computed on the data as filtered.
-- **Draws.** Line, scatter, bar, histogram, box, KDE and heatmap charts in the
-  terminal, exportable as PNG or EPS.
-- **Reshapes and saves.** Pivot and melt, export to CSV, Parquet, JSON, NDJSON,
-  Arrow or Avro, and views that replay a query, filters and sort on the
-  next dataset with the same shape.
-- **Configurable.** Light and dark palettes with every color a config key,
-  defaults for every option, and arrow keys or `h` `j` `k` `l`.
+Press <kbd>?</kbd> for the current screen's keys. The bottom bar shows its main
+actions. <kbd>Esc</kbd> backs out; <kbd>Ctrl</kbd>+<kbd>Q</kbd> quits.
+Use the search button above to search this manual.
 
-Datui is open source under the MIT license. Source, issues and releases are on
-[GitHub](https://github.com/derekwisong/datui).
-
-These pages describe one release; [other versions](../) are also published.
+[Choose another version](../#versions), [watch the demos](demos.md), or
+[report a problem](https://github.com/derekwisong/datui/issues).

@@ -7,6 +7,21 @@
 Datui runs two automated security checks alongside the usual format and clippy
 gates. Both are in the `Security` workflow, and both can be run locally.
 
+## Running them locally
+
+Install the tools once:
+
+```bash
+cargo install cargo-deny --locked
+uv tool install zizmor          # or: pipx install zizmor
+```
+
+Then:
+
+```bash
+./scripts/code/check_security.sh
+```
+
 ## What runs
 
 **cargo-deny** checks `Cargo.lock` against the [RustSec advisory
@@ -32,21 +47,6 @@ A third check, [OpenSSF Scorecard][scorecard], runs on a schedule in its own
 workflow. It scores the repository's supply-chain posture and writes each check
 to the Security tab with a specific remediation. It never fails a build.
 
-## Running them locally
-
-Install the tools once:
-
-```bash
-cargo install cargo-deny --locked
-uv tool install zizmor          # or: pipx install zizmor
-```
-
-Then:
-
-```bash
-./scripts/code/check_security.sh
-```
-
 ## When cargo-deny fails
 
 Most advisory failures are cleared by updating the lockfile:
@@ -59,7 +59,7 @@ cargo deny check advisories
 If an advisory cannot be cleared, because the fix is in a version some other
 dependency will not accept, add it to the `ignore` list in `deny.toml` with two
 things written down: why it is acceptable today, and the event that should clear
-it. An entry without both is a silenced alarm rather than a decision.
+it. Both are required for an exception.
 
 The current entries are all of that shape. The two `quick-xml` denial-of-service
 advisories are the ones worth watching. They used to be reachable whenever datui
@@ -76,11 +76,8 @@ Pin it to a full commit SHA, with the version tag in a trailing comment:
 - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 ```
 
-A tag is a mutable pointer. Whoever controls the upstream repository can move
-`v5` to point at anything, and every workflow that trusts the tag will run it on
-the next build. A SHA cannot be moved. Dependabot is configured to raise pull
-requests when a pinned action has a newer release, so pinning does not mean
-going stale.
+Tags can be moved; a commit SHA identifies the reviewed version.
+Dependabot proposes updates to pinned actions.
 
 Resolve the SHA for a tag with:
 

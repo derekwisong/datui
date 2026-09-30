@@ -1,134 +1,92 @@
 # Dataset Info
 
-Press <kbd>i</kbd> for the schema and the facts about the file. <kbd>i</kbd>
-or <kbd>Esc</kbd> closes it.
+Press <kbd>i</kbd> to inspect the dataset's schema and storage details.
+Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 
 ![Info Panel Demo](../demos/03-info.gif)
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type, for a dataset of many files how many of them carry it, and, for Parquet, its codec and compression ratio |
-| **Resources** | File size, the memory used by the buffered rows, the format, for Parquet the overall compression ratio, row groups, version and writer, and what opening the dataset cost |
-| **Partitions** | For a hive-partitioned dataset, its partition columns |
-| **Notes** | What datui noticed about the data while reading it. Only there when something is worth saying |
+| **Schema** | Row and column counts, column types, schema source, file coverage, and Parquet codecs/compression |
+| **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
+| **Partitions** | Partition columns for a hive-partitioned dataset |
+| **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tab; afterward focus rests on the tab bar |
-| <kbd>i</kbd> | Open the panel — on the Notes tab while notes are unread |
-| <kbd>Tab</kbd> | On the Schema tab, move focus between the tab bar and the column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the column table (when it is focused), or move through the notes |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tabs |
+| <kbd>Tab</kbd> | Move between the Schema tab bar and its column table |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table or notes |
+| <kbd>Enter</kbd> | Apply a note's offered action, when available |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
-The panel's footer names the keys that work now, and when the schema table
-is taller than the panel it counts the columns out of view.
-
-The row count is for the whole dataset, not the rows on screen. The type of
-each column is also shown in the table's second header row, which <kbd>D</kbd>
-toggles.
+The row count covers the dataset, not just the visible page. Column types also
+appear in the table's second header row; <kbd>D</kbd> toggles that row.
 
 ## Notes
 
-A directory of Parquet files rarely holds files that agree, and rarely holds
-only files with something in them. Where datui notices either, it says so:
+Notes explain what datui found while listing files and reading metadata:
 
-| Note | From |
+| Finding | Evidence |
 |---|---|
-| A column is not in every file, and which partitions have it | The footers and the file names |
-| Files disagree on a column's type, beyond what widening settles | The footers |
-| A column is stored as more than one type the scan can read into one | The footers |
-| A column is read as text, so it compares as text | The footers |
-| A file holds no rows at all | The footers |
-| Row groups are large enough that a page of rows costs much more than a page | The footers |
-| There are very many files and the middle one holds very little | The listing and the footers |
-| The directories do not all partition by the same keys | The file names |
-| A file's footer could not be read, so it was left out | The footers |
-| Files in the directory are not Parquet, so they are not in the table | The listing |
-| The directory held more than one format and was read as the commonest; what was passed over | The listing |
-| These are a Delta, Iceberg or Hudi table's plain files, not the table | The directory's markers |
-| A filter or sort leaves rows out, because their files hold its column in another type | The footers |
+| Missing columns, conflicting types, or types widened for reading | Parquet footers |
+| Empty files, large row groups, or many small files | Listing and footers |
+| Inconsistent partition keys | File paths |
+| Unreadable footers or files skipped because of their format | Listing and metadata reads |
+| Plain files from a Delta, Iceberg or Hudi table | Directory markers |
+| Rows excluded because a filter/sort column has incompatible types | Schema metadata and the active view |
 
-The last two are notes about the read rather than about the data, and they are
-the only ones settled before a footer is read. A lake table's files carry a chip
-beside the row count as well: that count includes rows a delete tombstoned and
-versions an update replaced, so it is a true count of the files and a wrong
-count of the table.
+Each note states its scope, such as `in all 6,541 footers` or
+`in 20,000 of 200,000 footers (sample)`. Background metadata reads can update
+these findings. Notes reuse information gathered during loading; they do not
+scan the data values. For null rates, duplicates and other content checks,
+use [Data Quality](data-quality.md).
 
-Where the files that have a column fall into a shape worth naming, the note says so
-as well as counting them: `fee is in 4,001 of 6,541 files, none before
-date=2010-07-18` is a field a feed started sending, and `oops is in 1 of 6,541
-files, only date=2024-03-02` is one directory's mistake. Only those two shapes —
-a column scattered across a dataset is just a count. `none before` also needs the
-directories to sort the way you would read them: where partition values are not
-zero-padded, `part=10` comes before `part=2` in the listing and there is no
-honest way to say where a column starts, so nothing is said. A dataset whose footers were
-sampled gets no such phrase: a file whose footer was not read looks like a file
-missing nothing, and a range drawn over those would be a guess.
+When all footers are available, a missing-column note may identify the first
+partition containing a column, or a single partition where it appears.
+Datui omits these patterns when metadata is sampled or partition names cannot
+be reliably ordered, such as `part=2` and `part=10`.
 
-Every note says what it is based on — `in all 6,541 footers`, or `in 20,000 of
-200,000 footers (sample)` — so a count never stands for files datui has not
-looked at. A cloud directory that is still reading its footers behind the data
-says `in 2 of 6,541 footers (sample)` until they land, and the notes are
-rewritten from all of them when they do. None of them costs a read of its own:
-they come from the footers the schema and the row count already needed.
+**Lake tables:** datui reads their plain files without applying table metadata.
+The displayed row count may include deleted rows and superseded versions.
+See [lake table directories](loading-data.md#directories).
 
-A note is one sentence and the line beneath it saying what it is based on;
-<kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller than
-the panel, the corner says how many notes are out of view.
+### Read a conflicting column as text
 
-A note about a column the files store in more than one type offers to **read it
-as text**: press <kbd>Enter</kbd> on it and the column is read from the files
-that disagree too, at the type each of them wrote, so the values the conflict hid
-appear. While the cursor is on such a note the panel's last row says so. A filter
-or sort on the column then compares text, and a note stays to say it. A column
-any file holds as a list, an array, a duration, binary or an unknown type
-cannot be shown as text at all, and no offer is made for it.
+Select a type-conflict note and press <kbd>Enter</kbd> when **read as text**
+is offered. Values from the conflicting files become visible, but filters and
+sorting now compare strings. For example, `"10"` sorts before `"2"`.
 
-Every note but one kind describes the dataset as opened. The exception is the
-note about a filter or sort leaving rows out, which describes the view: one
-arrives for each column you sort or filter by that some file holds in another
-type, and goes when you clear it. See [datasets whose files differ](loading-data.md#files-that-disagree).
+The action is unavailable if any file stores the column as a list, array,
+duration, binary or unknown type. See [files that disagree](loading-data.md#files-that-disagree).
 
-A query, a pivot or a drill-down builds rows of its own, so the notes step
-aside; resetting or drilling back up brings them back.
+Most notes describe the dataset as opened. Filter/sort exclusion notes follow
+the active view and disappear when those controls are cleared. Queries,
+pivots and drill-downs hide dataset notes until you reset or return to the
+original level.
 
-When there is something to note, the <kbd>i</kbd> key in the control bar takes
-a quiet accent until you open the panel. `notes_accent = false` in the
-`[display]` section of the [config](configuration.md) turns that off; the Notes
-tab is still there either way.
+Unread notes accent the <kbd>i</kbd> key and open on the Notes tab. Set
+`notes_accent = false` under `[display]` in the [config](configuration.md)
+to disable the accent.
 
 ## Measurements
 
-At the foot of the **Resources** tab, what this dataset has cost: finding it,
-reading its footers, and fetching the page on screen.
+The **Resources** tab reports work datui can measure:
 
-Listing and Footers appear for the datasets datui finds and reads itself: a
-directory of Parquet opened with `--hive`, a remote prefix, a remote glob, and
-a single remote object. Anything else — a single local file, a CSV, a local
-directory opened without `--hive`, a directory or prefix opened with
-`single_spine_schema = false` — is handed straight to Polars, which does not
-report what it did, so neither row appears and there is no Total. A glob is
-listed and matched by datui rather than by the object store, so its Listing
-row reports the files the pattern matched, out of everything under the literal
-part of the key.
-
-Last page appears whichever route opened the dataset, because datui asks for
-the rows on screen and times the answer either way; a dataset already known to
-be empty has no page to fetch, so nothing is reported.
-
-| Metric | Formula |
+| Metric | Meaning |
 |---|---|
-| Listing | time to find the dataset's files, and how many were found |
-| Footers | time the footer passes cost, and how many footers were read |
-| Last page | time from asking for the rows on screen to having them, and how many files were read for them |
-| Total | the listing and the footers added up |
+| Listing | Time spent finding files, plus the number found |
+| Footers | Time spent reading Parquet metadata, plus footer reads |
+| Last page | Time spent fetching the visible rows, plus files read |
+| Total | Listing time plus footer time |
 
-"Footers read" is not the number of files. A footer is read more than once on
-most datasets — one large enough to open before its footers are read has them
-read again behind the open, and one whose open could not settle its row count
-reads them again to count — so a three-file directory commonly reports six. The
-figure is what the reads cost, which is the point of it; the size of the
-dataset is on the Listing row.
+Listing and Footers appear for paths handled by datui's metadata reader,
+including Parquet directories and remote sources. Paths delegated directly
+to Polars may omit those measurements. Last page is available on either route,
+unless the dataset is already known to be empty.
+
+Footer reads can exceed the number of files: schema and row-count passes may
+read the same footer more than once. Use the Listing count for dataset size.

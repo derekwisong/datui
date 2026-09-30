@@ -1,39 +1,52 @@
-# Performance Tips
+# Performance tips
 
-Datui works on a lazy Polars plan and reads only the rows on screen, so most
-datasets are fast without any of this. When one is not:
+Opening a file and calculating over it have different costs. Datui keeps a
+buffer of visible rows, but a query, sort, aggregation or analysis may scan
+the full input. Lazy loading does not make every operation fit in memory.
 
-**Prefer Parquet.** It is scanned lazily, row groups are skipped, and the
-schema and row count come from the footer. JSON, Avro, Excel and ORC are read
-whole before the table appears; see [Formats](../user-guide/loading-data.md#formats).
+| Task | What helps |
+|---|---|
+| Browse a large dataset | Prefer Parquet: types and row counts are stored in footers, and data is read in row groups |
+| Open local partitions | Pass the directory, such as `datui ./events/`, to use datui's schema union and file metadata |
+| Pivot a large table | Filter first; pivot reads all affected rows to discover the output columns |
+| Analyze many rows | Use the sample-size setting for Describe, Distribution and Correlation |
+| Chart many rows | Filter or aggregate first, then check **Limit Rows**; the default is 10,000 |
+| Open compressed CSV | Put `--temp-dir` on a disk with room for the uncompressed file |
 
-**Open a hive directory, not a glob.** `datui /data/events/` is faster than
-`datui --hive "/data/events/**/*.parquet"`, and the schema is read from one file
-rather than all of them.
+## Sample deliberately
 
-**Query before you pivot.** Pivot has to read every affected row to discover
-the new column names. Filter or query down first.
+Describe, Distribution and Correlation use up to 100,000 rows by default.
+For a larger table, the sample is spread across the dataset. An unfiltered
+Parquet or IPC file uses selected ranges; other views stream the data while
+keeping a bounded sample. See [sampling](../user-guide/analysis-features.md#sampling).
 
-**Let the analysis sample.** Describe, distribution fitting and the
-correlation matrix analyze a 100,000-row sample of a larger table, spread
-across all of it. On one unfiltered Parquet file that reads a few dozen row
-groups however large the file is; anything else is read once as a stream,
-holding only the sample. `a` reads every row when the sample is not enough.
-See [Analysis](../user-guide/analysis-features.md#sampling).
+```bash
+datui --sample-rows 50000 events.parquet
+```
 
-**Cap chart rows.** Charts use at most `row_limit` rows (default 10,000), set
-in [`[chart]`](../user-guide/configuration.md#charts) or with **Limit Rows** in
-the chart view.
+Use `--sample-rows 0` to analyze every row, or press <kbd>a</kbd> on a sampled
+result and confirm. <kbd>Esc</kbd> cancels a run.
+[Data Quality](../user-guide/data-quality.md) has separate scope and sample budgets.
 
-**Leave streaming on.** `--polars-streaming` (default `true`) lets Polars
-process a collect in batches. Turn it off only to test whether it is the cause
-of a problem.
+Chart **Limit Rows** caps input rows; it does not produce a representative
+random sample. For a time series, aggregate the whole period before charting
+if you want the whole period represented.
 
-**Compressed CSV.** A `.csv.gz` is decompressed to a temporary file so it can
-still be scanned lazily. Point `--temp-dir` at a fast disk with room for the
-uncompressed file.
+## Know what gets read
 
-**Cloud data.** Parquet in S3 or GCS is read in place, and a partitioned prefix
-opens like a local hive directory. Other formats are downloaded whole first.
-The [home screen](../user-guide/home-screen.md#cloud-storage) lists bucket
-contents without reading any object.
+- Parquet, CSV, JSONL and Arrow IPC use scans. JSON arrays, Avro, Excel and ORC
+  are loaded in full. See [formats](../user-guide/loading-data.md#formats).
+- A local Parquet directory normally reads file footers to combine schemas.
+  Beyond 20,000 files the schema uses sampled footers. Large cloud directories
+  can open before the background footer pass finishes. See
+  [multi-file loading](../user-guide/loading-data.md#how-large-remote-datasets-open).
+- Parquet in object storage uses range reads. Supported remote CSV and JSONL
+  directories scan in place; HTTP and other download routes fetch the file
+  first. See [remote data](../user-guide/remote-data.md).
+
+Leave `--polars-streaming` enabled unless you are diagnosing a problem. It lets
+supported operations process data in batches; it is not a memory bound on
+all queries.
+
+Use <kbd>i</kbd> → **Resources** to inspect the buffer and loading measurements,
+and **Notes** for layouts with large row groups or many small files.

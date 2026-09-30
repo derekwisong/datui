@@ -1,4 +1,4 @@
-# Querying Data
+# Queries and search
 
 Press <kbd>/</kbd> to open the query prompt. It has three tabs; <kbd>←</kbd>
 <kbd>→</kbd> switch them, and <kbd>Tab</kbd> moves between the tab bar and
@@ -8,18 +8,33 @@ the input.
 |---|---|---|
 | **Query** | Datui's own short language, described below | `select name, salary by dept where salary > 100000` |
 | **Fuzzy** | Words to look for in any text column | `smith london` |
-| **SQL** | Standard SQL. The table is called `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
+| **SQL** | SQL over the table named `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
 
 <kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
 walk the history of the current tab. Submit an empty query to return to the
 full table. Running a query — or clearing one — starts a fresh view: sidebar
-filters, sort, frozen columns and pivot/melt are dropped. This is deliberate;
-apply them after the query.
+filters, sort, frozen columns and pivot/melt are dropped. Apply sidebar settings after the query.
 
-![Querying Demo](../demos/02-querying.gif)
+## Run a query
 
-The rest of this page is about the **Query** tab. The complete grammar is in
-the [Query Syntax reference](../reference/query-syntax.md).
+With the [quick-start penguin data](../getting-started/quick-start.md), enter
+this on the **Query** tab:
+
+```text
+select mean_mass_g: avg body_mass_g by species
+```
+
+It returns three species averages. Gentoo has the highest, about 5,076 g.
+On the **SQL** tab, the equivalent query is:
+
+```sql
+SELECT species, AVG(body_mass_g) AS mean_mass_g
+FROM df
+GROUP BY species
+```
+
+The examples below use the Query tab. See [Query syntax](../reference/query-syntax.md)
+for the complete grammar and [the demo](../demos.md#querying) for a recording.
 
 ## Choosing columns
 
@@ -45,8 +60,7 @@ select where city.contains["York"]       # string accessors
 
 ## Arithmetic
 
-`+`, `-`, `*` and `/` for divide; `%` also divides. The language is a q/kdb+
-dialect, which is where `%` and the **right to left** binding come from:
+`+`, `-`, `*` and `/` for divide; `%` also divides. Expressions bind **right to left**:
 `a * b + c` is `a * (b + c)`. Use parentheses when in doubt. Comparisons bind
 the same way, so `(a + b) * 2 > 100` parses as `(a + b) * (2 > 100)` — put
 the comparison first: `100 < (a + b) * 2`.

@@ -1,9 +1,16 @@
-# Exporting Data
+# Export data
 
 Press <kbd>e</kbd> to write the current view to a file: the rows and columns
 as queried, filtered and sorted.
 
-![Export Demo](../demos/08-export.gif)
+## Save a CSV
+
+1. Apply the query and filters to export.
+2. Press <kbd>e</kbd> and enter `result.csv` in **Path**.
+3. Press <kbd>Enter</kbd>. If the file exists, confirm whether to overwrite it.
+
+The file contains all matching rows and displayed columns, not just the page
+on screen. Numbers use their raw values, without display formatting.
 
 | Format | Extension | Options |
 |---|---|---|
@@ -35,26 +42,18 @@ trailing `.gz`/`.zst`/`.bz2`/`.xz` sets the compression (`out.csv.gz` selects
 CSV, gzipped); picking a format afterward rewrites the typed extension to
 match, so the file's name and its bytes agree.
 
-If the file exists, <kbd>Enter</kbd> asks first, starting on No; declining
-returns to the filled form, path intact. On a narrow terminal the dialog
-stacks into one column, Format first, and <kbd>↑</kbd> <kbd>↓</kbd> still
-cycle it.
-
-Numbers are written as raw values, whatever the
-[display formatting](configuration.md#number-formatting) shows on screen.
+Overwrite confirmation defaults to **No**. Declining returns to the form
+with your path intact.
 
 ## Source file
 
-A directory of Parquet files that disagree — on disk or in the cloud — shows an
-empty cell three ways:
-a null the data holds, a column the file was written without, and a column the
-file keeps in another type. See
-[datasets whose files differ](loading-data.md#files-that-disagree).
+For a dataset with missing columns or conflicting types, **Source file** adds
+the original file path to each exported row. This helps trace empty values
+back to the files that produced them.
 
-No file format has "absent", so an export writes all three as null. **Source
-file** adds a column naming the file each row came from, which is enough to
-tell them apart downstream: a row whose file never had the column is a
-different thing from a row whose file had it and left it empty.
+The `∅`, `·` and `≠` [cell markers](loading-data.md#files-that-disagree) all
+export as null. Use the source path with the original file's schema to
+distinguish their causes.
 
 The option is offered only for those datasets, and is off by default. If the
 data already has a column called `source_file`, that column is left alone and

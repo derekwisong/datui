@@ -1,107 +1,108 @@
 # Documentation
 
-Datui uses [mdBook][mdbook] to build static documentation web pages from markdown files. The published docs site (GitHub Pages) contains **tagged releases only**; docs are built and deployed when you push a version tag (see [Release workflow](#release-workflow)).
-
-> The documentation markdown files live in the [docs](https://github.com/derekwisong/datui/tree/main/docs) subdirectory.
-
-## Prerequisites
-
-- **mdbook** — required for all doc builds:
-  ```bash
-  cargo install mdbook
-  ```
-  If you used the [Setup Script](setup-script.md), mdbook may already be installed. The build scripts look for it in `PATH` or `~/.cargo/bin/`.
-
-- **Python 3 + scripts/requirements.txt** — required only when building docs for the current branch (e.g. `main`) or when generating command-line options. Tag builds use the committed `command-line-options.md` for that tag.
-
-## Build documentation locally
-
-### Build all tagged versions (matches production)
-
-This builds docs for every `v*` tag and rebuilds the index. It **skips** any tag whose `book/<tag>/` was already built for the same git SHA, so re-running only rebuilds new or changed tags.
-
 ```bash
-python3 scripts/docs/build_all_docs_local.py
+python3 scripts/docs/build_single_version_docs.py
+python3 scripts/docs/rebuild_index.py
+python3 -m http.server 8000 --directory book
 ```
 
-Output goes to `book/`. At the end you can start a local HTTP server to browse, or open `book/index.html` in a browser.
-
-To **force a full rebuild** (e.g. after changing the build script or cleaning up):
-
-```bash
-rm -rf book && python3 scripts/docs/build_all_docs_local.py
-```
-
-### Build a single version
-
-Useful for quick iteration on one tag or to preview the current branch:
+Open `http://localhost:8000` to preview the landing page and the book for your
+current checkout. A branch named `docs/revision` builds to
+`book/docs/revision/`. Install the prerequisites first:
 
 ```bash
-# Build one tag (e.g. v0.2.22)
-python3 scripts/docs/build_single_version_docs.py v0.2.22
-
-# Build current branch (e.g. main) — output in book/main/
-python3 scripts/docs/build_single_version_docs.py main
+cargo install mdbook --version 0.5.2 --locked
+python3 -m pip install -r scripts/requirements.txt
 ```
 
-A single-version build does **not** update the index. The index only lists tagged versions, so `book/main/` will not appear there; open `book/main/index.html` directly to preview.
+Use the project's virtual environment for the Python commands if needed.
+The scripts find mdBook on `PATH` or in `~/.cargo/bin/`.
 
-## Generated reference: command-line options
+## Where to edit
 
-`docs/reference/command-line-options.md` is **generated** from the application’s Clap definitions. Do not edit it manually.
+| File | Purpose |
+|---|---|
+| `README.md` | GitHub introduction, install commands and links into the manual |
+| `scripts/docs/index.html.j2` | Landing page at the site root |
+| `docs/introduction.md` | The manual's task index |
+| `docs/SUMMARY.md` | Sidebar order and chapter titles |
+| `docs/user-guide/` | Task instructions and explanations |
+| `docs/reference/` | Keys, query grammar and generated CLI options |
+| `docs/night-market.css` | mdBook colors and layout |
 
-The doc build copies `docs/` into a temp directory, generates the CLI options into that copy (for non-tag builds), then runs mdbook from the temp tree. Tag builds use the committed file for that tag.
+Write the command or key first. Use a table for choices. Explain the result
+and any limit that changes how to use it. Verify behavior against the code;
+avoid speed claims that have not been measured.
 
-To generate the options file on demand:
+Keep manual links relative and use `.md` extensions in Markdown. The landing
+page also uses relative links, so the same output works at `/datui/` on
+GitHub Pages or at the root of a future custom domain. Registering a domain,
+DNS and Pages configuration are separate deployment steps.
+
+## Build choices
+
+| Command | Output and behavior |
+|---|---|
+| `python3 scripts/docs/build_single_version_docs.py` | Builds the current checkout, under its branch name |
+| `python3 scripts/docs/build_single_version_docs.py preview` | Builds the current checkout to `book/preview/`; a branch argument names the output, it does not check out that branch |
+| `python3 scripts/docs/build_single_version_docs.py vX.Y.Z` | Checks out the tag, builds it, then restores the checkout; use a clean worktree |
+| `python3 scripts/docs/build_all_docs_local.py` | Builds all tags in temporary worktrees, updates `latest/`, then the landing page |
+| `python3 scripts/docs/rebuild_index.py` | Renders only the landing page from existing built books |
+
+Single-version builds do not rebuild the landing page. The index lists built
+release and development books, including branch names with slashes. It ignores
+asset directories and incomplete builds.
+
+The primary documentation link uses `latest/` when that book exists,
+otherwise the newest built release, then a development book. With no books,
+it links to the source docs on GitHub. A missing demo is omitted. The site
+root stays a landing page; it does not redirect into a manual.
+
+## Generated CLI reference
+
+Do not edit `docs/reference/command-line-options.md` by hand. Change the Clap
+help text in `crates/datui-cli`, then regenerate:
 
 ```bash
-python3 scripts/docs/generate_command_line_options.py              # print to terminal
-python3 scripts/docs/generate_command_line_options.py -o path.md   # write to path
+python3 scripts/docs/generate_command_line_options.py -o docs/reference/command-line-options.md
 ```
 
-The release workflow and `gen_docs` use this script when building docs.
+Branch doc builds generate the reference in a temporary copy. Tag builds use
+the committed reference from that tag. Building the generator needs Rust.
 
-## Check documentation links
-
-Use [lychee](https://github.com/lycheeverse/lychee) to check for broken links:
+## Check the result
 
 ```bash
-cargo install lychee
-./scripts/docs/check_doc_links.sh [--build] [--online] [PATH]
+python3 -m unittest discover -s scripts/docs -p 'test_*.py'
+./scripts/docs/check_doc_links.sh book/preview
 ```
 
-- **`--build`** — Build docs for `main` first (`build_single_version_docs.py main`), then check that tree.
-- **`--online`** — Check external URLs as well (default is offline, internal links only).
-- **`PATH`** — Directory to check (default: `book/main`). Use a tag directory after building all docs, e.g. `book/v0.2.22`.
+The link check needs [lychee](https://github.com/lycheeverse/lychee):
+`cargo install lychee`. It checks local targets and fragments by default;
+`--online` adds external URLs. `--build` builds the current checkout into
+`book/main/` before checking.
 
-Examples:
+Also inspect the landing page in light and dark mode, at phone and desktop
+widths, with keyboard navigation and with JavaScript disabled. Install and
+documentation links must work without scripts. The GIF starts only when the
+visitor chooses Play and can be stopped.
 
-```bash
-./scripts/docs/check_doc_links.sh --build              # build main, then check book/main
-python3 scripts/docs/build_all_docs_local.py && \
-  ./scripts/docs/check_doc_links.sh book/v0.2.22         # check a tag after full build
-```
+## Publishing
 
-The script exits with a non-zero code if any broken links are found.
+The release workflow builds tagged documentation when a `v*` tag is pushed.
+**Build and publish docs** can also be run manually. Both publish:
 
-## Release workflow
+| Path | Contents |
+|---|---|
+| `/` | Landing page from the workflow checkout's template |
+| `/latest/` | Copy of the newest tagged book |
+| `/vX.Y.Z/` | Book built from that tag's files |
 
-Docs are built and deployed only when a version tag (`v*`) is pushed. The release workflow:
+Merging a documentation PR does not replace the books for existing tags.
+The revised manual reaches `/latest/` with the next release. A manual workflow
+run can update the landing page without making a release.
 
-1. **Computes a cache key** from the set of all `v*` tags and their current SHAs. The key changes when a tag is added or when a tag’s SHA changes (e.g. force-move).
-2. **Restores** the `book/` directory from cache (if any) so previous tag builds can be reused.
-3. **For each tag**, builds docs only if `book/<tag>/.built_sha` is missing or does not match the tag’s current SHA. Otherwise the cached build for that tag is skipped.
-4. Runs **rebuild_index.py** to regenerate the index from the tag directories.
-5. **Prepares the Pages artifact** by copying `book` to a deploy tree and removing cache metadata (`.built_sha`), then uploads that tree to GitHub Pages.
-
-So the first run (or after cache eviction) builds all tags; later runs only build new or changed tags. This keeps release job time down as the number of tags grows.
-
-Scripts involved:
-
-- **build_single_version_docs.py** — Builds one version (tag or branch). Used by CI and by `build_all_docs_local.py`.
-- **build_all_docs_local.py** — Builds all tags locally with the same skip-if-built logic for fast re-runs.
-- **rebuild_index.py** — Scans `book/` for `v*` version dirs and generates `book/index.html` from `index.html.j2`.
-
----
-
-[mdbook]: https://rust-lang.github.io/mdBook
+Tag builds are cached by tag SHA in `book/<tag>/.built_sha`; deployment removes
+those marker files. To rebuild one cached tag locally, remove its marker and
+run the all-version builder again. Do not publish local development previews
+as a release book.

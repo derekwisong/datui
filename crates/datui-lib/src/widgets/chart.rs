@@ -1078,6 +1078,11 @@ fn render_heatmap_chart(
     let y_format = AxisFormat::new(&y_values, &numbers.y);
     let at = |level| {
         y_values.map(|v| {
+            // A whole-number axis has no label between two whole numbers: its
+            // middle of 0 to 1 would read `0` or `1`.
+            if numbers.y.whole && v.fract() != 0.0 {
+                return String::new();
+            }
             y_format
                 .label(v, level)
                 .or_else(|| y_format.label(v, 0))
@@ -1789,6 +1794,66 @@ mod tests {
         // Too narrow for those: the short form, each in the same unit and places.
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 16, 12));
         assert_eq!(y_labels(&text), ["12,6k", "12,3k", "12,0k"], "{text}");
+    }
+
+    /// A heatmap's y labels in one format; an integer column's middle label is left
+    /// out when it falls between two whole numbers, where it read `0` twice.
+    #[test]
+    fn heatmap_y_labels_are_whole_where_the_column_is() {
+        let heatmap = |(y_min, y_max)| HeatmapData {
+            x_column: "price".to_string(),
+            y_column: "flag".to_string(),
+            x_min: 0.0,
+            x_max: 10.0,
+            y_min,
+            y_max,
+            x_bins: 4,
+            y_bins: 4,
+            counts: vec![vec![1.0; 4]; 4],
+            max_count: 1.0,
+            rows: Default::default(),
+        };
+        let y_labels = |text: &str| -> Vec<String> {
+            // The plot's rows, each starting with its label if it has one.
+            text.lines()
+                .filter(|r| r.contains('@'))
+                .filter_map(|r| r.split_whitespace().next())
+                .filter(|l| !l.starts_with('@'))
+                .map(String::from)
+                .collect()
+        };
+        let whole = PlotNumbers {
+            x: AxisNumbers::default(),
+            y: AxisNumbers {
+                whole: true,
+                ..AxisNumbers::default()
+            },
+        };
+        let g = crate::glyphs::unicode();
+        let modal = open_modal();
+        let area = Rect::new(0, 0, 40, 12);
+        let data = heatmap((0.0, 1.0));
+        let text = plot_text_in(
+            &modal,
+            ChartRenderData::Heatmap {
+                data: Some(&data),
+                numbers: whole,
+            },
+            g,
+            area,
+        );
+        assert_eq!(y_labels(&text), ["1", "0"], "{text}");
+        let data = heatmap((0.0, 0.012));
+        let text = plot_text_in(
+            &modal,
+            ChartRenderData::Heatmap {
+                data: Some(&data),
+                numbers: PlotNumbers::default(),
+            },
+            g,
+            area,
+        );
+        assert_eq!(y_labels(&text), ["0.0120", "0.0060", "0.0000"], "{text}");
     }
 
     /// A count, or an integer column, ticks in whole numbers as the table prints

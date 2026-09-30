@@ -6206,14 +6206,31 @@ struct TemplateApplicationState {
 #[derive(Default)]
 pub(crate) struct ChartCache {
     entries: Vec<(ChartRequest, Result<ChartPrepared, String>)>,
+    /// The rows read for these entries and which view (`len_generation`) they are
+    /// from, so another option re-draws from them rather than reading again.
+    held: chart_data::HeldRows,
+    held_view: Option<u64>,
 }
 
 impl ChartCache {
     const CAPACITY: usize = 8;
     const XY_CAPACITY: usize = 2;
 
+    /// Forget every entry and the rows read. A worker still reading keeps the handle it
+    /// was given and fills that one, never the next view's.
     fn clear(&mut self) {
         self.entries.clear();
+        self.held = chart_data::HeldRows::default();
+        self.held_view = None;
+    }
+
+    /// The rows held for `view`, or a fresh holder when they belong to another.
+    fn held_rows(&mut self, view: Option<u64>) -> chart_data::HeldRows {
+        if self.held_view != view {
+            self.held = chart_data::HeldRows::default();
+            self.held_view = view;
+        }
+        self.held.clone()
     }
 
     fn get(&self, request: &ChartRequest) -> Option<&Result<ChartPrepared, String>> {
@@ -16521,6 +16538,7 @@ impl App {
             known_total: state.num_rows_if_valid(),
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.polars_streaming,
+            held: self.chart_cache.held_rows(dataset),
         };
         self.chart_inflight = Some(ChartInflight {
             dataset,

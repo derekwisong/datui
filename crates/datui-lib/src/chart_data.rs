@@ -11,6 +11,7 @@ use color_eyre::Result;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
 use std::f64::consts::PI;
+use std::sync::{Arc, Mutex};
 
 /// Describes how x-axis numeric values map to temporal types for label formatting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,7 +91,7 @@ pub fn format_x_axis_label(v: f64, kind: XAxisTemporalKind) -> String {
 }
 
 /// How a chart reads its rows.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ChartSampling {
     /// Rows to read; `None` reads every row.
     pub limit: Option<usize>,
@@ -99,6 +100,8 @@ pub struct ChartSampling {
     /// The shared analysis seed, so a chart and Describe draw alike.
     pub seed: u64,
     pub streaming: bool,
+    /// The rows already read from this view.
+    pub held: HeldRows,
 }
 
 impl ChartSampling {
@@ -109,7 +112,28 @@ impl ChartSampling {
             known_total: None,
             seed: crate::sampling::Sample::default().seed,
             streaming: false,
+            held: HeldRows::default(),
         }
+    }
+}
+
+/// The rows a chart last read from one view. Another bin count, range, bandwidth or
+/// chart over columns already read draws from them instead of reading the table
+/// again, and every chart of the view describes the same sample. Shared with the
+/// worker that reads; whoever owns the view starts a new one when the view changes.
+#[derive(Clone, Default)]
+pub struct HeldRows(Arc<Mutex<Option<Held>>>);
+
+struct Held {
+    limit: Option<usize>,
+    seed: u64,
+    df: DataFrame,
+    rows: RowsRead,
+}
+
+impl std::fmt::Debug for HeldRows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HeldRows")
     }
 }
 
@@ -186,34 +210,56 @@ pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>) -> Vec<String> {
 /// Read `columns` (each once, however often named) through the analysis sampler: every
 /// row up to the limit, and past it a seeded sample spread across the table — runs of
 /// one Parquet or IPC file, or one streamed pass over anything else — never its head.
+///
+/// Rows already held for the same size and seed are used as they are when they have
+/// the columns. Otherwise the read takes the held columns along, so going back to one
+/// does not read again.
 fn read_columns(
     lf: &LazyFrame,
     columns: &[&str],
     sampling: &ChartSampling,
 ) -> Result<(DataFrame, RowsRead)> {
-    let mut unique: Vec<&str> = Vec::with_capacity(columns.len());
+    let mut unique: Vec<PlSmallStr> = Vec::with_capacity(columns.len());
     for c in columns {
-        if !unique.contains(c) {
-            unique.push(c);
+        if !unique.iter().any(|u| u == c) {
+            unique.push((*c).into());
+        }
+    }
+    let mut held = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = held
+        .as_ref()
+        .filter(|h| h.limit == sampling.limit && h.seed == sampling.seed)
+    {
+        if unique.iter().all(|c| h.df.column(c).is_ok()) {
+            return Ok((h.df.select(unique.iter().cloned())?, h.rows));
+        }
+        for c in h.df.get_column_names() {
+            if !unique.contains(c) {
+                unique.push(c.clone());
+            }
         }
     }
     let lf = lf
         .clone()
-        .select(unique.iter().map(|c| col(*c)).collect::<Vec<_>>());
-    let rows = crate::statistics::analysis_rows(
+        .select(unique.iter().map(|c| col(c.clone())).collect::<Vec<_>>());
+    let read = crate::statistics::analysis_rows(
         &lf,
         sampling.limit,
         sampling.known_total,
         sampling.seed,
         sampling.streaming,
     )?;
-    Ok((
-        rows.df,
-        RowsRead {
-            total_rows: rows.total_rows,
-            sample_size: rows.sample_size,
-        },
-    ))
+    let rows = RowsRead {
+        total_rows: read.total_rows,
+        sample_size: read.sample_size,
+    };
+    *held = Some(Held {
+        limit: sampling.limit,
+        seed: sampling.seed,
+        df: read.df.clone(),
+        rows,
+    });
+    Ok((read.df, rows))
 }
 
 /// A column's values as `f64`, one per row; null, NaN and infinities are `None`.
@@ -934,6 +980,50 @@ mod tests {
         };
         let c = xy(&lf, "x", &["y"], &other);
         assert_ne!(a.series, c.series);
+    }
+
+    /// Another option over columns already read draws from the rows held, without
+    /// reading the file again; a new column is read with the held ones, and another
+    /// sample size reads afresh.
+    #[test]
+    fn rows_already_read_are_not_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fares.csv");
+        let write = |a: i64, b: i64| {
+            let rows: String = (0..100).map(|i| format!("{},{}\n", i + a, i + b)).collect();
+            std::fs::write(&path, format!("a,b\n{rows}")).unwrap();
+        };
+        write(0, 0);
+        let lf = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let sampling = ChartSampling::rows(Some(10_000));
+        let first = prepare_histogram_data(&lf, "a", 10, ValueRange::All, &sampling).unwrap();
+        assert_eq!(first.x_min, 0.0);
+
+        write(1_000, 1_000);
+        let held =
+            prepare_histogram_data(&lf, "a", 5, ValueRange::Percentile1To99, &sampling).unwrap();
+        assert!(
+            held.x_max < 100.0,
+            "drawn from the rows held: {}",
+            held.x_max
+        );
+        let boxed = prepare_box_plot_data(&lf, &["a"], ValueRange::All, &sampling).unwrap();
+        assert_eq!(boxed.stats[0].max, 99.0);
+
+        let with_b = prepare_histogram_data(&lf, "b", 10, ValueRange::All, &sampling).unwrap();
+        assert_eq!(with_b.x_min, 1_000.0, "b was not held: read");
+        let a_again = prepare_histogram_data(&lf, "a", 10, ValueRange::All, &sampling).unwrap();
+        assert_eq!(a_again.x_min, 1_000.0, "read along with b");
+
+        write(5_000, 5_000);
+        let other_size = ChartSampling {
+            limit: Some(50),
+            ..sampling.clone()
+        };
+        let resampled = prepare_histogram_data(&lf, "a", 10, ValueRange::All, &other_size).unwrap();
+        assert!(resampled.x_min >= 5_000.0, "another size reads afresh");
     }
 
     /// A line is drawn in X order whatever order the rows are in, as a pivot leaves

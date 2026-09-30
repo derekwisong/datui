@@ -1064,7 +1064,7 @@ pub fn expand_azure_short_url(
     let Some((scheme, rest)) = text.split_once("://") else {
         return Ok(path.to_path_buf());
     };
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "az" | "adl" | "azure") {
+    if !crate::source::is_azure_short_scheme(scheme) {
         return Ok(path.to_path_buf());
     }
     let (container, key) = rest.split_once('/').unwrap_or((rest, ""));

@@ -35,6 +35,22 @@ pub fn input_source(path: &Path) -> InputSource {
     InputSource::Local(path.to_path_buf())
 }
 
+/// Whether `path` is a URL datui reads rather than a path on this machine: whatever
+/// [`input_source`] places remotely, and the Azure forms that name no account, which
+/// are expanded when opened.
+pub fn is_remote_url(path: &Path) -> bool {
+    !matches!(input_source(path), InputSource::Local(_))
+        || path
+            .to_string_lossy()
+            .split_once("://")
+            .is_some_and(|(scheme, _)| is_azure_short_scheme(scheme))
+}
+
+/// `az`, `adl` and `azure`: Azure schemes that name a container but no account.
+pub(crate) fn is_azure_short_scheme(scheme: &str) -> bool {
+    matches!(scheme.to_ascii_lowercase().as_str(), "az" | "adl" | "azure")
+}
+
 /// The source an `s3://<id>@bucket/key` URL names, and the URL without it.
 ///
 /// Only S3 URLs carry a source, and only for S3-compatible servers, whose bucket names
@@ -196,6 +212,29 @@ pub(crate) fn cloud_path_should_download(ext: Option<&str>, is_glob: bool) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_url_datui_reads_is_remote() {
+        for url in [
+            "s3://bucket/key.parquet",
+            "s3a://bucket/key.parquet",
+            "gs://bucket/dir/",
+            "gcs://bucket/dir/",
+            "abfss://release@overturemapswestus2.dfs.core.windows.net/2026-09-23.1/",
+            "abfs://container@account.dfs.core.windows.net/x.parquet",
+            "https://account.blob.core.windows.net/container/x.csv",
+            "az://container/x.csv",
+            "adl://container/x.csv",
+            "azure://container/x.csv",
+            "http://example.com/data.csv",
+            "https://example.com/data.csv",
+        ] {
+            assert!(is_remote_url(Path::new(url)), "{url}");
+        }
+        for path in ["/tmp/file.parquet", "relative.csv", ".", "data/2024.csv"] {
+            assert!(!is_remote_url(Path::new(path)), "{path}");
+        }
+    }
 
     #[test]
     fn input_source_local_path() {

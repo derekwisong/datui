@@ -89,6 +89,62 @@ fn compact_number(v: f64) -> String {
     format!("{text}{suffix}")
 }
 
+/// A tick on a whole-number axis (counts, an integer column) at `level` of detail: 0
+/// the whole number in the table's `format`, 1 as [`axis_label_at`] shortens it.
+pub fn whole_axis_label_at(
+    v: f64,
+    level: usize,
+    format: &crate::numfmt::NumberFormat,
+) -> Option<String> {
+    match level {
+        0 => Some(format_bar_value(v.round(), true, format)),
+        level => axis_label_at(v.round(), level),
+    }
+}
+
+/// The format the table prints `column` in, plain where it prints it unformatted.
+pub fn table_number_format(
+    settings: &crate::numfmt::NumberFormatSettings,
+    column: &str,
+    dtype: &DataType,
+) -> crate::numfmt::NumberFormat {
+    match settings.formatter_for(column, dtype) {
+        crate::numfmt::CellFormatter::Number(format) => format,
+        crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
+    }
+}
+
+/// The table's format for `column` when it holds whole numbers, for an axis's ticks;
+/// `None` for any other column.
+pub fn whole_number_format(
+    settings: &crate::numfmt::NumberFormatSettings,
+    schema: &Schema,
+    column: &str,
+) -> Option<crate::numfmt::NumberFormat> {
+    let dtype = schema.get(column)?;
+    dtype
+        .is_integer()
+        .then(|| table_number_format(settings, column, dtype))
+}
+
+/// The first column's format when every one of `columns` holds whole numbers.
+pub fn whole_numbers_format(
+    settings: &crate::numfmt::NumberFormatSettings,
+    schema: &Schema,
+    columns: &[String],
+) -> Option<crate::numfmt::NumberFormat> {
+    let formats: Option<Vec<_>> = columns
+        .iter()
+        .map(|c| whole_number_format(settings, schema, c))
+        .collect();
+    formats?.into_iter().next()
+}
+
+/// The format the table prints a count in.
+pub fn count_format(settings: &crate::numfmt::NumberFormatSettings) -> crate::numfmt::NumberFormat {
+    table_number_format(settings, "Count", &DataType::UInt64)
+}
+
 /// An x value as the date and time it stands for, when `kind` is a date or datetime.
 fn x_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTime> {
     const UNIX_EPOCH_CE_DAYS: i32 = 719_163;

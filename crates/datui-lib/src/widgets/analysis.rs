@@ -1795,7 +1795,8 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // Normalize values for display (find the maximum for scaling)
     let max_data = data_bin_counts.iter().cloned().fold(0, usize::max);
     let max_theory = theory_bin_counts.iter().cloned().fold(0.0, f64::max);
-    let global_max = max_data.max(max_theory as usize).max(1) as f64;
+    // Even, so the middle label is a whole count.
+    let global_max = (max_data.max(max_theory.ceil() as usize).max(1) as f64 / 2.0).ceil() * 2.0;
 
     // Use the shared label width calculated in the caller
     // This ensures both histogram and Q-Q plot use the same padding for alignment

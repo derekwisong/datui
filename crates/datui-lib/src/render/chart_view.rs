@@ -10,7 +10,7 @@ use crate::chart_modal::ChartKind;
 use crate::render::context::RenderContext;
 use crate::widgets::{
     self,
-    chart::{ChartRenderData, ChartView},
+    chart::{ChartRenderData, ChartView, WholeAxes},
 };
 use crate::{ChartPrepared, ChartRequest};
 use ratatui::layout::Rect;
@@ -30,6 +30,24 @@ pub fn render(
     let error = outcome.and_then(|o| o.as_ref().err()).map(String::as_str);
     let notes = prepared.map(ChartPrepared::notes).unwrap_or_default();
 
+    // Axes of whole numbers tick in whole numbers, printed as the table prints them.
+    let schema = app.data_table_state.as_ref().map(|state| &state.schema);
+    let whole = |column: &str| {
+        schema.and_then(|s| chart_data::whole_number_format(&ctx.number_format, s, column))
+    };
+    let all_whole = |columns: &[String]| {
+        schema.and_then(|s| chart_data::whole_numbers_format(&ctx.number_format, s, columns))
+    };
+    let modal = &app.chart_modal;
+    let xy_whole = |kind: chart_data::XAxisTemporalKind| WholeAxes {
+        x: (kind == chart_data::XAxisTemporalKind::Numeric)
+            .then(|| modal.effective_x_column().and_then(|x| whole(x)))
+            .flatten(),
+        y: (!modal.log_scale)
+            .then(|| all_whole(&modal.effective_y_columns()))
+            .flatten(),
+    };
+
     let render_data = match (app.chart_modal.chart_kind, prepared) {
         (ChartKind::XY, Some(ChartPrepared::XY(c))) => ChartRenderData::XY {
             series: if app.chart_modal.log_scale {
@@ -40,52 +58,71 @@ pub fn render(
             breaks: Some(&c.breaks),
             x_axis_kind: c.x_axis_kind,
             x_bounds: None,
+            whole: xy_whole(c.x_axis_kind),
         },
         (ChartKind::XY, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
             series: None,
             breaks: None,
             x_axis_kind: c.x_axis_kind,
             x_bounds: Some((c.x_min, c.x_max)),
+            whole: xy_whole(c.x_axis_kind),
         },
         // Still on its way: empty axes, typed from the schema so the labels are right.
-        (ChartKind::XY, _) => ChartRenderData::XY {
-            series: None,
-            breaks: None,
-            x_axis_kind: match (
-                app.chart_modal.effective_x_column(),
-                app.data_table_state.as_ref(),
-            ) {
-                (Some(x), Some(state)) => {
-                    chart_data::x_axis_temporal_kind_for_column(&state.schema, x)
-                }
+        (ChartKind::XY, _) => {
+            let x_axis_kind = match (modal.effective_x_column(), schema) {
+                (Some(x), Some(schema)) => chart_data::x_axis_temporal_kind_for_column(schema, x),
                 _ => chart_data::XAxisTemporalKind::Numeric,
-            },
-            x_bounds: None,
-        },
-        (ChartKind::Histogram, prepared) => ChartRenderData::Histogram {
-            data: match prepared {
+            };
+            ChartRenderData::XY {
+                series: None,
+                breaks: None,
+                x_axis_kind,
+                x_bounds: None,
+                whole: xy_whole(x_axis_kind),
+            }
+        }
+        (ChartKind::Histogram, prepared) => {
+            let data = match prepared {
                 Some(ChartPrepared::Histogram(d)) => Some(d),
                 _ => None,
-            },
-        },
-        (ChartKind::BoxPlot, prepared) => ChartRenderData::BoxPlot {
-            data: match prepared {
+            };
+            ChartRenderData::Histogram {
+                data,
+                x_whole: data.and_then(|d| whole(&d.column)),
+            }
+        }
+        (ChartKind::BoxPlot, prepared) => {
+            let data = match prepared {
                 Some(ChartPrepared::BoxPlot(d)) => Some(d),
                 _ => None,
-            },
-        },
+            };
+            let columns: Vec<String> = data
+                .map(|d| d.stats.iter().map(|s| s.name.clone()).collect())
+                .unwrap_or_default();
+            ChartRenderData::BoxPlot {
+                data,
+                y_whole: all_whole(&columns),
+            }
+        }
         (ChartKind::Kde, prepared) => ChartRenderData::Kde {
             data: match prepared {
                 Some(ChartPrepared::Kde(d)) => Some(d),
                 _ => None,
             },
         },
-        (ChartKind::Heatmap, prepared) => ChartRenderData::Heatmap {
-            data: match prepared {
+        (ChartKind::Heatmap, prepared) => {
+            let data = match prepared {
                 Some(ChartPrepared::Heatmap(d)) => Some(d),
                 _ => None,
-            },
-        },
+            };
+            ChartRenderData::Heatmap {
+                data,
+                whole: WholeAxes {
+                    x: data.and_then(|d| whole(&d.x_column)),
+                    y: data.and_then(|d| whole(&d.y_column)),
+                },
+            }
+        }
         (ChartKind::Bar, prepared) => ChartRenderData::Bar {
             data: match prepared {
                 Some(ChartPrepared::Bar(d)) => Some(d),

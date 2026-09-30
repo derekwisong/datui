@@ -51,6 +51,33 @@ impl<'a> AxisSpec<'a> {
             title,
         }
     }
+
+    /// A whole-number axis's ticks: the whole numbers nearest the ends of `bounds`
+    /// inside them, and nearest halfway. On bounds from [`whole_span`] they are its
+    /// ends and middle, evenly spaced as a y axis needs.
+    pub fn whole(bounds: [f64; 2], label: TickLabel<'a>, title: &'a str) -> Self {
+        let [lo, hi] = bounds;
+        let (first, last) = (lo.ceil(), hi.floor());
+        let mut ticks = Vec::new();
+        if first <= last {
+            ticks.extend([first, ((lo + hi) / 2.0).round().clamp(first, last), last]);
+            ticks.dedup();
+        }
+        Self {
+            bounds,
+            ticks,
+            label,
+            title,
+        }
+    }
+}
+
+/// `bounds` widened to whole numbers an even span apart, so a whole-number y axis's
+/// middle tick is a whole number too.
+pub fn whole_span([lo, hi]: [f64; 2]) -> [f64; 2] {
+    let (lo, hi) = (lo.floor(), hi.ceil());
+    let span = (hi - lo).max(2.0);
+    [lo, lo + span + span % 2.0]
 }
 
 /// A chart's two axes and how they are drawn.
@@ -413,6 +440,23 @@ mod tests {
         assert!(frame.y_title.is_some() && frame.x_title.is_none());
         let (_, frame) = render(Rect::new(0, 0, 30, 5), g);
         assert!(frame.y_title.is_none() && frame.x_title.is_none());
+    }
+
+    /// A whole-number axis ticks only at whole numbers; a y axis widens so its evenly
+    /// spaced middle tick is one too.
+    #[test]
+    fn whole_number_ticks() {
+        let label = |_: f64, _: usize| None;
+        let ticks = |bounds| AxisSpec::whole(bounds, &label, "").ticks;
+        assert_eq!(ticks([0.0, 7.0]), [0.0, 4.0, 7.0]);
+        assert_eq!(ticks([-0.5, 2.5]), [0.0, 1.0, 2.0]);
+        assert_eq!(ticks([3.0, 4.0]), [3.0, 4.0]);
+        assert!(ticks([3.2, 3.8]).is_empty());
+        assert_eq!(whole_span([0.0, 4321.0]), [0.0, 4322.0]);
+        assert_eq!(whole_span([3.0, 10.0]), [3.0, 11.0]);
+        assert_eq!(whole_span([0.5, 1.5]), [0.0, 2.0]);
+        assert_eq!(whole_span([5.0, 5.0]), [5.0, 7.0]);
+        assert_eq!(ticks(whole_span([0.0, 1.0])), [0.0, 1.0, 2.0]);
     }
 
     /// A title longer than its row is cut with the set's ellipsis.

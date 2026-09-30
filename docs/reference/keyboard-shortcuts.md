@@ -205,8 +205,9 @@ In Data Quality:
 | <kbd>s</kbd> | Open the shared Sample form |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
 | In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date or time column there is nothing to assign, and the row says so |
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its frame counts the lines below |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its last row counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
+| <kbd>Enter</kbd> on a column | Open its detail: its findings, then what was measured; <kbd>Enter</kbd> again returns to the list |
 | <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
 | <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | In Trends, choose the measure the table draws |

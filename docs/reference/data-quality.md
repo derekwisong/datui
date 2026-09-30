@@ -41,7 +41,9 @@ rows were sampled of how many.
 ## The plan
 
 The plan shows the sample, profile grain, what is read, comparison, estimated
-rows and transfer direction; <kbd>p</kbd> shows the estimate basis. The rows
+rows and transfer direction. <kbd>p</kbd> shows the access plan: source,
+scope, grain, sample, rows evaluated, value reads, source files, the extra
+reads a type conflict costs, writes (none) and the estimate basis. The rows
 are the shared [sample](../user-guide/analysis-features.md#sampling): <kbd>s</kbd>, or <kbd>Space</kbd> on the
 Sample row, opens its form.
 
@@ -95,7 +97,8 @@ View Rows and <kbd>e</kbd> Plan.
 | <kbd>m</kbd> | Cycle the measure Trends draws: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | Rerun with a new sample seed, for every tool |
-| <kbd>Esc</kbd> | Back one level |
+| <kbd>Tab</kbd> | Move between the result and the tool list |
+| <kbd>Esc</kbd> | Back one level; from the plan, close Analysis |
 
 Every result states eligible and evaluated rows and whether values are exact,
 sampled, or metadata-only.
@@ -109,7 +112,12 @@ sampled, or metadata-only.
   when every row was read, from the sample when one was. <kbd>Esc</kbd> returns
   to the report.
 - **Columns** — a mark per column (problem, note or clean), its missing
-  count and its findings; <kbd>Enter</kbd> opens the column's measurements.
+  count and its findings. <kbd>Enter</kbd> opens the column's detail: its
+  findings first, then what was measured on it, one aligned row each (type,
+  missing, distinct, empty and blank text, NaN, range, most common value, text
+  length, what the text parses as, spellings). Values read as the table shows
+  them, number format included. <kbd>↑</kbd> <kbd>↓</kbd> move to the next
+  column; <kbd>Enter</kbd> or <kbd>Esc</kbd> returns to the list.
 - **Segments** — needs a Grain other than the whole dataset; until then the
   page says so and <kbd>Enter</kbd> opens the plan on Grain. One row per
   segment (`year=2019`, a file, a row chunk, a window) in the order its name
@@ -133,11 +141,14 @@ sampled, or metadata-only.
   part says what it needs when it has nothing, and <kbd>Enter</kbd> opens it:
   Time roles when the data has date columns, Grain otherwise.
 
-## Sampling and budgets
+<a id="sampling-and-budgets"></a>
+
+## Sampling
 
 Every grain reads the shared [sample](../user-guide/analysis-features.md#sampling), the same rows every tool
 reads, and splits it into segments. Only a full scan (the sample's method set
-to Every row) asks for confirmation.
+to Every row) asks first: the **Full Scan** dialog, <kbd>Enter</kbd> to run,
+<kbd>Esc</kbd> to cancel.
 
 | | |
 |---|---|

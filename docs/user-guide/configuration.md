@@ -56,8 +56,8 @@ datui data.csv --row-numbers
 datui data.csv --sample-rows 0
 ```
 
-The second command makes Describe, Distribution and Correlation read every row.
-It does not change Data Quality's separate sample budget.
+The second command makes every analysis tool, Data Quality included, read
+every row.
 
 Imports have a limitation: values equal to built-in defaults may be treated
 as unset. See [import precedence](../reference/settings.md#importing-other-config-files)

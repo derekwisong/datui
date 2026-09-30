@@ -26,7 +26,7 @@ datui --sample-rows 50000 events.parquet
 
 Use `--sample-rows 0` to analyze every row, or press <kbd>a</kbd> on a sampled
 result and confirm. <kbd>Esc</kbd> cancels a run.
-[Data Quality](../user-guide/data-quality.md) has separate scope and sample budgets.
+[Data Quality](../user-guide/data-quality.md) reads the same sample.
 
 Chart **Limit Rows** caps input rows; it does not produce a representative
 random sample. For a time series, aggregate the whole period before charting

@@ -305,7 +305,8 @@ table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
 replayed in order once the work is done — except a bare <kbd>Enter</kbd> or
 <kbd>Esc</kbd>, which is dropped. At most 32 keys are held, and held keys
 die with the screen they were typed at. At the loading screen nothing is
-held: the allowed keys act, the rest are dropped.
+held: the allowed keys act, the rest are dropped. While a view is applied,
+<kbd>Esc</kbd> stops it and keeps the table as it was.
 
 ## Terminal notes
 

@@ -71,6 +71,16 @@ fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<App
     }
 }
 
+/// Handle events until no background work is left.
+fn settle(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    while let Some(event) = next_event(app, rx) {
+        let mut next = app.event(&event);
+        while let Some(event) = next.take() {
+            next = app.event(&event);
+        }
+    }
+}
+
 fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: PathBuf) {
     load_file_with(app, rx, path, OpenOptions::default());
 }
@@ -652,6 +662,9 @@ fn test_template_save_and_apply_pivot() {
     );
 
     send_key(&mut app, KeyCode::Char('V'));
+    // The pivot is read in the background.
+    assert!(app.is_busy());
+    settle(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();

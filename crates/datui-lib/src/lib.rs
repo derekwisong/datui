@@ -1558,10 +1558,13 @@ mod template_rollback_tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// A template that pivots and then fails must roll the pivot back too: otherwise the
-    /// view shows the original columns while SQL still runs against the pivot.
-    #[test]
-    fn a_failed_template_rolls_back_the_reshape() {
+    /// An app with `long.csv` open, `id,key,val` over five ids, and views of its own.
+    fn long_csv_app() -> (
+        App,
+        mpsc::Receiver<AppEvent>,
+        mpsc::Sender<AppEvent>,
+        tempfile::TempDir,
+    ) {
         crate::tests::ensure_sample_data();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("long.csv");
@@ -1572,11 +1575,17 @@ mod template_rollback_tests {
         std::fs::write(&path, body).unwrap();
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
+        app.template_manager = TemplateManager::new(&config).unwrap();
         open(&mut app, &rx, &tx, path);
+        (app, rx, tx, dir)
+    }
 
+    /// A view of `long.csv` that pivots `key` into columns.
+    fn pivot_view(app: &mut App, name: &str) -> Template {
         let mut template = app
             .create_template_from_current_state(
-                "pivot then break".to_string(),
+                name.to_string(),
                 None,
                 template::MatchCriteria {
                     exact_path: None,
@@ -1595,10 +1604,81 @@ mod template_rollback_tests {
             aggregation: pivot_melt_modal::PivotAggregation::First,
             sort_columns: None,
         });
+        template.settings.column_order.clear();
+        template
+    }
+
+    fn columns(app: &App) -> Vec<String> {
+        let state = app.data_table_state.as_ref().unwrap();
+        state.schema.iter_names().map(|s| s.to_string()).collect()
+    }
+
+    /// Applying a view plans its steps and returns: the pivot is read by a worker,
+    /// with the table as it was and busy meanwhile, and installed when it is in.
+    #[test]
+    fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let template = pivot_view(&mut app, "pivot");
+
+        assert!(app.apply_template(&template).is_ok());
+        assert!(app.is_busy(), "the pivot is read in the background");
+        assert!(app.view_applying());
+        assert_eq!(columns(&app), ["id", "key", "val"], "nothing changed yet");
+        assert!(app.active_template_id.is_none());
+
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        assert!(!app.error_modal.active, "{}", app.error_modal.message);
+        assert_eq!(columns(&app), ["id", "k1", "k2"]);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.last_pivot_spec().is_some());
+        assert_eq!(state.display_df().map(|df| df.height()), Some(5));
+        assert_eq!(
+            app.active_template_id.as_deref(),
+            Some(template.id.as_str())
+        );
+    }
+
+    /// Without a pivot every step plans at once, and the first rows are read in the
+    /// background.
+    #[test]
+    fn a_view_returns_before_its_rows_are_read() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "sorted");
+        template.settings.pivot = None;
+        template.settings.sort_columns = vec!["val".to_string()];
+        template.settings.sort_descending = vec![true];
+
+        assert!(app.apply_template(&template).is_ok());
+        assert!(app.is_busy(), "the rows are read in the background");
+        assert!(app.view_applying());
+        assert!(
+            !app.data_table_state.as_ref().unwrap().is_num_rows_valid(),
+            "not even counted"
+        );
+
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        let state = app.data_table_state.as_ref().unwrap();
+        let first = state.display_df().unwrap().column("val").unwrap().get(0);
+        assert_eq!(first.unwrap(), AnyValue::Int64(40));
+        assert_eq!(
+            app.active_template_id.as_deref(),
+            Some(template.id.as_str())
+        );
+    }
+
+    /// A template that pivots and then fails must roll the pivot back too: otherwise the
+    /// view shows the original columns while SQL still runs against the pivot.
+    #[test]
+    fn a_failed_template_rolls_back_the_reshape() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "pivot then break");
         // Applied after the pivot, and referring to a column that does not exist.
         template.settings.column_order = vec!["no_such_column".to_string()];
 
-        assert!(app.apply_template(&template).is_err());
+        let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
+        assert!(app.apply_template(&template).is_ok(), "the pivot plans");
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        assert!(app.error_modal.active, "the step after it fails");
 
         let state = app.data_table_state.as_ref().unwrap();
         let root: Vec<String> = state
@@ -1615,6 +1695,147 @@ mod template_rollback_tests {
         );
         assert!(state.last_pivot_spec().is_none());
         assert!(state.reshaped_lf_clone().is_none());
+        assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
+        assert!(app.active_template_id.is_none());
+    }
+
+    /// A pivot that fails on the data, in the worker, leaves the table as it was.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "cast then pivot");
+        template.settings.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+            sql_query: Some("SELECT id, key, CAST(key AS INT) AS val FROM df".to_string()),
+            ..Default::default()
+        });
+
+        let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
+        assert!(app.apply_template(&template).is_ok(), "it plans");
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+
+        assert!(app.error_modal.active, "the failure is said");
+        assert_eq!(columns(&app), ["id", "key", "val"]);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.active_sql_query.is_empty());
+        assert!(state.last_pivot_spec().is_none());
+        assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
+        assert!(app.active_template_id.is_none());
+    }
+
+    /// Esc while a view's pivot is read acts at once, even with keys held, and keeps
+    /// the table; the pivot's answer is dropped when it lands.
+    #[test]
+    fn esc_cancels_a_view_being_pivoted() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let template = pivot_view(&mut app, "pivot");
+        assert!(app.apply_template(&template).is_ok());
+
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.hard_escape_while_busy(&esc), "it jumps the queue");
+        app.event(&AppEvent::Key(esc));
+        assert!(!app.is_busy());
+        assert!(!app.view_applying());
+        assert_eq!(app.flash_message(), Some("View cancelled"));
+
+        // The worker still answers; its answer is stale.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let event = rx.recv_timeout(std::time::Duration::from_secs(1));
+            if let Ok(event) = event {
+                let pivot = matches!(event, AppEvent::ViewPivotReady { .. });
+                if let Some(next) = app.event(&event) {
+                    let _ = tx.send(next);
+                }
+                if pivot {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "the pivot never came");
+        }
+        assert_eq!(columns(&app), ["id", "key", "val"]);
+        assert!(app.active_template_id.is_none());
+        assert!(!app.is_busy());
+    }
+
+    /// Esc while a view's first rows are read puts the view before it back.
+    #[test]
+    fn esc_cancels_a_view_being_read() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "narrow");
+        template.settings.pivot = None;
+        template.settings.column_order = vec!["id".to_string(), "val".to_string()];
+        assert!(app.apply_template(&template).is_ok());
+        assert!(app.view_applying());
+
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.get_column_order(), ["id", "key", "val"]);
+        assert_eq!(state.display_df().map(|df| df.width()), Some(3));
+        assert!(app.active_template_id.is_none());
+        assert!(!app.error_modal.active);
+    }
+
+    /// A pivot answering for a generation since passed is dropped, and the view it
+    /// belonged to is left waiting on its own.
+    #[test]
+    fn a_stale_view_pivot_is_dropped() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let template = pivot_view(&mut app, "pivot");
+        assert!(app.apply_template(&template).is_ok());
+        let current = app.task_generation;
+
+        let stale = polars::prelude::df!("id" => [1i64], "zz" => [2i64]).unwrap();
+        app.event(&AppEvent::ViewPivotReady {
+            generation: current.wrapping_sub(1),
+            pivoted: Ok(stale),
+        });
+        assert_eq!(
+            columns(&app),
+            ["id", "key", "val"],
+            "the stale one is dropped"
+        );
+        assert!(app.view_applying(), "the view still waits on its own");
+
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        assert_eq!(columns(&app), ["id", "k1", "k2"]);
+    }
+
+    /// A view applied on open reads the first rows itself: the dataset's own are never
+    /// asked for, and the view's pivot is what the table shows.
+    #[test]
+    fn a_view_applied_on_open_reads_the_rows_once() {
+        let (mut app, rx, tx, dir) = long_csv_app();
+        let template = pivot_view(&mut app, "on open");
+        app.template_manager.update_template(&template).unwrap();
+
+        app.startup_template = Some("on open".to_string());
+        let path = dir.path().join("long.csv");
+        let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+        let mut loads = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            while let Some(event) = next.take() {
+                loads += usize::from(matches!(event, AppEvent::DoLoadBuffer));
+                next = app.event(&event);
+            }
+            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the open never ended");
+            next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+        }
+        drop(tx);
+        assert_eq!(loads, 0, "the view reads the first rows");
+        assert!(!app.error_modal.active, "{}", app.error_modal.message);
+        assert_eq!(columns(&app), ["id", "k1", "k2"]);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.display_df().map(|df| df.height()), Some(5));
+        assert!(matches!(app.loading_state, LoadingState::Idle));
     }
 
     /// Rolling a failed template back restores the frame, and the frame's rows still
@@ -6072,6 +6293,11 @@ pub enum AppEvent {
         spec: PivotSpec,
         pivoted: std::result::Result<DataFrame, String>,
     },
+    /// A view's pivot, read off the UI thread. The error is a message for the user.
+    ViewPivotReady {
+        generation: u64,
+        pivoted: std::result::Result<DataFrame, String>,
+    },
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
     /// Collect and format the whole view off-thread for a table-scope copy.
@@ -6763,32 +6989,20 @@ fn active_query_settings(
     }
 }
 
-// Helper struct to save state before template application
-struct TemplateApplicationState {
-    lf: LazyFrame,
-    base_lf: LazyFrame,
-    reshaped_lf: Option<LazyFrame>,
-    pivot: Option<PivotSpec>,
-    melt: Option<MeltSpec>,
-    reshape_source: Option<pivot_melt_modal::ReshapeSource>,
-    schema: Arc<Schema>,
-    active_query: String,
-    active_sql_query: String,
-    active_fuzzy_query: String,
-    filters: Vec<FilterStatement>,
-    sort_columns: Vec<String>,
-    sort_descending: Vec<bool>,
-    sort_ascending: bool,
-    column_order: Vec<String>,
-    locked_columns_count: usize,
-    /// Whether `lf` carries the hidden drift column, and what its groups mean. Rolling
-    /// the frame back without these would leave the two disagreeing.
-    drift: bool,
-    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
-    notes: Vec<crate::notes::Note>,
-    /// Whether the notes had already been offered. A rollback is not news, so the
-    /// quiet accent on `i` should be where the user left it afterwards.
-    notes_seen: bool,
+/// A view waiting on its pivot, read in the background. Nothing on screen has changed
+/// yet: when the pivot is in, the view's steps are planned again around it.
+struct PendingView {
+    generation: u64,
+    template: Template,
+}
+
+/// How far planning a view's steps got.
+enum Replayed {
+    /// Every step is planned; the view's rows are still to be read.
+    Planned,
+    /// Stopped at the pivot, which has to be read before the steps after it can be
+    /// planned.
+    Pivot(Box<crate::widgets::datatable::PivotJob>),
 }
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
@@ -7588,6 +7802,8 @@ pub struct App {
     reading_sample: bool,
     /// The generation a pivot from the modal was read under, while it is read.
     pivot_generation: Option<u64>,
+    /// A view being applied whose pivot is still being read.
+    view_pivot: Option<PendingView>,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -8608,9 +8824,11 @@ impl App {
         let leave_quality_evidence = self.quality_evidence_return.is_some()
             && self.input_mode == InputMode::Normal
             && key.code == KeyCode::Esc;
+        let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         quit || home
             || cancel_analysis
             || cancel_pivot
+            || cancel_view
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -8946,6 +9164,9 @@ impl App {
     /// The wait while the rows for the view are fetched.
     pub const LOADING_BUFFER: &'static str = "Loading buffer...";
 
+    /// The wait while a view's pivot or first rows are read.
+    const APPLYING_VIEW: &'static str = "Applying view...";
+
     /// The wait while a grouped row the buffer does not hold is read to drill into.
     const READING_GROUP: &'static str = "Reading the group...";
 
@@ -9113,13 +9334,15 @@ impl App {
         true
     }
 
+    /// Install a loaded dataset and apply the view it opens with, if any. Returns
+    /// whether that view is reading the first rows, which the caller then leaves to it.
     fn apply_schema_ready(
         &mut self,
         state: DataTableState,
         path: Option<PathBuf>,
         options: &OpenOptions,
         debug_label: Option<String>,
-    ) {
+    ) -> bool {
         // Installing a dataset is the point of no return for abandonment, so every
         // caller has to have checked. A new one that forgets swaps a dataset in
         // underneath the home screen.
@@ -9143,8 +9366,9 @@ impl App {
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
         // A query still running was over the dataset being replaced; its rollback
-        // is that dataset's view.
+        // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;
+        self.view_pivot = None;
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -9212,26 +9436,33 @@ impl App {
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
         self.active_template_id = None;
-        if let Some(name) = self.startup_template.take() {
-            match self.template_manager.get_template_by_name(&name).cloned() {
-                Some(template) => {
-                    if let Err(e) = self.apply_template(&template) {
-                        self.error_modal
-                            .show(format!("Error applying view \"{name}\": {e}"));
-                    }
+        let template = match self.startup_template.take() {
+            Some(name) => match self.template_manager.get_template_by_name(&name).cloned() {
+                Some(template) => Some(template),
+                None => {
+                    self.error_modal.show(format!("No view named \"{name}\""));
+                    None
                 }
-                None => self.error_modal.show(format!("No view named \"{name}\"")),
+            },
+            None if self.app_config.templates.auto_apply => self.path.clone().and_then(|path| {
+                self.data_table_state.as_ref().and_then(|state| {
+                    self.template_manager
+                        .get_most_relevant(&path, state.source_schema())
+                })
+            }),
+            None => None,
+        };
+        let Some(template) = template else {
+            return false;
+        };
+        match self.apply_template(&template) {
+            // The view reads its own first rows, so the dataset's are never read.
+            Ok(()) => true,
+            Err(e) => {
+                self.error_modal
+                    .show(format!("Error applying view \"{}\": {e}", template.name));
+                false
             }
-        } else if self.app_config.templates.auto_apply
-            && let Some(path) = self.path.clone()
-            && let Some(template) = self.data_table_state.as_ref().and_then(|state| {
-                self.template_manager
-                    .get_most_relevant(&path, state.source_schema())
-            })
-            && let Err(e) = self.apply_template(&template)
-        {
-            self.error_modal
-                .show(format!("Error applying view \"{}\": {e}", template.name));
         }
     }
 
@@ -9766,6 +9997,7 @@ impl App {
             quality_evidence_label: None,
             reading_sample: false,
             pivot_generation: None,
+            view_pivot: None,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -14178,6 +14410,13 @@ impl App {
         // the textarea's Copy binding and must reach it.
         if ctrl && event.code == KeyCode::Char('c') && !self.text_field_focused() {
             return Some(AppEvent::Exit);
+        }
+
+        // Acts at once (see `hard_escape_while_busy`), ahead of the keys held behind
+        // the view.
+        if event.code == KeyCode::Esc && self.view_applying() {
+            self.cancel_view();
+            return None;
         }
 
         if event.code == KeyCode::Esc
@@ -18659,17 +18898,9 @@ impl App {
                 }
                 // A query that failed on its first rows is not applied: the table,
                 // its schema and its row count go back to what they were (#400).
-                if let Some(run) = self.take_query_run()
-                    && let Some(state) = self.data_table_state.as_mut()
-                {
-                    state.roll_back(run.rollback);
-                    match run.len_counted {
-                        Some((_, Some(groups))) => state.set_file_row_groups(&groups),
-                        Some((rows, None)) => state.set_num_rows(rows),
-                        None => {}
-                    }
-                    self.len_count_inflight = run.len_count_inflight;
-                    self.len_count_failed = run.len_count_failed;
+                if let Some(run) = self.take_query_run() {
+                    let rows = run.rows;
+                    let origin = self.roll_back_query_run(run);
                     self.collect_inflight = None;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
@@ -18677,11 +18908,11 @@ impl App {
                     // Run from the prompt, the reason goes under the query, which
                     // stays open to be fixed. Sent any other way — a view applied —
                     // there is nothing to edit, and the error modal says why.
-                    let mode = match run.origin {
-                        RunOrigin::View { previous } => {
-                            self.active_template_id = previous;
+                    let mode = match origin {
+                        RunOrigin::View { .. } => {
                             self.error_modal
                                 .show(format!("Error applying view: {message}"));
+                            self.read_after_view_rollback();
                             return None;
                         }
                         RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
@@ -18692,7 +18923,7 @@ impl App {
                     };
                     let sql = mode == QueryMode::Sql;
                     self.query_run_error = Some(match conversion {
-                        Some(failure) if sql => failure.sql_message(run.rows),
+                        Some(failure) if sql => failure.sql_message(rows),
                         _ => message.clone(),
                     });
                     self.inline_failures = self.inline_failures.wrapping_add(1);
@@ -18775,7 +19006,14 @@ impl App {
                     if let Some((slot_gen, state)) = taken
                         && slot_gen == self.task_generation
                     {
-                        self.apply_schema_ready(state, path.clone(), options, debug_label.clone());
+                        if self.apply_schema_ready(
+                            state,
+                            path.clone(),
+                            options,
+                            debug_label.clone(),
+                        ) {
+                            return None;
+                        }
                         return Some(AppEvent::DoLoadBuffer);
                     }
                     // Generation matched but slot was empty or stale — loading failed silently.
@@ -19259,6 +19497,56 @@ impl App {
                 if let Some(state) = &mut self.data_table_state {
                     state.set_column_order(order.clone());
                     state.set_locked_columns(*locked_count);
+                }
+                None
+            }
+            AppEvent::ViewPivotReady {
+                generation,
+                pivoted,
+            } => {
+                // A bump means the view was cancelled or something replaced it; its
+                // owner has the busy state.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                let pending = self
+                    .view_pivot
+                    .take_if(|pending| pending.generation == *generation)?;
+                let planned = match pivoted {
+                    Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
+                        // Nothing changed while the pivot was read, so the steps before
+                        // it plan as they did; this time the pivot is in hand.
+                        let rollback = state.rollback_point();
+                        state.error = None;
+                        state.defer_collect = true;
+                        let replayed = Self::replay_view(
+                            state,
+                            &pending.template.settings,
+                            Some(pivoted.clone()),
+                        );
+                        state.defer_collect = false;
+                        match replayed {
+                            Ok(_) => Ok(rollback),
+                            Err(e) => {
+                                state.roll_back(rollback);
+                                Err(e.to_string())
+                            }
+                        }
+                    }),
+                    Err(message) => Some(Err(message.clone())),
+                };
+                match planned {
+                    // The busy state passes to the read of its rows.
+                    Some(Ok(rollback)) => self.view_planned(&pending.template, rollback),
+                    Some(Err(message)) => {
+                        self.error_modal
+                            .show(format!("Error applying view: {message}"));
+                        self.read_after_view_rollback();
+                    }
+                    None => {
+                        self.busy = false;
+                        self.status_message = None;
+                    }
                 }
                 None
             }
@@ -20023,112 +20311,169 @@ impl App {
         (has_partitions, has_notes)
     }
 
-    /// The pipeline state a failed template application is rolled back to.
-    fn snapshot_state(&self) -> Option<TemplateApplicationState> {
-        self.data_table_state
-            .as_ref()
-            .map(|state| TemplateApplicationState {
-                lf: state.lf.clone(),
-                base_lf: state.base_lf_clone(),
-                reshaped_lf: state.reshaped_lf_clone(),
-                pivot: state.last_pivot_spec().cloned(),
-                melt: state.last_melt_spec().cloned(),
-                reshape_source: state.reshape_source().cloned(),
-                schema: state.schema.clone(),
-                active_query: state.active_query.clone(),
-                active_sql_query: state.get_active_sql_query().to_string(),
-                active_fuzzy_query: state.get_active_fuzzy_query().to_string(),
-                // The filters and sort applied to the frame being snapshotted (`lf`),
-                // not the grouped view's when drilled.
-                filters: state.view_filters().to_vec(),
-                sort_columns: state.view_sort_columns().to_vec(),
-                sort_descending: state.view_sort_descending().to_vec(),
-                sort_ascending: state.view_sort_ascending(),
-                column_order: state.get_column_order().to_vec(),
-                locked_columns_count: state.locked_columns_count(),
-                drift: state.drifts(),
-                drift_groups: state.drift_groups(),
-                notes: state.dataset_notes().to_vec(),
-                notes_seen: state.notes_seen(),
-            })
-    }
-
+    /// Start applying `template`. Its steps are planned here, which reads nothing; a
+    /// step that cannot be planned fails here and changes nothing. The reads — a pivot,
+    /// then the view's first rows — run in the background, and the view is installed
+    /// when they are in. One that fails there puts the view before it back (#400).
     fn apply_template(&mut self, template: &Template) -> Result<()> {
-        // Save state before applying template so we can restore on failure
-        let saved_state = self.snapshot_state();
-        let saved_active_template_id = self.active_template_id.clone();
-        // A query in the view can still fail on the data once its rows are read,
-        // after this returns; then the view as it is now comes back (#400).
-        let settings = &template.settings;
-        let source_queries = settings
-            .reshape_source
-            .iter()
-            .flat_map(|source| [&source.sql_query, &source.query, &source.fuzzy_query]);
-        let has_query = [&settings.sql_query, &settings.query, &settings.fuzzy_query]
-            .into_iter()
-            .chain(source_queries)
-            .any(|q| q.as_deref().is_some_and(|q| !q.trim().is_empty()));
-        let rollback = self
-            .data_table_state
-            .as_ref()
-            .filter(|_| has_query)
-            .map(|state| state.rollback_point());
-
-        if let Some(state) = &mut self.data_table_state {
-            state.error = None;
-            if let Err(e) = Self::replay_view(state, &template.settings) {
-                if let Some(saved) = saved_state {
-                    self.restore_state(saved);
+        self.view_pivot = None;
+        let Some(state) = self.data_table_state.as_mut() else {
+            return Ok(());
+        };
+        let rollback = state.rollback_point();
+        state.error = None;
+        state.defer_collect = true;
+        let replayed = Self::replay_view(state, &template.settings, None);
+        state.defer_collect = false;
+        match replayed {
+            Err(e) => {
+                state.roll_back(rollback);
+                Err(e)
+            }
+            Ok(Replayed::Planned) => {
+                self.view_planned(template, rollback);
+                Ok(())
+            }
+            Ok(Replayed::Pivot(job)) => {
+                // The table stays as it is while the pivot is read.
+                state.roll_back(rollback);
+                // Past any load-ahead for the view on screen, whose rows must not land
+                // in the one that replaces it.
+                if !self.work_a_bump_would_strand() {
+                    self.task_generation = self.task_generation.wrapping_add(1);
                 }
-                self.active_template_id = saved_active_template_id;
-                return Err(e);
+                self.view_pivot = Some(PendingView {
+                    generation: self.task_generation,
+                    template: template.clone(),
+                });
+                self.spawn_bg(Self::APPLYING_VIEW, move |task_gen, tx| {
+                    let pivoted = job
+                        .run()
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+                    let _ = tx.send(AppEvent::ViewPivotReady {
+                        generation: task_gen,
+                        pivoted,
+                    });
+                });
+                Ok(())
             }
         }
+    }
 
-        // Update template usage statistics
-        // Note: We need to clone and update the template, then save it
-        // For now, we'll update the template manager's internal state
-        // A more complete implementation would reload templates after saving
+    /// The view's steps are planned over `rollback`, the view it replaces: mark it
+    /// applied and read its first rows. Until they are in, a failure puts `rollback`
+    /// back and the view marked applied before it.
+    fn view_planned(
+        &mut self,
+        template: &Template,
+        rollback: crate::widgets::datatable::ViewRollback,
+    ) {
         if let Some(path) = &self.path {
-            let mut updated_template = template.clone();
-            updated_template.last_used = Some(std::time::SystemTime::now());
-            updated_template.usage_count += 1;
-            updated_template.last_matched_file = Some(path.clone());
-
-            // Save updated template
-            let _ = self.template_manager.save_template(&updated_template);
+            let mut used = template.clone();
+            used.last_used = Some(std::time::SystemTime::now());
+            used.usage_count += 1;
+            used.last_matched_file = Some(path.clone());
+            let _ = self.template_manager.save_template(&used);
         }
+        let previous = self.active_template_id.replace(template.id.clone());
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        self.query_running = Some(QueryRun {
+            origin: RunOrigin::View { previous },
+            frame: state.len_generation(),
+            rollback,
+            len_count_inflight: self.len_count_inflight,
+            len_count_failed: self.len_count_failed,
+            len_counted: None,
+            rows: None,
+        });
+        if !self.spawn_async_collect(Self::APPLYING_VIEW) {
+            // Nothing to read: the view has no rows.
+            self.query_running = None;
+            self.busy = false;
+            self.status_message = None;
+        }
+    }
 
-        if let Some(rollback) = rollback
-            && let Some(state) = self.data_table_state.as_ref()
+    /// Whether a view is being applied at the table: its pivot or its first rows are
+    /// being read.
+    fn view_applying(&self) -> bool {
+        if !self.busy
+            || self.input_mode != InputMode::Normal
+            || self.error_modal.active
+            || self.show_help
         {
-            self.query_running = Some(QueryRun {
-                origin: RunOrigin::View {
-                    previous: saved_active_template_id,
-                },
-                frame: state.len_generation(),
-                rollback,
-                len_count_inflight: self.len_count_inflight,
-                len_count_failed: self.len_count_failed,
-                len_counted: None,
-                rows: None,
-            });
+            return false;
         }
+        let pivot = self
+            .view_pivot
+            .as_ref()
+            .is_some_and(|pending| pending.generation == self.task_generation);
+        let rows = self.query_running.as_ref().is_some_and(|run| {
+            matches!(run.origin, RunOrigin::View { .. })
+                && self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.len_generation() == run.frame)
+        });
+        pivot || rows
+    }
 
-        // Track active template
-        self.active_template_id = Some(template.id.clone());
+    /// Stop applying a view and keep the one before it. As with a pivot, a worker runs
+    /// to the end and the bump drops its answer.
+    fn cancel_view(&mut self) {
+        self.task_generation = self.task_generation.wrapping_add(1);
+        self.screen_generation = self.screen_generation.wrapping_add(1);
+        self.view_pivot = None;
+        if let Some(run) = self.take_query_run() {
+            self.roll_back_query_run(run);
+        }
+        self.collect_inflight = None;
+        self.read_after_view_rollback();
+        self.flash_note("View cancelled".to_string());
+    }
 
-        Ok(())
+    /// Put back the view a running query or view replaced, with its row count, and
+    /// return where the query came from.
+    fn roll_back_query_run(&mut self, run: QueryRun) -> RunOrigin {
+        if let Some(state) = self.data_table_state.as_mut() {
+            state.roll_back(run.rollback);
+            match run.len_counted {
+                Some((_, Some(groups))) => state.set_file_row_groups(&groups),
+                Some((rows, None)) => state.set_num_rows(rows),
+                None => {}
+            }
+        }
+        self.len_count_inflight = run.len_count_inflight;
+        self.len_count_failed = run.len_count_failed;
+        if let RunOrigin::View { previous } = &run.origin {
+            self.active_template_id = previous.clone();
+        }
+        run.origin
+    }
+
+    /// The view before a failed or cancelled one is back: read its rows if it has none
+    /// on hand, as when the view was applied on open, else stop being busy.
+    fn read_after_view_rollback(&mut self) {
+        self.busy = false;
+        self.status_message = None;
+        if !self.spawn_async_collect(Self::LOADING_BUFFER)
+            && matches!(self.loading_state, LoadingState::Loading { .. })
+        {
+            self.loading_state = LoadingState::Idle;
+        }
     }
 
     /// Run a view's steps on `state` in the order they were built. With a pivot or melt:
     /// the query, filters and sort it ran over, the reshape, then the query, filters and
     /// sort on its result. Without one: the query, filters and sort. Column order last.
-    /// Stops at the first step that fails.
+    /// Stops at the first step that fails, and at a pivot unless `pivoted` holds it.
     fn replay_view(
         state: &mut DataTableState,
         settings: &template::TemplateSettings,
-    ) -> Result<()> {
+        pivoted: Option<DataFrame>,
+    ) -> Result<Replayed> {
         if settings.pivot.is_some() || settings.melt.is_some() {
             if let Some(source) = &settings.reshape_source {
                 Self::replay_query(
@@ -20144,10 +20489,14 @@ impl App {
                     source.sort_directions(),
                 )?;
             }
-            let reshaped = match (&settings.pivot, &settings.melt) {
-                (Some(spec), _) => state.pivot(spec),
-                (None, Some(spec)) => state.melt(spec),
-                (None, None) => Ok(()),
+            let reshaped = match (&settings.pivot, &settings.melt, pivoted) {
+                (Some(spec), _, Some(pivoted)) => state.install_pivot(spec, pivoted),
+                (Some(spec), _, None) => {
+                    Self::check_plan(state)?;
+                    return Ok(Replayed::Pivot(Box::new(state.plan_pivot(spec))));
+                }
+                (None, Some(spec), _) => state.melt(spec),
+                (None, None, _) => Ok(()),
             };
             reshaped.map_err(|e| {
                 color_eyre::eyre::eyre!(
@@ -20170,15 +20519,17 @@ impl App {
         )?;
         if !settings.column_order.is_empty() {
             state.set_column_order(settings.column_order.clone());
-            if let Some(error) = state.error.clone() {
-                return Err(color_eyre::eyre::eyre!("{}", error));
-            }
             state.set_locked_columns(settings.locked_columns_count);
-            if let Some(error) = state.error.clone() {
-                return Err(color_eyre::eyre::eyre!("{}", error));
-            }
         }
-        Ok(())
+        Self::check_plan(state)?;
+        Ok(Replayed::Planned)
+    }
+
+    /// Whether the frame the steps so far built can be read, by its plan alone.
+    fn check_plan(state: &DataTableState) -> Result<()> {
+        state.check_plan().map_err(|e| {
+            color_eyre::eyre::eyre!("{}", crate::error_display::user_message_from_polars(&e))
+        })
     }
 
     /// A view's query: SQL or q-style (at most one is stored), then a search.
@@ -20534,72 +20885,6 @@ impl App {
         let lf = format.prepare(state.visible_lf())?;
         let mut df = crate::statistics::collect_lazy(lf, state.polars_streaming)?;
         Self::export_data_from_df(&mut df, path, format, options)
-    }
-
-    fn restore_state(&mut self, saved: TemplateApplicationState) {
-        if let Some(state) = &mut self.data_table_state {
-            // Clone saved lf and schema so we can restore them after applying methods
-            let saved_lf = saved.lf.clone();
-            let saved_schema = saved.schema.clone();
-
-            // Restore lf and schema directly (these are public fields)
-            // This preserves the exact LazyFrame state from before template application
-            state.lf = saved.lf;
-            state.set_base_lf(saved.base_lf);
-            // Before the filter and sort below, not after. They rebuild the notes about
-            // what the view leaves out, and they can only do that while the state still
-            // knows the rows stand for rows of a file — which the failed template's own
-            // query turned off. Put back afterwards instead and the restored frame goes
-            // on leaving rows out with nothing on screen saying why.
-            state.restore_drift(saved.drift, saved.drift_groups, saved.notes);
-            // Without this a template that pivoted and then failed would leave the
-            // pivot as the root SQL runs against while the view shows none.
-            state.restore_reshape(
-                saved.reshaped_lf,
-                saved.pivot,
-                saved.melt,
-                saved.reshape_source,
-            );
-            state.schema = saved.schema;
-            state.active_query = saved.active_query;
-            state.active_sql_query = saved.active_sql_query;
-            state.active_fuzzy_query = saved.active_fuzzy_query;
-            state.error = None;
-            // The projection first: these two decide what the frame is read as, and a
-            // filter or sort applied while the template's column order is still in
-            // place collects against a column that may not be there. That used to
-            // error, and each step here was guarded on the one before, so the rest of
-            // the rollback was abandoned — leaving the template's sort in the sidebar
-            // over the user's own frame.
-            state.set_column_order(saved.column_order.clone());
-            state.set_locked_columns(saved.locked_columns_count);
-            // Unguarded, for the same reason: a rollback that stops half way leaves a
-            // state neither the template's nor the user's. Whatever these make of the
-            // frame is thrown away two lines below; what they are here for is the view
-            // state they set on the way, and every one of them has to be the user's.
-            state.filter(saved.filters.clone());
-            if saved.sort_columns.is_empty() {
-                // Nothing sorted: `sort_ascending` alone carries a reversed natural order.
-                state.sort(Vec::new(), saved.sort_ascending);
-            } else {
-                state.sort_by(saved.sort_columns.clone(), saved.sort_descending.clone());
-            }
-            // Restore the exact saved lf and schema (in case filter/sort modified them)
-            state.lf = saved_lf;
-            state.schema = saved_schema;
-            // The count is left as the rebuild above measured it. `base_lf` follows
-            // every pipeline root, so what `sort` rebuilt from it is the same frame
-            // this one is, and invalidating here only threw the footer count away and
-            // made the next `collect` count a remote dataset over again, on this
-            // thread, for a number it already had.
-            //
-            // Any error those steps raised was about a frame that is no longer here.
-            state.error = None;
-            if saved.notes_seen {
-                state.mark_notes_seen();
-            }
-            state.collect();
-        }
     }
 
     pub fn create_template_from_current_state(

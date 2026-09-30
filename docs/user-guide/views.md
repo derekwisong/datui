@@ -23,6 +23,10 @@ to store. In the description field, <kbd>Enter</kbd> inserts a newline;
 
 Or from the command line: `datui --template quarterly data.csv`.
 
+A view's pivot and first rows are read in the background, with a spinner in
+the bottom bar. <kbd>Esc</kbd> stops it and keeps the table as it was. A view
+that fails on the data is not applied, and a dialog says why.
+
 ## List controls
 
 Views are listed by how well they fit the open file. A check mark marks the

@@ -953,7 +953,7 @@ mod tests {
         p2.app.chart_modal.active = true;
         p2.app
             .chart_modal
-            .open(&["a".to_string(), "b".to_string()], &[], None);
+            .open(&["a".to_string(), "b".to_string()], &[], None, 0);
         p2.app.chart_modal.focus = ChartFocus::XColumn;
         assert!(
             !p2.app.text_field_focused(),

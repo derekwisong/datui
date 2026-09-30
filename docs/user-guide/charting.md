@@ -13,23 +13,43 @@ Open the [quick-start penguin data](../getting-started/quick-start.md), then:
 
 Use <kbd>Tab</kbd> to move through settings and <kbd>Space</kbd> to open a
 column picker. Type part of a name to narrow it; on Y, <kbd>Space</kbd>
-toggles a series and <kbd>Enter</kbd> closes the picker.
+toggles a series and <kbd>Enter</kbd> closes the picker. The Y picker leaves
+out the X column.
 The chart contains the 342 rows with both measurements present.
+
+Points are drawn in X order, so a line runs left to right whatever order the
+table is in. Nulls are dropped per series: a row with no X is left out, and a
+missing Y drops that series' point and breaks its line. Other series keep
+their points.
+
+Esc keeps the chart as you left it: sort or filter the table, press
+<kbd>c</kbd>, and the same columns chart the new view. A column the view no
+longer has is dropped from the chart. Opening another dataset starts over.
 
 ## Chart types
 
 | Tab | Plots | Columns | Options |
 |---|---|---|---|
 | **XY** | Line, scatter or bar | One numeric or temporal X, up to seven numeric Y | Y from zero, log scale, legend |
-| **Histogram** | Counts per bin | One numeric column | Bins |
-| **Box Plot** | Quartiles and outliers | One numeric column | |
-| **KDE** | A smoothed density curve | One numeric column | Bandwidth |
+| **Histogram** | Counts per bin | One numeric column | Bins, range |
+| **Box Plot** | Quartiles and outliers | One numeric column | Range |
+| **KDE** | A smoothed density curve | One numeric column | Bandwidth, range |
 | **Heatmap** | Density of two variables | Numeric X and Y | Bins |
 
-Every type has a **Limit Rows** option at the bottom of the sidebar: how many
-rows are used to build the chart. The default comes from `row_limit` in the
-[`[chart]` config section](../reference/settings.md#charts) and is 10,000. This is a row cap, not random sampling. Filter or aggregate
-first when the chart needs to represent a larger period or dataset.
+## Large tables
+
+| Option | What it does |
+|---|---|
+| **Sample size** | Rows the chart reads. A larger table is sampled across all of it, and the chart says so under the plot: `sample of 10,000 of 3.5M rows`. **Every row** reads the whole view |
+| **Range** | Histogram, Box Plot and KDE: **All** values, or **p1-p99** (the 1st to 99th percentile) to leave out outliers that squash the rest into a bin or two. The chart counts what it left out: `195 values outside p1-p99` |
+
+The sample is drawn as the [analysis tools](analysis-features.md#sampling)
+draw theirs, with the same seed: 50 runs of one Parquet or IPC file, or one
+streamed pass over anything else. Another option, or another chart of columns
+already read, draws from the same rows without reading the table again. An
+exported PNG or EPS carries the same notes under the plot. The default size
+comes from `row_limit` in the
+[`[chart]` config section](../reference/settings.md#charts) and is 10,000.
 
 ## Keys
 
@@ -37,8 +57,8 @@ first when the chart needs to represent a larger period or dataset.
 |---|---|
 | <kbd>1</kbd>–<kbd>5</kbd> | Switch chart type directly, from anywhere (<kbd>[</kbd> <kbd>]</kbd> cycle) |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style |
-| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, or adjust bins, bandwidth or the row limit (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the limit) |
+| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style or range |
+| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style or range, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
 | <kbd>e</kbd> | Export the chart |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table |

@@ -10,7 +10,7 @@ the full input. Lazy loading does not make every operation fit in memory.
 | Open local partitions | Pass the directory, such as `datui ./events/`, to use datui's schema union and file metadata |
 | Pivot a large table | Filter first; pivot reads all affected rows to discover the output columns |
 | Analyze many rows | Use the sample-size setting for Describe, Distribution and Correlation |
-| Chart many rows | Filter or aggregate first, then check **Limit Rows**; the default is 10,000 |
+| Chart many rows | Charts sample 10,000 rows across the table; raise **Sample size** for more |
 | Open compressed CSV | Put `--temp-dir` on a disk with room for the uncompressed file |
 
 ## Sample deliberately
@@ -28,9 +28,9 @@ Use `--sample-rows 0` to analyze every row, or press <kbd>a</kbd> on a sampled
 result and confirm. <kbd>Esc</kbd> cancels a run.
 [Data Quality](../user-guide/data-quality.md) reads the same sample.
 
-Chart **Limit Rows** caps input rows; it does not produce a representative
-random sample. For a time series, aggregate the whole period before charting
-if you want the whole period represented.
+Charts read the same kind of sample, 10,000 rows by default (**Sample size**
+in the chart view). A sampled line chart of a long time series is sparse;
+aggregate the period first to chart every step of it.
 
 ## Know what gets read
 

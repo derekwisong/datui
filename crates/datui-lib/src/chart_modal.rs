@@ -4,6 +4,7 @@
 //! edited through the one shared Picker, so the state here is the choices
 //! themselves plus which row holds focus.
 
+use crate::chart_data::ValueRange;
 use crate::widgets::ui::PickerState;
 
 /// Chart kind: full chart category shown as tabs, switched with 1-5 or [ ].
@@ -81,7 +82,9 @@ pub enum ChartFocus {
     Bins,
     /// KDE bandwidth multiplier.
     Bandwidth,
-    /// Row cap shared by every chart kind; the last row of each form.
+    /// Which values the Histogram, Box Plot, or KDE draws: all, or a percentile range.
+    Range,
+    /// Sample size shared by every chart kind; the last row of each form.
     LimitRows,
 }
 
@@ -103,13 +106,13 @@ pub const KDE_BANDWIDTH_MIN: f64 = 0.2;
 pub const KDE_BANDWIDTH_MAX: f64 = 5.0;
 pub const KDE_BANDWIDTH_STEP: f64 = 0.1;
 
-/// Chart row limit bounds (for Limit Rows option). User can go down to 0; 0 becomes unlimited (None).
+/// Chart sample size bounds (the Sample size row). User can go down to 0; 0 becomes every row (None).
 pub const CHART_ROW_LIMIT_MIN: usize = 0;
 /// Maximum applicable limit (Polars slice takes u32).
 pub const CHART_ROW_LIMIT_MAX: usize = u32::MAX as usize;
-/// PgUp/PgDown step for Limit Rows.
+/// PgUp/PgDown step for Sample size.
 pub const CHART_ROW_LIMIT_PAGE_STEP: usize = 100_000;
-/// Default numeric limit when switching from Unlimited with + or PgUp.
+/// Default numeric limit when switching from every row with + or PgUp.
 pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
 /// Below this limit, +/- step is CHART_ROW_LIMIT_STEP_SMALL; at or above, CHART_ROW_LIMIT_STEP_LARGE.
 pub const CHART_ROW_LIMIT_STEP_THRESHOLD: usize = 20_000;
@@ -165,8 +168,13 @@ pub struct ChartModal {
     pub heatmap_x_column: Option<String>,
     pub heatmap_y_column: Option<String>,
     pub heatmap_bins: usize,
-    /// Maximum rows for chart data. None = unlimited (display "Unlimited"); Some(n) = cap at n.
+    /// Histogram, Box Plot and KDE: which values are drawn.
+    pub value_range: ValueRange,
+    /// Rows a chart reads: up to this many, sampled across the table. None = every row.
     pub row_limit: Option<usize>,
+    /// The dataset the choices were made on (`App::dataset_generation`). Reopening the
+    /// chart on the same dataset — after a sort or a filter — keeps them.
+    pub dataset: Option<u64>,
 }
 
 impl ChartModal {
@@ -174,29 +182,19 @@ impl ChartModal {
         Self::default()
     }
 
-    /// Open the chart view. No default x or y columns; the user picks them.
-    /// `default_row_limit` is the initial value for Limit rows (e.g. from config); None = unlimited.
+    /// Open the chart view. On a dataset seen before, the chart comes back as it was
+    /// left, less any column the view no longer has; otherwise it starts with no
+    /// columns picked. `default_row_limit` is the initial Sample size (e.g. from
+    /// config); None = every row.
     pub fn open(
         &mut self,
         numeric_columns: &[String],
         datetime_columns: &[String],
         default_row_limit: Option<usize>,
+        dataset: u64,
     ) {
         self.active = true;
-        self.chart_kind = ChartKind::XY;
-        self.chart_type = ChartType::Line;
-        self.y_starts_at_zero = false;
-        self.log_scale = false;
-        self.show_legend = true;
         self.picker = None;
-        self.row_limit = default_row_limit.and_then(|n| {
-            if n == 0 {
-                None
-            } else {
-                Some(n.clamp(1, CHART_ROW_LIMIT_MAX))
-            }
-        });
-
         // x_candidates: datetime first, then numeric (for list order).
         self.x_candidates = datetime_columns.to_vec();
         for c in numeric_columns {
@@ -205,7 +203,25 @@ impl ChartModal {
             }
         }
         self.numeric_candidates = numeric_columns.to_vec();
-
+        if self.dataset == Some(dataset) {
+            self.keep_existing_choices();
+            self.focus = self.row_order()[0];
+            return;
+        }
+        self.dataset = Some(dataset);
+        self.chart_kind = ChartKind::XY;
+        self.chart_type = ChartType::Line;
+        self.y_starts_at_zero = false;
+        self.log_scale = false;
+        self.show_legend = true;
+        self.value_range = ValueRange::All;
+        self.row_limit = default_row_limit.and_then(|n| {
+            if n == 0 {
+                None
+            } else {
+                Some(n.clamp(1, CHART_ROW_LIMIT_MAX))
+            }
+        });
         self.x_column = None;
         self.y_columns.clear();
         self.hist_column = None;
@@ -219,20 +235,29 @@ impl ChartModal {
         self.focus = self.row_order()[0];
     }
 
+    /// Close the chart view. The choices stay for the next open on this dataset.
     pub fn close(&mut self) {
         self.active = false;
-        self.chart_kind = ChartKind::XY;
         self.picker = None;
-        self.x_column = None;
-        self.y_columns.clear();
-        self.hist_column = None;
-        self.box_column = None;
-        self.kde_column = None;
-        self.heatmap_x_column = None;
-        self.heatmap_y_column = None;
-        self.x_candidates.clear();
-        self.numeric_candidates.clear();
-        self.focus = ChartFocus::Style;
+    }
+
+    /// Drop the choices whose columns the view no longer offers, and a Y series that
+    /// is the X column.
+    fn keep_existing_choices(&mut self) {
+        let keep = |choice: &mut Option<String>, pool: &[String]| {
+            if choice.as_ref().is_some_and(|c| !pool.contains(c)) {
+                *choice = None;
+            }
+        };
+        keep(&mut self.x_column, &self.x_candidates);
+        keep(&mut self.hist_column, &self.numeric_candidates);
+        keep(&mut self.box_column, &self.numeric_candidates);
+        keep(&mut self.kde_column, &self.numeric_candidates);
+        keep(&mut self.heatmap_x_column, &self.numeric_candidates);
+        keep(&mut self.heatmap_y_column, &self.numeric_candidates);
+        let (numeric, x) = (&self.numeric_candidates, &self.x_column);
+        self.y_columns
+            .retain(|c| numeric.contains(c) && Some(c) != x.as_ref());
     }
 
     // ----- Focus -----
@@ -250,9 +275,9 @@ impl ChartModal {
                 ShowLegend,
                 LimitRows,
             ],
-            ChartKind::Histogram => &[Column, Bins, LimitRows],
-            ChartKind::BoxPlot => &[Column, LimitRows],
-            ChartKind::Kde => &[Column, Bandwidth, LimitRows],
+            ChartKind::Histogram => &[Column, Bins, Range, LimitRows],
+            ChartKind::BoxPlot => &[Column, Range, LimitRows],
+            ChartKind::Kde => &[Column, Bandwidth, Range, LimitRows],
             ChartKind::Heatmap => &[HeatmapX, HeatmapY, Bins, LimitRows],
         }
     }
@@ -338,14 +363,20 @@ impl ChartModal {
 
     // ----- Picker -----
 
-    /// What the focused row's Picker offers.
+    /// What the focused row's Picker offers. The Y series leave out the X column:
+    /// charted against itself it is only a diagonal.
     pub fn picker_items(&self) -> Vec<String> {
         match self.focus {
             ChartFocus::XColumn => self.x_candidates.clone(),
-            ChartFocus::YColumns
-            | ChartFocus::Column
-            | ChartFocus::HeatmapX
-            | ChartFocus::HeatmapY => self.numeric_candidates.clone(),
+            ChartFocus::YColumns => self
+                .numeric_candidates
+                .iter()
+                .filter(|c| Some(*c) != self.x_column.as_ref())
+                .cloned()
+                .collect(),
+            ChartFocus::Column | ChartFocus::HeatmapX | ChartFocus::HeatmapY => {
+                self.numeric_candidates.clone()
+            }
             _ => Vec::new(),
         }
     }
@@ -399,7 +430,11 @@ impl ChartModal {
         };
         self.picker = None;
         match self.focus {
-            ChartFocus::XColumn => self.x_column = Some(item),
+            ChartFocus::XColumn => {
+                // A series cannot be the X axis too.
+                self.y_columns.retain(|c| *c != item);
+                self.x_column = Some(item);
+            }
             ChartFocus::YColumns => {
                 if self.y_columns.is_empty() {
                     self.y_columns.push(item);
@@ -531,15 +566,18 @@ impl ChartModal {
         };
     }
 
-    /// Effective row limit to pass to prepare_* (unlimited = CHART_ROW_LIMIT_MAX).
-    pub fn effective_row_limit(&self) -> usize {
-        self.row_limit.unwrap_or(CHART_ROW_LIMIT_MAX)
+    /// Step the value range (the Range row) forward or back.
+    pub fn cycle_value_range(&mut self, delta: i32) {
+        let all = ValueRange::ALL;
+        let i = all.iter().position(|&r| r == self.value_range).unwrap_or(0) as i32;
+        let n = all.len() as i32;
+        self.value_range = all[(i + delta).rem_euclid(n) as usize];
     }
 
-    /// Display string for Limit rows: "Unlimited" or number with commas.
+    /// Display string for Sample size: "Every row" or number with commas.
     pub fn row_limit_display(&self) -> String {
         match self.row_limit {
-            None => "Unlimited".to_string(),
+            None => "Every row".to_string(),
             Some(n) => format_usize_with_commas(n),
         }
     }
@@ -574,6 +612,7 @@ impl ChartModal {
             ChartFocus::Bandwidth => {
                 self.adjust_kde_bandwidth_factor(delta as f64 * KDE_BANDWIDTH_STEP)
             }
+            ChartFocus::Range => self.cycle_value_range(delta),
             ChartFocus::LimitRows => self.adjust_row_limit(delta),
             _ => {}
         }
@@ -645,7 +684,7 @@ mod tests {
         let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
         let mut modal = ChartModal::new();
-        modal.open(&numeric, &datetime, Some(10_000));
+        modal.open(&numeric, &datetime, Some(10_000), 1);
         modal
     }
 
@@ -751,7 +790,7 @@ mod tests {
     fn y_picker_toggles_and_caps_at_the_series_max() {
         let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
         let mut modal = ChartModal::new();
-        modal.open(&cols, &[], Some(10_000));
+        modal.open(&cols, &[], Some(10_000), 1);
         modal.focus = ChartFocus::YColumns;
         modal.open_picker();
         for _ in 0..=Y_SERIES_MAX {
@@ -806,6 +845,73 @@ mod tests {
         modal.focus = ChartFocus::XColumn;
         modal.open_picker();
         assert_eq!(modal.effective_x_column(), None);
+    }
+
+    /// The X column is not offered as a Y series, and picking a series as X takes
+    /// it out of the series.
+    #[test]
+    fn the_x_column_is_not_a_y_choice() {
+        let mut modal = open_modal();
+        modal.x_column = Some("a".to_string());
+        modal.focus = ChartFocus::YColumns;
+        assert_eq!(modal.picker_items(), ["b", "c"]);
+
+        modal.y_columns = vec!["b".to_string(), "c".to_string()];
+        modal.focus = ChartFocus::XColumn;
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().select_original(2); // b
+        modal.picker_choose();
+        assert_eq!(modal.x_column.as_deref(), Some("b"));
+        assert_eq!(modal.y_columns, ["c"]);
+    }
+
+    /// Reopening on the same dataset keeps the chart as it was left, less columns
+    /// the view no longer has; another dataset starts clean.
+    #[test]
+    fn reopening_keeps_choices_while_their_columns_exist() {
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::Histogram);
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["a".to_string(), "b".to_string()];
+        modal.hist_column = Some("c".to_string());
+        modal.value_range = crate::chart_data::ValueRange::Percentile1To99;
+        modal.close();
+
+        let numeric = vec!["a".to_string(), "c".to_string()];
+        let datetime = vec!["date".to_string()];
+        modal.open(&numeric, &datetime, Some(10_000), 1);
+        assert_eq!(modal.chart_kind, ChartKind::Histogram);
+        assert_eq!(modal.x_column.as_deref(), Some("date"));
+        assert_eq!(modal.y_columns, ["a"], "b is gone from the view");
+        assert_eq!(modal.hist_column.as_deref(), Some("c"));
+        assert_eq!(
+            modal.value_range,
+            crate::chart_data::ValueRange::Percentile1To99
+        );
+        modal.close();
+
+        modal.open(&numeric, &datetime, Some(10_000), 2);
+        assert_eq!(modal.chart_kind, ChartKind::XY);
+        assert!(modal.x_column.is_none() && modal.y_columns.is_empty());
+        assert!(modal.hist_column.is_none());
+    }
+
+    #[test]
+    fn the_range_row_cycles() {
+        use crate::chart_data::ValueRange;
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::BoxPlot);
+        assert_eq!(
+            modal.row_order(),
+            [ChartFocus::Column, ChartFocus::Range, ChartFocus::LimitRows]
+        );
+        modal.focus = ChartFocus::Range;
+        modal.adjust_number_row(1);
+        assert_eq!(modal.value_range, ValueRange::Percentile1To99);
+        modal.adjust_number_row(1);
+        assert_eq!(modal.value_range, ValueRange::All);
+        modal.adjust_number_row(-1);
+        assert_eq!(modal.value_range, ValueRange::Percentile1To99);
     }
 
     #[test]

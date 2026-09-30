@@ -96,7 +96,7 @@ event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
 
 ```toml
 [chart]
-row_limit = 10000   # Rows used to build a chart, 1 to 10_000_000. Adjustable in the chart view
+row_limit = 10000   # Chart sample size; a larger table is sampled across all of it. Adjustable in the chart view
 ```
 
 ## Data

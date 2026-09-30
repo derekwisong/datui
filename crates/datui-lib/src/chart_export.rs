@@ -17,6 +17,54 @@ fn ps_escape(s: &str) -> String {
         .replace(')', "\\)")
 }
 
+/// The chart's notes on its input (a sample, values a range left out), small and gray
+/// under the plot, right-aligned to its edge at `right`: an exported chart says what
+/// the chart view says.
+fn write_eps_notes(f: &mut File, notes: &[String], right: f64) -> Result<()> {
+    if notes.is_empty() {
+        return Ok(());
+    }
+    writeln!(f, "0.4 setgray")?;
+    writeln!(f, "/Helvetica findfont 7 scalefont setfont")?;
+    for (i, note) in notes.iter().rev().enumerate() {
+        writeln!(
+            f,
+            "({}) dup stringwidth pop {} exch sub {} moveto show",
+            ps_escape(note),
+            right,
+            2.0 + i as f64 * 8.0
+        )?;
+    }
+    writeln!(f, "0 setgray")?;
+    Ok(())
+}
+
+/// [`write_eps_notes`] for a PNG: in the bottom margin, right-aligned to the plot.
+fn draw_png_notes(
+    root: &plotters::drawing::DrawingArea<
+        plotters::prelude::BitMapBackend<'_>,
+        plotters::coord::Shift,
+    >,
+    notes: &[String],
+    margin: i32,
+) -> Result<()> {
+    use plotters::prelude::*;
+    use plotters::style::text_anchor::{HPos, Pos, VPos};
+    let (width, height) = root.dim_in_pixel();
+    let style = ("sans-serif", 13)
+        .into_font()
+        .color(&RGBColor(100, 100, 100))
+        .pos(Pos::new(HPos::Right, VPos::Bottom));
+    for (i, note) in notes.iter().rev().enumerate() {
+        root.draw(&Text::new(
+            note.as_str(),
+            (width as i32 - margin, height as i32 - 4 - i as i32 * 14),
+            style.clone(),
+        ))?;
+    }
+    Ok(())
+}
+
 /// Generate "nice" tick values in [min, max] with roughly max_ticks steps.
 fn nice_ticks(min: f64, max: f64, max_ticks: usize) -> Vec<f64> {
     let range = if max > min { max - min } else { 1.0 };
@@ -75,6 +123,8 @@ pub struct ChartExportBounds {
     pub log_scale: bool,
     /// Optional chart title shown on export. None or empty = no title.
     pub chart_title: Option<String>,
+    /// What the chart says under the plot about its input (`chart_data::chart_notes`).
+    pub notes: Vec<String>,
 }
 
 /// Bounds and options for rendering a box plot export.
@@ -85,12 +135,15 @@ pub struct BoxPlotExportBounds {
     pub x_label: String,
     pub y_label: String,
     pub chart_title: Option<String>,
+    pub notes: Vec<String>,
 }
 
 /// One series: name and (x, y) points (y already log-transformed if log scale).
 pub struct ChartExportSeries {
     pub name: String,
     pub points: Vec<(f64, f64)>,
+    /// Where a line starts again after a gap (see `chart_data::segments`).
+    pub breaks: Vec<usize>,
 }
 
 /// Export format for chart: PNG or EPS.
@@ -323,12 +376,14 @@ pub fn write_chart_eps(
 
         match chart_type {
             ChartType::Line => {
-                let (px, py) = s.points[0];
-                writeln!(f, "{} {} moveto", to_x(px), to_y(py))?;
-                for &(px, py) in &s.points[1..] {
-                    writeln!(f, "{} {} lineto", to_x(px), to_y(py))?;
+                for segment in crate::chart_data::segments(&s.points, &s.breaks) {
+                    let (px, py) = segment[0];
+                    writeln!(f, "{} {} moveto", to_x(px), to_y(py))?;
+                    for &(px, py) in &segment[1..] {
+                        writeln!(f, "{} {} lineto", to_x(px), to_y(py))?;
+                    }
+                    writeln!(f, "stroke")?;
                 }
-                writeln!(f, "stroke")?;
             }
             ChartType::Scatter => {
                 let rad = 3.0;
@@ -349,6 +404,7 @@ pub fn write_chart_eps(
         }
     }
 
+    write_eps_notes(&mut f, &bounds.notes, MARGIN_LEFT + PLOT_W)?;
     writeln!(f, "grestore")?;
     writeln!(f, "%%EOF")?;
     f.sync_all()?;
@@ -424,10 +480,17 @@ pub fn write_chart_png(
         let color = colors[idx % colors.len()];
         match chart_type {
             ChartType::Line => {
-                chart
-                    .draw_series(LineSeries::new(s.points.iter().copied(), color))?
-                    .label(s.name.as_str())
-                    .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+                // One line per run between gaps; the legend names the first.
+                let segments = crate::chart_data::segments(&s.points, &s.breaks);
+                for (i, segment) in segments.into_iter().enumerate() {
+                    let drawn =
+                        chart.draw_series(LineSeries::new(segment.iter().copied(), color))?;
+                    if i == 0 {
+                        drawn.label(s.name.as_str()).legend(move |(x, y)| {
+                            PathElement::new(vec![(x, y), (x + 20, y)], color)
+                        });
+                    }
+                }
             }
             ChartType::Scatter => {
                 chart.draw_series(PointSeries::of_element(
@@ -453,6 +516,7 @@ pub fn write_chart_png(
         .border_style(BLACK)
         .draw()?;
 
+    draw_png_notes(&root, &bounds.notes, 30)?;
     root.present()?;
     Ok(())
 }
@@ -551,6 +615,7 @@ pub fn write_box_plot_png(
         )))?;
     }
 
+    draw_png_notes(&root, &bounds.notes, 30)?;
     root.present()?;
     Ok(())
 }
@@ -610,6 +675,7 @@ pub fn write_heatmap_png(
         .y_label_formatter(&|v| format_axis_label(*v))
         .draw()?;
 
+    draw_png_notes(&root, &bounds.notes, 30)?;
     root.present()?;
     Ok(())
 }
@@ -817,6 +883,7 @@ pub fn write_box_plot_eps(
         writeln!(f, "{} {} lineto stroke", to_x(x + cap_half), to_y(stat.max))?;
     }
 
+    write_eps_notes(&mut f, &bounds.notes, MARGIN_LEFT + PLOT_W)?;
     writeln!(f, "grestore")?;
     writeln!(f, "%%EOF")?;
     f.sync_all()?;
@@ -1005,6 +1072,7 @@ pub fn write_heatmap_eps(
         writeln!(f, "grestore")?;
     }
 
+    write_eps_notes(&mut f, &bounds.notes, MARGIN_LEFT + PLOT_W)?;
     writeln!(f, "grestore")?;
     writeln!(f, "%%EOF")?;
     f.sync_all()?;
@@ -1024,6 +1092,7 @@ mod tests {
         let series = vec![ChartExportSeries {
             name: "s1".to_string(),
             points: vec![(0.0, 1.0), (1.0, 2.0), (2.0, 1.5)],
+            breaks: Vec::new(),
         }];
         let bounds = ChartExportBounds {
             x_min: 0.0,
@@ -1035,6 +1104,10 @@ mod tests {
             x_axis_kind: XAxisTemporalKind::Numeric,
             log_scale: false,
             chart_title: None,
+            notes: vec![
+                "sample of 1,000 of 50k rows".to_string(),
+                "4 values outside p1-p99".to_string(),
+            ],
         };
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1076,6 +1149,13 @@ mod tests {
         // Series data (color and drawing)
         assert!(content.contains("setrgbcolor"), "series color");
         assert!(content.contains("lineto"), "line series");
+
+        // The notes on the chart's input, as the chart view shows them
+        assert!(
+            content.contains("(sample of 1,000 of 50k rows)"),
+            "sample note"
+        );
+        assert!(content.contains("(4 values outside p1-p99)"), "range note");
     }
 
     /// Walks a PostScript line and returns the text that sits *outside* string
@@ -1131,6 +1211,7 @@ mod tests {
             let series = vec![ChartExportSeries {
                 name: payload.to_string(),
                 points: vec![(0.0, 1.0), (1.0, 2.0)],
+                breaks: Vec::new(),
             }];
             let bounds = ChartExportBounds {
                 x_min: 0.0,
@@ -1142,6 +1223,7 @@ mod tests {
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 log_scale: false,
                 chart_title: Some(payload.to_string()),
+                notes: vec![payload.to_string()],
             };
 
             let dir = tempfile::tempdir().expect("temp dir");

@@ -786,6 +786,7 @@ mod chart_prepare_tests {
         ChartRequest::Histogram {
             column: column.to_string(),
             bins: 10,
+            range: chart_data::ValueRange::All,
             row_limit: None,
         }
     }
@@ -797,6 +798,8 @@ mod chart_prepare_tests {
             x_min: 0.0,
             x_max: 1.0,
             max_count: 0.0,
+            rows: chart_data::RowsRead::default(),
+            clipped: None,
         })
     }
 
@@ -997,8 +1000,10 @@ mod chart_prepare_tests {
             x_column: x.to_string(),
             y_columns: vec!["y".to_string()],
             series: vec![vec![(0.0, 1.0)]],
+            breaks: vec![Vec::new()],
             series_log: None,
             x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
+            rows: chart_data::RowsRead::default(),
         })
     }
 
@@ -1149,6 +1154,97 @@ mod chart_prepare_tests {
         app.event(&AppEvent::BackgroundChartReady);
         assert!(app.chart_inflight.is_none());
         assert!(matches!(app.chart_cache.get(&request), Some(Err(_))));
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn screen(app: &mut App) -> String {
+        let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buf);
+        buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// Sorting or filtering the table between two looks at the chart keeps its X and
+    /// Y; the chart comes back as it was left, drawn from the new view.
+    #[test]
+    fn a_sort_or_filter_keeps_the_chart_columns() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_xy_csv(dir.path(), "keep.csv", 10);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+        select_xy(&mut app);
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        app.event(&AppEvent::Sort(vec!["y".to_string()], vec![true]));
+        pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        key(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.input_mode, InputMode::Chart);
+        assert_eq!(app.chart_modal.x_column.as_deref(), Some("x"));
+        assert_eq!(app.chart_modal.y_columns, ["y"]);
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+        let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
+        let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+            panic!("an XY chart is prepared");
+        };
+        assert_eq!(
+            xy.series[0],
+            [
+                (0.0, 0.0),
+                (1.0, 10.0),
+                (2.0, 20.0),
+                (3.0, 30.0),
+                (4.0, 40.0)
+            ],
+            "a descending sort still draws left to right"
+        );
+        key(&mut app, KeyCode::Esc);
+
+        use crate::filter_modal::{FilterOperator, LogicalOperator};
+        app.event(&AppEvent::Filter(vec![FilterStatement {
+            column: "x".to_string(),
+            operator: FilterOperator::Lt,
+            value: "3".to_string(),
+            logical_op: LogicalOperator::And,
+        }]));
+        pump(&mut app, &rx, &tx, |a| !a.is_busy());
+        key(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.chart_modal.x_column.as_deref(), Some("x"));
+        assert_eq!(app.chart_modal.y_columns, ["y"]);
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+        let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
+        let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+            panic!("an XY chart is prepared");
+        };
+        assert_eq!(xy.series[0].len(), 3, "drawn from the filtered view");
+    }
+
+    /// A selection that cannot be prepared says why on the chart, instead of drawing
+    /// empty axes.
+    #[test]
+    fn a_failed_preparation_shows_its_error() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_xy_csv(dir.path(), "fails.csv", 1);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+        select_xy(&mut app);
+        app.chart_modal.y_columns = vec!["gone".to_string()];
+        app.event(&AppEvent::Resize(100, 24));
+        let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
+        pump(&mut app, &rx, &tx, |a| {
+            a.chart_cache.get(&request).is_some()
+        });
+        assert!(matches!(app.chart_cache.get(&request), Some(Err(_))));
+        let text = screen(&mut app);
+        assert!(text.contains("gone"), "the error names the column: {text}");
     }
 
     /// Esc leaves a worker running that cannot be cancelled; reopening the chart and
@@ -6103,21 +6199,38 @@ struct TemplateApplicationState {
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
 /// recently used first. A failure is remembered too, so a selection that cannot be
-/// charted is not retried after every event; it draws as empty, as it always has.
+/// charted is not retried after every event; the chart shows its message.
 /// Bounded so that toggling between a few selections does not collect again, without
 /// holding every series ever prepared: XY series are the only payload that grows with
 /// the row limit, so few of those are kept and only the current one has its log copy.
 #[derive(Default)]
 pub(crate) struct ChartCache {
     entries: Vec<(ChartRequest, Result<ChartPrepared, String>)>,
+    /// The rows read for these entries and which view (`len_generation`) they are
+    /// from, so another option re-draws from them rather than reading again.
+    held: chart_data::HeldRows,
+    held_view: Option<u64>,
 }
 
 impl ChartCache {
     const CAPACITY: usize = 8;
     const XY_CAPACITY: usize = 2;
 
+    /// Forget every entry and the rows read. A worker still reading keeps the handle it
+    /// was given and fills that one, never the next view's.
     fn clear(&mut self) {
         self.entries.clear();
+        self.held = chart_data::HeldRows::default();
+        self.held_view = None;
+    }
+
+    /// The rows held for `view`, or a fresh holder when they belong to another.
+    fn held_rows(&mut self, view: Option<u64>) -> chart_data::HeldRows {
+        if self.held_view != view {
+            self.held = chart_data::HeldRows::default();
+            self.held_view = view;
+        }
+        self.held.clone()
     }
 
     fn get(&self, request: &ChartRequest) -> Option<&Result<ChartPrepared, String>> {
@@ -6220,15 +6333,18 @@ pub(crate) enum ChartRequest {
     Histogram {
         column: String,
         bins: usize,
+        range: chart_data::ValueRange,
         row_limit: Option<usize>,
     },
     BoxPlot {
         column: String,
+        range: chart_data::ValueRange,
         row_limit: Option<usize>,
     },
     Kde {
         column: String,
         bandwidth_factor: f64,
+        range: chart_data::ValueRange,
         row_limit: Option<usize>,
     },
     Heatmap {
@@ -6242,6 +6358,7 @@ pub(crate) enum ChartRequest {
 impl ChartRequest {
     fn from_modal(modal: &ChartModal) -> Option<Self> {
         let row_limit = modal.row_limit;
+        let range = modal.value_range;
         match modal.chart_kind {
             ChartKind::XY => {
                 let x_column = modal.effective_x_column()?.clone();
@@ -6262,15 +6379,18 @@ impl ChartRequest {
             ChartKind::Histogram => Some(Self::Histogram {
                 column: modal.effective_hist_column()?,
                 bins: modal.hist_bins,
+                range,
                 row_limit,
             }),
             ChartKind::BoxPlot => Some(Self::BoxPlot {
                 column: modal.effective_box_column()?,
+                range,
                 row_limit,
             }),
             ChartKind::Kde => Some(Self::Kde {
                 column: modal.effective_kde_column()?,
                 bandwidth_factor: modal.kde_bandwidth_factor,
+                range,
                 row_limit,
             }),
             ChartKind::Heatmap => Some(Self::Heatmap {
@@ -6282,41 +6402,60 @@ impl ChartRequest {
         }
     }
 
-    /// The Polars work. Runs on a worker thread; `rows` is the effective row limit.
-    fn prepare(&self, lf: &LazyFrame, schema: &Schema, rows: usize) -> Result<ChartPrepared> {
+    /// The Polars work. Runs on a worker thread.
+    fn prepare(
+        &self,
+        lf: &LazyFrame,
+        schema: &Schema,
+        sampling: &chart_data::ChartSampling,
+    ) -> Result<ChartPrepared> {
         Ok(match self {
             Self::XY {
                 x_column,
                 y_columns,
                 ..
             } => {
-                let r = chart_data::prepare_chart_data(lf, schema, x_column, y_columns, rows)?;
+                let r = chart_data::prepare_chart_data(lf, schema, x_column, y_columns, sampling)?;
                 ChartPrepared::XY(ChartCacheXY {
                     x_column: x_column.clone(),
                     y_columns: y_columns.clone(),
                     series: r.series,
+                    breaks: r.breaks,
                     series_log: None,
                     x_axis_kind: r.x_axis_kind,
+                    rows: r.rows,
                 })
             }
             Self::XRange { x_column, .. } => ChartPrepared::XRange(
-                chart_data::prepare_chart_x_range(lf, schema, x_column, rows)?,
+                chart_data::prepare_chart_x_range(lf, schema, x_column, sampling)?,
             ),
-            Self::Histogram { column, bins, .. } => ChartPrepared::Histogram(
-                chart_data::prepare_histogram_data(lf, column, *bins, rows)?,
-            ),
-            Self::BoxPlot { column, .. } => ChartPrepared::BoxPlot(
-                chart_data::prepare_box_plot_data(lf, std::slice::from_ref(column), rows)?,
-            ),
+            Self::Histogram {
+                column,
+                bins,
+                range,
+                ..
+            } => ChartPrepared::Histogram(chart_data::prepare_histogram_data(
+                lf, column, *bins, *range, sampling,
+            )?),
+            Self::BoxPlot { column, range, .. } => {
+                ChartPrepared::BoxPlot(chart_data::prepare_box_plot_data(
+                    lf,
+                    std::slice::from_ref(column),
+                    *range,
+                    sampling,
+                )?)
+            }
             Self::Kde {
                 column,
                 bandwidth_factor,
+                range,
                 ..
             } => ChartPrepared::Kde(chart_data::prepare_kde_data(
                 lf,
                 std::slice::from_ref(column),
                 *bandwidth_factor,
-                rows,
+                *range,
+                sampling,
             )?),
             Self::Heatmap {
                 x_column,
@@ -6324,7 +6463,7 @@ impl ChartRequest {
                 bins,
                 ..
             } => ChartPrepared::Heatmap(chart_data::prepare_heatmap_data(
-                lf, x_column, y_column, *bins, rows,
+                lf, x_column, y_column, *bins, sampling,
             )?),
         })
     }
@@ -6358,6 +6497,21 @@ pub(crate) enum ChartPrepared {
     BoxPlot(chart_data::BoxPlotData),
     Kde(chart_data::KdeData),
     Heatmap(chart_data::HeatmapData),
+}
+
+impl ChartPrepared {
+    /// What the chart says under the plot about the rows and values it drew.
+    pub(crate) fn notes(&self) -> Vec<String> {
+        let (rows, clipped) = match self {
+            Self::XY(c) => (&c.rows, None),
+            Self::XRange(c) => (&c.rows, None),
+            Self::Histogram(d) => (&d.rows, d.clipped.as_ref()),
+            Self::BoxPlot(d) => (&d.rows, d.clipped.as_ref()),
+            Self::Kde(d) => (&d.rows, d.clipped.as_ref()),
+            Self::Heatmap(d) => (&d.rows, None),
+        };
+        chart_data::chart_notes(rows, clipped)
+    }
 }
 
 /// A chart export with its data taken from the cache; `write` is the slow part and runs
@@ -6418,8 +6572,11 @@ pub(crate) struct ChartCacheXY {
     pub(crate) x_column: String,
     pub(crate) y_columns: Vec<String>,
     pub(crate) series: Vec<Vec<(f64, f64)>>,
+    /// Where each series' line starts again after a null (see `chart_data::segments`).
+    pub(crate) breaks: Vec<Vec<usize>>,
     pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
+    pub(crate) rows: chart_data::RowsRead,
 }
 
 /// The buffer collect in flight: what it will fill, and for which data.
@@ -14513,6 +14670,7 @@ impl App {
                         ChartFocus::LogScale => self.chart_modal.toggle_log_scale(),
                         ChartFocus::ShowLegend => self.chart_modal.toggle_show_legend(),
                         ChartFocus::Style => self.chart_modal.next_chart_type(),
+                        ChartFocus::Range => self.chart_modal.cycle_value_range(1),
                         focus if self.chart_modal.is_picker_row(focus) => {
                             self.chart_modal.open_picker();
                         }
@@ -16197,6 +16355,7 @@ impl App {
                         &numeric_columns,
                         &datetime_columns,
                         self.app_config.chart.row_limit,
+                        self.dataset_generation,
                     );
                     self.chart_cache.clear();
                     self.input_mode = InputMode::Chart;
@@ -16369,10 +16528,18 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let lf = state.lf.clone();
+        // Unsorted: the rows a chart draws do not depend on the table's order, a line
+        // is drawn in X order anyway, and a sort would make a sampled read read it all.
+        let lf = state.analysis_lf();
         let schema = state.schema.clone();
         let dataset = Some(state.len_generation());
-        let rows = self.chart_modal.effective_row_limit();
+        let sampling = chart_data::ChartSampling {
+            limit: self.chart_modal.row_limit,
+            known_total: state.num_rows_if_valid(),
+            seed: self.analysis_modal.sample.seed,
+            streaming: self.app_config.performance.polars_streaming,
+            held: self.chart_cache.held_rows(dataset),
+        };
         self.chart_inflight = Some(ChartInflight {
             dataset,
             request: request.clone(),
@@ -16385,7 +16552,7 @@ impl App {
             // in-flight record would stand for the rest of the session and every later
             // selection would be refused.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                request.prepare(&lf, &schema, rows)
+                request.prepare(&lf, &schema, &sampling)
             }))
             .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
             .map_err(|e| crate::error_display::user_message_from_report(&e, None));
@@ -18624,6 +18791,7 @@ impl App {
             None => return Ok(None),
         };
         let no_points = || color_eyre::eyre::eyre!("No valid data points to export");
+        let notes = prepared.notes();
 
         let job = match prepared {
             ChartPrepared::XY(cache) => {
@@ -18639,10 +18807,12 @@ impl App {
                 let series: Vec<ChartExportSeries> = points
                     .into_iter()
                     .zip(cache.y_columns.iter())
-                    .filter(|(points, _)| !points.is_empty())
-                    .map(|(points, name)| ChartExportSeries {
+                    .zip(cache.breaks.iter())
+                    .filter(|((points, _), _)| !points.is_empty())
+                    .map(|((points, name), breaks)| ChartExportSeries {
                         name: name.clone(),
                         points,
+                        breaks: breaks.clone(),
                     })
                     .collect();
                 if series.is_empty() {
@@ -18691,6 +18861,7 @@ impl App {
                     x_axis_kind: cache.x_axis_kind,
                     log_scale,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Series {
                     series,
@@ -18707,6 +18878,7 @@ impl App {
                 let series = vec![ChartExportSeries {
                     name: data.column.clone(),
                     points,
+                    breaks: Vec::new(),
                 }];
                 let x_max = if data.x_max > data.x_min {
                     data.x_max
@@ -18728,6 +18900,7 @@ impl App {
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Series {
                     series,
@@ -18746,6 +18919,7 @@ impl App {
                     x_label: "Columns".to_string(),
                     y_label: "Value".to_string(),
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::BoxPlot {
                     data: data.clone(),
@@ -18762,6 +18936,7 @@ impl App {
                     .map(|s| ChartExportSeries {
                         name: s.name.clone(),
                         points: s.points.clone(),
+                        breaks: Vec::new(),
                     })
                     .collect();
                 let bounds = ChartExportBounds {
@@ -18778,6 +18953,7 @@ impl App {
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Series {
                     series,
@@ -18799,6 +18975,7 @@ impl App {
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Heatmap {
                     data: data.clone(),

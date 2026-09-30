@@ -2,12 +2,16 @@
 //!
 //! Draws only what `App::chart_cache` already holds. The data is prepared off the UI
 //! thread by `App::ensure_chart_data`; while the current selection's data is still on
-//! its way the chart area shows the empty axes and the control bar spins.
+//! its way the chart area shows the empty axes and the control bar spins. A selection
+//! that failed to prepare shows why.
 
 use crate::chart_data;
 use crate::chart_modal::ChartKind;
 use crate::render::context::RenderContext;
-use crate::widgets::{self, chart::ChartRenderData};
+use crate::widgets::{
+    self,
+    chart::{ChartRenderData, ChartView},
+};
 use crate::{ChartPrepared, ChartRequest};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Clear, Widget};
@@ -20,8 +24,11 @@ pub fn render(
 ) {
     Clear.render(chart_area, buf);
 
-    let prepared = ChartRequest::from_modal(&app.chart_modal)
-        .and_then(|request| app.chart_cache.prepared(&request));
+    let outcome = ChartRequest::from_modal(&app.chart_modal)
+        .and_then(|request| app.chart_cache.get(&request));
+    let prepared = outcome.and_then(|o| o.as_ref().ok());
+    let error = outcome.and_then(|o| o.as_ref().err()).map(String::as_str);
+    let notes = prepared.map(ChartPrepared::notes).unwrap_or_default();
 
     let render_data = match (app.chart_modal.chart_kind, prepared) {
         (ChartKind::XY, Some(ChartPrepared::XY(c))) => ChartRenderData::XY {
@@ -30,17 +37,20 @@ pub fn render(
             } else {
                 Some(&c.series)
             },
+            breaks: Some(&c.breaks),
             x_axis_kind: c.x_axis_kind,
             x_bounds: None,
         },
         (ChartKind::XY, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
             series: None,
+            breaks: None,
             x_axis_kind: c.x_axis_kind,
             x_bounds: Some((c.x_min, c.x_max)),
         },
         // Still on its way: empty axes, typed from the schema so the labels are right.
         (ChartKind::XY, _) => ChartRenderData::XY {
             series: None,
+            breaks: None,
             x_axis_kind: match (
                 app.chart_modal.effective_x_column(),
                 app.data_table_state.as_ref(),
@@ -84,7 +94,11 @@ pub fn render(
         &mut app.chart_modal,
         &app.theme,
         ctx,
-        render_data,
+        ChartView {
+            data: render_data,
+            notes,
+            error,
+        },
     );
 
     if app.chart_export_modal.active {

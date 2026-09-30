@@ -114,7 +114,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     }
     let (endpoint, requests) = counting_server("fast-bucket");
     // Keys of their own: the same server with the same key would be one source.
-    let lab = |name: &str, key: &str| datui::config::CloudSourceConfig {
+    let lab = |name: &str, key: &str| datui::config::CloudConnectionConfig {
         name: name.to_string(),
         kind: Some("s3".to_string()),
         endpoint_url: Some(endpoint.clone()),
@@ -126,13 +126,13 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
 
     let mut config = datui::config::AppConfig::default();
     config.data.use_desktop_recents = false;
-    config.cloud.sources = vec![
+    config.cloud.connections = vec![
         lab("lab", "DATUI_TEST_KEY"),
         // Hidden from elsewhere after its row is drawn.
         lab("gone", "GONE_KEY"),
         // AWS itself, so its buckets are plain `s3://bucket` URLs that need the source
         // remembered. Never listed here: a request to it would leave the machine.
-        datui::config::CloudSourceConfig {
+        datui::config::CloudConnectionConfig {
             name: "cached".to_string(),
             kind: Some("s3".to_string()),
             access_key_id_env: Some("CACHED_KEY".to_string()),
@@ -141,13 +141,16 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
         },
     ];
     // Hidden, as one might hide a source whose login broke.
-    config.cloud.sources.push(datui::config::CloudSourceConfig {
-        name: "hidden-old".to_string(),
-        kind: Some("s3".to_string()),
-        access_key_id_env: Some("OLD_KEY".to_string()),
-        secret_access_key_env: Some("OLD_SECRET".to_string()),
-        ..Default::default()
-    });
+    config
+        .cloud
+        .connections
+        .push(datui::config::CloudConnectionConfig {
+            name: "hidden-old".to_string(),
+            kind: Some("s3".to_string()),
+            access_key_id_env: Some("OLD_KEY".to_string()),
+            secret_access_key_env: Some("OLD_SECRET".to_string()),
+            ..Default::default()
+        });
     // Only the configured sources, whatever this machine is logged in to.
     config.cloud.discover = Some(datui::config::CloudDiscover::None);
     config.cloud.hide = vec!["public".to_string(), "hidden-old".to_string()];

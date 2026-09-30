@@ -493,7 +493,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     let known_sources: Vec<String> = app
         .app_config
         .cloud
-        .sources
+        .connections
         .iter()
         .map(|s| s.name.clone())
         .collect();
@@ -1087,7 +1087,8 @@ fn entry_line<'a>(
     let name_width = name_width.saturating_sub(indent);
 
     let mut name = entry.name.clone();
-    if shows_as_a_place(entry) {
+    // Nothing is there to go inside of, whatever the path looks like.
+    if shows_as_a_place(entry) && place_kind != Some("missing") {
         name.push('/');
     }
     // A column hit takes the place of the kind label: both are a short note about
@@ -1100,7 +1101,7 @@ fn entry_line<'a>(
     let described = entry.label();
     // Whether the cell ends up holding the curated word rather than a label. Only one
     // arm below reaches for it, and a row whose *path* is curated but whose kind sends
-    // it elsewhere — a `multi` prefix in a public source — is carrying a label.
+    // it elsewhere — a `multi` prefix in a collection — is carrying a label.
     let mut shows_curated = false;
     let kind = match entry.kind {
         // A count beats the word for a bucket or container. Not the *curated* word,
@@ -1121,6 +1122,12 @@ fn entry_line<'a>(
                 .or(looking)
                 .unwrap_or(described.as_ref()),
         },
+        // A collection's local dataset that is not there says so, rather than the
+        // ellipsis of a row nothing has looked at yet.
+        EntryKind::Unknown if place_kind.is_some() => {
+            shows_curated = true;
+            place_kind.unwrap_or_default()
+        }
         _ => described.as_ref(),
     };
     // Two stores can hold the same bucket and key, so a row from one that is named in
@@ -1602,6 +1609,10 @@ fn kind_words(
                 .unwrap_or("directory")
                 .to_string(),
         },
+        // A local dataset of a collection that is not there.
+        EntryKind::Unknown if place_kind == Some("missing") => {
+            "missing: nothing at this path".to_string()
+        }
         _ => String::new(),
     }
 }
@@ -1791,7 +1802,6 @@ fn source_details(
     };
     let noun = match source.api.as_str() {
         "azure" => "accounts",
-        "public" => "datasets",
         _ => "buckets",
     };
     match &source.status {
@@ -1947,6 +1957,8 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // the way to read the whole of it is one row further in.
                 EntryKind::Directory if door_in_there => INSIDE_AND_THE_DOOR,
                 EntryKind::Directory => "",
+                // A collection's local dataset that is not there: the kind line says so.
+                EntryKind::Unknown if app.home.missing.contains(&entry.path) => "",
                 EntryKind::Unknown => "Not read yet.",
                 EntryKind::Other => "datui has no reader for this file.",
                 // The log says which files are live, and datui does not read it.
@@ -2577,7 +2589,7 @@ mod tests {
 
         // And a row whose *path* is curated but whose kind never reaches for the word
         // is carrying a label, which gives way like any other. Only a `Directory` row
-        // consults `place_kind`; a `multi` prefix in a public source does not.
+        // consults `place_kind`; a `multi` prefix in a collection does not.
         let mut curated_multi = row("s3://bucket/occurrence", EntryKind::MultiFile);
         curated_multi.size = Some(4096);
         curated_multi.holds = crate::discover::Holds {

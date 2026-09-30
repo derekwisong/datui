@@ -16,7 +16,8 @@ Navigation:
   Space:            While the filter is empty: fold or unfold the section
                     header under the cursor. With a filter typed, it types
   Backspace:        Delete a filter character; on an empty filter, up a
-                    level (from a bucket, back to its cloud source)
+                    level (from a bucket, back to its cloud source; from
+                    the top of a collection's remote dataset, back here)
   Tab:              Cycle the sort; the control bar names the order in effect
   Esc:              Back out one layer: the path prompt, the filter, the
                     directory, then to the open data
@@ -45,8 +46,12 @@ Sections, in order:
                     lives in, newest place first
   Current directory: Where datui was launched
   Cloud:            One row per cloud source; Enter lists its buckets
+  Collections:      Each [[sources]] collection under its label: named
+                    datasets, local or remote. Enter opens a file and
+                    steps into a directory or a bucket prefix
   Configured:       Directories from [data] directories in the config,
                     then those remembered with Ctrl+D
+  Public datasets:  The built-in collection, after your own
   Elsewhere:        Directories your desktop recorded; starts folded
   Found:            Search results, shown while typing
 
@@ -59,7 +64,9 @@ Reading a row:
   directory as one table whatever the label says. The row hides while a
   filter is typed, and is absent when nothing inside is openable. Inside a
   directory, the last row counts the files datui can't open; Enter on it
-  shows them. The Notes tab says what a read had to decide.
+  shows them. The Notes tab says what a read had to decide. In a
+  collection, "dataset" marks a remote directory not listed until you
+  enter it, and "missing" a local path with nothing there.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)
@@ -68,6 +75,5 @@ Help and leaving:
 What datui remembers, all under its cache directory and never the data
 itself: recent paths, the shapes and column names it measured (so this
 screen can say 1,000 × 11 without reading anything), query history, section
-folds, remembered directories, bucket listings, hidden cloud sources and
-public places.
+folds, remembered directories, bucket listings and hidden cloud sources.
 datui --clear-cache removes all of it.

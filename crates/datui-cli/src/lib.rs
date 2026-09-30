@@ -404,7 +404,7 @@ pub struct Args {
     #[arg(long = "s3-region", value_name = "REGION", help_heading = "Cloud")]
     pub s3_region: Option<String>,
 
-    /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Sources in [[cloud.sources]] always appear
+    /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Entries in [[cloud.connections]] always appear
     #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover, help_heading = "Cloud")]
     pub cloud_discover: Option<String>,
 }

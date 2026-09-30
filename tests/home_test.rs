@@ -1175,6 +1175,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
     let root = std::path::PathBuf::from("/mnt/share/sets");
     let mut home = HomeState::default();
     home.apply_listing(datui::home::Listing {
+        missing: Default::default(),
         sections: vec![datui::home::Section {
             door: None,
             title: "/mnt/share/sets".into(),
@@ -1504,6 +1505,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
     touch(tmp.path(), "sales.parquet");
 
     let request = ListingRequest {
+        collections: Vec::new(),
         config_dirs: vec![tmp.path().to_path_buf()],
         remembered_dirs: Vec::new(),
         recents: Vec::new(),
@@ -1736,6 +1738,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
     ]);
 
     let listing = build_listing(&ListingRequest {
+        collections: Vec::new(),
         config_dirs: Vec::new(),
         remembered_dirs: Vec::new(),
         recents: vec![dataset.clone()],
@@ -1828,6 +1831,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         PathBuf::from("https://acct.blob.core.windows.net/c/p/"),
     ];
     let listing = build_listing(&ListingRequest {
+        collections: Vec::new(),
         config_dirs: Vec::new(),
         remembered_dirs: Vec::new(),
         recents: typed.clone(),
@@ -1897,6 +1901,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
     };
     let label_for = |cache: &CacheManager| -> Option<String> {
         let listing = build_listing(&ListingRequest {
+            collections: Vec::new(),
             config_dirs: Vec::new(),
             remembered_dirs: Vec::new(),
             recents: vec![dataset.clone()],
@@ -1954,6 +1959,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
         },
     )]);
     let listing = build_listing(&ListingRequest {
+        collections: Vec::new(),
         config_dirs: Vec::new(),
         remembered_dirs: Vec::new(),
         recents: vec![dataset],
@@ -2053,6 +2059,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
     )]);
 
     let listing = build_listing(&ListingRequest {
+        collections: Vec::new(),
         config_dirs: Vec::new(),
         remembered_dirs: Vec::new(),
         recents: vec![dataset.clone()],
@@ -2128,6 +2135,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
     )]);
 
     let listing = build_listing(&ListingRequest {
+        collections: Vec::new(),
         config_dirs: Vec::new(),
         remembered_dirs: Vec::new(),
         recents: Vec::new(),
@@ -2185,6 +2193,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
 fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
     let mut home = HomeState::default();
     home.apply_listing(datui::home::Listing {
+        missing: Default::default(),
         sections: vec![datui::home::Section {
             door: None,
             title: "TEST".into(),
@@ -3326,6 +3335,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
     let next = TempDir::new().unwrap();
     hive_partitions(next.path(), 200);
     home.apply_listing(datui::home::Listing {
+        missing: Default::default(),
         sections: vec![datui::home::Section {
             door: None,
             title: "NEXT".into(),
@@ -3968,6 +3978,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
     let recent = touch(&recent_dir, "c.parquet");
 
     let listing = build_listing(&ListingRequest {
+        collections: Vec::new(),
         config_dirs: vec![configured.clone()],
         remembered_dirs: Vec::new(),
         recents: vec![recent],
@@ -4382,39 +4393,96 @@ fn test_google_steps_through_project_bucket_and_prefix() {
 }
 
 #[test]
-fn test_public_datasets_are_named_rows_and_backspace_returns_to_them() {
-    use datui::home::{CloudSource, CloudStatus};
+fn test_collections_are_sections_of_named_datasets() {
+    use datui::home::{Collection, CollectionDataset};
     use std::path::{Path, PathBuf};
+    let dir = TempDir::new().unwrap();
+    let sales = dir.path().join("sales.csv");
+    fs::write(&sales, "a,b\n1,2\n").unwrap();
+    let archive = dir.path().join("archive");
+    fs::create_dir(&archive).unwrap();
+    fs::write(archive.join("2024.csv"), "a,b\n1,2\n").unwrap();
+    let gone = dir.path().join("gone.parquet");
     let noaa = PathBuf::from("s3://noaa-ghcn-pds/parquet/");
+    let penguins = PathBuf::from("https://example.com/penguins.csv");
     let overture = PathBuf::from("abfss://release@overturemapswestus2.dfs.core.windows.net/");
+    let dataset = |name: &str, location: &Path| CollectionDataset {
+        name: name.to_string(),
+        location: location.to_path_buf(),
+        details: vec![("about".to_string(), format!("{name} data"))],
+    };
     let mut home = HomeState {
-        cloud: vec![CloudSource {
-            id: "public".to_string(),
-            label: "Public datasets".to_string(),
-            api: "public".to_string(),
-            buckets: vec![noaa.clone(), overture.clone()],
-            names: [
-                (noaa.clone(), "NOAA daily weather".to_string()),
-                (overture.clone(), "Overture Maps".to_string()),
-            ]
-            .into_iter()
-            .collect(),
-            status: CloudStatus::Listed,
-            ..Default::default()
-        }],
+        collections: vec![
+            Collection {
+                name: "mine".to_string(),
+                label: "My datasets".to_string(),
+                builtin: false,
+                datasets: vec![
+                    dataset("Sales", &sales),
+                    dataset("Archive", &archive),
+                    dataset("Gone", &gone),
+                    dataset("Weather", &noaa),
+                    dataset("Penguins", &penguins),
+                ],
+            },
+            Collection {
+                name: "public".to_string(),
+                label: "Public datasets".to_string(),
+                builtin: true,
+                // The same place as `Weather`: the collection listed first names it.
+                datasets: vec![dataset("Overture Maps", &overture), dataset("NOAA", &noaa)],
+            },
+        ],
         network_check: |_| false,
         ..Default::default()
     };
-    assert_eq!(home.cloud[0].count_text(), "2 datasets");
-
-    home.browsing = Some(PathBuf::from("cloud://public"));
     home.rebuild(&[], &[]);
-    let names: Vec<&str> = home.sections[0]
+    let section = |title: &str| {
+        home.sections
+            .iter()
+            .find(|s| s.title == title)
+            .unwrap_or_else(|| panic!("no {title} section"))
+    };
+    let mine = section("My datasets");
+    assert_eq!(mine.origin, Some("configured"));
+    assert_eq!(section("Public datasets").origin, Some("built in"));
+    let rows: Vec<(&str, EntryKind)> = mine
         .rows
         .iter()
-        .map(|r| r.name.as_str())
+        .map(|r| (r.name.as_str(), r.kind))
         .collect();
-    assert_eq!(names, ["NOAA daily weather", "Overture Maps"]);
+    assert_eq!(
+        rows,
+        [
+            ("Sales", EntryKind::File),
+            ("Archive", EntryKind::Directory),
+            ("Gone", EntryKind::Unknown),
+            ("Weather", EntryKind::Directory),
+            ("Penguins", EntryKind::File),
+        ],
+        "named by the config, each kind found without reading anything remote"
+    );
+    let titles: Vec<&str> = home.sections.iter().map(|s| s.title.as_str()).collect();
+    let (mine_at, public_at) = (
+        titles.iter().position(|t| *t == "My datasets").unwrap(),
+        titles.iter().position(|t| *t == "Public datasets").unwrap(),
+    );
+    assert!(
+        mine_at < public_at,
+        "the built-in catalog comes last: {titles:?}"
+    );
+
+    // A missing local dataset stays, and says so.
+    assert!(home.missing.contains(&gone));
+    assert_eq!(home.place_kind(&gone), Some("missing"));
+    assert_eq!(home.place_kind(&noaa), Some("dataset"));
+    assert_eq!(home.place_kind(&sales), None);
+    assert_eq!(
+        home.place_details(&noaa).unwrap(),
+        [("about".to_string(), "Weather data".to_string())]
+    );
+    // Nothing is asked of a remote dataset's store until it is entered.
+    assert!(home.cloud_directories_to_peek(10).is_empty());
 
     let year = Path::new("s3://noaa-ghcn-pds/parquet/by_year");
     assert_eq!(
@@ -4424,32 +4492,24 @@ fn test_public_datasets_are_named_rows_and_backspace_returns_to_them() {
     );
     assert_eq!(
         home.parent_of(Path::new("s3://noaa-ghcn-pds/parquet")),
-        Some(PathBuf::from("cloud://public")),
-        "a dataset's root goes back to the datasets, not up the bucket"
+        None,
+        "a dataset's root goes back to the listing, not up the bucket"
     );
-    assert_eq!(
-        home.parent_of(&overture),
-        Some(PathBuf::from("cloud://public"))
-    );
-    assert_eq!(
-        home.cloud_source_of(Path::new(
-            "abfss://release@overturemapswestus2.dfs.core.windows.net/2026-08-19.0/"
-        ))
-        .map(|s| s.id.as_str()),
-        Some("public")
-    );
-
+    assert_eq!(home.parent_of(&overture), None);
     let sep = datui::glyphs::get().trail;
     assert_eq!(
         home.location_label(Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2020")),
-        format!(
-            "cloud {sep} Public datasets {sep} NOAA daily weather {sep} by_year {sep} YEAR=2020"
-        )
+        format!("My datasets {sep} Weather {sep} by_year {sep} YEAR=2020")
     );
-
     home.browsing = Some(year.to_path_buf());
-    home.browse_start = Some(PathBuf::from("cloud://public"));
+    home.browse_start = Some(noaa.clone());
     assert!(home.below_browse_start());
+
+    // Inside, the dataset is titled by its name, not its URL.
+    home.browsing = Some(noaa.clone());
+    home.browse_start = Some(noaa.clone());
+    home.rebuild(&[], &[]);
+    assert_eq!(home.sections[0].title, "Weather");
 }
 
 #[test]
@@ -4547,6 +4607,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
 
     let listed = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
         let request = ListingRequest {
+            collections: Vec::new(),
             config_dirs: Vec::new(),
             remembered_dirs: Vec::new(),
             recents: Vec::new(),

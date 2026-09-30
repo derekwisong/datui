@@ -198,6 +198,13 @@ fn within(url: &str, root: &str) -> bool {
     }
 }
 
+/// Whether two locations are one place, however a trailing slash or an Azure URL is
+/// spelled.
+fn same_place(a: &Path, b: &Path) -> bool {
+    let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
+    within(&a, &b) && within(&b, &a)
+}
+
 /// What is left of `url` below `root`, which it is [`within`].
 fn within_rest(url: &str, root: &str) -> String {
     let canonical = |u: &str| match crate::source::azure_parts(u) {
@@ -533,11 +540,11 @@ pub enum CloudStatus {
 /// would be a billed network round trip per keystroke.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CloudSource {
-    /// The source ID, as in `[[cloud.sources]]` and `s3://<id>@bucket`.
+    /// The source ID, as in `[[cloud.connections]]` and `s3://<id>@bucket`.
     pub id: String,
     /// The row's name.
     pub label: String,
-    /// The API spoken: `s3`, `gcs`, `azure`, or `public` for public datasets.
+    /// The API spoken: `s3`, `gcs` or `azure`.
     pub api: String,
     /// The account, endpoint or project, and where the login came from.
     pub note: String,
@@ -555,37 +562,9 @@ pub struct CloudSource {
     /// Lines for the details pane of places inside the source: an Azure account's
     /// subscription, region and namespace.
     pub place_details: std::collections::HashMap<PathBuf, Vec<(String, String)>>,
-    /// Names for places that are not named by their URL: a public dataset.
-    pub names: std::collections::HashMap<PathBuf, String>,
 }
 
 impl CloudSource {
-    /// Whether this source's first level is public datasets rather than buckets.
-    pub fn is_public(&self) -> bool {
-        self.api == "public"
-    }
-
-    /// The row for one of this source's places.
-    fn entry(&self, place: &Path) -> Entry {
-        let mut entry = bucket_entry(place);
-        if let Some(name) = self.names.get(place) {
-            entry.name = name.clone();
-        }
-        entry
-    }
-
-    /// The dataset `path` is in, when this is a public source: its place as listed.
-    fn dataset_of(&self, path: &Path) -> Option<&PathBuf> {
-        if !self.is_public() {
-            return None;
-        }
-        let text = path.to_string_lossy();
-        self.buckets
-            .iter()
-            .filter(|place| within(&text, &place.to_string_lossy()))
-            // The innermost, when one dataset is inside another.
-            .max_by_key(|place| place.as_os_str().len())
-    }
     /// What the row says instead of a size: the bucket count, or why there is none.
     pub fn count_text(&self) -> String {
         match &self.status {
@@ -597,8 +576,6 @@ impl CloudSource {
                     ("account", "accounts")
                 } else if self.api == "gcs" {
                     ("project", "projects")
-                } else if self.is_public() {
-                    ("dataset", "datasets")
                 } else {
                     ("bucket", "buckets")
                 };
@@ -630,6 +607,157 @@ impl CloudSource {
     /// Whether the row reports a failure.
     pub fn failed(&self) -> bool {
         matches!(self.status, CloudStatus::Failed { .. })
+    }
+}
+
+/// A `[[sources]]` collection as the home screen shows it: a section of named datasets,
+/// local and remote alike.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Collection {
+    /// The collection's name, as in `[[sources]]` and `[data] hide_sources`.
+    pub name: String,
+    /// The section's title.
+    pub label: String,
+    /// The built-in catalog, rather than a collection from the config.
+    pub builtin: bool,
+    pub datasets: Vec<CollectionDataset>,
+}
+
+/// One dataset of a [`Collection`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CollectionDataset {
+    /// The row's name.
+    pub name: String,
+    /// The local path with `~` and `$VAR` expanded, or the URL.
+    pub location: PathBuf,
+    /// `key  value` lines for the details pane.
+    pub details: Vec<(String, String)>,
+}
+
+impl Collection {
+    /// A configured collection as the home screen shows it.
+    pub fn from_config(source: &crate::config::SourceConfig, builtin: bool) -> Self {
+        Self {
+            name: source.name.clone(),
+            label: source.label().to_string(),
+            builtin,
+            datasets: source
+                .datasets
+                .iter()
+                .map(|dataset| {
+                    let location = dataset
+                        .local_path()
+                        .or_else(|| dataset.url.as_deref().map(PathBuf::from))
+                        .unwrap_or_default();
+                    let mut details: Vec<(String, String)> = [
+                        ("about", &dataset.description),
+                        ("publisher", &dataset.publisher),
+                        ("license", &dataset.license),
+                        ("homepage", &dataset.homepage),
+                    ]
+                    .into_iter()
+                    .filter(|(_, value)| !value.is_empty())
+                    .map(|(key, value)| (key.to_string(), value.clone()))
+                    .collect();
+                    match &dataset.url {
+                        None => details.push(("path".to_string(), display_path(&location))),
+                        Some(url) => {
+                            details.push(("url".to_string(), url.clone()));
+                            // How it is read: what `auth` and `connection` say, in words.
+                            let login = match (&dataset.connection, dataset.auth.as_deref()) {
+                                (Some(connection), _) => connection.clone(),
+                                (None, Some("anonymous")) => "none".to_string(),
+                                _ if !crate::config::is_object_store_dataset(url) => {
+                                    "none".to_string()
+                                }
+                                _ => "auto".to_string(),
+                            };
+                            details.push(("login".to_string(), login));
+                        }
+                    }
+                    CollectionDataset {
+                        name: dataset.name.clone(),
+                        location,
+                        details,
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The collections the home screen shows, in order.
+pub fn collections(config: &crate::config::AppConfig) -> Vec<Collection> {
+    config
+        .shown_collections()
+        .iter()
+        .map(|source| {
+            let builtin = !config.sources.iter().any(|s| s.name == source.name);
+            Collection::from_config(source, builtin)
+        })
+        .collect()
+}
+
+/// The row for one dataset of a collection. Nothing is read to make it but a local
+/// path's own directory entry; a remote dataset is named by its URL alone.
+fn collection_entry(
+    dataset: &CollectionDataset,
+    network_check: fn(&Path) -> bool,
+    missing: &mut std::collections::HashSet<PathBuf>,
+) -> Entry {
+    let path = &dataset.location;
+    let local = matches!(
+        crate::source::input_source(path),
+        crate::source::InputSource::Local(_)
+    );
+    let mut entry = if is_object_store_url(path) {
+        if names_a_file(path) {
+            entry_for_path(path, true)
+        } else {
+            Entry::directory(path)
+        }
+    } else if !local || network_check(path) {
+        entry_for_path(path, true)
+    } else if path.exists() {
+        entry_for_path(path, false)
+    } else {
+        missing.insert(path.clone());
+        let mut entry = entry_for_path(path, true);
+        entry.kind = EntryKind::Unknown;
+        entry
+    };
+    entry.name = dataset.name.clone();
+    entry
+}
+
+/// A collection's section.
+fn collection_section(
+    collection: &Collection,
+    network_check: fn(&Path) -> bool,
+    missing: &mut std::collections::HashSet<PathBuf>,
+) -> Section {
+    Section {
+        title: collection.label.clone(),
+        subtitle: None,
+        origin: Some(if collection.builtin {
+            "built in"
+        } else {
+            "configured"
+        }),
+        root: None,
+        rows: collection
+            .datasets
+            .iter()
+            .map(|dataset| collection_entry(dataset, network_check, missing))
+            .collect(),
+        unavailable: false,
+        unavailable_note: None,
+        folded_by_default: false,
+        remote_root: None,
+        waiting: false,
+        grouped_by_place: false,
+        door: None,
+        place_labels: Default::default(),
     }
 }
 
@@ -910,6 +1038,10 @@ pub struct HomeState {
     /// buckets. Empty on a machine with no cloud credentials, which is the common case
     /// and not a failure.
     pub cloud: Vec<CloudSource>,
+    /// The `[[sources]]` collections shown, each a section of its own.
+    pub collections: Vec<Collection>,
+    /// Local datasets of a collection that the last listing found missing.
+    pub missing: std::collections::HashSet<PathBuf>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
     pub waiting_since: Option<std::time::Instant>,
     /// `RECENT` shows every place, however many rows that takes. Set by `Enter` on the
@@ -950,6 +1082,8 @@ impl Default for HomeState {
         Self {
             sections: Vec::new(),
             cloud: Vec::new(),
+            collections: Vec::new(),
+            missing: Default::default(),
             filter: String::new(),
             hide_unreadable: true,
             lake_here: None,
@@ -1008,6 +1142,8 @@ pub struct ListingRequest {
     pub network_check: fn(&Path) -> bool,
     /// Cloud sources and the buckets already enumerated for them.
     pub cloud: Vec<CloudSource>,
+    /// The `[[sources]]` collections to list.
+    pub collections: Vec<Collection>,
     /// What datui measured on a previous run. A row whose size and modification time
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
@@ -1018,6 +1154,8 @@ pub struct ListingRequest {
 #[derive(Debug, Clone, Default)]
 pub struct Listing {
     pub sections: Vec<Section>,
+    /// Local datasets of a collection that do not exist.
+    pub missing: std::collections::HashSet<PathBuf>,
 }
 
 /// Find out what a row is, and then what is in it.
@@ -1146,6 +1284,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         probe_errors,
         network_check,
         cloud,
+        collections,
         known,
     } = request;
     let network_check = *network_check;
@@ -1159,7 +1298,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if let Some(id) = browsing.as_deref().and_then(cloud_source_id) {
         let source = cloud.iter().find(|s| s.id == id);
         let rows = source
-            .map(|s| s.buckets.iter().map(|b| s.entry(b)).collect())
+            .map(|s| s.buckets.iter().map(|b| bucket_entry(b)).collect())
             .unwrap_or_default();
         let failure = source.and_then(|s| match &s.status {
             CloudStatus::Failed { short, .. } => Some(short.clone()),
@@ -1185,7 +1324,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             root: None,
         });
         annotate(&mut sections, known, network_check, &mounts);
-        return Listing { sections };
+        return Listing {
+            sections,
+            ..Default::default()
+        };
     }
 
     // Descended into a directory: show only that.
@@ -1235,8 +1377,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // account or container is titled by name, not by its long URL.
             title: {
                 let text = dir.to_string_lossy();
-                if let Some(name) = cloud.iter().find_map(|s| s.names.get(&dir)) {
-                    name.clone()
+                if let Some(dataset) = collections
+                    .iter()
+                    .flat_map(|c| c.datasets.iter())
+                    .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
+                {
+                    dataset.name.clone()
                 } else if let Some((_, account)) = cloud_account(&dir) {
                     account
                 } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
@@ -1268,7 +1414,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             place_labels: Default::default(),
         });
         annotate(&mut sections, known, network_check, &mounts);
-        return Listing { sections };
+        return Listing {
+            sections,
+            ..Default::default()
+        };
     }
 
     // Recents that still exist, most recent first.
@@ -1489,8 +1638,23 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         });
     }
 
+    // Collections from the config, in the order defined: named datasets rather than
+    // directories, so they sit with the stores, above the directories to look through.
+    let mut missing = std::collections::HashSet::new();
+    let (builtin, configured): (Vec<&Collection>, Vec<&Collection>) =
+        collections.iter().partition(|c| c.builtin);
+    for collection in configured {
+        sections.push(collection_section(collection, network_check, &mut missing));
+    }
+
     // Configured places in the order configured, then remembered ones in the order kept.
     sections.extend(rest.into_iter().map(|(_, s)| s));
+
+    // The built-in catalog is for when there is nothing of your own yet, so it comes
+    // after everything that is.
+    for collection in builtin {
+        sections.push(collection_section(collection, network_check, &mut missing));
+    }
 
     if !elsewhere.is_empty() {
         sections.push(Section {
@@ -1520,7 +1684,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // so nothing here can block on a filesystem that has stopped answering.
     annotate(&mut sections, known, network_check, &mounts);
 
-    Listing { sections }
+    Listing { sections, missing }
 }
 
 /// The key a record about `path` is filed under in the dataset index.
@@ -1990,6 +2154,7 @@ impl HomeState {
             probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
+            collections: self.collections.clone(),
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
@@ -2002,6 +2167,7 @@ impl HomeState {
     pub fn apply_listing(&mut self, listing: Listing) {
         let previous = self.selected_key();
         self.sections = listing.sections;
+        self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
         if let (Some(browsing), Some((dir, format))) = (&self.browsing, &self.lake_here)
             && browsing == dir
@@ -2240,9 +2406,6 @@ impl HomeState {
         if let Some(id) = cloud_source_id(path) {
             return self.cloud.iter().find(|s| s.id == id);
         }
-        if let Some((source, _)) = self.dataset_of(path) {
-            return Some(source);
-        }
         if let Some((id, _)) = cloud_account(path) {
             return self.cloud.iter().find(|s| s.id == id);
         }
@@ -2274,24 +2437,20 @@ impl HomeState {
         if cloud_source_id(path).is_some() {
             return None;
         }
-        // Out of a dataset's root is back to the datasets, not up into a bucket that
-        // may not be listable at all.
-        if let Some((source, place)) = self.dataset_of(path) {
-            let text = path.to_string_lossy();
-            if text.trim_end_matches('/') == place.to_string_lossy().trim_end_matches('/') {
-                return Some(cloud_place(&source.id));
+        // Out of a remote dataset's root is back to the collection it is listed in, not
+        // up into a bucket that may not be listable at all.
+        if let Some((_, dataset)) = self.remote_dataset_of(path) {
+            let place = &dataset.location;
+            if same_place(path, place) {
+                return None;
             }
             let up = self.parent_within(path)?;
             // The dataset's own place, as listed, so its listing is found again.
-            return Some(
-                if up.to_string_lossy().trim_end_matches('/')
-                    == place.to_string_lossy().trim_end_matches('/')
-                {
-                    place.clone()
-                } else {
-                    up
-                },
-            );
+            return Some(if same_place(&up, place) {
+                place.clone()
+            } else {
+                up
+            });
         }
         if let Some((id, _)) = cloud_account(path) {
             return Some(cloud_place(&id));
@@ -2340,11 +2499,29 @@ impl HomeState {
         parent_location(path)
     }
 
-    /// The public source and dataset `path` is in.
-    fn dataset_of(&self, path: &Path) -> Option<(&CloudSource, &PathBuf)> {
-        self.cloud
+    /// The remote collection dataset `path` is in: the innermost, when one dataset is
+    /// inside another, and the first listed of two that are the same place.
+    fn remote_dataset_of(&self, path: &Path) -> Option<(&Collection, &CollectionDataset)> {
+        if !is_object_store_url(path) {
+            return None;
+        }
+        let text = path.to_string_lossy();
+        self.collections
             .iter()
-            .find_map(|source| source.dataset_of(path).map(|place| (source, place)))
+            .flat_map(|c| c.datasets.iter().map(move |d| (c, d)))
+            .filter(|(_, d)| {
+                is_object_store_url(&d.location) && within(&text, &d.location.to_string_lossy())
+            })
+            .rev()
+            .max_by_key(|(_, d)| d.location.to_string_lossy().trim_end_matches('/').len())
+    }
+
+    /// The collection dataset listed at `path` itself.
+    pub fn collection_dataset(&self, path: &Path) -> Option<(&Collection, &CollectionDataset)> {
+        self.collections
+            .iter()
+            .flat_map(|c| c.datasets.iter().map(move |d| (c, d)))
+            .find(|(_, d)| d.location == path || same_place(&d.location, path))
     }
 
     /// The place of an Azure account, from whichever source lists it.
@@ -2385,8 +2562,12 @@ impl HomeState {
         }
     }
 
-    /// What to call a place a source names itself: a public dataset.
+    /// What to call a place a source or collection names itself: a remote dataset of a
+    /// collection, or a local one that is missing.
     pub fn place_kind(&self, path: &Path) -> Option<&'static str> {
+        if self.missing.contains(path) {
+            return Some("missing");
+        }
         if let Some((id, _)) = cloud_account(path) {
             return self
                 .cloud
@@ -2394,10 +2575,11 @@ impl HomeState {
                 .any(|s| s.id == id && s.api == "gcs")
                 .then_some("project");
         }
-        self.cloud
-            .iter()
-            .any(|s| s.is_public() && s.names.contains_key(path))
-            .then_some("dataset")
+        (is_object_store_url(path)
+            && self
+                .collection_dataset(path)
+                .is_some_and(|(_, d)| is_object_store_url(&d.location)))
+        .then_some("dataset")
     }
 
     /// The project place a Google bucket was listed under, when it was.
@@ -2424,11 +2606,13 @@ impl HomeState {
         Some(PathBuf::from(format!("gs://{bucket}")))
     }
 
-    /// Details-pane lines for a place a cloud source listed, when it has any.
+    /// Details-pane lines for a place a cloud source listed or a collection names, when
+    /// it has any.
     pub fn place_details(&self, path: &Path) -> Option<&[(String, String)]> {
         self.cloud
             .iter()
             .find_map(|s| s.place_details.get(path))
+            .or_else(|| self.collection_dataset(path).map(|(_, d)| &d.details))
             .map(Vec::as_slice)
     }
 
@@ -2437,18 +2621,23 @@ impl HomeState {
     /// something to show a person.
     pub fn location_label(&self, path: &Path) -> String {
         let sep = crate::glyphs::get().trail;
+        // Inside a remote dataset of a collection: the collection, the dataset's name,
+        // and the way down from it.
+        if let Some((collection, dataset)) = self.remote_dataset_of(path) {
+            let text = path.to_string_lossy();
+            let rest = within_rest(&text, &dataset.location.to_string_lossy());
+            let mut parts = vec![collection.label.clone(), dataset.name.clone()];
+            parts.extend(
+                rest.split('/')
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string),
+            );
+            return parts.join(&format!(" {sep} "));
+        }
         if let Some(source) = self.cloud_source_of(path) {
             let mut parts = vec!["cloud".to_string(), source.label.clone()];
             let text = path.to_string_lossy();
-            if let Some(place) = source.dataset_of(path) {
-                parts.push(source.entry(place).name);
-                let rest = within_rest(&text, &place.to_string_lossy());
-                parts.extend(
-                    rest.split('/')
-                        .filter(|p| !p.is_empty())
-                        .map(str::to_string),
-                );
-            } else if let Some((_, account)) = cloud_account(path) {
+            if let Some((_, account)) = cloud_account(path) {
                 parts.push(account);
             } else if let Some((account, container, key)) = crate::source::azure_parts(&text) {
                 parts.push(account);
@@ -2494,7 +2683,7 @@ impl HomeState {
                 .iter()
                 .flat_map(|source| {
                     source.buckets.iter().map(move |bucket| {
-                        let mut entry = source.entry(bucket);
+                        let mut entry = bucket_entry(bucket);
                         entry.name = format!(
                             "{} {} {}",
                             source.label,
@@ -3028,6 +3217,11 @@ impl HomeState {
             if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
                 continue;
             }
+            // A collection's dataset is listed by name at the top, and nothing is asked
+            // of its store until it is opened or entered.
+            if self.browsing.is_none() && self.collection_dataset(&entry.path).is_some() {
+                continue;
+            }
             // Asked and answered, or asked and still out.
             if self.cloud_kinds.contains_key(&entry.path)
                 || self.peeking.contains(&entry.path)
@@ -3173,7 +3367,7 @@ impl HomeState {
             let Row::Entry { entry, .. } = row else {
                 continue;
             };
-            if entry.kind != EntryKind::Unknown {
+            if entry.kind != EntryKind::Unknown || self.missing.contains(&entry.path) {
                 continue;
             }
             // Already looked into, even if the look settled nothing — a path that has

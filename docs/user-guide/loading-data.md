@@ -313,14 +313,14 @@ Name each store in the config, with the environment variables that hold its keys
 The keys themselves never go in the file.
 
 ```toml
-[[cloud.sources]]
+[[cloud.connections]]
 name = "lab"                                  # lowercase letters, digits and -
 kind = "s3"
 endpoint_url = "http://localhost:9000"
 access_key_id_env = "LAB_KEY"
 secret_access_key_env = "LAB_SECRET"
 
-[[cloud.sources]]
+[[cloud.connections]]
 name = "onprem"
 label = "On-prem MinIO"
 kind = "s3"
@@ -331,6 +331,9 @@ secret_access_key_env = "ONPREM_SECRET"
 
 Servers already set up in the MinIO client (`mc alias set`, or `MC_HOST_<alias>`)
 or in s3cmd need no config: they are the sources `mc-<alias>` and `s3cfg`.
+
+To keep a dataset in one of these stores on the home screen by name, list it in a
+[`[[sources]]`](configuration.md#sources) collection with `connection = "onprem"`.
 
 Open an object from a named S3-compatible store by putting its name before the
 bucket. Two servers can have a bucket with the same name, and the name says which
@@ -438,25 +441,25 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 | A login | Signs with it. If the place refuses, datui tries once more unsigned, and remembers for the session which one worked |
 
 The retry matters most on Azure, which refuses a public container to a login from
-another tenant. A public bucket or container read this way is listed with the
-[public datasets](home-screen.md#public-datasets) from then on.
+another tenant.
 
 A few well-known datasets are built in; see the
-[home screen](home-screen.md#public-datasets). For a compact list of your own, add a
-source with `public = true` and its data as URLs of any cloud:
+[home screen](home-screen.md#public-datasets). For a list of your own, name them in
+a [`[[sources]]`](configuration.md#sources) collection with `auth = "anonymous"`,
+which reads them with no login even on a machine that has one:
 
 ```toml
 # GBIF occurrence snapshots: CC BY-NC 4.0, see https://www.gbif.org/terms
-[[cloud.sources]]
+[[sources]]
 name = "gbif"
 label = "GBIF"
-public = true
-buckets = ["s3://gbif-open-data-us-east-1/occurrence/"]
-```
 
-Use structured `[[cloud.sources.datasets]]` tables to give entries names,
-descriptions, publishers, licenses and homepages; see
-[Configuration](configuration.md#cloud).
+[[sources.datasets]]
+name = "Occurrences"
+url = "s3://gbif-open-data-us-east-1/occurrence/"
+auth = "anonymous"
+license = "CC BY-NC 4.0"
+```
 
 A license is the publisher's, not datui's: check it before you use the data.
 

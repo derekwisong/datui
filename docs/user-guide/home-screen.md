@@ -45,7 +45,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL (with a filter typed, <kbd>~</kbd> types into it). <kbd>Tab</kbd> completes a path. A cloud URL to a directory is browsed; one to a file opens |
 | <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows |
-| <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level |
+| <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
@@ -70,8 +70,10 @@ Datasets are grouped by where they came from, in this order:
 | `RECENT` | Datasets you have opened, grouped under the directory each lives in, local or in a bucket | | open |
 | current directory | Where you launched datui | `current directory` | open |
 | `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | | open |
+| collections | Each [`[[sources]]`](#collections) collection under its label, in the order defined | `configured` | open |
 | configured directories | `[data] directories`, in the order listed | `configured` | open |
 | remembered directories | Directories kept with <kbd>Ctrl</kbd>+<kbd>D</kbd>, in the order kept | `remembered` | open |
+| `PUBLIC DATASETS` | The built-in [public datasets](#public-datasets) | `built in` | open |
 | `ELSEWHERE` | Directories from your desktop's recent-files list | | folded |
 | `Found` | Datasets below the current directory, while you are typing | | |
 
@@ -314,6 +316,54 @@ A marker before each name says what opening it will cost:
 
 Local disk is dimmed; the rest are colored.
 
+## Collections
+
+A collection is a list of datasets you named in the config, local and remote
+alike, shown as a section under its label. See
+[Configuration](configuration.md#sources) for `[[sources]]`.
+
+```
+▾ MY DATASETS  5   configured  ────────────────────────────────────
+  ▪ Sales                                          6.8 KB   now
+  ▪ Archive/ 1 csv                                          now
+  ◦ Gone missing
+  ≈ Weather/ dataset
+  ≈ Penguins
+```
+
+| Row | <kbd>Enter</kbd> | Label |
+|---|---|---|
+| Local file | Opens it | Measured like any file |
+| Local directory | Steps inside | What is inside (`1 csv`, `hive`) |
+| Local path with nothing there | Says it does not exist | `missing` |
+| Directory in an object store | Steps inside; <kbd>Backspace</kbd> at its top comes back here | `dataset` |
+| File in an object store or on the web | Opens it; a web file is downloaded after asking | |
+
+Nothing remote is asked for until you open or enter a dataset. Inside one, the
+title bar's trail starts with the collection and the dataset's name:
+`My datasets › Weather › by_year`. The details pane shows the dataset's
+description, publisher, license and homepage, its path or URL, and `login`: `none`,
+`auto`, or the connection that reads it.
+
+### Public datasets
+
+`Public datasets` is the built-in collection: data its publishers host and keep up
+to date, readable with no login. It comes after everything of your own.
+
+| Dataset | Data | License |
+|---|---|---|
+| NOAA daily weather (GHCN-D) | Weather station observations worldwide, as Parquet by year and by station | CC0 |
+| Bitcoin and Ethereum | Blocks and transactions, as Parquet by date | AWS sample-code license |
+| OpenAlex | Scholarly works, authors, institutions and topics, as Parquet | CC0 |
+| Overture Maps | Places, buildings, addresses, roads and boundaries, as GeoParquet by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
+| Google Open Buildings | 1.8 billion building footprints, as CSV | CC BY 4.0 or ODbL |
+| BigQuery sample data | The small samples Google's documentation uses | Not stated |
+
+The license is the publisher's: check it before you use the data. A collection
+named `public` replaces this one, `[data] builtin_catalog = false` drops it, and
+`[data] hide_sources = ["public"]` hides it; see
+[Configuration](configuration.md#sources).
+
 ## Cloud storage
 
 Every object store datui can read is one row under `CLOUD`. <kbd>Enter</kbd> on a
@@ -325,7 +375,6 @@ objects open like files, and opened objects go into `RECENT` like any other path
 | S3 and S3-compatible | source › bucket › directory › object |
 | Google Cloud | source › project › bucket › directory › object |
 | Azure | source › account › container › directory › blob |
-| Public datasets | source › dataset › directory › object |
 
 ```
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
@@ -333,14 +382,13 @@ objects open like files, and opened objects go into `RECENT` like any other path
   ≈ Google Cloud      gcs     4 projects    project: example-project · gcloud
   ≈ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
   ≈ onprem            s3      403           minio.corp.example:9000 · datui config
-  ≈ Public datasets   public  6 datasets    built in
 ```
 
 | Column | Shows |
 |---|---|
 | Name | The source's `label`, or its name |
-| API | `s3`, `gcs`, `azure`, or `public` |
-| Count | How many buckets (projects for Google Cloud, accounts for Azure, datasets for public data), a spinner while listing, `not listed` before the first listing, or why there are none |
+| API | `s3`, `gcs` or `azure` |
+| Count | How many buckets (projects for Google Cloud, accounts for Azure), a spinner while listing, `not listed` before the first listing, or why there are none |
 | Note | The endpoint, project or profile, and where the login was found |
 
 The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
@@ -359,7 +407,7 @@ gives the whole message:
 | `unsupported login` | An application-default login datui cannot use itself (workload identity federation, impersonation), and no `gcloud` to ask |
 | `needs gcloud` | A login through `gcloud`, which is not installed |
 | `not signed in` | Azure tools are installed but nobody is signed in; the pane names `az login` or `Connect-AzAccount` |
-| `not configured` | A variable named in `[[cloud.sources]]` is not set |
+| `not configured` | A variable named in `[[cloud.connections]]` is not set |
 | `unavailable` | The endpoint did not answer |
 | `not found` | The source was removed or hidden since its row was drawn; <kbd>Ctrl</kbd>+<kbd>R</kbd> at the top looks again |
 
@@ -408,8 +456,7 @@ one that can be read.
 | Azure from the environment | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token, or a service principal (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`) |
 | Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, the file written by `gcloud auth application-default login`, or else the active `gcloud` configuration's login. Its rows are projects |
 | Each other `gcloud` configuration with a different account | `gcloud-<configuration>` | An `account` in `configurations/config_<name>` under `~/.config/gcloud` (`%APPDATA%\gcloud` on Windows, or `CLOUDSDK_CONFIG`) |
-| Public datasets | `public` | The configured `public` source, or the built-in catalog unless `public_datasets = false` |
-| Each `[[cloud.sources]]` entry | its `name` | Always |
+| Each `[[cloud.connections]]` entry | its `name` | Always |
 
 To show only some kinds of login found on the machine, or none:
 
@@ -419,14 +466,14 @@ To show only some kinds of login found on the machine, or none:
 | `false` or `"none"` | `none` | None |
 | `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
 
-`[[cloud.sources]]` entries and public datasets appear whatever it says. The flag
+`[[cloud.connections]]` entries appear whatever it says. The flag
 overrides the config for one run.
 
 A source in the config with the same name as one of these replaces it. The same
 server with the same key found in several places is one row; its note lists
 every place. `mc`'s placeholder aliases and its public `play` server are left
 out. See [Loading Data](loading-data.md#several-stores-at-once) for
-`[[cloud.sources]]`.
+`[[cloud.connections]]`.
 
 Google Cloud lists every project the login can find, the one named in the
 environment or the active `gcloud` configuration first — and alone when
@@ -435,31 +482,6 @@ searching for projects is refused. A profile that needs the AWS CLI shows
 the CLI's message; see [Loading Data](loading-data.md#aws-profiles). A cloud
 VM's identity is not discovered unless `[cloud] instance_identity = true`; see
 [Configuration](configuration.md#cloud).
-
-### Public datasets
-
-`Public datasets` lists data its publishers host and keep up to date, readable with
-no login. Nothing is requested until you open one.
-
-| Dataset | Data | License |
-|---|---|---|
-| NOAA daily weather (GHCN-D) | Weather station observations worldwide, as Parquet by year and by station | CC0 |
-| Bitcoin and Ethereum | Blocks and transactions, as Parquet by date | AWS sample-code license |
-| OpenAlex | Scholarly works, authors, institutions and topics, as Parquet | CC0 |
-| Overture Maps | Places, buildings, addresses, roads and boundaries, as GeoParquet by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
-| Google Open Buildings | 1.8 billion building footprints, as CSV | CC BY 4.0 or ODbL |
-| BigQuery sample data | The small samples Google's documentation uses | Not stated |
-
-The details pane gives each one's publisher, license and homepage. The license is
-the publisher's: check it before you use the data. <kbd>Backspace</kbd> at a
-dataset's top returns to the list. A public bucket or container you have browsed or
-opened unsigned is added to the list. For a list of your own, see
-[Loading Data](loading-data.md#public-data).
-
-`datui --generate-config` writes this catalog as active
-`[[cloud.sources.datasets]]` tables to edit; see
-[Configuration](configuration.md#cloud) for the fields and how the snapshot
-behaves.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
 objects some tools leave to stand for folders.

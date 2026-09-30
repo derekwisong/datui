@@ -8223,6 +8223,7 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
     app.enter_home();
     app.home
         .apply_listing(datui::home::build_listing(&datui::home::ListingRequest {
+            collections: Vec::new(),
             config_dirs: vec![configured.clone()],
             remembered_dirs: vec![kept.clone(), configured.clone()],
             recents: Vec::new(),

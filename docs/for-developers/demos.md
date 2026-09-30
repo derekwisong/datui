@@ -53,7 +53,8 @@ So the home-screen tapes (`12` through `16`) record against a fixture, built by
   is the line that matters: that list is the one input which can put a file from
   anywhere on the machine into the recording;
 - its own empty `HOME`, with inherited cloud credential variables removed before VHS
-  starts, so only the built-in public datasets appear under `CLOUD`.
+  starts, so no cloud login is found and the only remote data is the built-in public
+  datasets.
 
 The generator gives VHS those variables directly. The tape only changes into the
 fixture workspace while its terminal is hidden. It also removes `NO_COLOR` and sets

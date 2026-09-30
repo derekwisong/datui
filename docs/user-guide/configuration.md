@@ -137,6 +137,8 @@ row_limit = 10000   # Rows used to build a chart, 1 to 10_000_000. Adjustable in
 directories = ["/mnt/data", "~/datasets"]   # Places the home screen always lists
 use_desktop_recents = true                  # Offer directories from the desktop's recent-files list
 show_unreadable_files = false               # List files datui cannot read, dimmed; Ctrl+A flips it
+builtin_catalog = true                      # Offer the built-in "public" collection
+hide_sources = []                           # Collections not to show, by name
 
 [data.search]                               # The recursive search typing starts
 enabled           = true
@@ -152,6 +154,110 @@ extensions        = []                      # Empty means every format datui ope
 See [The Home Screen](home-screen.md#searching-below-the-current-directory)
 for what each does.
 
+### Sources
+
+`[[sources]]` names a collection of datasets. The home screen lists each
+collection under its label, one row per dataset, wherever the data lives:
+
+```toml
+[[sources]]
+name = "my-datasets"                  # lowercase letters, digits and -
+label = "My datasets"
+
+[[sources.datasets]]
+name = "Sales"
+path = "~/datasets/sales.parquet"
+description = "Monthly sales"
+
+[[sources.datasets]]
+name = "Weather"
+url = "s3://noaa-ghcn-pds/parquet/"
+auth = "anonymous"
+description = "Daily weather observations"
+
+[[sources.datasets]]
+name = "Penguins"
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+
+[[sources.datasets]]
+name = "Orders"
+url = "s3://orders/2024/"
+connection = "onprem"                 # a [[cloud.connections]] name
+```
+
+| Collection field | Meaning |
+|---|---|
+| `name` | Required. Lowercase letters, digits and `-`, at most 40 characters. What `hide_sources` and a later file name it by |
+| `label` | The section title. Default: the name |
+
+| Dataset field | Meaning |
+|---|---|
+| `name` | Required. The row's name, unique in the collection |
+| `path` | A local file or directory. `~` and `$VAR` expand; a relative path is relative to the config file that names it |
+| `url` | An `s3://`, `gs://` or Azure file or directory, or an `http://` or `https://` data file |
+| `auth` | Object-store `url` only: `auto` (the default) or `anonymous` |
+| `connection` | Object-store `url` only: the [`[[cloud.connections]]`](#cloud) entry whose login reads it |
+| `description`, `publisher`, `license`, `homepage` | Shown in the details pane |
+
+A dataset has exactly one of `path` and `url`. No two datasets in a collection
+share a name or a location.
+
+| Location | <kbd>Enter</kbd> | Read with |
+|---|---|---|
+| Local file | Opens it | |
+| Local directory | Steps inside | |
+| Object-store file | Opens it | `auth` or `connection` |
+| Object-store directory | Steps inside. <kbd>Backspace</kbd> at its top comes back to the list | `auth` or `connection` |
+| HTTP(S) file | Downloads it, after asking, and opens it | No login |
+
+| Reading | Means |
+|---|---|
+| `auth = "auto"` | As the URL typed at <kbd>~</kbd> would be: the login found for that cloud, unsigned when there is none or it is refused |
+| `auth = "anonymous"` | No credentials and no signature, whatever login the machine has |
+| `connection = "<name>"` | That connection's login and nothing else. Its `kind` must match the URL, and an Azure connection's `account` the URL's account |
+
+HTTP(S) is always read with no login, and its URL must name a file datui reads:
+a web server has no listing to browse. Name a connection with `connection`, not
+in the URL: `s3://onprem@bucket/` is refused.
+
+A collection holds references, not data. Nothing is read until a dataset is
+opened or entered, so a remote directory's row says `dataset` until then. A local
+path with nothing there stays listed and says `missing`.
+
+The built-in collection, `public`, lists [public datasets](home-screen.md#public-datasets)
+after everything else:
+
+| To | Do |
+|---|---|
+| Replace it | Define a collection named `public`. It replaces the whole catalog; nothing built in is merged in |
+| Drop it | `[data] builtin_catalog = false`. A configured `public` still shows |
+| Hide a collection, `public` or yours | `[data] hide_sources = ["public", "my-datasets"]` |
+
+`datui --generate-config` writes the catalog as an active `public` collection to
+edit. It is a snapshot: later datui releases do not change it. Run
+`datui --generate-config --force` for a new one, after saving any edits you want
+to keep.
+
+Across [imported files](#importing-other-config-files), collections are listed in
+the order defined, imports first. A later collection with the same name replaces
+the earlier one whole; datasets are never merged. `hide_sources` adds up across
+files, and `builtin_catalog = false` in any file turns the catalog off. Two
+collections with one name in one file are an error.
+
+Collections are apart from `[data] directories`, remembered directories and
+`RECENT`. A directory there is a place to look through, and whatever you open goes
+into `RECENT` whether or not a collection names it.
+
+This replaces the public-data settings of earlier 0.4 development builds, which
+are no longer read:
+
+| Before | Now |
+|---|---|
+| `[[cloud.sources]]` | `[[cloud.connections]]`, the same fields less `public` and `datasets` |
+| `public = true` with `buckets` or `[[cloud.sources.datasets]]` | `[[sources]]` with `[[sources.datasets]]` and `auth = "anonymous"` |
+| `[cloud] public_datasets = false` | `[data] builtin_catalog = false` |
+| `[cloud] hide = ["public"]` | `[data] hide_sources = ["public"]` |
+
 ### Cloud
 
 ```toml
@@ -160,7 +266,6 @@ s3_endpoint_url = "http://localhost:9000"   # MinIO, R2, Ceph and other S3-compa
 s3_access_key_id = "..."
 s3_secret_access_key = "..."
 s3_region = "us-east-1"
-public_datasets = true                      # compatibility switch for the built-in catalog; false hides it
 azure_account_keys = true                   # read Azure with the account key after a sign-in is refused for want of a data role
 env_files = [".env"]                        # read cloud variables from these files; off unless listed
 instance_identity = false                   # use the EC2, GCE or Azure VM's own identity
@@ -171,10 +276,11 @@ list_on_start = false                       # list every source's buckets at lau
 Environment variables override these, and command-line flags override both.
 See [Loading Data](loading-data.md#remote-data).
 
-More stores go in `[[cloud.sources]]`, one table each:
+More stores go in `[[cloud.connections]]`, one table each. Each is a row under
+`CLOUD`, and a [`[[sources]]`](#sources) dataset can name one with `connection`:
 
 ```toml
-[[cloud.sources]]
+[[cloud.connections]]
 name = "onprem"
 label = "On-prem MinIO"
 kind = "s3"
@@ -190,10 +296,8 @@ buckets = ["sales", "logs"]
 |---|---|---|
 | `name` | all | Required. Lowercase letters, digits and `-`, at most 40 characters. Used in `s3://<name>@bucket/key` |
 | `label` | all | Shown instead of the name |
-| `kind` | all | Required, except with `public`. `s3`, `gcs` or `azure` |
-| `public` | | `true` for data anyone can read. `buckets` and `datasets` are then URLs from any supported cloud, read without credentials |
-| `buckets` | all | Buckets to show when the keys can read but not list |
-| `datasets` | public | Structured dataset tables with `name`, `url`, and optional metadata |
+| `kind` | all | Required. `s3`, `gcs` or `azure` |
+| `buckets` | s3, gcs | Bucket names to show when the keys can read but not list |
 | `endpoint_url` | s3 | An S3-compatible server. Without it, the source is AWS |
 | `region` | s3 | Region to sign for |
 | `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
@@ -206,71 +310,20 @@ buckets = ["sales", "logs"]
 | `configuration` | gcs | A `gcloud` configuration whose login to use. Without it, the application-default login |
 | `project` | gcs | The project listed first, and the one listed when projects cannot be searched |
 
-A public source lists data from any cloud and reads it unsigned:
-
-```toml
-[[cloud.sources]]
-name = "open-data"
-public = true
-buckets = [
-  "s3://noaa-ghcn-pds/parquet/",
-  "gs://cloud-samples-data/bigquery/",
-  "abfss://release@overturemapswestus2.dfs.core.windows.net/",
-]
-```
-
-Use `[[cloud.sources.datasets]]` when the home screen should show a stable name and
-details. Each table belongs to the preceding source:
-
-```toml
-[[cloud.sources]]
-name = "public"
-label = "Public datasets"
-public = true
-
-[[cloud.sources.datasets]]
-name = "NOAA daily weather (GHCN-D)"
-url = "s3://noaa-ghcn-pds/parquet/"
-description = "Worldwide weather station observations, by year and by station"
-publisher = "NOAA"
-license = "CC0"
-homepage = "https://registry.opendata.aws/noaa-ghcn/"
-```
-
-| Dataset field | Meaning |
-|---|---|
-| `name` | Required, nonempty name shown on the home screen; unique in this source |
-| `url` | Required `s3://`, `gs://` or Azure URL; unique in this source |
-| `description` | Optional summary shown in the details pane |
-| `publisher` | Optional publisher |
-| `license` | Optional license name |
-| `homepage` | Optional publisher page |
-
-A configured source named `public` replaces the built-in catalog. Other public
-source names create separate collections. `hide = ["public"]` hides the catalog,
-and the older `public_datasets = false` switch remains supported.
-
-`datui --generate-config` writes the current built-in `public` source and dataset
-tables as active TOML. Delete a dataset table to exclude it, edit one to change its
-metadata, or add another table. The generated catalog is a snapshot: a retained
-config does not automatically receive datasets or metadata added by later datui
-releases. Run `datui --generate-config --force` to take a new snapshot, after saving
-any local changes you want to keep.
-
 #### Secrets that live elsewhere
 
 A password manager or vault can supply a secret without it touching the config or
 the environment:
 
 ```toml
-[[cloud.sources]]
+[[cloud.connections]]
 name = "onprem"
 kind = "s3"
 endpoint_url = "https://minio.corp.example:9000"
 access_key_id_env = "ONPREM_KEY"
 secret_command = "pass show minio/onprem"        # or: op read op://vault/minio/secret
 
-[[cloud.sources]]
+[[cloud.connections]]
 name = "analytics"
 kind = "gcs"
 credentials_file = "~/keys/analytics-sa.json"   # a path, never the key itself
@@ -285,7 +338,7 @@ output is reported. On Windows, a `.cmd` or `.bat` wrapper works.
 `env_files` reads variables from files such as a project's `.env`, relative to the
 directory datui starts in (or under `~`). Only cloud variable names are taken: the
 `AWS_*`, `GOOGLE_*` and `AZURE_*` ones datui reads, `MC_HOST_<alias>`, and the
-names `[[cloud.sources]]` point at with `*_env`. Anything else in the file, a
+names `[[cloud.connections]]` point at with `*_env`. Anything else in the file, a
 database password for one, is ignored. A variable already set in the environment
 wins, and nothing is exported, so no program datui starts sees them. It is off
 unless you list files: reading whatever `.env` sits in the current directory,

@@ -1703,13 +1703,9 @@ fn test_the_generated_default_config_is_valid_toml() {
         .expect("the generated default config must validate");
 
     assert!(generated.contains("# [display]"));
-    assert!(generated.contains("[[cloud.sources]]\nname = \"public\""));
-    assert_eq!(parsed.cloud.sources.len(), 1);
-    assert_eq!(parsed.cloud.sources[0].name, "public");
-    assert_eq!(
-        parsed.cloud.sources[0].datasets,
-        datui::config::builtin_public_source().datasets
-    );
+    assert!(generated.contains("[[sources]]\nname = \"public\""));
+    assert!(parsed.cloud.connections.is_empty());
+    assert_eq!(parsed.sources, [datui::config::builtin_catalog()]);
 }
 
 #[test]
@@ -1860,7 +1856,7 @@ fn cloud_error(toml_text: &str) -> String {
 fn cloud_sources_parse_and_validate() {
     let config = cloud_config(
         r#"
-[[cloud.sources]]
+[[cloud.connections]]
 name = "onprem"
 label = "On-prem MinIO"
 kind = "s3"
@@ -1871,24 +1867,24 @@ access_key_id_env = "ONPREM_KEY"
 secret_access_key_env = "ONPREM_SECRET"
 buckets = ["sales", "logs"]
 
-[[cloud.sources]]
+[[cloud.connections]]
 name = "analytics"
 kind = "gcs"
 "#,
     );
     config.validate().expect("valid sources");
-    assert_eq!(config.cloud.sources.len(), 2);
+    assert_eq!(config.cloud.connections.len(), 2);
     assert_eq!(
-        config.cloud.sources[0].label.as_deref(),
+        config.cloud.connections[0].label.as_deref(),
         Some("On-prem MinIO")
     );
-    assert_eq!(config.cloud.sources[0].buckets, ["sales", "logs"]);
+    assert_eq!(config.cloud.connections[0].buckets, ["sales", "logs"]);
 }
 
 #[test]
 fn cloud_sources_name_the_problem() {
     let unknown = cloud_error(
-        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nendpont_url = \"http://x\"\n",
+        "[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nendpont_url = \"http://x\"\n",
     );
     assert!(
         unknown.contains("'endpont_url'") && unknown.contains("endpoint_url"),
@@ -1896,7 +1892,7 @@ fn cloud_sources_name_the_problem() {
     );
 
     let secret = cloud_error(
-        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nsecret_access_key = \"hunter2\"\n",
+        "[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nsecret_access_key = \"hunter2\"\n",
     );
     assert!(secret.contains("secret_access_key_env"), "{secret}");
     assert!(
@@ -1904,250 +1900,437 @@ fn cloud_sources_name_the_problem() {
         "the secret must not be echoed: {secret}"
     );
 
-    let name = cloud_error("[[cloud.sources]]\nname = \"On Prem\"\nkind = \"s3\"\n");
+    let name = cloud_error("[[cloud.connections]]\nname = \"On Prem\"\nkind = \"s3\"\n");
     assert!(name.contains("not a valid name"), "{name}");
 
     let twice = cloud_error(
-        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\n[[cloud.sources]]\nname = \"lab\"\nkind = \"gcs\"\n",
+        "[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\n[[cloud.connections]]\nname = \"lab\"\nkind = \"gcs\"\n",
     );
     assert!(twice.contains("used twice"), "{twice}");
 
     let wrong_kind = cloud_error(
-        "[[cloud.sources]]\nname = \"g\"\nkind = \"gcs\"\nendpoint_url = \"http://x\"\n",
+        "[[cloud.connections]]\nname = \"g\"\nkind = \"gcs\"\nendpoint_url = \"http://x\"\n",
     );
     assert!(wrong_kind.contains("only to kind = \"s3\""), "{wrong_kind}");
 
-    let no_kind = cloud_error("[[cloud.sources]]\nname = \"lab\"\n");
+    let no_kind = cloud_error("[[cloud.connections]]\nname = \"lab\"\n");
     assert!(no_kind.contains("kind is required"), "{no_kind}");
 
     let azure = cloud_config(
-        "[[cloud.sources]]\nname = \"research\"\nkind = \"azure\"\naccount = \"datuiresearch\"\nsas_env = \"RESEARCH_SAS\"\n",
+        "[[cloud.connections]]\nname = \"research\"\nkind = \"azure\"\naccount = \"datuiresearch\"\nsas_env = \"RESEARCH_SAS\"\n",
     );
     azure.validate().expect("an azure source");
     let two_secrets = cloud_error(
-        "[[cloud.sources]]\nname = \"r\"\nkind = \"azure\"\naccount = \"a\"\nsas_env = \"S\"\naccount_key_env = \"K\"\n",
+        "[[cloud.connections]]\nname = \"r\"\nkind = \"azure\"\naccount = \"a\"\nsas_env = \"S\"\naccount_key_env = \"K\"\n",
     );
     assert!(two_secrets.contains("Use one"), "{two_secrets}");
-    let no_account = cloud_error("[[cloud.sources]]\nname = \"r\"\nkind = \"azure\"\n");
+    let no_account = cloud_error("[[cloud.connections]]\nname = \"r\"\nkind = \"azure\"\n");
     assert!(no_account.contains("needs account"), "{no_account}");
     let literal = cloud_error(
-        "[[cloud.sources]]\nname = \"r\"\nkind = \"azure\"\naccount = \"a\"\naccount_key = \"c2VjcmV0\"\n",
+        "[[cloud.connections]]\nname = \"r\"\nkind = \"azure\"\naccount = \"a\"\naccount_key = \"c2VjcmV0\"\n",
     );
     assert!(
         literal.contains("account_key_env") && !literal.contains("c2VjcmV0"),
         "{literal}"
     );
     let azure_only =
-        cloud_error("[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\naccount = \"a\"\n");
+        cloud_error("[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\naccount = \"a\"\n");
     assert!(
         azure_only.contains("only to kind = \"azure\""),
         "{azure_only}"
     );
 
     let secret_twice = cloud_error(
-        "[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\naccess_key_id_env = \"K\"\nsecret_access_key_env = \"S\"\nsecret_command = \"pass show m\"\n",
+        "[[cloud.connections]]\nname = \"m\"\nkind = \"s3\"\naccess_key_id_env = \"K\"\nsecret_access_key_env = \"S\"\nsecret_command = \"pass show m\"\n",
     );
     assert!(secret_twice.contains("Use one"), "{secret_twice}");
     let no_key_id = cloud_error(
-        "[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\nsecret_command = \"pass show m\"\n",
+        "[[cloud.connections]]\nname = \"m\"\nkind = \"s3\"\nsecret_command = \"pass show m\"\n",
     );
     assert!(no_key_id.contains("access_key_id_env"), "{no_key_id}");
     let gcs_command = cloud_error(
-        "[[cloud.sources]]\nname = \"g\"\nkind = \"gcs\"\nsecret_command = \"pass show g\"\n",
+        "[[cloud.connections]]\nname = \"g\"\nkind = \"gcs\"\nsecret_command = \"pass show g\"\n",
     );
     assert!(
         gcs_command.contains("secret_command applies only"),
         "{gcs_command}"
     );
     let file_and_configuration = cloud_error(
-        "[[cloud.sources]]\nname = \"g\"\nkind = \"gcs\"\ncredentials_file = \"~/sa.json\"\nconfiguration = \"work\"\n",
+        "[[cloud.connections]]\nname = \"g\"\nkind = \"gcs\"\ncredentials_file = \"~/sa.json\"\nconfiguration = \"work\"\n",
     );
     assert!(
         file_and_configuration.contains("Use one"),
         "{file_and_configuration}"
     );
     let s3_file = cloud_error(
-        "[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\ncredentials_file = \"~/sa.json\"\n",
+        "[[cloud.connections]]\nname = \"m\"\nkind = \"s3\"\ncredentials_file = \"~/sa.json\"\n",
     );
     assert!(s3_file.contains("only to kind = \"gcs\""), "{s3_file}");
     cloud_config(
-        "[cloud]\nenv_files = [\".env\"]\ninstance_identity = true\n[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\naccess_key_id_env = \"K\"\nsecret_command = \"pass show m\"\n",
+        "[cloud]\nenv_files = [\".env\"]\ninstance_identity = true\n[[cloud.connections]]\nname = \"m\"\nkind = \"s3\"\naccess_key_id_env = \"K\"\nsecret_command = \"pass show m\"\n",
     )
     .validate()
     .expect("opt-ins");
 
     let google_only =
-        cloud_error("[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nproject = \"p\"\n");
+        cloud_error("[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nproject = \"p\"\n");
     assert!(
         google_only.contains("only to kind = \"gcs\""),
         "{google_only}"
     );
 
     let addressing = cloud_error(
-        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\naddressing = \"sideways\"\n",
+        "[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\naddressing = \"sideways\"\n",
     );
     assert!(addressing.contains("path or virtual"), "{addressing}");
 }
 
 #[test]
-fn public_sources_take_urls_and_nothing_that_signs() {
-    let config = cloud_config(
-        r#"
-[cloud]
-public_datasets = false
-
-[[cloud.sources]]
-name = "open-data"
-public = true
-buckets = [
-  "s3://noaa-ghcn-pds/parquet/",
-  "gs://cloud-samples-data/bigquery/",
-  "abfss://release@overturemapswestus2.dfs.core.windows.net/",
-]
-"#,
-    );
-    config.validate().expect("a valid public source");
-    assert_eq!(config.cloud.public_datasets, Some(false));
-    assert_eq!(config.cloud.sources[0].public, Some(true));
-
-    let signing = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://b/\"]\naccess_key_id_env = \"K\"\n",
-    );
-    assert!(
-        signing.contains("does not apply to a public source"),
-        "{signing}"
-    );
-
-    let empty = cloud_error("[[cloud.sources]]\nname = \"p\"\npublic = true\n");
-    assert!(empty.contains("buckets or datasets"), "{empty}");
-
-    let not_url = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"noaa-ghcn-pds\"]\n",
-    );
-    assert!(not_url.contains("is not an s3://"), "{not_url}");
-
+fn a_connection_names_buckets_and_nothing_public() {
     let forgot = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\nkind = \"s3\"\nbuckets = [\"s3://noaa-ghcn-pds/\"]\n",
+        "[[cloud.connections]]\nname = \"p\"\nkind = \"s3\"\nbuckets = [\"s3://noaa-ghcn-pds/\"]\n",
     );
-    assert!(forgot.contains("add public = true"), "{forgot}");
+    assert!(forgot.contains("[[sources.datasets]]"), "{forgot}");
+    for key in ["public = true", "datasets = []"] {
+        let old = cloud_error(&format!(
+            "[[cloud.connections]]\nname = \"p\"\nkind = \"s3\"\n{key}\n"
+        ));
+        assert!(old.contains("unknown key"), "{key}: {old}");
+    }
+}
+
+/// One collection holding a local file, an anonymous S3 prefix, an HTTPS file and a
+/// private bucket read through a configured connection.
+const MIXED: &str = r#"
+[[cloud.connections]]
+name = "onprem"
+kind = "s3"
+endpoint_url = "https://minio.corp.example:9000"
+access_key_id_env = "ONPREM_KEY"
+secret_access_key_env = "ONPREM_SECRET"
+
+[[sources]]
+name = "my-datasets"
+label = "My datasets"
+
+[[sources.datasets]]
+name = "Sales"
+path = "~/datasets/sales.parquet"
+description = "Monthly sales"
+
+[[sources.datasets]]
+name = "Weather"
+url = "s3://noaa-ghcn-pds/parquet/"
+auth = "anonymous"
+description = "Daily weather observations"
+
+[[sources.datasets]]
+name = "Penguins"
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+
+[[sources.datasets]]
+name = "Orders"
+url = "s3://orders/2024/"
+connection = "onprem"
+"#;
+
+#[test]
+fn a_collection_mixes_local_and_remote_datasets() {
+    let config = cloud_config(MIXED);
+    config.validate().expect("a valid mixed collection");
+    let collection = &config.sources[0];
+    assert_eq!(collection.label(), "My datasets");
+    let names: Vec<&str> = collection
+        .datasets
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(names, ["Sales", "Weather", "Penguins", "Orders"]);
+    assert_eq!(
+        collection.datasets[0].local_path(),
+        Some(datui::config::expand_config_path("~").join("datasets/sales.parquet"))
+    );
+    // Configured, the built-in catalog still follows it.
+    let ids: Vec<String> = config.collections().into_iter().map(|c| c.name).collect();
+    assert_eq!(ids, ["my-datasets", "public"]);
 }
 
 #[test]
-fn structured_public_datasets_parse_and_validate() {
-    let config = cloud_config(
-        r#"
-[[cloud.sources]]
-name = "public"
-label = "My public data"
-public = true
-buckets = ["gs://compact/example/"]
-
-[[cloud.sources.datasets]]
-name = "Weather"
-url = "s3://weather/parquet/"
-description = "Daily observations"
-publisher = "Example agency"
-license = "CC0"
-homepage = "https://example.com/weather"
-
-[[cloud.sources.datasets]]
-name = "Buildings"
-url = "abfss://release@buildings.dfs.core.windows.net/"
-"#,
+fn collection_mistakes_are_named() {
+    let error = |body: &str| cloud_error(&format!("{MIXED}\n{body}"));
+    let dataset = |fields: &str| {
+        error(&format!(
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"d\"\n{fields}\n"
+        ))
+    };
+    for (fields, expected) in [
+        ("", "path or url"),
+        ("path = \"/a.csv\"\nurl = \"s3://b/\"", "path and url both"),
+        ("path = \" \"", "path is blank"),
+        ("path = \"s3://b/a.csv\"", "is a URL"),
+        (
+            "path = \"/a.csv\"\nauth = \"anonymous\"",
+            "auth applies only to a url",
+        ),
+        (
+            "path = \"/a.csv\"\nconnection = \"onprem\"",
+            "connection applies only to a url",
+        ),
+        (
+            "url = \"s3://b/\"\nauth = \"public\"",
+            "auth \"public\" is not valid",
+        ),
+        ("url = \"ftp://host/a.csv\"", "is not an s3://"),
+        ("url = \"https://example.com/data/\"", "is not a data file"),
+        (
+            "url = \"https://example.com/data.zip\"",
+            "is not a data file",
+        ),
+        (
+            "url = \"https://user:pw@example.com/a.csv\"",
+            "is not a data file",
+        ),
+        (
+            "url = \"https://example.com/a.csv\"\nconnection = \"onprem\"",
+            "only to s3://",
+        ),
+        ("url = \"s3://onprem@b/\"", "rather than in the URL"),
+        (
+            "url = \"s3://b/\"\nconnection = \"nowhere\"",
+            "no [[cloud.connections]] entry is named \"nowhere\". Connections: onprem",
+        ),
+        (
+            "url = \"gs://b/\"\nconnection = \"onprem\"",
+            "is kind = \"s3\", which does not read gcs URLs",
+        ),
+        (
+            "url = \"s3://b/\"\nconnection = \"onprem\"\nauth = \"anonymous\"",
+            "auth and connection both",
+        ),
+        (
+            "url = \"s3://b/\"\nanonymous = true",
+            "unknown key 'anonymous'",
+        ),
+    ] {
+        let message = dataset(fields);
+        assert!(message.contains(expected), "{fields:?}: {message}");
+    }
+    for (body, expected) in [
+        (
+            "[[sources]]\nname = \"My Data\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
+            "not a valid name",
+        ),
+        ("[[sources]]\nname = \"x\"\n", "no datasets"),
+        (
+            "[[sources]]\nname = \"x\"\nlabel = \" \"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
+            "label is blank",
+        ),
+        (
+            "[[sources]]\nname = \"x\"\nhidden = true\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
+            "unknown key 'hidden'",
+        ),
+        (
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \" \"\npath = \"/a\"\n",
+            "nonempty name",
+        ),
+        (
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/b\"\n",
+            "name \"d\" is used twice",
+        ),
+        (
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\nurl = \"s3://b\"\n[[sources.datasets]]\nname = \"b\"\nurl = \"s3://b/\"\n",
+            "\"s3://b/\" is listed twice",
+        ),
+        (
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\nurl = \"https://account.blob.core.windows.net/c/p/\"\n[[sources.datasets]]\nname = \"b\"\nurl = \"abfss://c@account.dfs.core.windows.net/p\"\n",
+            "is listed twice",
+        ),
+        (
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\npath = \"~/a.csv\"\n[[sources.datasets]]\nname = \"b\"\npath = \"$HOME/a.csv\"\n",
+            "is listed twice",
+        ),
+        (
+            "[[sources]]\nname = \"my-datasets\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
+            "\"my-datasets\" is used twice",
+        ),
+        (
+            "[data]\nhide_sources = [\"My datasets\"]\n",
+            "Use the name, not",
+        ),
+    ] {
+        let message = error(body);
+        assert!(message.contains(expected), "{body:?}: {message}");
+    }
+    // A connection names the account an Azure URL is in.
+    let azure = cloud_error(
+        "[[cloud.connections]]\nname = \"az\"\nkind = \"azure\"\naccount = \"one\"\n[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"d\"\nurl = \"abfss://c@two.dfs.core.windows.net/p/\"\nconnection = \"az\"\n",
     );
-    config.validate().expect("structured public datasets");
-    let source = &config.cloud.sources[0];
-    assert_eq!(source.datasets.len(), 2);
-    assert_eq!(source.datasets[0].description, "Daily observations");
-    assert!(source.datasets[1].description.is_empty());
-
-    let no_name = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"\"\nurl = \"s3://b/\"\n",
-    );
-    assert!(no_name.contains("nonempty name"), "{no_name}");
-    let bad_url = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"https://example.com\"\n",
-    );
-    assert!(bad_url.contains("is not an s3://"), "{bad_url}");
-    let duplicate_name = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"gs://b/\"\n",
-    );
-    assert!(
-        duplicate_name.contains("name \"x\" is used twice"),
-        "{duplicate_name}"
-    );
-    let duplicate_url = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://a/\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
-    );
-    assert!(
-        duplicate_url.contains("URL \"s3://a/\" is used twice"),
-        "{duplicate_url}"
-    );
-    let duplicate_url_without_slash = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://a\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
-    );
-    assert!(
-        duplicate_url_without_slash.contains("URL \"s3://a/\" is used twice"),
-        "{duplicate_url_without_slash}"
-    );
-    let duplicate_azure_url = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"https://account.blob.core.windows.net/container/path/\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"abfss://container@account.dfs.core.windows.net/path\"\n",
-    );
-    assert!(
-        duplicate_azure_url
-            .contains("URL \"abfss://container@account.dfs.core.windows.net/path\" is used twice"),
-        "{duplicate_azure_url}"
-    );
-    let private = cloud_error(
-        "[[cloud.sources]]\nname = \"p\"\nkind = \"s3\"\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
-    );
-    assert!(private.contains("only to a public source"), "{private}");
+    assert!(azure.contains("account \"one\""), "{azure}");
 }
 
 #[test]
 fn a_later_layer_replaces_a_source_by_name() {
     let mut base = cloud_config(
-        "[cloud]\nhide = [\"a\"]\n[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
+        "[cloud]\nhide = [\"a\"]\n[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
     );
     let over = cloud_config(
-        "[cloud]\nhide = [\"a\", \"b\"]\n[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"two\"\n[[cloud.sources]]\nname = \"new\"\nkind = \"gcs\"\n",
+        "[cloud]\nhide = [\"a\", \"b\"]\n[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"two\"\n[[cloud.connections]]\nname = \"new\"\nkind = \"gcs\"\n",
     );
     base.merge(over);
-    let names: Vec<&str> = base.cloud.sources.iter().map(|s| s.name.as_str()).collect();
+    let names: Vec<&str> = base
+        .cloud
+        .connections
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
     assert_eq!(names, ["lab", "new"]);
-    assert_eq!(base.cloud.sources[0].region.as_deref(), Some("two"));
+    assert_eq!(base.cloud.connections[0].region.as_deref(), Some("two"));
     assert_eq!(base.cloud.hide, ["a", "b"]);
 }
 
 #[test]
-fn a_later_layer_replaces_a_structured_public_catalog() {
+fn a_later_layer_replaces_a_collection_whole() {
     let mut base = cloud_config(
-        "[[cloud.sources]]\nname = \"public\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"Old\"\nurl = \"s3://old/\"\n",
+        "[[sources]]\nname = \"team\"\n[[sources.datasets]]\nname = \"Old\"\nurl = \"s3://old/\"\n[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"/data/mine.csv\"\n",
     );
     let over = cloud_config(
-        "[[cloud.sources]]\nname = \"public\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"New\"\nurl = \"gs://new/\"\ndescription = \"Replacement\"\n",
+        "[[sources]]\nname = \"team\"\nlabel = \"Team\"\n[[sources.datasets]]\nname = \"New\"\nurl = \"gs://new/\"\ndescription = \"Replacement\"\n[[sources]]\nname = \"extra\"\n[[sources.datasets]]\nname = \"Extra\"\npath = \"/data/extra.csv\"\n",
     );
-
     base.merge(over);
-
-    assert_eq!(base.cloud.sources.len(), 1);
-    assert_eq!(base.cloud.sources[0].datasets.len(), 1);
-    assert_eq!(base.cloud.sources[0].datasets[0].name, "New");
-    assert_eq!(base.cloud.sources[0].datasets[0].description, "Replacement");
+    let names: Vec<&str> = base.sources.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["team", "mine", "extra"],
+        "replaced in place, new ones after"
+    );
+    assert_eq!(base.sources[0].label(), "Team");
+    assert_eq!(
+        base.sources[0].datasets.len(),
+        1,
+        "datasets are never merged"
+    );
+    assert_eq!(base.sources[0].datasets[0].name, "New");
 }
 
 #[test]
-fn the_generated_config_materializes_the_builtin_public_catalog() {
+fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
+    let names = |config: &AppConfig, shown: bool| -> Vec<(String, String)> {
+        let list = if shown {
+            config.shown_collections()
+        } else {
+            config.collections()
+        };
+        list.into_iter()
+            .map(|c| (c.name.clone(), c.label().to_string()))
+            .collect()
+    };
+    let default = AppConfig::default();
+    assert_eq!(
+        names(&default, true),
+        [("public".to_string(), "Public datasets".to_string())]
+    );
+
+    // A collection named `public` replaces the whole catalog, where it is defined.
+    let mut replaced = AppConfig::default();
+    replaced.merge(cloud_config(
+        "[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"A\"\npath = \"/a.csv\"\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Weather\"\nurl = \"s3://weather/\"\nauth = \"anonymous\"\n",
+    ));
+    replaced.validate().unwrap();
+    assert_eq!(
+        names(&replaced, true),
+        [
+            ("mine".to_string(), "mine".to_string()),
+            ("public".to_string(), "Curated".to_string())
+        ]
+    );
+    let catalog = &replaced.collections()[1];
+    assert_eq!(
+        catalog.datasets.len(),
+        1,
+        "nothing of the built-in is merged in"
+    );
+    assert_eq!(
+        replaced
+            .cloud
+            .dataset_access
+            .iter()
+            .map(|a| a.url.as_str())
+            .collect::<Vec<_>>(),
+        ["s3://weather/"],
+        "only the replacement's URLs are read anonymously"
+    );
+
+    // Dropping the built-in leaves a configured `public` alone; hiding hides it.
+    let mut dropped = replaced.clone();
+    dropped.merge(cloud_config("[data]\nbuiltin_catalog = false\n"));
+    assert_eq!(names(&dropped, true).len(), 2);
+    let mut off = AppConfig::default();
+    off.merge(cloud_config("[data]\nbuiltin_catalog = false\n"));
+    assert!(off.collections().is_empty());
+    assert!(off.cloud.dataset_access.is_empty());
+
+    let mut hidden = replaced.clone();
+    hidden.merge(cloud_config("[data]\nhide_sources = [\"public\"]\n"));
+    hidden.merge(cloud_config("[data]\nhide_sources = [\"mine\"]\n"));
+    assert_eq!(hidden.data.hide_sources, ["public", "mine"], "hides add up");
+    assert!(names(&hidden, true).is_empty());
+    assert_eq!(names(&hidden, false).len(), 2, "hidden, not gone");
+}
+
+#[test]
+fn relative_paths_are_relative_to_the_file_that_names_them() {
+    let dir = TempDir::new().unwrap();
+    let team = dir.path().join("team");
+    fs::create_dir_all(&team).unwrap();
+    fs::write(
+        team.join("shared.toml"),
+        "[[sources]]\nname = \"team\"\n[[sources.datasets]]\nname = \"Shared\"\npath = \"data/shared.csv\"\n[[sources.datasets]]\nname = \"Home\"\npath = \"~/home.csv\"\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        "import = [\"team/shared.toml\"]\n[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"mine.parquet\"\n",
+    )
+    .unwrap();
+    let config = AppConfig::load_from_file(&config_path).expect("loads");
+    let path =
+        |source: usize, dataset: usize| config.sources[source].datasets[dataset].local_path();
+    assert_eq!(path(0, 0), Some(team.join("data/shared.csv")));
+    assert_eq!(
+        path(0, 1),
+        Some(datui::config::expand_config_path("~").join("home.csv")),
+        "~ is not relative"
+    );
+    assert_eq!(path(1, 0), Some(dir.path().join("mine.parquet")));
+}
+
+#[test]
+fn two_collections_of_one_name_in_one_file_are_refused() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"A\"\npath = \"/a\"\n[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"B\"\npath = \"/b\"\n",
+    )
+    .unwrap();
+    let error = AppConfig::load_from_file(&config_path)
+        .expect_err("refused")
+        .to_string();
+    assert!(error.contains("\"x\" is used twice"), "{error}");
+}
+
+#[test]
+fn the_generated_config_materializes_the_builtin_catalog() {
     let (_dir, manager) = setup_test_config_dir();
     let text = manager.generate_default_config();
     let config: AppConfig = toml::from_str(&text).expect("generated config parses");
     config.validate().expect("generated config validates");
-    assert_eq!(
-        config.cloud.sources,
-        [datui::config::builtin_public_source()]
-    );
+    assert_eq!(config.sources, [datui::config::builtin_catalog()]);
     assert!(text.contains("snapshot"), "{text}");
-    assert!(text.contains("[[cloud.sources.datasets]]"), "{text}");
+    assert!(text.contains("[[sources.datasets]]"), "{text}");
+    assert!(text.contains("# builtin_catalog = true"), "{text}");
+    assert!(text.contains("# hide_sources = []"), "{text}");
     assert!(!text.contains("\nhide ="), "{text}");
 }
 
@@ -2185,13 +2368,6 @@ fn cloud_listings_and_hidden_sources_survive_a_restart() {
     again.hide_cloud_source("corp");
     again.hide_cloud_source("corp");
     assert_eq!(again.load_hidden_cloud_sources(), ["corp"]);
-
-    again.remember_public_place("s3://gbif-open-data-us-east-1/");
-    again.remember_public_place("s3://gbif-open-data-us-east-1/");
-    assert_eq!(
-        CacheManager::with_dir(temp_dir.path().to_path_buf()).load_public_places(),
-        ["s3://gbif-open-data-us-east-1/"]
-    );
 }
 
 #[test]

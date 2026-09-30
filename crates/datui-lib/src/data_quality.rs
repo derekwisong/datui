@@ -4284,6 +4284,40 @@ mod tests {
         .lazy()
     }
 
+    /// A full run over the whole scope takes its one segment from the column profile
+    /// it already measured: the numbers a second pass over the scope gave.
+    #[test]
+    fn a_full_whole_scope_segment_is_the_column_profile() {
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+        let schema = fixture().collect_schema().unwrap();
+        let read = profile_segments_lazy(&fixture(), 4, &plan, None, &schema, false).unwrap();
+        assert_eq!(results.segments.len(), 1);
+        let (reused, read) = (&results.segments[0], &read[0]);
+        assert_eq!(reused.label, read.label);
+        assert_eq!(reused.total_rows, read.total_rows);
+        assert_eq!(reused.evaluated_rows, read.evaluated_rows);
+        assert_eq!(reused.null_cells, read.null_cells);
+        assert_eq!(reused.null_rate, read.null_rate);
+        let counts = |segment: &SegmentQualityProfile| {
+            segment
+                .columns
+                .iter()
+                .map(|column| {
+                    (
+                        column.name.clone(),
+                        column.null_count,
+                        column.distinct_count,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(counts(reused), counts(read));
+    }
+
     #[test]
     fn full_profile_reports_core_counts() {
         let plan = DataQualityPlan {

@@ -1865,7 +1865,12 @@ fn partitioned_cloud_directories_are_hive_datasets() {
         return;
     }
     let (mut app, rx) = live_app();
-    assert!(enter_source(&mut app, &rx, "public"));
+    // The built-in catalog is a collection on the home screen, its datasets its rows.
+    assert!(pump_until(&mut app, &rx, 10, |app| section_named(
+        app,
+        "Public datasets"
+    )
+    .is_some_and(|s| !s.rows.is_empty())));
     let row_kind = |app: &datui::App, name: &str| {
         app.home.visible().iter().find_map(|row| match row {
             datui::home::Row::Entry { entry, .. } | datui::home::Row::Door { entry, .. }

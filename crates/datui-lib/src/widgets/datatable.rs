@@ -42,20 +42,94 @@ use arrow::array::types::{
 use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
 
-fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
-    // The lazy pivot only allows the value column to be referenced as `element()`.
-    let e = element();
-    let expr = match agg {
-        PivotAggregation::Last => e.last(),
-        PivotAggregation::First => e.first(),
-        PivotAggregation::Min => e.min(),
-        PivotAggregation::Max => e.max(),
-        PivotAggregation::Avg => e.mean(),
-        PivotAggregation::Med => e.median(),
-        PivotAggregation::Std => e.std(1),
-        PivotAggregation::Count => e.len(),
-    };
-    Ok(expr)
+/// `agg` over `values`, one cell of a pivot.
+fn pivot_agg_expr(agg: PivotAggregation, values: Expr) -> Expr {
+    match agg {
+        PivotAggregation::Last => values.last(),
+        PivotAggregation::First => values.first(),
+        PivotAggregation::Min => values.min(),
+        PivotAggregation::Max => values.max(),
+        PivotAggregation::Avg => values.mean(),
+        PivotAggregation::Med => values.median(),
+        PivotAggregation::Std => values.std(1),
+        PivotAggregation::Count => values.len(),
+    }
+}
+
+/// A pivot of the view as it was when planned, to be read off the UI thread.
+pub struct PivotJob {
+    view: LazyFrame,
+    spec: PivotSpec,
+    streaming: bool,
+}
+
+impl PivotJob {
+    /// The pivoted frame, in one pass over the view.
+    ///
+    /// The lazy pivot has to be told its new columns before it runs, which would mean a
+    /// distinct pass over the view and then the pivot over it again. Instead each cell is
+    /// aggregated by a group-by on the index and pivot columns in one pass; the new
+    /// columns are read off that result and the pivot runs over it in memory. The new
+    /// columns come out alphabetical with a trailing `null` column, as the eager pivot
+    /// ordered them, and index rows keep first-seen order.
+    pub fn run(self) -> Result<DataFrame> {
+        let on = self.spec.pivot_column.as_str();
+        let value = self.spec.value_column.as_str();
+        let index: Vec<PlSmallStr> = if self.spec.index.is_empty() {
+            self.view
+                .clone()
+                .collect_schema()?
+                .iter_names()
+                .filter(|name| name.as_str() != on && name.as_str() != value)
+                .cloned()
+                .collect()
+        } else {
+            self.spec.index.iter().map(PlSmallStr::from).collect()
+        };
+        // `Expr::Column`, not `col`: a header may contain `*` or `^`, and names are
+        // literal.
+        let keys: Vec<Expr> = index
+            .iter()
+            .cloned()
+            .chain([PlSmallStr::from(on)])
+            .map(Expr::Column)
+            .collect();
+        let cells = collect_lazy(
+            self.view.group_by_stable(keys).agg([pivot_agg_expr(
+                self.spec.aggregation,
+                Expr::Column(PlSmallStr::from(value)),
+            )
+            .alias(value)]),
+            self.streaming,
+        )?;
+        let on_columns = cells
+            .clone()
+            .lazy()
+            .select([Expr::Column(PlSmallStr::from(on))])
+            .unique(None, UniqueKeepStrategy::Any)
+            .sort([on], SortMultipleOptions::default().with_nulls_last(true))
+            .collect()?;
+        // One row per index and pivot value now, so `first` is that cell. A count sums
+        // instead, so a pair with no rows counts 0 rather than null, as it always did.
+        let cell = match self.spec.aggregation {
+            PivotAggregation::Count => element().sum(),
+            _ => element().first(),
+        };
+        let pivoted = cells
+            .lazy()
+            .pivot(
+                by_name([on], true, false),
+                Arc::new(on_columns),
+                by_name(index, true, false),
+                by_name([value], true, false),
+                cell,
+                true,
+                PlSmallStr::from_static("_"),
+                PivotColumnNaming::Auto,
+            )
+            .collect()?;
+        Ok(pivoted)
+    }
 }
 
 pub struct DataTableState {
@@ -6671,43 +6745,29 @@ impl DataTableState {
         }
     }
 
-    /// Pivot the current `LazyFrame` (long → wide). Never uses `original_lf`.
-    /// The lazy pivot needs the new column set before it runs, so one distinct pass on the
-    /// pivot column comes first, sorted so the new columns come out alphabetical with a
-    /// trailing `null` column, as the eager pivot ordered them. Index rows keep first-seen
-    /// order.
-    pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
-        let on = spec.pivot_column.as_str();
-        let value = spec.value_column.as_str();
-        let on_columns = collect_lazy(
-            self.lf
-                .clone()
-                .select([col(on)])
-                .unique(None, UniqueKeepStrategy::Any)
-                .sort([on], SortMultipleOptions::default().with_nulls_last(true)),
-            self.polars_streaming,
-        )?;
-        // Names are literal: a header may contain `*` or `^`, so no pattern expansion.
-        let index = if spec.index.is_empty() {
-            all() - by_name([on, value], true, false)
-        } else {
-            by_name(spec.index.iter().map(String::as_str), true, false)
-        };
-        let pivoted = self.visible_lf().pivot(
-            by_name([on], true, false),
-            Arc::new(on_columns),
-            index,
-            by_name([value], true, false),
-            pivot_agg_expr(spec.aggregation)?,
-            true,
-            PlSmallStr::from_static("_"),
-            PivotColumnNaming::Auto,
-        );
+    /// Plan a pivot of the view (long → wide). Nothing is read until the job runs.
+    /// Never uses `original_lf`.
+    pub fn plan_pivot(&self, spec: &PivotSpec) -> PivotJob {
+        PivotJob {
+            view: self.visible_lf(),
+            spec: spec.clone(),
+            streaming: self.polars_streaming,
+        }
+    }
 
+    /// Show `pivoted`, the result of `spec`'s [`PivotJob`], as the new pipeline root.
+    pub fn install_pivot(&mut self, spec: &PivotSpec, pivoted: DataFrame) -> Result<()> {
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
-        self.replace_lf_after_reshape(pivoted)?;
-        Ok(())
+        self.replace_lf_after_reshape(pivoted.lazy())
+    }
+
+    /// Pivot the view here and now, reading it on this thread: for a view, which
+    /// applies each of its steps in turn. The Pivot & Melt modal runs the [`PivotJob`]
+    /// in the background instead.
+    pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
+        let pivoted = self.plan_pivot(spec).run()?;
+        self.install_pivot(spec, pivoted)
     }
 
     /// Melt the current `LazyFrame` (wide → long). Never uses `original_lf`.

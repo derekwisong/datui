@@ -75,6 +75,17 @@ fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: Path
     load_file_with(app, rx, path, OpenOptions::default());
 }
 
+/// Handle events until no background work is owed. A pivot reads its data in the
+/// background.
+fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
+    while let Some(ev) = next_event(app, rx) {
+        let mut next = app.event(&ev);
+        while let Some(n) = next.take() {
+            next = app.event(&n);
+        }
+    }
+}
+
 /// TUI-like collect sequence before pivot: DoLoadBuffer → Collect → set visible_rows → collect.
 fn simulate_initial_tui_collects(app: &mut App, terminal_height: usize) {
     let state = match app.data_table_state.as_mut() {
@@ -121,6 +132,7 @@ fn test_pivot_via_events() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
+    pump_until_idle(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
@@ -204,6 +216,7 @@ fn test_pivot_long_string_via_events() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
+    pump_until_idle(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
@@ -342,6 +355,7 @@ fn test_pivot_on_current_view_after_filter() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
+    pump_until_idle(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
@@ -432,6 +446,7 @@ fn test_pivot_via_modal_apply() {
     while let Some(n) = next.take() {
         next = app.event(&n);
     }
+    pump_until_idle(&mut app, &rx);
 
     assert!(!app.pivot_melt_modal.active);
     assert_eq!(app.input_mode, InputMode::Normal);
@@ -528,6 +543,7 @@ fn test_pivot_via_keys_only() {
     while let Some(n) = next.take() {
         next = app.event(&n);
     }
+    pump_until_idle(&mut app, &rx);
 
     assert!(!app.pivot_melt_modal.active);
     let state = app.data_table_state.as_ref().unwrap();
@@ -603,6 +619,7 @@ fn test_template_save_and_apply_pivot() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
+    pump_until_idle(&mut app, &rx);
 
     let match_criteria = MatchCriteria {
         exact_path: Some(path.clone()),
@@ -646,4 +663,83 @@ fn test_template_save_and_apply_pivot() {
     assert!(df.height() > 0);
 
     assert!(template.settings.pivot.is_some());
+}
+
+/// The pivot reads its data off the UI thread: the event returns at once with the app
+/// busy and the table as it was, and the result is installed when the read lands.
+#[test]
+fn test_pivot_reads_in_the_background() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    load_file(
+        &mut app,
+        &rx,
+        PathBuf::from("tests/sample-data/pivot_long.parquet"),
+    );
+    pump_until_idle(&mut app, &rx);
+    send_key(&mut app, KeyCode::Char('p'));
+    assert!(app.pivot_melt_modal.active);
+
+    let spec = PivotSpec {
+        index: vec!["date".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "value".to_string(),
+        aggregation: PivotAggregation::Last,
+        sort_columns: None,
+    };
+    let next = app.event(&AppEvent::Pivot(spec));
+    assert!(next.is_none(), "nothing more runs on this thread");
+    assert!(app.is_busy(), "the control bar shows the pivot running");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.last_pivot_spec().is_none());
+    assert!(
+        state.schema.contains("key"),
+        "the table is as it was until the read lands"
+    );
+    assert!(
+        app.pivot_melt_modal.active,
+        "the modal waits for the result"
+    );
+
+    pump_until_idle(&mut app, &rx);
+    assert!(!app.pivot_melt_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.last_pivot_spec().is_some());
+    let df = state.lf.clone().collect().unwrap();
+    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+    assert_eq!(names, vec!["date", "A", "B", "C"]);
+    assert_eq!(df.height(), 31);
+}
+
+/// A pivot that lands after something newer replaced the view is dropped.
+#[test]
+fn test_a_stale_pivot_result_is_dropped() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    load_file(
+        &mut app,
+        &rx,
+        PathBuf::from("tests/sample-data/pivot_long.parquet"),
+    );
+    pump_until_idle(&mut app, &rx);
+
+    let spec = PivotSpec {
+        index: vec!["date".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "value".to_string(),
+        aggregation: PivotAggregation::Last,
+        sort_columns: None,
+    };
+    let pivoted = polars::prelude::df!("date" => ["2024-01-01"], "A" => [1.0]).unwrap();
+    app.event(&AppEvent::PivotReady {
+        generation: app.task_generation().wrapping_sub(1),
+        spec,
+        pivoted: Ok(pivoted),
+    });
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.last_pivot_spec().is_none());
+    assert!(state.schema.contains("key"));
 }

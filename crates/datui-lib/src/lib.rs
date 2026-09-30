@@ -5935,6 +5935,12 @@ pub enum AppEvent {
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
     Pivot(PivotSpec),
+    /// A pivot, read off the UI thread. The error is a message for the user.
+    PivotReady {
+        generation: u64,
+        spec: PivotSpec,
+        pivoted: std::result::Result<DataFrame, String>,
+    },
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
     /// Collect and format the whole view off-thread for a table-scope copy.
@@ -8749,6 +8755,9 @@ impl App {
 
     /// The wait while a grouped row the buffer does not hold is read to drill into.
     const READING_GROUP: &'static str = "Reading the group...";
+
+    /// The wait while a pivot reads the view.
+    const COMPUTING_PIVOT: &'static str = "Computing pivot...";
 
     /// How long a fetch goes unmentioned. A local page lands well inside it, and the key
     /// chips staying put is the difference between paging and a bar that blinks a
@@ -19153,29 +19162,61 @@ impl App {
                 None
             }
             AppEvent::Pivot(spec) => {
-                self.busy = true;
-                if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    let result = state.pivot(spec);
-                    state.defer_collect = false;
-                    match result {
-                        Ok(()) => {
-                            self.pivot_melt_modal.close();
+                // The modal stays up until the result is in, so a pivot that fails
+                // leaves the spec there to fix.
+                let job = self.data_table_state.as_ref()?.plan_pivot(spec);
+                let spec = spec.clone();
+                self.spawn_bg(Self::COMPUTING_PIVOT, move |task_gen, tx| {
+                    let pivoted = job
+                        .run()
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+                    let _ = tx.send(AppEvent::PivotReady {
+                        generation: task_gen,
+                        spec,
+                        pivoted,
+                    });
+                });
+                None
+            }
+            AppEvent::PivotReady {
+                generation,
+                spec,
+                pivoted,
+            } => {
+                // A bump means something replaced the view; its owner has the busy state.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                if self.status_message.as_deref() == Some(Self::COMPUTING_PIVOT) {
+                    self.status_message = None;
+                }
+                let installed = match pivoted {
+                    Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
+                        state.defer_collect = true;
+                        let installed = state.install_pivot(spec, pivoted.clone());
+                        state.defer_collect = false;
+                        installed
+                            .map_err(|e| crate::error_display::user_message_from_report(&e, None))
+                    }),
+                    Err(message) => Some(Err(message.clone())),
+                };
+                match installed {
+                    Some(Ok(())) => {
+                        self.pivot_melt_modal.close();
+                        // Only from the modal: a trip home meanwhile stays home.
+                        if self.input_mode == InputMode::PivotMelt {
                             self.input_mode = InputMode::Normal;
-                            self.spawn_async_collect("Computing pivot...");
-                            None
                         }
-                        Err(e) => {
-                            self.busy = false;
-                            self.error_modal
-                                .show(crate::error_display::user_message_from_report(&e, None));
-                            None
+                        // The busy state passes to the collect.
+                        if self.spawn_async_collect(Self::LOADING_BUFFER) {
+                            return None;
                         }
                     }
-                } else {
-                    self.busy = false;
-                    None
+                    Some(Err(message)) => self.error_modal.show(message),
+                    None => {}
                 }
+                self.busy = false;
+                None
             }
             AppEvent::Melt(spec) => {
                 self.busy = true;

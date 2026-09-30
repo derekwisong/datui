@@ -33,8 +33,9 @@ The result has three rows. Values below are rounded to one decimal:
 | Chinstrap | 3527.2 | 3939.0 |
 | Gentoo | 4679.7 | 5484.8 |
 
-Output columns are sorted alphabetically. Pivot reads every affected row into
-memory to discover the columns; filter large datasets first.
+Output columns are sorted alphabetically. Pivot reads the rows once, in the
+background, and keeps one value per index and column pair in memory; filter
+large datasets first.
 
 ### Choose an aggregate
 

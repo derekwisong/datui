@@ -4423,6 +4423,17 @@ impl DataTableState {
             || self.drilled_down_group_index.is_some()
     }
 
+    /// Whether the view may still take its rows straight from the scan: nothing
+    /// that picks rows (a filter, a search, a reshape, a group, a drill). A query
+    /// may only choose columns, so it may.
+    pub(crate) fn may_keep_scan_rows(&self) -> bool {
+        self.filters.is_empty()
+            && self.active_fuzzy_query.is_empty()
+            && self.reshaped_lf.is_none()
+            && self.grouped.is_none()
+            && self.drilled_down_group_index.is_none()
+    }
+
     fn is_pristine(&self) -> bool {
         self.filters.is_empty()
             && self.sort_columns.is_empty()
@@ -5404,16 +5415,18 @@ impl DataTableState {
     /// Number of source files known to participate in the pristine dataset scan.
     /// Returns `None` after a query or reshape has broken the row-to-file mapping.
     pub fn source_file_count(&self) -> Option<usize> {
-        if !self.is_pristine() {
-            return None;
-        }
+        self.is_pristine().then(|| self.loaded_file_count())
+    }
+
+    /// Files the dataset was loaded from, whatever the view does with their rows.
+    pub(crate) fn loaded_file_count(&self) -> usize {
         if !self.drift_files.is_empty() {
-            return Some(self.drift_files.len());
+            self.drift_files.len()
+        } else if let Some(remote) = &self.remote_files {
+            remote.urls.len()
+        } else {
+            1
         }
-        if let Some(remote) = &self.remote_files {
-            return Some(remote.urls.len());
-        }
-        Some(1)
     }
 
     /// Rows the `max_buffered_mb` budget allows a buffer, never fewer than a screen;

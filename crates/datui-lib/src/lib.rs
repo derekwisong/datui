@@ -8757,15 +8757,9 @@ impl App {
                 })
     }
 
-    /// Whether a random sample of `plan` may read seeded runs of one file rather
-    /// than stream every row: one Parquet or IPC file, its rows as loaded. Told from
-    /// the path and the view, since the sampler's own test needs the plan built; a
-    /// false yes only means Setup says a pass may be shorter than it is.
-    ///
-    /// Leans to yes: seeded runs see too few rows to count segments, so a yes is what
-    /// makes Setup name a count pass, and a run that streams after all counts in its
-    /// one pass and reads less than Setup said, never more.
-    pub(crate) fn quality_may_read_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
+    /// Whether the dataset is one Parquet or IPC file, the one kind the sampler may
+    /// read seeded runs of.
+    fn quality_one_columnar_file(&self) -> bool {
         let Some(state) = self.data_table_state.as_ref() else {
             return false;
         };
@@ -8782,16 +8776,52 @@ impl App {
                     )
                 })
         });
-        columnar
-            && state.source_file_count() == Some(1)
-            && !state.changes_rows()
-            && matches!(
-                plan.scope,
-                data_quality::QualityScope::CurrentView
-                    | data_quality::QualityScope::WholeSource
-                    | data_quality::QualityScope::FirstRows(_)
-                    | data_quality::QualityScope::ViewRows { .. }
-            )
+        columnar && state.loaded_file_count() == 1
+    }
+
+    /// Whether a random sample of `plan` reads seeded runs of one file rather than
+    /// stream every row, as Setup's Read says. Told from the path and the view, since
+    /// the sampler's own test needs the plan built. Yes only where the scan is read as
+    /// loaded: the whole source whatever the view, or a view that picks no rows (a
+    /// sort does not count: samples read the view unsorted). Where it is not sure,
+    /// Setup names the longer read.
+    pub(crate) fn quality_reads_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return false;
+        };
+        self.quality_one_columnar_file()
+            && match plan.scope {
+                data_quality::QualityScope::WholeSource => true,
+                data_quality::QualityScope::CurrentView => !state.changes_rows(),
+                // Read in the order on screen, sort included.
+                data_quality::QualityScope::FirstRows(_)
+                | data_quality::QualityScope::ViewRows { .. } => {
+                    state.source_file_count() == Some(1)
+                }
+                _ => false,
+            }
+    }
+
+    /// Whether a random sample of `plan` may read seeded runs: where
+    /// [`Self::quality_reads_blocks`] is sure, and wherever the view may still read
+    /// the scan as loaded, a query's included.
+    ///
+    /// Leans to yes: seeded runs see too few rows to count segments, so a yes is what
+    /// makes Setup name a count pass, and a run that streams after all counts in its
+    /// one pass and reads less than Setup said, never more.
+    pub(crate) fn quality_may_read_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return false;
+        };
+        self.quality_reads_blocks(plan)
+            || (self.quality_one_columnar_file()
+                && state.may_keep_scan_rows()
+                && matches!(
+                    plan.scope,
+                    data_quality::QualityScope::CurrentView
+                        | data_quality::QualityScope::FirstRows(_)
+                        | data_quality::QualityScope::ViewRows { .. }
+                ))
     }
 
     /// Whether the session cache holds a report for exactly `plan` on this view.

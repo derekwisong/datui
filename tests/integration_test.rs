@@ -3104,6 +3104,111 @@ fn data_quality_edits_read_only_what_they_must() {
     );
 }
 
+/// On one Parquet file the sampler reads seeded runs, which see too few rows to
+/// count segments, so the run counts them in a pass of its own, and Setup says so
+/// before Run: a sort leaves the unsorted scan the sample reads, and the whole
+/// source is read as loaded whatever the view shows. A filtered view streams, and
+/// counts in that pass.
+#[test]
+fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
+    use datui::data_quality::{QualityGrain, QualityScope, QualityStage};
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dq_reuse_blocks.parquet");
+    let minute = 60_000_000i64;
+    let start = 1_704_067_200_000_000i64;
+    let mut df = df!(
+        "id" => (0..20_000i64).collect::<Vec<_>>(),
+        "at" => (0..20_000i64).map(|row| start + row * 97 * minute).collect::<Vec<_>>(),
+    )
+    .unwrap()
+    .lazy()
+    .with_column(col("at").cast(DataType::Datetime(TimeUnit::Microseconds, None)))
+    .collect()
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let setup = |app: &mut App| {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
+    let filtered = || {
+        AppEvent::Filter(vec![FilterStatement {
+            column: "id".into(),
+            operator: FilterOperator::Gt,
+            value: "10".into(),
+            logical_op: LogicalOperator::And,
+        }])
+    };
+    for (name, view, scope, blocks) in [
+        ("as loaded", None, QualityScope::CurrentView, true),
+        ("sorted", Some(sorted()), QualityScope::CurrentView, true),
+        ("sorted", Some(sorted()), QualityScope::WholeSource, true),
+        (
+            "filtered",
+            Some(filtered()),
+            QualityScope::WholeSource,
+            true,
+        ),
+        (
+            "filtered",
+            Some(filtered()),
+            QualityScope::CurrentView,
+            false,
+        ),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        if let Some(view) = &view {
+            let mut next = app.event(view);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+            pump_until_idle(&mut app, &rx, &tx);
+        }
+        press(&mut app, KeyCode::Char('a'));
+        app.analysis_modal.sidebar_state.select(Some(3));
+        show_sample_form(&mut app);
+        {
+            let plan = &mut app.analysis_modal.data_quality_plan;
+            plan.dataset_rows = 300;
+            plan.scope = scope.clone();
+            plan.grain = QualityGrain::TimeWindows {
+                column: "at".into(),
+                every: "1d".into(),
+            };
+        }
+        let text = setup(&mut app);
+        let reads = run_quality_reads(&mut app, &rx);
+        if blocks {
+            assert!(
+                text.contains("Seeded runs of the file") && text.contains("Plus one count of at"),
+                "{name} {scope:?}: Setup said\n{text}"
+            );
+            assert_eq!(
+                reads,
+                [QualityStage::ReadingSample, QualityStage::CountingSegments],
+                "{name} {scope:?}"
+            );
+        } else {
+            assert!(
+                text.contains("One pass that streams")
+                    && text.contains("Counts every row by at in that pass"),
+                "{name} {scope:?}: Setup said\n{text}"
+            );
+            assert_eq!(reads, [QualityStage::ReadingSample], "{name} {scope:?}");
+        }
+    }
+}
+
 /// However Setup is reached, Esc discards what was staged in it: after Esc handed
 /// the cursor to the tools and Tab brought it back, and after a report tab key
 /// pressed in Setup, which does not leave it. A draft never rides out of Setup

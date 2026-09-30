@@ -30,8 +30,8 @@ pub struct SetupView<'a> {
     pub time_candidates: &'a [String],
     /// A run would start from the rows the last run read.
     pub reuses_sample: bool,
-    /// A random sample may read seeded runs of one file instead of streaming it.
-    pub may_read_blocks: bool,
+    /// A random sample reads seeded runs of one file instead of streaming it.
+    pub reads_blocks: bool,
     /// Where a run gets exact segment totals: see [`SegmentCount`].
     pub segment_count: SegmentCount,
     /// The rows this draft's sample reads were read earlier and released to the
@@ -568,7 +568,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
                 "Reads every row: the scope holds no more than the sample".to_string()
             }
-            _ if view.may_read_blocks => {
+            _ if view.reads_blocks => {
                 format!("Seeded runs of the file, about {n} rows, not a pass over it")
             }
             _ => format!("One pass that streams every eligible row, keeping a seeded {n}"),
@@ -620,7 +620,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     } else if state.is_remote_source() {
         "unknown".to_string()
     } else if sampled
-        && view.may_read_blocks
+        && view.reads_blocks
         && !exact
         && matches!(plan.method, crate::sampling::SampleMethod::Spread)
     {

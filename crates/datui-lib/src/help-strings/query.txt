@@ -3,10 +3,14 @@ Keys:
                     selected: typing replaces it, arrows edit it).
                     On the tab bar, Enter returns to the input
   Ctrl+T:           Next mode: SQL, Search, q-style (from the input too)
-  Tab / Shift+Tab:  Move focus between the input and the tab bar
+  Shift+Tab:        Input to the tab bar and back
+  Tab:              SQL: complete a column name or df; again for the
+                    next match. Search, q-style: to the tab bar
+  Alt+Enter:        SQL: start a new line
   ← / → (h/l):      On the tab bar: switch mode
   ↑ / ↓:            Earlier and later queries from the history
-                    (Ctrl+P / Ctrl+N too; each mode keeps its own)
+                    (Ctrl+P / Ctrl+N too; each mode keeps its own).
+                    In SQL over several lines, they move between lines first
   Ctrl+U / Ctrl+K:  Delete to the start / end of the line
   Ctrl+Z / Ctrl+R:  Undo / redo
   Ctrl+J:           Run, the same as Enter
@@ -23,6 +27,12 @@ them after the query.
 SQL:
   Full SQL over the loaded, drilled or reshaped data; the table name is df.
   Example: SELECT city, count(*) FROM df GROUP BY city
+  The columns of df are listed under the input, narrowed to the name being
+  typed. A long statement wraps onto up to four lines.
+  A statement that fails while running stays open with the reason under
+  it, and the table keeps what it showed. For values that will not
+  convert: TRY_CAST(col AS INT) reads them as null; trim text with SUBSTR
+  or REPLACE before STRPTIME.
 
 Search:
   Every word's letters in order, in any text column. A row matches when,

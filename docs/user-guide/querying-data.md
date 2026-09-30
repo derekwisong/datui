@@ -3,7 +3,8 @@
 Press <kbd>/</kbd> to open the query prompt. It opens on **SQL**, or on the
 active query's mode when you edit one.
 <kbd>Ctrl</kbd>+<kbd>T</kbd> switches mode without leaving the input;
-<kbd>Tab</kbd> moves to the tab bar, where <kbd>←</kbd> <kbd>→</kbd> switch too.
+<kbd>Shift</kbd>+<kbd>Tab</kbd> moves to the tab bar, where <kbd>←</kbd>
+<kbd>→</kbd> switch too.
 
 | Mode | What you type | Example |
 |---|---|---|
@@ -37,6 +38,35 @@ GROUP BY species
 ```
 
 It returns three species averages. Gentoo has the highest, about 5,076 g.
+
+## Write SQL
+
+| Key | In the SQL input |
+|---|---|
+| <kbd>Tab</kbd> | Complete the column name, or `df`, being typed. Press again for the next match |
+| <kbd>Alt</kbd>+<kbd>Enter</kbd> | Start a new line |
+| <kbd>Enter</kbd> | Run the statement |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move between lines; past the first or last, walk the history |
+
+- The columns of `df` and their types are listed under the input, narrowed to
+  the name being typed. Names with spaces complete in double quotes:
+  `"Team 1"`.
+- A long statement wraps onto up to four lines instead of scrolling sideways.
+- An empty input shows an example to start from: `SELECT * FROM df WHERE ...`.
+
+If a statement fails while it runs — a value that will not convert — the
+prompt stays open with the reason under the statement, and the table keeps
+what it showed. The reason names the column, the values that failed and SQL
+that gets past them:
+
+| Failure | Try |
+|---|---|
+| `STRPTIME` meets text that does not match the format | Trim it first: `STRPTIME(SUBSTR(Date, 1, 15), '%a %b %d %Y')`, or `REPLACE` |
+| `CAST` meets text that is not a number | `TRY_CAST(col AS INT)`, which reads it as null |
+| `CAST(col AS DATE)` meets a date not written `YYYY-MM-DD` | `STRPTIME(col, '%d/%m/%Y')` with the format it is written in |
+
+The count is exact when the run checked every value; on a large table it
+says "at least", from the rows read before it failed.
 
 ## Search
 

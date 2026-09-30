@@ -909,17 +909,29 @@ pub struct BarData {
 }
 
 impl BarData {
-    /// Each bar's value as the table prints the value column: its number format, or
-    /// plain where the table shows the column unformatted.
-    pub fn value_labels(&self, settings: &crate::numfmt::NumberFormatSettings) -> Vec<String> {
-        let format = match settings.formatter_for(&self.value_column, &self.value_dtype) {
+    /// The format the table prints the value column in, or plain where it shows the
+    /// column unformatted.
+    pub fn value_format(
+        &self,
+        settings: &crate::numfmt::NumberFormatSettings,
+    ) -> crate::numfmt::NumberFormat {
+        match settings.formatter_for(&self.value_column, &self.value_dtype) {
             crate::numfmt::CellFormatter::Number(format) => format,
             crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
-        };
+        }
+    }
+
+    /// Each bar's value as the table prints the value column.
+    pub fn value_labels(&self, settings: &crate::numfmt::NumberFormatSettings) -> Vec<String> {
+        self.labels_in(&self.value_format(settings))
+    }
+
+    /// Each bar's value in `format`: whole for an integer column or a count.
+    pub fn labels_in(&self, format: &crate::numfmt::NumberFormat) -> Vec<String> {
         let integer = self.value_dtype.is_integer();
         self.bars
             .iter()
-            .map(|b| format_bar_value(b.value, integer, &format))
+            .map(|b| format_bar_value(b.value, integer, format))
             .collect()
     }
 }

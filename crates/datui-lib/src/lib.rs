@@ -7171,8 +7171,8 @@ enum ChartExportJob {
     },
     Bar {
         data: chart_data::BarData,
-        /// Each bar's value in the table's number format.
-        values: Vec<String>,
+        /// The value column's format in the table, for the values and the axis.
+        format: crate::numfmt::NumberFormat,
         title: Option<String>,
         notes: Vec<String>,
     },
@@ -7211,19 +7211,22 @@ impl ChartExportJob {
             }
             (
                 Self::Bar {
-                    data, title, notes, ..
+                    data,
+                    format,
+                    title,
+                    notes,
                 },
                 ChartExportFormat::Png,
-            ) => write_bar_png(path, data, title.as_deref(), notes, size),
+            ) => write_bar_png(path, data, format, title.as_deref(), notes, size),
             (
                 Self::Bar {
                     data,
-                    values,
+                    format,
                     title,
                     notes,
                 },
                 ChartExportFormat::Eps,
-            ) => write_bar_eps(path, data, values, title.as_deref(), notes),
+            ) => write_bar_eps(path, data, format, title.as_deref(), notes),
         }
     }
 }
@@ -19908,7 +19911,7 @@ impl App {
                     return Err(no_points());
                 }
                 ChartExportJob::Bar {
-                    values: data.value_labels(&self.number_format),
+                    format: data.value_format(&self.number_format),
                     data: data.clone(),
                     title: chart_title,
                     notes,

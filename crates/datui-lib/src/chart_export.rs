@@ -6,10 +6,11 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::chart_data::{
-    Bar, BarData, BoxPlotData, HeatmapData, XAxisTemporalKind, format_axis_label,
+    Bar, BarData, BoxPlotData, HeatmapData, XAxisTemporalKind, format_axis_label, format_bar_value,
     format_x_axis_label,
 };
 use crate::chart_modal::ChartType;
+use crate::numfmt::NumberFormat;
 
 /// Escape a string for PostScript ( and ) and \.
 fn ps_escape(s: &str) -> String {
@@ -1098,6 +1099,19 @@ fn bar_label(bar: &Bar, max: usize) -> String {
     format!("{kept}...")
 }
 
+/// A tick on a bar chart's value axis. An integer column's, or a count's, are whole
+/// numbers in the table's format, with none between them; any other value's print as
+/// every axis prints.
+fn bar_tick(v: f64, integer: bool, format: &NumberFormat) -> Option<String> {
+    if !integer {
+        return Some(format_axis_label(v));
+    }
+    let whole = v.round();
+    // Ticks are stepped in floating point, so a whole one can be a hair off.
+    ((v - whole).abs() <= 1e-9 * whole.abs().max(1.0))
+        .then(|| format_bar_value(whole, true, format))
+}
+
 /// Longest category label an export writes, so a long one cannot run into the bars.
 const BAR_LABEL_MAX: usize = 30;
 
@@ -1119,6 +1133,7 @@ fn bar_category_title(data: &BarData) -> String {
 pub fn write_bar_png(
     path: &Path,
     data: &BarData,
+    format: &NumberFormat,
     title: Option<&str>,
     notes: &[String],
     (width, height): (u32, u32),
@@ -1164,13 +1179,22 @@ pub fn write_bar_png(
         _ => String::new(),
     };
     let category_title = bar_category_title(data);
+    let integer = data.value_dtype.is_integer();
+    // No more ticks than whole numbers in the range, so each tick can be one.
+    let ticks = if integer {
+        ((hi - lo).floor() as usize + 1).clamp(2, 10)
+    } else {
+        10
+    };
+    let value_tick = |v: &f64| bar_tick(*v, integer, format).unwrap_or_default();
     chart
         .configure_mesh()
         .disable_y_mesh()
         .y_labels(n)
+        .x_labels(ticks)
         .x_desc(data.value_column.as_str())
         .y_desc(category_title.as_str())
-        .x_label_formatter(&|v: &f64| format_axis_label(*v))
+        .x_label_formatter(&value_tick)
         .y_label_formatter(&key_label)
         .draw()?;
 
@@ -1198,13 +1222,15 @@ pub fn write_bar_png(
 pub fn write_bar_eps(
     path: &Path,
     data: &BarData,
-    values: &[String],
+    format: &NumberFormat,
     title: Option<&str>,
     notes: &[String],
 ) -> Result<()> {
     if data.bars.is_empty() {
         return Err(color_eyre::eyre::eyre!("No data to export"));
     }
+    let values = data.labels_in(format);
+    let integer = data.value_dtype.is_integer();
     const W: f64 = 500.0;
     const ROW_H: f64 = 14.0;
     const CHAR_W: f64 = 5.0;
@@ -1253,6 +1279,9 @@ pub fn write_bar_eps(
     writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
     for v in nice_ticks(lo, hi, 6) {
         let px = to_x(v);
+        let Some(s) = bar_tick(v, integer, format) else {
+            continue;
+        };
         if !(margin_left..=margin_left + plot_w).contains(&px) {
             continue;
         }
@@ -1263,7 +1292,6 @@ pub fn write_bar_eps(
             px, MARGIN_BOTTOM, plot_h
         )?;
         writeln!(f, "0 setgray 1 setlinewidth")?;
-        let s = format_axis_label(v);
         let label_w = s.len() as f64 * CHAR_W;
         writeln!(
             f,
@@ -1276,7 +1304,7 @@ pub fn write_bar_eps(
 
     // Bars, first at the top, each with its category left of the plot and its value
     // past its end.
-    for (i, ((bar, label), value)) in data.bars.iter().zip(&labels).zip(values).enumerate() {
+    for (i, ((bar, label), value)) in data.bars.iter().zip(&labels).zip(&values).enumerate() {
         let top = MARGIN_BOTTOM + plot_h - i as f64 * ROW_H;
         let (x0, x1) = (to_x(bar.value.min(0.0)), to_x(bar.value.max(0.0)));
         writeln!(f, "0.0 0.7 0.9 setrgbcolor")?;
@@ -1563,12 +1591,20 @@ mod tests {
         let data = bar_data();
         let png = dir.path().join("bars.png");
         let notes = ["sample of 10,000 of 50k rows".to_string()];
-        write_bar_png(&png, &data, Some("Delay by carrier"), &notes, (640, 480)).expect("png");
+        let format = NumberFormat::preset("european").unwrap();
+        write_bar_png(
+            &png,
+            &data,
+            &format,
+            Some("Delay by carrier"),
+            &notes,
+            (640, 480),
+        )
+        .expect("png");
         assert!(std::fs::metadata(&png).unwrap().len() > 0);
 
         let eps = dir.path().join("bars.eps");
-        let values = ["21,92", "3,00", "-9,93"].map(String::from);
-        write_bar_eps(&eps, &data, &values, Some("Delay by carrier"), &notes).expect("eps");
+        write_bar_eps(&eps, &data, &format, Some("Delay by carrier"), &notes).expect("eps");
         let content = std::fs::read_to_string(&eps).unwrap();
         for text in [
             "(sample of 10,000 of 50k rows)",
@@ -1584,6 +1620,57 @@ mod tests {
         }
         for line in content.lines().filter(|l| !l.starts_with('%')) {
             assert!(!code_outside_strings(line).contains("INJECTED"), "{line}");
+        }
+    }
+
+    /// Counts, and an integer column's values, tick in whole numbers in the table's
+    /// format: `5,000`, never `5000.00`, and no tick between two whole numbers.
+    #[test]
+    fn a_whole_number_value_axis_has_whole_ticks() {
+        let format = NumberFormat::preset("thousands").unwrap();
+        assert_eq!(bar_tick(10_000.0, true, &format).as_deref(), Some("10,000"));
+        assert_eq!(
+            bar_tick(2.000_000_000_000_4, true, &format).as_deref(),
+            Some("2")
+        );
+        assert_eq!(bar_tick(0.5, true, &format), None);
+        assert_eq!(bar_tick(0.5, false, &format).as_deref(), Some("0.50"));
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let counts = |values: &[f64]| BarData {
+            category: "carrier".to_string(),
+            value_column: "count".to_string(),
+            bars: values
+                .iter()
+                .map(|&value| Bar {
+                    label: Some("UA".to_string()),
+                    value,
+                })
+                .collect(),
+            more: 0,
+            no_value: 0,
+            rows: Default::default(),
+            value_dtype: polars::prelude::DataType::UInt64,
+            counted: None,
+        };
+        for (values, ticks) in [
+            (
+                &[30_000.0, 15_000.0][..],
+                &["(0)", "(10,000)", "(30,000)"][..],
+            ),
+            (&[3.0, 1.0][..], &["(0)", "(1)", "(2)", "(3)"][..]),
+        ] {
+            let data = counts(values);
+            let eps = dir.path().join("counts.eps");
+            write_bar_eps(&eps, &data, &format, None, &[]).expect("eps");
+            let content = std::fs::read_to_string(&eps).unwrap();
+            for tick in ticks {
+                assert!(content.contains(tick), "{tick} in {content}");
+            }
+            assert!(!content.contains(".5)"), "{content}");
+            assert!(!content.contains(".00)"), "{content}");
+            let png = dir.path().join("counts.png");
+            write_bar_png(&png, &data, &format, None, &[], (640, 480)).expect("png");
         }
     }
 

@@ -460,66 +460,6 @@ pub fn compute_statistics_for_sample(
     })
 }
 
-/// Computes describe statistics for a single column of an already-collected DataFrame.
-///
-/// Used by the UI to compute stats per column and yield between columns for progress display.
-/// No progress or chunk types; the library only exposes granularity.
-pub fn compute_describe_column(
-    df: &DataFrame,
-    schema: &Schema,
-    column_index: usize,
-    options: &ComputeOptions,
-    actual_sample_size: Option<usize>,
-    is_sampled: bool,
-) -> Result<ColumnStatistics> {
-    let (name, dtype) = schema
-        .iter()
-        .nth(column_index)
-        .ok_or_else(|| color_eyre::eyre::eyre!("column index {} out of range", column_index))?;
-    let col = df.column(name)?;
-    let series = col.as_materialized_series();
-    let count = series.len();
-    let null_count = series.null_count();
-
-    let numeric_stats = if is_numeric_type(dtype) {
-        Some(compute_numeric_stats(
-            series,
-            options.include_skewness_kurtosis_outliers,
-        )?)
-    } else {
-        None
-    };
-
-    let categorical_stats = if is_categorical_type(dtype) {
-        Some(compute_categorical_stats(series)?)
-    } else {
-        None
-    };
-
-    let distribution_info =
-        if options.include_distribution_info && is_numeric_type(dtype) && null_count < count {
-            Some(infer_distribution(
-                series,
-                series,
-                actual_sample_size.unwrap_or(count),
-                is_sampled,
-            ))
-        } else {
-            None
-        };
-
-    Ok(ColumnStatistics {
-        name: name.to_string(),
-        dtype: dtype.clone(),
-        count,
-        null_count,
-        numeric_stats,
-        categorical_stats,
-        temporal_stats: temporal_stats_of(series)?,
-        distribution_info,
-    })
-}
-
 /// Builds describe-only AnalysisResults from a list of column statistics.
 ///
 /// Used when completing chunked describe; correlation and distribution analyses stay empty/None.
@@ -781,121 +721,6 @@ fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
     df.column(col_name)
         .ok()
         .and_then(|s| s.get(row).ok().map(|v| v.str_value().to_string()))
-}
-
-/// A value as the table writes it; `None` for a null.
-fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
-    match df.column(col_name).ok()?.get(row).ok()? {
-        AnyValue::Null => None,
-        v => Some(v.str_value().to_string()),
-    }
-}
-
-/// Describe's temporal statistics for one collected column, through the same
-/// aggregation the lazy path runs.
-fn temporal_stats_of(series: &Series) -> Result<Option<TemporalStatistics>> {
-    if !is_temporal_type(series.dtype()) {
-        return Ok(None);
-    }
-    let frame = DataFrame::new_infer_height(vec![series.clone().into()])?;
-    let schema = frame.schema().clone();
-    let agg_df = frame
-        .lazy()
-        .select(build_describe_aggregation_exprs(&schema))
-        .collect()?;
-    Ok(parse_describe_agg_row(&agg_df, &schema)
-        .pop()
-        .and_then(|stats| stats.temporal_stats))
-}
-
-/// Computes distribution statistics for numeric columns.
-///
-/// - Infers distribution types for numeric columns missing distribution_info
-/// - Computes advanced statistics (skewness, kurtosis, outliers) if missing
-/// - Generates distribution_analyses for columns with detected distributions
-pub fn compute_distribution_statistics(
-    results: &mut AnalysisResults,
-    lf: &LazyFrame,
-    sample: &crate::sampling::Sample,
-    polars_streaming: bool,
-) -> Result<()> {
-    let rows = crate::sampling::read(lf, sample, Some(results.total_rows), polars_streaming)?;
-    let actual_sample_size = rows.sample_size;
-    let should_sample = actual_sample_size.is_some();
-    let df = rows.df;
-
-    for col_stat in &mut results.column_statistics {
-        if col_stat.distribution_info.is_none()
-            && is_numeric_type(&col_stat.dtype)
-            && col_stat.null_count < col_stat.count
-        {
-            let series = df.column(&col_stat.name)?.as_materialized_series();
-            col_stat.distribution_info = Some(infer_distribution(
-                series,
-                series,
-                actual_sample_size.unwrap_or(col_stat.count),
-                should_sample,
-            ));
-        }
-
-        if let Some(ref mut num_stats) = col_stat.numeric_stats {
-            let needs_advanced_stats = num_stats.skewness == 0.0
-                && num_stats.kurtosis == 3.0
-                && num_stats.outliers_iqr == 0
-                && num_stats.outliers_zscore == 0
-                && col_stat.count > 0;
-            if needs_advanced_stats {
-                let values = finite_values(df.column(&col_stat.name)?.as_materialized_series());
-                (num_stats.skewness, num_stats.kurtosis) = skewness_and_kurtosis(&values);
-                let (out_iqr, out_zscore) = detect_outliers(&values, num_stats.q25, num_stats.q75);
-                num_stats.outliers_iqr = out_iqr;
-                num_stats.outliers_zscore = out_zscore;
-            }
-        }
-    }
-
-    if results.distribution_analyses.is_empty() {
-        results.distribution_analyses = results
-            .column_statistics
-            .iter()
-            .filter_map(|col_stat| {
-                if let (Some(numeric_stats), Some(dist_info)) =
-                    (&col_stat.numeric_stats, &col_stat.distribution_info)
-                {
-                    if let Ok(series_col) = df.column(&col_stat.name) {
-                        let series = series_col.as_materialized_series();
-                        Some(compute_advanced_distribution_analysis(
-                            &col_stat.name,
-                            series,
-                            numeric_stats,
-                            dist_info,
-                            actual_sample_size.unwrap_or(results.total_rows),
-                            should_sample,
-                        ))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect();
-    }
-
-    Ok(())
-}
-
-/// Computes correlation matrix if not already present in results.
-pub fn compute_correlation_statistics(
-    results: &mut AnalysisResults,
-    lf: &LazyFrame,
-    polars_streaming: bool,
-) -> Result<()> {
-    if results.correlation_matrix.is_none() {
-        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
-        results.correlation_matrix = compute_correlation_matrix(&df).ok();
-    }
-    Ok(())
 }
 
 /// Uses Polars' definition so Int128, UInt128, Decimal, and future numeric types are included.
@@ -3150,12 +2975,6 @@ pub(crate) mod describe_tests {
         let sampled = compute_describe_single_aggregation(&df, &schema, 6, None, 0, false)
             .unwrap()
             .column_statistics;
-        let per_column: Vec<ColumnStatistics> = (0..df.width())
-            .map(|i| {
-                compute_describe_column(&df, &schema, i, &ComputeOptions::default(), None, false)
-                    .unwrap()
-            })
-            .collect();
         let expected = [
             [
                 "2025-01-03",
@@ -3186,7 +3005,7 @@ pub(crate) mod describe_tests {
             ],
             ["3m", "1m", "2m", "3m", "4m", "5m"],
         ];
-        for stats in [&lazy, &sampled, &per_column] {
+        for stats in [&lazy, &sampled] {
             assert_eq!(stats.len(), expected.len());
             for (column, want) in stats.iter().zip(expected) {
                 assert!(column.numeric_stats.is_none(), "{}", column.name);

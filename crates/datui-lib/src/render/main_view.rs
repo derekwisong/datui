@@ -64,6 +64,11 @@ pub enum ControlBarSpec {
 /// Returns the control bar keybindings and options for the current main view content.
 /// The main render loop calls this and applies the result to the Controls widget.
 pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBarSpec {
+    // A confirmation takes every key until it is answered, over any screen: the
+    // keys underneath do nothing meanwhile.
+    if app.confirmation_modal.active {
+        return ControlBarSpec::Custom(crate::render::overlays::confirmation_keys());
+    }
     match content {
         MainViewContent::Datatable => {
             // A surface that owns the keyboard gets a bar that describes it:
@@ -120,10 +125,6 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
         }
         MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
         MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
-        // A load waiting on the download confirmation takes only the modal's keys.
-        MainViewContent::Loading if app.awaiting_download_confirmation() => {
-            ControlBarSpec::Custom(crate::render::overlays::confirmation_keys())
-        }
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
         MainViewContent::Loading => ControlBarSpec::Custom(vec![

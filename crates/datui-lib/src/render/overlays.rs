@@ -32,8 +32,7 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
-/// The confirmation modal's keys: its footer, and the control bar while a load
-/// waits on it.
+/// The confirmation modal's keys: its footer, and the control bar while it is up.
 pub fn confirmation_keys() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Enter", "Confirm"),

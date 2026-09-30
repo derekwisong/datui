@@ -4419,6 +4419,40 @@ pub mod tests {
         assert!(app.pending_copy.is_some());
     }
 
+    /// A confirmation takes every key until it is answered, so the bar names its keys
+    /// rather than the table's, which do nothing meanwhile.
+    #[test]
+    fn a_confirmation_puts_its_keys_in_the_bar() {
+        use crate::App;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.csv");
+        std::fs::write(&path, "id\n1\n2\n3\n").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        super::chart_prepare_tests::open(&mut app, &rx, &tx, path);
+        assert!(control_bar(&mut app).contains("Query"), "the table's keys");
+
+        app.data_table_state.as_mut().unwrap().invalidate_num_rows();
+        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        let _ = app.perform_copy();
+        assert!(app.confirmation_modal.active, "an unknown size asks");
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Confirm") && bar.contains("Switch") && bar.contains("Cancel"),
+            "the bar names the modal's keys: {bar}"
+        );
+        assert!(!bar.contains("Query"), "not the table's: {bar}");
+
+        let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.confirmation_modal.active);
+        assert!(
+            control_bar(&mut app).contains("Query"),
+            "and back once answered"
+        );
+    }
+
     /// A count landing while a load is in flight does not cancel the load.
     ///
     /// `BackgroundLenReady` answers an End by jumping to the end, which reaches

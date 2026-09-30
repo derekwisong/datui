@@ -41,13 +41,15 @@ longer has is dropped from the chart. Opening another dataset starts over.
 | Option | What it does |
 |---|---|
 | **Sample size** | Rows the chart reads. A larger table is sampled across all of it, and the chart says so under the plot: `sample of 10,000 of 3.5M rows`. **Every row** reads the whole view |
-| **Range** | Histogram, Box Plot and KDE: **All** values, or **1st-99th pct** to leave out outliers that squash the rest into a bin or two. The chart counts what it left out: `1,207 values outside 1st-99th pct` |
+| **Range** | Histogram, Box Plot and KDE: **All** values, or **p1-p99** (the 1st to 99th percentile) to leave out outliers that squash the rest into a bin or two. The chart counts what it left out: `195 values outside p1-p99` |
 
 The sample is drawn as the [analysis tools](analysis-features.md#sampling)
-draw theirs, with the same seed: a few dozen runs of one Parquet or IPC file,
-or one streamed pass over anything else. The default size comes from `row_limit` in
-the [`[chart]` config section](../reference/settings.md#charts) and is
-10,000.
+draw theirs, with the same seed: 50 runs of one Parquet or IPC file, or one
+streamed pass over anything else. Another option, or another chart of columns
+already read, draws from the same rows without reading the table again. An
+exported PNG or EPS carries the same notes under the plot. The default size
+comes from `row_limit` in the
+[`[chart]` config section](../reference/settings.md#charts) and is 10,000.
 
 ## Keys
 

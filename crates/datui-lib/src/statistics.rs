@@ -234,6 +234,8 @@ pub struct AnalysisResults {
     pub column_statistics: Vec<ColumnStatistics>,
     pub total_rows: usize,
     pub sample_size: Option<usize>,
+    /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
+    pub per_value: Option<usize>,
     pub sample_seed: u64,
     pub correlation_matrix: Option<CorrelationMatrix>,
     pub distribution_analyses: Vec<DistributionAnalysis>,
@@ -327,6 +329,7 @@ pub fn compute_statistics_for_sample(
     let total_rows = rows.total_rows;
     let actual_sample_size = rows.sample_size;
     let should_sample = actual_sample_size.is_some();
+    let per_value = rows.per_value.as_ref().map(|per_value| per_value.kept);
     let df = rows.df;
 
     let mut column_statistics = Vec::new();
@@ -415,6 +418,7 @@ pub fn compute_statistics_for_sample(
         column_statistics,
         total_rows,
         sample_size: actual_sample_size,
+        per_value,
         sample_seed: seed,
         correlation_matrix,
         distribution_analyses,
@@ -493,6 +497,7 @@ pub fn analysis_results_from_describe(
         column_statistics,
         total_rows,
         sample_size,
+        per_value: None,
         sample_seed,
         correlation_matrix: None,
         distribution_analyses: Vec::new(),
@@ -635,14 +640,16 @@ pub fn compute_describe_from_lazy(
     let seed = sample.seed;
     if sample.method != crate::sampling::SampleMethod::EveryRow {
         let rows = crate::sampling::read(lf, sample, known_total, polars_streaming)?;
-        return compute_describe_single_aggregation(
+        let mut results = compute_describe_single_aggregation(
             &rows.df,
             &schema,
             rows.total_rows,
             rows.sample_size,
             seed,
             polars_streaming,
-        );
+        )?;
+        results.per_value = rows.per_value.map(|per_value| per_value.kept);
+        return Ok(results);
     }
     let total_rows = match known_total {
         Some(total) => total,
@@ -818,6 +825,8 @@ pub struct AnalysisRows {
     pub total_rows: usize,
     /// How many rows were sampled, when the table had more than the analysis reads.
     pub sample_size: Option<usize>,
+    /// What an equal-per-value sample kept and counted.
+    pub per_value: Option<crate::sampling::PerValue>,
 }
 
 /// How many places across the table a block sample reads from. Enough that no one
@@ -873,6 +882,7 @@ pub fn analysis_rows(
             df,
             total_rows,
             sample_size: None,
+            per_value: None,
         });
     };
     if !slices_reach_into_the_scan(lf) {
@@ -882,6 +892,7 @@ pub fn analysis_rows(
             df,
             total_rows,
             sample_size,
+            per_value: None,
         });
     }
     let total_rows = match known_total {
@@ -894,6 +905,7 @@ pub fn analysis_rows(
             df,
             total_rows,
             sample_size: None,
+            per_value: None,
         });
     }
     let df = block_sample(lf, total_rows, n, seed, polars_streaming)?;
@@ -901,6 +913,7 @@ pub fn analysis_rows(
         sample_size: Some(df.height()),
         df,
         total_rows,
+        per_value: None,
     })
 }
 

@@ -920,6 +920,7 @@ fn test_stale_background_events_are_ignored() {
         column_statistics: vec![],
         total_rows: 999_999,
         sample_size: None,
+        per_value: None,
         sample_seed: 0,
         correlation_matrix: None,
         distribution_analyses: vec![],
@@ -972,7 +973,9 @@ fn test_stale_background_events_are_ignored() {
             category_variants: vec![],
             shared_nulls: vec![],
             source_files: None,
+            per_value: None,
         },
+        kept: None,
     });
     assert!(
         app.analysis_modal.data_quality_results.is_none(),

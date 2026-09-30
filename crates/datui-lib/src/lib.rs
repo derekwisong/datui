@@ -686,6 +686,38 @@ mod classify_batch_tests {
 }
 
 #[cfg(test)]
+mod quality_sample_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Choosing equal rows per value of a column sets the grain to that column, so
+    /// Segments and Trends have what the sample was drawn for; a grain chosen
+    /// afterwards is not taken back.
+    #[test]
+    fn the_grain_follows_an_equal_per_value_sample_once() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let per_date = sampling::SampleMethod::PerPartition {
+            column: "date".into(),
+        };
+        app.analysis_modal.sample.method = per_date.clone();
+        app.sync_quality_plan();
+        assert_eq!(
+            app.analysis_modal.data_quality_plan.grain,
+            data_quality::QualityGrain::Partition("date".into())
+        );
+
+        app.analysis_modal.data_quality_plan.grain = data_quality::QualityGrain::Dataset;
+        app.sync_quality_plan();
+        assert_eq!(
+            app.analysis_modal.data_quality_plan.grain,
+            data_quality::QualityGrain::Dataset,
+            "the same sample again leaves the chosen grain alone"
+        );
+    }
+}
+
+#[cfg(test)]
 mod chart_prepare_tests {
     use super::*;
     use std::sync::mpsc;
@@ -5290,6 +5322,8 @@ pub enum AppEvent {
     BackgroundDataQualityReady {
         generation: u64,
         results: crate::data_quality::DataQualityResults,
+        /// The rows a sampled run read, for the next run and drill to cut.
+        kept: Option<KeptQualitySample>,
     },
     /// Background task completed: buffer data collected.
     /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
@@ -6439,6 +6473,16 @@ struct QualityCacheEntry {
     results: data_quality::DataQualityResults,
 }
 
+/// The rows the last sampled Data Quality run read, and what decided which rows they
+/// were. A run or a drill that names the same rows cuts these instead of reading.
+#[derive(Debug, Clone)]
+pub struct KeptQualitySample {
+    dataset_generation: u64,
+    view_generation: u64,
+    sample: sampling::Sample,
+    rows: std::sync::Arc<data_quality::QualitySample>,
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
@@ -6527,6 +6571,8 @@ pub struct App {
     startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
     quality_cache: Vec<QualityCacheEntry>,
+    /// See [`KeptQualitySample`]. One, the last: a sample is up to two million rows.
+    quality_sample: Option<KeptQualitySample>,
     /// The table an analysis drill left behind: Data Quality's matching rows or the
     /// sample's, shown in its place until Esc brings it back.
     quality_evidence_return: Option<Box<DataTableState>>,
@@ -6878,6 +6924,20 @@ impl App {
         })
     }
 
+    /// The rows the last sampled Data Quality run read, when they are the rows
+    /// `sample` names now: same dataset, same view, same sample.
+    fn kept_quality_sample(
+        &self,
+        sample: &sampling::Sample,
+    ) -> Option<std::sync::Arc<data_quality::QualitySample>> {
+        let kept = self.quality_sample.as_ref()?;
+        let view_generation = self.data_table_state.as_ref()?.len_generation();
+        (kept.dataset_generation == self.dataset_generation
+            && kept.view_generation == view_generation
+            && &kept.sample == sample)
+            .then(|| kept.rows.clone())
+    }
+
     fn restore_cached_quality(&mut self) -> bool {
         let Some(view_generation) = self
             .data_table_state
@@ -7152,8 +7212,8 @@ impl App {
 
     /// Read the shared sample, as the tool on screen reads it, to show as a table.
     ///
-    /// Read again rather than kept from the last run: the seed makes it the same rows,
-    /// and holding every tool's rows between runs would hold memory nobody asked for.
+    /// Data Quality's last sample is kept and cut when it is these rows; any other is
+    /// drawn again from its seed, which makes it the same rows the tool measured.
     fn read_sample_view(&mut self) -> Option<AppEvent> {
         let sample = self.analysis_modal.sample.clone();
         self.read_sample_rows(sample, None)
@@ -7170,6 +7230,17 @@ impl App {
         let state = self.data_table_state.as_ref()?;
         let (source, known_total) = Self::sample_source_for(state, &sample.scope);
         let streaming = self.app_config.performance.polars_streaming;
+        // The rows Data Quality just measured, when they are the rows asked for: cut
+        // from memory rather than drawn again from the files.
+        let kept = self.kept_quality_sample(&sample).map(|kept| {
+            let columns: Vec<_> = state
+                .schema
+                .iter_names()
+                .filter(|name| kept.df().column(name.as_str()).is_ok())
+                .map(|name| polars::prelude::col(name.clone()))
+                .collect();
+            (kept, columns)
+        });
         self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new(if evidence.is_some() {
             "Reading the matching sampled rows"
@@ -7178,25 +7249,36 @@ impl App {
         }));
         self.busy = true;
         self.spawn_bg("Reading the sample...", move |task_gen, tx| {
-            let read = source
-                .cut(&sample.scope)
-                .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming))
-                .and_then(|rows| {
-                    let label = format!(
-                        "Sample {} {}",
-                        crate::glyphs::get().middot,
-                        sample.outcome(rows.total_rows, rows.sample_size)
-                    );
-                    match evidence {
-                        Some((predicate, label)) => {
-                            let df = polars::prelude::IntoLazy::lazy(rows.df)
-                                .filter(predicate)
-                                .collect()?;
-                            Ok((df, label))
-                        }
-                        None => Ok((rows.df, label)),
+            let rows = match kept {
+                Some((kept, columns)) => polars::prelude::IntoLazy::lazy(kept.df().clone())
+                    .select(columns)
+                    .collect()
+                    .map_err(color_eyre::eyre::Report::from)
+                    .map(|df| kept.analysis_rows(df)),
+                None => source
+                    .cut(&sample.scope)
+                    .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
+            };
+            let read = rows.and_then(|rows| {
+                let label = format!(
+                    "Sample {} {}",
+                    crate::glyphs::get().middot,
+                    sample.outcome(
+                        rows.total_rows,
+                        rows.sample_size,
+                        rows.per_value.as_ref().map(|per_value| per_value.kept),
+                    )
+                );
+                match evidence {
+                    Some((predicate, label)) => {
+                        let df = polars::prelude::IntoLazy::lazy(rows.df)
+                            .filter(predicate)
+                            .collect()?;
+                        Ok((df, label))
                     }
-                });
+                    None => Ok((rows.df, label)),
+                }
+            });
             let _ = tx.send(match read {
                 Ok((df, label)) => AppEvent::BackgroundSampleReady {
                     generation: task_gen,
@@ -7252,6 +7334,17 @@ impl App {
             } else {
                 data_quality::QualityCompute::Sample
             };
+        }
+        // Choosing equal rows per value of a column is choosing to look at that column's
+        // values side by side, and the grain is what does that. Taken only when the
+        // choice is new and the grain has not been set, so a grain chosen afterwards
+        // stays chosen.
+        if let sampling::SampleMethod::PerPartition { column } = &sample.method
+            && plan.method != sample.method
+            && plan.grain == data_quality::QualityGrain::Dataset
+        {
+            plan.grain = data_quality::QualityGrain::Partition(column.clone());
+            plan.baseline_segment = None;
         }
         plan.method = sample.method;
     }
@@ -7936,6 +8029,7 @@ impl App {
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
         self.quality_cache.clear();
+        self.quality_sample = None;
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
         // Whatever chart state survived belongs to the dataset being replaced.
@@ -8540,6 +8634,7 @@ impl App {
                 app_config.performance.analysis_sample_rows,
             ),
             quality_cache: Vec::new(),
+            quality_sample: None,
             quality_evidence_return: None,
             quality_evidence_label: None,
             reading_sample: false,
@@ -17273,6 +17368,7 @@ impl App {
                                     column_statistics: vec![],
                                     total_rows: rows.total_rows,
                                     sample_size: rows.sample_size,
+                                    per_value: rows.per_value.map(|per_value| per_value.kept),
                                     sample_seed: seed,
                                     correlation_matrix: matrix,
                                     distribution_analyses: vec![],
@@ -17326,6 +17422,9 @@ impl App {
                         (lf, source, rows)
                     };
                     let streaming = state.polars_streaming;
+                    let view_generation = state.len_generation();
+                    let dataset_generation = self.dataset_generation;
+                    let kept = self.kept_quality_sample(&plan.sample());
                     // Only a confirmed full scan pays to read the values a type
                     // conflict hides, and only its access plan promised the read.
                     let mut source = source;
@@ -17363,17 +17462,24 @@ impl App {
                                 return;
                             }
                         };
-                        match crate::data_quality::compute_data_quality(
+                        match crate::data_quality::compute_data_quality_kept(
                             &lf,
                             cached_rows,
                             &plan,
                             source.as_ref(),
                             streaming,
+                            kept.as_deref(),
                         ) {
-                            Ok(results) => {
+                            Ok((results, rows)) => {
                                 let _ = tx.send(AppEvent::BackgroundDataQualityReady {
                                     generation: task_gen,
                                     results,
+                                    kept: rows.map(|rows| KeptQualitySample {
+                                        dataset_generation,
+                                        view_generation,
+                                        sample: plan.sample(),
+                                        rows: std::sync::Arc::new(rows),
+                                    }),
                                 });
                             }
                             Err(error) => {
@@ -17673,7 +17779,15 @@ impl App {
             AppEvent::BackgroundDataQualityReady {
                 generation,
                 results,
+                kept,
             } => {
+                // Kept whatever became of the run's results: the rows are the rows the
+                // key names, and a read is not to be thrown away.
+                if let Some(kept) = kept
+                    && kept.dataset_generation == self.dataset_generation
+                {
+                    self.quality_sample = Some(kept.clone());
+                }
                 if *generation == self.task_generation
                     && self.analysis_modal.active
                     && self.analysis_modal.selected_tool

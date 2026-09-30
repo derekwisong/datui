@@ -1298,6 +1298,8 @@ pub struct DataQualityResults {
     /// How many source files' footers were compared, when the scope has files to
     /// compare. `None` means the checks that compare files could not run.
     pub source_files: Option<usize>,
+    /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
+    pub per_value: Option<usize>,
 }
 
 impl DataQualityResults {
@@ -1349,6 +1351,48 @@ impl DataQualityResults {
             category_variants: Vec::new(),
             shared_nulls: Vec::new(),
             source_files: None,
+            per_value: None,
+        }
+    }
+}
+
+/// The rows a sampled run read, kept beside its results.
+///
+/// A run that differs from the last only in how it cuts the rows — grain, comparison,
+/// time roles — cuts these again rather than reading the source again, and a grain it
+/// has already counted segments for is not counted twice. The caller keys it by what
+/// decides which rows were read: the dataset, the view, and the plan's sample.
+#[derive(Debug, Clone)]
+pub struct QualitySample {
+    df: DataFrame,
+    /// Where each row sat in the scope, when it was read for row chunks.
+    positions: Option<Vec<u32>>,
+    precision: QualityPrecision,
+    total_rows: Option<usize>,
+    per_value: Option<crate::sampling::PerValue>,
+    /// Segment row counts already read, by the grain they were counted for.
+    counted: Vec<(QualityGrain, BTreeMap<String, usize>)>,
+}
+
+impl QualitySample {
+    /// Whether this sample can serve `plan` without a read: it was read for row
+    /// positions when the grain needs them.
+    fn serves(&self, plan: &DataQualityPlan) -> bool {
+        !matches!(plan.grain, QualityGrain::RowChunks(_)) || self.positions.is_some()
+    }
+
+    /// The rows themselves, as the sample every tool reads.
+    pub fn df(&self) -> &DataFrame {
+        &self.df
+    }
+
+    /// `df`, cut from these rows, described as the sampler described them.
+    pub fn analysis_rows(&self, df: DataFrame) -> crate::statistics::AnalysisRows {
+        crate::statistics::AnalysisRows {
+            sample_size: (self.precision == QualityPrecision::Sampled).then_some(df.height()),
+            total_rows: self.total_rows.unwrap_or(df.height()),
+            per_value: self.per_value.clone(),
+            df,
         }
     }
 }
@@ -1360,6 +1404,20 @@ pub fn compute_data_quality(
     source: Option<&QualitySourceContext>,
     polars_streaming: bool,
 ) -> Result<DataQualityResults> {
+    compute_data_quality_kept(lf, total_rows, plan, source, polars_streaming, None)
+        .map(|(results, _)| results)
+}
+
+/// [`compute_data_quality`], cutting `kept` instead of reading when it serves the
+/// plan, and returning the sample a sampled run read so the next run can do the same.
+pub fn compute_data_quality_kept(
+    lf: &LazyFrame,
+    total_rows: Option<usize>,
+    plan: &DataQualityPlan,
+    source: Option<&QualitySourceContext>,
+    polars_streaming: bool,
+    kept: Option<&QualitySample>,
+) -> Result<(DataQualityResults, Option<QualitySample>)> {
     let collected_schema = lf.clone().collect_schema()?;
     let schema = visible_schema(&collected_schema, source);
     // What the footers already said: which files have which columns. Free at every
@@ -1370,7 +1428,7 @@ pub fn compute_data_quality(
             results.observations = drift_observations(source, None, polars_streaming);
         }
         results.source_files = source.map(|source| source.file_names.len());
-        return Ok(results);
+        return Ok((results, None));
     }
     let grain_column = match &plan.grain {
         QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => Some(column),
@@ -1405,53 +1463,23 @@ pub fn compute_data_quality(
         if total_rows == 0 && plan.scope != QualityScope::CurrentView {
             return Err(crate::sampling::no_rows_error(&plan.scope));
         }
-        return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming);
+        return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming)
+            .map(|results| (results, None));
     }
 
     // The shared analysis sampler, as every other tool reads: by default spread
     // across the whole scope, so a file sorted by date is not judged by its first
     // stretch. Every grain cuts its segments from this one sample, so a segmented
     // run reads no more than the sample says and measures the rows every tool reads.
-    let chunked = matches!(plan.grain, QualityGrain::RowChunks(_));
-    let (profile_df, sample_positions, evaluated_rows, precision, total_rows) = match plan.compute {
-        QualityCompute::Sample => {
-            let sample = crate::sampling::Sample {
-                scope: QualityScope::CurrentView,
-                method: plan.method.clone(),
-                rows: plan.dataset_rows,
-                seed: plan.sample_seed,
-            };
-            // A row chunk is a stretch of the scope's order, so a sampled row has to
-            // remember where it sat.
-            let read_from = if chunked {
-                lf.clone().with_row_index(QUALITY_SAMPLE_POSITION, None)
-            } else {
-                lf.clone()
-            };
-            let sampled =
-                crate::sampling::read_rows(&read_from, &sample, total_rows, polars_streaming)?;
-            let (df, positions) = if chunked {
-                let positions = sampled
-                    .df
-                    .column(QUALITY_SAMPLE_POSITION)?
-                    .cast(&DataType::UInt32)?
-                    .u32()?
-                    .into_no_null_iter()
-                    .collect::<Vec<_>>();
-                (sampled.df.drop(QUALITY_SAMPLE_POSITION)?, Some(positions))
-            } else {
-                (sampled.df, None)
-            };
-            let height = df.height();
-            let precision = if sampled.sample_size.is_some() {
-                QualityPrecision::Sampled
-            } else {
-                QualityPrecision::Exact
-            };
-            (df, positions, height, precision, Some(sampled.total_rows))
-        }
-        QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
+    let mut kept = match kept.filter(|kept| kept.serves(plan)) {
+        Some(kept) => kept.clone(),
+        None => read_quality_sample(lf, total_rows, plan, polars_streaming)?,
     };
+    let profile_df = kept.df.clone();
+    let sample_positions = kept.positions.clone();
+    let evaluated_rows = profile_df.height();
+    let precision = kept.precision;
+    let total_rows = kept.total_rows;
 
     // Rows chosen by the sample that match nothing are a mistake to name, not an
     // empty report that reads as clean.
@@ -1491,7 +1519,12 @@ pub fn compute_data_quality(
             totals: &{
                 let mut totals = known_segment_totals(plan, total_rows, source);
                 if precision == QualityPrecision::Sampled {
-                    totals.extend(counted_segment_totals(lf, plan, polars_streaming)?);
+                    totals.extend(sampled_segment_totals(
+                        lf,
+                        plan,
+                        &mut kept,
+                        polars_streaming,
+                    )?);
                 }
                 totals
             },
@@ -1500,8 +1533,9 @@ pub fn compute_data_quality(
     )?;
     let temporal = profile_temporal(&profile_df, plan, sample_positions.as_deref())?;
     let shared_nulls = profile_shared_nulls(&profile_df.lazy(), &columns, polars_streaming)?;
+    let per_value = kept.per_value.as_ref().map(|per_value| per_value.kept);
 
-    Ok(DataQualityResults {
+    let results = DataQualityResults {
         total_rows,
         evaluated_rows,
         precision,
@@ -1514,7 +1548,97 @@ pub fn compute_data_quality(
         category_variants,
         shared_nulls,
         source_files: source.map(|source| source.file_names.len()),
+        per_value,
+    };
+    Ok((results, Some(kept)))
+}
+
+/// Read the rows a sampled run measures.
+fn read_quality_sample(
+    lf: &LazyFrame,
+    total_rows: Option<usize>,
+    plan: &DataQualityPlan,
+    polars_streaming: bool,
+) -> Result<QualitySample> {
+    let sample = crate::sampling::Sample {
+        scope: QualityScope::CurrentView,
+        method: plan.method.clone(),
+        rows: plan.dataset_rows,
+        seed: plan.sample_seed,
+    };
+    // A row chunk is a stretch of the scope's order, so a sampled row has to
+    // remember where it sat.
+    let chunked = matches!(plan.grain, QualityGrain::RowChunks(_));
+    let read_from = if chunked {
+        lf.clone().with_row_index(QUALITY_SAMPLE_POSITION, None)
+    } else {
+        lf.clone()
+    };
+    let sampled = crate::sampling::read_rows(&read_from, &sample, total_rows, polars_streaming)?;
+    let (df, positions) = if chunked {
+        let positions = sampled
+            .df
+            .column(QUALITY_SAMPLE_POSITION)?
+            .cast(&DataType::UInt32)?
+            .u32()?
+            .into_no_null_iter()
+            .collect::<Vec<_>>();
+        (sampled.df.drop(QUALITY_SAMPLE_POSITION)?, Some(positions))
+    } else {
+        (sampled.df, None)
+    };
+    let precision = if sampled.sample_size.is_some() {
+        QualityPrecision::Sampled
+    } else {
+        QualityPrecision::Exact
+    };
+    Ok(QualitySample {
+        df,
+        positions,
+        precision,
+        total_rows: Some(sampled.total_rows),
+        per_value: sampled.per_value,
+        counted: Vec::new(),
     })
+}
+
+/// How many rows each segment of a sampled run holds, reading only what nothing has
+/// counted yet.
+///
+/// An equal-per-value sample counted every value as it streamed, so a grain by the
+/// same column is already counted. Another grain is counted by a read of its key, once:
+/// the count is kept with the sample for the next run to cut it.
+fn sampled_segment_totals(
+    lf: &LazyFrame,
+    plan: &DataQualityPlan,
+    kept: &mut QualitySample,
+    polars_streaming: bool,
+) -> Result<BTreeMap<String, usize>> {
+    if !matches!(
+        plan.grain,
+        QualityGrain::Partition(_) | QualityGrain::TimeWindows { .. }
+    ) {
+        return Ok(BTreeMap::new());
+    }
+    if let (
+        QualityGrain::Partition(column),
+        crate::sampling::SampleMethod::PerPartition { column: sampled },
+        Some(per_value),
+    ) = (&plan.grain, &plan.method, &kept.per_value)
+        && column == sampled
+    {
+        return Ok(per_value
+            .totals
+            .iter()
+            .map(|(raw, rows)| (segment_label(&plan.grain, raw.as_deref()), *rows))
+            .collect());
+    }
+    if let Some((_, totals)) = kept.counted.iter().find(|(grain, _)| *grain == plan.grain) {
+        return Ok(totals.clone());
+    }
+    let totals = counted_segment_totals(lf, plan, polars_streaming)?;
+    kept.counted.push((plan.grain.clone(), totals.clone()));
+    Ok(totals)
 }
 
 fn compute_full_quality(
@@ -1567,6 +1691,7 @@ fn compute_full_quality(
         category_variants,
         shared_nulls,
         source_files: source.map(|source| source.file_names.len()),
+        per_value: None,
     })
 }
 
@@ -3927,6 +4052,87 @@ mod tests {
                 .collect::<Vec<_>>(),
             "seeded"
         );
+    }
+
+    /// A run that changes only how the rows are cut reads nothing: it cuts the rows
+    /// the last run kept. An equal-per-value sample counted its values as it read, so
+    /// a grain by the same column is sized from that; another grain is counted once
+    /// and the count kept. The frame handed to the later runs fails on any read.
+    #[test]
+    fn a_grain_change_cuts_the_kept_sample() {
+        let frame = df!(
+            "id" => (0..120i64).collect::<Vec<_>>(),
+            "region" => (0..120)
+                .map(|row| if row < 100 { "big" } else { "small" })
+                .collect::<Vec<_>>(),
+            "kind" => (0..120)
+                .map(|row| if row % 2 == 0 { "x" } else { "y" })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        // The same schema, and an error the moment a row is read.
+        let poisoned = frame.clone().filter(
+            (col("id") + lit(1_000i64))
+                .strict_cast(DataType::UInt8)
+                .is_not_null(),
+        );
+        let totals = |results: &DataQualityResults| {
+            results
+                .segments
+                .iter()
+                .map(|segment| (segment.label.clone(), segment.total_rows))
+                .collect::<Vec<_>>()
+        };
+        let whole = DataQualityPlan {
+            method: crate::sampling::SampleMethod::PerPartition {
+                column: "region".into(),
+            },
+            dataset_rows: 5,
+            ..DataQualityPlan::default()
+        };
+        let (_, kept) = compute_data_quality_kept(&frame, None, &whole, None, false, None).unwrap();
+        let kept = kept.unwrap();
+
+        let by_region = DataQualityPlan {
+            grain: QualityGrain::Partition("region".into()),
+            ..whole.clone()
+        };
+        let (results, again) =
+            compute_data_quality_kept(&poisoned, None, &by_region, None, false, Some(&kept))
+                .unwrap();
+        assert_eq!(
+            totals(&results),
+            [
+                ("region=big".to_string(), Some(100)),
+                ("region=small".to_string(), Some(20))
+            ]
+        );
+        assert!(again.unwrap().counted.is_empty(), "counted by the sampler");
+        let fresh = compute_data_quality(&frame, None, &by_region, None, false).unwrap();
+        assert_eq!(
+            format!("{:?}", results.segments),
+            format!("{:?}", fresh.segments),
+            "the same as reading afresh"
+        );
+
+        let by_kind = DataQualityPlan {
+            grain: QualityGrain::Partition("kind".into()),
+            ..whole
+        };
+        let (counted, kept) =
+            compute_data_quality_kept(&frame, None, &by_kind, None, false, Some(&kept)).unwrap();
+        let (recut, _) =
+            compute_data_quality_kept(&poisoned, None, &by_kind, None, false, kept.as_ref())
+                .unwrap();
+        assert_eq!(
+            totals(&recut),
+            [
+                ("kind=x".to_string(), Some(60)),
+                ("kind=y".to_string(), Some(60))
+            ]
+        );
+        assert_eq!(totals(&recut), totals(&counted));
     }
 
     /// Segments are the shared sample's rows, split. A random sample gives each

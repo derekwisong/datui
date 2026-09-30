@@ -187,7 +187,7 @@ to Every row) asks for confirmation.
 | | |
 |---|---|
 | Dataset grain | The whole sample is one segment |
-| File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. A segment's total is shown when it is known without reading it (a file's rows from its footer when whole files are in scope, a row chunk's size) and is otherwise unknown on a sample |
+| File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. Choosing Equal per value sets the grain to that column when no grain is set. A segment's total comes from what is already known (a file's rows from its footer when whole files are in scope, a row chunk's size, the rows an Equal per value sample counted while it read), and otherwise from one count of the grain's column, kept for the session |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
 | Time windows | By hour, day, week or month of a date or time column, starting on the calendar boundary for their width (weeks start on Monday) and named by where they start (`2024-01-31`, `week of 2024-01-29`, `2024-01`); a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
@@ -277,7 +277,7 @@ Partitions, files and time ranges read the source, ignoring the query and filter
 | Method | What it reads |
 |---|---|
 | Random | A seeded random sample across all the rows chosen |
-| Equal per value | Up to the sample size from each value of a column, so a small partition is represented beside a large one; refused past 10,000 values or 2,000,000 rows kept |
+| Equal per value | Up to the sample size from each value of a column, so a small partition is represented beside a large one. At most 2,000,000 rows are kept: past that, every value keeps the same smaller number, and the header says what it was lowered to. Refused past 10,000 values |
 | First rows | The first rows in order: the fastest read, and only the head |
 | Every row | No sampling |
 

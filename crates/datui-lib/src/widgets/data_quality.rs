@@ -180,9 +180,9 @@ fn measured_on(plan: &DataQualityPlan, results: &DataQualityResults) -> String {
     };
     match (results.precision, results.total_rows) {
         (QualityPrecision::Metadata, _) => format!("file metadata only, no values read{scope}"),
-        (QualityPrecision::Exact, _) => sample.outcome(results.evaluated_rows, None),
+        (QualityPrecision::Exact, _) => sample.outcome(results.evaluated_rows, None, None),
         (QualityPrecision::Sampled | QualityPrecision::Estimated, Some(total)) => {
-            sample.outcome(total, Some(results.evaluated_rows))
+            sample.outcome(total, Some(results.evaluated_rows), results.per_value)
         }
         (QualityPrecision::Sampled | QualityPrecision::Estimated, None) => format!(
             "sample of {} rows{scope}",

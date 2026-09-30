@@ -136,7 +136,8 @@ impl<'a> AnalysisWidget<'a> {
             Some(results) if self.selected_tool.is_some() => format!(
                 "{tool_name} {} {}",
                 crate::glyphs::get().middot,
-                self.sample.outcome(results.total_rows, results.sample_size)
+                self.sample
+                    .outcome(results.total_rows, results.sample_size, results.per_value)
             ),
             _ => tool_name.to_string(),
         };

@@ -21676,14 +21676,9 @@ impl App {
                 IpcWriter::new(&mut writer).finish(df)?;
             }
             ExportFormat::Avro => {
-                use polars::io::avro::AvroWriter;
-                let file = File::create(path)?;
-                let mut writer = BufWriter::new(file);
-                // Polars writes a header per chunk, which no reader can open.
-                df.rechunk_mut_par();
-                AvroWriter::new(&mut writer)
-                    .with_name(crate::avro_types::RECORD_NAME.to_string())
-                    .finish(df)?;
+                let mut writer = BufWriter::new(File::create(path)?);
+                crate::avro_types::write(df, &mut writer)?;
+                writer.flush()?;
             }
         }
 

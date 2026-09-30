@@ -1297,6 +1297,7 @@ dependencies = [
  "orc-rust",
  "plotters",
  "polars",
+ "polars-arrow",
  "polars-error",
  "polars-json",
  "polars-parquet",

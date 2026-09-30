@@ -83,8 +83,7 @@ dialog says so when the view has such a name.
 | `délai` | `d_lai` |
 | `a-b`, beside `a_b` | `a_b_2` |
 
-The file does not keep the original names: Polars' Avro writer has no way to
-set a field's `aliases` or `doc`.
+A renamed field keeps its original name as its `doc` in the file's schema.
 
 ## Keys
 

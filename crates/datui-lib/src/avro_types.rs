@@ -11,12 +11,18 @@
 //! value whose leading byte is 0x80 or more, so every reader sees 327.68 as
 //! -327.68. Decimals are written as their exact text instead.
 //!
-//! And it writes names as they are, but an Avro name is `[A-Za-z_][A-Za-z0-9_]*`:
-//! strict readers refuse `my col` or `2024`. Columns and struct fields are
-//! renamed to valid names; the writer has no way to keep the originals in the
-//! schema's `aliases` or `doc`.
+//! And it writes names as they are, with an empty record name, but an Avro name
+//! is `[A-Za-z_][A-Za-z0-9_]*` and strict readers refuse the file. [`write`]
+//! names the record and gives each column and struct field a valid name in the
+//! file's schema, with the original as the field's `doc`. It also writes the
+//! header once, where Polars' writer repeats it for every chunk.
+
+use std::io::Write;
 
 use polars::prelude::*;
+use polars_arrow::io::avro::avro_schema::file::{Block, CompressedBlock};
+use polars_arrow::io::avro::avro_schema::schema::{Field as AvroField, Schema as AvroSchema};
+use polars_arrow::io::avro::{avro_schema, write as avro_write};
 
 /// The record name of an export. Polars' default is empty, which strict readers
 /// refuse; its nested records are `r1`, `r2`, ..., so this never clashes.
@@ -68,55 +74,70 @@ fn avro_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
         .collect()
 }
 
-/// `dtype` with the fields of every struct in it under valid Avro names.
-fn avro_named(dtype: &DataType) -> DataType {
-    match dtype {
-        DataType::List(inner) => DataType::List(Box::new(avro_named(inner))),
-        DataType::Array(inner, width) => DataType::Array(Box::new(avro_named(inner)), *width),
-        DataType::Struct(fields) => {
-            let names = avro_names(fields.iter().map(|f| f.name().as_str()));
-            DataType::Struct(
-                fields
-                    .iter()
-                    .zip(names)
-                    .map(|(f, name)| Field::new(name.into(), avro_named(f.dtype())))
-                    .collect(),
-            )
+/// Whether an Avro export renames this column or a struct field inside it.
+pub fn renames(name: &str, dtype: &DataType) -> bool {
+    fn inside(dtype: &DataType) -> bool {
+        match dtype {
+            DataType::List(inner) | DataType::Array(inner, _) => inside(inner),
+            DataType::Struct(fields) => fields.iter().any(|f| renames(f.name(), f.dtype())),
+            _ => false,
         }
-        dtype => dtype.clone(),
+    }
+    !is_avro_name(name) || inside(dtype)
+}
+
+/// `fields` under valid Avro names at any depth, each renamed one keeping its
+/// original name as its `doc`. Only the schema changes: values are written by
+/// position.
+fn name_fields(fields: &mut [AvroField]) {
+    fn name_schema(schema: &mut AvroSchema) {
+        match schema {
+            AvroSchema::Union(branches) => branches.iter_mut().for_each(name_schema),
+            AvroSchema::Array(items) | AvroSchema::Map(items) => name_schema(items),
+            AvroSchema::Record(record) => name_fields(&mut record.fields),
+            _ => {}
+        }
+    }
+    let names = avro_names(fields.iter().map(|f| f.name.as_str()));
+    for (field, name) in fields.iter_mut().zip(names) {
+        if field.name != name {
+            field.doc = Some(std::mem::replace(&mut field.name, name));
+        }
+        name_schema(&mut field.schema);
     }
 }
 
-/// Whether an Avro export renames this column or a struct field inside it.
-pub fn renames(name: &str, dtype: &DataType) -> bool {
-    !is_avro_name(name) || &avro_named(dtype) != dtype
-}
+/// Write `df`, prepared by [`lazy_for_avro`], as an uncompressed Avro file:
+/// what Polars' `AvroWriter` writes, with valid names and one header.
+pub fn write(df: &mut DataFrame, mut writer: impl Write) -> PolarsResult<()> {
+    // Serializing walks the columns' chunks together, so they must line up.
+    df.align_chunks_par();
+    let schema = df.schema().to_arrow(CompatLevel::oldest());
+    let mut record = avro_write::to_record(&schema, RECORD_NAME.to_string())?;
+    name_fields(&mut record.fields);
+    avro_schema::write::write_metadata(&mut writer, record.clone(), None)?;
 
-/// `series` with its struct fields renamed as in `dtype`, by position, at any
-/// depth. A cast would not do: Polars casts a struct by field name, so a
-/// renamed field would come out all null.
-fn rename_fields(series: &Series, dtype: &DataType) -> PolarsResult<Series> {
-    Ok(match dtype {
-        DataType::List(inner) => series
-            .list()?
-            .apply_to_inner(&|s| rename_fields(&s, inner))?
-            .into_series(),
-        DataType::Array(inner, _) => series
-            .array()?
-            .apply_to_inner(&|s| rename_fields(&s, inner))?
-            .into_series(),
-        DataType::Struct(fields) => {
-            let mut targets = fields.iter();
-            series
-                .struct_()?
-                .try_apply_fields(|field| {
-                    let target = targets.next().expect("one target per field");
-                    Ok(rename_fields(field, target.dtype())?.with_name(target.name().clone()))
-                })?
-                .into_series()
+    let mut data = vec![];
+    let mut compressed = CompressedBlock::default();
+    for chunk in df.iter_chunks(CompatLevel::oldest(), true) {
+        if chunk.height() == 0 {
+            continue;
         }
-        _ => series.clone(),
-    })
+        let mut serializers: Vec<_> = chunk
+            .iter()
+            .zip(&record.fields)
+            .map(|(array, field)| avro_write::new_serializer(array.as_ref(), &field.schema))
+            .collect();
+        let mut block = Block::new(chunk.height(), std::mem::take(&mut data));
+        avro_write::serialize(&mut serializers, &mut block);
+        avro_schema::write::compress(&mut block, &mut compressed, None)?;
+        avro_schema::write::write_block(&mut writer, &compressed)?;
+        // Both buffers are reused for the next chunk.
+        data = block.data;
+        data.clear();
+        compressed.data.clear();
+    }
+    Ok(())
 }
 
 /// What `dtype` is written as. `durations` keeps times and durations as
@@ -151,43 +172,9 @@ fn writable(dtype: &DataType, durations: bool) -> DataType {
     }
 }
 
-/// `lf` with every column Avro cannot hold cast to one it can, and every name
-/// valid in Avro. Planned, not run.
-pub fn lazy_for_avro(lf: LazyFrame) -> PolarsResult<LazyFrame> {
-    let mut lf = lazy_casts(lf)?;
-    let schema = lf.collect_schema()?;
-    let renamed: Vec<Expr> = schema
-        .iter()
-        .filter(|(_, dtype)| &avro_named(dtype) != *dtype)
-        .map(|(name, _)| {
-            col(name.clone()).map(
-                |c| {
-                    let series = c.as_materialized_series();
-                    rename_fields(series, &avro_named(series.dtype())).map(Column::from)
-                },
-                |_, field| Ok(Field::new(field.name().clone(), avro_named(field.dtype()))),
-            )
-        })
-        .collect();
-    if !renamed.is_empty() {
-        lf = lf.with_columns(renamed);
-    }
-    let (old, new): (Vec<_>, Vec<_>) = schema
-        .iter_names()
-        .map(|name| name.as_str())
-        .zip(avro_names(schema.iter_names().map(|name| name.as_str())))
-        .filter(|(old, new)| old != new)
-        .unzip();
-    Ok(if old.is_empty() {
-        lf
-    } else {
-        lf.rename(old, new, true)
-    })
-}
-
 /// `lf` with every column Avro cannot hold cast to one it can, under its own
-/// name.
-fn lazy_casts(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
+/// name. Planned, not run.
+pub fn lazy_for_avro(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let schema = lf.collect_schema()?;
     let exprs: Vec<Expr> = schema
         .iter()
@@ -216,13 +203,17 @@ fn lazy_casts(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polars::io::avro::{AvroReader, AvroWriter};
+    use polars::io::avro::AvroReader;
 
-    fn round_trip(lf: LazyFrame) -> DataFrame {
+    fn written(lf: LazyFrame) -> Vec<u8> {
         let mut df = lazy_for_avro(lf).unwrap().collect().unwrap();
         let mut bytes = Vec::new();
-        AvroWriter::new(&mut bytes).finish(&mut df).unwrap();
-        AvroReader::new(std::io::Cursor::new(bytes))
+        write(&mut df, &mut bytes).unwrap();
+        bytes
+    }
+
+    fn round_trip(lf: LazyFrame) -> DataFrame {
+        AvroReader::new(std::io::Cursor::new(written(lf)))
             .finish()
             .unwrap()
     }
@@ -348,9 +339,12 @@ mod tests {
             .unwrap()
             .lazy()
             .select([
-                as_struct(vec![col("n").alias("x y"), col("n").alias("x-y")])
-                    .implode(true)
-                    .alias("my list"),
+                as_struct(vec![
+                    col("n").alias("x y"),
+                    (col("n") * lit(10)).alias("x-y"),
+                ])
+                .implode(true)
+                .alias("my list"),
                 when(col("n").is_null())
                     .then(lit(NULL).cast(DataType::Struct(vec![Field::new(
                         "1st".into(),
@@ -374,15 +368,68 @@ mod tests {
             .unwrap()
             .get_as_series(0)
             .unwrap();
-        let x = items.struct_().unwrap().field_by_name("x_y_2").unwrap();
-        assert_eq!(
-            x.i64().unwrap().iter().collect::<Vec<_>>(),
-            [Some(1), None, Some(3)]
-        );
+        let field = |name: &str| {
+            let values = items.struct_().unwrap().field_by_name(name).unwrap();
+            values.i64().unwrap().iter().collect::<Vec<_>>()
+        };
+        assert_eq!(field("x_y"), [Some(1), None, Some(3)]);
+        assert_eq!(field("x_y_2"), [Some(10), None, Some(30)]);
         let point = back.column("point").unwrap();
         assert_eq!(point.null_count(), 1, "{point:?}");
         let first = point.struct_().unwrap().field_by_name("_1st").unwrap();
         assert_eq!(first.i64().unwrap().get(2), Some(3));
+    }
+
+    /// A renamed field keeps its original name as its doc, nested ones too, and
+    /// a frame of several chunks is one header and a block for each.
+    #[test]
+    fn originals_are_docs_and_chunks_share_one_header() {
+        let part = df!("my col" => [1i64], "ok" => [2i64])
+            .unwrap()
+            .lazy()
+            .with_column(as_struct(vec![col("ok").alias("x y")]).alias("point"))
+            .collect()
+            .unwrap();
+        let mut df = part.clone();
+        df.vstack_mut(&part).unwrap();
+        assert_eq!(df.first_col_n_chunks(), 2);
+        let mut bytes = Vec::new();
+        write(&mut df, &mut bytes).unwrap();
+
+        let record = avro_schema::read::read_metadata(&mut std::io::Cursor::new(&bytes))
+            .unwrap()
+            .record;
+        assert_eq!(record.name, RECORD_NAME);
+        let docs = |fields: &[AvroField]| -> Vec<(String, Option<String>)> {
+            fields
+                .iter()
+                .map(|f| (f.name.clone(), f.doc.clone()))
+                .collect()
+        };
+        assert_eq!(
+            docs(&record.fields),
+            [
+                ("my_col".to_string(), Some("my col".to_string())),
+                ("ok".to_string(), None),
+                ("point".to_string(), None),
+            ]
+        );
+        let AvroSchema::Union(branches) = &record.fields[2].schema else {
+            panic!("{:?}", record.fields[2].schema);
+        };
+        let AvroSchema::Record(point) = &branches[1] else {
+            panic!("{branches:?}");
+        };
+        assert_eq!(
+            docs(&point.fields),
+            [("x_y".to_string(), Some("x y".to_string()))]
+        );
+
+        let back = AvroReader::new(std::io::Cursor::new(bytes))
+            .finish()
+            .unwrap();
+        let my_col = back.column("my_col").unwrap().i64().unwrap();
+        assert_eq!(my_col.iter().collect::<Vec<_>>(), [Some(1), Some(1)]);
     }
 
     /// A value that does not fit fails by column name rather than turning null.

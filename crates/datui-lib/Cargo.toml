@@ -129,6 +129,13 @@ default-features = false
 version = "0.55"
 default-features = false
 
+# Polars' Avro schema and serializers, already in the tree through polars/avro:
+# its `AvroWriter` cannot name fields apart from the columns or keep a doc.
+[dependencies.polars-arrow]
+version = "0.55"
+default-features = false
+features = ["io_avro"]
+
 [dev-dependencies]
 tempfile = "3.8"
 criterion = "0.8"

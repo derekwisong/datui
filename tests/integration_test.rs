@@ -5978,8 +5978,9 @@ fn test_avro_export_writes_valid_names() {
 
     let out = dir.path().join("out.avro");
     export_as(&mut app, &rx, &tx, &out, ExportFormat::Avro, false);
+    let schema = avro_schema(&out);
     let mut names = Vec::new();
-    avro_schema_names(&avro_schema(&out), &mut names);
+    avro_schema_names(&schema, &mut names);
     assert!(names.contains(&"Row".to_string()), "{names:?}");
     for name in &names {
         let mut chars = name.chars();
@@ -5991,6 +5992,23 @@ fn test_avro_export_writes_valid_names() {
             "{name:?} in {names:?}"
         );
     }
+    let docs: Vec<(&str, Option<&str>)> = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap(), f["doc"].as_str()))
+        .collect();
+    assert_eq!(
+        docs,
+        [
+            ("my_col", Some("my col")),
+            ("_2024", Some("2024")),
+            ("a_b_2", Some("a-b")),
+            ("a_b", None),
+            ("d_lai", Some("délai")),
+        ],
+        "the original names stay in the file"
+    );
 
     let back = AvroReader::new(File::open(&out).unwrap()).finish().unwrap();
     let columns: Vec<&str> = back.get_column_names().iter().map(|n| n.as_str()).collect();

@@ -40,6 +40,13 @@ longer has is dropped from the chart. Opening another dataset starts over.
 XY's **Bar** style draws vertical bars at a numeric X; the **Bar** tab is for
 categories.
 
+Axis numbers take the table's digit grouping and decimal separator
+([number format](../reference/settings.md#number-formatting)), with one
+notation and precision per axis, chosen from its range. Counts and integer
+columns tick in whole numbers. An axis too narrow for its labels shortens them,
+to `12.3k` or `12,3k`. Exports and the Distribution plots label their axes the
+same way.
+
 ## Count rows per category
 
 With the [quick-start penguin data](../getting-started/quick-start.md):

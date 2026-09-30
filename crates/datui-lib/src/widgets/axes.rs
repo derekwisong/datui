@@ -18,6 +18,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::chart_data::{AxisFormat, AxisNumbers};
 use crate::glyphs::Glyphs;
 
 /// Rows the plot keeps before an axis title gives up its row.
@@ -29,7 +30,7 @@ const MAX_LEVELS: usize = 8;
 const LABEL_GAP: u16 = 2;
 
 /// A tick's label at a level of detail, 0 the fullest; `None` past the shortest.
-pub type TickLabel<'a> = &'a dyn Fn(f64, usize) -> Option<String>;
+pub type TickLabel<'a> = Box<dyn Fn(f64, usize) -> Option<String> + 'a>;
 
 /// One axis: its range, where its ticks sit, how to write them, and its title.
 pub struct AxisSpec<'a> {
@@ -68,6 +69,54 @@ impl<'a> AxisSpec<'a> {
             ticks,
             label,
             title,
+        }
+    }
+
+    /// A numeric x axis over `bounds` holding `numbers`: ticked at whole numbers when
+    /// they are whole, at its ends and middle otherwise, every tick in one format.
+    pub fn numbers(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
+        Self::numbers_as(bounds, numbers, title, |v| v)
+    }
+
+    /// A numeric y axis: its labels sit evenly up the axis, so a whole-number one
+    /// widens to bounds its middle tick is whole in.
+    pub fn y_numbers(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
+        let bounds = if numbers.whole {
+            whole_span(bounds)
+        } else {
+            bounds
+        };
+        Self::numbers(bounds, numbers, title)
+    }
+
+    /// A numeric axis whose position `v` stands for the number `shown(v)`, as on a log
+    /// scale: its format is chosen from the numbers its ticks stand for.
+    pub fn numbers_as(
+        bounds: [f64; 2],
+        numbers: &AxisNumbers,
+        title: &'a str,
+        shown: impl Fn(f64) -> f64 + 'a,
+    ) -> Self {
+        let unlabeled = || -> TickLabel<'a> { Box::new(|_, _| None) };
+        let axis = if numbers.whole {
+            Self::whole(bounds, unlabeled(), title)
+        } else {
+            Self::ends_and_middle(bounds, unlabeled(), title)
+        };
+        let shown_ticks: Vec<f64> = axis.ticks.iter().map(|&v| shown(v)).collect();
+        let format = AxisFormat::new(&shown_ticks, numbers);
+        Self {
+            label: Box::new(move |v, level| format.label(shown(v), level)),
+            ..axis
+        }
+    }
+
+    /// The same axis, its labels right-aligned in `width` cells.
+    pub fn padded(self, width: usize) -> Self {
+        let label = self.label;
+        Self {
+            label: Box::new(move |v, level| label(v, level).map(|l| format!("{l:>width$}"))),
+            ..self
         }
     }
 }
@@ -329,11 +378,19 @@ pub fn cut(text: &str, width: usize, g: &Glyphs) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{XAxisTemporalKind, axis_label_at, x_axis_label_at};
+    use crate::chart_data::{XAxisTemporalKind, x_axis_label_at};
     use ratatui::widgets::Dataset;
 
     /// Days since the epoch of 2020-01-01 and 2024-12-31.
     const FIVE_YEARS: [f64; 2] = [18262.0, 20088.0];
+
+    /// Date ticks on an axis spanning `bounds`.
+    fn dates(bounds: (f64, f64)) -> TickLabel<'static> {
+        let numbers = AxisFormat::new(&[], &AxisNumbers::default());
+        Box::new(move |v, level| {
+            x_axis_label_at(v, XAxisTemporalKind::Date, bounds, level, &numbers)
+        })
+    }
 
     fn labels_on(axis: &AxisSpec<'_>, width: u16) -> Vec<String> {
         // The plot starts four cells in, past the y labels and the axis.
@@ -348,8 +405,7 @@ mod tests {
     #[test]
     fn labels_drop_the_middle_then_shorten() {
         let [lo, hi] = FIVE_YEARS;
-        let label = |v, level| x_axis_label_at(v, XAxisTemporalKind::Date, (lo, hi), level);
-        let axis = AxisSpec::ends_and_middle(FIVE_YEARS, &label, "");
+        let axis = AxisSpec::ends_and_middle(FIVE_YEARS, dates((lo, hi)), "");
         assert_eq!(
             labels_on(&axis, 40),
             ["2020-01-01", "2022-07-02", "2024-12-31"]
@@ -367,7 +423,7 @@ mod tests {
         let axis = AxisSpec {
             bounds: [-0.5, 6.5],
             ticks: (0..7).map(f64::from).collect(),
-            label: &names,
+            label: Box::new(names),
             title: "",
         };
         for width in 10..120 {
@@ -393,18 +449,17 @@ mod tests {
     fn short_forms_tell_the_ends_apart() {
         // 2024-03-01 to 2024-03-08.
         let march = (19783.0, 19790.0);
-        let label = |v, level| x_axis_label_at(v, XAxisTemporalKind::Date, march, level);
-        let axis = AxisSpec::ends_and_middle([march.0, march.1], &label, "");
+        let axis = AxisSpec::ends_and_middle([march.0, march.1], dates(march), "");
         assert_eq!(labels_on(&axis, 16), ["03-01", "03-08"]);
 
-        let axis = AxisSpec::ends_and_middle([1000.1, 1000.3], &axis_label_at, "");
+        let axis = AxisSpec::numbers([1000.1, 1000.3], &AxisNumbers::default(), "");
         assert!(labels_on(&axis, 12).is_empty());
     }
 
     fn render(area: Rect, g: &Glyphs) -> (Buffer, PlotFrame) {
         let axes = PlotAxes {
-            x: AxisSpec::ends_and_middle([0.0, 10.0], &axis_label_at, "x title"),
-            y: AxisSpec::ends_and_middle([0.0, 1000.0], &axis_label_at, "y title"),
+            x: AxisSpec::numbers([0.0, 10.0], &AxisNumbers::default(), "x title"),
+            y: AxisSpec::numbers([0.0, 1000.0], &AxisNumbers::default(), "y title"),
             line: Style::default(),
             labels: Style::default(),
             titles: Style::default(),
@@ -446,8 +501,7 @@ mod tests {
     /// spaced middle tick is one too.
     #[test]
     fn whole_number_ticks() {
-        let label = |_: f64, _: usize| None;
-        let ticks = |bounds| AxisSpec::whole(bounds, &label, "").ticks;
+        let ticks = |bounds| AxisSpec::whole(bounds, Box::new(|_, _| None), "").ticks;
         assert_eq!(ticks([0.0, 7.0]), [0.0, 4.0, 7.0]);
         assert_eq!(ticks([-0.5, 2.5]), [0.0, 1.0, 2.0]);
         assert_eq!(ticks([3.0, 4.0]), [3.0, 4.0]);

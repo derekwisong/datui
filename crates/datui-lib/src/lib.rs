@@ -21257,17 +21257,16 @@ impl App {
         }
     }
 
-    /// The table's format for `column` when it holds whole numbers, for an export's
-    /// axis ticks; `None` for any other column.
-    fn whole_number_format(&self, column: &str) -> Option<crate::numfmt::NumberFormat> {
-        let schema = &self.data_table_state.as_ref()?.schema;
-        chart_data::whole_number_format(&self.number_format, schema, column)
+    /// What `column` holds, for an export's axis ticks.
+    fn axis_numbers(&self, column: &str) -> chart_data::AxisNumbers {
+        let schema = self.data_table_state.as_ref().map(|s| s.schema.as_ref());
+        chart_data::AxisNumbers::column(&self.number_format, schema, column)
     }
 
-    /// The first column's format when every one of `columns` holds whole numbers.
-    fn whole_numbers_format(&self, columns: &[String]) -> Option<crate::numfmt::NumberFormat> {
-        let schema = &self.data_table_state.as_ref()?.schema;
-        chart_data::whole_numbers_format(&self.number_format, schema, columns)
+    /// What `columns` hold on one axis.
+    fn axes_numbers(&self, columns: &[String]) -> chart_data::AxisNumbers {
+        let schema = self.data_table_state.as_ref().map(|s| s.schema.as_ref());
+        chart_data::AxisNumbers::columns(&self.number_format, schema, columns)
     }
 
     /// Build the export from the prepared chart for the current selection. `Ok(None)`
@@ -21389,14 +21388,8 @@ impl App {
                     log_scale,
                     chart_title,
                     notes,
-                    x_whole: (cache.x_axis_kind == chart_data::XAxisTemporalKind::Numeric)
-                        .then(|| self.whole_number_format(&cache.x_column))
-                        .flatten(),
-                    y_whole: if log_scale {
-                        None
-                    } else {
-                        self.whole_numbers_format(&cache.y_columns)
-                    },
+                    x_numbers: self.axis_numbers(&cache.x_column),
+                    y_numbers: self.axes_numbers(&cache.y_columns),
                 };
                 ChartExportJob::Series {
                     series,
@@ -21436,8 +21429,8 @@ impl App {
                     log_scale: false,
                     chart_title,
                     notes,
-                    x_whole: self.whole_number_format(&data.column),
-                    y_whole: Some(chart_data::count_format(&self.number_format)),
+                    x_numbers: self.axis_numbers(&data.column),
+                    y_numbers: chart_data::AxisNumbers::count(&self.number_format),
                 };
                 ChartExportJob::Series {
                     series,
@@ -21457,7 +21450,7 @@ impl App {
                     y_label: "Value".to_string(),
                     chart_title,
                     notes,
-                    y_whole: self.whole_numbers_format(
+                    y_numbers: self.axes_numbers(
                         &data
                             .stats
                             .iter()
@@ -21498,8 +21491,16 @@ impl App {
                     log_scale: false,
                     chart_title,
                     notes,
-                    x_whole: None,
-                    y_whole: None,
+                    x_numbers: self
+                        .axes_numbers(
+                            &data
+                                .series
+                                .iter()
+                                .map(|s| s.name.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                        .fractional(),
+                    y_numbers: chart_data::AxisNumbers::measure(&self.number_format, "Density"),
                 };
                 ChartExportJob::Series {
                     series,
@@ -21522,8 +21523,8 @@ impl App {
                     log_scale: false,
                     chart_title,
                     notes,
-                    x_whole: self.whole_number_format(&data.x_column),
-                    y_whole: self.whole_number_format(&data.y_column),
+                    x_numbers: self.axis_numbers(&data.x_column),
+                    y_numbers: self.axis_numbers(&data.y_column),
                 };
                 ChartExportJob::Heatmap {
                     data: data.clone(),

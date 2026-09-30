@@ -9758,16 +9758,25 @@ fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
     assert!(first, "ORDER BY is kept");
 }
 
-/// A GROUP BY that fails once it runs is not applied, and the grouped view left in
-/// place still drills by its own keys, not the failed statement's.
+/// A GROUP BY that fails once it runs is not applied, and the view left in place drills
+/// as before: not at all over the rows as loaded, and by its own keys, not the failed
+/// statement's, over a grouped view.
 #[test]
 fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_rollback");
+    let failing = "SELECT CAST(dept AS INT) AS dept, COUNT(*) AS n FROM df GROUP BY 1";
+    // Over the rows as loaded, the failed statement leaves nothing to drill into.
+    app.event(&AppEvent::SqlSearch(failing.to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.modal_showing(), "the failure is said");
+    assert!(!app.data_table_state.as_ref().unwrap().can_drill_down());
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.modal_showing());
+
     let grouped = "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept";
     run_sql(&mut app, &rx, &tx, grouped);
-    app.event(&AppEvent::SqlSearch(
-        "SELECT CAST(dept AS INT) AS dept, COUNT(*) AS n FROM df GROUP BY 1".to_string(),
-    ));
+    app.event(&AppEvent::SqlSearch(failing.to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     let state = app.data_table_state.as_mut().unwrap();

@@ -2066,6 +2066,13 @@ fn data_quality_reads_as_a_report() {
     )));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
     assert!(app.analysis_modal.data_quality_results.is_some());
+    // With the tool list focused the bar names its keys, not the page's.
+    let tab = AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.event(&tab);
+    let bar = bar_now(&mut app);
+    assert!(bar.contains("Select") && !bar.contains("Details"), "{bar}");
+    app.event(&tab);
+    assert!(bar_now(&mut app).contains("Details"));
 
     // The clean entry lists what was checked: the most important few, then all.
     for code in [KeyCode::End, KeyCode::Enter] {

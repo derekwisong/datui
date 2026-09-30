@@ -390,13 +390,18 @@ pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
                     lines.push(std::mem::take(&mut line));
                     continue;
                 }
-                // A word wider than the line is split where the line ends.
-                let head = crate::glyphs::take_columns(&word, width).to_string();
+                // A word wider than the line is split where the line ends; a
+                // character wider than the whole line goes on one of its own.
+                let mut head = crate::glyphs::take_columns(&word, width).to_string();
+                if head.is_empty() {
+                    head = word.chars().next().map(String::from).unwrap_or_default();
+                }
                 word = word[head.len()..].to_string();
-                lines.push(head);
                 if word.is_empty() {
+                    line = head;
                     break;
                 }
+                lines.push(head);
             }
         }
         lines.push(line);
@@ -611,5 +616,6 @@ mod tests {
         assert_eq!(wrap_words("one two three", 7), ["one two", "three"]);
         assert_eq!(wrap_words("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap_words("a\nb", 10), ["a", "b"]);
+        assert_eq!(wrap_words("東京", 1), ["東", "京"]);
     }
 }

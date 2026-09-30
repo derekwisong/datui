@@ -1624,6 +1624,37 @@ mod template_rollback_tests {
             .collect()
     }
 
+    /// Open `long.csv` with `template` applied on open and handle events until the
+    /// open is done; `intercept` may take an event instead. Returns how many times the
+    /// dataset's own rows were asked for.
+    fn open_with_view(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        dir: &tempfile::TempDir,
+        template: &Template,
+        mut intercept: impl FnMut(&mut App, &AppEvent) -> bool,
+    ) -> usize {
+        app.template_manager.update_template(template).unwrap();
+        app.startup_template = Some(template.name.clone());
+        let path = dir.path().join("long.csv");
+        let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+        let mut loads = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            while let Some(event) = next.take() {
+                loads += usize::from(matches!(event, AppEvent::DoLoadBuffer));
+                if !intercept(app, &event) {
+                    next = app.event(&event);
+                }
+            }
+            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset {
+                return loads;
+            }
+            assert!(std::time::Instant::now() < deadline, "the open never ended");
+            next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+        }
+    }
+
     /// Applying a view plans its steps and returns: the pivot is read by a worker,
     /// with the table as it was and busy meanwhile, and installed when it is in.
     #[test]
@@ -1844,24 +1875,7 @@ mod template_rollback_tests {
     fn a_view_applied_on_open_reads_the_rows_once() {
         let (mut app, rx, tx, dir) = long_csv_app();
         let template = pivot_view(&mut app, "on open");
-        app.template_manager.update_template(&template).unwrap();
-
-        app.startup_template = Some("on open".to_string());
-        let path = dir.path().join("long.csv");
-        let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-        let mut loads = 0;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            while let Some(event) = next.take() {
-                loads += usize::from(matches!(event, AppEvent::DoLoadBuffer));
-                next = app.event(&event);
-            }
-            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "the open never ended");
-            next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
-        }
+        let loads = open_with_view(&mut app, &rx, &dir, &template, |_, _| false);
         drop(tx);
         assert_eq!(loads, 0, "the view reads the first rows");
         assert!(!app.error_modal.active, "{}", app.error_modal.message);
@@ -1869,6 +1883,67 @@ mod template_rollback_tests {
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.display_df().map(|df| df.height()), Some(5));
         assert!(matches!(app.loading_state, LoadingState::Idle));
+    }
+
+    /// A view's pivot whose worker dies on open is not applied, and the dataset's own
+    /// rows are read instead.
+    #[test]
+    fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
+        let (mut app, rx, tx, dir) = long_csv_app();
+        let template = pivot_view(&mut app, "dies");
+        open_with_view(&mut app, &rx, &dir, &template, |app, event| {
+            let AppEvent::ViewPivotReady { generation, .. } = event else {
+                return false;
+            };
+            // What `spawn_bg` sends in its place when the worker panics.
+            let _ = app.event(&AppEvent::BackgroundError {
+                generation: *generation,
+                message: "worker died".to_string(),
+            });
+            true
+        });
+        drop(tx);
+        assert!(app.error_modal.active);
+        assert_eq!(columns(&app), ["id", "key", "val"]);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.last_pivot_spec().is_none());
+        assert!(state.display_df().is_some_and(|df| df.height() > 0));
+        assert!(app.active_template_id.is_none());
+        assert!(matches!(app.loading_state, LoadingState::Idle));
+    }
+
+    /// A view whose rows' worker dies puts the view before it back.
+    #[test]
+    fn a_view_whose_rows_worker_dies_rolls_back() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "narrow");
+        template.settings.pivot = None;
+        template.settings.column_order = vec!["id".to_string(), "val".to_string()];
+        let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
+        assert!(app.apply_template(&template).is_ok());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.is_busy() {
+            assert!(std::time::Instant::now() < deadline, "the rows never came");
+            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
+                continue;
+            };
+            // What `spawn_bg` sends in its place when the worker panics.
+            let event = match event {
+                AppEvent::BackgroundCollectReady { generation } => AppEvent::BackgroundError {
+                    generation,
+                    message: "worker died".to_string(),
+                },
+                event => event,
+            };
+            if let Some(next) = app.event(&event) {
+                let _ = tx.send(next);
+            }
+        }
+        assert!(app.error_modal.active);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.get_column_order(), ["id", "key", "val"]);
+        assert_eq!(state.display_df(), shown.as_ref());
+        assert!(app.active_template_id.is_none());
     }
 
     /// Rolling a failed template back restores the frame, and the frame's rows still
@@ -19461,6 +19536,19 @@ impl App {
                 message,
             } => {
                 if *generation == self.task_generation {
+                    // A view whose pivot or first rows died with the worker is not
+                    // applied: the view before it comes back, as when either fails.
+                    let pivot = self
+                        .view_pivot
+                        .take_if(|pending| pending.generation == *generation)
+                        .is_some();
+                    let rows = self
+                        .query_running
+                        .as_ref()
+                        .is_some_and(|run| matches!(run.origin, RunOrigin::View { .. }));
+                    if rows && let Some(run) = self.take_query_run() {
+                        self.roll_back_query_run(run);
+                    }
                     self.collect_inflight = None;
                     self.analysis_modal.computing = None;
                     // A load chosen at home fails at home, with the reason beside the
@@ -19482,6 +19570,9 @@ impl App {
                         self.home.status = self.last_load_error.clone();
                     }
                     self.error_modal.show(message.clone());
+                    if pivot || rows {
+                        self.read_after_view_rollback();
+                    }
                 }
                 None
             }
@@ -20421,11 +20512,19 @@ impl App {
             len_counted: None,
             rows: None,
         });
-        if !self.spawn_async_collect(Self::APPLYING_VIEW) {
-            // Nothing to read: the view has no rows.
+        if self.spawn_async_collect(Self::APPLYING_VIEW) {
+            // A collect queued behind a worker still finishing sets neither itself.
+            self.busy = true;
+            self.status_message = Some(Self::APPLYING_VIEW.to_string());
+        } else {
+            // Nothing to read: the view has no rows. Applied on open, it was the
+            // open's last step.
             self.query_running = None;
             self.busy = false;
             self.status_message = None;
+            if matches!(self.loading_state, LoadingState::Loading { .. }) {
+                self.loading_state = LoadingState::Idle;
+            }
         }
     }
 
@@ -20459,6 +20558,8 @@ impl App {
             self.roll_back_query_run(run);
         }
         self.collect_inflight = None;
+        // A collect for the view, queued behind a worker, would read it after all.
+        self.collect_owed = None;
         self.read_after_view_rollback();
         self.flash_note("View cancelled".to_string());
     }
@@ -20487,9 +20588,12 @@ impl App {
     fn read_after_view_rollback(&mut self) {
         self.busy = false;
         self.status_message = None;
-        if !self.spawn_async_collect(Self::LOADING_BUFFER)
-            && matches!(self.loading_state, LoadingState::Loading { .. })
-        {
+        if self.spawn_async_collect(Self::LOADING_BUFFER) {
+            // A collect queued behind a worker still finishing sets neither itself.
+            self.busy = true;
+            self.status_message
+                .get_or_insert_with(|| Self::LOADING_BUFFER.to_string());
+        } else if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
         }
     }

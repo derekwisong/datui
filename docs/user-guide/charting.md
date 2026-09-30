@@ -35,16 +35,36 @@ longer has is dropped from the chart. Opening another dataset starts over.
 | **Box Plot** | Quartiles and outliers | One numeric column | Range |
 | **KDE** | A smoothed density curve | One numeric column | Bandwidth, range |
 | **Heatmap** | Density of two variables | Numeric X and Y | Bins |
-| **Bar** | One horizontal bar per category | A text, categorical, boolean or integer category, and a numeric value | Order |
+| **Bar** | One horizontal bar per category | A text, categorical, boolean or integer category, and **Count** or a numeric value | Order |
 
 XY's **Bar** style draws vertical bars at a numeric X; the **Bar** tab is for
 categories.
 
+## Count rows per category
+
+With the [quick-start penguin data](../getting-started/quick-start.md):
+
+1. Press <kbd>c</kbd>, then <kbd>6</kbd> for **Bar**.
+2. Choose `species` for **Category** and **Count** for **Value**.
+
+The bars read Adelie 152, Gentoo 124, Chinstrap 68: no query needed.
+
+Counts are exact. The whole view is counted in one pass that keeps a count per
+category and no rows, whatever the **Sample size**. When the view has more rows
+than the sample size, the chart says so under the plot: `counts of 3.5M rows`.
+A view that fits in the rows the chart already read is counted from those.
+
+| Case | What happens |
+|---|---|
+| More than 100,000 categories | The count stops and the chart says so. Count by a column with fewer values |
+| A null category | Its own bar, labeled `∅` |
+| Equal counts | A to Z |
+| Another category, or leaving the chart, while it counts | The count stops; nothing partial is kept |
+
 ## Chart one value per category
 
-The Bar tab charts a grouped result: one row per category. Group first with a
-[query](querying-data.md), then chart it. With the
-[quick-start penguin data](../getting-started/quick-start.md):
+With a numeric **Value**, the Bar tab charts a grouped result: one row per
+category. Group first with a [query](querying-data.md), then chart it:
 
 1. Press <kbd>/</kbd> and run `select avg body_mass_g by species`.
 2. Press <kbd>c</kbd>, then <kbd>6</kbd> for **Bar**.
@@ -53,19 +73,19 @@ The Bar tab charts a grouped result: one row per category. Group first with a
 | Option | What it does |
 |---|---|
 | **Category** | One bar per value. Text, categorical, boolean and integer columns |
-| **Value** | The bar's length, printed beside it in the table's number format. Any numeric column but the category |
+| **Value** | The bar's length, printed beside it in the table's number format. **Count**, the rows per category, or any numeric column but the category |
 | **Order** | **Value**, largest first, or **Label**: text A to Z, numbers ascending |
 
 | Case | What happens |
 |---|---|
-| A category repeats | Refused: the chart says how many rows and categories it found and suggests the query that groups them. Bars are not summed or averaged for you |
+| A category repeats | Refused: the chart says how many rows and categories it found and suggests the query that groups them, or **Count**. Bars are not summed or averaged for you |
 | More bars than rows | The bars that fit, then `+ 212 more` counting the rest |
 | Negative values | Bars grow left of zero |
 | A null category | Its own bar, labeled `∅` |
 | A null value | That category is left out and counted under the plot |
 
-A chart reads at most **Sample size** rows, so a grouped result with more
-categories than that is sampled, and says so.
+A chart of values reads at most **Sample size** rows, so a grouped result with
+more categories than that is sampled, and says so.
 
 ## Large tables
 

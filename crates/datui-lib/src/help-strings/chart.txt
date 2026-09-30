@@ -14,7 +14,9 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap, Bar.
                     (the 1st to 99th percentile); the chart counts
                     the values left out
   Bar:              One bar per category: a text, categorical,
-                    boolean or integer column, one row per category
+                    boolean or integer column. Value Count counts
+                    the rows per category, exactly, over the whole
+                    view; a numeric value takes one row per category
                     (group first with a query). Order by value or
                     label; bars that do not fit are counted
   e:                Export the chart to PNG or EPS. Needs the chart's

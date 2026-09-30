@@ -181,9 +181,14 @@ fn render_sidebar(
             ChartFocus::Category => {
                 echo_or_placeholder(modal.bar_category.as_deref().unwrap_or(""), "none")
             }
-            ChartFocus::Value => {
-                echo_or_placeholder(modal.bar_value.as_deref().unwrap_or(""), "none")
-            }
+            ChartFocus::Value => echo_or_placeholder(
+                modal
+                    .bar_value
+                    .as_ref()
+                    .map(crate::chart_data::BarValue::label)
+                    .unwrap_or(""),
+                "none",
+            ),
             ChartFocus::Order => FormValue::Choice(modal.bar_order.label()),
             ChartFocus::LimitRows => {
                 number = modal.row_limit_display();
@@ -1480,6 +1485,7 @@ mod tests {
             no_value: 0,
             rows: Default::default(),
             value_dtype: polars::prelude::DataType::Float64,
+            counted: None,
         }
     }
 

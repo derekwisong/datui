@@ -812,6 +812,7 @@ mod chart_prepare_tests {
             dataset: None,
             request: request.clone(),
             stale: false,
+            cancel: Arc::default(),
         }
     }
 
@@ -958,6 +959,64 @@ mod chart_prepare_tests {
         app.chart_modal.row_limit = None;
         assert_eq!(ChartRequest::from_modal(&app.chart_modal), Some(request));
         assert!(!app.chart_request_pending(), "not asked for again");
+    }
+
+    /// Moving past the selection in flight tells it to stop, so a count streaming the
+    /// whole view does not hold up the next chart. A count stopped part way is dropped,
+    /// not remembered as a failure; a result that finished anyway is kept.
+    #[test]
+    fn moving_on_cancels_the_preparation_in_flight() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let a = histogram_request("a");
+        app.input_mode = InputMode::Chart;
+        app.chart_modal.active = true;
+        app.chart_modal.chart_kind = ChartKind::Histogram;
+        app.chart_modal.hist_column = Some("a".to_string());
+        app.chart_modal.hist_bins = 10;
+        app.chart_modal.row_limit = None;
+        app.chart_inflight = Some(inflight(&a));
+        let cancelled = |app: &App| {
+            app.chart_inflight
+                .as_ref()
+                .unwrap()
+                .cancel
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        app.ensure_chart_data();
+        assert!(!cancelled(&app), "still the selection on screen");
+        app.chart_modal.hist_column = Some("b".to_string());
+        app.ensure_chart_data();
+        assert!(cancelled(&app), "moved past");
+
+        *app.pending_chart_result.lock().unwrap() = Some(Err("count cancelled".into()));
+        app.event(&AppEvent::BackgroundChartReady);
+        assert!(
+            app.chart_cache.get(&a).is_none(),
+            "not remembered as failed"
+        );
+
+        app.chart_inflight = Some(inflight(&a));
+        app.ensure_chart_data();
+        *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+        app.event(&AppEvent::BackgroundChartReady);
+        assert!(app.chart_cache.satisfies(&a), "a finished read is kept");
+
+        // A count is of the whole view: another order or sample size of the same
+        // category waits for the pass rather than starting it over.
+        app.chart_modal.chart_kind = ChartKind::Bar;
+        app.chart_modal.bar_category = Some("carrier".to_string());
+        app.chart_modal.bar_value = Some(chart_data::BarValue::Count);
+        let count = ChartRequest::from_modal(&app.chart_modal).unwrap();
+        app.chart_inflight = Some(inflight(&count));
+        app.chart_modal.bar_order = chart_data::BarOrder::Label;
+        app.chart_modal.row_limit = Some(100);
+        app.ensure_chart_data();
+        assert!(!cancelled(&app), "the same count");
+        app.chart_modal.bar_category = Some("origin".to_string());
+        app.ensure_chart_data();
+        assert!(cancelled(&app), "another category");
     }
 
     /// Two selections that alternate stay prepared: neither is collected again when
@@ -1307,10 +1366,14 @@ mod chart_prepare_tests {
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Tab);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.chart_modal.picker_items(), ["delay"]);
+        assert_eq!(app.chart_modal.picker_items(), ["Count", "delay"]);
+        key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.chart_modal.bar_category.as_deref(), Some("carrier"));
-        assert_eq!(app.chart_modal.bar_value.as_deref(), Some("delay"));
+        assert_eq!(
+            app.chart_modal.bar_value,
+            Some(chart_data::BarValue::Column("delay".to_string()))
+        );
         app.event(&AppEvent::Resize(100, 24));
         pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
@@ -1382,6 +1445,73 @@ mod chart_prepare_tests {
         for chip in ["1-6", "Chart", "Space", "Edit", "Help", "Esc"] {
             assert!(value.contains(chip), "{chip} in {value:?}");
         }
+    }
+
+    /// Count, first in the Value picker, charts the rows per category of the raw table
+    /// with no query: exact past the sample size, and the note says they are counts of
+    /// every row.
+    #[test]
+    fn a_bar_chart_counts_rows_per_category() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("penguins.csv");
+        let mut body = String::from("species,island\n");
+        for (species, n) in [("Adelie", 152), ("Gentoo", 124), ("Chinstrap", 68)] {
+            for _ in 0..n {
+                body.push_str(&format!("{species},Biscoe\n"));
+            }
+        }
+        body.push_str(",Dream\n");
+        std::fs::write(&path, body).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Char('6'));
+        app.chart_modal.row_limit = Some(100);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.chart_modal.picker_items(), ["species", "island"]);
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.chart_modal.picker_items(),
+            ["Count"],
+            "no numeric column, and still a value to chart"
+        );
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.chart_modal.bar_value, Some(chart_data::BarValue::Count));
+        app.event(&AppEvent::Resize(100, 24));
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+
+        let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buf);
+        let drawn: Vec<String> = (0..24)
+            .map(|y| (42..100).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let starts: Vec<String> = drawn
+            .iter()
+            .filter_map(|r| {
+                let mut words = r.split_whitespace();
+                let label = words.next()?;
+                let value = words.next()?;
+                ["Adelie", "Gentoo", "Chinstrap", "species"]
+                    .contains(&label)
+                    .then(|| format!("{label} {value}"))
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            ["species count", "Adelie 152", "Gentoo 124", "Chinstrap 68"],
+            "{drawn:#?}"
+        );
+        assert!(
+            drawn.iter().any(|r| r.contains("counts of 345 rows")),
+            "{drawn:#?}"
+        );
+        assert!(!drawn.iter().any(|r| r.contains("sample of")), "{drawn:#?}");
     }
 
     /// Esc leaves a worker running that cannot be cancelled; reopening the chart and
@@ -4904,6 +5034,7 @@ pub mod tests {
                         row_limit: None,
                     },
                     stale: false,
+                    cancel: Default::default(),
                 });
                 None
             }),
@@ -6818,13 +6949,33 @@ pub(crate) enum ChartRequest {
     },
     Bar {
         category: String,
-        value: String,
+        value: chart_data::BarValue,
         order: chart_data::BarOrder,
         row_limit: Option<usize>,
     },
 }
 
 impl ChartRequest {
+    /// Whether preparing `other` reads what this needs. A count is of the whole view,
+    /// so another order or sample size of the same category is the same pass.
+    fn reads_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Bar {
+                    category: a,
+                    value: chart_data::BarValue::Count,
+                    ..
+                },
+                Self::Bar {
+                    category: b,
+                    value: chart_data::BarValue::Count,
+                    ..
+                },
+            ) => a == b,
+            _ => self == other,
+        }
+    }
+
     fn from_modal(modal: &ChartModal) -> Option<Self> {
         let row_limit = modal.row_limit;
         let range = modal.value_range;
@@ -6945,14 +7096,23 @@ impl ChartRequest {
                 value,
                 order,
                 ..
-            } => ChartPrepared::Bar(chart_data::prepare_bar_data(
-                lf,
-                category,
-                value,
-                *order,
-                chart_data::BAR_CAP,
-                sampling,
-            )?),
+            } => ChartPrepared::Bar(match value {
+                chart_data::BarValue::Count => chart_data::prepare_bar_counts(
+                    lf,
+                    category,
+                    *order,
+                    chart_data::BAR_CAP,
+                    sampling,
+                )?,
+                chart_data::BarValue::Column(value) => chart_data::prepare_bar_data(
+                    lf,
+                    category,
+                    value,
+                    *order,
+                    chart_data::BAR_CAP,
+                    sampling,
+                )?,
+            }),
         })
     }
 }
@@ -6974,6 +7134,9 @@ struct ChartInflight {
     /// cancelled, so the record stays until its result lands and is discarded; the next
     /// request waits for it, which is what keeps the number of collects at one.
     stale: bool,
+    /// Set when the selection moves past the request or its view goes. A streamed count
+    /// stops at its next batch; every other read is bounded and runs to the end.
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A prepared chart, ready to go into the cache. Each payload names the columns it
@@ -6993,6 +7156,12 @@ impl ChartPrepared {
     pub(crate) fn notes(&self) -> Vec<String> {
         if let Self::Bar(d) = self {
             let mut notes = chart_data::chart_notes(&d.rows, None);
+            if let Some(rows) = d.counted {
+                notes.push(format!(
+                    "counts of {} rows",
+                    crate::discover::format_rows(rows)
+                ));
+            }
             if d.no_value > 0 {
                 let noun = if d.no_value == 1 {
                     "category"
@@ -7037,8 +7206,8 @@ enum ChartExportJob {
     },
     Bar {
         data: chart_data::BarData,
-        /// Each bar's value in the table's number format.
-        values: Vec<String>,
+        /// The value column's format in the table, for the values and the axis.
+        format: crate::numfmt::NumberFormat,
         title: Option<String>,
         notes: Vec<String>,
     },
@@ -7077,19 +7246,22 @@ impl ChartExportJob {
             }
             (
                 Self::Bar {
-                    data, title, notes, ..
+                    data,
+                    format,
+                    title,
+                    notes,
                 },
                 ChartExportFormat::Png,
-            ) => write_bar_png(path, data, title.as_deref(), notes, size),
+            ) => write_bar_png(path, data, format, title.as_deref(), notes, size),
             (
                 Self::Bar {
                     data,
-                    values,
+                    format,
                     title,
                     notes,
                 },
                 ChartExportFormat::Eps,
-            ) => write_bar_eps(path, data, values, title.as_deref(), notes),
+            ) => write_bar_eps(path, data, format, title.as_deref(), notes),
         }
     }
 }
@@ -17186,6 +17358,9 @@ impl App {
         self.chart_cache.clear();
         if let Some(inflight) = self.chart_inflight.as_mut() {
             inflight.stale = true;
+            inflight
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
@@ -17216,7 +17391,19 @@ impl App {
         if self.input_mode != InputMode::Chart || !self.chart_modal.active {
             return;
         }
-        let Some(request) = ChartRequest::from_modal(&self.chart_modal) else {
+        let request = ChartRequest::from_modal(&self.chart_modal);
+        if let Some(inflight) = self.chart_inflight.as_ref()
+            && !request
+                .as_ref()
+                .is_some_and(|r| r.reads_as(&inflight.request))
+        {
+            // A count streaming a large view for a selection the cursor has moved
+            // past would hold up the next chart for as long as it reads.
+            inflight
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let Some(request) = request else {
             return;
         };
         if self.chart_cache.get(&request).is_some() {
@@ -17240,11 +17427,13 @@ impl App {
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.polars_streaming,
             held: self.chart_cache.held_rows(dataset),
+            cancel: Arc::default(),
         };
         self.chart_inflight = Some(ChartInflight {
             dataset,
             request: request.clone(),
             stale: false,
+            cancel: Arc::clone(&sampling.cancel),
         });
         let slot = self.pending_chart_result.clone();
         let tx = self.events.clone();
@@ -19332,6 +19521,11 @@ impl App {
                 if inflight.stale {
                     return None;
                 }
+                // A count stopped part way is no answer, and must not be remembered as
+                // a failure; the selection is prepared again when it comes back.
+                if outcome.is_err() && inflight.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return None;
+                }
                 let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
                 if dataset != inflight.dataset {
                     return None;
@@ -19754,7 +19948,7 @@ impl App {
                     return Err(no_points());
                 }
                 ChartExportJob::Bar {
-                    values: data.value_labels(&self.number_format),
+                    format: data.value_format(&self.number_format),
                     data: data.clone(),
                     title: chart_title,
                     notes,

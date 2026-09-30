@@ -11,6 +11,7 @@ use color_eyre::Result;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Describes how x-axis numeric values map to temporal types for label formatting.
@@ -102,6 +103,8 @@ pub struct ChartSampling {
     pub streaming: bool,
     /// The rows already read from this view.
     pub held: HeldRows,
+    /// Set once nobody wants the result: a streamed count stops at its next batch.
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl ChartSampling {
@@ -113,6 +116,7 @@ impl ChartSampling {
             seed: crate::sampling::Sample::default().seed,
             streaming: false,
             held: HeldRows::default(),
+            cancel: Arc::default(),
         }
     }
 }
@@ -122,13 +126,26 @@ impl ChartSampling {
 /// again, and every chart of the view describes the same sample. Shared with the
 /// worker that reads; whoever owns the view starts a new one when the view changes.
 #[derive(Clone, Default)]
-pub struct HeldRows(Arc<Mutex<Option<Held>>>);
+pub struct HeldRows(Arc<Mutex<Holding>>);
+
+#[derive(Default)]
+struct Holding {
+    rows: Option<Held>,
+    /// Rows per category, from a count of the whole view: exact whatever the sample
+    /// size, so another order or size draws from them rather than counting again.
+    counts: Vec<HeldCounts>,
+}
 
 struct Held {
     limit: Option<usize>,
     seed: u64,
     df: DataFrame,
     rows: RowsRead,
+}
+
+struct HeldCounts {
+    category: String,
+    counted: Counted,
 }
 
 impl std::fmt::Debug for HeldRows {
@@ -225,8 +242,9 @@ fn read_columns(
             unique.push((*c).into());
         }
     }
-    let mut held = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(h) = held
+    let mut holding = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = holding
+        .rows
         .as_ref()
         .filter(|h| h.limit == sampling.limit && h.seed == sampling.seed)
     {
@@ -253,7 +271,7 @@ fn read_columns(
         total_rows: read.total_rows,
         sample_size: read.sample_size,
     };
-    *held = Some(Held {
+    holding.rows = Some(Held {
         limit: sampling.limit,
         seed: sampling.seed,
         df: read.df.clone(),
@@ -844,6 +862,27 @@ pub fn is_category_dtype(dtype: &DataType) -> bool {
     ) || dtype.is_integer()
 }
 
+/// What sets a bar's length: a numeric column, one row per category, or how many rows
+/// each category has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BarValue {
+    Count,
+    Column(String),
+}
+
+impl BarValue {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Count => "Count",
+            Self::Column(column) => column,
+        }
+    }
+}
+
+/// Categories a count keeps before it stops: past this the column is an identifier,
+/// not a category, and a count per value would hold as much as the table.
+pub const COUNT_CATEGORY_CAP: usize = 100_000;
+
 /// One bar: its category (`None` for a null category) and its value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bar {
@@ -864,20 +903,35 @@ pub struct BarData {
     pub rows: RowsRead,
     /// The value column's type: an integer column prints whole numbers.
     pub value_dtype: DataType,
+    /// Rows counted, when a count read past the sample size: the counts are of every
+    /// row of the view, and the note says so.
+    pub counted: Option<usize>,
 }
 
 impl BarData {
-    /// Each bar's value as the table prints the value column: its number format, or
-    /// plain where the table shows the column unformatted.
-    pub fn value_labels(&self, settings: &crate::numfmt::NumberFormatSettings) -> Vec<String> {
-        let format = match settings.formatter_for(&self.value_column, &self.value_dtype) {
+    /// The format the table prints the value column in, or plain where it shows the
+    /// column unformatted.
+    pub fn value_format(
+        &self,
+        settings: &crate::numfmt::NumberFormatSettings,
+    ) -> crate::numfmt::NumberFormat {
+        match settings.formatter_for(&self.value_column, &self.value_dtype) {
             crate::numfmt::CellFormatter::Number(format) => format,
             crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
-        };
+        }
+    }
+
+    /// Each bar's value as the table prints the value column.
+    pub fn value_labels(&self, settings: &crate::numfmt::NumberFormatSettings) -> Vec<String> {
+        self.labels_in(&self.value_format(settings))
+    }
+
+    /// Each bar's value in `format`: whole for an integer column or a count.
+    pub fn labels_in(&self, format: &crate::numfmt::NumberFormat) -> Vec<String> {
         let integer = self.value_dtype.is_integer();
         self.bars
             .iter()
-            .map(|b| format_bar_value(b.value, integer, &format))
+            .map(|b| format_bar_value(b.value, integer, format))
             .collect()
     }
 }
@@ -958,24 +1012,38 @@ pub fn prepare_bar_data(
         };
         return Err(color_eyre::eyre::eyre!(
             "{category} repeats: {} categories in {read}. A bar takes one row per category, \
-             so group first: SELECT {c}, AVG({v}) FROM df GROUP BY {c}{q}",
+             so group first: SELECT {c}, AVG({v}) FROM df GROUP BY {c}{q}, or choose Count \
+             for the rows per category",
             crate::numfmt::group_chrome(seen.len()),
         ));
     }
 
     let values = f64_values(&df, value)?;
+    let (bars, more, no_value) = order_bars(&categories, &labels, &values, order, cap);
+    Ok(BarData {
+        category: category.to_string(),
+        value_column: value.to_string(),
+        bars,
+        more,
+        no_value,
+        rows,
+        value_dtype: df.column(value)?.dtype().clone(),
+        counted: None,
+    })
+}
+
+/// A bar per row in `order`, up to `cap`: the bars, how many are past the cap, and how
+/// many rows had no value. Equal values keep row order.
+fn order_bars(
+    categories: &Series,
+    labels: &[Option<&str>],
+    values: &[Option<f64>],
+    order: BarOrder,
+    cap: usize,
+) -> (Vec<Bar>, usize, usize) {
     let row_order: Vec<usize> = match order {
         BarOrder::Value => (0..labels.len()).collect(),
-        BarOrder::Label => categories
-            .arg_sort(
-                SortOptions::default()
-                    .with_nulls_last(true)
-                    .with_maintain_order(true),
-            )
-            .iter()
-            .flatten()
-            .map(|i| i as usize)
-            .collect(),
+        BarOrder::Label => label_order(categories),
     };
     let mut no_value = 0;
     let mut bars: Vec<Bar> = row_order
@@ -992,20 +1060,316 @@ pub fn prepare_bar_data(
         })
         .collect();
     if order == BarOrder::Value {
-        // Stable: equal values keep table order.
+        // Stable: equal values keep row order.
         bars.sort_by(|a, b| b.value.total_cmp(&a.value));
     }
     let more = bars.len().saturating_sub(cap);
     bars.truncate(cap);
-    Ok(BarData {
+    (bars, more, no_value)
+}
+
+/// Rows in the category's own order: text A to Z, numbers ascending, an enum in its
+/// order, nulls last.
+fn label_order(categories: &Series) -> Vec<usize> {
+    categories
+        .arg_sort(
+            SortOptions::default()
+                .with_nulls_last(true)
+                .with_maintain_order(true),
+        )
+        .iter()
+        .flatten()
+        .map(|i| i as usize)
+        .collect()
+}
+
+/// Prepare a bar chart of how many rows each category has. The counts are exact: the
+/// whole view is counted, whatever the sample size, in one streamed pass that keeps a
+/// count per category and no rows. When the rows held are the whole view, those are
+/// counted instead. Past [`COUNT_CATEGORY_CAP`] categories the count stops, and says
+/// so rather than drawing part of the view as the whole.
+pub fn prepare_bar_counts(
+    lf: &LazyFrame,
+    category: &str,
+    order: BarOrder,
+    cap: usize,
+    sampling: &ChartSampling,
+) -> Result<BarData> {
+    count_bars(lf, category, order, cap, COUNT_CATEGORY_CAP, sampling)
+}
+
+fn count_bars(
+    lf: &LazyFrame,
+    category: &str,
+    order: BarOrder,
+    cap: usize,
+    max_categories: usize,
+    sampling: &ChartSampling,
+) -> Result<BarData> {
+    let counted = match held_counts(sampling, category, max_categories)? {
+        Some(counted) => counted,
+        None => {
+            // A view the sample size takes whole is read as the other charts read it,
+            // so they draw from the same rows after; a larger one is streamed.
+            let fits = sampling
+                .limit
+                .zip(sampling.known_total)
+                .is_some_and(|(n, total)| total <= n);
+            let whole = if fits {
+                let (df, rows) = read_columns(lf, &[category], sampling)?;
+                rows.sample_size.is_none().then_some(df)
+            } else {
+                None
+            };
+            let counted = match whole {
+                Some(df) => count_frame(&df, category, max_categories)?,
+                None => stream_counts(lf, category, max_categories, &sampling.cancel)?,
+            };
+            hold_counts(sampling, category, &counted);
+            counted
+        }
+    };
+    let (counts, total) = match counted {
+        Counted::All { counts, rows } => (counts, rows),
+        Counted::TooMany => {
+            return Err(color_eyre::eyre::eyre!(
+                "more than {} categories of {category}: counting stopped. Count by a \
+                 column with fewer values",
+                crate::numfmt::group_chrome(max_categories)
+            ));
+        }
+    };
+    let data = |bars, more| BarData {
         category: category.to_string(),
-        value_column: value.to_string(),
+        value_column: "count".to_string(),
         bars,
         more,
-        no_value,
-        rows,
-        value_dtype: df.column(value)?.dtype().clone(),
-    })
+        no_value: 0,
+        rows: RowsRead {
+            total_rows: total,
+            sample_size: None,
+        },
+        value_dtype: DataType::UInt64,
+        counted: sampling.limit.is_some_and(|n| total > n).then_some(total),
+    };
+    let Some(counts) = counts else {
+        return Ok(data(Vec::new(), 0));
+    };
+    // Label order first, so categories with equal counts come A to Z.
+    let by_label: Vec<IdxSize> = label_order(counts.column(category)?.as_materialized_series())
+        .into_iter()
+        .map(|i| i as IdxSize)
+        .collect();
+    let counts = counts.take(&IdxCa::from_vec("order".into(), by_label))?;
+    let categories = counts.column(category)?.as_materialized_series().clone();
+    let labels_series = categories.cast(&DataType::String)?;
+    let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
+    let values: Vec<Option<f64>> = counts
+        .column(COUNT_COLUMN)?
+        .u64()?
+        .iter()
+        .map(|n| n.map(|n| n as f64))
+        .collect();
+    let (bars, more, _) = order_bars(&categories, &labels, &values, order, cap);
+    Ok(data(bars, more))
+}
+
+/// The view's counts of `category` without reading it: counted before, or counted now
+/// from rows held that are the whole view.
+fn held_counts(
+    sampling: &ChartSampling,
+    category: &str,
+    max_categories: usize,
+) -> Result<Option<Counted>> {
+    let holding = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(held) = holding.counts.iter().find(|h| h.category == category) {
+        return Ok(Some(held.counted.clone()));
+    }
+    let Some(whole) = holding
+        .rows
+        .as_ref()
+        .filter(|h| h.rows.sample_size.is_none() && h.df.column(category).is_ok())
+    else {
+        return Ok(None);
+    };
+    let counted = count_frame(&whole.df, category, max_categories)?;
+    drop(holding);
+    hold_counts(sampling, category, &counted);
+    Ok(Some(counted))
+}
+
+fn hold_counts(sampling: &ChartSampling, category: &str, counted: &Counted) {
+    let mut holding = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
+    holding.counts.retain(|h| h.category != category);
+    if holding.counts.len() >= HELD_COUNTS {
+        holding.counts.remove(0);
+    }
+    holding.counts.push(HeldCounts {
+        category: category.to_string(),
+        counted: counted.clone(),
+    });
+}
+
+/// Count the categories of rows already in memory.
+fn count_frame(df: &DataFrame, category: &str, max_categories: usize) -> Result<Counted> {
+    let mut tally = Tally::new(category, max_categories);
+    tally.observe(&df.select([category])?)?;
+    Ok(tally.finish()?)
+}
+
+/// What a count found: one row per category with its rows in [`COUNT_COLUMN`] (none
+/// when the view has no rows), and the rows counted; or more categories than it keeps.
+#[derive(Clone)]
+enum Counted {
+    All {
+        counts: Option<DataFrame>,
+        rows: usize,
+    },
+    TooMany,
+}
+
+const COUNT_COLUMN: &str = "__datui_bar_count";
+
+/// Counts held per view: enough to go back and forth between a few categories, each
+/// up to [`COUNT_CATEGORY_CAP`] rows.
+const HELD_COUNTS: usize = 4;
+
+/// Rows piled up unmerged before a merge, at least: a run of new categories costs a
+/// merge now and then rather than one per batch.
+const MERGE_AFTER: usize = 1 << 16;
+
+/// Rows per category, added up batch by batch. Holds one row per category and the
+/// batches since the last merge, never the rows themselves.
+struct Tally {
+    category: PlSmallStr,
+    max: usize,
+    counts: Option<DataFrame>,
+    /// Rows of `counts` as last merged: one per category.
+    merged: usize,
+    rows: usize,
+    too_many: bool,
+    /// Stopped before the end of the view because nobody wants the count.
+    cancelled: bool,
+}
+
+impl Tally {
+    fn new(category: &str, max: usize) -> Self {
+        Self {
+            category: category.into(),
+            max,
+            counts: None,
+            merged: 0,
+            rows: 0,
+            too_many: false,
+            cancelled: false,
+        }
+    }
+
+    /// Count a batch of the category column. True once there are more categories than
+    /// the count keeps, which stops the read.
+    fn observe(&mut self, batch: &DataFrame) -> PolarsResult<bool> {
+        if self.too_many {
+            return Ok(true);
+        }
+        self.rows += batch.height();
+        let part = group_counts(batch, &self.category, false)?;
+        let mut counts = match self.counts.take() {
+            Some(mut counts) => {
+                counts.vstack_mut(&part)?;
+                counts
+            }
+            None => part,
+        };
+        if counts.height() - self.merged >= self.merged.max(MERGE_AFTER) {
+            counts = group_counts(&counts, &self.category, true)?;
+            self.merged = counts.height();
+            self.too_many = self.merged > self.max;
+        }
+        self.counts = Some(counts);
+        Ok(self.too_many)
+    }
+
+    fn finish(self) -> PolarsResult<Counted> {
+        let counts = match self.counts {
+            Some(counts) => Some(group_counts(&counts, &self.category, true)?),
+            None => None,
+        };
+        if self.too_many || counts.as_ref().is_some_and(|c| c.height() > self.max) {
+            return Ok(Counted::TooMany);
+        }
+        Ok(Counted::All {
+            counts,
+            rows: self.rows,
+        })
+    }
+}
+
+/// One row per category of `df` with how many rows it stands for: its rows, or when
+/// `summed` the counts they already carry, added up. A null category is one of them.
+fn group_counts(df: &DataFrame, category: &str, summed: bool) -> PolarsResult<DataFrame> {
+    let by = df.group_by([category])?;
+    let groups = by.get_groups();
+    let counts: Vec<u64> = if summed {
+        let carried: Vec<u64> = df
+            .column(COUNT_COLUMN)?
+            .u64()?
+            .into_no_null_iter()
+            .collect();
+        groups
+            .iter()
+            .map(|group| match group {
+                GroupsIndicator::Idx((_, rows)) => rows.iter().map(|&i| carried[i as usize]).sum(),
+                GroupsIndicator::Slice([first, len]) => {
+                    carried[first as usize..(first + len) as usize].iter().sum()
+                }
+            })
+            .collect()
+    } else {
+        groups.iter().map(|group| group.len() as u64).collect()
+    };
+    let mut columns = by.keys();
+    columns.push(Column::new(COUNT_COLUMN.into(), counts));
+    DataFrame::new_infer_height(columns)
+}
+
+/// Count the view's categories in one streamed pass, stopping past `max` of them, or
+/// as soon as `cancel` is set: a pass over a large table can take minutes, and the
+/// next chart waits for it.
+fn stream_counts(
+    lf: &LazyFrame,
+    category: &str,
+    max: usize,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Counted> {
+    let state = Arc::new(Mutex::new(Tally::new(category, max)));
+    let callback_state = Arc::clone(&state);
+    let callback_cancel = Arc::clone(cancel);
+    let sink = lf.clone().select([col(category)]).sink_batches(
+        PlanCallback::new(move |batch: DataFrame| {
+            let mut tally = callback_state
+                .lock()
+                .map_err(|_| PolarsError::ComputeError("count lock failed".into()))?;
+            if callback_cancel.load(Ordering::Relaxed) {
+                tally.cancelled = true;
+                return Ok(true);
+            }
+            tally.observe(&batch)
+        }),
+        false,
+        None,
+    )?;
+    // Streaming whatever the setting: a count per category is all this holds.
+    crate::statistics::collect_lazy(sink, true)?;
+    let tally = std::mem::replace(
+        &mut *state.lock().unwrap_or_else(|e| e.into_inner()),
+        Tally::new(category, max),
+    );
+    // Part of the view counted is not a count of it. A pass that finished before it
+    // was told to stop is whole, and kept.
+    if tally.cancelled {
+        return Err(color_eyre::eyre::eyre!("count cancelled"));
+    }
+    Ok(tally.finish()?)
 }
 
 #[cfg(test)]
@@ -1511,7 +1875,9 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            err.ends_with(r#"SELECT "Species", AVG("mass g") FROM df GROUP BY "Species""#),
+            err.ends_with(
+                r#"SELECT "Species", AVG("mass g") FROM df GROUP BY "Species", or choose Count for the rows per category"#
+            ),
             "{err}"
         );
     }
@@ -1599,5 +1965,244 @@ mod tests {
             ["1234.50", "7.00"],
             "F turns it off"
         );
+    }
+
+    fn species(n_adelie: usize, n_gentoo: usize, n_chinstrap: usize, n_null: usize) -> LazyFrame {
+        let mut species: Vec<Option<&str>> = Vec::new();
+        // Interleaved, so no stretch of the table is one species.
+        let mut left = [
+            (Some("Adelie"), n_adelie),
+            (Some("Gentoo"), n_gentoo),
+            (Some("Chinstrap"), n_chinstrap),
+            (None, n_null),
+        ];
+        while left.iter().any(|(_, n)| *n > 0) {
+            for (name, n) in &mut left {
+                if *n > 0 {
+                    species.push(*name);
+                    *n -= 1;
+                }
+            }
+        }
+        df!("species" => species).unwrap().lazy()
+    }
+
+    fn counts(data: &BarData) -> Vec<(Option<&str>, f64)> {
+        data.bars
+            .iter()
+            .map(|b| (b.label.as_deref(), b.value))
+            .collect()
+    }
+
+    /// Count is exact over the whole view, not a count of the sample: more rows than
+    /// the sample size are all counted, a null category is a bar of its own, and the
+    /// note says the counts are of every row.
+    #[test]
+    fn counts_are_exact_past_the_sample_size() {
+        let lf = species(30_000, 15_000, 4_999, 1);
+        let sampling = ChartSampling::rows(Some(1_000));
+        let data = prepare_bar_counts(&lf, "species", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(
+            counts(&data),
+            [
+                (Some("Adelie"), 30_000.0),
+                (Some("Gentoo"), 15_000.0),
+                (Some("Chinstrap"), 4_999.0),
+                (None, 1.0)
+            ]
+        );
+        assert_eq!(data.counted, Some(50_000), "counted past the sample size");
+        assert_eq!(data.rows.sample_size, None);
+        assert_eq!(data.value_column, "count");
+        assert_eq!(
+            data.value_labels(&crate::numfmt::NumberFormatSettings {
+                format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+                ..Default::default()
+            }),
+            ["30,000", "15,000", "4,999", "1"],
+            "whole numbers"
+        );
+
+        let by_label =
+            prepare_bar_counts(&lf, "species", BarOrder::Label, BAR_CAP, &sampling).unwrap();
+        assert_eq!(
+            counts(&by_label),
+            [
+                (Some("Adelie"), 30_000.0),
+                (Some("Chinstrap"), 4_999.0),
+                (Some("Gentoo"), 15_000.0),
+                (None, 1.0)
+            ],
+            "the null category last"
+        );
+
+        // Every row read, or a view under the sample size: nothing to say.
+        let every = prepare_bar_counts(
+            &lf,
+            "species",
+            BarOrder::Value,
+            BAR_CAP,
+            &ChartSampling::rows(None),
+        )
+        .unwrap();
+        assert_eq!(every.counted, None);
+        let small = species(152, 124, 68, 0);
+        let data =
+            prepare_bar_counts(&small, "species", BarOrder::Value, BAR_CAP, &all_rows()).unwrap();
+        assert_eq!(
+            counts(&data),
+            [
+                (Some("Adelie"), 152.0),
+                (Some("Gentoo"), 124.0),
+                (Some("Chinstrap"), 68.0)
+            ]
+        );
+        assert_eq!(data.counted, None);
+    }
+
+    /// Equal counts come A to Z; past the bar cap the rest are counted, not drawn; past
+    /// the category cap the count stops and says so rather than drawing a part.
+    #[test]
+    fn counts_cap_their_bars_and_stop_past_the_category_cap() {
+        let lf = df!("carrier" => &["UA", "B6", "AA", "AA", "DL", "B6", "AA"])
+            .unwrap()
+            .lazy();
+        let data = prepare_bar_counts(&lf, "carrier", BarOrder::Value, 2, &all_rows()).unwrap();
+        assert_eq!(counts(&data), [(Some("AA"), 3.0), (Some("B6"), 2.0)]);
+        assert_eq!(data.more, 2, "DL and UA are counted, not drawn");
+        let data =
+            prepare_bar_counts(&lf, "carrier", BarOrder::Value, BAR_CAP, &all_rows()).unwrap();
+        assert_eq!(
+            counts(&data)[2..],
+            [(Some("DL"), 1.0), (Some("UA"), 1.0)],
+            "ties A to Z"
+        );
+
+        let err = count_bars(&lf, "carrier", BarOrder::Value, BAR_CAP, 3, &all_rows())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "more than 3 categories of carrier: counting stopped. Count by a column with \
+             fewer values"
+        );
+        let data = count_bars(&lf, "carrier", BarOrder::Value, BAR_CAP, 4, &all_rows()).unwrap();
+        assert_eq!(data.bars.len(), 4, "four is not more than four");
+    }
+
+    /// Batches are added up category by category, merged as they pile up; the read is
+    /// told to stop as soon as the categories pass the cap.
+    #[test]
+    fn a_tally_merges_batches_and_stops_past_its_cap() {
+        let batch = |ids: std::ops::Range<i64>| df!("id" => ids.collect::<Vec<_>>()).unwrap();
+        let mut tally = Tally::new("id", 200_000);
+        assert!(!tally.observe(&batch(0..70_000)).unwrap());
+        assert_eq!(tally.merged, 70_000, "merged once the batches pile up");
+        assert!(!tally.observe(&batch(0..10)).unwrap());
+        let Counted::All { counts, rows } = tally.finish().unwrap() else {
+            panic!("under the cap");
+        };
+        assert_eq!(rows, 70_010);
+        let counts = counts.unwrap();
+        assert_eq!(counts.height(), 70_000);
+        let total: u64 = counts
+            .column(COUNT_COLUMN)
+            .unwrap()
+            .u64()
+            .unwrap()
+            .sum()
+            .unwrap();
+        assert_eq!(total, 70_010);
+
+        let mut tally = Tally::new("id", 1_000);
+        assert!(
+            tally.observe(&batch(0..70_000)).unwrap(),
+            "past the cap: stop reading"
+        );
+        assert!(matches!(tally.finish().unwrap(), Counted::TooMany));
+    }
+
+    /// Through the streamed pass: past the cap the read stops and the count says so; a
+    /// cancelled count is an error and is not held as the view's counts.
+    #[test]
+    fn a_streamed_count_stops_past_its_cap_or_when_cancelled() {
+        let ids = df!("id" => (0..200_000i64).collect::<Vec<_>>())
+            .unwrap()
+            .lazy();
+        let cancel = Arc::default();
+        assert!(matches!(
+            stream_counts(&ids, "id", 1_000, &cancel).unwrap(),
+            Counted::TooMany
+        ));
+
+        let lf = species(30_000, 15_000, 4_999, 1);
+        let sampling = ChartSampling::rows(Some(1_000));
+        sampling.cancel.store(true, Ordering::Relaxed);
+        let err = prepare_bar_counts(&lf, "species", BarOrder::Value, BAR_CAP, &sampling)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "count cancelled");
+        assert!(sampling.held.0.lock().unwrap().counts.is_empty());
+        sampling.cancel.store(false, Ordering::Relaxed);
+        let data = prepare_bar_counts(&lf, "species", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(data.counted, Some(50_000));
+    }
+
+    /// When the rows held are the whole view, Count counts them rather than reading
+    /// again; a count is held too, so another order does not count again.
+    #[test]
+    fn counts_come_from_the_rows_held_and_are_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flights.csv");
+        std::fs::write(&path, "carrier,delay\nUA,1\nUA,2\nAA,3\n").unwrap();
+        let lf = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let sampling = all_rows();
+        prepare_histogram_data(&lf, "delay", 10, ValueRange::All, &sampling).unwrap();
+        std::fs::write(&path, "carrier,delay\nZZ,1\n").unwrap();
+        // The rows held have no carrier: read, one count per category.
+        let data = prepare_bar_counts(&lf, "carrier", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(counts(&data), [(Some("ZZ"), 1.0)]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flights.csv");
+        std::fs::write(&path, "carrier,delay\nUA,1\nUA,2\nAA,3\n").unwrap();
+        let lf = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let sampling = all_rows();
+        // Refused, carriers repeat; the rows it read stay held.
+        assert!(
+            prepare_bar_data(&lf, "carrier", "delay", BarOrder::Value, BAR_CAP, &sampling).is_err()
+        );
+        std::fs::write(&path, "carrier,delay\nZZ,1\n").unwrap();
+        let data = prepare_bar_counts(&lf, "carrier", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(
+            counts(&data),
+            [(Some("UA"), 2.0), (Some("AA"), 1.0)],
+            "counted from the rows held"
+        );
+        // Without the rows, only the count held can say this.
+        sampling.held.0.lock().unwrap().rows = None;
+        let data = prepare_bar_counts(&lf, "carrier", BarOrder::Label, BAR_CAP, &sampling).unwrap();
+        assert_eq!(
+            counts(&data),
+            [(Some("AA"), 1.0), (Some("UA"), 2.0)],
+            "another order from the count held"
+        );
+
+        // A view the sample size takes whole is read as a chart reads it, and its rows
+        // held for the next chart.
+        let sampling = ChartSampling {
+            known_total: Some(3),
+            ..all_rows()
+        };
+        std::fs::write(&path, "carrier,delay\nUA,1\nUA,2\nAA,3\n").unwrap();
+        let data = prepare_bar_counts(&lf, "carrier", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(counts(&data), [(Some("UA"), 2.0), (Some("AA"), 1.0)]);
+        let holding = sampling.held.0.lock().unwrap();
+        let held = holding.rows.as_ref().expect("the rows read are held");
+        assert_eq!(held.df.column("carrier").unwrap().len(), 3);
     }
 }

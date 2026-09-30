@@ -2473,13 +2473,20 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
     }
 
     analysis.percentage = analysis.total_count as f64 / values.len() as f64 * 100.0;
-    // Most extreme first; a z-score is the distance from the mean in one scale.
-    analysis.outlier_rows.sort_by(|a, b| {
+    // Most extreme first; a z-score is the distance from the mean in one scale. The
+    // hundred are picked before sorting: a long tail has tens of thousands.
+    let most_extreme = |a: &OutlierRow, b: &OutlierRow| {
         b.z_score
             .unwrap_or(0.0)
             .total_cmp(&a.z_score.unwrap_or(0.0))
-    });
-    analysis.outlier_rows.truncate(OUTLIER_EXAMPLES);
+    };
+    if analysis.outlier_rows.len() > OUTLIER_EXAMPLES {
+        analysis
+            .outlier_rows
+            .select_nth_unstable_by(OUTLIER_EXAMPLES, most_extreme);
+        analysis.outlier_rows.truncate(OUTLIER_EXAMPLES);
+    }
+    analysis.outlier_rows.sort_by(most_extreme);
     analysis
 }
 
@@ -2503,40 +2510,58 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
         ));
     }
 
+    let columns = numeric_cols
+        .iter()
+        .map(|name| Ok(Centered::new(df.column(name)?.as_materialized_series())))
+        .collect::<Result<Vec<_>>>()?;
+
     let n = numeric_cols.len();
     let mut correlations = vec![vec![1.0; n]; n];
     let mut p_values = vec![vec![0.0; n]; n];
     let mut sample_sizes = vec![vec![0; n]; n];
 
-    // Compute pairwise correlations
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let (values1, values2) = finite_pairs(
-                df.column(&numeric_cols[i])?.as_materialized_series(),
-                df.column(&numeric_cols[j])?.as_materialized_series(),
-            );
+    // Every pair is one pass over two columns; fifty columns are 1,225 pairs, so the
+    // rows of the matrix are shared out across threads, interleaved to even the load.
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(n - 1);
+    let pairs: Vec<(usize, usize, f64, usize)> = std::thread::scope(|scope| {
+        let columns = &columns;
+        let handles: Vec<_> = (0..threads)
+            .map(|thread| {
+                scope.spawn(move || {
+                    let mut pairs = Vec::new();
+                    for i in (thread..n).step_by(threads) {
+                        for j in (i + 1)..n {
+                            let (correlation, count) = pearson(&columns[i], &columns[j]);
+                            pairs.push((i, j, correlation, count));
+                        }
+                    }
+                    pairs
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
 
-            let sample_size = values1.len();
-            sample_sizes[i][j] = sample_size;
-            sample_sizes[j][i] = sample_size;
-
-            if sample_size < 3 {
-                // Not enough data for correlation
-                correlations[i][j] = f64::NAN;
-                correlations[j][i] = f64::NAN;
-                continue;
-            }
-
-            let correlation = compute_pearson_correlation(&values1, &values2);
-            correlations[i][j] = correlation;
-            correlations[j][i] = correlation; // Symmetric
-
-            // Compute p-value (statistical significance)
-            if sample_size >= 3 && !correlation.is_nan() {
-                let p_value = compute_correlation_p_value(correlation, sample_size);
-                p_values[i][j] = p_value;
-                p_values[j][i] = p_value;
-            }
+    for (i, j, correlation, sample_size) in pairs {
+        sample_sizes[i][j] = sample_size;
+        sample_sizes[j][i] = sample_size;
+        // Fewer than three pairs say nothing.
+        let correlation = if sample_size < 3 {
+            f64::NAN
+        } else {
+            correlation
+        };
+        correlations[i][j] = correlation;
+        correlations[j][i] = correlation;
+        if !correlation.is_nan() {
+            let p_value = compute_correlation_p_value(correlation, sample_size);
+            p_values[i][j] = p_value;
+            p_values[j][i] = p_value;
         }
     }
 
@@ -2546,6 +2571,66 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
         p_values: Some(p_values),
         sample_sizes,
     })
+}
+
+/// A numeric column ready to correlate: its finite values less their mean, NaN where
+/// a value is null or not finite. Centering once keeps the one-pass sums below exact
+/// enough, and each pair is then one pass with no copies.
+struct Centered {
+    values: Vec<f64>,
+    /// No value is missing, so every row pairs.
+    complete: bool,
+}
+
+impl Centered {
+    fn new(series: &Series) -> Self {
+        let floats = series.cast(&DataType::Float64).ok();
+        let mut values: Vec<f64> = match floats.as_ref().and_then(|floats| floats.f64().ok()) {
+            Some(floats) => floats
+                .iter()
+                .map(|v| v.filter(|v| v.is_finite()).unwrap_or(f64::NAN))
+                .collect(),
+            None => vec![f64::NAN; series.len()],
+        };
+        let (sum, count) = values
+            .iter()
+            .filter(|v| !v.is_nan())
+            .fold((0.0, 0usize), |(sum, count), v| (sum + v, count + 1));
+        if count > 0 {
+            let mean = sum / count as f64;
+            values.iter_mut().for_each(|v| *v -= mean);
+        }
+        let complete = count == values.len();
+        Self { values, complete }
+    }
+}
+
+/// Pearson r over the rows where both columns have a value, and how many rows those
+/// are. NaN when either is one value throughout those rows.
+fn pearson(a: &Centered, b: &Centered) -> (f64, usize) {
+    let (mut x, mut y, mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut count = 0usize;
+    let pairs = a.values.iter().zip(&b.values);
+    let both = a.complete && b.complete;
+    for (&v1, &v2) in pairs {
+        if !both && (v1.is_nan() || v2.is_nan()) {
+            continue;
+        }
+        count += 1;
+        x += v1;
+        y += v2;
+        xx += v1 * v1;
+        yy += v2 * v2;
+        xy += v1 * v2;
+    }
+    let n = count as f64;
+    let (sxx, syy, sxy) = (xx - x * x / n, yy - y * y / n, xy - x * y / n);
+    // Measured against the sums of squares: what a column with one value leaves
+    // behind is rounding, not spread.
+    if count < 2 || sxx <= xx * 1e-12 || syy <= yy * 1e-12 {
+        return (f64::NAN, count);
+    }
+    ((sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0), count)
 }
 
 /// The rows where both columns hold a finite value, as two aligned lists: every pair,
@@ -2834,11 +2919,18 @@ mod sampling_tests {
         let df = df!(
             "year" => vec![2020.0f64; 50],
             "value" => (0..50).map(|i| i as f64).collect::<Vec<_>>(),
-            "double" => (0..50).map(|i| 2.0 * i as f64).collect::<Vec<_>>()
+            "double" => (0..50).map(|i| 2.0 * i as f64).collect::<Vec<_>>(),
+            // Its mean is not exactly 0.1, so centering leaves rounding behind.
+            "tenth" => vec![0.1f64; 50]
         )
         .unwrap();
         let matrix = compute_correlation_matrix(&df).unwrap();
         assert!(matrix.correlations[0][1].is_nan(), "undefined, not 0");
+        assert!(
+            matrix.correlations[3][1].is_nan(),
+            "{}",
+            matrix.correlations[3][1]
+        );
         assert!((matrix.correlations[1][2] - 1.0).abs() < 1e-9);
     }
 

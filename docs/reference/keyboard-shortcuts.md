@@ -232,7 +232,7 @@ In Data Quality:
 | <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Enter</kbd> or <kbd>Space</kbd> chooses; <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> choose and move rows |
 | <kbd>Space</kbd> where several can be chosen | Toggle a column in or out; <kbd>Enter</kbd> then closes the picker (Done), and <kbd>Esc</kbd> keeps the toggles made so far |
 | <kbd>Enter</kbd> | In a single-choice picker, choose; otherwise apply, from anywhere in the form |
-| <kbd>Esc</kbd> | Close the picker; pressed again, close without applying |
+| <kbd>Esc</kbd> | Stop a pivot being computed; close the picker; otherwise close without applying |
 
 ## Export
 

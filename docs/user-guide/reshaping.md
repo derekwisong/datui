@@ -33,8 +33,9 @@ The result has three rows. Values below are rounded to one decimal:
 | Chinstrap | 3527.2 | 3939.0 |
 | Gentoo | 4679.7 | 5484.8 |
 
-Output columns are sorted alphabetically. Pivot reads every affected row into
-memory to discover the columns; filter large datasets first.
+Output columns are sorted alphabetically. Pivot reads the rows once, in the
+background, and keeps one value per index and column pair in memory; filter
+large datasets first.
 
 ### Choose an aggregate
 
@@ -74,7 +75,7 @@ Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 | <kbd>Space</kbd> or typing | Open the focused row's picker, narrowed by what you type |
 | <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
-| <kbd>Esc</kbd> | Close the picker; pressed again, close without applying |
+| <kbd>Esc</kbd> | Stop a pivot being computed; close the picker; otherwise close without applying |
 | <kbd>?</kbd> | Help |
 
 ## Views

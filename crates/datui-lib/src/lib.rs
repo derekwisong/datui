@@ -5935,6 +5935,12 @@ pub enum AppEvent {
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
     Pivot(PivotSpec),
+    /// A pivot, read off the UI thread. The error is a message for the user.
+    PivotReady {
+        generation: u64,
+        spec: PivotSpec,
+        pivoted: std::result::Result<DataFrame, String>,
+    },
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
     /// Collect and format the whole view off-thread for a table-scope copy.
@@ -7408,6 +7414,8 @@ pub struct App {
     /// The shared sample is being read to show as a table; a cancel leaves the tool
     /// on screen as it was.
     reading_sample: bool,
+    /// The generation a pivot from the modal was read under, while it is read.
+    pivot_generation: Option<u64>,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -8307,6 +8315,23 @@ impl App {
         self.flash_note("Analysis cancelled".to_string());
     }
 
+    /// Whether the Pivot & Melt modal is waiting on a pivot it started.
+    fn pivot_computing(&self) -> bool {
+        self.input_mode == InputMode::PivotMelt
+            && self.pivot_generation == Some(self.task_generation)
+    }
+
+    /// Stop waiting for the pivot in flight. As with an analysis, the worker runs to
+    /// the end and the bump drops its answer. The form stays open with its spec.
+    fn cancel_pivot(&mut self) {
+        self.task_generation = self.task_generation.wrapping_add(1);
+        self.screen_generation = self.screen_generation.wrapping_add(1);
+        self.pivot_generation = None;
+        self.busy = false;
+        self.status_message = None;
+        self.flash_note("Pivot cancelled".to_string());
+    }
+
     /// Drill into the group on row `group_index` of the table, whose values are `row`,
     /// and fetch its rows off the UI thread. A drill that fails says why on the control
     /// bar and leaves the grouped view as it was.
@@ -8407,11 +8432,13 @@ impl App {
         let cancel_analysis = self.analysis_modal.active
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
+        let cancel_pivot = self.pivot_computing() && key.code == KeyCode::Esc;
         let leave_quality_evidence = self.quality_evidence_return.is_some()
             && self.input_mode == InputMode::Normal
             && key.code == KeyCode::Esc;
         quit || home
             || cancel_analysis
+            || cancel_pivot
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -8749,6 +8776,9 @@ impl App {
 
     /// The wait while a grouped row the buffer does not hold is read to drill into.
     const READING_GROUP: &'static str = "Reading the group...";
+
+    /// The wait while a pivot reads the view.
+    const COMPUTING_PIVOT: &'static str = "Computing pivot...";
 
     /// How long a fetch goes unmentioned. A local page lands well inside it, and the key
     /// chips staying put is the difference between paging and a bar that blinks a
@@ -9563,6 +9593,7 @@ impl App {
             quality_evidence_return: None,
             quality_evidence_label: None,
             reading_sample: false,
+            pivot_generation: None,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -14869,6 +14900,12 @@ impl App {
         }
 
         if self.input_mode == InputMode::PivotMelt {
+            // Acts at once (see `hard_escape_while_busy`), ahead of the keys held
+            // behind the pivot; a second Esc closes the form.
+            if event.code == KeyCode::Esc && self.pivot_computing() {
+                self.cancel_pivot();
+                return None;
+            }
             let picker_open = self.pivot_melt_modal.picker.is_some();
             let text_focus = !picker_open
                 && self
@@ -19153,29 +19190,63 @@ impl App {
                 None
             }
             AppEvent::Pivot(spec) => {
-                self.busy = true;
-                if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    let result = state.pivot(spec);
-                    state.defer_collect = false;
-                    match result {
-                        Ok(()) => {
-                            self.pivot_melt_modal.close();
+                // The modal stays up until the result is in, so a pivot that fails
+                // leaves the spec there to fix.
+                let job = self.data_table_state.as_ref()?.plan_pivot(spec);
+                let spec = spec.clone();
+                self.pivot_generation = Some(self.task_generation);
+                self.spawn_bg(Self::COMPUTING_PIVOT, move |task_gen, tx| {
+                    let pivoted = job
+                        .run()
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+                    let _ = tx.send(AppEvent::PivotReady {
+                        generation: task_gen,
+                        spec,
+                        pivoted,
+                    });
+                });
+                None
+            }
+            AppEvent::PivotReady {
+                generation,
+                spec,
+                pivoted,
+            } => {
+                // A bump means something replaced the view; its owner has the busy state.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                self.pivot_generation = None;
+                if self.status_message.as_deref() == Some(Self::COMPUTING_PIVOT) {
+                    self.status_message = None;
+                }
+                let installed = match pivoted {
+                    Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
+                        state.defer_collect = true;
+                        let installed = state.install_pivot(spec, pivoted.clone());
+                        state.defer_collect = false;
+                        installed
+                            .map_err(|e| crate::error_display::user_message_from_report(&e, None))
+                    }),
+                    Err(message) => Some(Err(message.clone())),
+                };
+                match installed {
+                    Some(Ok(())) => {
+                        self.pivot_melt_modal.close();
+                        // Only from the modal: a trip home meanwhile stays home.
+                        if self.input_mode == InputMode::PivotMelt {
                             self.input_mode = InputMode::Normal;
-                            self.spawn_async_collect("Computing pivot...");
-                            None
                         }
-                        Err(e) => {
-                            self.busy = false;
-                            self.error_modal
-                                .show(crate::error_display::user_message_from_report(&e, None));
-                            None
+                        // The busy state passes to the collect.
+                        if self.spawn_async_collect(Self::LOADING_BUFFER) {
+                            return None;
                         }
                     }
-                } else {
-                    self.busy = false;
-                    None
+                    Some(Err(message)) => self.error_modal.show(message),
+                    None => {}
                 }
+                self.busy = false;
+                None
             }
             AppEvent::Melt(spec) => {
                 self.busy = true;

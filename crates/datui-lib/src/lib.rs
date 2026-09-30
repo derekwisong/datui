@@ -5766,7 +5766,13 @@ pub enum AppEvent {
     DoLoadSchemaBlocking(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
     /// First collect() on state; then emit Collect (phased loading).
     DoLoadBuffer,
-    DoDecompress(Vec<PathBuf>, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
+    /// Decompress a CSV once the UI shows "Decompressing". `file` is what is read;
+    /// `path` is where the dataset is from: the same file, or the URL of a download.
+    DoDecompress {
+        file: PathBuf,
+        path: PathBuf,
+        options: OpenOptions,
+    },
     DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
     DoExportCollect(PathBuf, ExportFormat, ExportOptions), // Collect data for export; then emit DoExportWrite
     DoExportWrite(PathBuf, ExportFormat, ExportOptions),   // Write collected DataFrame to file
@@ -17238,7 +17244,11 @@ impl App {
                             progress_percent: 30,
                         };
                     }
-                    Some(AppEvent::DoDecompress(paths.clone(), options.clone()))
+                    Some(AppEvent::DoDecompress {
+                        file: first.clone(),
+                        path: first.clone(),
+                        options: options.clone(),
+                    })
                 } else {
                     // Opened again, and downloaded already: read the copy on hand. `H`
                     // re-reads a downloaded file this way rather than fetching it again.
@@ -17785,10 +17795,11 @@ impl App {
                             .and_then(|stem| stem.to_str())
                             .is_some_and(|stem| stem.to_ascii_lowercase().ends_with(".csv")));
                 if compressed_csv {
-                    return Some(AppEvent::DoDecompress(
-                        vec![temp_path.clone()],
-                        options.clone(),
-                    ));
+                    return Some(AppEvent::DoDecompress {
+                        file: temp_path.clone(),
+                        path: display_path.unwrap_or_else(|| temp_path.clone()),
+                        options: options.clone(),
+                    });
                 }
                 self.spawn_scan_as(
                     "Scanning...",
@@ -17883,11 +17894,16 @@ impl App {
                 self.spawn_async_collect(Self::LOADING_BUFFER);
                 None
             }
-            AppEvent::DoDecompress(paths, options) => {
+            AppEvent::DoDecompress {
+                file,
+                path,
+                options,
+            } => {
                 if !self.load_active {
                     return None;
                 }
-                let path = paths[0].clone();
+                let file = file.clone();
+                let path = path.clone();
                 // Only a CSV comes this way; said, so it can have its header turned off.
                 let options_owned = OpenOptions {
                     format: options.format.or(Some(FileFormat::Csv)),
@@ -17895,7 +17911,7 @@ impl App {
                 };
                 let schema_slot = self.pending_schema_result.clone();
                 self.spawn_bg("Decompressing...", move |task_gen, tx| {
-                    match Self::decompressed_csv_state(&path, &options_owned) {
+                    match Self::decompressed_csv_state(&file, &options_owned) {
                         Ok(state) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
                             let dominated = slot.as_ref().is_some_and(|(g, _)| *g > task_gen);

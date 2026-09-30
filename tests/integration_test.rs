@@ -11883,16 +11883,17 @@ fn h_does_nothing_on_parquet() {
     assert_eq!(column_names(&app), before);
 }
 
-/// A CSV over HTTP is read again from the copy already downloaded, not fetched again.
-#[test]
-fn h_rereads_a_download_from_the_copy_on_hand() {
+/// Serve `body` at `http://127.0.0.1:<port>/<name>` to every request. Returns the URL
+/// and a count of the GETs, which is how many downloads there were.
+fn serve_over_http(
+    name: &str,
+    body: Vec<u8>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use std::io::{Read, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    common::isolate_cache();
-    let body = "39,77516\n50,83311\n38,215646\n";
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/adult.csv", listener.local_addr().unwrap());
+    let url = format!("http://{}/{name}", listener.local_addr().unwrap());
     let fetched = Arc::new(AtomicUsize::new(0));
     let counter = fetched.clone();
     std::thread::spawn(move || {
@@ -11909,13 +11910,24 @@ fn h_rereads_a_download_from_the_copy_on_hand() {
             }
             let _ = write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len(),
-                if get { body } else { "" }
             );
+            if get {
+                let _ = stream.write_all(&body);
+            }
         }
     });
+    (url, fetched)
+}
+
+/// A CSV over HTTP is read again from the copy already downloaded, not fetched again.
+#[test]
+fn h_rereads_a_download_from_the_copy_on_hand() {
+    use std::sync::atomic::Ordering;
+    common::isolate_cache();
+    let (url, fetched) = serve_over_http("adult.csv", b"39,77516\n50,83311\n38,215646\n".to_vec());
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
@@ -11935,6 +11947,45 @@ fn h_rereads_a_download_from_the_copy_on_hand() {
         downloads,
         "read again from the copy on hand"
     );
+}
+
+/// A compressed CSV over HTTP is downloaded and decompressed into temporary files, but
+/// the dataset is the URL: the header, the Info panel and a view saved on it name that.
+#[test]
+fn a_compressed_csv_over_http_is_its_url() {
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+    common::isolate_cache();
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(b"id,name\n1,a\n2,b\n").unwrap();
+    let (url, _) = serve_over_http("http_gz_location.csv.gz", gz.finish().unwrap());
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![PathBuf::from(&url)], OpenOptions::default()),
+    );
+    assert_eq!(column_names(&app), ["id", "name"]);
+    assert_eq!(app.open_path(), Some(Path::new(&url)));
+
+    // Reread from the copy on hand, still under the URL.
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    assert_eq!(column_names(&app), ["column_1", "column_2"]);
+    assert_eq!(app.open_path(), Some(Path::new(&url)));
+
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["column_1".to_string()], vec![true]);
+    app.event(&key(KeyCode::Char('v')));
+    app.event(&key(KeyCode::Char('s')));
+    assert_eq!(
+        app.template_modal.name_input.value(),
+        "http_gz_location.csv"
+    );
+    assert_eq!(app.template_modal.exact_path_input.value(), url);
 }
 
 // ---------------------------------------------------------------------------

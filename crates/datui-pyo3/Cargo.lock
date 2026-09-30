@@ -1280,6 +1280,7 @@ dependencies = [
  "plotters",
  "polars",
  "polars-error",
+ "polars-json",
  "polars-parquet",
  "polars-sql",
  "quick-xml 0.42.0",

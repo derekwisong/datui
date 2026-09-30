@@ -29,8 +29,10 @@ rows; **View** includes only the rows on screen.
 A TSV or CSV copy also carries an HTML table flavor, so a paste into a
 spreadsheet or an email keeps its columns while a paste into a terminal stays
 plain text. Values are raw, like an export: display formatting is not applied
-and a null is an empty field. The **Header** toggle is on for View and Table
-and off for Row; a Markdown table always keeps its header.
+and a null is an empty field. List and struct cells are JSON in every format,
+as in a [CSV export](exporting-data.md#lists-and-structs). The **Header**
+toggle is on for View and Table and off for Row; a Markdown table always keeps
+its header.
 
 A large Table copy asks first — and so does one whose size is not known yet.
 Above 200 MiB the copy is refused with a pointer to

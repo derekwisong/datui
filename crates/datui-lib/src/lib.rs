@@ -77,6 +77,7 @@ pub mod home;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
+pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
@@ -17044,10 +17045,14 @@ impl App {
                         &self.theme,
                         self.original_file_delimiter,
                     );
-                    self.export_modal.offer_source_file = self
-                        .data_table_state
-                        .as_ref()
-                        .is_some_and(|state| state.can_name_source_files());
+                    if let Some(state) = self.data_table_state.as_ref() {
+                        self.export_modal.offer_source_file = state.can_name_source_files();
+                        self.export_modal.nested_columns = state
+                            .get_column_order()
+                            .iter()
+                            .filter_map(|name| state.schema.get(name))
+                            .any(crate::nested_json::is_nested);
+                    }
                     self.input_mode = InputMode::Export;
                 }
                 None
@@ -19319,7 +19324,12 @@ impl App {
                     let format = *format;
                     let options = options.clone();
                     self.spawn_bg("Collecting data for export...", move |task_gen, tx| {
-                        match crate::statistics::collect_lazy(lf, streaming) {
+                        let lf = if format.holds_nesting() {
+                            Ok(lf)
+                        } else {
+                            crate::nested_json::lazy_as_json(lf)
+                        };
+                        match lf.and_then(|lf| crate::statistics::collect_lazy(lf, streaming)) {
                             Ok(df) => {
                                 let _ = tx.send(AppEvent::BackgroundExportCollected {
                                     generation: task_gen,
@@ -20373,7 +20383,12 @@ impl App {
         format: ExportFormat,
         options: &ExportOptions,
     ) -> Result<()> {
-        let mut df = crate::statistics::collect_lazy(state.visible_lf(), state.polars_streaming)?;
+        let lf = if format.holds_nesting() {
+            state.visible_lf()
+        } else {
+            crate::nested_json::lazy_as_json(state.visible_lf())?
+        };
+        let mut df = crate::statistics::collect_lazy(lf, state.polars_streaming)?;
         Self::export_data_from_df(&mut df, path, format, options)
     }
 

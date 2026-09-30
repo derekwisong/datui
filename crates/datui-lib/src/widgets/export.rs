@@ -15,6 +15,9 @@ const LABEL_WIDTH: u16 = 17;
 /// Columns the format list needs: rail plus the longest name plus air.
 const FORMAT_WIDTH: u16 = 12;
 
+/// Shown under the rows of a format that cannot hold lists or structs.
+const NESTED_NOTE: &str = "Lists and structs are written as JSON.";
+
 fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
     match compression {
         None => "None",
@@ -188,13 +191,21 @@ pub fn render_export_modal(
     }
 
     // The reason the form cannot export yet, inline under the rows: a warning
-    // at most, never a modal.
-    if let Some(message) = modal.path_error {
+    // at most, never a modal. Otherwise the line says how a format without
+    // nesting writes the view's list and struct columns.
+    let status = match modal.path_error {
+        Some(message) => Some((message, ctx.warning)),
+        None if modal.nested_columns && !modal.selected_format.holds_nesting() => {
+            Some((NESTED_NOTE, ctx.dimmed))
+        }
+        None => None,
+    };
+    if let Some((message, color)) = status {
         let y = first_y + row_count + 1;
         if y < content.y + content.height {
             ratatui::widgets::Widget::render(
                 ratatui::widgets::Paragraph::new(message)
-                    .style(ratatui::style::Style::default().fg(ctx.warning)),
+                    .style(ratatui::style::Style::default().fg(color)),
                 Rect {
                     x: options_x,
                     y,
@@ -240,6 +251,26 @@ mod tests {
         let out = painted(&mut modal, 70, 12);
         assert!(out.contains("Format"), "{out}");
         assert!(out.contains("Parquet"), "the list is visible: {out}");
+    }
+
+    /// A view with list or struct columns hears how CSV writes them; formats
+    /// that keep the types, and views without such columns, say nothing.
+    #[test]
+    fn csv_says_how_nested_columns_are_written() {
+        let mut modal = ExportModal::new();
+        modal.active = true;
+        for width in [44u16, 70] {
+            let out = painted(&mut modal, width, 12);
+            assert!(!out.contains(NESTED_NOTE), "no nested columns: {out}");
+            modal.nested_columns = true;
+            let out = painted(&mut modal, width, 12);
+            assert!(out.contains(NESTED_NOTE), "missing at {width}: {out}");
+            modal.selected_format = ExportFormat::Parquet;
+            let out = painted(&mut modal, width, 12);
+            assert!(!out.contains(NESTED_NOTE), "Parquet keeps them: {out}");
+            modal.selected_format = ExportFormat::Csv;
+            modal.nested_columns = false;
+        }
     }
 
     /// An invalid form says why inline, and never with a modal.

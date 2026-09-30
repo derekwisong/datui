@@ -35,6 +35,10 @@ Formats:
   Arrow:   Arrow IPC / Feather v2
   Avro:    Avro row format
 
+  CSV has no lists or structs: those columns are written as JSON text,
+  [1,2] or {"x":1}, and the dialog says so when the view has one. The
+  other formats keep the real types.
+
 Source file:
   Only offered for a directory of Parquet files that disagree, local or in
   the cloud. Adds a column

@@ -5126,6 +5126,26 @@ fn export_csv(
     path: &std::path::Path,
     source_file: bool,
 ) -> String {
+    export_as(
+        app,
+        rx,
+        tx,
+        path,
+        datui::export_modal::ExportFormat::Csv,
+        source_file,
+    );
+    std::fs::read_to_string(path).expect("the export wrote a file")
+}
+
+/// Run an export in `format` through the app's own two-phase export events.
+fn export_as(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    path: &std::path::Path,
+    format: datui::export_modal::ExportFormat,
+    source_file: bool,
+) {
     let options = datui::ExportOptions {
         source_file,
         csv_delimiter: b',',
@@ -5135,11 +5155,7 @@ fn export_csv(
         ndjson_compression: None,
         parquet_compression: None,
     };
-    let start = AppEvent::DoExportCollect(
-        path.to_path_buf(),
-        datui::export_modal::ExportFormat::Csv,
-        options,
-    );
+    let start = AppEvent::DoExportCollect(path.to_path_buf(), format, options);
     if let Some(next) = app.event(&start) {
         let _ = tx.send(next);
     }
@@ -5154,7 +5170,191 @@ fn export_csv(
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    std::fs::read_to_string(path).expect("the export wrote a file")
+}
+
+/// Read a CSV export back with every column as text, sorted by `key`.
+fn read_csv_as_text(path: &std::path::Path, key: &str) -> DataFrame {
+    CsvReadOptions::default()
+        .with_infer_schema_length(Some(0))
+        .try_into_reader_with_file_path(Some(path.to_path_buf()))
+        .unwrap()
+        .finish()
+        .unwrap()
+        .sort([key], Default::default())
+        .unwrap()
+}
+
+fn text_column(df: &DataFrame, name: &str) -> Vec<Option<String>> {
+    let text = df.column(name).unwrap().str().unwrap();
+    (0..text.len())
+        .map(|i| text.get(i).map(str::to_string))
+        .collect()
+}
+
+/// A q-style `by` result holds list columns, which CSV cannot: they are written
+/// as JSON text, while Parquet keeps them as lists.
+#[test]
+fn test_csv_export_writes_a_by_result_lists_as_json() {
+    use datui::export_modal::ExportFormat;
+    let (mut app, rx, tx) = open_query_filter_fixture("export_nested_by.csv");
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select a, name by c where a < 6".to_string());
+    press(&mut app, KeyCode::Char('e'));
+    assert!(
+        app.export_modal.nested_columns,
+        "the dialog knows to say how lists are written"
+    );
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    assert!(
+        rendered_text(&buffer).contains("Lists and structs are written as JSON."),
+        "{}",
+        rendered_text(&buffer)
+    );
+    press(&mut app, KeyCode::Esc);
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = dir.path().join("by.csv");
+    export_as(&mut app, &rx, &tx, &out, ExportFormat::Csv, false);
+    let back = read_csv_as_text(&out, "c");
+    assert_eq!(
+        text_column(&back, "a"),
+        ["[0,3]", "[1,4]", "[2,5]"].map(|s| Some(s.to_string()))
+    );
+    assert_eq!(
+        text_column(&back, "name"),
+        [
+            r#"["alpha_0","beta_3"]"#,
+            r#"["beta_1","alpha_4"]"#,
+            r#"["alpha_2","beta_5"]"#,
+        ]
+        .map(|s| Some(s.to_string()))
+    );
+
+    let out = dir.path().join("by.parquet");
+    export_as(&mut app, &rx, &tx, &out, ExportFormat::Parquet, false);
+    let back = ParquetReader::new(File::open(&out).unwrap())
+        .finish()
+        .unwrap();
+    assert_eq!(
+        back.column("a").unwrap().dtype(),
+        &DataType::List(Box::new(DataType::Int64)),
+        "Parquet keeps the real type"
+    );
+}
+
+/// SQL's ARRAY_AGG and a struct column both reach a CSV as
+/// JSON; a null list stays an empty field.
+#[cfg(feature = "sql")]
+#[test]
+fn test_csv_export_writes_sql_arrays_and_structs_as_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let point = StructChunked::from_series(
+        "point".into(),
+        3,
+        [
+            Series::new("x".into(), [1i64, 2, 3]),
+            Series::new("label".into(), [Some("a"), None, Some("c,d")]),
+        ]
+        .iter(),
+    )
+    .unwrap()
+    .into_series();
+    let df = df!(
+        "g" => ["p", "q", "p"],
+        "v" => [Some(1i64), None, Some(3)],
+    )
+    .unwrap()
+    .hstack(&[point.into()])
+    .unwrap();
+    write_parquet(dir.path(), "src", df);
+    let (mut app, rx, tx) = open_local_dataset_with_channel(&dir.path().join("src"));
+    app.data_table_state.as_mut().unwrap().sql_query(
+        "select g, array_agg(v) as vs, first(point) as point from df group by g".to_string(),
+    );
+
+    let out = dir.path().join("sql.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, false);
+    let back = read_csv_as_text(&out, "g");
+    assert_eq!(
+        text_column(&back, "vs"),
+        [Some("[1,3]".to_string()), Some("[null]".to_string())],
+        "{csv}"
+    );
+    assert_eq!(
+        text_column(&back, "point"),
+        [
+            Some(r#"{"x":1,"label":"a"}"#.to_string()),
+            Some(r#"{"x":2,"label":null}"#.to_string()),
+        ],
+        "{csv}"
+    );
+}
+
+/// Every copy format takes list cells as JSON, the same text a CSV export
+/// writes, instead of failing on them.
+#[test]
+fn test_copy_writes_list_cells_as_json() {
+    use datui::clipboard::{Destination, Payload};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<Payload>>>);
+    impl Destination for Capture {
+        fn write(&mut self, payload: &Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload.clone());
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    let (mut app, rx, tx) = open_query_filter_fixture("copy_nested_by.csv");
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select name by c where a < 2".to_string());
+    pump_until_idle(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    pump_until_idle(&mut app, &rx, &tx);
+    app.render(area, &mut buffer);
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capture(copies.clone())));
+
+    // The table scope, collected off-thread, as TSV with its header.
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let text = copies.lock().unwrap().last().expect("a copy").text.clone();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines[1..].sort();
+    assert_eq!(
+        lines,
+        [
+            "c\tname",
+            "0\t\"[\"\"alpha_0\"\"]\"",
+            "1\t\"[\"\"beta_1\"\"]\""
+        ]
+    );
+
+    // The same scope as Markdown.
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let text = copies.lock().unwrap().last().expect("a copy").text.clone();
+    assert!(text.contains(r#"["alpha_0"]"#), "{text}");
 }
 
 /// A query builds its own rows, and its schema becomes the column order — so a query

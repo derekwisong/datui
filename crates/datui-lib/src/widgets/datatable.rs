@@ -6325,9 +6325,11 @@ impl DataTableState {
     }
 
     /// The selected row's raw value in one column. A null is an empty string,
-    /// like a null in an export — never the UI's glyph.
+    /// like a null in an export — never the UI's glyph. A list or struct is
+    /// JSON, as in a CSV export.
     pub fn copy_cell_value(&self, column: &str) -> Option<String> {
         let row = self.copy_row_df()?;
+        let row = crate::nested_json::frame_as_json(&row.select([column]).ok()?).ok()?;
         let series = row.column(column).ok()?.as_materialized_series();
         Some(match series.get(0).ok()? {
             AnyValue::Null => String::new(),

@@ -1936,7 +1936,25 @@ impl IntervalFact {
 /// The rows of the segment labeled `label` under `grain`, as a predicate: `Some(None)`
 /// for the whole scope, `None` where a segment is a stretch of rows or a file and not
 /// a value to filter on. Read back from the label, which names a partition's value
-/// and a window's start exactly.
+/// as its segment was keyed and a window's start exactly.
+/// Each value of `column` as a segment label writes it, null where it is null. A
+/// cast to text writes a float or a datetime differently than the label does, and
+/// then the rows a label names would not be found.
+fn label_text(column: &str) -> Expr {
+    col(column).map(
+        |values| {
+            let text = (0..values.len())
+                .map(|row| {
+                    let value = values.get(row)?;
+                    Ok((!value.is_null()).then(|| value.str_value().into_owned()))
+                })
+                .collect::<PolarsResult<StringChunked>>()?;
+            Ok(text.with_name(values.name().clone()).into_column())
+        },
+        |_, field| Ok(Field::new(field.name().clone(), DataType::String)),
+    )
+}
+
 fn segment_predicate(
     plan: &DataQualityPlan,
     grain: &QualityGrain,
@@ -1949,9 +1967,7 @@ fn segment_predicate(
             Some(Some(if value == "∅" {
                 col(column.as_str()).is_null()
             } else {
-                col(column.as_str())
-                    .cast(DataType::String)
-                    .eq(lit(value.to_string()))
+                label_text(column).eq(lit(value.to_string()))
             }))
         }
         QualityGrain::TimeWindows { column, every } => {
@@ -8127,5 +8143,95 @@ mod temporal_tests {
                 .evidence_predicate(IntervalFact::Negative, &plan)
                 .is_none()
         }));
+    }
+
+    /// A segment's label finds its rows whatever the partition holds: text with
+    /// `=` and spaces, integers, booleans, floats and datetimes (the last two write
+    /// differently cast to text), and a zoned column's windows at every width,
+    /// across New York's spring-forward day.
+    #[test]
+    fn a_facts_rows_are_found_by_any_segment_label() {
+        let spring = 1_710_054_000_000_000i64; // 2024-03-10 07:00 UTC
+        let zoned: Column = Series::new(
+            "zoned".into(),
+            [0, 3, 20, -1, -10, 40, 0, 960]
+                .map(|hours| (hours >= 0 || hours == -10).then_some(spring + hours * HOUR)),
+        )
+        .cast(&DataType::Datetime(
+            TimeUnit::Nanoseconds,
+            TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
+        ))
+        .unwrap()
+        .into();
+        let mut frame = delays().collect().unwrap();
+        for column in [
+            Column::new(
+                "key=part".into(),
+                [
+                    Some("a=b"),
+                    Some(" x "),
+                    Some(""),
+                    None,
+                    Some("é"),
+                    Some("a=b"),
+                    Some("1.0"),
+                    Some(" x "),
+                ],
+            ),
+            Column::new("int".into(), [1i64, 2, 3, 1, 2, 3, 1, 2]),
+            Column::new(
+                "float".into(),
+                [0.1f64, 1e20, 2.5, 0.1, 1e20, 2.5, 0.1, 3.0],
+            ),
+            Column::new(
+                "bool".into(),
+                [true, false, true, false, true, false, true, false],
+            ),
+            datetimes("stamp", &[0, HOUR, 0, HOUR, 0, HOUR, 1, 0].map(Some)),
+            zoned,
+        ] {
+            frame.with_column(column).unwrap();
+        }
+        let frame = frame.lazy();
+        let grains = ["key=part", "int", "float", "bool", "stamp"]
+            .map(|column| QualityGrain::Partition(column.to_string()))
+            .into_iter()
+            .chain(
+                QUALITY_WINDOW_WIDTHS.map(|every| QualityGrain::TimeWindows {
+                    column: "zoned".to_string(),
+                    every: every.to_string(),
+                }),
+            );
+        for grain in grains {
+            for clock in IntervalClock::ALL {
+                let plan = DataQualityPlan {
+                    temporal_roles: roles(&[
+                        (TemporalRole::Event, "sent"),
+                        (TemporalRole::Received, "seen"),
+                    ]),
+                    latency_threshold_seconds: Some(3_600),
+                    grain: grain.clone(),
+                    interval_clock: clock,
+                    ..DataQualityPlan::default()
+                };
+                for results in both_ways(&frame, 8, &plan) {
+                    for latency in &results.temporal {
+                        for fact in IntervalFact::ALL {
+                            let Some((count, _)) = latency.count(fact, &plan) else {
+                                continue;
+                            };
+                            let predicate = latency.evidence_predicate(fact, &plan).unwrap();
+                            let rows = frame.clone().filter(predicate).collect().unwrap();
+                            assert_eq!(
+                                rows.height(),
+                                count,
+                                "{grain:?} {clock:?} {} {fact:?}",
+                                latency.segment
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

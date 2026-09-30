@@ -32,6 +32,15 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
+/// The confirmation modal's keys: its footer, and the control bar while it is up.
+pub fn confirmation_keys() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Enter", "Confirm"),
+        (crate::glyphs::get().updown_lr, "Switch"),
+        ("Esc", "Cancel"),
+    ]
+}
+
 /// Renders the confirmation modal: the question, a Yes/No choice the rail and
 /// accent mark, and the keys in the footer. No buttons.
 pub fn render_confirmation_modal(
@@ -41,10 +50,11 @@ pub fn render_confirmation_modal(
     ctx: &RenderContext,
 ) {
     let g = crate::glyphs::get();
-    let footer = HintBar::from_ctx(ctx)
-        .hint("Enter", "Confirm")
-        .hint(g.updown_lr, "Switch")
-        .hint("Esc", "Cancel");
+    let footer = confirmation_keys()
+        .into_iter()
+        .fold(HintBar::from_ctx(ctx), |bar, (key, label)| {
+            bar.hint(key, label)
+        });
     let popup = message_popup(area, &modal.message, 2, 64);
     let content = Surface::new("Confirm")
         .footer(&footer)

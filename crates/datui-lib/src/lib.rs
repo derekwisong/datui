@@ -4269,6 +4269,119 @@ pub mod tests {
         );
     }
 
+    /// A server that compresses on request (GitHub Pages, where the public NYC flights
+    /// file lives) still gets its size read: asked for gzip, it answers with the
+    /// compressed length, which ureq strips, and the confirmation said "unknown".
+    #[cfg(feature = "http")]
+    #[test]
+    fn the_size_probe_reads_a_compressing_server() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/flights.csv",
+            listener.local_addr().expect("bound")
+        );
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let asks_for_gzip = String::from_utf8_lossy(&request)
+                .to_ascii_lowercase()
+                .lines()
+                .any(|l| l.starts_with("accept-encoding:") && l.contains("gzip"));
+            let headers = if asks_for_gzip {
+                "Content-Encoding: gzip\r\nContent-Length: 9404410"
+            } else {
+                "Content-Length: 33206996"
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n{headers}\r\nConnection: close\r\n\r\n"
+            );
+        });
+
+        assert_eq!(
+            crate::App::fetch_remote_size_http(&url).expect("the probe never fails"),
+            Some(33_206_996),
+            "the file's own length, not the compressed one and not none"
+        );
+    }
+
+    /// The size probe is labeled as such, and once the confirmation is up nothing
+    /// spins: datui is waiting on a key, and the bar names the modal's keys (#385).
+    #[cfg(feature = "http")]
+    #[test]
+    fn the_download_confirmation_is_not_busy() {
+        use crate::{App, AppEvent, OpenOptions, PendingDownload};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        fn screen(app: &mut App) -> String {
+            let area = Rect::new(0, 0, 120, 24);
+            let mut buf = Buffer::empty(area);
+            app.render(area, &mut buf);
+            buf.content().iter().map(|c| c.symbol()).collect()
+        }
+        let spinning = |text: &str| {
+            crate::glyphs::get()
+                .spinner
+                .iter()
+                .any(|frame| text.contains(frame))
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        // Nothing listens on the discard port: the probe fails fast, and its answer
+        // goes to a channel nobody reads.
+        let url = "http://127.0.0.1:9/flights.parquet";
+        let mut next = Some(AppEvent::Open(
+            vec![std::path::PathBuf::from(url)],
+            OpenOptions::default(),
+        ));
+        while let Some(event) = next {
+            next = app.handle(&event).expect("no keys here");
+        }
+
+        assert!(app.is_busy(), "the probe is running");
+        let bar = control_bar(&mut app);
+        assert!(bar.contains("Checking size"), "the probe is named: {bar}");
+        assert!(!bar.contains("Scanning"), "nothing is scanned yet: {bar}");
+
+        let _ = app.handle(&AppEvent::BackgroundRemoteSizeReady {
+            generation: app.task_generation(),
+            pending: Box::new(PendingDownload::Http {
+                url: url.to_string(),
+                size: Some(33 * 1024 * 1024),
+                options: OpenOptions::default(),
+            }),
+        });
+
+        assert!(
+            app.awaiting_download_confirmation(),
+            "the user is being asked"
+        );
+        assert!(!app.is_busy(), "and nothing is running while they decide");
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Confirm") && bar.contains("Cancel"),
+            "the bar names the modal's keys: {bar}"
+        );
+        assert!(
+            !bar.contains("Checking") && !bar.contains("Scanning"),
+            "and no phase: {bar}"
+        );
+        let text = screen(&mut app);
+        assert!(!spinning(&text), "no spinner anywhere: {text}");
+    }
+
     /// A whole-table copy whose size is not known yet (the row count is still
     /// being read) must ask first, never collect an unknown amount unprompted.
     #[test]
@@ -4304,6 +4417,40 @@ pub mod tests {
             "an unknown size asks; it never collects unprompted"
         );
         assert!(app.pending_copy.is_some());
+    }
+
+    /// A confirmation takes every key until it is answered, so the bar names its keys
+    /// rather than the table's, which do nothing meanwhile.
+    #[test]
+    fn a_confirmation_puts_its_keys_in_the_bar() {
+        use crate::App;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.csv");
+        std::fs::write(&path, "id\n1\n2\n3\n").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        super::chart_prepare_tests::open(&mut app, &rx, &tx, path);
+        assert!(control_bar(&mut app).contains("Query"), "the table's keys");
+
+        app.data_table_state.as_mut().unwrap().invalidate_num_rows();
+        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        let _ = app.perform_copy();
+        assert!(app.confirmation_modal.active, "an unknown size asks");
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Confirm") && bar.contains("Switch") && bar.contains("Cancel"),
+            "the bar names the modal's keys: {bar}"
+        );
+        assert!(!bar.contains("Query"), "not the table's: {bar}");
+
+        let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.confirmation_modal.active);
+        assert!(
+            control_bar(&mut app).contains("Query"),
+            "and back once answered"
+        );
     }
 
     /// A count landing while a load is in flight does not cancel the load.
@@ -8405,7 +8552,7 @@ impl App {
     /// Whether a spinner is on screen, so the run loop turns it and redraws.
     pub fn something_is_spinning(&self) -> bool {
         self.busy
-            || self.row_count_pending()
+            || (self.row_count_pending() && !self.awaiting_download_confirmation())
             || self.chart_preparing()
             || (self.input_mode == InputMode::Home
                 && (self.home.awaiting_listing().is_some()
@@ -11522,7 +11669,10 @@ impl App {
     #[cfg(feature = "http")]
     fn fetch_remote_size_http(url: &str) -> Result<Option<u64>> {
         let agent = Self::http_agent(std::time::Duration::from_secs(15));
-        match agent.head(url).call() {
+        // ureq asks for gzip by default and strips Content-Length from a compressed
+        // answer, so a server that compresses (GitHub Pages does) reports no size.
+        // Identity asks for the file's own length, which is what lands on disk.
+        match agent.head(url).header("Accept-Encoding", "identity").call() {
             Ok(r) => Ok(r
                 .headers()
                 .get("Content-Length")
@@ -11658,6 +11808,22 @@ impl App {
     fn spawn_remote_size_probe(&mut self, pending: PendingDownload) -> Option<AppEvent> {
         #[cfg(feature = "cloud")]
         let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
+        // The loading phase is what the bar and the loading screen print, so it has to
+        // name the probe; nothing has been scanned yet. No percentage: the probe is
+        // not a fraction of the load.
+        if let LoadingState::Loading {
+            file_path,
+            file_size,
+            ..
+        } = &self.loading_state
+        {
+            self.loading_state = LoadingState::Loading {
+                file_path: file_path.clone(),
+                file_size: *file_size,
+                current_phase: "Checking size".to_string(),
+                progress_percent: 0,
+            };
+        }
         self.spawn_bg("Checking size...", move |task_gen, tx| {
             let size = match &pending {
                 #[cfg(feature = "http")]
@@ -17711,6 +17877,10 @@ impl App {
                 if *generation != self.task_generation || !self.load_active {
                     return None;
                 }
+                // Nothing runs while the question is up: datui waits on a key, and a
+                // spinner would read as progress. The pending download's lease keeps
+                // the generation held meanwhile.
+                self.busy = false;
                 self.status_message = None;
                 self.confirmation_modal
                     .show(Self::download_confirmation_message(pending));
@@ -20587,6 +20757,8 @@ impl Widget for &mut App {
 
         // Derive status message from loading_state or explicit status_message.
         let status_msg = match &self.loading_state {
+            // The load is paused on the user; the bar names the modal's keys instead.
+            LoadingState::Loading { .. } if self.awaiting_download_confirmation() => None,
             LoadingState::Loading {
                 current_phase,
                 progress_percent,
@@ -20761,6 +20933,11 @@ impl Widget for &mut App {
             && self.data_table_state.as_ref().is_some_and(|s| {
                 !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())
             });
+        // Nothing is counted while a load waits on the download confirmation, and a
+        // spinning count there would read as progress.
+        if self.awaiting_download_confirmation() {
+            controls.row_count = None;
+        }
         controls = controls
             .with_row_count_pending(count_pending)
             .with_row_count_unknown(count_unknown)

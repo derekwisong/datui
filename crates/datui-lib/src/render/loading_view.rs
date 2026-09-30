@@ -45,7 +45,11 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
 
     let g = glyphs::get();
     let frame = app.throbber_frame as usize % g.spinner.len();
-    let mut lines = vec![
+    // Paused on the download confirmation: nothing is in progress, so no spinner and
+    // no phase. The line stays so the file below it does not move.
+    let phase_line = if app.awaiting_download_confirmation() {
+        Line::from("")
+    } else {
         Line::from(vec![
             Span::styled(
                 format!("{}  ", g.spinner[frame]),
@@ -65,9 +69,9 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
                     .fg(ctx.text_primary)
                     .add_modifier(Modifier::BOLD),
             ),
-        ]),
-        Line::from(""),
-    ];
+        ])
+    };
+    let mut lines = vec![phase_line, Line::from("")];
 
     // The name first and the location under it: which file is coming is the question
     // being answered, and a long path would push the name off a narrow screen.

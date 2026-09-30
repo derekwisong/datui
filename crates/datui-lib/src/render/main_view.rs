@@ -64,6 +64,11 @@ pub enum ControlBarSpec {
 /// Returns the control bar keybindings and options for the current main view content.
 /// The main render loop calls this and applies the result to the Controls widget.
 pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBarSpec {
+    // A confirmation takes every key until it is answered, over any screen: the
+    // keys underneath do nothing meanwhile.
+    if app.confirmation_modal.active {
+        return ControlBarSpec::Custom(crate::render::overlays::confirmation_keys());
+    }
     match content {
         MainViewContent::Datatable => {
             // A surface that owns the keyboard gets a bar that describes it:

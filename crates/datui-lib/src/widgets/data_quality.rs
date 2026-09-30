@@ -1250,6 +1250,13 @@ fn check_lines(
 
 /// `text` cut to `width` display columns, with the ellipsis glyph when anything was
 /// cut, so a truncated count never reads as a smaller one.
+/// A segment's label as the terminal draws it: the `∅` naming rows with no value
+/// is the null glyph, which `LANG=C` swaps for its ASCII twin. The label itself
+/// stays as it is, since evidence finds a segment's rows by it.
+fn segment_text(label: &str) -> String {
+    label.replace('∅', glyphs::get().null)
+}
+
 fn fit(text: &str, width: usize) -> String {
     if glyphs::display_width(text) <= width {
         return text.to_string();
@@ -1770,7 +1777,7 @@ fn render_segments(
     let label_width = results
         .segments
         .iter()
-        .map(|segment| glyphs::display_width(&segment.label))
+        .map(|segment| glyphs::display_width(&segment_text(&segment.label)))
         .max()
         .unwrap_or(0)
         .clamp(7, 40) as u16
@@ -1790,7 +1797,7 @@ fn render_segments(
         .map(|&index| &results.segments[index])
         .map(|segment| {
             let mut cells = vec![
-                Cell::from(segment.label.clone()),
+                Cell::from(segment_text(&segment.label)),
                 Cell::from(rows_label(segment)),
                 Cell::from(format!("{:.1}%", segment.null_rate * 100.0)),
             ];
@@ -1857,8 +1864,12 @@ fn render_segment_detail(
         .split(area);
     let other = segment.compared_with.as_deref();
     let title = match other {
-        Some(other) => format!("{} vs {other}", segment.label),
-        None => segment.label.clone(),
+        Some(other) => format!(
+            "{} vs {}",
+            segment_text(&segment.label),
+            segment_text(other)
+        ),
+        None => segment_text(&segment.label),
     };
     Paragraph::new(rule_line(
         &title,
@@ -1910,11 +1921,13 @@ fn render_segment_detail(
     let mut headers = vec!["Column".to_string(), "Measure".to_string()];
     let mut widths = vec![Constraint::Length(name_width), Constraint::Length(10)];
     if let Some(other) = other {
-        headers.push(other.to_string());
-        widths.push(Constraint::Length(value_width(other)));
+        headers.push(segment_text(other));
+        widths.push(Constraint::Length(value_width(&segment_text(other))));
     }
-    headers.push(segment.label.clone());
-    widths.push(Constraint::Length(value_width(&segment.label)));
+    headers.push(segment_text(&segment.label));
+    widths.push(Constraint::Length(value_width(&segment_text(
+        &segment.label,
+    ))));
     if other.is_some() {
         headers.push("Change".to_string());
         widths.push(Constraint::Fill(1));
@@ -2081,7 +2094,7 @@ fn render_intervals(
         .any(|profile| profile.segment != profiles[0].segment);
     let segment_width = profiles
         .iter()
-        .map(|profile| glyphs::display_width(&profile.segment))
+        .map(|profile| glyphs::display_width(&segment_text(&profile.segment)))
         .max()
         .unwrap_or(0)
         .clamp(8, 22) as u16;
@@ -2128,7 +2141,7 @@ fn render_intervals(
     let rows = profiles.iter().map(|profile| {
         let mut cells = vec![fit(&profile.label(), interval_width)];
         if segmented && (wide || medium) {
-            cells.push(fit(&profile.segment, segment_width as usize));
+            cells.push(fit(&segment_text(&profile.segment), segment_width as usize));
         }
         if wide {
             cells.extend([
@@ -2185,7 +2198,7 @@ fn render_interval_detail(
         .areas(area);
     Paragraph::new(rule_line(
         &profile.label(),
-        Some(&profile.segment),
+        Some(&segment_text(&profile.segment)),
         title.width,
         theme,
     ))
@@ -2249,7 +2262,7 @@ fn render_interval_detail(
     if grain != QualityGrain::Dataset {
         rows.push(plain(
             "Segment",
-            format!("{}, {}", profile.segment, grain.label()),
+            format!("{}, {}", segment_text(&profile.segment), grain.label()),
         ));
     }
     rows.push(plain("Rows", numfmt::group_chrome(profile.evaluated_rows)));
@@ -2338,12 +2351,15 @@ fn render_interval_detail(
     }
     let height = body.height as usize;
     let offset = if lines.len() > height {
-        // Room for the count of what is below, and for the focused row.
-        (focus + 2).saturating_sub(height.saturating_sub(1))
+        // Room for the count of what is below, and for the focused row; never
+        // past the last line, which would leave the bottom blank.
+        (focus + 2)
+            .saturating_sub(height.saturating_sub(1))
+            .min(lines.len() - height)
     } else {
         0
     };
-    render_counted(lines.split_off(offset.min(lines.len())), body, theme, buf);
+    render_counted(lines.split_off(offset), body, theme, buf);
 }
 
 /// Which starts and ends are measured, chosen from every pair the assigned roles
@@ -2487,7 +2503,9 @@ fn render_trend_table(
     ))
     .render(title, buf);
     let mut facts = vec![format!(
-        "{first} to {last}, {} {unit}",
+        "{} to {}, {} {unit}",
+        segment_text(first),
+        segment_text(last),
         numfmt::group_chrome(results.segments.len())
     )];
     if per_bar > 1 {
@@ -3944,7 +3962,8 @@ mod interval_tests {
             .into_iter()
             .filter(|fact| first.count(*fact, &screen.plan).is_some())
             .collect::<Vec<_>>();
-        for size in [(80, 24), (60, 20)] {
+        // 60x17 is what a 60x20 terminal leaves the page under its bars.
+        for size in [(80, 24), (60, 20), (60, 17)] {
             for (selected, fact) in facts.iter().enumerate() {
                 let text = screen.draw(QualityPage::IntervalDetail, 0, selected, size);
                 let rail = format!("{} {}", glyphs::get().rail, fact.label(first));
@@ -3953,6 +3972,13 @@ mod interval_tests {
                     "{fact:?} under the cursor at {size:?}:\n{text}"
                 );
                 assert_glyph_slots(&text);
+                // Scrolled, the page ends on its last line or the count of what
+                // is below, never on blank lines.
+                if !text.contains("Start") {
+                    let lines = text.lines().collect::<Vec<_>>();
+                    let last = lines.iter().rposition(|line| !line.trim().is_empty());
+                    assert_eq!(last, Some(lines.len() - 2), "{fact:?}:\n{text}");
+                }
             }
         }
     }

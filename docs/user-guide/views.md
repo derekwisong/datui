@@ -52,11 +52,11 @@ should match the view:
 | Filename pattern | its name matches a glob |
 | Schema | it has all the view's columns; extra columns are fine |
 
-Schema matching is enabled by default. The view records the columns of the data
-as loaded, before its query, so a view whose query renames or computes columns
-still matches the next file. Matching views rank above unrelated
-ones; exact schemas rank above schemas with extra columns. Other match rules
-and usage history also affect the score. Press <kbd>i</kbd> to inspect it.
+Schema matching is enabled by default. It records the columns as loaded,
+before the query, so a view whose query renames columns still matches the next
+file. Matching views rank above unrelated ones; exact schemas rank above
+schemas with extra columns. Other match rules and usage history also affect
+the score. Press <kbd>i</kbd> to inspect it.
 <kbd>V</kbd> and automatic application use only views with a matching rule.
 
 Only the active query tab is saved: **Query**, **SQL** or **Fuzzy**. Filters,

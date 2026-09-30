@@ -45,6 +45,10 @@ select col["First Name"], col["Last Name"]
 select no_spaces: col["name with spaces"]
 ```
 
+A column named like a function (`count`, `log`, `var`) is read as the
+function when something follows it, so `select log + 1` is `log(+1)`. Write
+`col["log"] + 1`.
+
 ## Right-to-left expression parsing
 
 There is no operator precedence. Expressions are parsed right-to-left: the
@@ -73,7 +77,7 @@ See [Where clause](#where-clause--and-).
 - `select a, b: x + y, c` — columns and aliased expressions
 - `select distinct carrier, origin` — only the distinct rows of the result;
   `select distinct` alone drops duplicate rows. A column named `distinct` is
-  `col["distinct"]`
+  `col["distinct"]`, or plain `distinct` before `,` `:` `.` or an operator
 
 ## By clause (grouping and aggregation)
 
@@ -296,4 +300,3 @@ Each runs as written on the public dataset of that name on the home screen.
 | NYC flights | `select distinct carrier, origin` |
 | NYC flights | `select planes: nunique tailnum by carrier` |
 | Food nutrition | `select items: count item by restaurant where item like "*Chicken*"` |
-

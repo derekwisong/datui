@@ -169,10 +169,9 @@ select trips: count fare_amount by b: 5 xbar fare_amount  # buckets of 5
 
 A `by` clause without aggregates gives one row per group. With aggregates
 (`avg`, `sum`, `min`, `max`, `count`, `std`, `med`, `first`, `last`, `nunique`,
-`var`, `dev`, and `w wavg x`) you get one summary row per group. Brackets around
-the argument are optional. An unaliased
-aggregate of a column is named `fn_column` (`avg salary` → `avg_salary`); name
-it yourself with `:`.
+`var`, `dev`, and `w wavg x`) you get one summary row per group. Brackets
+around the argument are optional. An unaliased aggregate of a column is named
+`fn_column` (`avg salary` → `avg_salary`); name it yourself with `:`.
 
 Press <kbd>Enter</kbd> on a group to see its rows; a line above the table names
 the group, and <kbd>Esc</kbd> comes back.

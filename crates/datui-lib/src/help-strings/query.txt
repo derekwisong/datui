@@ -87,8 +87,8 @@ Aggregation Functions (square brackets optional):
   var[expr], dev[expr]     - Variance, standard deviation (sample)
   w wavg x                 - Average of x weighted by w
 
-  Unaliased aggregates of a column are named fn_column (avg[salary] -> avg_salary);
-  an alias overrides this (total:sum[price] -> total).
+  Unaliased aggregates of a column are named fn_column (avg[salary] ->
+  avg_salary); an alias overrides this (total:sum[price] -> total).
 
 Aggregation Examples:
   select avg[price], min[quantity], max[date] by category

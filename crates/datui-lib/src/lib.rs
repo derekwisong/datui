@@ -1971,6 +1971,113 @@ mod template_rollback_tests {
         assert!(app.active_template_id.is_none());
     }
 
+    /// `long.csv` sorted on `val` descending and filtered to `val > 0`, with the rows
+    /// that view shows.
+    fn sorted_and_filtered(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        tx: &mpsc::Sender<AppEvent>,
+    ) -> Option<DataFrame> {
+        use crate::filter_modal::{FilterOperator, LogicalOperator};
+        app.event(&AppEvent::Sort(vec!["val".to_string()], vec![true]));
+        crate::chart_prepare_tests::pump(app, rx, tx, |a| !a.is_busy());
+        app.event(&AppEvent::Filter(vec![FilterStatement {
+            column: "val".to_string(),
+            operator: FilterOperator::Gt,
+            value: "0".to_string(),
+            logical_op: LogicalOperator::And,
+        }]));
+        crate::chart_prepare_tests::pump(app, rx, tx, |a| !a.is_busy());
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows, 8);
+        state.display_df().cloned()
+    }
+
+    /// Handle events until the app is idle, as if the worker reading the first rows
+    /// panicked.
+    fn pump_with_dying_rows(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        tx: &mpsc::Sender<AppEvent>,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.is_busy() {
+            assert!(std::time::Instant::now() < deadline, "the rows never came");
+            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
+                continue;
+            };
+            // What `spawn_bg` sends in its place when the worker panics.
+            let event = match event {
+                AppEvent::BackgroundCollectReady { generation } => AppEvent::BackgroundError {
+                    generation,
+                    message: "worker died".to_string(),
+                },
+                event => event,
+            };
+            if let Some(next) = app.event(&event) {
+                let _ = tx.send(next);
+            }
+        }
+    }
+
+    /// The view before the query is back: its rows, count, sort and filter.
+    fn assert_rolled_back(app: &App, shown: Option<&DataFrame>) {
+        assert!(app.query_running.is_none());
+        assert!(!app.is_busy());
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.get_active_query().is_empty());
+        assert!(state.get_active_sql_query().is_empty());
+        assert_eq!(columns(app), ["id", "key", "val"]);
+        assert_eq!(state.display_df(), shown);
+        assert!(state.is_num_rows_valid());
+        assert_eq!(state.num_rows, 8);
+        assert_eq!(state.get_sort_columns(), ["val"]);
+        assert_eq!(state.get_sort_descending(), [true]);
+        assert_eq!(state.get_filters().len(), 1);
+    }
+
+    /// #432: a query run from the prompt whose rows' worker dies is not applied, and
+    /// the reason is under the query, as when the rows fail.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_prompt_query_whose_rows_worker_dies_rolls_back() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let shown = sorted_and_filtered(&mut app, &rx, &tx);
+        let press = |app: &mut App, code: KeyCode| {
+            let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            while let Some(event) = next.take() {
+                next = app.event(&event);
+            }
+        };
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+        app.sql_input.set_value("SELECT id FROM df WHERE val > 5");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.query_running.is_some(), "the query planned");
+        pump_with_dying_rows(&mut app, &rx, &tx);
+
+        assert_rolled_back(&app, shown.as_ref());
+        assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+        assert_eq!(app.query_prompt_error().as_deref(), Some("worker died"));
+        assert!(!app.error_modal.active, "no modal over the prompt");
+        assert!(matches!(app.loading_state, LoadingState::Idle));
+    }
+
+    /// #432: a query sent without the prompt whose rows' worker dies is not applied,
+    /// and a dialog says why.
+    #[test]
+    fn a_query_whose_rows_worker_dies_rolls_back() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        let shown = sorted_and_filtered(&mut app, &rx, &tx);
+        app.event(&AppEvent::Search("select id where val > 5".to_string()));
+        assert!(app.query_running.is_some(), "the query planned");
+        pump_with_dying_rows(&mut app, &rx, &tx);
+
+        assert_rolled_back(&app, shown.as_ref());
+        assert!(app.error_modal.active);
+        assert_eq!(app.error_modal.message, "worker died");
+    }
+
     /// Rolling a failed template back restores the frame, and the frame's rows still
     /// stand for rows of a file — so what the state believes about them has to be
     /// rolled back with it, or the cells go back to reading as plain nulls.
@@ -19032,34 +19139,7 @@ impl App {
                 // A query that failed on its first rows is not applied: the table,
                 // its schema and its row count go back to what they were (#400).
                 if let Some(run) = self.take_query_run() {
-                    let rows = run.rows;
-                    let origin = self.roll_back_query_run(run);
-                    self.collect_inflight = None;
-                    self.loading_state = LoadingState::Idle;
-                    self.status_message = None;
-                    self.busy = false;
-                    // Run from the prompt, the reason goes under the query, which
-                    // stays open to be fixed. Sent any other way — a view applied —
-                    // there is nothing to edit, and the error modal says why.
-                    let mode = match origin {
-                        RunOrigin::View { .. } => {
-                            self.error_modal
-                                .show(format!("Error applying view: {message}"));
-                            self.read_after_view_rollback();
-                            return None;
-                        }
-                        RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
-                        RunOrigin::Query(_) => {
-                            self.error_modal.show(message.clone());
-                            return None;
-                        }
-                    };
-                    let sql = mode == QueryMode::Sql;
-                    self.query_run_error = Some(match conversion {
-                        Some(failure) if sql => failure.sql_message(rows),
-                        _ => message.clone(),
-                    });
-                    self.inline_failures = self.inline_failures.wrapping_add(1);
+                    self.fail_query_run(run, message, conversion.as_deref());
                     return None;
                 }
                 let waited_on = self
@@ -19567,6 +19647,16 @@ impl App {
                         .view_pivot
                         .take_if(|pending| pending.generation == *generation)
                         .is_some();
+                    // A query whose first rows died with the worker fails as when
+                    // they cannot be read (#432).
+                    let query = self
+                        .query_running
+                        .as_ref()
+                        .is_some_and(|run| matches!(run.origin, RunOrigin::Query(_)));
+                    if query && let Some(run) = self.take_query_run() {
+                        self.fail_query_run(run, message, None);
+                        return None;
+                    }
                     let rows = self
                         .query_running
                         .as_ref()
@@ -20587,6 +20677,44 @@ impl App {
         self.collect_owed = None;
         self.read_after_view_rollback();
         self.flash_note("View cancelled".to_string());
+    }
+
+    /// A query or view whose first rows could not be read is not applied: put back
+    /// what it replaced and say why where its origin says to.
+    fn fail_query_run(
+        &mut self,
+        run: QueryRun,
+        message: &str,
+        conversion: Option<&crate::error_display::ConversionFailure>,
+    ) {
+        let rows = run.rows;
+        let origin = self.roll_back_query_run(run);
+        self.collect_inflight = None;
+        self.loading_state = LoadingState::Idle;
+        self.status_message = None;
+        self.busy = false;
+        // Run from the prompt, the reason goes under the query, which stays open to
+        // be fixed. Sent any other way — a view applied — there is nothing to edit,
+        // and the error modal says why.
+        let mode = match origin {
+            RunOrigin::View { .. } => {
+                self.error_modal
+                    .show(format!("Error applying view: {message}"));
+                self.read_after_view_rollback();
+                return;
+            }
+            RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
+            RunOrigin::Query(_) => {
+                self.error_modal.show(message.to_string());
+                return;
+            }
+        };
+        let sql = mode == QueryMode::Sql;
+        self.query_run_error = Some(match conversion {
+            Some(failure) if sql => failure.sql_message(rows),
+            _ => message.to_string(),
+        });
+        self.inline_failures = self.inline_failures.wrapping_add(1);
     }
 
     /// Put back the view a running query or view replaced, with its row count, and

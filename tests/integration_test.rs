@@ -9440,6 +9440,352 @@ fn test_enter_with_nothing_to_drill_into_flashes() {
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
+/// Salaries by department, 40 rows: `dept` cycles eng, ops, sales and a null every
+/// fourth row; `salary` climbs by 5,000 from 60,000; `ts` is the hour `i % 24`.
+fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let dir = PathBuf::from("tests/sample-data").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let n = 40i64;
+    let df = df!(
+        "id" => (0..n).collect::<Vec<_>>(),
+        "dept" => (0..n)
+            .map(|i| ["eng", "ops", "sales"].get((i % 4) as usize).copied())
+            .collect::<Vec<_>>(),
+        "salary" => (0..n).map(|i| 60_000 + i * 5_000).collect::<Vec<_>>(),
+        "ts" => (0..n).map(|i| (i % 24) * 3_600_000_000).collect::<Vec<_>>(),
+    )
+    .unwrap()
+    .lazy()
+    .with_column(col("ts").cast(DataType::Datetime(TimeUnit::Microseconds, None)))
+    .collect()
+    .unwrap();
+    write_parquet(&dir, "", df);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.join("data.parquet")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// Run `sql` as the SQL prompt would and wait for its rows.
+fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>, sql: &str) {
+    app.event(&AppEvent::SqlSearch(sql.to_string()));
+    pump_until_idle(app, rx, tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+}
+
+/// The acceptance case: Enter on a department of a SQL `GROUP BY` shows that
+/// department's rows that passed the `WHERE`, key first, and Esc brings the grouped
+/// rows back with the cursor on the department.
+#[test]
+fn test_sql_group_by_drills_into_rows_after_where() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_where");
+    let area = Rect::new(0, 0, 100, 30);
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT dept, AVG(salary) AS avg_salary FROM df WHERE salary > 100000 GROUP BY dept",
+    );
+    painted(&mut app, &rx, &tx, area);
+    let depts = on_screen(&app, "dept");
+    assert_eq!(depts.len(), 4, "eng, ops, sales and null: {depts:?}");
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .locked_columns_count(),
+        1,
+        "the key is frozen, as a `by` key is"
+    );
+
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    assert_eq!(state.drilled_down_group_key, Some(vec![depts[1].clone()]));
+    assert_eq!(state.headers(), ["dept", "id", "salary", "ts"]);
+    let df = state.lf.clone().collect().unwrap();
+    let salaries = df.column("salary").unwrap().i64().unwrap();
+    assert!(salaries.into_no_null_iter().all(|s| s > 100_000));
+    let expected = (0..40i64)
+        .filter(|i| 60_000 + i * 5_000 > 100_000)
+        .filter(|i| {
+            ["eng", "ops", "sales"]
+                .get((i % 4) as usize)
+                .map_or("null", |d| d)
+                == depts[1]
+        })
+        .count();
+    assert_eq!(df.height(), expected);
+    assert!(on_screen(&app, "dept").iter().all(|d| *d == depts[1]));
+
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_drilled_down());
+    assert_eq!(state.headers(), ["dept", "avg_salary"]);
+    assert_eq!(on_screen(&app, "dept"), depts);
+    assert_eq!(state.table_state.selected(), Some(1));
+}
+
+/// Every group of a SQL aggregate drills into as many rows as it counted, whatever the
+/// key: a null, a renamed column, a computed key named by its alias, by its expression
+/// or by ordinal, several keys, and with HAVING, ORDER BY and LIMIT on the result.
+#[test]
+fn test_sql_group_by_drills_by_null_computed_and_aliased_keys() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_keys");
+    for sql in [
+        "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept",
+        "SELECT COUNT(*) AS n, dept AS d FROM df GROUP BY dept",
+        "SELECT EXTRACT(HOUR FROM ts) AS h, COUNT(*) AS n FROM df GROUP BY h",
+        "SELECT EXTRACT(HOUR FROM ts) AS h, COUNT(*) AS n FROM df GROUP BY EXTRACT(HOUR FROM ts)",
+        "SELECT salary > 150000 AS high, COUNT(*) AS n FROM df GROUP BY 1",
+        "SELECT dept, id % 2 = 0 AS even, COUNT(*) AS n FROM df GROUP BY dept, even",
+        "SELECT dept, COUNT(*) AS n FROM df WHERE id > 5 GROUP BY dept \
+         HAVING COUNT(*) > 3 ORDER BY n DESC, dept LIMIT 3",
+        "SELECT t.dept, COUNT(*) AS n FROM df AS t WHERE t.salary < 200000 GROUP BY t.dept",
+    ] {
+        run_sql(&mut app, &rx, &tx, sql);
+        let state = app.data_table_state.as_mut().unwrap();
+        assert!(state.can_drill_down(), "{sql}");
+        let counts: Vec<u32> = state
+            .lf
+            .clone()
+            .collect()
+            .unwrap()
+            .column("n")
+            .unwrap()
+            .u32()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert!(!counts.is_empty(), "{sql}");
+        for (group, counted) in counts.into_iter().enumerate() {
+            state.drill_down_into_group(group).unwrap();
+            let rows = state.lf.clone().collect().unwrap();
+            assert_eq!(rows.height() as u32, counted, "{sql}, group {group}");
+            assert!(
+                rows.get_column_names()
+                    .iter()
+                    .all(|c| !c.starts_with("__datui")),
+                "{sql}: no scratch columns"
+            );
+            state.drill_up().unwrap();
+        }
+    }
+}
+
+/// A null key drills into the rows whose key is null, and a computed key into the
+/// rows that compute it, with the source's own columns.
+#[test]
+fn test_sql_group_by_null_and_computed_key_rows() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_null");
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY dept NULLS LAST",
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    state.drill_down_into_group(3).unwrap();
+    assert_eq!(
+        state.drilled_down_group_key_columns,
+        Some(vec!["dept".to_string()])
+    );
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 10);
+    assert_eq!(df.column("dept").unwrap().null_count(), 10);
+    state.drill_up().unwrap();
+
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT EXTRACT(HOUR FROM ts) AS h, SUM(salary) AS total FROM df \
+         GROUP BY h ORDER BY h",
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    state.drill_down_into_group(3).unwrap();
+    assert_eq!(state.drilled_down_group_key, Some(vec!["3".to_string()]));
+    assert_eq!(state.headers(), ["id", "dept", "salary", "ts"]);
+    let df = state.lf.clone().collect().unwrap();
+    let ids: Vec<i64> = df
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(ids, [3, 27], "hour 3");
+}
+
+/// `ARRAY_AGG` lists are values the statement computed, not the group's rows: a drill
+/// still shows the source rows.
+#[test]
+fn test_sql_group_by_with_lists_drills_into_source_rows() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_lists");
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT dept, ARRAY_AGG(id) AS ids, MAX(salary) AS top FROM df \
+         WHERE dept IS NOT NULL GROUP BY dept ORDER BY dept",
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    assert!(state.is_grouped(), "a list column");
+    state.drill_down_into_group(0).unwrap();
+    assert_eq!(state.headers(), ["dept", "id", "salary", "ts"]);
+    assert_eq!(state.lf.clone().collect().unwrap().height(), 10);
+}
+
+/// A statement whose rows cannot be traced back reliably does not drill: Enter says
+/// there is nothing to drill into.
+#[test]
+fn test_sql_shapes_without_a_source_do_not_drill() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_unsupported");
+    let area = Rect::new(0, 0, 100, 30);
+    for sql in [
+        "SELECT dept, salary FROM df",
+        "SELECT dept, COUNT(*) AS n FROM df \
+         WHERE dept IN (SELECT dept FROM df WHERE salary > 200000) GROUP BY dept",
+        "SELECT a.dept, COUNT(*) AS n FROM df AS a JOIN df AS b ON a.id = b.id GROUP BY a.dept",
+        "WITH t AS (SELECT * FROM df) SELECT dept, COUNT(*) AS n FROM t GROUP BY dept",
+        "SELECT AVG(salary) AS avg FROM df GROUP BY dept",
+    ] {
+        run_sql(&mut app, &rx, &tx, sql);
+        painted(&mut app, &rx, &tx, area);
+        assert!(
+            !app.data_table_state.as_ref().unwrap().can_drill_down(),
+            "{sql}"
+        );
+        press_and_send(&mut app, &tx, KeyCode::Enter);
+        assert_eq!(app.flash_message(), Some("Nothing to drill into"), "{sql}");
+        assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
+    }
+}
+
+/// Enter on a grouped result with no rows says there is nothing to drill into rather
+/// than doing nothing.
+#[test]
+fn test_enter_on_an_empty_sql_group_by_flashes() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_empty");
+    let area = Rect::new(0, 0, 100, 30);
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT dept, COUNT(*) AS n FROM df WHERE salary < 0 GROUP BY dept",
+    );
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(current_rows(&app), 0);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.flash_message(), Some("Nothing to drill into"));
+    assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
+}
+
+/// Polars returns groups in any order. A grouping without ORDER BY comes back sorted by
+/// its keys, as a `by` result does, so each read of it (a page, the count, Esc from a
+/// drill) shows the same rows in the same places; ORDER BY is left as written.
+#[test]
+fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_group_order");
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT EXTRACT(HOUR FROM ts) AS h, dept, COUNT(*) AS n FROM df GROUP BY dept, h",
+    );
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf
+        .clone()
+        .collect()
+        .unwrap();
+    let sorted = df
+        .sort(
+            ["h", "dept"],
+            SortMultipleOptions::default().with_nulls_last(true),
+        )
+        .unwrap();
+    assert!(df.equals_missing(&sorted), "{df}");
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .locked_columns_count(),
+        2,
+        "both keys lead, so both are frozen"
+    );
+
+    run_sql(
+        &mut app,
+        &rx,
+        &tx,
+        "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY dept DESC NULLS FIRST",
+    );
+    assert_eq!(
+        current_rows(&app),
+        4,
+        "the order as written: {:?}",
+        app.data_table_state.as_ref().unwrap().lf.clone().collect()
+    );
+    let first = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("dept")
+        .unwrap()
+        .get(0)
+        .unwrap()
+        .is_null();
+    assert!(first, "ORDER BY is kept");
+}
+
+/// A GROUP BY that fails once it runs is not applied, and the view left in place drills
+/// as before: not at all over the rows as loaded, and by its own keys, not the failed
+/// statement's, over a grouped view.
+#[test]
+fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
+    let (mut app, rx, tx) = open_salary_fixture("sql_drill_rollback");
+    let failing = "SELECT CAST(dept AS INT) AS dept, COUNT(*) AS n FROM df GROUP BY 1";
+    // Over the rows as loaded, the failed statement leaves nothing to drill into.
+    app.event(&AppEvent::SqlSearch(failing.to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.modal_showing(), "the failure is said");
+    assert!(!app.data_table_state.as_ref().unwrap().can_drill_down());
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.modal_showing());
+
+    let grouped = "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept";
+    run_sql(&mut app, &rx, &tx, grouped);
+    app.event(&AppEvent::SqlSearch(failing.to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.modal_showing(), "the failure is said");
+    let state = app.data_table_state.as_mut().unwrap();
+    assert_eq!(state.get_active_sql_query(), grouped);
+    state.drill_down_into_group(0).unwrap();
+    assert_eq!(state.drilled_down_group_key, Some(vec!["eng".to_string()]));
+    assert_eq!(current_rows(&app), 10);
+}
+
 /// SQL inside a drill-down runs on the group, like the sidebar does, not on the whole
 /// loaded table.
 #[test]

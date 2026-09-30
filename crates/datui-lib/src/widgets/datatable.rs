@@ -370,6 +370,11 @@ struct GroupSource {
     rows: LazyFrame,
     /// Each key's column in the result, with the expression that computes it from `rows`.
     keys: Vec<(PlSmallStr, Expr)>,
+    /// Columns `rows` carries only to compute keys, left out of a drill.
+    scratch: Vec<PlSmallStr>,
+    /// Whether the result's list columns are each group's rows, as a `by` query's are.
+    /// A SQL result's lists are values it computed, such as `ARRAY_AGG`.
+    rows_in_lists: bool,
 }
 
 /// The row a drill into a group reads, from [`DataTableState::drill_row`].
@@ -6504,10 +6509,16 @@ impl DataTableState {
         !self.is_drilled_down() && (self.is_grouped() || self.group_source.is_some())
     }
 
+    /// Whether a drill shows the lists of a row as the group's rows rather than
+    /// filtering the source: a `by` result, or lists with no grouping query behind them.
+    fn drills_lists(&self) -> bool {
+        self.is_grouped() && self.group_source.as_ref().is_none_or(|s| s.rows_in_lists)
+    }
+
     /// The columns of a row that a drill into its group reads: every column of a result
     /// holding its groups as lists, the keys of one holding aggregates.
     fn drill_columns(&self) -> Vec<String> {
-        if self.is_grouped() {
+        if self.drills_lists() {
             return self.schema.iter_names().map(|n| n.to_string()).collect();
         }
         self.group_source
@@ -6571,7 +6582,7 @@ impl DataTableState {
         if row.height() == 0 {
             return Err(color_eyre::eyre::eyre!("Group index out of bounds"));
         }
-        let mut group = if self.is_grouped() {
+        let mut group = if self.drills_lists() {
             Self::group_from_lists(row, self.group_key_columns(), self.group_value_columns())?
         } else if let Some(source) = &self.group_source {
             Self::group_from_source(source, row)?
@@ -6580,7 +6591,7 @@ impl DataTableState {
         };
         // A list form that also aggregates (`select a, n: count a by k`) holds its
         // aggregates beside the keys; the query knows which columns are keys.
-        if let Some(source) = self.group_source.as_ref().filter(|_| self.is_grouped()) {
+        if let Some(source) = self.group_source.as_ref().filter(|_| self.drills_lists()) {
             let keys: Vec<&str> = source.keys.iter().map(|(n, _)| n.as_str()).collect();
             (group.key_columns, group.key_values) = group
                 .key_columns
@@ -6681,7 +6692,9 @@ impl DataTableState {
             // The key as the query computed it, against the value it produced; the alias
             // only named the result's column.
             let key = expr.clone().meta().undo_aliases();
-            if let Expr::Column(source_column) = &key {
+            if let Expr::Column(source_column) = &key
+                && !source.scratch.contains(source_column)
+            {
                 lead.push(source_column.to_string());
             }
             let matches = key.eq_missing(lit(Scalar::new(column.dtype().clone(), value)));
@@ -6691,10 +6704,13 @@ impl DataTableState {
             });
         }
         let rows = source.rows.clone();
-        let lf = match predicate {
+        let mut lf = match predicate {
             Some(predicate) => rows.filter(predicate),
             None => rows,
         };
+        if !source.scratch.is_empty() {
+            lf = lf.drop(by_name(source.scratch.iter().cloned(), true, false));
+        }
         Ok(GroupRows {
             lf,
             key_columns,
@@ -7094,6 +7110,8 @@ impl DataTableState {
                     self.group_source = Some(GroupSource {
                         rows: group_rows,
                         keys,
+                        scratch: Vec::new(),
+                        rows_in_lists: true,
                     });
                 }
                 self.forget_reshape();
@@ -7146,9 +7164,10 @@ impl DataTableState {
         {
             use polars_sql::SQLContext;
             let mut ctx = SQLContext::new();
-            ctx.register("df", self.query_root());
+            let root = self.query_root();
+            ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
-                Ok(result_lf) => {
+                Ok(mut result_lf) => {
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -7156,7 +7175,10 @@ impl DataTableState {
                             return;
                         }
                     };
+                    let group_source =
+                        Self::sql_group_source(&mut ctx, trimmed, root, &mut result_lf, &schema);
                     self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0);
+                    self.install_sql_group_source(group_source);
                 }
                 Err(e) => {
                     self.error = Some(e);
@@ -7170,6 +7192,77 @@ impl DataTableState {
                 "SQL support not compiled in (build with --features sql)".into(),
             ));
         }
+    }
+
+    /// What a SQL `GROUP BY` result was grouped from, when the statement is a grouping
+    /// of `df` simple enough to trace (see [`crate::sql_group`]). Plans without reading.
+    /// A grouping with no ORDER BY or LIMIT has its rows sorted by key, as a `by`
+    /// query's are: Polars returns groups in any order, and every read of the result
+    /// (each page, the row count, coming back from a drill) would otherwise be free to
+    /// shuffle them.
+    #[cfg(feature = "sql")]
+    fn sql_group_source(
+        ctx: &mut polars_sql::SQLContext,
+        sql: &str,
+        root: LazyFrame,
+        result_lf: &mut LazyFrame,
+        result: &Schema,
+    ) -> Option<GroupSource> {
+        use crate::sql_group::KeySource;
+        let columns = root.clone().collect_schema().ok()?;
+        let names: Vec<&str> = columns.iter_names().map(|n| n.as_str()).collect();
+        let plan = crate::sql_group::plan(sql, &names, result.len())?;
+        let rows = ctx.execute(&plan.source_sql).ok()?;
+        let source_schema = rows.clone().collect_schema().ok()?;
+        let mut scratch = Vec::new();
+        let mut keys = Vec::with_capacity(plan.keys.len());
+        for key in plan.keys {
+            let (name, dtype) = result.get_at_index(key.result_index)?;
+            let column = match key.source {
+                KeySource::Column(c) => PlSmallStr::from(c),
+                KeySource::Computed(c) => {
+                    let c = PlSmallStr::from(c);
+                    scratch.push(c.clone());
+                    c
+                }
+            };
+            // A key the grouping changed the type of would never compare equal.
+            if source_schema.get(&column) != Some(dtype) {
+                return None;
+            }
+            keys.push((name.clone(), col(column)));
+        }
+        if !plan.ordered {
+            // In the order they are shown.
+            let by: Vec<Expr> = result
+                .iter_names()
+                .filter(|name| keys.iter().any(|(key, _)| key == *name))
+                .map(|name| col(name.clone()))
+                .collect();
+            let options = sort_options(vec![false; by.len()]);
+            *result_lf = result_lf.clone().sort_by_exprs(by, options);
+        }
+        Some(GroupSource {
+            rows,
+            keys,
+            scratch,
+            rows_in_lists: false,
+        })
+    }
+
+    /// Record a SQL result's group source and freeze the keys that lead it, as a `by`
+    /// query's are.
+    #[cfg(feature = "sql")]
+    fn install_sql_group_source(&mut self, source: Option<GroupSource>) {
+        let Some(source) = source else {
+            return;
+        };
+        self.locked_columns_count = self
+            .schema
+            .iter_names()
+            .take_while(|c| source.keys.iter().any(|(k, _)| k == *c))
+            .count();
+        self.group_source = Some(source);
     }
 
     /// Fuzzy search: filter rows where any string column matches the query.

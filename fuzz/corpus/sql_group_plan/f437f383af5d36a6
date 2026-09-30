@@ -1,0 +1,1 @@
+SELECT dept, EXTRACT(HOUR FROM ts) AS h, SUM(salary) FROM df GROUP BY dept, EXTRACT(HOUR FROM ts)

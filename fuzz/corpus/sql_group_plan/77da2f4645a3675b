@@ -1,0 +1,1 @@
+SELECT salary, dept AS salary2, COUNT(*) FROM df GROUP BY salary, dept

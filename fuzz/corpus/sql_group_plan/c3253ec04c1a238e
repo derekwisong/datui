@@ -1,0 +1,1 @@
+SELECT t.dept, COUNT(*) FROM df AS t GROUP BY "t"."dept"

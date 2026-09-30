@@ -1,0 +1,1 @@
+SELECT dept, AVG(salary) AS avg_salary FROM df WHERE salary > 100000 GROUP BY dept HAVING COUNT(*) > 1 ORDER BY avg_salary DESC LIMIT 3

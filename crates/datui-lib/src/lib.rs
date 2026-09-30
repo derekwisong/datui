@@ -98,6 +98,10 @@ pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
 mod sql_assist;
+// Public so the fuzz target `sql_group_plan` can reach `plan`, which reads every SQL
+// statement the prompt runs.
+#[cfg(feature = "sql")]
+pub mod sql_group;
 pub mod statistics;
 pub mod template;
 pub mod widgets;
@@ -2822,6 +2826,46 @@ mod template_rollback_tests {
         assert!(state.is_num_rows_valid(), "with its count");
         assert_eq!(state.num_rows, 40);
         assert_ne!(app.len_count_inflight, Some(counting), "not left counting");
+    }
+
+    /// A view whose SQL groups another way and then fails leaves the grouped view it
+    /// rolled back to drilling by that view's own keys, not the failed view's.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_failed_template_rolls_back_what_a_grouped_row_drills_into() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("depts.csv");
+        std::fs::write(&path, "dept,salary\neng,1\nops,2\neng,3\nops,4\neng,5\n").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+        let state = app.data_table_state.as_mut().unwrap();
+        state.sql_query("SELECT dept, COUNT(*) AS n FROM df GROUP BY dept".to_string());
+        assert!(state.error.is_none(), "{:?}", state.error);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "group another way then break".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query =
+            Some("SELECT salary > 2 AS dept, COUNT(*) AS n FROM df GROUP BY 1".to_string());
+        template.settings.column_order = vec!["no_such_column".to_string()];
+        assert!(app.apply_template(&template).is_err());
+
+        let state = app.data_table_state.as_mut().unwrap();
+        state.drill_down_into_group(0).unwrap();
+        assert_eq!(state.drilled_down_group_key, Some(vec!["eng".to_string()]));
+        assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
     }
 }
 
@@ -18115,15 +18159,21 @@ impl App {
                     return None;
                 }
                 let state = self.data_table_state.as_ref()?;
-                let selected = state.table_state.selected()?;
-                let group_index = state.start_row + selected;
-                match state.drill_row(group_index) {
+                // An empty result has no row selected, and says so like any other.
+                let drill = state
+                    .table_state
+                    .selected()
+                    .map(|selected| state.start_row + selected)
+                    .and_then(|index| Some((index, state.drill_row(index)?)));
+                match drill {
                     None if state.is_drilled_down() => {
                         self.flash_note("Already in a group; Esc goes back".to_string());
                     }
                     None => self.flash_note("Nothing to drill into".to_string()),
-                    Some(DrillRow::Buffered(row)) => self.drill_into(group_index, &row),
-                    Some(DrillRow::Read(lf)) => {
+                    Some((group_index, DrillRow::Buffered(row))) => {
+                        self.drill_into(group_index, &row)
+                    }
+                    Some((group_index, DrillRow::Read(lf))) => {
                         let streaming = state.polars_streaming;
                         self.spawn_bg(Self::READING_GROUP, move |task_gen, tx| {
                             let row = crate::statistics::collect_lazy(*lf, streaming)

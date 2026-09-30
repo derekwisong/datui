@@ -1,0 +1,1 @@
+SELECT upper(dept) AS u, COUNT(*) AS n FROM df GROUP BY UPPER(("dept"))

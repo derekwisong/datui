@@ -29,12 +29,18 @@ fails on the data is not applied: the reason shows under it, the table
 keeps what it showed, and the query is there to fix.
 
 SQL:
-  Full SQL over the loaded, drilled or reshaped data; the table name is df.
+  The SQL the bundled Polars supports, not the full SQL standard, over one
+  table, df: the group's rows while drilled into one, the pivot or melt
+  result while one is in effect, otherwise the data as loaded. Never the
+  sidebar filters or sort, nor the previous statement's result.
   Example: SELECT city, count(*) FROM df GROUP BY city
   The columns of df are listed under the input, narrowed to the name being
   typed. A long statement wraps onto up to four lines.
   For values that will not convert, TRY_CAST(col AS INT) reads them as
   null; trim text with SUBSTR or REPLACE before STRPTIME.
+  Enter on a row of a GROUP BY result shows the rows of df behind it,
+  after the WHERE; Esc comes back. Only for one table grouped by selected
+  keys: no joins, subqueries, WITH, UNION or window functions.
 
 Search:
   Every word's letters in order, in any text column. A row matches when,

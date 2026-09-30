@@ -2151,6 +2151,7 @@ mod classification_tests {
         write(dir.path(), "b.parquet", &["id"]);
         std::fs::write(dir.path().join("README.txt"), b"notes").unwrap();
 
+        #[cfg(feature = "cloud")]
         let objects: Vec<(String, u64)> = [
             ("out/a.parquet", 100u64),
             ("out/b.parquet", 100),
@@ -2160,6 +2161,7 @@ mod classification_tests {
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
 
+        #[cfg(feature = "cloud")]
         assert_eq!(
             classify_directory(dir.path()),
             crate::cloud_browse::look_at_listing("out/", &[], &objects).0,
@@ -2814,6 +2816,7 @@ mod classification_tests {
 
     /// Part files with no extension inside a `.parquet` directory are data by where they
     /// sit. The cloud route has always counted them; the local one said `dir`.
+    #[cfg(feature = "cloud")]
     #[test]
     fn extensionless_part_files_are_data_on_both_routes() {
         let dir = tempfile::tempdir().unwrap();
@@ -2879,6 +2882,7 @@ mod classification_tests {
     /// routes. It is not much of one — but the local route has always said so, and the
     /// cloud route disagreeing was the divergence. Pinned rather than left to be
     /// rediscovered: #275 phase 3 takes the consequence off the label.
+    #[cfg(feature = "cloud")]
     #[test]
     fn one_partition_beside_files_datui_cannot_read_answers_alike() {
         let dir = tempfile::tempdir().unwrap();
@@ -2911,6 +2915,7 @@ mod classification_tests {
             directories.push(format!("events/_date={day}/"));
         }
 
+        #[cfg(feature = "cloud")]
         assert_eq!(
             classify_directory(dir.path()),
             crate::cloud_browse::look_at_listing("events/", &directories, &[]).0,
@@ -2924,6 +2929,7 @@ mod classification_tests {
     /// A prefix a writer made for itself is not a directory somebody put data in, on
     /// either route. `_temporary/` counted toward the majority in a bucket and not
     /// locally, so the same directory came back two different kinds.
+    #[cfg(feature = "cloud")]
     #[test]
     fn a_writers_own_directory_is_skipped_on_both_routes() {
         let dir = tempfile::tempdir().unwrap();
@@ -3025,6 +3031,7 @@ mod classification_tests {
     /// own file. A probe of the first eight entries never saw the JSON and said `multi`;
     /// a bucket listing sorts `_metadata.json` first and said `dir`. Same directory, two
     /// answers, decided by the order the filesystem happened to return.
+    #[cfg(feature = "cloud")]
     #[test]
     fn a_writers_own_file_is_skipped_whatever_order_it_is_listed_in() {
         let dir = tempfile::tempdir().unwrap();
@@ -3072,6 +3079,7 @@ mod classification_tests {
             "five markers beside two data files do not outvote them"
         );
 
+        #[cfg(feature = "cloud")]
         let keys: Vec<(String, u64)> = [
             ("out/_SUCCESS", 0u64),
             ("out/_committed_1727", 12),
@@ -3084,6 +3092,7 @@ mod classification_tests {
         .iter()
         .map(|(k, s)| ((*k).to_string(), *s))
         .collect();
+        #[cfg(feature = "cloud")]
         assert_eq!(
             crate::cloud_browse::look_at_listing("out/", &[], &keys).0,
             EntryKind::MultiFile,

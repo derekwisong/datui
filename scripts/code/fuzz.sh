@@ -39,7 +39,7 @@ SANITIZER="${DATUI_FUZZ_SANITIZER:-none}"
 
 cd "$(dirname "$0")/../.."
 
-TARGETS=(parse_query number_format fuzzy_match glob_match config_parse)
+TARGETS=(parse_query sql_group_plan number_format fuzzy_match glob_match config_parse)
 
 case "${1:-}" in
     list)

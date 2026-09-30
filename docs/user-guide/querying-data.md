@@ -42,6 +42,23 @@ GROUP BY species
 ```
 
 It returns three species averages. Gentoo has the highest, about 5,076 g.
+Press <kbd>Enter</kbd> on Gentoo to see its penguins; see
+[Drill into a GROUP BY](#drill-into-a-group-by).
+
+## SQL
+
+SQL mode runs the SQL that the bundled version of
+[Polars supports](https://docs.pola.rs/api/python/stable/reference/sql/index.html),
+not the full SQL standard. A statement reads one table, `df`:
+
+| `df` is | While |
+|---|---|
+| The group's rows | Drilled into a group |
+| The pivot or melt result | A pivot or melt is in effect |
+| The data as loaded | Otherwise |
+
+Sidebar filters and sort are not part of `df`, and neither is the previous
+statement's result: each statement starts from `df` again.
 
 ## Write SQL
 
@@ -69,6 +86,31 @@ the column, the values that failed and SQL that gets past them:
 
 The count is exact when the whole column was checked before the run stopped.
 Otherwise it says "At least N", from the rows read so far.
+
+## Drill into a GROUP BY
+
+Press <kbd>Enter</kbd> on a row of a `GROUP BY` result to see the rows behind
+it: the rows of `df` that passed the `WHERE` and share the row's keys, with
+every column of `df`, a key that is a column first. A null key shows the rows
+whose key is null.
+<kbd>Esc</kbd> comes back to the grouped rows, cursor and frozen columns as
+they were.
+
+```sql
+SELECT dept, AVG(salary) AS avg_salary FROM df WHERE salary > 100000 GROUP BY dept
+SELECT EXTRACT(HOUR FROM ts) AS h, COUNT(*) AS n FROM df GROUP BY h ORDER BY n DESC
+```
+
+| Drills | Does not drill |
+|---|---|
+| `SELECT keys, aggregates FROM df [WHERE] GROUP BY keys`, then any `HAVING`, `ORDER BY`, `LIMIT` | Joins, subqueries, `WITH`, `UNION` |
+| A key named by its column, its select alias, its position (`GROUP BY 1`) or the same expression as selected | Window functions (`OVER`), `DISTINCT ON`, `GROUP BY ALL`, `UNNEST` |
+| Computed keys: `EXTRACT(HOUR FROM ts) AS h` | A key that is not selected, or written differently in `SELECT` |
+
+Where a statement does not drill, <kbd>Enter</kbd> says there is nothing to
+drill into. A result that drills has the keys that lead it frozen, as a q-style
+`by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
+since Polars returns groups in no fixed order.
 
 ## Search
 

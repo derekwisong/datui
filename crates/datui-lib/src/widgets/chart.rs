@@ -18,6 +18,7 @@ use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
+use unicode_width::UnicodeWidthStr;
 
 const SIDEBAR_WIDTH: u16 = 42;
 /// Where the value column starts, past the rail gutter: the longest label,
@@ -668,6 +669,7 @@ fn render_xy_chart(
 
             // A series is drawn as its runs between gaps, so a line never bridges a
             // missing value; only the first run is named, which keeps one legend entry.
+            let name_width = legend_width(names_and_points.iter().map(|s| s.name));
             let datasets: Vec<Dataset> = names_and_points
                 .iter()
                 .enumerate()
@@ -687,7 +689,7 @@ fn render_xy_chart(
                                 .style(style)
                                 .data(run);
                             if j == 0 {
-                                dataset.name(series.name)
+                                dataset.name(legend_name(series.name, name_width))
                             } else {
                                 dataset
                             }
@@ -777,6 +779,19 @@ fn render_xy_chart(
             .centered()
             .render(area, buf);
     }
+}
+
+/// The widest of the legend's names, in cells.
+fn legend_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
+    names.map(UnicodeWidthStr::width).max().unwrap_or(0)
+}
+
+/// A legend name padded to the legend's width. ratatui writes each name over the
+/// plot without clearing the rest of its row, so marks showed through beside a
+/// short name.
+fn legend_name(name: &str, width: usize) -> String {
+    let pad = width.saturating_sub(UnicodeWidthStr::width(name));
+    format!("{name}{:pad$}", "")
 }
 
 fn render_histogram_chart(
@@ -896,6 +911,7 @@ fn render_kde_chart(
         "chart_series_color_7",
     ];
 
+    let name_width = legend_width(data.series.iter().map(|s| s.name.as_str()));
     let datasets: Vec<Dataset> = data
         .series
         .iter()
@@ -907,7 +923,7 @@ fn render_kde_chart(
                 .unwrap_or("primary_chart_series_color");
             let style = Style::default().fg(theme.get(color_key));
             Dataset::default()
-                .name(s.name.as_str())
+                .name(legend_name(&s.name, name_width))
                 .graph_type(GraphType::Line)
                 .marker(g.plot.line)
                 .style(style)
@@ -1711,6 +1727,41 @@ mod tests {
         let bars = bar_data(5);
         let text = plot_text(&modal, ChartRenderData::Bar { data: Some(&bars) }, ascii);
         assert!(text.is_ascii() && text.contains('#'), "bars:\n{text}");
+    }
+
+    /// The legend reads clean over a full plot: a short name's row is blank past
+    /// the name, not the marks behind it.
+    #[test]
+    fn the_legend_hides_the_plot_behind_it() {
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["price".to_string(), "volume".to_string()];
+        modal.show_legend = true;
+        modal.chart_type = ChartType::Bar;
+        // Bars in every column fill the plot, legend corner included.
+        let series: Vec<Vec<(f64, f64)>> = vec![(0..120).map(|i| (i as f64, 100.0)).collect(); 2];
+        for g in [crate::glyphs::ascii(), crate::glyphs::unicode()] {
+            let text = plot_text(
+                &modal,
+                ChartRenderData::XY {
+                    series: Some(&series),
+                    breaks: None,
+                    x_axis_kind: XAxisTemporalKind::Numeric,
+                    x_bounds: None,
+                },
+                g,
+            );
+            let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+            let corner = g.plot.axis.top_left.chars().next().unwrap();
+            let left = rows[0].iter().position(|c| *c == corner).expect(&text);
+            let interior = |y: usize| {
+                rows[y][left + 1..rows[y].len() - 1]
+                    .iter()
+                    .collect::<String>()
+            };
+            assert_eq!(interior(1), "price ", "{text}");
+            assert_eq!(interior(2), "volume", "{text}");
+        }
     }
 
     #[test]

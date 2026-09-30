@@ -623,13 +623,17 @@ pub fn page_setup(
     match page {
         QualityPage::Segments if plan.grain == QualityGrain::Dataset => Some(QualitySetup::Grain),
         QualityPage::Trends if !shows_trend(plan, results) => Some(QualitySetup::Grain),
-        // Roles that make no interval want a pair chosen; otherwise, roles.
+        // Roles that make no interval want a pair chosen; otherwise, roles. Pairs
+        // that measured nothing (metadata only, text with no format) are not
+        // fixed by either, and the page says what is.
         QualityPage::Intervals if results.temporal.is_empty() && has_time_columns => {
-            Some(if plan.candidate_pairs().is_empty() {
-                QualitySetup::TimeRoles
+            if plan.candidate_pairs().is_empty() {
+                Some(QualitySetup::TimeRoles)
+            } else if plan.interval_pairs().is_empty() {
+                Some(QualitySetup::Intervals)
             } else {
-                QualitySetup::Intervals
-            })
+                None
+            }
         }
         _ => None,
     }
@@ -1849,6 +1853,13 @@ impl TemporalLatencyProfile {
             IntervalFact::Zero => Some((self.zero_count, paired)),
             IntervalFact::OverThreshold => self.above_threshold_count.map(|count| (count, paired)),
         }
+    }
+
+    /// Whether this interval's segment is a value its rows can be found by, rather
+    /// than a stretch of rows or a file.
+    pub fn segment_opens(&self, plan: &DataQualityPlan) -> bool {
+        let grain = plan.interval_grain(&self.start_column, &self.end_column);
+        segment_predicate(plan, &grain, &self.segment).is_some()
     }
 
     /// The rows behind `fact` in this interval's segment, as a predicate over the
@@ -6164,6 +6175,10 @@ mod tests {
             setup(QualityPage::Intervals, &paired, true),
             Some(QualitySetup::Intervals)
         );
+        // A chosen pair that measured nothing, as on metadata only, is not fixed by
+        // choosing pairs again: the page says what is, and Enter opens nothing.
+        paired.toggle_interval((TemporalRole::Created, TemporalRole::Processed));
+        assert_eq!(setup(QualityPage::Intervals, &paired, true), None);
         assert_eq!(
             page_setup(QualityPage::Segments, &plan, None, true),
             None,

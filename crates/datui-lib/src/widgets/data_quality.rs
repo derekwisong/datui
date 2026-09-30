@@ -616,10 +616,21 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             lines.push("File metadata only: no values read".to_string());
             return lines;
         }
-        QualityCompute::Full => lines.push(format!(
-            "Every eligible row, in up to {} passes over the scope: one per check",
-            full_passes(config)
-        )),
+        QualityCompute::Full => {
+            lines.push(format!(
+                "Every eligible row, in up to {} passes over the scope: one per check",
+                full_passes(config)
+            ));
+            // Each column an interval is windowed by is a grouping of its own.
+            let clocks =
+                crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+            if clocks > 1 {
+                lines.push(format!(
+                    "Window by {}: {clocks} of those passes for intervals, one per column",
+                    plan.interval_clock.label()
+                ));
+            }
+        }
         QualityCompute::Sample if view.reuses_sample => {
             lines.push("Uses the rows a run already read: no source read".to_string());
         }
@@ -2018,8 +2029,22 @@ fn render_intervals(
     ))
     .render(title, buf);
     if profiles.is_empty() {
+        let schema = config.state.quality_schema(&plan.scope);
         let message = if config.setup.time_candidates.is_empty() {
             "No date, time or text columns, so no time between dates to measure."
+        } else if plan.compute == QualityCompute::Metadata && !plan.interval_pairs().is_empty() {
+            "File metadata only reads no values, so no time between dates. Set Values \
+             to Read in Setup (e)."
+        } else if plan.interval_pairs().iter().any(|(start, end)| {
+            [start, end].into_iter().any(|role| {
+                plan.role_column(*role)
+                    .is_some_and(|column| !plan.reads_as_time(column, schema))
+            })
+        }) {
+            "An interval's column is text with no format. Choose one under Text as \
+             time in Setup (e)."
+        } else if !plan.interval_pairs().is_empty() {
+            "No rows to measure the time between dates on."
         } else if !plan.candidate_pairs().is_empty() {
             "The time roles make no interval. Choose a start and an end under \
              Intervals in Setup (e)."
@@ -2279,6 +2304,21 @@ fn render_interval_detail(
     // scrolls to keep it in view.
     let mut lines = Vec::new();
     let mut focus = 0;
+    // Enter opens nothing in a row chunk or a file, so say why under the segment
+    // rather than leave it to be found out.
+    let closed = (!profile.segment_opens(plan)).then(|| {
+        let what = match grain {
+            QualityGrain::File => "a file",
+            _ => "a row chunk",
+        };
+        Line::styled(
+            fit(
+                &format!("  Rows do not open: {what} is not a value to filter on"),
+                width,
+            ),
+            Style::default().fg(theme.get("dimmed")),
+        )
+    });
     for (row, fact) in &rows {
         if fact.is_some() && *fact == selected {
             focus = lines.len();
@@ -2292,6 +2332,9 @@ fn render_interval_detail(
             }
         }
         lines.extend(row_lines);
+        if row.label == "Segment" {
+            lines.extend(closed.clone());
+        }
     }
     let height = body.height as usize;
     let offset = if lines.len() > height {
@@ -3683,6 +3726,8 @@ mod interval_tests {
     struct Screen {
         state: DataTableState,
         plan: DataQualityPlan,
+        /// What Setup offers roles: the frame's date and time columns, and text.
+        candidates: Vec<String>,
         results: DataQualityResults,
         theme: Theme,
         ctx: RenderContext,
@@ -3705,6 +3750,9 @@ mod interval_tests {
             Self {
                 state,
                 plan,
+                candidates: ["sent", "seen", "from", "to", "stamp"]
+                    .map(String::from)
+                    .to_vec(),
                 results,
                 theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
                 ctx: RenderContext::for_test(),
@@ -3749,7 +3797,10 @@ mod interval_tests {
                 interval_index: interval,
                 segments_by_change: false,
                 page,
-                setup: SetupView::default(),
+                setup: SetupView {
+                    time_candidates: &self.candidates,
+                    ..SetupView::default()
+                },
                 plan_field: selected,
                 show_access: false,
                 observation_detail: false,
@@ -3904,6 +3955,66 @@ mod interval_tests {
                 assert_glyph_slots(&text);
             }
         }
+    }
+
+    /// Where Enter cannot help, the page says why: a report of file metadata reads
+    /// no times, and a row chunk's rows are not a value a count can open.
+    #[test]
+    fn intervals_say_why_nothing_opens() {
+        let roles = vec![
+            role(TemporalRole::Event, "sent"),
+            role(TemporalRole::Received, "seen"),
+        ];
+        let screen = Screen::new(DataQualityPlan {
+            compute: QualityCompute::Metadata,
+            temporal_roles: roles.clone(),
+            ..DataQualityPlan::default()
+        });
+        assert!(screen.results.temporal.is_empty());
+        let text = screen.draw(QualityPage::Intervals, 0, 0, (80, 24));
+        assert!(
+            text.contains("File metadata only reads no values"),
+            "{text}"
+        );
+
+        let screen = Screen::new(DataQualityPlan {
+            compute: QualityCompute::Full,
+            temporal_roles: roles,
+            grain: QualityGrain::RowChunks(4),
+            ..DataQualityPlan::default()
+        });
+        for size in [(80, 24), (60, 20)] {
+            let text = screen.draw(QualityPage::IntervalDetail, 0, 0, size);
+            assert!(text.contains("Rows do not open: a row chunk"), "{text}");
+        }
+    }
+
+    /// Windowing intervals by their ends groups once per end column, and on a full
+    /// scan Setup says how many of its passes that is before Run.
+    #[test]
+    fn setup_counts_the_passes_a_window_clock_takes() {
+        let mut plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            temporal_roles: vec![
+                role(TemporalRole::Event, "sent"),
+                role(TemporalRole::Received, "seen"),
+                role(TemporalRole::Processed, "to"),
+            ],
+            grain: QualityGrain::TimeWindows {
+                column: "sent".to_string(),
+                every: "1d".to_string(),
+            },
+            interval_clock: IntervalClock::End,
+            ..DataQualityPlan::default()
+        };
+        let text = Screen::new(plan.clone()).draw(QualityPage::Setup, 0, 0, (120, 40));
+        assert!(
+            text.contains("Window by each interval's end: 2 of those passes for intervals"),
+            "{text}"
+        );
+        plan.interval_clock = IntervalClock::Grain;
+        let text = Screen::new(plan).draw(QualityPage::Setup, 0, 0, (120, 40));
+        assert!(!text.contains("of those passes for intervals"), "{text}");
     }
 
     /// Valid from to valid to is a validity period: no end is open, an end before

@@ -12090,10 +12090,11 @@ impl App {
                     Ok(nv) => nv,
                     Err(e) => return Some(Err(e)),
                 };
+                // No `--parse-strings` here: its sample would be a second read of
+                // the bucket. Nor Polars' `try_parse_dates`, which fails the whole
+                // read on a value it cannot parse, even one like those it inferred
+                // the type from. Timestamps stay text.
                 DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
-                    // `--parse-strings` reads a sample, which a bucket is not asked
-                    // for; Polars finds dates in the rows it reads for the schema.
-                    .with_try_parse_dates(options.parse_dates)
                     .finish()
                     .map_err(named)
                     .and_then(|lf| {
@@ -20542,19 +20543,21 @@ mod cloud_csv_prefix_tests {
         assert_eq!(df.column("id").unwrap().null_count(), 0);
     }
 
-    /// A CSV prefix finds timestamps with the string typing on, which it never runs.
+    /// A CSV prefix keeps timestamps as text rather than risk a read that fails on
+    /// them: Polars' date inference takes `2024-01-01 10:00:00 UTC`, as BigQuery
+    /// exports it, for a datetime and then cannot parse it.
     #[test]
-    fn a_csv_prefix_reads_iso_timestamps_as_datetime() {
+    fn a_csv_prefix_keeps_timestamps_as_text() {
         let dir = tempfile::tempdir().unwrap();
-        let csv = "t,mixed\n2013-01-01T10:00:00Z,2013-01-01T10:00:00Z\n\
-                   2013-01-01T11:00:00.5Z,2013-01-01T11:00:00\n";
+        let csv = "z,bq\n2013-01-01T10:00:00Z,2024-01-01 10:00:00 UTC\n\
+                   2013-01-01T11:00:00.5Z,2024-01-02 11:30:15 UTC\n";
         std::fs::write(dir.path().join("a.csv"), csv).unwrap();
         let glob = format!("{}/*.csv", dir.path().display());
         let options = OpenOptions {
             parse_strings: Some(ParseStringsTarget::All),
             ..OpenOptions::default()
         };
-        let schema = App::scan_cloud_prefix(
+        let df = App::scan_cloud_prefix(
             &glob,
             CloudOptions::default(),
             FileFormat::Csv,
@@ -20563,16 +20566,11 @@ mod cloud_csv_prefix_tests {
         )
         .expect("a CSV reader")
         .unwrap()
-        .collect_schema()
-        .unwrap();
-        assert_eq!(
-            schema.get("t"),
-            Some(&DataType::Datetime(
-                polars::prelude::TimeUnit::Microseconds,
-                Some(polars::prelude::TimeZone::UTC)
-            ))
-        );
-        assert_eq!(schema.get("mixed"), Some(&DataType::String));
+        .collect()
+        .expect("the read succeeds");
+        assert_eq!(df.height(), 2);
+        assert_eq!(df.column("z").unwrap().dtype(), &DataType::String);
+        assert_eq!(df.column("bq").unwrap().dtype(), &DataType::String);
     }
 
     /// With one source, `local`, whose endpoint refuses every connection: a browse

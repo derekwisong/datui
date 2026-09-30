@@ -6840,6 +6840,88 @@ mod tests {
         }
     }
 
+    /// A count taken in the sampling pass is the count a full scan finds, segment by
+    /// segment: nulls in the key are their own segment, a zoned column is cut in UTC
+    /// as a scan cuts it, and a date column is cut as the midnight it is. The rows it
+    /// counted then serve a coarser window with no read.
+    #[test]
+    fn counts_in_the_sampling_pass_match_a_full_scan() {
+        let (df, _, _) = counting_table(3_000);
+        let gaps = |name: &str| {
+            when((col("id") % lit(11i64)).eq(lit(0i64)))
+                .then(lit(NULL))
+                .otherwise(col(name))
+                .alias(name)
+        };
+        let df = df
+            .lazy()
+            .with_columns([gaps("at"), gaps("region")])
+            .with_columns([
+                col("at")
+                    .dt()
+                    .replace_time_zone(
+                        TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
+                        lit("earliest"),
+                        NonExistent::Null,
+                    )
+                    .alias("zoned"),
+                col("at").cast(DataType::Date).alias("day"),
+            ])
+            .collect()
+            .unwrap();
+        let window = |column: &str, every: &str| QualityGrain::TimeWindows {
+            column: column.into(),
+            every: every.into(),
+        };
+        for grain in [
+            window("at", "1h"),
+            window("zoned", "1d"),
+            window("day", "1d"),
+            QualityGrain::Partition("region".into()),
+        ] {
+            let plan = DataQualityPlan {
+                dataset_rows: 200,
+                sample_seed: 3,
+                grain: grain.clone(),
+                ..DataQualityPlan::default()
+            };
+            let (results, kept) =
+                compute_data_quality_kept(&df.clone().lazy(), None, &plan, None, false, None)
+                    .unwrap();
+            assert_eq!(results.precision, QualityPrecision::Sampled);
+            assert!(
+                results
+                    .segments
+                    .iter()
+                    .any(|segment| segment.label.contains('∅')),
+                "{grain:?} has a null segment"
+            );
+            assert_exact(&results, &df, &plan);
+            let kept = kept.unwrap();
+            assert_eq!(
+                kept.segment_count(&plan),
+                SegmentCount::Retained,
+                "{grain:?}"
+            );
+            if let QualityGrain::TimeWindows { column, .. } = &grain {
+                let monthly = DataQualityPlan {
+                    grain: window(column, "1mo"),
+                    ..plan.clone()
+                };
+                let (results, _) = compute_data_quality_kept(
+                    &df.clone().lazy(),
+                    None,
+                    &monthly,
+                    None,
+                    false,
+                    Some(&kept),
+                )
+                .unwrap();
+                assert_exact(&results, &df, &monthly);
+            }
+        }
+    }
+
     /// Hours sum into days, weeks and months, and days into weeks and months, to the
     /// counts a read of the coarser window gives: on a plain, a zoned and a date
     /// column, across month ends, week starts and a daylight saving change. A week

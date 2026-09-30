@@ -59,6 +59,7 @@ A view that fits in the rows the chart already read is counted from those.
 | More than 100,000 categories | The count stops and the chart says so. Count by a column with fewer values |
 | A null category | Its own bar, labeled `∅` |
 | Equal counts | A to Z |
+| Another category, or leaving the chart, while it counts | The count stops; nothing partial is kept |
 
 ## Chart one value per category
 

@@ -6,11 +6,12 @@
 //! and errors that are not worth stopping for (cache, history) land here instead of
 //! vanishing.
 
+use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 pub use log::LevelFilter;
@@ -93,8 +94,8 @@ impl FileLog {
     }
 
     fn append(path: &Path) -> std::io::Result<File> {
-        // Append mode, so lines written through fd 2 and through `write_line` land
-        // whole and in order rather than overwriting each other.
+        // Append mode, so two sessions sharing the file interleave lines rather than
+        // overwrite each other.
         OpenOptions::new().create(true).append(true).open(path)
     }
 
@@ -107,22 +108,14 @@ impl FileLog {
         self.rotate_if_full()
     }
 
-    /// Measured on the file rather than counted, because stray stderr grows it too.
+    /// Measured on the file rather than counted, since another session may share it.
     fn rotate_if_full(&mut self) -> std::io::Result<bool> {
         if self.file.metadata()?.len() <= self.cap {
             return Ok(false);
         }
         std::fs::rename(&self.path, rotated_path(&self.path))?;
         self.file = Self::append(&self.path)?;
-        #[cfg(unix)]
-        stderr::follow(self.raw_fd());
         Ok(true)
-    }
-
-    #[cfg(unix)]
-    fn raw_fd(&self) -> std::os::fd::RawFd {
-        use std::os::fd::AsRawFd;
-        self.file.as_raw_fd()
     }
 }
 
@@ -156,34 +149,8 @@ impl Log for Logger {
     }
 
     fn log(&self, record: &Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-        // Formatted before the lock, in case formatting logs something itself.
-        let message = record.args().to_string().replace('\n', "\n    ");
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let mut state = state();
-        if state.file.is_none() {
-            return;
-        }
-        let mut text = String::new();
-        if !state.started {
-            state.started = true;
-            text.push_str(&format!(
-                "{now} ----- datui {} (pid {})\n",
-                env!("CARGO_PKG_VERSION"),
-                std::process::id()
-            ));
-        }
-        text.push_str(&format!(
-            "{now} {:<5} {}: {}",
-            record.level(),
-            record.target(),
-            redact(&message, &state.secrets)
-        ));
-        if let Some(file) = state.file.as_mut() {
-            // A log that cannot be written has nowhere to say so; stderr is the screen.
-            let _ = file.write_line(&text);
+        if self.enabled(record.metadata()) {
+            write_record(record.level().as_str(), record.target(), record.args());
         }
     }
 
@@ -191,6 +158,60 @@ impl Log for Logger {
         if let Some(file) = state().file.as_mut() {
             let _ = file.file.flush();
         }
+    }
+}
+
+thread_local! {
+    /// Set while this thread writes a record. A panic in the middle of one runs the
+    /// hook, which logs; without this it would wait on the lock the thread holds.
+    static WRITING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Clears [`WRITING`] however the write ends.
+struct Writing;
+
+impl Writing {
+    fn enter() -> Option<Self> {
+        (!WRITING.with(|w| w.replace(true))).then_some(Self)
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        WRITING.with(|w| w.set(false));
+    }
+}
+
+/// Write one record whatever the level, when the log is open.
+fn write_record(level: &str, target: &str, message: impl std::fmt::Display) {
+    let Some(_writing) = Writing::enter() else {
+        return;
+    };
+    // Formatted before the lock, in case formatting logs something itself.
+    let message = message.to_string().replace('\n', "\n    ");
+    let now = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let mut state = state();
+    if state.file.is_none() {
+        return;
+    }
+    let mut text = String::new();
+    if !state.started {
+        state.started = true;
+        text.push_str(&format!(
+            "{now} ----- datui {} (pid {})\n",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        ));
+    }
+    text.push_str(&format!(
+        "{now} {level:<5} {target}: {}",
+        redact(&message, &state.secrets)
+    ));
+    if let Some(file) = state.file.as_mut() {
+        // A log that cannot be written has nowhere to say so; stderr is the screen.
+        let _ = file.write_line(&text);
     }
 }
 
@@ -390,7 +411,54 @@ static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The last panic on a background thread, to print if it takes the TUI thread down.
 static BACKGROUND_PANIC: Mutex<Option<String>> = Mutex::new(None);
 
-/// The span during which the TUI owns the terminal: stderr points at the log (Unix),
+/// Background panics nothing has told the user about yet: those on threads that do
+/// not report their own (see [`catch_panic`]).
+static UNREPORTED_PANICS: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// Set while [`catch_panic`] runs work on this thread, which then reports its own.
+    static REPORTS_ITS_PANICS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `work`, turning a panic into a message for the user. The hook has already
+/// logged the panic with its backtrace; the message says where. A panic on a Polars
+/// thread that this work was waiting on is resumed here, so it is reported here too.
+pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    let reported = REPORTS_ITS_PANICS.with(|r| r.replace(true));
+    let unreported = UNREPORTED_PANICS.load(Ordering::SeqCst);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+    REPORTS_ITS_PANICS.with(|r| r.set(reported));
+    caught.map_err(|payload| {
+        // Those counted meanwhile were the Polars threads this work waited on.
+        UNREPORTED_PANICS.fetch_min(unreported, Ordering::SeqCst);
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".to_string());
+        match current_path() {
+            Some(path) => format!("Internal error: {what}\n\nDetails: {}", path.display()),
+            None => format!("Internal error: {what}"),
+        }
+    })
+}
+
+/// What to flash when a background thread panicked with nothing to say so: a raw
+/// thread's result simply never arrives. `None` when none did since the last call.
+pub fn take_unreported_panic() -> Option<String> {
+    if UNREPORTED_PANICS.swap(0, Ordering::SeqCst) == 0 {
+        return None;
+    }
+    Some(match current_path() {
+        Some(path) => format!(
+            "A background task failed; see {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        None => "A background task failed".to_string(),
+    })
+}
+
+/// The span during which the TUI owns the terminal: stderr goes to the log (Unix),
 /// and a panic on a background thread is logged instead of printed over the screen.
 /// Dropping it, on every exit path, hands stderr back.
 pub struct TuiSession {
@@ -403,8 +471,12 @@ impl TuiSession {
     pub fn begin(restore_terminal: fn()) -> Self {
         reset_polars_warnings();
         *BACKGROUND_PANIC.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        UNREPORTED_PANICS.store(0, Ordering::SeqCst);
         #[cfg(unix)]
-        stderr::redirect();
+        {
+            let logging = state().file.is_some();
+            stderr::redirect(logging);
+        }
         TUI_ACTIVE.store(true, Ordering::SeqCst);
         install_panic_hook();
         Self { restore_terminal }
@@ -413,12 +485,15 @@ impl TuiSession {
 
 impl Drop for TuiSession {
     fn drop(&mut self) {
-        TUI_ACTIVE.store(false, Ordering::SeqCst);
+        // Already inactive when the hook saw this thread panic: it restored stderr, and
+        // the hooks below it the terminal. Restoring again would pop the shell's
+        // keyboard flags rather than ours.
+        let hook_handled_it = !TUI_ACTIVE.swap(false, Ordering::SeqCst);
         #[cfg(unix)]
         stderr::restore();
         // A panic resumed from another thread (a Polars worker's, say) unwinds this one
         // without running the hook, so the terminal and the message are ours to handle.
-        if std::thread::panicking() {
+        if std::thread::panicking() && !hook_handled_it {
             (self.restore_terminal)();
             if let Some(message) = BACKGROUND_PANIC
                 .lock()
@@ -454,6 +529,9 @@ fn install_panic_hook() {
             );
             log::error!(target: "datui::panic", "{message}");
             *BACKGROUND_PANIC.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+            if !REPORTS_ITS_PANICS.with(Cell::get) {
+                UNREPORTED_PANICS.fetch_add(1, Ordering::SeqCst);
+            }
             return;
         }
         // The TUI thread: hand stderr back so the report reaches the terminal. Inactive
@@ -479,64 +557,117 @@ fn panic_payload(info: &std::panic::PanicHookInfo<'_>) -> String {
         .unwrap_or_else(|| "panic".to_string())
 }
 
-/// Pointing fd 2 somewhere else and back. Windows is left alone: there the Polars hook
-/// is what keeps its warnings off the screen.
+/// One line someone wrote to stderr while the TUI was up.
+#[cfg(unix)]
+fn write_stray_line(line: &[u8]) {
+    let text = String::from_utf8_lossy(line);
+    let text = text.trim_end_matches(['\n', '\r']);
+    if !text.trim().is_empty() {
+        write_record("WARN", "stderr", text);
+    }
+}
+
+/// Pointing fd 2 away from the terminal and back. Windows is left alone: there the
+/// Polars hook is what keeps its warnings off the screen.
+///
+/// With the log open, fd 2 becomes a pipe that a thread reads into the log line by
+/// line, so stray output is masked and counted toward the cap like any other record.
 #[cfg(unix)]
 mod stderr {
-    use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+    use std::io::BufRead;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, channel};
+    use std::time::Duration;
 
-    /// A duplicate of the real stderr while it is redirected.
-    static SAVED: Mutex<Option<OwnedFd>> = Mutex::new(None);
-
-    fn saved() -> std::sync::MutexGuard<'static, Option<OwnedFd>> {
-        SAVED.lock().unwrap_or_else(|e| e.into_inner())
+    struct Redirect {
+        /// A duplicate of the real stderr.
+        terminal: OwnedFd,
+        /// Answers once the reader has read the pipe to its end; `None` for /dev/null.
+        drained: Option<Receiver<()>>,
     }
 
-    /// Point fd 2 at the log file, or at `/dev/null` with logging off.
-    pub(super) fn redirect() {
-        // The logger's lock first, as `follow` is called under it.
-        let log = super::state();
-        let mut saved = saved();
-        if saved.is_some() {
+    static REDIRECT: Mutex<Option<Redirect>> = Mutex::new(None);
+
+    fn current() -> std::sync::MutexGuard<'static, Option<Redirect>> {
+        REDIRECT.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Point fd 2 at the log, or at `/dev/null` with logging off.
+    pub(super) fn redirect(logging: bool) {
+        let mut current = current();
+        if current.is_some() {
             return;
         }
-        // SAFETY: dup of fd 2, which is open for the life of the process.
-        let copy = unsafe { libc::dup(libc::STDERR_FILENO) };
+        // SAFETY: fcntl(F_DUPFD_CLOEXEC) reads no memory; on failure it returns -1.
+        // Close-on-exec, so a child process never inherits the terminal through it.
+        let copy = unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 0) };
         if copy < 0 {
             return;
         }
-        // SAFETY: `copy` was just returned by dup and is owned by nothing else.
-        let copy = unsafe { OwnedFd::from_raw_fd(copy) };
-        let pointed = match log.file.as_ref() {
-            Some(file) => point(file.raw_fd()),
-            None => std::fs::OpenOptions::new()
+        // SAFETY: `copy` is a new descriptor that nothing else owns.
+        let terminal = unsafe { OwnedFd::from_raw_fd(copy) };
+        let target = logging.then(into_the_log).flatten().or_else(|| {
+            std::fs::OpenOptions::new()
                 .write(true)
                 .open("/dev/null")
-                .is_ok_and(|null| point(std::os::fd::AsRawFd::as_raw_fd(&null))),
-        };
-        if pointed {
-            *saved = Some(copy);
+                .ok()
+                .map(|null| (OwnedFd::from(null), None))
+        });
+        // `target` closes at the end of this function, which leaves fd 2 as the pipe's
+        // only writer: once fd 2 points back at the terminal, the reader sees the end.
+        if let Some((target, drained)) = target
+            && point(target.as_raw_fd())
+        {
+            *current = Some(Redirect { terminal, drained });
         }
     }
 
-    /// After a rotation, keep fd 2 on the new file.
-    pub(super) fn follow(fd: RawFd) {
-        if saved().is_some() {
-            point(fd);
-        }
+    /// A pipe whose other end a thread copies into the log, line by line.
+    fn into_the_log() -> Option<(OwnedFd, Option<Receiver<()>>)> {
+        let (reader, writer) = std::io::pipe().ok()?;
+        let (done, drained) = channel();
+        std::thread::Builder::new()
+            .name("datui-stderr".into())
+            .spawn(move || {
+                let mut reader = std::io::BufReader::new(reader);
+                let mut line = Vec::new();
+                loop {
+                    line.clear();
+                    match reader.read_until(b'\n', &mut line) {
+                        Ok(0) => break,
+                        // Caught, because a reader that died would close the pipe and
+                        // turn every later `eprintln!` into a panic of its own.
+                        Ok(_) => {
+                            let _ = std::panic::catch_unwind(|| super::write_stray_line(&line));
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+                let _ = done.send(());
+            })
+            .ok()?;
+        Some((writer.into(), Some(drained)))
     }
 
     /// Hand the real stderr back. A no-op when it is not redirected.
     pub(super) fn restore() {
-        let Some(copy) = saved().take() else {
+        let Some(redirect) = current().take() else {
             return;
         };
-        point(std::os::fd::AsRawFd::as_raw_fd(&copy));
+        point(redirect.terminal.as_raw_fd());
+        // Let the reader finish what was written just before, so a panic report or a
+        // last warning is in the log. Bounded: a child process that inherited fd 2
+        // holds the pipe open for as long as it runs.
+        if let Some(drained) = redirect.drained {
+            let _ = drained.recv_timeout(Duration::from_millis(500));
+        }
     }
 
     fn point(fd: RawFd) -> bool {
-        // SAFETY: dup2 onto fd 2 with an fd the caller holds open.
+        // SAFETY: dup2 reads no memory; `fd` is open, as the caller holds it. fd 2 is
+        // replaced atomically, so a concurrent write lands on one file or the other.
         unsafe { libc::dup2(fd, libc::STDERR_FILENO) >= 0 }
     }
 }
@@ -659,6 +790,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_caught_panic_becomes_a_message() {
+        assert_eq!(catch_panic(|| 7), Ok(7));
+        let message = catch_panic::<()>(|| panic!("worker died")).unwrap_err();
+        assert!(
+            message.starts_with("Internal error: worker died"),
+            "{message}"
+        );
+        let formatted = catch_panic::<()>(|| panic!("row {} of {}", 3, 9)).unwrap_err();
+        assert!(formatted.contains("row 3 of 9"), "{formatted}");
+    }
+
     /// The only test in this binary that sets the global logger and the Polars hook, so
     /// nothing else races it for the file.
     #[test]
@@ -701,6 +844,9 @@ mod tests {
         app.busy = true;
         assert!(!app.flash_polars_warning(), "a busy message outranks it");
         app.busy = false;
+        app.error_modal.active = true;
+        assert!(!app.flash_polars_warning(), "a modal would hide it");
+        app.error_modal.active = false;
         let mut flashed = Vec::new();
         while app.flash_polars_warning() {
             flashed.extend(app.flash_message().map(str::to_string));

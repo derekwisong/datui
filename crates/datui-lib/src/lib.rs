@@ -4075,11 +4075,12 @@ pub mod tests {
         assert!(!app.work_a_bump_would_strand());
     }
 
-    /// A worker that panics still returns its lease.
+    /// A worker that panics fails like any other task, then returns its lease.
     ///
     /// The hazard `schema_union::Pass` was built for: a count that never comes back down
     /// is a permanent "something is waiting", and here that would mean the buffer never
-    /// collects again for the rest of the session.
+    /// collects again for the rest of the session. And a panic that only reached the log
+    /// would leave the spinner up with nothing on screen saying why.
     #[test]
     fn a_panicking_worker_still_returns_its_lease() {
         use crate::{App, AppEvent};
@@ -4088,10 +4089,22 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.spawn_bg("Working...", |_task_gen, _tx| panic!("worker died"));
         assert!(app.work_a_bump_would_strand());
+        assert!(app.busy);
 
-        let finished = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the lease reports back even from a panic");
+        let recv = || {
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the worker reports back even from a panic")
+        };
+        let failed = recv();
+        assert!(
+            matches!(&failed, AppEvent::BackgroundError { message, .. } if message.contains("worker died")),
+            "the panic fails the task first"
+        );
+        let _ = app.handle(&failed);
+        assert!(!app.busy, "the spinner comes down");
+        assert!(app.error_modal.active, "and the user is told");
+
+        let finished = recv();
         assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
         let _ = app.handle(&finished);
         assert!(
@@ -8173,10 +8186,9 @@ impl App {
     }
 
     /// Show the next Polars user warning on the control bar, once per session, when the
-    /// bar is free: a busy message outranks a flash and would hide it. Returns true when
-    /// the frame must redraw.
+    /// bar is free. Returns true when the frame must redraw.
     pub fn flash_polars_warning(&mut self) -> bool {
-        if self.busy || self.flash.is_some() {
+        if !self.bar_is_free() {
             return false;
         }
         match logging::next_polars_warning() {
@@ -8186,6 +8198,31 @@ impl App {
             }
             None => false,
         }
+    }
+
+    /// Say that a background thread panicked when nothing else did; work run through
+    /// `spawn_bg` fails with an error modal instead. Returns true when the frame must
+    /// redraw.
+    pub fn flash_background_panic(&mut self) -> bool {
+        if !self.bar_is_free() {
+            return false;
+        }
+        match logging::take_unreported_panic() {
+            Some(message) => {
+                self.flash_note(message);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a flash would be seen: a busy message outranks it, and a modal would
+    /// hide it until it expired.
+    fn bar_is_free(&self) -> bool {
+        !self.busy
+            && self.flash.is_none()
+            && !self.error_modal.active
+            && !self.confirmation_modal.active
     }
 
     /// See the `input_dropped` field.
@@ -9055,9 +9092,17 @@ impl App {
             self.status_message = Some(status.to_string());
         }
         self.runtime.spawn_blocking(move || {
-            // Dropped after `work` returns, and on the way out of a panic too.
+            // Dropped after `work` returns or panics, so behind the error sent below.
             let _lease = lease;
-            work(task_gen, tx);
+            let sender = tx.clone();
+            // A panic would otherwise leave the spinner up forever with only the log
+            // knowing why; the task it stopped fails the way any other failure does.
+            if let Err(message) = logging::catch_panic(|| work(task_gen, sender)) {
+                let _ = tx.send(AppEvent::BackgroundError {
+                    generation: task_gen,
+                    message,
+                });
+            }
         });
     }
 
@@ -16983,11 +17028,9 @@ impl App {
             // A panic in the preparation must still report back: without the event the
             // in-flight record would stand for the rest of the session and every later
             // selection would be refused.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                request.prepare(&lf, &schema, &sampling)
-            }))
-            .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
-            .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+            let result = logging::catch_panic(|| request.prepare(&lf, &schema, &sampling))
+                .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
+                .map_err(|e| crate::error_display::user_message_from_report(&e, None));
             *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
             let _ = tx.send(AppEvent::BackgroundChartReady);
         });
@@ -18641,7 +18684,7 @@ impl App {
                         // open will read them, so the rule judges the directory the user is
                         // about to see rather than one nobody will open.
                         let as_read = Self::read_as(&options);
-                        let looked = std::panic::catch_unwind(|| {
+                        let looked = logging::catch_panic(|| {
                             let mut entry = discover::Entry::directory(&looking);
                             entry.kind = discover::EntryKind::Unknown;
                             home::look_into_as(&entry, &as_read)
@@ -21254,6 +21297,7 @@ fn run_impl(
         // A completion flash times out on its own; the idle poll interval is the
         // clock, so no extra wake-up machinery is needed.
         updated |= app.tick_flash();
+        updated |= app.flash_background_panic();
         updated |= app.flash_polars_warning();
 
         app.request_what_the_frame_needs();

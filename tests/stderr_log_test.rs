@@ -19,11 +19,29 @@ fn child_session() {
         level: LevelFilter::Warn,
         unknown_level: None,
     });
+    datui::logging::keep_out_of_log("hunter2-secret-value");
     // No terminal here, so there is nothing to restore.
     let _session = TuiSession::begin(|| {});
     eprintln!("stray stderr line");
+    eprintln!("stray line with hunter2-secret-value in it");
+
+    // Work that reports its own panic is not announced a second time.
+    let reported = std::thread::spawn(|| {
+        datui::logging::catch_panic::<()>(|| panic!("reported boom")).unwrap_err()
+    })
+    .join()
+    .unwrap();
+    assert!(reported.contains("reported boom"), "{reported}");
+    assert_eq!(datui::logging::take_unreported_panic(), None);
+
     let caught = std::thread::spawn(|| panic!("background boom")).join();
     assert!(caught.is_err(), "the worker's panic is caught");
+    assert_eq!(
+        datui::logging::take_unreported_panic().as_deref(),
+        Some("A background task failed; see datui.log"),
+        "a raw thread's panic waits to be announced"
+    );
+    assert_eq!(datui::logging::take_unreported_panic(), None, "once");
     if std::env::var_os(RESUME).is_some() {
         // As a Polars worker's panic reaches the thread that asked: no hook runs.
         std::panic::resume_unwind(caught.unwrap_err());
@@ -63,7 +81,13 @@ fn stderr_goes_to_the_log_and_a_panic_to_the_terminal() {
     assert!(!stderr.contains("stray stderr line"), "stderr: {stderr}");
     assert!(!stderr.contains("background boom"), "stderr: {stderr}");
     assert!(logged.contains("stray stderr line"), "log: {logged}");
+    assert!(
+        logged.contains("stray line with *** in it"),
+        "log: {logged}"
+    );
+    assert!(!logged.contains("hunter2-secret-value"), "log: {logged}");
     assert!(logged.contains("background boom"), "log: {logged}");
+    assert!(logged.contains("reported boom"), "log: {logged}");
     assert!(!logged.contains("foreground boom"), "log: {logged}");
 }
 

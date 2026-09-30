@@ -1272,7 +1272,16 @@ fn every_public_dataset_lists_and_opens() {
     let mut failures = Vec::new();
     for dataset in cloud_sources::builtin_datasets() {
         let started = std::time::Instant::now();
-        let found = match first_openable(&dataset.url, &config, &runtime) {
+        let direct_file = matches!(
+            datui::source::input_source(std::path::Path::new(&dataset.url)),
+            datui::source::InputSource::Http(_)
+        );
+        let candidate = if direct_file {
+            Ok(Some(dataset.url.clone()))
+        } else {
+            first_openable(&dataset.url, &config, &runtime)
+        };
+        let found = match candidate {
             Ok(Some(url)) => url,
             Ok(None) => {
                 failures.push(format!("{}: no data file found", dataset.name));
@@ -1308,34 +1317,27 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
         return;
     }
     let (mut app, rx) = live_app();
-    let headers = open_through_home(
-        &mut app,
-        &rx,
-        "public",
-        &["BigQuery sample data", "us-states", "us-states.parquet"],
-    );
-    assert!(headers.iter().any(|h| h == "name"), "{headers:?}");
-
-    let (mut app, rx) = live_app();
     assert!(enter_source(&mut app, &rx, "public"));
     let text = screen_text(&mut app, 120, 30);
     assert!(
         text.contains("NOAA daily weather") && text.contains("CC0"),
         "{text}"
     );
-    assert!(select_row(&mut app, "BigQuery sample data"));
+    assert!(select_row(&mut app, "NOAA daily weather (GHCN-D)"));
     app.event(&key(crossterm::event::KeyCode::Enter));
     assert!(pump_until(&mut app, &rx, 60, |app| app
         .home
         .visible()
         .iter()
         .any(
-            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "us-states")
+            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "by_year")
         )));
     let sep = datui::glyphs::get().trail;
     let text = screen_text(&mut app, 120, 30);
     assert!(
-        text.contains(&format!("Public datasets {sep} BigQuery sample data")),
+        text.contains(&format!(
+            "Public datasets {sep} NOAA daily weather (GHCN-D)"
+        )),
         "{text}"
     );
     app.event(&key(crossterm::event::KeyCode::Backspace));
@@ -1344,6 +1346,27 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
         Some(std::path::PathBuf::from("cloud://public")),
         "back to the datasets"
     );
+
+    assert!(pump_until(&mut app, &rx, 60, |app| {
+        app.home.visible().iter().any(
+            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Palmer penguins")
+        )
+    }));
+    assert!(select_row(&mut app, "Palmer penguins"));
+    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
+    assert!(pump_until(
+        &mut app,
+        &rx,
+        60,
+        datui::App::awaiting_download_confirmation
+    ));
+    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
+    assert!(pump_until(&mut app, &rx, 60, |app| app
+        .data_table_state
+        .is_some()
+        && !app.is_busy()));
+    let headers = app.data_table_state.as_ref().unwrap().headers();
+    assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
 }
 
 /// The quirks the public list is chosen to exercise: a bucket in another region, Parquet
@@ -1363,6 +1386,16 @@ fn public_data_quirks() {
         cloud_browse::s3_bucket_region("aws-public-blockchain").as_deref(),
         Some("us-east-2")
     );
+
+    // A tiny GCS fixture still tests anonymous access without a default catalog entry.
+    let gcs = "gs://cloud-samples-data/bigquery/us-states/";
+    let rows = runtime
+        .block_on(cloud_browse::list_objects(gcs, &config))
+        .expect("the explicit GCS fixture lists anonymously");
+    assert!(rows.iter().any(|row| row.name == "us-states.parquet"));
+    let headers = open_url(&format!("{gcs}us-states.parquet"), &config)
+        .expect("the explicit GCS fixture opens anonymously");
+    assert!(headers.iter().any(|h| h == "name"), "{headers:?}");
 
     // GBIF: CC BY-NC, so not on the list, and Parquet part files with no extension.
     let snapshots = runtime

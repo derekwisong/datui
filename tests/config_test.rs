@@ -2105,6 +2105,42 @@ url = "abfss://release@buildings.dfs.core.windows.net/"
 }
 
 #[test]
+fn public_datasets_accept_web_files_but_not_web_directories_or_archives() {
+    for url in [
+        "https://example.com/data.csv",
+        "http://localhost:8080/data.parquet",
+        "https://example.com/data.csv.gz",
+    ] {
+        let text = format!(
+            "[[cloud.sources]]\nname = \"public\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"Data\"\nurl = {url:?}\n"
+        );
+        cloud_config(&text)
+            .validate()
+            .unwrap_or_else(|e| panic!("{url}: {e}"));
+    }
+    for url in [
+        "https://example.com/",
+        "https://example.com/data/",
+        "https://example.com/data.zip",
+        "https://user:password@example.com/data.csv",
+        "https:///data.csv",
+        "https://example.com/bad path.csv",
+    ] {
+        let text = format!(
+            "[[cloud.sources]]\nname = \"public\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"Data\"\nurl = {url:?}\n"
+        );
+        assert!(cloud_config(&text).validate().is_err(), "{url}");
+    }
+    let bucket = cloud_error(
+        "[[cloud.sources]]\nname = \"public\"\npublic = true\nbuckets = [\"https://example.com/data.csv\"]\n",
+    );
+    assert!(
+        bucket.contains("is not an s3://"),
+        "web files belong in datasets"
+    );
+}
+
+#[test]
 fn a_later_layer_replaces_a_source_by_name() {
     let mut base = cloud_config(
         "[cloud]\nhide = [\"a\"]\n[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
@@ -2146,9 +2182,59 @@ fn the_generated_config_materializes_the_builtin_public_catalog() {
         config.cloud.sources,
         [datui::config::builtin_public_source()]
     );
+    let names: Vec<_> = config.cloud.sources[0]
+        .datasets
+        .iter()
+        .map(|dataset| dataset.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "NYC flights (2013)",
+            "Food nutrition (fast food)",
+            "US baby names (1880-2017)",
+            "NOAA daily weather (GHCN-D)",
+            "Premier League (2020-21)",
+            "NYC yellow taxis (January 2025)",
+            "Earthquakes (past month)",
+            "Space launches (1957-2018)",
+            "Palmer penguins",
+            "Bitcoin and Ethereum",
+            "Overture Maps"
+        ],
+        "generated configs should ship the curated catalog"
+    );
     assert!(text.contains("snapshot"), "{text}");
     assert!(text.contains("[[cloud.sources.datasets]]"), "{text}");
     assert!(!text.contains("\nhide ="), "{text}");
+}
+
+#[test]
+fn a_saved_public_catalog_keeps_entries_retired_from_the_defaults() {
+    let text = r#"
+[[cloud.sources]]
+name = "public"
+public = true
+
+[[cloud.sources.datasets]]
+name = "OpenAlex"
+url = "s3://openalex/data/parquet/"
+
+[[cloud.sources.datasets]]
+name = "Google Open Buildings"
+url = "gs://open-buildings-data/v3/"
+
+[[cloud.sources.datasets]]
+name = "BigQuery sample data"
+url = "gs://cloud-samples-data/bigquery/"
+"#;
+    let saved: AppConfig = toml::from_str(text).unwrap();
+    saved.validate().expect("old snapshots remain valid");
+    let mut config = AppConfig::default();
+    config.merge(saved.clone());
+    assert_eq!(config.cloud.sources, saved.cloud.sources);
+    let roundtrip: AppConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(roundtrip.cloud.sources, saved.cloud.sources);
 }
 
 #[test]

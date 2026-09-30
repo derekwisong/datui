@@ -71,3 +71,6 @@ screen can say 1,000 × 11 without reading anything), query history, section
 folds, remembered directories, bucket listings, hidden cloud sources and
 public places.
 datui --clear-cache removes all of it.
+
+Public datasets: Enter opens an HTTP(S) data file or browses an object-store
+location. Data stays with its publisher or named mirror until you open it.

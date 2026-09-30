@@ -73,6 +73,26 @@ all of them except `--parse-strings`.
 | `--parse-dates=false` | `parse_dates` | Stop parsing date-looking strings as Date and Datetime |
 | `--parse-strings=COL`, `--no-parse-strings` | | Trim and type-infer string columns; limit it to named columns, or turn it off |
 
+### Dates and timestamps
+
+String columns in CSV and JSON become dates when every value in the first 1000
+rows (`parse_strings_sample_rows`) parses the same way. `--parse-dates=false`
+turns this off.
+
+| Value | Type |
+|---|---|
+| `2024-01-31` | `date` |
+| `2024-01-31 10:00:00`, `2024-01-31T10:00:00.250` | `datetime[μs]` |
+| `2024-01-31T10:00:00Z`, `2024-01-31T10:00:00.250+00:00`, `2024-01-31 05:00:00-05:00` | `datetime[μs, UTC]`, converted to UTC |
+
+A column whose values disagree, such as an offset on some and none on others,
+stays text. A later value that does not parse is null. JSON strings become
+dates or times, never numbers.
+
+With `--no-parse-strings`, and for a directory of CSVs in a bucket, Polars
+decides from the rows it reads for the schema, and a later value that does not
+parse fails the read.
+
 ## Compression
 
 Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.

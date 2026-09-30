@@ -4964,7 +4964,7 @@ pub struct OpenOptions {
     /// line, once it is on screen. Applied to that open only; what later opens get
     /// is `[templates] auto_apply`'s business.
     pub template: Option<String>,
-    /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
+    /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime.
     pub parse_dates: bool,
     /// When set, trim and parse CSV string columns: None = off, Some(true) = all columns, Some(cols) = those columns only.
     pub parse_strings: Option<ParseStringsTarget>,
@@ -12091,6 +12091,9 @@ impl App {
                     Err(e) => return Some(Err(e)),
                 };
                 DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
+                    // `--parse-strings` reads a sample, which a bucket is not asked
+                    // for; Polars finds dates in the rows it reads for the schema.
+                    .with_try_parse_dates(options.parse_dates)
                     .finish()
                     .map_err(named)
                     .and_then(|lf| {
@@ -12804,6 +12807,13 @@ impl App {
                 }
             }
         };
+        // JSON is read into memory whole, so its sample costs no read of the file.
+        if matches!(
+            effective_format,
+            Some(FileFormat::Json) | Some(FileFormat::Jsonl)
+        ) {
+            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.lf, options);
+        }
         Ok(lf.lf)
     }
 
@@ -20530,6 +20540,39 @@ mod cloud_csv_prefix_tests {
         .unwrap();
         assert_eq!(df.column("name").unwrap().null_count(), 1);
         assert_eq!(df.column("id").unwrap().null_count(), 0);
+    }
+
+    /// A CSV prefix finds timestamps with the string typing on, which it never runs.
+    #[test]
+    fn a_csv_prefix_reads_iso_timestamps_as_datetime() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = "t,mixed\n2013-01-01T10:00:00Z,2013-01-01T10:00:00Z\n\
+                   2013-01-01T11:00:00.5Z,2013-01-01T11:00:00\n";
+        std::fs::write(dir.path().join("a.csv"), csv).unwrap();
+        let glob = format!("{}/*.csv", dir.path().display());
+        let options = OpenOptions {
+            parse_strings: Some(ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        let schema = App::scan_cloud_prefix(
+            &glob,
+            CloudOptions::default(),
+            FileFormat::Csv,
+            true,
+            &options,
+        )
+        .expect("a CSV reader")
+        .unwrap()
+        .collect_schema()
+        .unwrap();
+        assert_eq!(
+            schema.get("t"),
+            Some(&DataType::Datetime(
+                polars::prelude::TimeUnit::Microseconds,
+                Some(polars::prelude::TimeZone::UTC)
+            ))
+        );
+        assert_eq!(schema.get("mixed"), Some(&DataType::String));
     }
 
     /// With one source, `local`, whose endpoint refuses every connection: a browse

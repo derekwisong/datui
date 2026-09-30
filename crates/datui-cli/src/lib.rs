@@ -279,7 +279,7 @@ pub struct Args {
     #[arg(long = "single-spine-schema", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Reading")]
     pub single_spine_schema: Option<bool>,
 
-    /// Parse CSV string columns that look like dates (e.g. YYYY-MM-DD, ISO datetime) as dates (default: true)
+    /// Parse CSV and JSON string columns that look like dates or ISO 8601 timestamps (e.g. 2024-01-31, 2024-01-31T10:00:00Z) as Date or Datetime (default: true)
     #[arg(long = "parse-dates", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
     pub parse_dates: Option<bool>,
 

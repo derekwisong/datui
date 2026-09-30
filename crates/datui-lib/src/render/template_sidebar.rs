@@ -485,6 +485,7 @@ mod tests {
                 locked_columns_count: 0,
                 pivot: None,
                 melt: None,
+                reshape_source: None,
             },
         }
     }

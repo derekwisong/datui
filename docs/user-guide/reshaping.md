@@ -79,5 +79,7 @@ Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 
 ## Views
 
-A [view](views.md) saved after a pivot or melt stores the reshape. When
-it is applied, the order is query, filters, sort, pivot or melt, column order.
+A [view](views.md) saved after a pivot or melt stores the reshape and the
+query, filters and sort it ran over. When it is applied, the order is that
+query, filters and sort, the pivot or melt, then any SQL, filters and sort on
+its result, then column order.

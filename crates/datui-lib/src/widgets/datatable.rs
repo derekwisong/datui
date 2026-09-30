@@ -21,7 +21,7 @@ use ratatui::{
 use crate::error_display::user_message_from_polars;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
-use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::query::parse_query;
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
@@ -220,6 +220,10 @@ pub struct DataTableState {
     last_pivot_spec: Option<PivotSpec>,
     /// Last applied melt spec, if current lf is result of a melt. Used for templates.
     last_melt_spec: Option<MeltSpec>,
+    /// The query, filters and sort the pivot or melt in effect ran over, for a view to
+    /// replay before it. `None` while none is in effect, or when it ran over the data as
+    /// loaded.
+    reshape_source: Option<ReshapeSource>,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
     pub partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
@@ -342,6 +346,7 @@ pub struct ViewRollback {
     reshaped_lf: Option<LazyFrame>,
     last_pivot_spec: Option<PivotSpec>,
     last_melt_spec: Option<MeltSpec>,
+    reshape_source: Option<ReshapeSource>,
     drilled_down_group_index: Option<usize>,
     drilled_down_group_key: Option<Vec<String>>,
     drilled_down_group_key_columns: Option<Vec<String>>,
@@ -755,6 +760,7 @@ impl DataTableState {
             row_start_index: 1, // Will be set from options
             last_pivot_spec: None,
             last_melt_spec: None,
+            reshape_source: None,
             partition_columns: None,
             decompress_temp_file: None,
             polars_streaming,
@@ -873,6 +879,7 @@ impl DataTableState {
             row_start_index: options.row_start_index,
             last_pivot_spec: None,
             last_melt_spec: None,
+            reshape_source: None,
             partition_columns,
             decompress_temp_file: None,
             polars_streaming: options.polars_streaming,
@@ -978,6 +985,7 @@ impl DataTableState {
         self.reshaped_lf = None;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
+        self.reshape_source = None;
     }
 
     /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
@@ -996,6 +1004,7 @@ impl DataTableState {
         self.drift_groups = self.groups_at_open.clone();
         self.notes = self.notes_at_open.clone();
         self.reshaped_lf = None;
+        self.reshape_source = None;
         self.reset_view_state(0);
         self.restore_footer_count();
     }
@@ -6000,16 +6009,18 @@ impl DataTableState {
     }
 
     /// Put back a reshape taken with `reshaped_lf_clone` / `last_pivot_spec` /
-    /// `last_melt_spec`, e.g. when a template fails to apply.
+    /// `last_melt_spec` / `reshape_source`, e.g. when a template fails to apply.
     pub fn restore_reshape(
         &mut self,
         lf: Option<LazyFrame>,
         pivot: Option<PivotSpec>,
         melt: Option<MeltSpec>,
+        source: Option<ReshapeSource>,
     ) {
         self.reshaped_lf = lf;
         self.last_pivot_spec = pivot;
         self.last_melt_spec = melt;
+        self.reshape_source = source;
     }
 
     pub fn get_column_order(&self) -> &[String] {
@@ -6072,6 +6083,7 @@ impl DataTableState {
             reshaped_lf: self.reshaped_lf.clone(),
             last_pivot_spec: self.last_pivot_spec.clone(),
             last_melt_spec: self.last_melt_spec.clone(),
+            reshape_source: self.reshape_source.clone(),
             drilled_down_group_index: self.drilled_down_group_index,
             drilled_down_group_key: self.drilled_down_group_key.clone(),
             drilled_down_group_key_columns: self.drilled_down_group_key_columns.clone(),
@@ -6115,6 +6127,7 @@ impl DataTableState {
         self.reshaped_lf = saved.reshaped_lf;
         self.last_pivot_spec = saved.last_pivot_spec;
         self.last_melt_spec = saved.last_melt_spec;
+        self.reshape_source = saved.reshape_source;
         self.drilled_down_group_index = saved.drilled_down_group_index;
         self.drilled_down_group_key = saved.drilled_down_group_key;
         self.drilled_down_group_key_columns = saved.drilled_down_group_key_columns;
@@ -6178,6 +6191,11 @@ impl DataTableState {
 
     pub fn last_melt_spec(&self) -> Option<&MeltSpec> {
         self.last_melt_spec.as_ref()
+    }
+
+    /// What the pivot or melt in effect ran over. See the field.
+    pub fn reshape_source(&self) -> Option<&ReshapeSource> {
+        self.reshape_source.as_ref()
     }
 
     pub fn is_grouped(&self) -> bool {
@@ -6706,6 +6724,18 @@ impl DataTableState {
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
         let schema = lf.clone().collect_schema()?;
+        // Taken before the view state below is reset. Over an earlier reshape there is
+        // no source a view could replay, so none is kept.
+        let text = |q: &str| Some(q.trim().to_string()).filter(|q| !q.is_empty());
+        let source = ReshapeSource {
+            query: text(&self.active_query),
+            sql_query: text(&self.active_sql_query),
+            fuzzy_query: text(&self.active_fuzzy_query),
+            filters: self.filters.clone(),
+            sort_columns: self.sort_columns.clone(),
+            sort_descending: self.sort_descending.clone(),
+        };
+        self.reshape_source = (self.reshaped_lf.is_none() && !source.is_empty()).then_some(source);
         self.reshaped_lf = Some(lf.clone());
         self.install_base(lf, schema);
         self.reset_view_state(0);

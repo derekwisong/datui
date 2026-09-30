@@ -1,6 +1,7 @@
 //! Pivot / Melt modal state: a form of rows, each edited through one Picker
 //! scoped to that row alone. The staged spec is echoed live; Enter applies it.
 
+use crate::filter_modal::FilterStatement;
 use crate::widgets::text_input::TextInput;
 use crate::widgets::ui::PickerState;
 use polars::datatypes::DataType;
@@ -149,6 +150,45 @@ pub struct MeltSpec {
     pub value_columns: Vec<String>,
     pub variable_name: String,
     pub value_name: String,
+}
+
+/// What a pivot or melt ran over: the query, filters and sort in effect when it was
+/// applied. A view replays these before the reshape.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReshapeSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzzy_query: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<FilterStatement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sort_columns: Vec<String>,
+    /// Per entry of `sort_columns`, whether it runs descending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sort_descending: Vec<bool>,
+}
+
+impl ReshapeSource {
+    /// Nothing to replay: the reshape ran over the data as loaded.
+    pub fn is_empty(&self) -> bool {
+        self.query.is_none()
+            && self.sql_query.is_none()
+            && self.fuzzy_query.is_none()
+            && self.filters.is_empty()
+            && self.sort_columns.is_empty()
+    }
+
+    /// The per-column directions its sort runs, ascending where none was recorded.
+    pub fn sort_directions(&self) -> Vec<bool> {
+        if self.sort_descending.len() == self.sort_columns.len() {
+            self.sort_descending.clone()
+        } else {
+            vec![false; self.sort_columns.len()]
+        }
+    }
 }
 
 pub struct PivotMeltModal {

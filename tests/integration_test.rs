@@ -6862,6 +6862,9 @@ fn a_load_chosen_at_home_fails_at_home() {
     let area = Rect::new(0, 0, 120, 40);
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
+    // Its own recents: in the shared store, fifty opens elsewhere push these out.
+    let cache = datui::CacheManager::with_dir(dir.path().join("cache"));
+    app.use_cache(cache.clone());
     tx.send(AppEvent::Open(vec![first], OpenOptions::default()))
         .unwrap();
     for _tick in ticks() {
@@ -6898,7 +6901,6 @@ fn a_load_chosen_at_home_fails_at_home() {
 
     // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
     // The one that did load is, and recording is off-thread, so that is waited for.
-    let cache = datui::CacheManager::new("datui").expect("cache");
     let recorded = |path: &std::path::Path| {
         let path = datui::canonical::canonicalize(path).unwrap();
         cache.load_recents().contains(&path)
@@ -8596,15 +8598,15 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
 
 /// Recents grouped by place: two recents in one directory, one in another, so the
 /// home screen shows two place rows. Returns the app with the cursor on the first
-/// place row, and the three recents.
+/// place row, the three recents, and the app's cache.
 ///
 /// `seed_store` records them in the recents store too, for a test that reads it back.
-/// Tests share one isolated store, and every open writes to it, so a test that reads
-/// it asks whether its own paths are there rather than what else is.
+/// The store is this test's own, under `tmp`: the one the process shares is capped at
+/// fifty recents, and tests opening files in parallel push these out of it.
 fn app_with_recents_in_two_places(
     tmp: &tempfile::TempDir,
     seed_store: bool,
-) -> (App, Vec<PathBuf>) {
+) -> (App, Vec<PathBuf>, datui::CacheManager) {
     common::isolate_cache();
     // As the store keeps them: `/var` is `/private/var` on macOS, and a Windows temp
     // directory is named `RUNNER~1` until canonicalized.
@@ -8623,15 +8625,19 @@ fn app_with_recents_in_two_places(
     }
     // Recorded the way an open records them, so what the test forgets is what the
     // store holds. Oldest first: `push_recent` puts each at the front.
+    let cache = datui::CacheManager::with_dir(root.join("cache"));
     if seed_store {
-        let cache = datui::CacheManager::new("datui").expect("cache");
         for path in recents.iter().rev() {
-            cache.push_recent(path);
+            assert_eq!(
+                cache.push_recent(path),
+                datui::cache::HistoryUpdate::Written
+            );
         }
     }
 
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
+    app.use_cache(cache.clone());
     app.enter_home();
     app.home.rebuild(&[], &recents);
     let row = app
@@ -8641,7 +8647,7 @@ fn app_with_recents_in_two_places(
         .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
         .expect("the directory two recents live in is a place row");
     app.home.selected = row;
-    (app, recents)
+    (app, recents, cache)
 }
 
 /// `Enter` on a place row browses the place: the way back to a directory found by
@@ -8649,7 +8655,7 @@ fn app_with_recents_in_two_places(
 #[test]
 fn test_enter_on_a_place_row_browses_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let (mut app, recents, _) = app_with_recents_in_two_places(&tmp, false);
     let here = recents[0].parent().unwrap().to_path_buf();
 
     // The bar says → goes inside, the same as on any directory.
@@ -8688,8 +8694,7 @@ fn test_enter_on_a_place_row_browses_it() {
 #[test]
 fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents) = app_with_recents_in_two_places(&tmp, true);
-    let cache = datui::CacheManager::new("datui").expect("cache");
+    let (mut app, recents, cache) = app_with_recents_in_two_places(&tmp, true);
     let holds =
         |cache: &datui::CacheManager, path: &Path| cache.load_recents().iter().any(|p| p == path);
     assert!(recents.iter().all(|p| holds(&cache, p)));
@@ -8741,10 +8746,9 @@ fn ctrl(c: char) -> AppEvent {
 #[test]
 fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let (mut app, recents, cache) = app_with_recents_in_two_places(&tmp, false);
     let here = recents[0].parent().unwrap().to_path_buf();
     let there = recents[2].parent().unwrap().to_path_buf();
-    let cache = datui::CacheManager::new("datui").expect("cache");
     let kept = |cache: &datui::CacheManager, path: &Path| {
         cache.load_remembered_places().iter().any(|p| p == path)
     };
@@ -8773,7 +8777,6 @@ fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
     app.home.selected = row;
     app.event(&ctrl('d'));
     assert!(kept(&cache, &there), "a file row remembers its directory");
-    cache.forget_place(&there);
 }
 
 /// A remembered directory is listed like a configured one, marked `remembered`, and
@@ -13608,4 +13611,229 @@ fn test_sort_digits_stage_zero_and_explain_out_of_range() {
             .is_empty(),
         "Apply took the column out of the sort"
     );
+}
+
+/// `id,key,val` in long form: ten ids, each with a `k1` and a `k2` row, values scaled by
+/// `scale` so two files with the same columns give different results.
+fn long_csv(scale: i64) -> String {
+    let mut csv = String::from("id,key,val\n");
+    for id in 0..10 {
+        csv.push_str(&format!(
+            "{id},k1,{}\n{id},k2,{}\n",
+            id * scale,
+            id * 10 * scale
+        ));
+    }
+    csv
+}
+
+/// Run `steps` on one file and save a view matching a second; then apply the view to
+/// the second file and, in another app, run the same steps on it by hand. Returns the
+/// view, what applying it showed, and what the steps showed.
+fn view_and_steps_on_the_next_file(
+    name: &str,
+    steps: &[AppEvent],
+) -> (datui::Template, DataFrame, DataFrame) {
+    let next_name = format!("{name}_next.csv");
+    let next_path = PathBuf::from("tests/sample-data").join(&next_name);
+    let run = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>| {
+        for step in steps {
+            app.event(step);
+            pump_until_idle(app, rx, tx);
+            let state = app.data_table_state.as_ref().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+        }
+    };
+    let shown = |app: &App| {
+        let state = app.data_table_state.as_ref().unwrap();
+        state.visible_lf().collect().unwrap()
+    };
+
+    let (mut by_hand, rx, tx) = open_csv_with(&next_name, &long_csv(3), OpenOptions::default());
+    run(&mut by_hand, &rx, &tx);
+    let expected = shown(&by_hand);
+
+    let (mut app, rx, tx) = open_csv_with(
+        &format!("{name}_first.csv"),
+        &long_csv(1),
+        OpenOptions::default(),
+    );
+    run(&mut app, &rx, &tx);
+    let template = app
+        .create_template_from_current_state(
+            name.to_string(),
+            None,
+            datui::template::MatchCriteria {
+                exact_path: Some(next_path.clone()),
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+            },
+        )
+        .unwrap();
+    pump_open_until_loaded(&mut app, &rx, vec![next_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&key(KeyCode::Char('V')));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    (template, shown(&app), expected)
+}
+
+/// A view saved after a query, a filter and then a pivot replays all three: the pivot
+/// clears the query bar, but the view keeps what the pivot ran over and runs it first.
+#[test]
+fn test_a_view_replays_the_query_before_the_pivot() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let steps = [
+        AppEvent::SqlSearch("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
+        AppEvent::Filter(vec![filter_stmt(
+            "id",
+            datui::filter_modal::FilterOperator::Lt,
+            "8",
+        )]),
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        }),
+    ];
+    let (template, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
+
+    let source = template
+        .settings
+        .reshape_source
+        .as_ref()
+        .expect("the source");
+    assert!(source.sql_query.is_some());
+    assert_eq!(source.filters.len(), 1);
+    assert_eq!(template.settings.sql_query, None);
+    assert_eq!(expected.height(), 4, "ids 4..7");
+    assert!(
+        applied.equals_missing(&expected),
+        "{applied:?}\n{expected:?}"
+    );
+}
+
+/// SQL after a pivot runs on the pivot's result, so the view replays it after the
+/// pivot.
+#[test]
+fn test_a_view_replays_sql_on_the_pivot_after_it() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let steps = [
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        }),
+        AppEvent::SqlSearch("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
+    ];
+    let (template, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
+
+    assert!(template.settings.reshape_source.is_none());
+    assert_eq!(expected.height(), 5, "ids 5..9");
+    assert!(
+        applied.equals_missing(&expected),
+        "{applied:?}\n{expected:?}"
+    );
+}
+
+/// The same for a melt: the query it ran over comes first.
+#[test]
+fn test_a_view_replays_the_query_before_the_melt() {
+    use datui::pivot_melt_modal::MeltSpec;
+    let steps = [
+        AppEvent::SqlSearch("SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string()),
+        AppEvent::Melt(MeltSpec {
+            index: vec!["id".to_string()],
+            value_columns: vec!["val".to_string(), "doubled".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        }),
+    ];
+    let (template, applied, expected) = view_and_steps_on_the_next_file("view_query_melt", &steps);
+
+    assert!(template.settings.reshape_source.is_some());
+    assert_eq!(expected.height(), 12, "six rows, two columns each");
+    assert!(
+        applied.equals_missing(&expected),
+        "{applied:?}\n{expected:?}"
+    );
+}
+
+/// A reshape over another keeps no source: a view saved after a pivot then a melt holds
+/// only the melt. Applying it fails on the next file, whose columns the melt never saw,
+/// and leaves the table as it was rather than showing a melt of the wrong data.
+#[test]
+fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
+    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+    let steps = [
+        AppEvent::SqlSearch("SELECT * FROM df WHERE id >= 4".to_string()),
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        }),
+        AppEvent::Melt(MeltSpec {
+            index: vec!["id".to_string()],
+            value_columns: vec!["k1".to_string(), "k2".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        }),
+    ];
+    let next_path = PathBuf::from("tests/sample-data/view_pivot_melt_next.csv");
+    std::fs::write(&next_path, long_csv(3)).unwrap();
+    let (mut app, rx, tx) = open_csv_with(
+        "view_pivot_melt_first.csv",
+        &long_csv(1),
+        OpenOptions::default(),
+    );
+    for step in &steps {
+        app.event(step);
+        pump_until_idle(&mut app, &rx, &tx);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+    }
+    let template = app
+        .create_template_from_current_state(
+            "view_pivot_melt".to_string(),
+            None,
+            datui::template::MatchCriteria {
+                exact_path: Some(next_path.clone()),
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+            },
+        )
+        .unwrap();
+    assert!(template.settings.melt.is_some());
+    assert!(template.settings.reshape_source.is_none());
+
+    pump_open_until_loaded(&mut app, &rx, vec![next_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let before = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .visible_lf()
+        .collect()
+        .unwrap();
+    app.event(&key(KeyCode::Char('V')));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    assert!(app.modal_showing(), "the view says it could not apply");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.last_melt_spec().is_none());
+    let after = state.visible_lf().collect().unwrap();
+    assert!(after.equals_missing(&before), "{after:?}\n{before:?}");
 }

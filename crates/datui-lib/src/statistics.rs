@@ -558,18 +558,24 @@ fn build_describe_aggregation_exprs(schema: &Schema) -> Vec<Expr> {
             exprs.push(c.clone().mean().alias(format!("{}mean", prefix)));
             exprs.push(c.clone().std(1).alias(format!("{}std", prefix)));
             exprs.push(c.clone().min().alias(format!("{}min", prefix)));
+            // Without NaN, which sorts above every number and would be the upper
+            // quantiles of a column holding enough of it.
+            let numbers = c.clone().drop_nans();
             exprs.push(
-                c.clone()
+                numbers
+                    .clone()
                     .quantile(lit(0.25), QuantileMethod::Nearest)
                     .alias(format!("{}q25", prefix)),
             );
             exprs.push(
-                c.clone()
+                numbers
+                    .clone()
                     .quantile(lit(0.5), QuantileMethod::Nearest)
                     .alias(format!("{}median", prefix)),
             );
             exprs.push(
-                c.clone()
+                numbers
+                    .clone()
                     .quantile(lit(0.75), QuantileMethod::Nearest)
                     .alias(format!("{}q75", prefix)),
             );
@@ -1373,12 +1379,18 @@ fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<Nume
     let min = floats.min::<f64>()?.unwrap_or(f64::NAN);
     let max = floats.max::<f64>()?.unwrap_or(f64::NAN);
 
+    // NaN sorts above every number, so a column with some would have them as its
+    // upper percentiles and fences; Describe leaves them out too. One sort for all.
     let floats = floats.f64()?;
-    let mut percentiles = HashMap::new();
-    for p in [1u8, 5, 25, 50, 75, 95, 99] {
-        let value = floats.quantile(f64::from(p) / 100.0, QuantileMethod::Nearest)?;
-        percentiles.insert(p, value.unwrap_or(f64::NAN));
-    }
+    let numbers = floats.filter(&floats.is_not_nan())?;
+    const PERCENTILES: [u8; 7] = [1, 5, 25, 50, 75, 95, 99];
+    let quantiles = PERCENTILES.map(|p| f64::from(p) / 100.0);
+    let values = numbers.quantiles(&quantiles, QuantileMethod::Nearest)?;
+    let percentiles: HashMap<u8, f64> = PERCENTILES
+        .into_iter()
+        .zip(values)
+        .map(|(p, value)| (p, value.unwrap_or(f64::NAN)))
+        .collect();
 
     let median = percentiles[&50];
     let q25 = percentiles[&25];

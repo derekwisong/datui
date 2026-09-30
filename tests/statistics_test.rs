@@ -263,3 +263,38 @@ fn correlation_covers_every_finite_pair() -> Result<()> {
     assert!(close(pair.covariance, 2113.523780844375));
     Ok(())
 }
+
+/// NaN sorts above every number: two values in five of it made the median 84 and the
+/// upper quartile NaN, and with it every fence. Describe and Distribution leave it out.
+#[test]
+fn quantiles_leave_nan_out() -> Result<()> {
+    let values: Vec<f64> = (0..10_000)
+        .map(|i| match i {
+            _ if i % 5 < 2 => f64::NAN,
+            _ if i % 1000 == 3 => 10_000.0,
+            _ => (i % 100) as f64,
+        })
+        .collect();
+    let lf = df!("x" => values)?.lazy();
+    let every_row = datui::sampling::Sample {
+        method: datui::sampling::SampleMethod::EveryRow,
+        ..datui::sampling::Sample::default()
+    };
+    let describe = datui::statistics::compute_describe_from_lazy(&lf, None, &every_row, true)?;
+    let described = describe.column_statistics[0]
+        .numeric_stats
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (described.q25, described.median, described.q75),
+        (27.0, 52.0, 77.0)
+    );
+
+    let results = compute_statistics_with_options(&lf, None, 0, distribution_options())?;
+    let dist = &results.distribution_analyses[0];
+    assert_eq!(dist.percentiles.p50, 52.0);
+    assert_eq!(dist.percentiles.p75, 77.0);
+    assert_eq!(dist.outliers.total_count, 10);
+    assert!(close(dist.outliers.percentage, 10.0 / 6_000.0 * 100.0));
+    Ok(())
+}

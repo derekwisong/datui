@@ -287,7 +287,21 @@ mod tests {
         )
         .cast(&DataType::Array(Box::new(DataType::Binary), 2))
         .unwrap();
-        let df = DataFrame::new_infer_height(vec![blob.into(), blobs.into(), pair.into()]).unwrap();
+        let meta = StructChunked::from_series(
+            "meta".into(),
+            2,
+            [Series::new(
+                "raw".into(),
+                [b"ab".as_slice(), b"".as_slice()],
+            )]
+            .iter(),
+        )
+        .unwrap()
+        .with_outer_validity(Some([true, false].into_iter().collect()))
+        .into_series();
+        let df =
+            DataFrame::new_infer_height(vec![blob.into(), blobs.into(), pair.into(), meta.into()])
+                .unwrap();
 
         for column in df.columns() {
             let text = binary_as_base64(column.as_materialized_series()).unwrap();
@@ -300,6 +314,7 @@ mod tests {
         assert_eq!(cell("blob"), Some("aGn/"));
         assert_eq!(cell("blobs"), Some(r#"["eA=="]"#));
         assert_eq!(cell("pair"), Some(r#"["YQ==","Yg=="]"#));
+        assert_eq!(cell("meta"), Some(r#"{"raw":"YWI="}"#));
         let lazy = lazy_as_json(df.clone().lazy()).unwrap().collect().unwrap();
         assert!(cells.equals_missing(&lazy), "{cells}\n{lazy}");
 
@@ -315,12 +330,22 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8(ndjson).unwrap().lines().next(),
-            Some(r#"{"blob":"aGn/","blobs":["eA=="],"pair":["YQ==","Yg=="]}"#)
+            Some(
+                r#"{"blob":"aGn/","blobs":["eA=="],"pair":["YQ==","Yg=="],"meta":{"raw":"YWI="}}"#
+            )
         );
 
         let copy = crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Tsv, true)
             .unwrap();
         let row: Vec<&str> = copy.text.lines().nth(1).unwrap().split('\t').collect();
-        assert_eq!(row, ["aGn/", r#""[""eA==""]""#, r#""[""YQ=="",""Yg==""]""#]);
+        assert_eq!(
+            row,
+            [
+                "aGn/",
+                r#""[""eA==""]""#,
+                r#""[""YQ=="",""Yg==""]""#,
+                r#""{""raw"":""YWI=""}""#
+            ]
+        );
     }
 }

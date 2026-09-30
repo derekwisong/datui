@@ -268,14 +268,14 @@ impl<'a> AnalysisWidget<'a> {
                 .style(header_row_style)
                 .render(layout[0], buf);
 
-            // The key figures over the charts, on a second line when one would cut
-            // the last of them off.
+            // The key figures over the charts, wrapped rather than cut: at 60
+            // columns they take three lines.
             let stats = condensed_statistics_lines(
                 &condensed_statistics(dist),
                 layout[1].width,
                 self.theme,
             );
-            let stats_height = (stats.len() as u16).clamp(1, 2);
+            let stats_height = (stats.len() as u16).clamp(1, 3);
             let main_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(stats_height), Constraint::Fill(1)])
@@ -1453,21 +1453,20 @@ fn render_distribution_selector(
     let scale_y = content.y + content.height - 1;
     let list_height = (content.height - 2) as usize;
     let total = distribution_scores.len();
-    let offset = selected.saturating_sub(list_height.saturating_sub(1));
-    let below = total.saturating_sub(offset + list_height);
+    let (offset, shown) = list_window(selected, total, list_height);
+    let below = total - offset - shown;
+    if below > 0 && shown < list_height {
+        Paragraph::new(format!(" {} {below} more", g.ellipsis))
+            .style(Style::default().fg(ctx.dimmed))
+            .render(row(content.y + 1 + shown as u16), buf);
+    }
     for (i, (family, outcome)) in distribution_scores
         .iter()
         .enumerate()
         .skip(offset)
-        .take(list_height)
+        .take(shown)
     {
         let y = content.y + 1 + (i - offset) as u16;
-        if i - offset + 1 == list_height && below > 0 && i != selected {
-            Paragraph::new(format!(" {} {} more", g.ellipsis, below + 1))
-                .style(Style::default().fg(ctx.dimmed))
-                .render(row(y), buf);
-            break;
-        }
         // A family that does not apply has no p-value, and says so rather than
         // ranking a placeholder.
         let (p_text, p_style) = match outcome.and_then(|outcome| outcome.test()) {
@@ -1523,8 +1522,38 @@ struct DistributionPlotConfig<'a> {
     glyphs: &'a crate::glyphs::Glyphs,
 }
 
+/// A chart's min, middle and max x labels, without the middle one where the
+/// plot is too narrow for it to sit clear of the ends. The chart draws the ends
+/// flush with the plot's edges and centers the middle.
+fn fit_x_labels(mut labels: Vec<Span<'_>>, area: Rect, y_label_width: u16) -> Vec<Span<'_>> {
+    // The block's left padding and the y axis line.
+    let plot = area.width.saturating_sub(y_label_width + 2) as usize;
+    if let [first, middle, last] = labels.as_slice()
+        && 2 * first.width().max(last.width()) + middle.width() + 2 > plot
+    {
+        labels.remove(1);
+    }
+    labels
+}
+
 /// The family list's least width: the frame, the rail, "Exponential" and a p-value.
 const SELECTOR_WIDTH: u16 = 24;
+
+/// Which of `total` items a list of `rows` shows around the cursor, as the
+/// first and how many. While some are out of view below, the last row is kept
+/// to count them, so the cursor never sits on it.
+fn list_window(selected: usize, total: usize, rows: usize) -> (usize, usize) {
+    if total <= rows || rows == 0 {
+        return (0, total.min(rows));
+    }
+    let room = rows.saturating_sub(1).max(1);
+    let offset = selected.saturating_sub(room - 1);
+    if offset + rows >= total {
+        (total - rows, rows)
+    } else {
+        (offset, room)
+    }
+}
 
 /// The tool list's width beside a result: a third of the screen, at most 32.
 pub(crate) fn sidebar_width(width: u16) -> u16 {
@@ -1955,7 +1984,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             Axis::default()
                 .bounds([hist_min, hist_max]) // Use histogram range to align with bars (hist_min already clamped for non-negative data)
                 .style(Style::default().fg(theme.get("text_secondary")))
-                .labels(x_labels), // Show x-axis labels with histogram range
+                .labels(fit_x_labels(x_labels, area, shared_y_axis_label_width)),
         )
         .y_axis(
             Axis::default()
@@ -2048,7 +2077,10 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
             Some(FitOutcome::NotApplicable(reason)) => format!("{dist_type} {reason}"),
             _ => format!("{dist_type} was not fitted"),
         };
-        Paragraph::new(reason).centered().render(area, buf);
+        Paragraph::new(reason)
+            .centered()
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .render(area, buf);
         return;
     };
     let qq_data: Vec<(f64, f64)> = theoretical
@@ -2220,7 +2252,7 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
                 .title("Theoretical Values")
                 .style(Style::default().fg(theme.get("text_secondary")))
                 .bounds([theory_min_plot, theory_max_plot])
-                .labels(x_labels),
+                .labels(fit_x_labels(x_labels, area, shared_y_axis_label_width)),
         )
         .y_axis(
             Axis::default()
@@ -2543,6 +2575,29 @@ mod tests {
         let mut columns = ColumnScroll::default();
         assert_eq!(stat_window(&widths, 200, 2, &mut columns), (0, 9));
         assert_eq!(columns.max, 0, "everything fits, so nothing scrolls");
+    }
+
+    /// The family list keeps its cursor in view and, while families are out of
+    /// view below, a row to count them: the cursor never takes that row.
+    #[test]
+    fn the_family_list_counts_what_is_below_the_cursor() {
+        assert_eq!(list_window(3, 5, 8), (0, 5), "everything fits");
+        for selected in 0..14 {
+            let (offset, shown) = list_window(selected, 14, 12);
+            assert!(
+                (offset..offset + shown).contains(&selected),
+                "{selected} is drawn"
+            );
+            let below = 14 - offset - shown;
+            if below > 0 {
+                assert_eq!(shown, 11, "a row is left to count {below} at {selected}");
+            } else {
+                assert_eq!(shown, 12);
+            }
+        }
+        assert_eq!(list_window(11, 14, 12), (1, 11), "not the last row");
+        assert_eq!(list_window(13, 14, 12), (2, 12), "the end needs no count");
+        assert_eq!(list_window(4, 14, 1), (4, 1), "one row is the cursor's");
     }
 
     /// The matrix scrolls to the selected cell however it got there, and counts

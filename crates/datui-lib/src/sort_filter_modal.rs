@@ -37,6 +37,7 @@ impl SortFilterModal {
         self.active_tab = SortFilterTab::Sort;
         self.focus = SortFilterFocus::TabBar;
         self.sort.focus = SortFocus::ColumnList;
+        self.sort.status = None;
         // The render draws the cursor rail at `selected().unwrap_or(0)`; select
         // the row for real, or Space/L/v on the first row silently do nothing
         // until an arrow press makes the shown cursor true.

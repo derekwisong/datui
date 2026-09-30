@@ -483,9 +483,16 @@ impl SortModal {
                     .filter_map(|c| c.sort_order)
                     .max()
                     .unwrap_or(0);
+                let old_order = self.columns[real_idx].sort_order;
+                // A sorted column moves among the places already taken; an
+                // unsorted one may also join at the end.
+                let last = if old_order.is_some() {
+                    max_order
+                } else {
+                    max_order + 1
+                };
 
-                if new_order > 0 && new_order <= max_order + 1 {
-                    let old_order = self.columns[real_idx].sort_order;
+                if new_order > 0 && new_order <= last {
                     let selected_column_name = self.columns[real_idx].name.clone();
 
                     // Adjust existing orders
@@ -530,7 +537,9 @@ impl SortModal {
                     {
                         self.table_state.select(Some(new_selected_idx));
                     }
-                    self.has_unapplied_changes = true;
+                    if old_order != Some(new_order) {
+                        self.has_unapplied_changes = true;
+                    }
                 } else if new_order == 0 {
                     // User wants to unset sort order
                     if self.columns[real_idx].sort_order.take().is_some() {
@@ -557,11 +566,6 @@ impl SortModal {
                     }
                 } else {
                     // Past the end of the order: say so rather than doing nothing.
-                    let last = if self.columns[real_idx].sort_order.is_some() {
-                        max_order
-                    } else {
-                        max_order + 1
-                    };
                     let range = if last == 1 {
                         "1".to_string()
                     } else {
@@ -698,13 +702,17 @@ mod tests {
             Some("Position 5 is past the end; use 1-2.")
         );
 
-        // The sorted column itself has only the positions already there.
+        // The sorted column itself has only the positions already there, and
+        // its own position is no change.
         modal.table_state.select(Some(0));
-        modal.jump_selection_to_order(3);
+        modal.jump_selection_to_order(2);
         assert_eq!(
             modal.status.as_deref(),
-            Some("Position 3 is past the end; use 1.")
+            Some("Position 2 is past the end; use 1.")
         );
+        modal.jump_selection_to_order(1);
+        assert_eq!(modal.columns[0].sort_order, Some(1));
+        assert!(!modal.has_unapplied_changes);
     }
 
     #[test]

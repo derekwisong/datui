@@ -20604,31 +20604,14 @@ impl App {
     /// The table's format for `column` when it holds whole numbers, for an export's
     /// axis ticks; `None` for any other column.
     fn whole_number_format(&self, column: &str) -> Option<crate::numfmt::NumberFormat> {
-        let dtype = self.data_table_state.as_ref()?.schema.get(column)?;
-        dtype
-            .is_integer()
-            .then(|| self.table_number_format(column, dtype))
+        let schema = &self.data_table_state.as_ref()?.schema;
+        chart_data::whole_number_format(&self.number_format, schema, column)
     }
 
     /// The first column's format when every one of `columns` holds whole numbers.
     fn whole_numbers_format(&self, columns: &[String]) -> Option<crate::numfmt::NumberFormat> {
-        let formats: Option<Vec<_>> = columns
-            .iter()
-            .map(|c| self.whole_number_format(c))
-            .collect();
-        formats?.into_iter().next()
-    }
-
-    /// The format the table prints a count in.
-    fn count_format(&self) -> crate::numfmt::NumberFormat {
-        self.table_number_format("Count", &DataType::UInt64)
-    }
-
-    fn table_number_format(&self, column: &str, dtype: &DataType) -> crate::numfmt::NumberFormat {
-        match self.number_format.formatter_for(column, dtype) {
-            crate::numfmt::CellFormatter::Number(format) => format,
-            crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
-        }
+        let schema = &self.data_table_state.as_ref()?.schema;
+        chart_data::whole_numbers_format(&self.number_format, schema, columns)
     }
 
     /// Build the export from the prepared chart for the current selection. `Ok(None)`
@@ -20798,7 +20781,7 @@ impl App {
                     chart_title,
                     notes,
                     x_whole: self.whole_number_format(&data.column),
-                    y_whole: Some(self.count_format()),
+                    y_whole: Some(chart_data::count_format(&self.number_format)),
                 };
                 ChartExportJob::Series {
                     series,

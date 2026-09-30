@@ -1048,10 +1048,7 @@ impl BarData {
         &self,
         settings: &crate::numfmt::NumberFormatSettings,
     ) -> crate::numfmt::NumberFormat {
-        match settings.formatter_for(&self.value_column, &self.value_dtype) {
-            crate::numfmt::CellFormatter::Number(format) => format,
-            crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
-        }
+        table_number_format(settings, &self.value_column, &self.value_dtype)
     }
 
     /// Each bar's value as the table prints the value column.

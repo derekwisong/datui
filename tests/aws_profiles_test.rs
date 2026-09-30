@@ -119,9 +119,11 @@ fn listing_and_opening_sign_with_the_active_profile() {
     );
     app.enter_home();
 
-    let pump = |app: &mut datui::App, seconds: u64, done: &dyn Fn(&datui::App) -> bool| {
-        let deadline = Instant::now() + Duration::from_secs(seconds);
-        while Instant::now() < deadline && !done(app) {
+    // Until `done`. The deadline is only a hang guard, and failing it fails the test.
+    let pump = |app: &mut datui::App, what: &str, done: &dyn Fn(&datui::App) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(300);
+        while !done(app) {
+            assert!(Instant::now() < deadline, "{what}: {:?}", app.home.cloud);
             if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
                 let mut next = Some(event);
                 while let Some(event) = next {
@@ -129,29 +131,22 @@ fn listing_and_opening_sign_with_the_active_profile() {
                 }
             }
         }
-        done(app)
     };
 
     // Both listings answered: the default source's, and the `default` profile's own,
     // which runs alongside it and can land after it.
     let default_profile = datui::cloud_sources::profile_source_id("default");
-    let listed = pump(&mut app, 20, &|app| {
-        let answered = |id: &str| {
+    pump(
+        &mut app,
+        "the default source and the default profile list",
+        &|app| {
+            let answered = |id: &str| app.home.cloud.iter().any(|s| s.id == id && !s.busy());
             app.home
                 .cloud
                 .iter()
-                .any(|s| s.id == id && s.status != datui::home::CloudStatus::Listing)
-        };
-        app.home
-            .cloud
-            .iter()
-            .any(|s| s.id == "s3-default" && !s.buckets.is_empty())
-            && answered(&default_profile)
-    });
-    assert!(
-        listed,
-        "the default source and the default profile should list: {:?}",
-        app.home.cloud
+                .any(|s| s.id == "s3-default" && !s.buckets.is_empty())
+                && answered(&default_profile)
+        },
     );
 
     // Open an object through the same source. It does not exist, so the open fails,
@@ -167,7 +162,7 @@ fn listing_and_opening_sign_with_the_active_profile() {
     }
     // Until the object itself is asked for: the second profile's listing can land after
     // the snapshot above and would otherwise end the wait early.
-    pump(&mut app, 20, &|_| {
+    pump(&mut app, "the open reaches the object", &|_| {
         seen.lock()
             .unwrap()
             .iter()

@@ -1,11 +1,15 @@
 //! Columns cast to types Polars' Avro writer can hold, for an Avro export only.
 //!
 //! The writer knows booleans, 32- and 64-bit integers and floats, strings,
-//! binary, decimals, dates, naive millisecond and microsecond datetimes, and
-//! lists and structs of those. Anything else fails the whole export with
-//! "not yet implemented", so each is cast to the nearest type it does know.
-//! The casts are strict: a value that does not fit (a `u64` past `i64::MAX`)
-//! fails the export by column name instead of turning null.
+//! binary, dates, naive millisecond and microsecond datetimes, and lists and
+//! structs of those. Anything else fails the whole export with "not yet
+//! implemented", so each is cast to the nearest type it does know. The casts
+//! are strict: a value that does not fit (a `u64` past `i64::MAX`) fails the
+//! export by column name instead of turning null.
+//!
+//! It also writes decimals, but wrongly: it drops the sign byte of a positive
+//! value whose leading byte is 0x80 or more, so every reader sees 327.68 as
+//! -327.68. Decimals are written as their exact text instead.
 
 use polars::prelude::*;
 
@@ -17,7 +21,7 @@ fn writable(dtype: &DataType, durations: bool) -> DataType {
     match dtype {
         D::Int8 | D::Int16 | D::UInt8 | D::UInt16 => D::Int32,
         D::UInt32 | D::UInt64 => D::Int64,
-        D::Int128 | D::UInt128 => D::Decimal(38, 0),
+        D::Int128 | D::UInt128 | D::Decimal(..) => D::String,
         D::Float16 => D::Float32,
         // A time zone goes, the instant stays: the values read as UTC.
         D::Datetime(unit, _) => D::Datetime(
@@ -103,15 +107,16 @@ mod tests {
             col("n").cast(DataType::UInt32).alias("u32"),
             col("n").cast(DataType::UInt64).alias("u64"),
             col("n").cast(DataType::Int128).alias("i128"),
+            lit(327.68).cast(DataType::Decimal(10, 2)).alias("dec"),
             col("n")
                 .cast(DataType::Datetime(TimeUnit::Nanoseconds, None))
                 .alias("ns"),
             col("n")
                 .cast(DataType::Datetime(
                     TimeUnit::Microseconds,
-                    Some(TimeZone::UTC),
+                    TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
                 ))
-                .alias("utc"),
+                .alias("zoned"),
             col("n").cast(DataType::Time).alias("time"),
             col("n")
                 .cast(DataType::Duration(TimeUnit::Milliseconds))
@@ -137,15 +142,20 @@ mod tests {
         assert_eq!(dtype("i16"), DataType::Int32);
         assert_eq!(dtype("u32"), DataType::Int64);
         assert_eq!(dtype("u64"), DataType::Int64);
-        assert_eq!(dtype("i128"), DataType::Decimal(38, 0));
+        assert_eq!(first("i128"), AnyValue::StringOwned("3600000000".into()));
+        assert_eq!(
+            first("dec"),
+            AnyValue::StringOwned("327.68".into()),
+            "the writer's own decimal reads back as -327.68"
+        );
         assert_eq!(
             first("ns"),
             AnyValue::Datetime(3_600_000, TimeUnit::Microseconds, None)
         );
         assert_eq!(
-            first("utc"),
+            first("zoned"),
             AnyValue::Datetime(3_600_000_000, TimeUnit::Microseconds, None),
-            "the UTC instant, without its zone"
+            "the UTC instant, not the wall time in New York"
         );
         assert_eq!(first("time"), AnyValue::Int64(3_600_000), "microseconds");
         assert_eq!(

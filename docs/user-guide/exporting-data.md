@@ -48,19 +48,20 @@ Parquet, Arrow, JSON and NDJSON keep lists, arrays and structs as they are.
 ## Avro types
 
 Avro keeps booleans, 32- and 64-bit integers and floats, strings, binary,
-decimals, dates, millisecond and microsecond datetimes, lists and structs.
-Other columns are converted, inside lists and structs too:
+dates, millisecond and microsecond datetimes, lists and structs. Other
+columns are converted, inside lists and structs too:
 
 | Column | Avro |
 |---|---|
 | Array | List |
 | Categorical, enum | String |
 | 8- and 16-bit integer | 32-bit integer |
+| 16-bit float | 32-bit float |
 | Unsigned 32- and 64-bit integer | 64-bit integer; a value past its range fails the export |
-| 128-bit integer | Decimal |
-| Nanosecond datetime | Microsecond datetime |
+| Decimal, 128-bit integer | String of the exact value, such as `327.68` |
+| Nanosecond datetime | Microsecond datetime; digits past the microsecond are dropped |
 | Datetime with a time zone | The same instant in UTC, without the zone |
-| Time, duration | 64-bit integer of microseconds |
+| Time, duration | 64-bit integer of microseconds (a time counts from midnight) |
 | Null | String |
 
 ## Keys

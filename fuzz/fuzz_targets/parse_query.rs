@@ -23,10 +23,13 @@ fuzz_target!(|query: &str| {
         // guesses about the shape of a valid result turn out to be wrong: an early
         // version required output column names to be non-empty, and the fuzzer promptly
         // produced `select col[""]`, which asks for an empty name and gets one.
-        Ok((cols, filter, by, names)) => {
+        Ok(q) => {
             // Touch the results so the parse cannot be optimised away, and so the
             // expression trees are actually walked.
-            let _ = cols.len() + by.len() + names.len() + usize::from(filter.is_some());
+            let _ = q.cols.len()
+                + q.group_by.len()
+                + q.group_by_names.len()
+                + usize::from(q.filter.is_some());
         }
         // Every error message reaches the user through this, so it has to survive
         // whatever the parser and Polars put into it.

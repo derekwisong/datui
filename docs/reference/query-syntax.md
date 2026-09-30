@@ -45,6 +45,10 @@ select col["First Name"], col["Last Name"]
 select no_spaces: col["name with spaces"]
 ```
 
+A column named like a function (`count`, `log`, `var`) is read as the
+function when something follows it, so `select log + 1` is `log(+1)`. Write
+`col["log"] + 1`.
+
 ## Right-to-left expression parsing
 
 There is no operator precedence. Expressions are parsed right-to-left: the
@@ -71,6 +75,9 @@ See [Where clause](#where-clause--and-).
 - `select` — all columns, no expressions
 - `select a, b, c` — those columns or expressions, in order, separated by `,`
 - `select a, b: x + y, c` — columns and aliased expressions
+- `select distinct carrier, origin` — only the distinct rows of the result;
+  `select distinct` alone drops duplicate rows. A column named `distinct` is
+  `col["distinct"]`, or plain `distinct` before `,` `:` `.` or an operator
 
 ## By clause (grouping and aggregation)
 
@@ -80,7 +87,8 @@ See [Where clause](#where-clause--and-).
 
 By uses the same comma-separated list and `name : expression` rules as
 select. Aggregation functions (`avg`, `min`, `max`, `count`, `sum`, `std`,
-`med`) can be written `fn[expr]` or `fn expr`; brackets are optional.
+`med`, `nunique`, `var`, `dev`) can be written `fn[expr]` or `fn expr`;
+brackets are optional. `wavg` goes between its operands: `w wavg x`.
 
 An unaliased aggregate of a single column is named `{fn}_{column}`, so
 `select avg salary, max salary by department` yields `avg_salary` and
@@ -111,7 +119,7 @@ inside one AND term — and separate the groups with `,`.
 
 | Kind | Syntax |
 |---|---|
-| Arithmetic | `+` `-` `*` `/` `%` (`/` and `%` both divide; `%` is not modulo) |
+| Arithmetic | `+` `-` `*` `/` `%` (`/` and `%` both divide; `%` is not modulo, `mod` is) |
 | Equal, not equal | `=`, `!=`, `<>` (same as `!=`) |
 | Ordering | `<` `>` `<=` `>=` |
 | Coalesce | `^` — first non-null, left to right; `a^b^c` = coalesce(a, b, c), binding right-to-left as `a^(b^c)` |
@@ -122,6 +130,26 @@ inside one AND term — and separate the groups with `,`.
 
 Either side of a comparison can be a column, a literal or an expression:
 `where a = 10`, `where created_at.date > other_date_col`.
+
+## Word operators
+
+q's infix words, parsed right-to-left like every other operator.
+
+| Operator | Result | Example |
+|---|---|---|
+| `x in [a, b, c]` | True where `x` equals one of the values; the right side is a bracketed list | `select total: sum n by name where name in ["Emma", "Jennifer", "Olivia"]` |
+| `x like "pattern"` | True where the whole value matches: `*` is any run of characters, `?` one character; case-sensitive | `select restaurant, item where item like "*Chicken*"` |
+| `size xbar x` | `x` rounded down to a multiple of `size`, for buckets; a whole-number size keeps integers integral | `select trips: count fare_amount by b: 5 xbar fare_amount` |
+| `x mod n` | Remainder, with the sign of `n` (`-7 mod 3` is `2`) | `select dep_time, minute: dep_time mod 100` |
+| `w wavg x` | Average of `x` weighted by `w`, an aggregate; pairs where either is null are skipped | `select delay: distance wavg arr_delay by carrier` |
+
+Because evaluation is right-to-left, `x mod 2 in [1]` is `x mod (2 in [1])`.
+Write `(x mod 2) in [1]` or `1 = x mod 2`. `not name in ["Mary"]` negates the
+whole test.
+
+The words are operators only between two operands. A column named `in` or
+`mod` still works on its own or at the start of an expression, and
+`col["in"]` always does.
 
 ## Date and datetime accessors
 
@@ -135,8 +163,13 @@ extracts components: `column_ref.accessor`.
 | `year` | Int32 | Year |
 | `month` | Int8 | Month (1–12) |
 | `week` | Int8 | Week number |
+| `quarter` | Int8 | Quarter (1–4) |
 | `day` | Int8 | Day of month (1–31) |
+| `doy` | Int16 | Day of year (1–366) |
 | `dow` | Int8 | Day of week (1=Monday … 7=Sunday, ISO) |
+| `hour` | Int8 | Hour (0–23); Datetime and Time |
+| `minute` | Int8 | Minute (0–59); Datetime and Time |
+| `second` | Int8 | Second (0–59); Datetime and Time |
 | `month_start` | Date/Datetime | First day of month, at midnight for Datetime |
 | `month_end` | Date/Datetime | Last day of month |
 | `format["fmt"]` | String | Format as string (chrono strftime, e.g. `"%Y-%m"`) |
@@ -153,6 +186,31 @@ Apply to String columns:
 | `starts_with["x"]` | Boolean | True if the string starts with `x` |
 | `ends_with["x"]` | Boolean | True if the string ends with `x` |
 | `contains["x"]` | Boolean | True if the string contains `x` |
+| `part[sep, n]` | String | Split on `sep` and take piece `n`, counting from 0; negative counts from the end; past the last piece is null |
+| `slice[start, len]` | String | `len` characters from `start` (0-based; negative counts from the end); without `len`, to the end |
+| `replace[from, to]` | String | Every `from` replaced with `to`, literally |
+| `strip` | String | Leading and trailing whitespace removed |
+| `to_date["fmt"]` | Date | Parse with a chrono format such as `"%Y%m%d"`; without a format, Polars infers it |
+| `to_datetime["fmt"]` | Datetime | As `to_date`, for date and time: `"%Y-%m-%d %H:%M"` |
+
+`part`, `slice`, `replace`, `strip`, `to_date` and `to_datetime` also work on
+number and date columns, read as their text: NOAA's `DATE` parses whether it
+was read as `20240101` text or as an integer. A value that does not parse
+becomes null.
+
+### Number and conversion accessors
+
+| Accessor | Result | Description |
+|---|---|---|
+| `round[n]` | Number | Round to `n` decimals, halves away from zero; `round` alone rounds to a whole number |
+| `int` | Int64 | Convert; text that is not a whole number becomes null |
+| `float` | Float64 | Convert; text that is not a number becomes null |
+| `str` | String | Convert to text |
+
+Accessors chain left to right: `FT.part["–", 0].int`. Arguments are
+literals, quoted text or numbers, and a wrong number of them is an error
+naming the accessor. To apply an accessor to an aggregate or an expression,
+wrap it in parentheses: `(avg dep_delay).round[1]`.
 
 An accessor result is automatically aliased to `{column}_{accessor}`, so
 `timestamp.date` becomes `timestamp_date`.
@@ -191,7 +249,10 @@ logic in where. Write `fn[expr]` or `fn expr`; brackets are optional.
 | `sum` | — | Sum | `select sum[amount] by year` |
 | `first` | — | First value in group | `select first[value] by group` |
 | `last` | — | Last value in group | `select last[value] by group` |
-| `std` | `stddev` | Standard deviation | `select std[score] by group` |
+| `std` | `stddev`, `dev` | Standard deviation (sample) | `select dev dep_delay by origin` |
+| `var` | — | Variance (sample) | `select var dep_delay by origin` |
+| `nunique` | — | Count of distinct values | `select stations: nunique ID by ELEMENT` |
+| `wavg` | — | Weighted average, written `w wavg x` | `select delay: distance wavg arr_delay by carrier` |
 | `med` | `median` | Median | `select med[price] by type` |
 | `len` | `length` | String length (chars) | `select len[name] by category` |
 
@@ -213,3 +274,29 @@ logic in where. Write `fn[expr]` or `fn expr`; brackets are optional.
 | `abs` | Absolute value | `select abs[x]` |
 | `floor` | Numeric floor | `select floor[price]` |
 | `ceil` / `ceiling` | Numeric ceiling | `select ceil[score]` |
+| `sqrt` | Square root | `select sd: sqrt var dep_delay by origin` |
+| `log` | Natural logarithm | `select year, log_n: (log n).round[2] where name = "Emma"` |
+| `exp` | e raised to the value | `select exp[x]` |
+
+`var`, `dev` and `std` divide by n − 1, where q's `var` and `dev` divide by n.
+
+## Examples on the built-in datasets
+
+Each runs as written on the public dataset of that name on the home screen.
+
+| Dataset | Query |
+|---|---|
+| NYC yellow taxis | `select trips: count VendorID by tpep_pickup_datetime.hour` |
+| NYC yellow taxis | `select trips: count fare_amount by b: 5 xbar fare_amount where fare_amount > 0, fare_amount < 100` |
+| Premier League | `select home: FT.part["–", 0].int, away: FT.part["–", 1].int` |
+| Premier League | `select d: Date.replace["(P)", ""].to_date["%a %b %d %Y"]` |
+| Premier League | `select matches: count Round by m: Date.replace["(P)", ""].to_date["%a %b %d %Y"].month` |
+| NOAA weather (`by_year/YEAR=2024`) | `select day: DATE.to_date["%Y%m%d"], high: DATA_VALUE / 10 where ID = "USW00094728", ELEMENT = "TMAX"` |
+| NOAA weather (`by_year/YEAR=2024`) | `select stations: nunique ID by ELEMENT` |
+| NOAA weather (`by_year/YEAR=2024`) | `select stations: nunique ID by country: ID.slice[0, 2] where ELEMENT = "TMAX"` |
+| Baby names | `select total: sum n by name where name in ["Emma", "Jennifer", "Olivia"]` |
+| Baby names | `select total: sum n by decade: 10 xbar year where name = "Jennifer"` |
+| NYC flights | `select mean_delay: (avg dep_delay).round[1] by hour` |
+| NYC flights | `select distinct carrier, origin` |
+| NYC flights | `select planes: nunique tailnum by carrier` |
+| Food nutrition | `select items: count item by restaurant where item like "*Chicken*"` |

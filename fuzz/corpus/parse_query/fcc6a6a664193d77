@@ -1,0 +1,1 @@
+select dep_time, minute: dep_time mod 100, r: -7 mod 3

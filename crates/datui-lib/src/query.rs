@@ -1,6 +1,6 @@
 use polars::prelude::StrptimeOptions;
 use polars::prelude::*;
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Add, Div, Mul, Rem, Sub};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -335,6 +335,165 @@ fn token_text(token: &Token) -> String {
 /// Remedy shown when a clause keyword turns up out of place.
 const CLAUSE_ORDER: &str = "clause order is select [by group] [where conditions]";
 
+/// Infix operators spelled as words (q's names). They stay ordinary identifiers
+/// everywhere else, so a column called `in` or `mod` still reads as one when it
+/// opens an expression or follows a `.`.
+const WORD_OPS: [&str; 5] = ["in", "like", "xbar", "mod", "wavg"];
+
+/// The infix operator at `tokens[i]`, if there is one: a symbol, or an operator
+/// word that has an operand before it.
+fn infix_op_at(tokens: &[Token], i: usize) -> Option<&str> {
+    match tokens.get(i)? {
+        Token::Op(op) => Some(op.as_str()),
+        Token::Identifier(word)
+            if i > 0 && tokens[i - 1] != Token::Dot && WORD_OPS.contains(&word.as_str()) =>
+        {
+            Some(word.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// An operand of `mod` or `xbar`. A whole number is an integer literal, so an
+/// integer column keeps its type: `5 xbar passenger_count` stays Int64 instead of
+/// becoming 5.0, 10.0.
+fn int_or_expr(tokens: &[Token]) -> Result<Expr, String> {
+    let whole = |n: f64| n.fract() == 0.0 && n.abs() < i64::MAX as f64;
+    match tokens {
+        [Token::Number(n)] if whole(*n) => Ok(lit(*n as i64)),
+        [Token::Op(minus), Token::Number(n)] if minus == "-" && whole(*n) => Ok(lit(-(*n as i64))),
+        _ => parse_expr(tokens),
+    }
+}
+
+/// True when no `]` in `tokens` closes a `[` from outside them.
+fn brackets_balanced(tokens: &[Token]) -> bool {
+    let mut depth = 0usize;
+    tokens.iter().all(|t| match t {
+        Token::LBracket => {
+            depth += 1;
+            true
+        }
+        Token::RBracket => depth.checked_sub(1).map(|d| depth = d).is_some(),
+        _ => true,
+    })
+}
+
+/// OR of the conditions as a balanced tree, so a long `in` list nests
+/// logarithmically rather than one level per element.
+fn any_of(mut conditions: Vec<Expr>) -> Expr {
+    if conditions.len() <= 1 {
+        return conditions.pop().unwrap_or_else(|| lit(false));
+    }
+    let right = conditions.split_off(conditions.len() / 2);
+    any_of(conditions).or(any_of(right))
+}
+
+/// A `like` pattern as an anchored regex: `*` is any run of characters, `?` any
+/// one character, everything else literal.
+fn like_regex(pattern: &str) -> String {
+    let mut re = String::from("(?s)^");
+    for c in pattern.chars() {
+        match c {
+            '*' => re.push_str(".*"),
+            '?' => re.push('.'),
+            _ => re.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
+        }
+    }
+    re.push('$');
+    re
+}
+
+/// Operators whose right side is not an ordinary expression, or whose operands
+/// need their tokens (literal checks, names). Everything else goes to `apply_op`.
+fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Result<Expr, String> {
+    match op {
+        "in" => {
+            let list = match right_tokens {
+                // One list: the first `[` closes at the last token, so `[1] + [2]` is not.
+                [Token::LBracket, inner @ .., Token::RBracket] if brackets_balanced(inner) => inner,
+                _ => {
+                    return Err(
+                        "in takes a list on its right, e.g. name in [\"Emma\", \"Olivia\"]"
+                            .to_string(),
+                    );
+                }
+            };
+            let items = split_tokens(list, &Token::Comma);
+            if items.iter().any(|item| item.is_empty()) {
+                return Err(
+                    "in needs a list of values, e.g. name in [\"Emma\", \"Olivia\"]".to_string(),
+                );
+            }
+            let left = parse_expr(left_tokens)?;
+            // One `=` per value, so each value compares exactly as `x = value` would,
+            // with the same literal casting (numbers, dates, timestamps).
+            let conditions = items
+                .iter()
+                .map(|item| Ok(left.clone().eq(parse_expr(item)?)))
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(any_of(conditions))
+        }
+        "like" => {
+            let [Token::String(pattern)] = right_tokens else {
+                return Err(
+                    "like takes a quoted pattern on its right, e.g. item like \"*Chicken*\""
+                        .to_string(),
+                );
+            };
+            let left = parse_expr(left_tokens)?;
+            // Cast first so numeric codes (zip, station ids read as numbers) match too.
+            Ok(left
+                .cast(DataType::String)
+                .str()
+                .contains(lit(like_regex(pattern)), true))
+        }
+        "xbar" => {
+            if let [Token::Number(n)] = left_tokens
+                && *n <= 0.0
+            {
+                return Err(
+                    "xbar needs a positive bucket size, e.g. 5 xbar fare_amount".to_string()
+                );
+            }
+            let right = parse_expr(right_tokens)?;
+            let size = int_or_expr(left_tokens)?;
+            // floor_div floors toward negative infinity for both ints and floats,
+            // which is what makes every value land in the bucket at or below it.
+            Ok(right.floor_div(size.clone()).mul(size))
+        }
+        "mod" => {
+            let right = int_or_expr(right_tokens)?;
+            let left = int_or_expr(left_tokens)?;
+            Ok(left.rem(right))
+        }
+        "wavg" => {
+            let values = parse_expr(right_tokens)?;
+            let weights = parse_expr(left_tokens)?;
+            let weighted = weights.clone().mul(values);
+            // Only pairs with both a weight and a value count toward the total weight;
+            // a null value would otherwise still pull the average toward zero.
+            let total = weights.filter(weighted.clone().is_not_null()).sum();
+            // No weight at all (every pair null) is no average, not 0/0 = NaN.
+            let total = when(total.clone().neq(lit(0)))
+                .then(total)
+                .otherwise(lit(NULL));
+            let expr = weighted.sum().true_div(total);
+            Ok(match simple_column_name(right_tokens) {
+                Some(column) => expr.alias(format!("wavg_{}", column)),
+                None => expr,
+            })
+        }
+        _ => {
+            // Parse right side first (right-to-left evaluation): it holds any
+            // remaining operators, so c>c%n becomes c > (c%n).
+            let right = parse_expr(right_tokens)?;
+            let left = parse_expr(left_tokens)?;
+            apply_op(left, op, right)
+        }
+    }
+}
+
 fn apply_op(left: Expr, op: &str, right: Expr) -> Result<Expr, String> {
     match op {
         "+" => Ok(left.add(right)),
@@ -368,6 +527,42 @@ fn simple_column_name(tokens: &[Token]) -> Option<String> {
     }
 }
 
+const WAVG_USAGE: &str = "wavg goes between weights and values, e.g. passengers wavg fare";
+
+/// Aggregation function names, lowercase.
+const AGG_FUNCTIONS: [&str; 16] = [
+    "avg", "mean", "min", "max", "count", "std", "stddev", "dev", "var", "med", "median", "sum",
+    "first", "last", "nunique", "wavg",
+];
+
+/// Scalar function names, lowercase.
+const SCALAR_FUNCTIONS: [&str; 13] = [
+    "len", "length", "not", "null", "upper", "lower", "abs", "floor", "ceil", "ceiling", "sqrt",
+    "log", "exp",
+];
+
+fn is_agg_function(name: &str) -> bool {
+    AGG_FUNCTIONS.contains(&name.to_lowercase().as_str())
+}
+
+// Check if an identifier is a known function name
+fn is_function_name(name: &str) -> bool {
+    // `wavg` is infix (`w wavg x`), so it never opens an expression.
+    let name = name.to_lowercase();
+    name != "wavg" && (is_agg_function(&name) || SCALAR_FUNCTIONS.contains(&name.as_str()))
+}
+
+/// A function call, `fn[args]` or `fn args`. The name is checked before the
+/// arguments are parsed, so each argument is parsed once; trying aggregates and
+/// then scalars on the same arguments doubled the work at every nesting level.
+fn parse_call(name: &str, args: &[Token]) -> Result<Expr, String> {
+    if is_agg_function(name) {
+        parse_agg_function(name, args)
+    } else {
+        parse_function(name, args)
+    }
+}
+
 // Parse aggregation function like avg[a], min[b], etc.
 fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     if args.is_empty() {
@@ -377,17 +572,23 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
         ));
     }
     let fn_name = name.to_lowercase();
+    if fn_name == "wavg" {
+        return Err(WAVG_USAGE.to_string());
+    }
     let expr = parse_expr(args)?;
     let expr = match fn_name.as_str() {
         "avg" | "mean" => expr.mean(),
         "min" => expr.min(),
         "max" => expr.max(),
         "count" => expr.count(),
-        "std" | "stddev" => expr.std(1),
+        // Sample statistics (n - 1), like `std`; q's own var and dev divide by n.
+        "std" | "stddev" | "dev" => expr.std(1),
+        "var" => expr.var(1),
         "med" | "median" => expr.median(),
         "sum" => expr.sum(),
         "first" => expr.first(),
         "last" => expr.last(),
+        "nunique" => expr.n_unique(),
         _ => return Err(format!("Unknown aggregation function: {}", name)),
     };
     // Left unnamed, two aggregates of one column collide ("avg salary, max salary"),
@@ -404,8 +605,12 @@ fn parse_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     if args.is_empty() {
         return Err(format!("Function {} requires an argument", name));
     }
+    let name_lower = name.to_lowercase();
+    if !SCALAR_FUNCTIONS.contains(&name_lower.as_str()) {
+        return Err(format!("Unknown function: {}", name));
+    }
     let expr = parse_expr(args)?;
-    match name.to_lowercase().as_str() {
+    match name_lower.as_str() {
         "not" => Ok(expr.not()),
         "null" => Ok(expr.is_null()),
         "len" | "length" => Ok(expr.str().len_chars()),
@@ -414,74 +619,220 @@ fn parse_function(name: &str, args: &[Token]) -> Result<Expr, String> {
         "abs" => Ok(expr.abs()),
         "floor" => Ok(expr.floor()),
         "ceil" | "ceiling" => Ok(expr.ceil()),
+        "sqrt" => Ok(expr.sqrt()),
+        "log" => Ok(expr.log(lit(std::f64::consts::E))),
+        "exp" => Ok(expr.exp()),
         _ => Err(format!("Unknown function: {}", name)),
     }
 }
 
-/// Apply a date/datetime accessor to an expression.
-fn apply_dt_accessor(expr: Expr, accessor: &str, _arg: Option<&str>) -> Result<Expr, String> {
-    let dt = expr.dt();
-    match accessor.to_lowercase().as_str() {
-        "date" => Ok(dt.date()),
-        "time" => Ok(dt.time()),
-        "year" => Ok(dt.year()),
-        "month" => Ok(dt.month()),
-        "week" => Ok(dt.week()),
-        "day" => Ok(dt.day()),
-        "dow" => Ok(dt.weekday()),
-        "weekday" => Ok(dt.weekday()),
-        "month_start" => Ok(dt.month_start()),
-        "month_end" => Ok(dt.month_end()),
-        "format" => {
-            let fmt =
-                _arg.ok_or("format accessor requires an argument, e.g. .format[\"%Y-%m\"]")?;
-            Ok(dt.to_string(fmt))
+/// An accessor's bracketed argument: `.part["-", 0]` has a string and a number.
+#[derive(Debug, Clone, PartialEq)]
+enum AccessorArg {
+    Str(String),
+    Num(f64),
+}
+
+impl AccessorArg {
+    /// As it goes into the result's auto-alias: `part_-_0`, not `part_-_0.0`.
+    fn alias_text(&self) -> String {
+        match self {
+            AccessorArg::Str(s) => s.clone(),
+            AccessorArg::Num(n) => n.to_string(),
         }
-        _ => Err(format!(
-            "Unknown date/time accessor: '{}'. Valid: date, time, year, month, week, day, dow, month_start, month_end, format",
-            accessor
-        )),
     }
 }
 
-/// Apply a string accessor or method to an expression.
-fn apply_str_accessor(expr: Expr, accessor: &str, arg: Option<&str>) -> Result<Expr, String> {
-    let s = expr.str();
-    match accessor.to_lowercase().as_str() {
-        "len" | "length" => Ok(s.len_chars()),
-        "upper" => Ok(s.to_uppercase()),
-        "lower" => Ok(s.to_lowercase()),
-        "starts_with" => {
-            let pat = arg.ok_or("starts_with requires an argument, e.g. .starts_with[\"x\"]")?;
-            Ok(s.starts_with(lit(pat)))
-        }
-        "ends_with" => {
-            let pat = arg.ok_or("ends_with requires an argument, e.g. .ends_with[\"x\"]")?;
-            Ok(s.ends_with(lit(pat)))
-        }
-        "contains" => {
-            let pat = arg.ok_or("contains requires an argument, e.g. .contains[\"x\"]")?;
-            Ok(s.contains_literal(lit(pat)))
-        }
-        _ => Err(format!(
-            "Unknown string accessor: '{}'. Valid: len, upper, lower, starts_with, ends_with, contains",
-            accessor
-        )),
+/// Every accessor with the argument counts it takes and an example for errors.
+const ACCESSORS: &[(&str, usize, usize, &str)] = &[
+    // Date and time parts.
+    ("date", 0, 0, ".date"),
+    ("time", 0, 0, ".time"),
+    ("year", 0, 0, ".year"),
+    ("quarter", 0, 0, ".quarter"),
+    ("month", 0, 0, ".month"),
+    ("week", 0, 0, ".week"),
+    ("day", 0, 0, ".day"),
+    ("doy", 0, 0, ".doy"),
+    ("dow", 0, 0, ".dow"),
+    ("weekday", 0, 0, ".weekday"),
+    ("hour", 0, 0, ".hour"),
+    ("minute", 0, 0, ".minute"),
+    ("second", 0, 0, ".second"),
+    ("month_start", 0, 0, ".month_start"),
+    ("month_end", 0, 0, ".month_end"),
+    ("format", 1, 1, ".format[\"%Y-%m\"]"),
+    // Strings.
+    ("len", 0, 0, ".len"),
+    ("length", 0, 0, ".length"),
+    ("upper", 0, 0, ".upper"),
+    ("lower", 0, 0, ".lower"),
+    ("starts_with", 1, 1, ".starts_with[\"x\"]"),
+    ("ends_with", 1, 1, ".ends_with[\"x\"]"),
+    ("contains", 1, 1, ".contains[\"x\"]"),
+    ("part", 2, 2, ".part[\"-\", 0]"),
+    ("slice", 1, 2, ".slice[0, 4]"),
+    ("replace", 2, 2, ".replace[\"(P)\", \"\"]"),
+    ("strip", 0, 0, ".strip"),
+    ("to_date", 0, 1, ".to_date[\"%Y%m%d\"]"),
+    ("to_datetime", 0, 1, ".to_datetime[\"%Y-%m-%d %H:%M\"]"),
+    // Numbers and casts.
+    ("round", 0, 1, ".round[1]"),
+    ("int", 0, 0, ".int"),
+    ("float", 0, 0, ".float"),
+    ("str", 0, 0, ".str"),
+];
+
+/// Names for the unknown-accessor error, by kind.
+const ACCESSOR_HELP: &str = "Valid date/time: date, time, year, quarter, month, week, day, doy, dow, hour, minute, second, month_start, month_end, format. \
+     Valid string: len, upper, lower, starts_with, ends_with, contains, part, slice, replace, strip, to_date, to_datetime. \
+     Valid number: round, int, float, str";
+
+fn arg_count_text(min: usize, max: usize) -> String {
+    match (min, max) {
+        (0, 0) => "no arguments".to_string(),
+        (1, 1) => "1 argument".to_string(),
+        (a, b) if a == b => format!("{} arguments", a),
+        (a, b) => format!("{} to {} arguments", a, b),
     }
 }
 
-/// Apply accessor (date, string, or string method). Tries date first, then string.
-fn apply_accessor(expr: Expr, accessor: &str, arg: Option<&str>) -> Result<Expr, String> {
-    if let Ok(e) = apply_dt_accessor(expr.clone(), accessor, arg) {
-        return Ok(e);
+/// Apply accessor `name` with its bracketed arguments.
+fn apply_accessor(expr: Expr, accessor: &str, args: &[AccessorArg]) -> Result<Expr, String> {
+    let name = accessor.to_lowercase();
+    let Some(&(_, min, max, usage)) = ACCESSORS.iter().find(|(n, ..)| *n == name) else {
+        return Err(format!(
+            "Unknown accessor: '{}'. {}",
+            accessor, ACCESSOR_HELP
+        ));
+    };
+    if args.len() < min || args.len() > max {
+        return Err(format!(
+            "{} takes {}, e.g. {}; got {}",
+            name,
+            arg_count_text(min, max),
+            usage,
+            args.len()
+        ));
     }
-    if let Ok(e) = apply_str_accessor(expr, accessor, arg) {
-        return Ok(e);
+    let text = |i: usize| match args.get(i) {
+        Some(AccessorArg::Str(s)) => Ok(s.clone()),
+        _ => Err(format!(
+            "{}: argument {} must be quoted text, e.g. {}",
+            name,
+            i + 1,
+            usage
+        )),
+    };
+    let int = |i: usize| match args.get(i) {
+        Some(AccessorArg::Num(n)) if n.fract() == 0.0 && n.abs() <= u32::MAX as f64 => {
+            Ok(*n as i64)
+        }
+        _ => Err(format!(
+            "{}: argument {} must be a whole number, e.g. {}",
+            name,
+            i + 1,
+            usage
+        )),
+    };
+    let strptime = |format: Option<String>| StrptimeOptions {
+        format: format.map(Into::into),
+        // A value that does not match becomes null, as a failed parse does in q,
+        // rather than one stray row failing the whole query.
+        strict: false,
+        ..Default::default()
+    };
+    // The string pieces cast first, so they also work on numbers and dates read
+    // as such (NOAA's DATE, an integer zip code); a cast from String is a no-op.
+    let as_str = || expr.clone().cast(DataType::String).str();
+    Ok(match name.as_str() {
+        "date" => expr.dt().date(),
+        "time" => expr.dt().time(),
+        "year" => expr.dt().year(),
+        "quarter" => expr.dt().quarter(),
+        "month" => expr.dt().month(),
+        "week" => expr.dt().week(),
+        "day" => expr.dt().day(),
+        "doy" => expr.dt().ordinal_day(),
+        "dow" | "weekday" => expr.dt().weekday(),
+        "hour" => expr.dt().hour(),
+        "minute" => expr.dt().minute(),
+        "second" => expr.dt().second(),
+        "month_start" => expr.dt().month_start(),
+        "month_end" => expr.dt().month_end(),
+        "format" => expr.dt().to_string(&text(0)?),
+        "len" | "length" => expr.str().len_chars(),
+        "upper" => expr.str().to_uppercase(),
+        "lower" => expr.str().to_lowercase(),
+        "starts_with" => expr.str().starts_with(lit(text(0)?)),
+        "ends_with" => expr.str().ends_with(lit(text(0)?)),
+        "contains" => expr.str().contains_literal(lit(text(0)?)),
+        // Past the last piece is null, not an error; a negative index counts from the end.
+        "part" => as_str().split(lit(text(0)?)).list().get(lit(int(1)?), true),
+        "slice" => {
+            let start = int(0)?;
+            let length = match args.len() {
+                2 => {
+                    let n = int(1)?;
+                    if n < 0 {
+                        return Err(format!(
+                            "slice: the length cannot be negative, e.g. {}",
+                            usage
+                        ));
+                    }
+                    lit(n as u64)
+                }
+                // No length: to the end of the string.
+                _ => lit(NULL),
+            };
+            as_str().slice(lit(start), length)
+        }
+        "replace" => as_str().replace_all(lit(text(0)?), lit(text(1)?), true),
+        "strip" => as_str().strip_chars(lit(NULL)),
+        "to_date" => as_str().to_date(strptime(args.first().map(|_| text(0)).transpose()?)),
+        "to_datetime" => as_str().to_datetime(
+            None,
+            None,
+            strptime(args.first().map(|_| text(0)).transpose()?),
+            lit("raise"),
+        ),
+        "round" => {
+            let decimals = if args.is_empty() { 0 } else { int(0)? };
+            let decimals = u32::try_from(decimals)
+                .map_err(|_| format!("round: decimals cannot be negative, e.g. {}", usage))?;
+            // Half away from zero, the rounding people expect from a calculator or SQL.
+            expr.round(decimals, RoundMode::HalfAwayFromZero)
+        }
+        // Non-strict casts: a value that does not convert becomes null.
+        "int" => expr.cast(DataType::Int64),
+        "float" => expr.cast(DataType::Float64),
+        "str" => expr.cast(DataType::String),
+        _ => {
+            return Err(format!(
+                "Unknown accessor: '{}'. {}",
+                accessor, ACCESSOR_HELP
+            ));
+        }
+    })
+}
+
+/// The arguments inside an accessor's brackets: literals separated by commas.
+fn parse_accessor_args(accessor: &str, tokens: &[Token]) -> Result<Vec<AccessorArg>, String> {
+    if tokens.is_empty() {
+        return Ok(Vec::new());
     }
-    Err(format!(
-        "Unknown accessor: '{}'. Valid date: date, time, year, month, week, day, dow, month_start, month_end, format. Valid string: len, upper, lower, starts_with, ends_with, contains",
-        accessor
-    ))
+    split_tokens(tokens, &Token::Comma)
+        .iter()
+        .map(|arg| match arg.as_slice() {
+            [Token::String(s)] | [Token::Identifier(s)] => Ok(AccessorArg::Str(s.clone())),
+            [Token::Number(n)] => Ok(AccessorArg::Num(*n)),
+            [Token::Op(minus), Token::Number(n)] if minus == "-" => Ok(AccessorArg::Num(-n)),
+            _ => Err(format!(
+                "{} takes literal arguments, quoted text or numbers, e.g. .part[\"-\", 0]",
+                accessor
+            )),
+        })
+        .collect()
 }
 
 /// Parse optional dot accessors from remaining tokens. Returns (expr_with_accessors, remaining).
@@ -493,40 +844,34 @@ fn parse_accessors<'a>(
     base_name: Option<&str>,
 ) -> Result<(Expr, &'a [Token]), String> {
     let mut alias_suffix = String::new();
-    while tokens.len() >= 2 {
-        if let (Token::Dot, Token::Identifier(accessor)) = (&tokens[0], &tokens[1]) {
-            let (arg, consumed) = if tokens.len() >= 5
-                && tokens[2] == Token::LBracket
-                && matches!(tokens[3], Token::String(_) | Token::Identifier(_))
-                && tokens[4] == Token::RBracket
-            {
-                // accessor["arg"] or accessor[arg]
-                let arg = match &tokens[3] {
-                    Token::String(s) => s.clone(),
-                    Token::Identifier(id) => id.clone(),
-                    _ => {
-                        return Err(
-                            "Bracket accessor requires string or identifier argument".to_string()
-                        );
+    while let [Token::Dot, Token::Identifier(accessor), rest @ ..] = tokens {
+        let (args, consumed) = if rest.first() == Some(&Token::LBracket) {
+            let mut depth = 0;
+            let close = rest
+                .iter()
+                .position(|t| {
+                    match t {
+                        Token::LBracket => depth += 1,
+                        Token::RBracket => depth -= 1,
+                        _ => {}
                     }
-                };
-                (Some(arg), 5)
-            } else {
-                (None, 2)
-            };
-            expr = apply_accessor(expr, accessor, arg.as_deref())?;
-            if !alias_suffix.is_empty() {
-                alias_suffix.push('_');
-            }
-            alias_suffix.push_str(accessor);
-            if let Some(ref a) = arg {
-                alias_suffix.push('_');
-                alias_suffix.push_str(a);
-            }
-            tokens = &tokens[consumed..];
+                    depth == 0
+                })
+                .ok_or_else(|| format!("Unmatched bracket after .{}", accessor))?;
+            (parse_accessor_args(accessor, &rest[1..close])?, close + 3)
         } else {
-            break;
+            (Vec::new(), 2)
+        };
+        expr = apply_accessor(expr, accessor, &args)?;
+        if !alias_suffix.is_empty() {
+            alias_suffix.push('_');
         }
+        alias_suffix.push_str(accessor);
+        for arg in &args {
+            alias_suffix.push('_');
+            alias_suffix.push_str(&arg.alias_text());
+        }
+        tokens = &tokens[consumed..];
     }
     if !alias_suffix.is_empty() {
         let alias = match base_name {
@@ -536,36 +881,6 @@ fn parse_accessors<'a>(
         expr = expr.alias(&alias);
     }
     Ok((expr, tokens))
-}
-
-// Check if an identifier is a known function name
-fn is_function_name(name: &str) -> bool {
-    let name_lower = name.to_lowercase();
-    matches!(
-        name_lower.as_str(),
-        "avg"
-            | "mean"
-            | "min"
-            | "max"
-            | "count"
-            | "std"
-            | "stddev"
-            | "med"
-            | "median"
-            | "sum"
-            | "first"
-            | "last"
-            | "len"
-            | "length"
-            | "not"
-            | "null"
-            | "upper"
-            | "lower"
-            | "abs"
-            | "floor"
-            | "ceil"
-            | "ceiling"
-    )
 }
 
 fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
@@ -620,19 +935,8 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
                 if depth > 0 {
                     return Err("Unmatched bracket in function call".to_string());
                 }
-                let args = &tokens[2..i - 1];
-                // Try aggregation function first, then regular function
-                match parse_agg_function(name, args) {
-                    Ok(expr) => {
-                        let (expr, remaining) = parse_accessors(expr, &tokens[i..], None)?;
-                        Ok((expr, remaining))
-                    }
-                    Err(_) => {
-                        let expr = parse_function(name, args)?;
-                        let (expr, remaining) = parse_accessors(expr, &tokens[i..], None)?;
-                        Ok((expr, remaining))
-                    }
-                }
+                let expr = parse_call(name, &tokens[2..i - 1])?;
+                parse_accessors(expr, &tokens[i..], None)
             } else {
                 // Regular column reference
                 // (Function calls without brackets are handled in parse_expr)
@@ -765,14 +1069,7 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
         // Function call without brackets - parse the rest as the argument, going
         // through the same builders as the bracketed form so both spellings get
         // the same expression and the same auto-alias.
-        let remaining = &tokens[1..];
-        if remaining.is_empty() {
-            return Err(format!("Function {} requires an argument", name));
-        }
-        if let Ok(expr) = parse_agg_function(name, remaining) {
-            return Ok(expr);
-        }
-        return parse_function(name, remaining);
+        return parse_call(name, &tokens[1..]);
     }
 
     // Find the leftmost operator for right-to-left evaluation
@@ -787,7 +1084,7 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
             Token::RParen => depth -= 1,
             Token::LBracket => bracket_depth += 1,
             Token::RBracket => bracket_depth -= 1,
-            Token::Op(_) if depth == 0 && bracket_depth == 0 => {
+            _ if depth == 0 && bracket_depth == 0 && infix_op_at(tokens, i).is_some() => {
                 op_pos = Some(i);
                 break;
             }
@@ -798,10 +1095,9 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
     if let Some(pos) = op_pos {
         // Split at the operator
         let left_tokens = &tokens[..pos];
-        let op_token = &tokens[pos];
         let right_tokens = &tokens[pos + 1..];
 
-        if let Token::Op(op) = op_token {
+        if let Some(op) = infix_op_at(tokens, pos) {
             // Unary minus next to a literal with an operator on the other side: -0.1+discount → (-0.1)+discount
             if left_tokens.is_empty()
                 && op == "-"
@@ -809,16 +1105,19 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
                 && matches!(right_tokens[0], Token::Number(_))
                 && let Token::Number(n) = right_tokens[0]
             {
-                let negated = lit(0).sub(lit(n));
                 if right_tokens.len() >= 3
-                    && matches!(right_tokens[1], Token::Op(_))
-                    && let Token::Op(bin_op) = &right_tokens[1]
+                    && let Some(bin_op) = infix_op_at(right_tokens, 1)
                 {
+                    if WORD_OPS.contains(&bin_op) {
+                        // The word operators read their operands as tokens, so hand
+                        // them the negative number as one: -7 mod 3 is (-7) mod 3.
+                        return apply_infix(&[Token::Number(-n)], bin_op, &right_tokens[2..]);
+                    }
                     let right_expr = parse_expr(&right_tokens[2..])?;
-                    return apply_op(negated, bin_op, right_expr);
+                    return apply_op(lit(0).sub(lit(n)), bin_op, right_expr);
                 }
                 if right_tokens.len() == 1 {
-                    return Ok(negated);
+                    return Ok(lit(0).sub(lit(n)));
                 }
             }
             // Unary plus/minus when there is no left operand (e.g. -x, +x, -(a+b))
@@ -833,14 +1132,7 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
             if left_tokens.is_empty() {
                 return Err("Missing left operand".to_string());
             }
-            // Parse right side first (right-to-left evaluation)
-            // The right side contains any remaining operators that will be evaluated first
-            let right = parse_expr(right_tokens)?;
-            // Then parse left side
-            let left = parse_expr(left_tokens)?;
-            // Apply operator: left op right
-            // This gives us right-to-left evaluation: c>c%n becomes c > (c%n)
-            apply_op(left, op, right)
+            apply_infix(left_tokens, op, right_tokens)
         } else {
             Err("Expected operator".to_string())
         }
@@ -850,6 +1142,9 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
         // here used to make `where x > 1 by dept` silently ignore `by dept`.
         let (expr, remaining) = parse_term(tokens)?;
         if let Some(extra) = remaining.first() {
+            if matches!(&tokens[0], Token::Identifier(w) if w == "wavg") {
+                return Err(WAVG_USAGE.to_string());
+            }
             return Err(format!(
                 "Unexpected '{}' after the expression",
                 token_text(extra)
@@ -859,7 +1154,20 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
     }
 }
 
-type ParseQueryResult = Result<(Vec<Expr>, Option<Expr>, Vec<Expr>, Vec<String>), String>;
+/// A parsed q-style query, ready to apply to a LazyFrame.
+#[derive(Debug, Default)]
+pub struct ParsedQuery {
+    /// The select list; empty means every column.
+    pub cols: Vec<Expr>,
+    /// The where clause, its terms ANDed.
+    pub filter: Option<Expr>,
+    /// The by expressions.
+    pub group_by: Vec<Expr>,
+    /// Names of the by columns that have one (a plain column or an alias).
+    pub group_by_names: Vec<String>,
+    /// `select distinct`: drop duplicate result rows.
+    pub distinct: bool,
+}
 
 /// Convert Polars-specific error messages to user-friendly query errors.
 pub fn sanitize_query_error(msg: &str) -> String {
@@ -884,20 +1192,29 @@ pub fn sanitize_query_error(msg: &str) -> String {
     msg.to_string()
 }
 
-pub fn parse_query(query: &str) -> ParseQueryResult {
+pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
     // Empty query is equivalent to "select" - return all columns with no filter or grouping
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Ok((Vec::new(), None, Vec::new(), Vec::new()));
+        return Ok(ParsedQuery::default());
     }
 
     let tokens = tokenize(query)?;
     if tokens.is_empty() || tokens[0] != Token::Select {
         return Err("Query must start with 'select'".to_string());
     }
+    // `distinct` right after `select` is the keyword unless what follows makes it
+    // a column or an alias (`select distinct: x`, `select distinct, a`, `distinct + 1`);
+    // col["distinct"] always names the column.
+    let distinct = tokens.get(1) == Some(&Token::Identifier("distinct".to_string()))
+        && !matches!(
+            tokens.get(2),
+            Some(Token::Colon | Token::Comma | Token::Dot | Token::Op(_))
+        );
+    let body = &tokens[if distinct { 2 } else { 1 }..];
 
     // Split by "where" first
-    let mut parts = split_tokens(&tokens[1..], &Token::Where);
+    let mut parts = split_tokens(body, &Token::Where);
     let select_by_tokens = parts.remove(0);
     let where_tokens = if !parts.is_empty() {
         Some(parts.remove(0))
@@ -1119,7 +1436,13 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
         }
     }
 
-    Ok((cols, filter, group_by_cols, group_by_col_names))
+    Ok(ParsedQuery {
+        cols,
+        filter,
+        group_by: group_by_cols,
+        group_by_names: group_by_col_names,
+        distinct,
+    })
 }
 
 #[cfg(test)]
@@ -1203,7 +1526,7 @@ mod tests {
     fn test_parse_not_function() {
         let query = "select a where not[a = b]";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").eq(col("b")).not()));
     }
@@ -1217,11 +1540,11 @@ mod tests {
 
         let query3 = "select a where not a = b";
 
-        let (_, filter1, _, _) = parse_query(query1).unwrap();
+        let filter1 = parse_query(query1).unwrap().filter;
 
-        let (_, filter2, _, _) = parse_query(query2).unwrap();
+        let filter2 = parse_query(query2).unwrap().filter;
 
-        let (_, filter3, _, _) = parse_query(query3).unwrap();
+        let filter3 = parse_query(query3).unwrap().filter;
 
         // All should produce equivalent expressions
 
@@ -1237,7 +1560,7 @@ mod tests {
     fn test_parse_avg_without_brackets() {
         let query = "select avg 5+a by category";
 
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 1);
 
@@ -1249,7 +1572,7 @@ mod tests {
     fn test_parse_string_literal() {
         let query = "select a, b:\"foo\"";
 
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 2);
 
@@ -1265,7 +1588,7 @@ mod tests {
     fn test_parse_string_in_where() {
         let query = "select a where name=\"george\", age > 7";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         // Should have name="george" AND age > 7
 
@@ -1277,7 +1600,7 @@ mod tests {
     fn test_parse_col_syntax() {
         let query = "select col[\"first name\"]";
 
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 1);
 
@@ -1289,7 +1612,7 @@ mod tests {
     fn test_parse_col_syntax_with_alias() {
         let query = "select a, b:col[\"first name\"]";
 
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols.len(), 2);
 
@@ -1303,7 +1626,7 @@ mod tests {
     fn test_parse_col_syntax_with_string_literal() {
         let query = "select col[\"first name\"]:\"derek\", foo where foo > 7";
 
-        let (cols, filter, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
 
         assert_eq!(cols.len(), 2);
 
@@ -1319,7 +1642,7 @@ mod tests {
     fn test_parse_string_escape_sequences() {
         let query = "select a where name=\"george\\\"s name\"";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         // Should parse escaped quote correctly
 
@@ -1331,7 +1654,7 @@ mod tests {
     fn test_parse_query_simple_where() {
         let query = "select a where a > 10";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").gt(lit(10.0))));
     }
@@ -1340,7 +1663,7 @@ mod tests {
     fn test_parse_query_unary_minus_in_where() {
         // Minus next to literal with operator on other side: -0.5+discount → (-0.5)+discount
         let query = "select sum total-1 by product where 0<-0.5+discount";
-        let (cols, filter, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
         assert_eq!(cols.len(), 1);
         assert!(filter.is_some());
         // Filter: 0 < (-0.5) + discount
@@ -1351,7 +1674,7 @@ mod tests {
     #[test]
     fn test_parse_query_negative_literal_where() {
         let query = "select where 0<-0.1+discount";
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         let expected = lit(0.0).lt(lit(0).sub(lit(0.1)).add(col("discount")));
         assert_eq!(filter, Some(expected));
     }
@@ -1371,7 +1694,7 @@ mod tests {
     fn test_parse_query_alias() {
         let query = "select my_col:a + 1";
 
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
 
         assert_eq!(cols, vec![col("a").add(lit(1.0)).alias("my_col")]);
     }
@@ -1381,7 +1704,7 @@ mod tests {
     fn test_parse_query_and_or() {
         let query = "select a where a > 10 | a < 5, b = 2";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         let expected =
             (col("a").gt(lit(10.0)).or(col("a").lt(lit(5.0)))).and(col("b").eq(lit(2.0)));
@@ -1394,7 +1717,7 @@ mod tests {
     fn test_parse_query_neq() {
         let query = "select a where a != 10";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").neq(lit(10.0))));
     }
@@ -1404,7 +1727,7 @@ mod tests {
     fn test_parse_query_gte() {
         let query = "select a where a >= 10";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").gt_eq(lit(10.0))));
     }
@@ -1414,7 +1737,7 @@ mod tests {
     fn test_parse_query_lte() {
         let query = "select a where a <= 10";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         assert_eq!(filter, Some(col("a").lt_eq(lit(10.0))));
     }
@@ -1424,7 +1747,7 @@ mod tests {
     fn test_empty_query() {
         let query = "select";
 
-        let (cols, filter, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
 
         assert!(cols.is_empty());
 
@@ -1436,7 +1759,7 @@ mod tests {
     fn test_select_all_implicit() {
         let query = "select where a > 1";
 
-        let (cols, filter, _, _) = parse_query(query).unwrap();
+        let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
 
         assert!(cols.is_empty());
 
@@ -1479,7 +1802,7 @@ mod tests {
         // c>c%n should be parsed as c > (c % n), not (c > c) % n
         let query = "select t, v where c>c%n";
 
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
 
         // Should parse as c > (c % n)
         let expected = col("c").gt(col("c").div(col("n")));
@@ -1539,7 +1862,7 @@ mod tests {
     #[test]
     fn test_parse_query_select_with_date_accessor() {
         let query = "select event_date: timestamp.date";
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
         assert_eq!(cols.len(), 1);
         assert_eq!(
             cols[0],
@@ -1554,7 +1877,7 @@ mod tests {
     #[test]
     fn test_parse_query_select_col_with_accessor() {
         let query = "select col[\"Event Time\"].date, col[\"Event Time\"].year";
-        let (cols, _, _, _) = parse_query(query).unwrap();
+        let cols = parse_query(query).unwrap().cols;
         assert_eq!(cols.len(), 2);
         assert_eq!(
             cols[0],
@@ -1569,7 +1892,7 @@ mod tests {
     #[test]
     fn test_parse_query_where_with_date_accessor() {
         let query = "select where created_at.month = 12";
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         assert_eq!(
             filter,
             Some(
@@ -1585,7 +1908,7 @@ mod tests {
     #[test]
     fn test_parse_query_where_dow() {
         let query = "select where event_ts.dow = 1";
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         assert_eq!(
             filter,
             Some(
@@ -1642,7 +1965,7 @@ mod tests {
     #[test]
     fn test_parse_query_where_date_literal() {
         let query = "select where dt_col.date > 2021.01.01";
-        let (_, filter, _, _) = parse_query(query).unwrap();
+        let filter = parse_query(query).unwrap().filter;
         assert!(filter.is_some());
         // Verify the filter parses without error (date literal 2021.01.01 -> ISO 2021-01-01)
     }
@@ -1671,30 +1994,34 @@ mod tests {
 
     #[test]
     fn test_parse_null_and_not_null() {
-        let (_, f1, _, _) = parse_query("select where null col1").unwrap();
+        let f1 = parse_query("select where null col1").unwrap().filter;
         assert!(f1.is_some());
-        let (_, f2, _, _) = parse_query("select where not null col1").unwrap();
+        let f2 = parse_query("select where not null col1").unwrap().filter;
         assert!(f2.is_some());
     }
 
     #[test]
     fn test_parse_coalesce() {
-        let (cols, _, _, _) = parse_query("select a: coln^cola^colb").unwrap();
+        let cols = parse_query("select a: coln^cola^colb").unwrap().cols;
         assert_eq!(cols.len(), 1);
         // coalesce(coln, coalesce(cola, colb)) - parsing succeeds
     }
 
     #[test]
     fn test_parse_first_last_aggregation() {
-        let (cols, _, _, _) = parse_query("select first[value], last[value] by group").unwrap();
+        let cols = parse_query("select first[value], last[value] by group")
+            .unwrap()
+            .cols;
         assert_eq!(cols.len(), 2);
     }
 
     #[test]
     fn test_parse_string_accessors() {
-        let (_, filter, _, _) = parse_query("select where city_name.ends_with[\"lanta\"]").unwrap();
+        let filter = parse_query("select where city_name.ends_with[\"lanta\"]")
+            .unwrap()
+            .filter;
         assert!(filter.is_some());
-        let (cols, _, _, _) = parse_query("select name.len, name.upper").unwrap();
+        let cols = parse_query("select name.len, name.upper").unwrap().cols;
         assert_eq!(cols.len(), 2);
     }
 
@@ -1709,7 +2036,11 @@ mod tests {
     #[test]
     fn test_parse_by_with_date_accessor() {
         let query = "select order_date, count: count id by order_date.year";
-        let (cols, _, group_by_cols, _) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            group_by: group_by_cols,
+            ..
+        } = parse_query(query).unwrap();
         assert_eq!(cols.len(), 2);
         assert_eq!(group_by_cols.len(), 1);
         assert_eq!(
@@ -1721,7 +2052,11 @@ mod tests {
     #[test]
     fn test_unaliased_aggregates_of_same_column_coexist() {
         let query = "select avg salary, max salary by department";
-        let (cols, _, group_by_cols, _) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            group_by: group_by_cols,
+            ..
+        } = parse_query(query).unwrap();
         assert_eq!(cols.len(), 2);
         assert_eq!(cols[0], col("salary").mean().alias("avg_salary"));
         assert_eq!(cols[1], col("salary").max().alias("max_salary"));
@@ -1730,27 +2065,33 @@ mod tests {
 
     #[test]
     fn test_unaliased_aggregate_bracketed_and_bare_name_alike() {
-        let (bracketed, _, _, _) = parse_query("select avg[salary] by department").unwrap();
-        let (bare, _, _, _) = parse_query("select avg salary by department").unwrap();
+        let bracketed = parse_query("select avg[salary] by department")
+            .unwrap()
+            .cols;
+        let bare = parse_query("select avg salary by department").unwrap().cols;
         assert_eq!(bracketed, bare);
         assert_eq!(bracketed[0], col("salary").mean().alias("avg_salary"));
     }
 
     #[test]
     fn test_unaliased_aggregate_col_syntax_auto_alias() {
-        let (cols, _, _, _) = parse_query("select sum[col[\"unit price\"]] by region").unwrap();
+        let cols = parse_query("select sum[col[\"unit price\"]] by region")
+            .unwrap()
+            .cols;
         assert_eq!(cols[0], col("unit price").sum().alias("sum_unit price"));
     }
 
     #[test]
     fn test_bare_count_names_itself() {
-        let (cols, _, _, _) = parse_query("select count[x] by g").unwrap();
+        let cols = parse_query("select count[x] by g").unwrap().cols;
         assert_eq!(cols[0], col("x").count().alias("count_x"));
     }
 
     #[test]
     fn test_explicit_alias_overrides_aggregate_auto_alias() {
-        let (cols, _, _, _) = parse_query("select total:sum[price] by region").unwrap();
+        let cols = parse_query("select total:sum[price] by region")
+            .unwrap()
+            .cols;
         // The outer alias is applied last, so the result column is named "total".
         assert_eq!(
             cols[0],
@@ -1761,7 +2102,7 @@ mod tests {
     #[test]
     fn test_aggregate_of_expression_keeps_default_name() {
         // No single source column, so there is nothing to build a {fn}_{column} name from.
-        let (cols, _, _, _) = parse_query("select sum[price*qty] by region").unwrap();
+        let cols = parse_query("select sum[price*qty] by region").unwrap().cols;
         assert_eq!(cols[0], (col("price").mul(col("qty"))).sum());
     }
 
@@ -1769,7 +2110,11 @@ mod tests {
     fn test_docs_grouping_example_collects_with_auto_aliases() {
         // The example from docs/user-guide/querying-data.md must run as written.
         let query = "select avg salary, max salary, count name by department";
-        let (cols, _, group_by_cols, _) = parse_query(query).unwrap();
+        let ParsedQuery {
+            cols,
+            group_by: group_by_cols,
+            ..
+        } = parse_query(query).unwrap();
         let df = df!(
             "department" => &["eng", "eng", "ops"],
             "salary" => &[100.0f64, 200.0, 300.0],
@@ -1811,7 +2156,7 @@ mod tests {
     #[test]
     fn test_slash_in_where_clause() {
         // Same shape as the existing % test: c>c/n is c > (c/n).
-        let (_, filter, _, _) = parse_query("select t, v where c>c/n").unwrap();
+        let filter = parse_query("select t, v where c>c/n").unwrap().filter;
         assert_eq!(filter, Some(col("c").gt(col("c").div(col("n")))));
     }
 
@@ -1901,5 +2246,549 @@ mod tests {
             parse_query("select a + b * c").is_ok(),
             "an ordinary query must still parse after a rejected one"
         );
+    }
+
+    // --- q-style additions (#367) ---
+
+    /// Run a query over `df` the way `DataTableState::query` does.
+    fn eval(query: &str, df: &DataFrame) -> DataFrame {
+        let ParsedQuery {
+            cols,
+            filter,
+            group_by: by,
+            distinct,
+            ..
+        } = parse_query(query).unwrap();
+        let mut lf = df.clone().lazy();
+        if let Some(f) = filter {
+            lf = lf.filter(f);
+        }
+        if !by.is_empty() {
+            let keys = by.len();
+            lf = lf.group_by(by).agg(cols);
+            let schema = lf.collect_schema().unwrap();
+            let sort: Vec<Expr> = schema
+                .iter_names()
+                .take(keys)
+                .map(|n| col(n.as_str()))
+                .collect();
+            lf = lf.sort_by_exprs(sort, SortMultipleOptions::default());
+        } else if !cols.is_empty() {
+            lf = lf.select(cols);
+        }
+        if distinct {
+            lf = lf.unique_stable(None, UniqueKeepStrategy::First);
+        }
+        lf.collect().unwrap()
+    }
+
+    /// One column of the result as display strings, nulls as "null".
+    fn values(df: &DataFrame, name: &str) -> Vec<String> {
+        df.column(name)
+            .unwrap()
+            .as_materialized_series()
+            .iter()
+            .map(|v| match v {
+                AnyValue::String(s) => s.to_string(),
+                AnyValue::StringOwned(s) => s.to_string(),
+                v => v.to_string(),
+            })
+            .collect()
+    }
+
+    fn parse_err(query: &str) -> String {
+        parse_query(query).unwrap_err()
+    }
+
+    #[test]
+    fn test_time_part_accessors_parse() {
+        let expr = parse_expr(&tokenize("ts.hour").unwrap()).unwrap();
+        assert_eq!(expr, col("ts").dt().hour().alias("ts_hour"));
+        let expr = parse_expr(&tokenize("ts.doy").unwrap()).unwrap();
+        assert_eq!(expr, col("ts").dt().ordinal_day().alias("ts_doy"));
+        for accessor in ["hour", "minute", "second", "quarter", "doy"] {
+            let q = format!("select x.{}", accessor);
+            assert!(parse_query(&q).is_ok(), "{q}");
+        }
+    }
+
+    #[test]
+    fn test_time_part_accessors_evaluate() {
+        let df = df!("ts" => &["2024-03-15 13:45:30", "2024-12-31 00:00:05"])
+            .unwrap()
+            .lazy()
+            .select([col("ts").str().to_datetime(
+                None,
+                None,
+                StrptimeOptions::default(),
+                lit("raise"),
+            )])
+            .collect()
+            .unwrap();
+        let out = eval(
+            "select ts.hour, ts.minute, ts.second, ts.quarter, ts.doy",
+            &df,
+        );
+        assert_eq!(values(&out, "ts_hour"), ["13", "0"]);
+        assert_eq!(values(&out, "ts_minute"), ["45", "0"]);
+        assert_eq!(values(&out, "ts_second"), ["30", "5"]);
+        assert_eq!(values(&out, "ts_quarter"), ["1", "4"]);
+        assert_eq!(values(&out, "ts_doy"), ["75", "366"]);
+    }
+
+    #[test]
+    fn test_hour_groups_trips() {
+        // The taxi example: trips by pickup hour.
+        let df =
+            df!("pickup" => &["2025-01-01 08:10:00", "2025-01-01 08:50:00", "2025-01-01 17:00:00"])
+                .unwrap()
+                .lazy()
+                .with_column(col("pickup").str().to_datetime(
+                    None,
+                    None,
+                    StrptimeOptions::default(),
+                    lit("raise"),
+                ))
+                .collect()
+                .unwrap();
+        let out = eval("select trips: count pickup by pickup.hour", &df);
+        assert_eq!(values(&out, "pickup_hour"), ["8", "17"]);
+        assert_eq!(values(&out, "trips"), ["2", "1"]);
+    }
+
+    #[test]
+    fn test_to_date_and_to_datetime_parse_strings() {
+        let df = df!(
+            "DATE" => &["20240101", "20241231", "junk"],
+            "Date" => &["Sat Sep 12 2020", "Tue Jan 12 2021(P)", "Sun Sep 13 2020"],
+            "stamp" => &["2024-01-02 03:04", "2024-05-06 07:08", "nope"],
+        )
+        .unwrap();
+        let out = eval(
+            "select day: DATE.to_date[\"%Y%m%d\"], d: Date.replace[\"(P)\", \"\"].to_date[\"%a %b %d %Y\"], t: stamp.to_datetime[\"%Y-%m-%d %H:%M\"]",
+            &df,
+        );
+        // A value that does not match the format is null, not an error.
+        assert_eq!(values(&out, "day"), ["2024-01-01", "2024-12-31", "null"]);
+        assert_eq!(
+            values(&out, "d"),
+            ["2020-09-12", "2021-01-12", "2020-09-13"]
+        );
+        assert_eq!(
+            values(&out, "t"),
+            ["2024-01-02 03:04:00", "2024-05-06 07:08:00", "null"]
+        );
+    }
+
+    #[test]
+    fn test_to_date_parses_an_integer_column() {
+        // NOAA's DATE is 20240101; read from CSV it is an integer.
+        let df = df!("DATE" => &[20240101i64, 20240229]).unwrap();
+        let out = eval("select d: DATE.to_date[\"%Y%m%d\"]", &df);
+        assert_eq!(values(&out, "d"), ["2024-01-01", "2024-02-29"]);
+    }
+
+    #[test]
+    fn test_casts() {
+        let df = df!(
+            "s" => &["3", "4.5", "x"],
+            "f" => &[1.9f64, -1.9, 3.0],
+        )
+        .unwrap();
+        let out = eval("select a: s.int, b: s.float, c: f.int, d: f.str", &df);
+        assert_eq!(values(&out, "a"), ["3", "null", "null"]);
+        assert_eq!(values(&out, "b"), ["3.0", "4.5", "null"]);
+        assert_eq!(values(&out, "c"), ["1", "-1", "3"]);
+        assert_eq!(values(&out, "d"), ["1.9", "-1.9", "3.0"]);
+        assert_eq!(out.column("a").unwrap().dtype(), &DataType::Int64);
+        assert_eq!(out.column("b").unwrap().dtype(), &DataType::Float64);
+        assert_eq!(out.column("d").unwrap().dtype(), &DataType::String);
+    }
+
+    #[test]
+    fn test_string_pieces() {
+        let df = df!("FT" => &["0–3", "12–1", "  2–2  "]).unwrap();
+        let out = eval(
+            "select home: FT.part[\"–\", 0].int, away: FT.part[\"–\", -1].int, none: FT.part[\"–\", 5], head: FT.slice[0, 2], tail: FT.slice[-2], s: FT.strip, r: FT.replace[\"–\", \"-\"]",
+            &df,
+        );
+        assert_eq!(values(&out, "home"), ["0", "12", "null"]);
+        assert_eq!(values(&out, "away"), ["3", "1", "null"]);
+        assert_eq!(values(&out, "none"), ["null", "null", "null"]);
+        assert_eq!(values(&out, "head"), ["0–", "12", "  "]);
+        assert_eq!(values(&out, "tail"), ["–3", "–1", "  "]);
+        assert_eq!(values(&out, "s"), ["0–3", "12–1", "2–2"]);
+        assert_eq!(values(&out, "r"), ["0-3", "12-1", "  2-2  "]);
+    }
+
+    #[test]
+    fn test_string_pieces_auto_alias() {
+        let cols = parse_query("select FT.part[\"-\", 0], FT.strip")
+            .unwrap()
+            .cols;
+        let names: Vec<String> = cols
+            .iter()
+            .map(|e| e.clone().meta().output_name().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["FT_part_-_0", "FT_strip"]);
+    }
+
+    #[test]
+    fn test_in_parses_to_equalities() {
+        let filter = parse_query("select where name in [\"a\", \"b\"]")
+            .unwrap()
+            .filter;
+        assert_eq!(
+            filter,
+            Some(col("name").eq(lit("a")).or(col("name").eq(lit("b"))))
+        );
+    }
+
+    #[test]
+    fn test_in_filters() {
+        let df = df!(
+            "name" => &["Emma", "Jennifer", "Olivia", "Mary"],
+            "n" => &[1i32, 2, 3, 4],
+        )
+        .unwrap();
+        let out = eval(
+            "select name where name in [\"Emma\", \"Jennifer\", \"Olivia\"]",
+            &df,
+        );
+        assert_eq!(values(&out, "name"), ["Emma", "Jennifer", "Olivia"]);
+        let out = eval("select n where n in [2, 4.0, -1]", &df);
+        assert_eq!(values(&out, "n"), ["2", "4"]);
+        let out = eval("select name where not name in [\"Mary\"]", &df);
+        assert_eq!(values(&out, "name"), ["Emma", "Jennifer", "Olivia"]);
+        // Commas inside the list are not where-clause ANDs.
+        let out = eval("select name where name in [\"Emma\", \"Mary\"], n > 1", &df);
+        assert_eq!(values(&out, "name"), ["Mary"]);
+    }
+
+    #[test]
+    fn test_in_long_list_nests_shallowly() {
+        let items: Vec<String> = (0..2000).map(|i| i.to_string()).collect();
+        let q = format!("select where x in [{}]", items.join(", "));
+        let df = df!("x" => &[5i64, 1999, 2000]).unwrap();
+        assert_eq!(values(&eval(&q, &df), "x"), ["5", "1999"]);
+    }
+
+    #[test]
+    fn test_in_errors() {
+        let err = parse_err("select where x in 1");
+        assert!(err.contains("in takes a list"), "{err}");
+        let err = parse_err("select where x in []");
+        assert!(err.contains("in needs a list of values"), "{err}");
+        let err = parse_err("select where x in [1,, 2]");
+        assert!(err.contains("in needs a list of values"), "{err}");
+        let err = parse_err("select where x in [1] = y");
+        assert!(err.contains("in takes a list"), "{err}");
+        let err = parse_err("select where x in [1] + [2]");
+        assert!(err.contains("in takes a list"), "{err}");
+    }
+
+    #[test]
+    fn test_like_matches_whole_value() {
+        let df = df!("item" => &["Crispy Chicken", "Chicken", "Fish", "a.b", "axb"]).unwrap();
+        let out = eval("select item where item like \"*Chicken*\"", &df);
+        assert_eq!(values(&out, "item"), ["Crispy Chicken", "Chicken"]);
+        // Anchored: a prefix pattern does not match mid-string.
+        let out = eval("select item where item like \"Chick*\"", &df);
+        assert_eq!(values(&out, "item"), ["Chicken"]);
+        let out = eval("select item where item like \"F?sh\"", &df);
+        assert_eq!(values(&out, "item"), ["Fish"]);
+        // Regex characters are literal.
+        let out = eval("select item where item like \"a.b\"", &df);
+        assert_eq!(values(&out, "item"), ["a.b"]);
+    }
+
+    #[test]
+    fn test_like_errors() {
+        let err = parse_err("select where item like Chicken");
+        assert!(err.contains("like takes a quoted pattern"), "{err}");
+    }
+
+    #[test]
+    fn test_like_regex() {
+        assert_eq!(like_regex("*a?.b*"), "(?s)^.*a.\\.b.*$");
+    }
+
+    #[test]
+    fn test_xbar_buckets() {
+        let df = df!(
+            "fare" => &[-1.0f64, 0.0, 4.99, 5.0, 12.5],
+            "n" => &[-1i64, 0, 4, 5, 12],
+        )
+        .unwrap();
+        let out = eval("select f: 5 xbar fare, i: 5 xbar n, h: 0.5 xbar fare", &df);
+        assert_eq!(values(&out, "f"), ["-5.0", "0.0", "0.0", "5.0", "10.0"]);
+        // A whole-number bucket keeps an integer column integral.
+        assert_eq!(values(&out, "i"), ["-5", "0", "0", "5", "10"]);
+        assert_eq!(out.column("i").unwrap().dtype(), &DataType::Int64);
+        assert_eq!(values(&out, "h"), ["-1.0", "0.0", "4.5", "5.0", "12.5"]);
+    }
+
+    #[test]
+    fn test_xbar_groups() {
+        let df = df!("fare" => &[1.0f64, 3.0, 7.0, 12.0, 14.0]).unwrap();
+        let out = eval("select trips: count fare by b: 5 xbar fare", &df);
+        assert_eq!(values(&out, "b"), ["0.0", "5.0", "10.0"]);
+        assert_eq!(values(&out, "trips"), ["2", "1", "2"]);
+    }
+
+    #[test]
+    fn test_xbar_errors() {
+        let err = parse_err("select 0 xbar fare");
+        assert!(err.contains("positive bucket size"), "{err}");
+        let err = parse_err("select -5 xbar fare");
+        assert!(err.contains("positive bucket size"), "{err}");
+    }
+
+    #[test]
+    fn test_mod() {
+        let df = df!("n" => &[-7i64, 7, 9], "f" => &[7.5f64, -0.5, 2.0]).unwrap();
+        let out = eval("select a: n mod 3, b: f mod 2, c: -7 mod 3", &df);
+        // Floored, as in q: the result takes the sign of the divisor.
+        assert_eq!(values(&out, "a"), ["2", "1", "0"]);
+        assert_eq!(values(&out, "b"), ["1.5", "1.5", "0.0"]);
+        assert_eq!(values(&out, "c"), ["2", "2", "2"]);
+        // A negative whole divisor is an integer too.
+        let out = eval("select a: n mod -3", &df);
+        assert_eq!(values(&out, "a"), ["-1", "-2", "0"]);
+        assert_eq!(out.column("a").unwrap().dtype(), &DataType::Int64);
+    }
+
+    #[test]
+    fn test_word_operators_right_to_left() {
+        let parse = |s: &str| parse_expr(&tokenize(s).unwrap()).unwrap();
+        // a = b mod 2 is a = (b mod 2).
+        assert_eq!(parse("a = b mod 2"), col("a").eq(col("b").rem(lit(2i64))));
+        // 5 xbar x + 1 buckets x + 1; 2 * 5 xbar x doubles the bucket.
+        assert_eq!(
+            parse("5 xbar x + 1"),
+            col("x").add(lit(1.0)).floor_div(lit(5i64)).mul(lit(5i64))
+        );
+        assert_eq!(
+            parse("2 * 5 xbar x"),
+            lit(2.0).mul(col("x").floor_div(lit(5i64)).mul(lit(5i64)))
+        );
+        // flag = name in [...] compares flag with the membership test.
+        assert_eq!(
+            parse("flag = name in [\"a\"]"),
+            col("flag").eq(col("name").eq(lit("a")))
+        );
+        assert_eq!(parse("x mod 2 in [1]"), col("x").rem(lit(2.0).eq(lit(1.0))));
+        // A symbol operator to the left of like takes the whole like as its right side.
+        assert_eq!(
+            parse("ok = name like \"a*\""),
+            col("ok").eq(col("name")
+                .cast(DataType::String)
+                .str()
+                .contains(lit("(?s)^a.*$"), true))
+        );
+    }
+
+    #[test]
+    fn test_word_operators_right_to_left_evaluate() {
+        let df = df!("x" => &[3i64, 4, 9]).unwrap();
+        // 1 + x mod 4 is 1 + (x mod 4), not (1 + x) mod 4.
+        let out = eval("select a: 1 + x mod 4", &df);
+        assert_eq!(values(&out, "a"), ["4.0", "1.0", "2.0"]);
+        let out = eval("select a: (1 + x) mod 4", &df);
+        assert_eq!(values(&out, "a"), ["0.0", "1.0", "2.0"]);
+        // x mod 2 in [1] would be x mod (2 in [1]); parentheses test the remainder.
+        let out = eval("select x where (x mod 2) in [1]", &df);
+        assert_eq!(values(&out, "x"), ["3", "9"]);
+    }
+
+    #[test]
+    fn test_word_operators_are_still_column_names() {
+        let cols = parse_query("select in, mod, like + xbar").unwrap().cols;
+        assert_eq!(cols[0], col("in"));
+        assert_eq!(cols[1], col("mod"));
+        assert_eq!(cols[2], col("like").add(col("xbar")));
+        let err = parse_err("select x.in");
+        assert!(err.contains("Unknown accessor: 'in'"), "{err}");
+    }
+
+    #[test]
+    fn test_new_aggregates() {
+        let cols = parse_query("select nunique ID, var x, dev x by g")
+            .unwrap()
+            .cols;
+        assert_eq!(cols[0], col("ID").n_unique().alias("nunique_ID"));
+        assert_eq!(cols[1], col("x").var(1).alias("var_x"));
+        assert_eq!(cols[2], col("x").std(1).alias("dev_x"));
+
+        let df = df!(
+            "g" => &["a", "a", "a", "b"],
+            "ID" => &["s1", "s1", "s2", "s3"],
+            "x" => &[1.0f64, 2.0, 3.0, 5.0],
+        )
+        .unwrap();
+        let out = eval("select nunique ID, var x, dev[x] by g", &df);
+        assert_eq!(values(&out, "nunique_ID"), ["2", "1"]);
+        assert_eq!(values(&out, "var_x"), ["1.0", "null"]);
+        assert_eq!(values(&out, "dev_x"), ["1.0", "null"]);
+    }
+
+    #[test]
+    fn test_wavg() {
+        let df = df!(
+            "g" => &["a", "a", "a", "b"],
+            "w" => &[Some(1i64), Some(3), Some(5), Some(2)],
+            "x" => &[Some(10.0f64), Some(20.0), None, Some(4.0)],
+        )
+        .unwrap();
+        let out = eval("select w wavg x by g", &df);
+        // The null value's weight stays out of the total: (10 + 60) / 4.
+        assert_eq!(values(&out, "wavg_x"), ["17.5", "4.0"]);
+        // A group with no complete pair has no average.
+        let out = eval("select w wavg x where null x", &df);
+        assert_eq!(values(&out, "wavg_x"), ["null"]);
+        for query in ["select wavg[x]", "select wavg x"] {
+            let err = parse_err(query);
+            assert!(
+                err.contains("wavg goes between weights and values"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_round_and_math_functions() {
+        let df = df!("x" => &[2.25f64, -2.5, 4.0]).unwrap();
+        let out = eval(
+            "select r: x.round, r1: x.round[1], s: sqrt x, l: log[x], e: exp 0 * x",
+            &df,
+        );
+        assert_eq!(values(&out, "r"), ["2.0", "-3.0", "4.0"]);
+        assert_eq!(values(&out, "r1"), ["2.3", "-2.5", "4.0"]);
+        assert_eq!(values(&out, "s"), ["1.5", "NaN", "2.0"]);
+        assert!(values(&out, "l")[2].starts_with("1.386"));
+        assert_eq!(values(&out, "e"), ["1.0", "1.0", "1.0"]);
+        // An aggregate rounds after it is computed.
+        let df = df!("g" => &["a", "a"], "d" => &[1.0f64, 2.34]).unwrap();
+        let out = eval("select m: (avg d).round[1] by g", &df);
+        assert_eq!(values(&out, "m"), ["1.7"]);
+    }
+
+    #[test]
+    fn test_select_distinct() {
+        let ParsedQuery { cols, distinct, .. } =
+            parse_query("select distinct carrier, origin").unwrap();
+        assert!(distinct);
+        assert_eq!(cols, vec![col("carrier"), col("origin")]);
+        let distinct = parse_query("select carrier").unwrap().distinct;
+        assert!(!distinct);
+
+        let df = df!(
+            "carrier" => &["UA", "UA", "AA", "UA"],
+            "origin" => &["EWR", "EWR", "JFK", "LGA"],
+            "n" => &[1i32, 2, 3, 4],
+        )
+        .unwrap();
+        let out = eval("select distinct carrier, origin", &df);
+        assert_eq!(values(&out, "carrier"), ["UA", "AA", "UA"]);
+        assert_eq!(values(&out, "origin"), ["EWR", "JFK", "LGA"]);
+        let out = eval("select distinct carrier where n > 1", &df);
+        assert_eq!(values(&out, "carrier"), ["UA", "AA"]);
+        // A column named distinct is col["distinct"].
+        let ParsedQuery { cols, distinct, .. } = parse_query("select col[\"distinct\"]").unwrap();
+        assert!(!distinct);
+        assert_eq!(cols, vec![col("distinct")]);
+        // So is a bare `distinct` that is plainly a column or an alias.
+        let ParsedQuery { cols, distinct, .. } = parse_query("select distinct, n").unwrap();
+        assert!(!distinct);
+        assert_eq!(cols, vec![col("distinct"), col("n")]);
+        let ParsedQuery { cols, distinct, .. } = parse_query("select distinct: n").unwrap();
+        assert!(!distinct);
+        assert_eq!(cols, vec![col("n").alias("distinct")]);
+    }
+
+    #[test]
+    fn test_accessor_argument_count_errors() {
+        for (query, expected) in [
+            (
+                "select x.part[\",\"]",
+                "part takes 2 arguments, e.g. .part[\"-\", 0]; got 1",
+            ),
+            ("select x.slice", "slice takes 1 to 2 arguments"),
+            ("select x.replace[\"a\"]", "replace takes 2 arguments"),
+            ("select x.round[1, 2]", "round takes 0 to 1 arguments"),
+            (
+                "select x.to_date[\"%Y\", \"%m\"]",
+                "to_date takes 0 to 1 arguments",
+            ),
+            ("select x.hour[1]", "hour takes no arguments"),
+            ("select x.strip[\" \"]", "strip takes no arguments"),
+            ("select x.int[1]", "int takes no arguments"),
+            ("select x.format", "format takes 1 argument"),
+        ] {
+            let err = parse_err(query);
+            assert!(err.contains(expected), "{query}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_accessor_argument_type_errors() {
+        for (query, expected) in [
+            (
+                "select x.part[0, \",\"]",
+                "part: argument 1 must be quoted text",
+            ),
+            (
+                "select x.part[\",\", \"a\"]",
+                "part: argument 2 must be a whole number",
+            ),
+            (
+                "select x.part[\",\", 1.5]",
+                "part: argument 2 must be a whole number",
+            ),
+            ("select x.round[-1]", "round: decimals cannot be negative"),
+            (
+                "select x.slice[0, -1]",
+                "slice: the length cannot be negative",
+            ),
+            ("select x.slice[a + 1]", "slice takes literal arguments"),
+            ("select x.part[\",\"", "Unmatched bracket after .part"),
+        ] {
+            let err = parse_err(query);
+            assert!(err.contains(expected), "{query}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_unknown_accessor_lists_new_names() {
+        let err = parse_err("select x.nosuch");
+        for name in [
+            "hour",
+            "minute",
+            "second",
+            "quarter",
+            "doy",
+            "to_date",
+            "to_datetime",
+            "part",
+            "slice",
+            "replace",
+            "strip",
+            "round",
+            "int",
+            "float",
+            "str",
+        ] {
+            assert!(err.contains(name), "{name} missing from: {err}");
+        }
+    }
+
+    #[test]
+    fn test_nested_functions_parse_in_linear_time() {
+        // Each argument used to be parsed as an aggregate and then again as a scalar
+        // function, doubling the work at every level of nesting.
+        let bare = format!("select {}x", "abs ".repeat(40));
+        assert!(parse_query(&bare).is_ok());
+        let bracketed = format!("select {}x{}", "sqrt[".repeat(30), "]".repeat(30));
+        assert!(parse_query(&bracketed).is_ok());
     }
 }

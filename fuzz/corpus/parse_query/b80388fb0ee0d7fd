@@ -1,0 +1,1 @@
+select x.part[","], x.round[1, 2], x.slice[a + 1]

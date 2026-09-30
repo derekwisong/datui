@@ -1,0 +1,1 @@
+select x where (x mod 2) in [1], 1 = x mod 2, not name like "E*"

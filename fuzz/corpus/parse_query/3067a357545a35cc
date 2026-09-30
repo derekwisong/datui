@@ -1,0 +1,1 @@
+select day: DATE.to_date["%Y%m%d"], high: DATA_VALUE / 10

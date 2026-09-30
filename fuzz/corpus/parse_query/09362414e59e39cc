@@ -1,0 +1,1 @@
+select d: Date.replace["(P)", ""].to_date["%a %b %d %Y"]

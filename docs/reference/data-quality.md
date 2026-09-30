@@ -79,14 +79,14 @@ The Read section says what Run will do, before it does it:
 |---|---|
 | No read: the report is already here | The setup is the report's, or the session cache holds it |
 | Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
-| Seeded runs of the file | A random sample of one Parquet or IPC file as loaded: a few dozen short reads |
+| Seeded runs of the file | A random sample of one Parquet or IPC file: the whole source, or a view with no filter, query or reshape (a sort is fine); a few dozen short reads |
 | One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
 | Read before; released to free memory | Those rows were read this session and released to the memory budget: Run reads them again |
 | Counts every row by the grain's column in that pass | A partition or time-window grain on a streamed sample: exact segment totals from the one pass |
 | Segment totals from a count already read | The same grain was counted before, with these rows |
 | Segment totals summed from the hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
 | Plus one count of the grain's column | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
-| Too many segments to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
+| Too many segments … to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
 | Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
 | File metadata only | Values set to metadata only |
 
@@ -223,7 +223,7 @@ to Every row) asks first: the **Full Scan** dialog, <kbd>Enter</kbd> to run,
 | Dataset grain | The whole sample is one segment |
 | File, partition, chunk, window grain | The sample's rows, split by the segment each came from. A **Random** sample gives each segment its share, so a small one gets few rows; **Equal per value** of the partition column gives every segment the same number. Choosing Equal per value sets the grain to that column when no grain is set. A segment's total comes from what is already known (a file's rows from its footer when whole files are in scope, a row chunk's size, the rows an Equal per value sample counted while it read), from the count a streamed sample takes of the grain's column in its one pass, from a finer window's count summed, and otherwise from one count of the grain's column, kept with the rows |
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
-| Time windows | By hour, day, week or month of a date or time column, starting on the calendar boundary for their width (weeks start on Monday) and named by where they start (`2024-01-31`, `week of 2024-01-29`, `2024-01`); a window is cut at the same place whether sampled or scanned |
+| Time windows | By hour, day, week or month of a date or time column, starting on the calendar boundary for their width (weeks start on Monday) and named by where they start (`2024-01-31`, `week of 2024-01-29`, `2024-01`); a zoned column is cut and named in UTC; a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
 | Remote sources | Read-only; the access plan always reports zero remote writes |
 

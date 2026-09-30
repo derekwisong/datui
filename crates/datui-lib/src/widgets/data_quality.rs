@@ -600,7 +600,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
                 window_cadence(finer)
             )),
             SegmentCount::TooMany => lines.push(format!(
-                "Too many segments to count; choose a coarser grain than {}",
+                "Too many segments {} to count; choose a coarser grain",
                 plan.grain.label()
             )),
             SegmentCount::NotNeeded | SegmentCount::PerValue => {}

@@ -96,9 +96,10 @@ one sampling pass (which also counts the grain's segments when it streams), a
 count of the grain's column for exact segment totals, rows a run already read,
 or nothing when the report is already on screen or in the session cache.
 Changing roles, text formats, comparison, row chunks or a coarser window of a
-counted grain reads nothing; a new seed, size or scope reads a new sample. <kbd>p</kbd> shows the access plan in full. Reading every
-row asks for confirmation first; <kbd>Esc</kbd> there leaves the sample and the
-report as they were.
+counted grain reads nothing; a new seed, size or scope reads a new sample.
+<kbd>p</kbd> shows the access plan in full. Reading every row asks for
+confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
+they were.
 
 While a run reads, the progress names its stage, whether that stage reads the
 source, and the rows seen where the read can count them. <kbd>Esc</kbd>

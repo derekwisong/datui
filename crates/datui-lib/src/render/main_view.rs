@@ -120,6 +120,10 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
         }
         MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
         MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
+        // A load waiting on the download confirmation takes only the modal's keys.
+        MainViewContent::Loading if app.awaiting_download_confirmation() => {
+            ControlBarSpec::Custom(crate::render::overlays::confirmation_keys())
+        }
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
         MainViewContent::Loading => ControlBarSpec::Custom(vec![

@@ -271,6 +271,10 @@ pub struct Args {
     #[arg(long = "debug", action)]
     pub debug: bool,
 
+    /// Write the log here (default: [debug] log_file, or datui.log in the cache directory). DATUI_LOG sets the level: error, warn (default), info, debug or off
+    #[arg(long = "log-file", value_name = "PATH")]
+    pub log_file: Option<std::path::PathBuf>,
+
     /// Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file
     #[arg(long = "hive", action, help_heading = "Reading")]
     pub hive: bool,

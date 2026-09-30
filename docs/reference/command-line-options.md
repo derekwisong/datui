@@ -22,6 +22,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--compression <COMPRESSION>` | Compression format, when the extension does not say (default: auto-detected from the extension) |
 | `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension) |
 | `--debug` | Enable debug mode to show operational information |
+| `--log-file <PATH>` | Write the log here (default: [debug] log_file, or datui.log in the cache directory). DATUI_LOG sets the level: error, warn (default), info, debug or off |
 | `--hive` | Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file |
 | `--single-spine-schema[=<BOOL>]` | Combine Parquet file schemas from their footers (default: true). Set to false to use Polars' single-file schema inference |
 | `--parse-dates[=<BOOL>]` | Parse CSV and JSON string columns that look like dates or ISO 8601 timestamps (e.g. 2024-01-31, 2024-01-31T10:00:00Z) as Date or Datetime (default: true) |

@@ -2566,6 +2566,8 @@ pub struct DebugConfig {
     pub show_performance: bool,
     pub show_query: bool,
     pub show_transformations: bool,
+    /// Where the log goes. Unset: `datui.log` in the cache directory.
+    pub log_file: Option<String>,
 }
 
 // Field comments for DebugConfig
@@ -2579,6 +2581,10 @@ const DEBUG_COMMENTS: &[(&str, &str)] = &[
     (
         "show_transformations",
         "Show transformation state in debug overlay",
+    ),
+    (
+        "log_file",
+        "Log file path (default: datui.log in the cache directory; DATUI_LOG sets the level)",
     ),
 ];
 
@@ -2874,6 +2880,7 @@ impl Default for DebugConfig {
             show_performance: true,
             show_query: true,
             show_transformations: true,
+            log_file: None,
         }
     }
 }
@@ -3661,6 +3668,9 @@ impl DebugConfig {
         }
         if other.show_transformations != default.show_transformations {
             self.show_transformations = other.show_transformations;
+        }
+        if other.log_file.is_some() {
+            self.log_file = other.log_file;
         }
     }
 }

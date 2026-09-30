@@ -393,6 +393,7 @@ pub fn token(scope: &str, env: &Environment<'_>) -> Result<String, String> {
     })?;
     let (token, expires) =
         parse_token(&output).ok_or_else(|| "az returned no token".to_string())?;
+    crate::logging::keep_out_of_log(&token);
     if let Ok(mut cached) = tokens().lock() {
         cached.insert(scope.to_string(), (token.clone(), expires));
     }
@@ -645,6 +646,7 @@ fn cached_token(key: &str) -> Option<String> {
 }
 
 fn cache_token(key: &str, token: String, expires: Option<SystemTime>) {
+    crate::logging::keep_out_of_log(&token);
     if let Ok(mut cached) = tokens().lock() {
         cached.insert(key.to_string(), (token, expires));
     }
@@ -769,6 +771,7 @@ pub fn fetch_account_key(
         ));
     }
     let key = parse_keys(&text).ok_or_else(|| "the account returned no keys".to_string())?;
+    crate::logging::keep_out_of_log(&key);
     if let Ok(mut keys) = account_keys().lock() {
         keys.insert(account.to_string(), key.clone());
     }

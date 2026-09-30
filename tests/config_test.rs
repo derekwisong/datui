@@ -388,6 +388,30 @@ fn test_query_default_mode() {
 }
 
 #[test]
+fn test_log_file_parses_defaults_and_merges() {
+    use datui::config::DebugConfig;
+
+    assert_eq!(DebugConfig::default().log_file, None);
+    let omitted: AppConfig = toml::from_str("[debug]\nenabled = true\n").unwrap();
+    assert_eq!(omitted.debug.log_file, None);
+
+    let set: AppConfig = toml::from_str("[debug]\nlog_file = \"~/datui.log\"\n").unwrap();
+    assert_eq!(set.debug.log_file.as_deref(), Some("~/datui.log"));
+
+    let mut base = DebugConfig {
+        log_file: Some("/first.log".into()),
+        ..DebugConfig::default()
+    };
+    base.merge(DebugConfig::default());
+    assert_eq!(base.log_file.as_deref(), Some("/first.log"), "unset keeps");
+    base.merge(DebugConfig {
+        log_file: Some("/second.log".into()),
+        ..DebugConfig::default()
+    });
+    assert_eq!(base.log_file.as_deref(), Some("/second.log"), "set wins");
+}
+
+#[test]
 fn test_turning_the_notes_accent_off_survives_a_merge() {
     use datui::config::DisplayConfig;
 

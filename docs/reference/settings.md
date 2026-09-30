@@ -151,6 +151,7 @@ enabled = false          # Debug overlay (--debug)
 show_performance = true
 show_query = true
 show_transformations = true
+log_file = "~/datui.log" # Omit for datui.log in the cache directory
 ```
 
 `default_mode` applies when no query is active; editing one reopens its own
@@ -336,6 +337,22 @@ datui data.csv --sample-rows 0       # analyze every row, whatever the file says
 parses. Warnings go to stderr, which the UI hides; run
 `datui data.csv 2> /tmp/datui.log` and read the log after quitting. A `version`
 key, if present, must start with `0.2`.
+
+**Something failed and the screen said little.** Read the log: `datui.log` in
+the cache directory (`~/.cache/datui` on Linux, `~/Library/Caches/datui` on
+macOS, `%LOCALAPPDATA%\datui` on Windows). It holds Polars warnings, the errors
+datui showed, internal errors with their backtraces, cache and history
+failures, and anything else written to stderr while the UI was up, with
+credentials masked. It is capped at 1 MB, with the
+previous file kept as `datui.log.1`; `datui --clear-cache` deletes both.
+
+| Set | How |
+|---|---|
+| Another file | `--log-file PATH`, or `log_file` under `[debug]` |
+| Level | `DATUI_LOG=error`, `warn` (default), `info`, `debug`, or `off` |
+
+On Windows the log receives Polars warnings and datui's own messages, but not
+other stderr output.
 
 **An import does not apply.** Confirm the file exists at the resolved path, that
 your value differs from datui's default (see the caveat above), and that nothing

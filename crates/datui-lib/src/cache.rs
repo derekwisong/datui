@@ -1,3 +1,4 @@
+use crate::logging::LogFailure;
 use color_eyre::Result;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -90,14 +91,17 @@ impl CacheManager {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let log = crate::logging::LOG_FILE_NAME;
             let ours = path.is_file()
-                && matches!(
+                && (matches!(
                     path.extension().and_then(|e| e.to_str()),
                     Some("json" | "txt" | "lock")
-                );
-            if ours && let Err(_e) = fs::remove_file(&path) {
-                // Silently ignore cache file removal failures — this runs in a TUI
-                // context where stderr output would corrupt the terminal display.
+                ) || path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == log || n.strip_prefix(log) == Some(".1")));
+            if ours {
+                fs::remove_file(&path).or_log(&format!("remove {}", path.display()));
             }
         }
 
@@ -124,6 +128,13 @@ impl CacheManager {
         }
 
         Ok(history)
+    }
+
+    /// A history file, empty when it is missing or cannot be read; the latter is logged.
+    fn load_history_or_log(&self, history_id: &str) -> Vec<String> {
+        self.load_history_file(history_id)
+            .inspect_err(|e| log::warn!(target: "datui", "read {history_id} history: {e:#}"))
+            .unwrap_or_default()
     }
 
     /// Apply `update` to a history file, with the whole read-modify-write held under
@@ -172,12 +183,13 @@ impl CacheManager {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         if !held {
+            log::info!(target: "datui", "{history_id} history not updated: its lock is busy");
             return Ok(HistoryUpdate::SkippedBusy);
         }
 
         // Read, modify and write all inside the lock; the whole point is that another
         // instance cannot land between the read and the write.
-        let mut entries = self.load_history_file(history_id).unwrap_or_default();
+        let mut entries = self.load_history_or_log(history_id);
         update(&mut entries);
         let result = self.save_history_file(history_id, &entries);
 
@@ -218,6 +230,23 @@ impl CacheManager {
 
         Ok(())
     }
+}
+
+/// A JSON cache file. Missing is empty; unreadable or malformed is logged and empty,
+/// since a cache that cannot be read must never be worse than not having it.
+fn read_json_cache<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
+        Err(e) => {
+            log::warn!(target: "datui", "read {}: {e}", path.display());
+            return T::default();
+        }
+    };
+    serde_json::from_str(&text).unwrap_or_else(|e| {
+        log::warn!(target: "datui", "{} is malformed, ignoring it: {e}", path.display());
+        T::default()
+    })
 }
 
 /// How long to wait for another instance to finish rewriting a history file.
@@ -262,8 +291,7 @@ impl CacheManager {
     /// This is the *only* thing datui remembers about your data between runs. It is
     /// a convenience, not a record: deleting it loses nothing but ordering.
     pub fn load_recents(&self) -> Vec<std::path::PathBuf> {
-        self.load_history_file("recents")
-            .unwrap_or_default()
+        self.load_history_or_log("recents")
             .into_iter()
             .map(std::path::PathBuf::from)
             .collect()
@@ -274,8 +302,7 @@ impl CacheManager {
     /// One line per section, `title<TAB>1` for folded and `title<TAB>0` for opened.
     /// A section not listed takes its own default.
     pub fn load_folds(&self) -> std::collections::HashMap<String, bool> {
-        self.load_history_file("home_folds")
-            .unwrap_or_default()
+        self.load_history_or_log("home_folds")
             .into_iter()
             .filter_map(|line| {
                 let (title, state) = line.rsplit_once('\t')?;
@@ -291,7 +318,8 @@ impl CacheManager {
             .map(|(title, folded)| format!("{title}\t{}", if *folded { 1 } else { 0 }))
             .collect();
         lines.sort();
-        let _ = self.save_history_file("home_folds", &lines);
+        self.save_history_file("home_folds", &lines)
+            .or_log("save home folds");
     }
 
     /// Forget a single recently opened path.
@@ -301,9 +329,10 @@ impl CacheManager {
     /// whole cache to remove one is too blunt.
     pub fn forget_recent(&self, path: &std::path::Path) {
         let target = path.to_string_lossy().into_owned();
-        let _ = self.update_history_file("recents", |recents| {
+        self.update_history_file("recents", |recents| {
             recents.retain(|p| p != &target);
-        });
+        })
+        .or_log("forget a recent");
     }
 
     /// Forget several recently opened paths at once: every recent under one place.
@@ -312,14 +341,16 @@ impl CacheManager {
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        let _ = self.update_history_file("recents", |recents| {
+        self.update_history_file("recents", |recents| {
             recents.retain(|p| !targets.contains(p));
-        });
+        })
+        .or_log("forget recents");
     }
 
     /// Forget every recently opened path, leaving other caches alone.
     pub fn clear_recents(&self) {
-        let _ = self.update_history_file("recents", |recents| recents.clear());
+        self.update_history_file("recents", |recents| recents.clear())
+            .or_log("clear recents");
     }
 
     /// Whether a recorded path is still worth offering.
@@ -383,6 +414,7 @@ impl CacheManager {
             recents.retain(|p| Self::recent_is_worth_keeping(p, &mounts));
             recents.truncate(MAX_RECENTS);
         })
+        .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
         .unwrap_or(HistoryUpdate::SkippedBusy)
     }
 }
@@ -588,10 +620,7 @@ impl CacheManager {
     /// Unreadable means empty — a cache that cannot be read is one that has nothing to
     /// say, not an error worth stopping an open for.
     pub fn load_dataset_shapes(&self) -> std::collections::HashMap<String, DatasetShape> {
-        let Ok(text) = fs::read_to_string(self.dataset_shape_path()) else {
-            return Default::default();
-        };
-        serde_json::from_str(&text).unwrap_or_default()
+        read_json_cache(&self.dataset_shape_path())
     }
 
     /// What datui remembers about one dataset, if the fingerprint still matches.
@@ -621,7 +650,7 @@ impl CacheManager {
     /// Best effort: a shape that cannot be re-dated is still a shape that can be used,
     /// and failing the open over it would be absurd.
     fn touch_dataset_shape(&self, path: &str) {
-        let _ = self.with_cache_lock("dataset_shapes", || {
+        self.with_cache_lock("dataset_shapes", || {
             let mut all = self.load_dataset_shapes();
             if let Some(shape) = all.get_mut(path) {
                 shape.taken_at = std::time::SystemTime::now()
@@ -636,7 +665,8 @@ impl CacheManager {
                 let _ = fs::remove_file(&temp);
             })?;
             Ok(())
-        });
+        })
+        .or_log("re-date a dataset shape");
     }
 
     /// Remember one dataset's shape, keeping the others.
@@ -645,7 +675,7 @@ impl CacheManager {
     /// stops being one. The oldest entries go first, since what someone opened least
     /// recently is what they are least likely to open next.
     pub fn save_dataset_shape(&self, path: &str, shape: DatasetShape) {
-        let _ = self.with_cache_lock("dataset_shapes", || {
+        self.with_cache_lock("dataset_shapes", || {
             self.ensure_cache_dir()?;
             let mut all = self.load_dataset_shapes();
             all.insert(path.to_string(), shape);
@@ -664,7 +694,8 @@ impl CacheManager {
                 let _ = fs::remove_file(&temp);
             })?;
             Ok(())
-        });
+        })
+        .or_log("save a dataset shape");
     }
 
     fn cloud_listing_path(&self) -> PathBuf {
@@ -673,15 +704,12 @@ impl CacheManager {
 
     /// Every source's last listing, by source ID. Unreadable means empty.
     pub fn load_cloud_listings(&self) -> std::collections::HashMap<String, CloudListing> {
-        let Ok(text) = fs::read_to_string(self.cloud_listing_path()) else {
-            return Default::default();
-        };
-        serde_json::from_str(&text).unwrap_or_default()
+        read_json_cache(&self.cloud_listing_path())
     }
 
     /// Record one source's listing, keeping the others.
     pub fn save_cloud_listing(&self, id: &str, listing: CloudListing) {
-        let _ = self.with_cache_lock("cloud_sources", || {
+        self.with_cache_lock("cloud_sources", || {
             self.ensure_cache_dir()?;
             let mut all = self.load_cloud_listings();
             all.insert(id.to_string(), listing);
@@ -692,22 +720,24 @@ impl CacheManager {
                 let _ = fs::remove_file(&temp);
             })?;
             Ok(())
-        });
+        })
+        .or_log("save a cloud listing");
     }
 
     /// Source IDs hidden from the home screen with Delete.
     pub fn load_hidden_cloud_sources(&self) -> Vec<String> {
-        self.load_history_file("cloud_hidden").unwrap_or_default()
+        self.load_history_or_log("cloud_hidden")
     }
 
     /// Hide a source from the home screen until the cache is cleared.
     pub fn hide_cloud_source(&self, id: &str) {
         let id = id.to_string();
-        let _ = self.update_history_file("cloud_hidden", |hidden| {
+        self.update_history_file("cloud_hidden", |hidden| {
             if !hidden.contains(&id) {
                 hidden.push(id.clone());
             }
-        });
+        })
+        .or_log("hide a cloud source");
     }
 
     /// Directories kept on the home screen with Ctrl+D, in the order they were added.
@@ -716,8 +746,7 @@ impl CacheManager {
     /// into the config: that file is the user's, comments and all, and may be one of
     /// several merged together.
     pub fn load_remembered_places(&self) -> Vec<PathBuf> {
-        self.load_history_file("home_remembered")
-            .unwrap_or_default()
+        self.load_history_or_log("home_remembered")
             .into_iter()
             .map(PathBuf::from)
             .collect()
@@ -726,19 +755,21 @@ impl CacheManager {
     /// Keep a directory on the home screen until it is forgotten or the cache cleared.
     pub fn remember_place(&self, path: &std::path::Path) {
         let target = path.to_string_lossy().into_owned();
-        let _ = self.update_history_file("home_remembered", |places| {
+        self.update_history_file("home_remembered", |places| {
             if !places.contains(&target) {
                 places.push(target.clone());
             }
-        });
+        })
+        .or_log("remember a place");
     }
 
     /// Stop keeping a directory on the home screen.
     pub fn forget_place(&self, path: &std::path::Path) {
         let target = path.to_string_lossy().into_owned();
-        let _ = self.update_history_file("home_remembered", |places| {
+        self.update_history_file("home_remembered", |places| {
             places.retain(|p| p != &target);
-        });
+        })
+        .or_log("forget a place");
     }
 }
 
@@ -752,11 +783,7 @@ impl CacheManager {
     /// A malformed or unreadable file yields an empty index: this is a cache, and
     /// failing to read it must never be worse than not having it.
     pub fn load_dataset_facts(&self) -> std::collections::HashMap<PathBuf, DatasetFacts> {
-        let Ok(text) = fs::read_to_string(self.dataset_index_path()) else {
-            return Default::default();
-        };
-        serde_json::from_str::<std::collections::HashMap<PathBuf, DatasetFacts>>(&text)
-            .unwrap_or_default()
+        read_json_cache(&self.dataset_index_path())
     }
 
     /// Merge newly measured datasets into the index.
@@ -768,7 +795,7 @@ impl CacheManager {
         if facts.is_empty() {
             return;
         }
-        let _ = self.with_cache_lock("datasets", || {
+        self.with_cache_lock("datasets", || {
             let mut index = self.load_dataset_facts();
             for (path, entry) in facts {
                 index.insert(path.clone(), entry.clone());
@@ -790,7 +817,8 @@ impl CacheManager {
                 let _ = fs::remove_file(&temp);
             })?;
             Ok(())
-        });
+        })
+        .or_log("save dataset facts");
     }
 
     /// Run `work` holding the named cache lock, or skip it if the lock is contended
@@ -814,6 +842,7 @@ impl CacheManager {
                 break;
             }
             if std::time::Instant::now() >= deadline {
+                log::info!(target: "datui", "{name} cache not updated: its lock is busy");
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -1176,6 +1205,8 @@ mod facts_compat_tests {
             "dataset_shapes.json",
             "cloud_sources.json",
             "datasets.lock",
+            "datui.log",
+            "datui.log.1",
         ] {
             std::fs::write(dir.path().join(name), b"x").expect("write");
         }

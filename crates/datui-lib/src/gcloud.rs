@@ -159,6 +159,7 @@ pub fn token(configuration: &str, env: &Environment<'_>) -> Result<(String, Syst
     })?;
     let (token, expires) =
         parse_config_helper(&output).ok_or_else(|| "gcloud returned no token".to_string())?;
+    crate::logging::keep_out_of_log(&token);
     if let Ok(mut cached) = tokens().lock() {
         cached.insert(configuration.to_string(), (token.clone(), expires));
     }

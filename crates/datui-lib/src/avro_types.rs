@@ -15,12 +15,13 @@
 //! is `[A-Za-z_][A-Za-z0-9_]*` and strict readers refuse the file. [`write`]
 //! names the record and gives each column and struct field a valid name in the
 //! file's schema, with the original as the field's `doc`. It also writes the
-//! header once, where Polars' writer repeats it for every chunk.
+//! header once, where Polars' writer repeats it for every chunk, and cuts
+//! blocks by size rather than one per chunk.
 
 use std::io::Write;
 
 use polars::prelude::*;
-use polars_arrow::io::avro::avro_schema::file::{Block, CompressedBlock};
+use polars_arrow::io::avro::avro_schema::file::CompressedBlock;
 use polars_arrow::io::avro::avro_schema::schema::{Field as AvroField, Schema as AvroSchema};
 use polars_arrow::io::avro::{avro_schema, write as avro_write};
 
@@ -107,35 +108,54 @@ fn name_fields(fields: &mut [AvroField]) {
     }
 }
 
+/// A block is cut once it holds this many bytes, however the frame is chunked:
+/// a reader holds a whole block in memory, and Java's refuses one past 2 GiB.
+const BLOCK_BYTES: usize = 1 << 20;
+
 /// Write `df`, prepared by [`lazy_for_avro`], as an uncompressed Avro file:
-/// what Polars' `AvroWriter` writes, with valid names and one header.
+/// Polars' `AvroWriter`'s encoding, with valid names, one header, and blocks
+/// of about [`BLOCK_BYTES`].
 pub fn write(df: &mut DataFrame, mut writer: impl Write) -> PolarsResult<()> {
     // Serializing walks the columns' chunks together, so they must line up.
     df.align_chunks_par();
     let schema = df.schema().to_arrow(CompatLevel::oldest());
     let mut record = avro_write::to_record(&schema, RECORD_NAME.to_string())?;
     name_fields(&mut record.fields);
-    avro_schema::write::write_metadata(&mut writer, record.clone(), None)?;
+    // avro-schema turns any I/O error into "OutOfSpec", so it only ever writes
+    // to `out` and the file's errors, such as a full disk, come from here.
+    let mut out = Vec::new();
+    avro_schema::write::write_metadata(&mut out, record.clone(), None)?;
+    writer.write_all(&out)?;
 
-    let mut data = vec![];
-    let mut compressed = CompressedBlock::default();
+    let mut block = CompressedBlock::default();
+    let mut flush = |block: &mut CompressedBlock| -> PolarsResult<()> {
+        out.clear();
+        avro_schema::write::write_block(&mut out, block)?;
+        writer.write_all(&out)?;
+        block.data.clear();
+        block.number_of_rows = 0;
+        Ok(())
+    };
     for chunk in df.iter_chunks(CompatLevel::oldest(), true) {
-        if chunk.height() == 0 {
-            continue;
-        }
         let mut serializers: Vec<_> = chunk
             .iter()
             .zip(&record.fields)
             .map(|(array, field)| avro_write::new_serializer(array.as_ref(), &field.schema))
             .collect();
-        let mut block = Block::new(chunk.height(), std::mem::take(&mut data));
-        avro_write::serialize(&mut serializers, &mut block);
-        avro_schema::write::compress(&mut block, &mut compressed, None)?;
-        avro_schema::write::write_block(&mut writer, &compressed)?;
-        // Both buffers are reused for the next chunk.
-        data = block.data;
-        data.clear();
-        compressed.data.clear();
+        // Row by row, as Polars' `serialize` does, cutting a block by size.
+        for _ in 0..chunk.height() {
+            for serializer in &mut serializers {
+                let value = serializer.next().expect("a value for every row");
+                block.data.extend_from_slice(value);
+            }
+            block.number_of_rows += 1;
+            if block.data.len() >= BLOCK_BYTES {
+                flush(&mut block)?;
+            }
+        }
+    }
+    if block.number_of_rows > 0 {
+        flush(&mut block)?;
     }
     Ok(())
 }
@@ -430,6 +450,70 @@ mod tests {
             .unwrap();
         let my_col = back.column("my_col").unwrap().i64().unwrap();
         assert_eq!(my_col.iter().collect::<Vec<_>>(), [Some(1), Some(1)]);
+    }
+
+    /// Blocks are cut by size, not by chunk: a hundred one-row chunks are one
+    /// block, and one chunk of about 3 MiB is three, and every row reads back.
+    #[test]
+    fn blocks_are_cut_by_size() {
+        use avro_schema::read::fallible_streaming_iterator::FallibleStreamingIterator;
+        fn blocks(df: &mut DataFrame) -> Vec<(usize, usize)> {
+            let mut bytes = Vec::new();
+            write(df, &mut bytes).unwrap();
+            let back = AvroReader::new(std::io::Cursor::new(&bytes))
+                .finish()
+                .unwrap();
+            assert!(back.equals(df), "{back:?}");
+            let mut reader = std::io::Cursor::new(bytes);
+            let marker = avro_schema::read::read_metadata(&mut reader)
+                .unwrap()
+                .marker;
+            let mut iter = avro_schema::read::block_iterator(reader, None, marker);
+            let mut sizes = Vec::new();
+            while let Some(block) = iter.next().unwrap() {
+                sizes.push((block.number_of_rows, block.data.len()));
+            }
+            sizes
+        }
+        let text = "x".repeat(1000);
+        let row = df!("s" => [text.as_str()]).unwrap();
+        let mut many = row.clone();
+        for _ in 0..99 {
+            many.vstack_mut(&row).unwrap();
+        }
+        assert_eq!(many.first_col_n_chunks(), 100);
+        let sizes = blocks(&mut many);
+        assert_eq!(sizes.len(), 1, "{sizes:?}");
+        assert_eq!(sizes[0].0, 100);
+
+        let mut big = df!("s" => vec![text.as_str(); 3000]).unwrap();
+        assert_eq!(big.first_col_n_chunks(), 1);
+        let sizes = blocks(&mut big);
+        assert_eq!(sizes.len(), 3, "{sizes:?}");
+        assert_eq!(sizes.iter().map(|(rows, _)| rows).sum::<usize>(), 3000);
+        for (_, size) in &sizes[..2] {
+            assert!(
+                (BLOCK_BYTES..BLOCK_BYTES + 1100).contains(size),
+                "{sizes:?}"
+            );
+        }
+    }
+
+    /// A failed write reports the I/O error, not avro-schema's "OutOfSpec".
+    #[test]
+    fn a_write_error_says_what_failed() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut df = df!("n" => [1i64]).unwrap();
+        let err = write(&mut df, Full).unwrap_err().to_string();
+        assert!(err.contains("disk full"), "{err}");
     }
 
     /// A value that does not fit fails by column name rather than turning null.

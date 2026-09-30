@@ -94,6 +94,7 @@ pub mod search;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
+mod sql_assist;
 pub mod statistics;
 pub mod template;
 pub mod widgets;
@@ -1897,6 +1898,111 @@ mod template_rollback_tests {
             "with its rows, rather than the blank table the failure used to leave"
         );
         assert!(state.error.is_none(), "and the rollback clears the error");
+    }
+
+    #[cfg(feature = "sql")]
+    fn words_csv(dir: &tempfile::TempDir) -> PathBuf {
+        let path = dir.path().join("words.csv");
+        let mut csv = String::from("id,name\n");
+        for i in 0..40 {
+            csv.push_str(&format!("{i},word_{i}\n"));
+        }
+        std::fs::write(&path, csv).unwrap();
+        path
+    }
+
+    /// #400 through a view: a view whose SQL plans but fails on the data is not
+    /// left installed. The error is a dialog, over the view as it was.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_view_whose_query_fails_on_the_data_is_not_applied() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = words_csv(&dir);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "cast the words".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("SELECT CAST(name AS INT) AS n FROM df".to_string());
+        template.settings.column_order.clear();
+        let applied = app.apply_template(&template);
+        assert!(applied.is_ok(), "it plans: {applied:?}");
+        // As the event loop does: the frame drawn asks for its rows.
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        app.render(area, &mut ratatui::buffer::Buffer::empty(area));
+        let state = app.data_table_state.as_mut().unwrap();
+        assert!(std::mem::take(&mut state.needs_recollect));
+        app.spawn_async_collect(App::LOADING_BUFFER);
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+
+        assert!(app.error_modal.active, "the failure is said");
+        let state = app.data_table_state.as_ref().unwrap();
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["id", "name"],
+            "the frame is the one before the view"
+        );
+        assert!(state.active_sql_query.is_empty());
+        assert!(state.is_num_rows_valid());
+        assert_eq!(state.num_rows, 40);
+        assert_ne!(
+            app.active_template_id.as_deref(),
+            Some(template.id.as_str()),
+            "the view that failed is not marked applied"
+        );
+    }
+
+    /// The count of the view a query replaced can land while the query runs. If the
+    /// query then fails, the view comes back with that count rather than with a
+    /// marker saying it is still being counted, which nothing would ever clear.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = words_csv(&dir);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        // As if the view's count were still running when the query was sent.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.invalidate_num_rows();
+        let counting = state.len_generation();
+        app.len_count_inflight = Some(counting);
+
+        app.event(&AppEvent::SqlSearch(
+            "SELECT CAST(name AS INT) AS n FROM df".to_string(),
+        ));
+        assert!(app.query_running.is_some());
+        app.event(&AppEvent::BackgroundLenReady {
+            len_generation: counting,
+            num_rows: 40,
+            file_row_groups: None,
+        });
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+
+        assert!(app.query_running.is_none());
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.len_generation(), counting, "the view is back");
+        assert!(state.is_num_rows_valid(), "with its count");
+        assert_eq!(state.num_rows, 40);
+        assert_ne!(app.len_count_inflight, Some(counting), "not left counting");
     }
 }
 
@@ -5714,6 +5820,9 @@ pub enum AppEvent {
     BackgroundCollectFailed {
         generation: u64,
         message: String,
+        /// A value that would not convert, when that is what failed, for the SQL
+        /// prompt to say in its own words.
+        conversion: Option<Box<crate::error_display::ConversionFailure>>,
     },
     /// Background task completed: exact row count for the current LazyFrame. Applied to
     /// `data_table_state` only if `len_generation` still matches (the data is unchanged).
@@ -6057,6 +6166,35 @@ pub enum InputMode {
 pub enum InputType {
     Search,
     GoToLine,
+}
+
+/// A query whose first rows are being read. It planned, but can still fail on the
+/// data — a value that will not cast — and until the rows are in, the view it
+/// replaced is kept to go back to.
+struct QueryRun {
+    origin: RunOrigin,
+    /// The `len_generation` of the frame the query installed. Once that frame is gone
+    /// (a sort, a filter, another dataset) the rollback no longer applies.
+    frame: u64,
+    rollback: crate::widgets::datatable::ViewRollback,
+    /// The App's count markers as they were, for the frame the rollback restores.
+    /// A count of that frame still running when the query began lands while the
+    /// query's frame is installed, so its answer is kept here to go back with it.
+    len_count_inflight: Option<u64>,
+    len_count_failed: Option<u64>,
+    len_counted: Option<(usize, Option<Vec<Vec<usize>>>)>,
+    /// Rows `df` holds, when known, so a failure can say "of N".
+    rows: Option<usize>,
+}
+
+/// Where a running query came from, which decides where its failure is said.
+enum RunOrigin {
+    /// The query prompt, or its event sent directly: inline under the prompt while
+    /// it is open in this mode, else a dialog.
+    Query(QueryMode),
+    /// A view applied. Its failure is a dialog, and the view marked applied before
+    /// it is marked again.
+    View { previous: Option<String> },
 }
 
 /// Focus within the query prompt: the tab bar or the current mode's input.
@@ -7039,6 +7177,19 @@ pub struct App {
     input_type: Option<InputType>,
     query_mode: QueryMode,
     query_focus: QueryFocus,
+    /// The columns of `df`, for the SQL prompt's list and completion. Taken from the
+    /// schema when the prompt opens.
+    sql_columns: Vec<(String, DataType)>,
+    /// A Tab completion in progress in the SQL input.
+    sql_completion: Option<sql_assist::Cycle>,
+    /// A query whose first collect is running, and the view to go back to if it
+    /// fails. From the prompt, the prompt stays open until it is done.
+    query_running: Option<QueryRun>,
+    /// Why the last statement failed once it ran, shown under it in the prompt.
+    query_run_error: Option<String>,
+    /// Bumped when a running statement's failure lands in the prompt. Keys typed while
+    /// it ran were not answers to it; see `EventPump`.
+    inline_failures: u64,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
@@ -8544,6 +8695,9 @@ impl App {
         self.quality_sample = None;
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
+        // A query still running was over the dataset being replaced; its rollback
+        // is that dataset's view.
+        self.query_running = None;
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -8798,6 +8952,7 @@ impl App {
                     let _ = tx.send(AppEvent::BackgroundCollectFailed {
                         generation: task_gen,
                         message: crate::error_display::user_message_from_polars(&e),
+                        conversion: crate::error_display::conversion_failure(&e).map(Box::new),
                     });
                     // A pass over a frame that just failed to collect would fail too:
                     // report the count as failed and leave the retry to a later
@@ -9125,7 +9280,7 @@ impl App {
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("query".to_string()),
-            sql_input: TextInput::new()
+            sql_input: TextInput::statement()
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("sql".to_string()),
@@ -9137,6 +9292,11 @@ impl App {
             input_type: None,
             query_mode: QueryMode::default().resolve(),
             query_focus: QueryFocus::Input,
+            sql_columns: Vec::new(),
+            sql_completion: None,
+            query_running: None,
+            query_run_error: None,
+            inline_failures: 0,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
@@ -16011,10 +16171,22 @@ impl App {
                     return None;
                 }
 
-                if event.is_press()
-                    && event.code == KeyCode::Tab
-                    && !event.modifiers.contains(KeyModifiers::SHIFT)
-                {
+                // Shift+Tab goes up to the tab bar from every mode. Tab completes a
+                // name in SQL, and in the other modes, with nothing to complete, it
+                // goes to the tab bar too.
+                let shift_tab = event.code == KeyCode::BackTab
+                    || (event.code == KeyCode::Tab
+                        && event.modifiers.contains(KeyModifiers::SHIFT));
+                if event.is_press() && event.code == KeyCode::Tab && !shift_tab {
+                    if self.query_mode == QueryMode::Sql {
+                        self.complete_sql_name();
+                    } else {
+                        self.query_focus = QueryFocus::TabBar;
+                        self.sync_query_focus();
+                    }
+                    return None;
+                }
+                if event.is_press() && shift_tab {
                     self.query_focus = QueryFocus::TabBar;
                     self.sync_query_focus();
                     return None;
@@ -16431,6 +16603,9 @@ impl App {
                 self.input_type = Some(InputType::Search);
                 self.query_mode = self.opening_query_mode();
                 self.query_focus = QueryFocus::Input;
+                self.query_run_error = None;
+                self.sql_completion = None;
+                self.sql_columns.clear();
                 if let Some(state) = &mut self.data_table_state {
                     self.query_input.set_value(state.active_query.clone());
                     self.sql_input.set_value(state.get_active_sql_query());
@@ -16442,6 +16617,7 @@ impl App {
                     self.sql_input.select_all();
                     self.fuzzy_input.select_all();
                     state.suppress_error_display = true;
+                    self.sql_columns = state.sql_table_columns();
                 } else {
                     self.query_input.clear();
                     self.sql_input.clear();
@@ -17921,6 +18097,12 @@ impl App {
                 if self.len_count_failed == Some(*len_generation) {
                     self.len_count_failed = None;
                 }
+                if let Some(run) = self.query_running.as_mut()
+                    && run.len_count_inflight == Some(*len_generation)
+                {
+                    run.len_count_inflight = None;
+                    run.len_counted = Some((*num_rows, file_row_groups.clone()));
+                }
                 // Apply the exact total only if the data hasn't changed since the count
                 // was spawned. This runs independently of the buffer paint (which has
                 // usually already rendered), so it just corrects the scrollbar/total —
@@ -17960,6 +18142,12 @@ impl App {
             AppEvent::BackgroundLenFailed { len_generation } => {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
+                }
+                if let Some(run) = self.query_running.as_mut()
+                    && run.len_count_inflight == Some(*len_generation)
+                {
+                    run.len_count_inflight = None;
+                    run.len_count_failed = Some(*len_generation);
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
@@ -18032,10 +18220,17 @@ impl App {
                     {
                         state.apply_async_collect(result);
                     }
+                    // The query's first rows are in: it stands.
+                    let ran = self.take_query_run();
                     if waited_on {
                         self.loading_state = LoadingState::Idle;
                         self.status_message = None;
                         self.busy = false;
+                        if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
+                            && self.query_prompt_mode() == Some(mode)
+                        {
+                            self.leave_query_prompt_after_run();
+                        }
                     }
                 }
                 // Stale results (generation mismatch) are silently ignored —
@@ -18045,8 +18240,50 @@ impl App {
             AppEvent::BackgroundCollectFailed {
                 generation,
                 message,
+                conversion,
             } => {
                 if *generation != self.task_generation {
+                    return None;
+                }
+                // A query that failed on its first rows is not applied: the table,
+                // its schema and its row count go back to what they were (#400).
+                if let Some(run) = self.take_query_run()
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    state.roll_back(run.rollback);
+                    match run.len_counted {
+                        Some((_, Some(groups))) => state.set_file_row_groups(&groups),
+                        Some((rows, None)) => state.set_num_rows(rows),
+                        None => {}
+                    }
+                    self.len_count_inflight = run.len_count_inflight;
+                    self.len_count_failed = run.len_count_failed;
+                    self.collect_inflight = None;
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    // Run from the prompt, the reason goes under the query, which
+                    // stays open to be fixed. Sent any other way — a view applied —
+                    // there is nothing to edit, and the error modal says why.
+                    let mode = match run.origin {
+                        RunOrigin::View { previous } => {
+                            self.active_template_id = previous;
+                            self.error_modal
+                                .show(format!("Error applying view: {message}"));
+                            return None;
+                        }
+                        RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
+                        RunOrigin::Query(_) => {
+                            self.error_modal.show(message.clone());
+                            return None;
+                        }
+                    };
+                    let sql = mode == QueryMode::Sql;
+                    self.query_run_error = Some(match conversion {
+                        Some(failure) if sql => failure.sql_message(run.rows),
+                        _ => message.clone(),
+                    });
+                    self.inline_failures = self.inline_failures.wrapping_add(1);
                     return None;
                 }
                 let waited_on = self
@@ -18566,62 +18803,15 @@ impl App {
                 None
             }
             AppEvent::Search(query) => {
-                let query_succeeded = if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.query(query.clone());
-                    state.defer_collect = false;
-                    state.error.is_none()
-                } else {
-                    false
-                };
-
-                if query_succeeded {
-                    self.input_mode = InputMode::Normal;
-                    self.input_type = None;
-                    self.query_input.set_focused(false);
-                    if let Some(state) = &mut self.data_table_state {
-                        state.suppress_error_display = false;
-                    }
-                    self.spawn_async_collect("Applying query...");
-                }
+                self.run_query(QueryMode::QStyle, query, "Applying query...");
                 None
             }
             AppEvent::SqlSearch(sql) => {
-                let sql_succeeded = if let Some(state) = &mut self.data_table_state {
-                    state.sql_query(sql.clone());
-                    state.error.is_none()
-                } else {
-                    false
-                };
-                if sql_succeeded {
-                    self.input_mode = InputMode::Normal;
-                    self.input_type = None;
-                    self.sql_input.set_focused(false);
-                    if let Some(state) = &mut self.data_table_state {
-                        state.suppress_error_display = false;
-                    }
-                    self.spawn_async_collect("Applying SQL query...");
-                }
+                self.run_query(QueryMode::Sql, sql, "Applying SQL query...");
                 None
             }
             AppEvent::FuzzySearch(query) => {
-                let fuzzy_succeeded = if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.fuzzy_search(query.clone());
-                    state.defer_collect = false;
-                    state.error.is_none()
-                } else {
-                    false
-                };
-                if fuzzy_succeeded {
-                    self.input_mode = InputMode::Normal;
-                    self.input_type = None;
-                    self.fuzzy_input.set_focused(false);
-                    if let Some(state) = &mut self.data_table_state {
-                        state.suppress_error_display = false;
-                    }
-                    self.spawn_async_collect("Searching...");
-                }
+                self.run_query(QueryMode::Search, query, "Searching...");
                 None
             }
             AppEvent::Filter(statements) => {
@@ -19386,6 +19576,17 @@ impl App {
         // Save state before applying template so we can restore on failure
         let saved_state = self.snapshot_state();
         let saved_active_template_id = self.active_template_id.clone();
+        // A query in the view can still fail on the data once its rows are read,
+        // after this returns; then the view as it is now comes back (#400).
+        let settings = &template.settings;
+        let has_query = [&settings.sql_query, &settings.query, &settings.fuzzy_query]
+            .iter()
+            .any(|q| q.as_deref().is_some_and(|q| !q.trim().is_empty()));
+        let rollback = self
+            .data_table_state
+            .as_ref()
+            .filter(|_| has_query)
+            .map(|state| state.rollback_point());
 
         if let Some(state) = &mut self.data_table_state {
             state.error = None;
@@ -19527,6 +19728,22 @@ impl App {
 
             // Save updated template
             let _ = self.template_manager.save_template(&updated_template);
+        }
+
+        if let Some(rollback) = rollback
+            && let Some(state) = self.data_table_state.as_ref()
+        {
+            self.query_running = Some(QueryRun {
+                origin: RunOrigin::View {
+                    previous: saved_active_template_id,
+                },
+                frame: state.len_generation(),
+                rollback,
+                len_count_inflight: self.len_count_inflight,
+                len_count_failed: self.len_count_failed,
+                len_counted: None,
+                rows: None,
+            });
         }
 
         // Track active template
@@ -19976,7 +20193,138 @@ impl App {
         if let Some(state) = &mut self.data_table_state {
             state.error = None;
         }
+        self.query_run_error = None;
         self.sync_query_focus();
+    }
+
+    /// Tab in the SQL input: complete the column name or table name being typed,
+    /// and on further presses step through the other names that match.
+    fn complete_sql_name(&mut self) {
+        let line = self
+            .sql_input
+            .line_at(self.sql_input.cursor_line())
+            .unwrap_or_default()
+            .to_string();
+        let value = self.sql_input.value().to_string();
+        let Some(step) = sql_assist::tab(
+            &self.sql_columns,
+            &line,
+            self.sql_input.cursor_col(),
+            &value,
+            self.sql_input.cursor(),
+            &mut self.sql_completion,
+        ) else {
+            return;
+        };
+        self.sql_input
+            .replace_before_cursor(step.span, &step.insert);
+        sql_assist::landed(
+            &mut self.sql_completion,
+            self.sql_input.value(),
+            self.sql_input.cursor(),
+        );
+    }
+
+    /// The columns of `df` the word at the SQL cursor could name, for the list
+    /// under the input: every column while nothing is being typed.
+    pub(crate) fn sql_column_matches(&self) -> Vec<&(String, DataType)> {
+        let line = self
+            .sql_input
+            .line_at(self.sql_input.cursor_line())
+            .unwrap_or_default();
+        let word = sql_assist::word_before(line, self.sql_input.cursor_col())
+            .map(|w| w.text)
+            .unwrap_or_default();
+        sql_assist::matching(&self.sql_columns, &word)
+    }
+
+    /// The text in the query prompt's current mode, while the prompt is open.
+    pub fn query_prompt_text(&self) -> Option<&str> {
+        Some(match self.query_prompt_mode()? {
+            QueryMode::Sql => self.sql_input.value(),
+            QueryMode::Search => self.fuzzy_input.value(),
+            QueryMode::QStyle => self.query_input.value(),
+        })
+    }
+
+    /// Why the last run failed, for the line under the input: a statement that
+    /// failed while running, else one that could not be planned.
+    pub fn query_prompt_error(&self) -> Option<String> {
+        if let Some(error) = &self.query_run_error {
+            return Some(error.clone());
+        }
+        let state = self.data_table_state.as_ref()?;
+        let error = state.error.as_ref()?;
+        Some(if self.query_mode == QueryMode::Sql {
+            crate::error_display::sql_error_message(error, state.sql_table_rows())
+        } else {
+            crate::error_display::user_message_from_polars(error)
+        })
+    }
+
+    /// Bumped each time a running statement's failure is put in the prompt.
+    pub fn inline_failures(&self) -> u64 {
+        self.inline_failures
+    }
+
+    /// Plan a query in `mode` and read its first rows in the background. A query that
+    /// cannot be planned leaves its error on the state, where the prompt shows it. One
+    /// that plans stays pending — the prompt open, when it came from there — until its
+    /// rows are in; if they fail, the view it replaced comes back.
+    fn run_query(&mut self, mode: QueryMode, text: &str, status: &str) {
+        self.query_run_error = None;
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        let rollback = state.rollback_point();
+        let rows = state.sql_table_rows();
+        state.defer_collect = true;
+        match mode {
+            QueryMode::Sql => state.sql_query(text.to_string()),
+            QueryMode::QStyle => state.query(text.to_string()),
+            QueryMode::Search => state.fuzzy_search(text.to_string()),
+        }
+        state.defer_collect = false;
+        if state.error.is_some() {
+            return;
+        }
+        self.query_running = Some(QueryRun {
+            origin: RunOrigin::Query(mode),
+            frame: state.len_generation(),
+            rollback,
+            len_count_inflight: self.len_count_inflight,
+            len_count_failed: self.len_count_failed,
+            len_counted: None,
+            rows,
+        });
+        if !self.spawn_async_collect(status) {
+            // Nothing to read: the rows on hand already show it.
+            self.query_running = None;
+            if self.query_prompt_mode() == Some(mode) {
+                self.leave_query_prompt_after_run();
+            }
+        }
+    }
+
+    /// The query still running over the frame on screen, taken. One whose frame has
+    /// since been replaced is dropped: its rollback would undo what replaced it.
+    fn take_query_run(&mut self) -> Option<QueryRun> {
+        let run = self.query_running.take()?;
+        let frame = self.data_table_state.as_ref()?.len_generation();
+        (run.frame == frame).then_some(run)
+    }
+
+    /// A query ran and its rows are in: the prompt closes on them.
+    fn leave_query_prompt_after_run(&mut self) {
+        self.sql_completion = None;
+        self.input_mode = InputMode::Normal;
+        self.input_type = None;
+        self.sql_input.set_focused(false);
+        self.query_input.set_focused(false);
+        self.fuzzy_input.set_focused(false);
+        if let Some(state) = &mut self.data_table_state {
+            state.suppress_error_display = false;
+        }
     }
 
     /// Only the current mode's input carries the cursor, and only while the
@@ -19993,6 +20341,8 @@ impl App {
 
     /// Esc from anywhere in the prompt: nothing runs and nothing typed survives.
     fn close_query_prompt(&mut self) {
+        self.query_run_error = None;
+        self.sql_completion = None;
         self.query_input.clear();
         self.sql_input.clear();
         self.fuzzy_input.clear();

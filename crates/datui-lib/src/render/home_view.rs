@@ -59,22 +59,6 @@ fn truncate_start(text: &str, width: usize) -> String {
     format!("{ellipsis}{tail}")
 }
 
-/// Colour a Polars type with the palette the table uses, so a column reads the same
-/// here as it will once opened.
-fn type_color(dtype: &polars::prelude::DataType, ctx: &RenderContext) -> ratatui::style::Color {
-    use polars::prelude::DataType as D;
-    match dtype {
-        D::String | D::Categorical(_, _) | D::Enum(_, _) => ctx.str_col,
-        D::Int8 | D::Int16 | D::Int32 | D::Int64 | D::Int128 => ctx.int_col,
-        D::UInt8 | D::UInt16 | D::UInt32 | D::UInt64 => ctx.int_col,
-        D::Float32 | D::Float64 | D::Decimal(_, _) => ctx.float_col,
-        D::Boolean => ctx.bool_col,
-        D::Date | D::Datetime(_, _) | D::Duration(_) | D::Time => ctx.temporal_col,
-        D::Binary | D::BinaryOffset => ctx.binary_col,
-        _ => ctx.text_secondary,
-    }
-}
-
 /// The three metadata columns, already padded to fixed widths so they align down the
 /// list. Empty strings where a fact is genuinely unknown — a CSV's row count cannot
 /// be had without scanning it, and inventing one would be worse than a blank.
@@ -1522,7 +1506,7 @@ fn schema_lines(
             ),
             Span::styled(
                 format!("{dtype}"),
-                Style::default().fg(type_color(dtype, ctx)),
+                Style::default().fg(ctx.type_color(dtype)),
             ),
         ]);
         let takes = wrapped_rows(&line, width);

@@ -37,7 +37,7 @@ impl TextArea {
     }
 
     /// Display width of one character starting at display column `at`.
-    fn char_width(&self, c: char, at: usize) -> usize {
+    pub(super) fn char_width(&self, c: char, at: usize) -> usize {
         if c == '\t' {
             self.tab_len - (at % self.tab_len)
         } else {
@@ -78,7 +78,7 @@ impl TextArea {
 
     /// Style for the character at `(row, col)`, layering selection and cursor
     /// highlights over the base style.
-    fn style_at(&self, row: usize, col: usize) -> Style {
+    pub(super) fn style_at(&self, row: usize, col: usize) -> Style {
         let mut style = self.style;
         if let Some((start, end)) = self.selection()
             && (row, col) >= start
@@ -183,6 +183,10 @@ impl TextArea {
 impl Widget for &TextArea {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if self.wrap {
+            self.render_wrapped(area, buf);
             return;
         }
         let viewport = self.viewport_for(area);

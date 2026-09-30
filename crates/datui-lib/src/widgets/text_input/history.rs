@@ -24,6 +24,23 @@ pub fn push_entry(entries: &mut Vec<String>, entry: String) {
     entries.push(entry);
 }
 
+/// Stands for a line break on disk. The file holds one entry per line, and a
+/// statement can span several; U+2028 is Unicode's own line separator, and
+/// nothing typed into a query plausibly holds one.
+const LINE_BREAK_ON_DISK: char = '\u{2028}';
+
+fn to_disk(entry: &str) -> String {
+    entry.replace('\n', &LINE_BREAK_ON_DISK.to_string())
+}
+
+fn from_disk(entry: String) -> String {
+    if entry.contains(LINE_BREAK_ON_DISK) {
+        entry.replace(LINE_BREAK_ON_DISK, "\n")
+    } else {
+        entry
+    }
+}
+
 /// Drop the oldest entries until at most `limit` remain.
 fn trim(entries: &mut Vec<String>, limit: usize) {
     let excess = entries.len().saturating_sub(limit);
@@ -66,7 +83,11 @@ impl InputHistory {
             return Ok(());
         }
         if let Some(id) = &self.id {
-            self.entries = cache.load_history_file(id)?;
+            self.entries = cache
+                .load_history_file(id)?
+                .into_iter()
+                .map(from_disk)
+                .collect();
             self.loaded = true;
         }
         Ok(())
@@ -86,7 +107,7 @@ impl InputHistory {
         push_entry(&mut self.entries, value.to_string());
         trim(&mut self.entries, self.limit);
 
-        let entry = value.to_string();
+        let entry = to_disk(value);
         let limit = self.limit;
         cache.update_history_file(&id, move |entries| {
             push_entry(entries, entry);
@@ -181,6 +202,14 @@ mod tests {
         assert_eq!(history.newer().as_deref(), Some("three"));
         assert_eq!(history.newer().as_deref(), Some("draft"));
         assert_eq!(history.newer(), None);
+    }
+
+    #[test]
+    fn a_statement_over_several_lines_is_one_entry_on_disk() {
+        let sql = "SELECT *\nFROM df";
+        assert!(!to_disk(sql).contains('\n'));
+        assert_eq!(from_disk(to_disk(sql)), sql);
+        assert_eq!(from_disk("select a".to_string()), "select a");
     }
 
     #[test]

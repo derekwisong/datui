@@ -82,9 +82,11 @@ asking to download it) and steps into a directory or object-store prefix.
 | Key | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>T</kbd> | Next mode: SQL, Search, q-style, from the input or the tab bar |
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the input and the tab bar |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd> | From the input, go to the tab bar; from the tab bar, back to the input |
+| <kbd>Tab</kbd> | In SQL, complete a column name or `df` (again for the next match). In Search and q-style, and on the tab bar, move between the input and the tab bar |
+| <kbd>Alt</kbd>+<kbd>Enter</kbd> | In SQL, start a new line |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | On the tab bar, switch mode |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | History; each mode keeps its own |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | History; each mode keeps its own. In a SQL statement of several lines, <kbd>↑</kbd> <kbd>↓</kbd> move between them first |
 | <kbd>Enter</kbd> | Run. An empty query restores the full table. On the tab bar, return to the input |
 | <kbd>Esc</kbd> | Cancel |
 

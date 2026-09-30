@@ -257,6 +257,7 @@ enum ExcelColType {
 /// The grouped view and the pipeline state that produced it, saved by a drill-down so
 /// filters and sort inside the group work on the group and `drill_up` restores the
 /// grouped view as it was.
+#[derive(Clone)]
 struct GroupedView {
     lf: LazyFrame,
     base_lf: LazyFrame,
@@ -308,6 +309,49 @@ struct GroupRows {
     key_values: Vec<String>,
     /// Columns of `lf` that hold the keys as they stand, to lead the view.
     lead: Vec<String>,
+}
+
+/// The view as it stood before a query replaced it. A query plans
+/// without reading anything and can still fail once it runs — a value that will not
+/// cast — and then the table goes back to this, rows and all, rather than keep a
+/// frame that fails on every scroll. Frames and buffers are shared, not copied.
+pub struct ViewRollback {
+    lf: LazyFrame,
+    unsorted_lf: Option<LazyFrame>,
+    base_lf: LazyFrame,
+    df: Option<DataFrame>,
+    locked_df: Option<DataFrame>,
+    table_state: TableState,
+    start_row: usize,
+    termcol_index: usize,
+    schema: Arc<Schema>,
+    num_rows: usize,
+    num_rows_valid: bool,
+    len_generation: u64,
+    filters: Vec<FilterStatement>,
+    sort_columns: Vec<String>,
+    sort_descending: Vec<bool>,
+    sort_ascending: bool,
+    active_query: String,
+    active_sql_query: String,
+    active_fuzzy_query: String,
+    column_order: Vec<String>,
+    locked_columns_count: usize,
+    grouped: Option<GroupedView>,
+    reshaped_lf: Option<LazyFrame>,
+    last_pivot_spec: Option<PivotSpec>,
+    last_melt_spec: Option<MeltSpec>,
+    drilled_down_group_index: Option<usize>,
+    drilled_down_group_key: Option<Vec<String>>,
+    drilled_down_group_key_columns: Option<Vec<String>>,
+    drift_column_present: bool,
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    notes: Vec<crate::notes::Note>,
+    view_notes: Vec<crate::notes::Note>,
+    observed_bytes_per_row: Option<usize>,
+    buffered_start_row: usize,
+    buffered_end_row: usize,
+    buffered_df: Option<DataFrame>,
 }
 
 /// The query bar a result came from, with its text. At most one is active at a time.
@@ -5999,6 +6043,120 @@ impl DataTableState {
         &self.active_sql_query
     }
 
+    /// The view as it is now, to go back to if a query fails while running.
+    pub fn rollback_point(&self) -> ViewRollback {
+        ViewRollback {
+            lf: self.lf.clone(),
+            unsorted_lf: self.unsorted_lf.clone(),
+            base_lf: self.base_lf.clone(),
+            df: self.df.clone(),
+            locked_df: self.locked_df.clone(),
+            table_state: self.table_state,
+            start_row: self.start_row,
+            termcol_index: self.termcol_index,
+            schema: self.schema.clone(),
+            num_rows: self.num_rows,
+            num_rows_valid: self.num_rows_valid,
+            len_generation: self.len_generation,
+            filters: self.filters.clone(),
+            sort_columns: self.sort_columns.clone(),
+            sort_descending: self.sort_descending.clone(),
+            sort_ascending: self.sort_ascending,
+            active_query: self.active_query.clone(),
+            active_sql_query: self.active_sql_query.clone(),
+            active_fuzzy_query: self.active_fuzzy_query.clone(),
+            column_order: self.column_order.clone(),
+            locked_columns_count: self.locked_columns_count,
+            grouped: self.grouped.clone(),
+            reshaped_lf: self.reshaped_lf.clone(),
+            last_pivot_spec: self.last_pivot_spec.clone(),
+            last_melt_spec: self.last_melt_spec.clone(),
+            drilled_down_group_index: self.drilled_down_group_index,
+            drilled_down_group_key: self.drilled_down_group_key.clone(),
+            drilled_down_group_key_columns: self.drilled_down_group_key_columns.clone(),
+            drift_column_present: self.drift_column_present,
+            drift_groups: self.drift_groups.clone(),
+            notes: self.notes.clone(),
+            view_notes: self.view_notes.clone(),
+            observed_bytes_per_row: self.observed_bytes_per_row,
+            buffered_start_row: self.buffered_start_row,
+            buffered_end_row: self.buffered_end_row,
+            buffered_df: self.buffered_df.clone(),
+        }
+    }
+
+    /// Put back the view `rollback_point` saved. Its row count and buffer come back
+    /// with it, so nothing is read again.
+    pub fn roll_back(&mut self, saved: ViewRollback) {
+        self.lf = saved.lf;
+        self.unsorted_lf = saved.unsorted_lf;
+        self.base_lf = saved.base_lf;
+        self.df = saved.df;
+        self.locked_df = saved.locked_df;
+        self.table_state = saved.table_state;
+        self.start_row = saved.start_row;
+        self.termcol_index = saved.termcol_index;
+        self.schema = saved.schema;
+        self.num_rows = saved.num_rows;
+        self.num_rows_valid = saved.num_rows_valid;
+        self.len_generation = saved.len_generation;
+        self.filters = saved.filters;
+        self.sort_columns = saved.sort_columns;
+        self.sort_descending = saved.sort_descending;
+        self.sort_ascending = saved.sort_ascending;
+        self.active_query = saved.active_query;
+        self.active_sql_query = saved.active_sql_query;
+        self.active_fuzzy_query = saved.active_fuzzy_query;
+        self.column_order = saved.column_order;
+        self.locked_columns_count = saved.locked_columns_count;
+        self.grouped = saved.grouped;
+        // A q-style query or a search forgets the pivot or melt it replaces.
+        self.reshaped_lf = saved.reshaped_lf;
+        self.last_pivot_spec = saved.last_pivot_spec;
+        self.last_melt_spec = saved.last_melt_spec;
+        self.drilled_down_group_index = saved.drilled_down_group_index;
+        self.drilled_down_group_key = saved.drilled_down_group_key;
+        self.drilled_down_group_key_columns = saved.drilled_down_group_key_columns;
+        self.drift_column_present = saved.drift_column_present;
+        self.drift_groups = saved.drift_groups;
+        self.notes = saved.notes;
+        self.view_notes = saved.view_notes;
+        self.observed_bytes_per_row = saved.observed_bytes_per_row;
+        self.buffered_start_row = saved.buffered_start_row;
+        self.buffered_end_row = saved.buffered_end_row;
+        self.buffered_df = saved.buffered_df;
+        self.error = None;
+    }
+
+    /// The columns of `df`, the table SQL runs against, with their types. From the
+    /// schema already known for the data as loaded; a drilled group or a reshape only
+    /// has its plan resolved, which reads nothing.
+    pub fn sql_table_columns(&self) -> Vec<(String, DataType)> {
+        let schema = if self.grouped.is_none() && self.reshaped_lf.is_none() {
+            Some(self.original_schema.clone())
+        } else {
+            self.query_root().collect_schema().ok()
+        };
+        schema
+            .map(|schema| {
+                schema
+                    .iter()
+                    .filter(|(name, _)| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+                    .map(|(name, dtype)| (name.to_string(), dtype.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Rows `df` holds, when that is known without counting: the data as loaded,
+    /// once its count has come back.
+    pub fn sql_table_rows(&self) -> Option<usize> {
+        if self.grouped.is_some() || self.reshaped_lf.is_some() {
+            return None;
+        }
+        self.pristine_rows
+    }
+
     pub fn get_active_fuzzy_query(&self) -> &str {
         &self.active_fuzzy_query
     }
@@ -9609,6 +9767,27 @@ mod tests {
         assert!(names.contains(&"value"));
         assert!(names.contains(&"id"));
         assert!(names.contains(&"date"));
+    }
+
+    /// A q-style query forgets the melt it replaces; rolled back, the melt is
+    /// what SQL runs against again, not only what the table shows.
+    #[test]
+    fn a_rollback_brings_back_the_melt_a_query_forgot() {
+        let lf = create_melt_wide_lf();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        let spec = MeltSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        };
+        state.melt(&spec).unwrap();
+        let saved = state.rollback_point();
+        state.query("select id".to_string());
+        assert!(state.last_melt_spec().is_none());
+        state.roll_back(saved);
+        assert!(state.last_melt_spec().is_some());
+        assert_eq!(state.query_root().collect().unwrap().height(), 9);
     }
 
     #[test]

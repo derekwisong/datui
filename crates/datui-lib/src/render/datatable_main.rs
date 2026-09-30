@@ -25,23 +25,27 @@ pub fn render(
     );
     let input_strip_visible = main_view_content == MainViewContent::Datatable
         && app.input_mode == crate::InputMode::Editing;
-    let (has_error, err_msg) = match &app.data_table_state {
-        Some(state) => match &state.error {
-            Some(e) => (true, crate::error_display::user_message_from_polars(e)),
-            None => (false, String::new()),
-        },
-        None => (false, String::new()),
-    };
-    let input_strip_height = if input_strip_visible {
-        if app.input_type == Some(crate::InputType::Search) {
-            if has_error { 9 } else { 5 }
-        } else if has_error {
-            6
-        } else {
-            3
-        }
+    let prompt = app.input_type == Some(crate::InputType::Search);
+    let error = if prompt {
+        app.query_prompt_error()
     } else {
+        app.data_table_state
+            .as_ref()
+            .and_then(|state| state.error.as_ref())
+            .map(crate::error_display::user_message_from_polars)
+    };
+    // The prompt grows with a long statement, its error and the column list, and
+    // leaves the table a few rows to show what the query is over.
+    const TABLE_KEEPS: u16 = 6;
+    let input_strip_height = if !input_strip_visible {
         0
+    } else if prompt {
+        let room = main_area.height.saturating_sub(TABLE_KEEPS).max(5);
+        crate::render::input_strip::plan(app, main_area.width, room, error.as_deref()).total()
+    } else if error.is_some() {
+        6
+    } else {
+        3
     };
 
     let active_sidebar = ActiveSidebar::from_modals(
@@ -187,7 +191,7 @@ pub fn render(
                 height: input_strip_height.min(main_area.height),
             }
         });
-        crate::render::input_strip::render(input_area, buf, app, has_error, &err_msg, ctx);
+        crate::render::input_strip::render(input_area, buf, app, error.as_deref(), ctx);
     }
 
     if app.sort_filter_modal.active {

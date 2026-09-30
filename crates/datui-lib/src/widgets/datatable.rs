@@ -7906,13 +7906,22 @@ impl StatefulWidget for DataTable {
             // This pass only needs widths, so integers take numfmt's arithmetic
             // path instead of building a string per cell and throwing it away.
             let mut scratch = String::new();
+            let drifting = self.drifting_columns();
             for col_index in 0..cols {
                 let col_name = locked_df.get_column_names()[col_index];
-                // A locked column can be sorted too; its area must fit the mark.
-                let mut max_len = (col_name.chars().count()
-                    + self.sort_mark_for(col_name.as_str()).chars().count())
-                    as u16;
                 let col_data = &locked_df[col_index];
+                // The heading as `render_dataframe` sizes it: both marks, and the type
+                // row under it. Narrower, and the column overran its area onto the
+                // separator (`i64│`), or was dropped outright.
+                let mut max_len = (col_name.chars().count()
+                    + self.sort_mark_for(col_name.as_str()).chars().count()
+                    + self
+                        .drift_mark_for(col_name.as_str(), &drifting)
+                        .chars()
+                        .count()) as u16;
+                if self.dtype_row {
+                    max_len = max_len.max(dtype_label(col_data.dtype()).chars().count() as u16);
+                }
                 let col_fmt = if self.binary_cols.contains(col_name.as_str()) {
                     CellFormatter::Passthrough
                 } else {
@@ -12130,6 +12139,39 @@ mod tests {
         assert_eq!(buf[(sep + 1, 0)].bg, Color::Indexed(238));
         assert_eq!(buf[(sep + 1, 1)].bg, Color::Indexed(24));
         assert_eq!(buf[(sep + 1, 2)].bg, Color::Indexed(236));
+    }
+
+    /// A frozen column whose type is wider than its name and values still gets its
+    /// whole width and the gap before the separator. The width pass left the type row
+    /// out, so `id` over `i64` ran onto the line (`i64│`) and a one-letter string
+    /// column did not fit at all.
+    #[test]
+    fn a_frozen_column_is_as_wide_as_its_type() {
+        let lf = df!(
+            "id" => &[1i64, 2],
+            "k" => &["x", "y"],
+            "v" => &[-3.5f64, 4.25],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 2;
+        state.set_locked_columns(2);
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        DataTable {
+            dtype_row: true,
+            ..DataTable::default()
+        }
+        .render(area, &mut buf, &mut state);
+
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| row_string(&buf, area, y))
+            .collect();
+        let rule = crate::glyphs::get().rule;
+        assert!(rows[0].contains(&format!(" id k   {rule}")), "{rows:#?}");
+        assert!(rows[1].contains(&format!("i64 str {rule}")), "{rows:#?}");
+        assert!(rows[2].contains(&format!("  1 x   {rule}")), "{rows:#?}");
     }
 
     /// The gap is paid for in the width budget: at every width, the columns right of

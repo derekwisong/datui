@@ -2616,8 +2616,10 @@ impl DataTableState {
             // a format with an offset makes Polars read the column into UTC.
             "%Y-%m-%dT%H:%M:%S%.f%#z",
             "%Y-%m-%d %H:%M:%S%.f%#z",
+            "%Y-%m-%dT%H:%M%#z",
             "%Y-%m-%dT%H:%M:%S%.f",
             "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
             "%Y-%m-%d %H:%M:%S%.f",
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%d %H:%M",

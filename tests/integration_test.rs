@@ -7315,9 +7315,9 @@ fn test_parse_strings_survives_a_sidebar_filter() {
 /// ISO 8601 timestamps with `Z`, fractional seconds or an offset, as web APIs write them.
 /// `mixed` has an offset on one value and none on the other.
 const ISO_TIMESTAMPS_CSV: &str = "\
-id,z,frac,offset,space,mixed
-1,2013-01-01T10:00:00Z,2026-09-30T13:27:00.220Z,2026-09-30T13:27:00-05:00,2026-09-30 13:27:00+00,2013-01-01T10:00:00Z
-2,2013-01-01T11:00:00Z,2026-09-30T13:28:00.5Z,2026-09-30T13:27:00+00:00,2026-09-30 13:28:00+00,2013-01-01T11:00:00
+id,z,frac,offset,space,minutes,mixed
+1,2013-01-01T10:00:00Z,2026-09-30T13:27:00.220Z,2026-09-30T13:27:00-05:00,2026-09-30 13:27:00+00,2026-09-30T13:27Z,2013-01-01T10:00:00Z
+2,2013-01-01T11:00:00Z,2026-09-30T13:28:00.5Z,2026-09-30T13:27:00+00:00,2026-09-30 13:28:00+00,2026-09-30T13:28Z,2013-01-01T11:00:00
 ";
 
 /// The first row's value of `name`, in microseconds since the epoch.
@@ -7343,7 +7343,7 @@ fn first_micros(app: &App, name: &str) -> i64 {
 fn assert_iso_timestamps_typed(app: &App) {
     let utc = DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC));
     let schema = &app.data_table_state.as_ref().unwrap().schema;
-    for name in ["z", "frac", "offset", "space"] {
+    for name in ["z", "frac", "offset", "space", "minutes"] {
         assert_eq!(schema.get(name), Some(&utc), "{name}");
     }
     assert_eq!(schema.get("mixed"), Some(&DataType::String));
@@ -7351,6 +7351,7 @@ fn assert_iso_timestamps_typed(app: &App) {
     assert_eq!(first_micros(app, "frac"), 1_790_774_820_220_000);
     // -05:00 is five hours behind UTC.
     assert_eq!(first_micros(app, "offset"), 1_790_792_820_000_000);
+    assert_eq!(first_micros(app, "minutes"), 1_790_774_820_000_000);
 }
 
 /// Timestamps with `Z` or an offset load as UTC Datetime, with the string typing on
@@ -7390,14 +7391,33 @@ fn test_iso_timestamps_in_ndjson_load_as_utc_datetime() {
     for line in ISO_TIMESTAMPS_CSV.lines().skip(1) {
         let v: Vec<&str> = line.split(',').collect();
         jsonl.push_str(&format!(
-            "{{\"id\":{},\"zip\":\"0{}\",\"z\":\"{}\",\"frac\":\"{}\",\"offset\":\"{}\",\"space\":\"{}\",\"mixed\":\"{}\"}}\n",
-            v[0], v[0], v[1], v[2], v[3], v[4], v[5]
+            "{{\"id\":{},\"zip\":\"0{}\",\"z\":\"{}\",\"frac\":\"{}\",\"offset\":\"{}\",\"space\":\"{}\",\"minutes\":\"{}\",\"mixed\":\"{}\"}}\n",
+            v[0], v[0], v[1], v[2], v[3], v[4], v[5], v[6]
         ));
     }
     let (app, _rx, _tx) = open_csv_with("iso_timestamps.jsonl", &jsonl, OpenOptions::default());
     assert_iso_timestamps_typed(&app);
     let schema = &app.data_table_state.as_ref().unwrap().schema;
     assert_eq!(schema.get("zip"), Some(&DataType::String));
+}
+
+/// A column that gives seconds on some values and not others stays text: a format
+/// read from the first value must not match the front of a longer one and drop the
+/// rest.
+#[test]
+fn test_datetimes_of_mixed_precision_stay_text() {
+    use datui::ParseStringsTarget;
+    let csv = "t\n2024-01-01 10:00\n2024-01-02 11:30:15\n";
+    let options = OpenOptions {
+        parse_strings: Some(ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    let (app, _rx, _tx) = open_csv_with("datetimes_mixed_precision.csv", csv, options);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.schema.get("t"), Some(&DataType::String));
+    let df = state.lf.clone().collect().unwrap();
+    let t = df.column("t").unwrap().str().unwrap();
+    assert_eq!(t.get(1), Some("2024-01-02 11:30:15"));
 }
 
 /// SQL after a pivot sees the pivoted columns: the reshape is the root the query runs

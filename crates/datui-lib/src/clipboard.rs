@@ -181,7 +181,6 @@ impl CopyFormat {
 /// is `QuoteStyle::Necessary`, the writer's default. Raw values, like export;
 /// a null is an empty field, never the UI's `∅`.
 pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, String> {
-    crate::nested_json::ensure_delimitable(df.schema()).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     let mut df = df.clone();
     CsvWriter::new(&mut out)

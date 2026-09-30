@@ -40,10 +40,16 @@ cells as JSON text; the dialog says so when the view has one.
 
 A null list or struct is an empty field; NaN and infinity inside one are
 `null`, which JSON has no other spelling for. Polars reads the text back with
-`str.json_decode`. Binary data inside a list or struct has no JSON form, so
-CSV refuses that column: hide it or pick another format.
+`str.json_decode`.
 
 Parquet, Arrow, JSON and NDJSON keep lists, arrays and structs as they are.
+
+## Binary
+
+CSV, JSON and NDJSON have no bytes type, so they write a binary value as
+standard base64 text, inside lists and structs too: `hi` is written `aGk=`.
+Polars reads it back with `str.decode("base64")`. Parquet, Arrow and Avro keep
+the bytes.
 
 ## Avro types
 

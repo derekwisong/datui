@@ -5,7 +5,12 @@
 //!
 //! The text is Polars' own JSON writer, the one NDJSON export uses, so a list
 //! reads the same in a CSV as in a `.jsonl` written from the same view.
+//!
+//! Binary has no JSON or CSV form, and Polars' JSON writer panics on it, so it
+//! is written as standard base64 text wherever it sits: a CSV, JSON or NDJSON
+//! export and a copy all spell the same bytes the same way.
 
+use base64::Engine as _;
 use polars::prelude::*;
 
 /// Whether a column holds values a delimited writer cannot write.
@@ -16,41 +21,95 @@ pub fn is_nested(dtype: &DataType) -> bool {
     )
 }
 
-/// Whether the JSON writer handles every leaf of `dtype`. It has no binary
-/// encoding and panics on one, so a nested binary column is left as it is and
-/// refused by `ensure_delimitable` instead.
-fn json_writable(dtype: &DataType) -> bool {
+fn is_binary(dtype: &DataType) -> bool {
+    matches!(dtype, DataType::Binary | DataType::BinaryOffset)
+}
+
+/// Whether `dtype` is binary or has binary anywhere inside.
+fn has_binary(dtype: &DataType) -> bool {
     match dtype {
-        DataType::List(inner) | DataType::Array(inner, _) => json_writable(inner),
-        DataType::Struct(fields) => fields.iter().all(|f| json_writable(f.dtype())),
-        DataType::Binary | DataType::BinaryOffset | DataType::Unknown(_) => false,
-        _ => true,
+        DataType::List(inner) | DataType::Array(inner, _) => has_binary(inner),
+        DataType::Struct(fields) => fields.iter().any(|f| has_binary(f.dtype())),
+        dtype => is_binary(dtype),
     }
 }
 
-fn converts(dtype: &DataType) -> bool {
-    is_nested(dtype) && json_writable(dtype)
-}
-
-/// An error naming the first nested column with binary inside, which neither
-/// the delimited writer nor JSON can write. Polars' own "does not support
-/// nested data" would name neither the column nor a way out.
-pub fn ensure_delimitable(schema: &Schema) -> PolarsResult<()> {
-    match schema
-        .iter()
-        .find(|(_, dtype)| is_nested(dtype) && !json_writable(dtype))
-    {
-        Some((name, _)) => polars_bail!(
-            ComputeError: "Column \"{name}\" has binary data inside a list or struct, \
-            which CSV and TSV cannot hold. Hide the column (s), or export as Parquet or Arrow"
+/// `dtype` with every binary leaf as a string, the type [`binary_as_base64`] returns.
+fn base64_dtype(dtype: &DataType) -> DataType {
+    match dtype {
+        DataType::List(inner) => DataType::List(Box::new(base64_dtype(inner))),
+        DataType::Array(inner, width) => DataType::Array(Box::new(base64_dtype(inner)), *width),
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|f| Field::new(f.name().clone(), base64_dtype(f.dtype())))
+                .collect(),
         ),
-        None => Ok(()),
+        dtype if is_binary(dtype) => DataType::String,
+        dtype => dtype.clone(),
     }
+}
+
+/// `series` with every binary value, at any depth, as its base64 text. Lists,
+/// arrays and structs keep their shape and their nulls.
+pub fn binary_as_base64(series: &Series) -> PolarsResult<Series> {
+    Ok(match series.dtype() {
+        dtype if !has_binary(dtype) => series.clone(),
+        DataType::List(_) => series
+            .list()?
+            .apply_to_inner(&|inner| binary_as_base64(&inner))?
+            .into_series(),
+        DataType::Array(..) => series
+            .array()?
+            .apply_to_inner(&|inner| binary_as_base64(&inner))?
+            .into_series(),
+        DataType::Struct(_) => series
+            .struct_()?
+            .try_apply_fields(binary_as_base64)?
+            .into_series(),
+        _ => {
+            let engine = base64::engine::general_purpose::STANDARD;
+            let bytes = series.cast(&DataType::Binary)?;
+            bytes
+                .binary()?
+                .iter()
+                .map(|value| value.map(|b| engine.encode(b)))
+                .collect::<StringChunked>()
+                .with_name(series.name().clone())
+                .into_series()
+        }
+    })
+}
+
+/// `lf` with every column that has binary in it written as base64 text, in
+/// place and under its own name. Planned, not run.
+pub fn lazy_binary_as_base64(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
+    let schema = lf.collect_schema()?;
+    let exprs: Vec<Expr> = schema
+        .iter()
+        .filter(|(_, dtype)| has_binary(dtype))
+        .map(|(name, _)| {
+            col(name.clone()).map(
+                |c| binary_as_base64(c.as_materialized_series()).map(Column::from),
+                |_, field| {
+                    Ok(Field::new(
+                        field.name().clone(),
+                        base64_dtype(field.dtype()),
+                    ))
+                },
+            )
+        })
+        .collect();
+    Ok(if exprs.is_empty() {
+        lf
+    } else {
+        lf.with_columns(exprs)
+    })
 }
 
 /// One nested column as a String column of JSON, null where the value is null.
 pub fn column_as_json(column: &Column) -> PolarsResult<Column> {
-    let series = column.as_materialized_series();
+    let series = binary_as_base64(column.as_materialized_series())?;
     let chunks = (0..series.n_chunks()).map(|i| {
         let array = series.to_arrow(i, CompatLevel::newest());
         // The writer spells a missing value `null`; the cell stays empty
@@ -61,14 +120,15 @@ pub fn column_as_json(column: &Column) -> PolarsResult<Column> {
     Ok(StringChunked::from_chunk_iter(series.name().clone(), chunks).into_column())
 }
 
-/// `lf` with every nested column replaced by its JSON text, in place and under
-/// its own name. Planned, not run: the text is built as the rows are collected.
-pub fn lazy_as_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
+/// `lf` with every nested column replaced by its JSON text, and every binary
+/// column by its base64 text, in place and under its own name. Planned, not
+/// run: the text is built as the rows are collected.
+pub fn lazy_as_json(lf: LazyFrame) -> PolarsResult<LazyFrame> {
+    let mut lf = lazy_binary_as_base64(lf)?;
     let schema = lf.collect_schema()?;
-    ensure_delimitable(&schema)?;
     let exprs: Vec<Expr> = schema
         .iter()
-        .filter(|(_, dtype)| converts(dtype))
+        .filter(|(_, dtype)| is_nested(dtype))
         .map(|(name, _)| {
             col(name.clone()).map(
                 |c| column_as_json(&c),
@@ -83,13 +143,15 @@ pub fn lazy_as_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     })
 }
 
-/// `df` with every nested column replaced by its JSON text, for frames already
-/// in memory (the rows a copy takes from the buffer).
+/// `df` with every nested column replaced by its JSON text, and every binary
+/// column by its base64 text, for frames already in memory (a copy's rows).
 pub fn frame_as_json(df: &DataFrame) -> PolarsResult<DataFrame> {
     let mut out = df.clone();
     for column in df.columns() {
-        if converts(column.dtype()) {
+        if is_nested(column.dtype()) {
             out.with_column(column_as_json(column)?)?;
+        } else if is_binary(column.dtype()) {
+            out.with_column(binary_as_base64(column.as_materialized_series())?.into_column())?;
         }
     }
     Ok(out)
@@ -207,36 +269,83 @@ mod tests {
         assert!(rebuilt.contains(r#""dt":"2024-01-02T00:00:00+00:00","c":"a""#));
     }
 
-    /// Binary inside a list has no JSON spelling: the frame keeps it, and a
-    /// CSV export or a TSV copy says which column and what to do instead of
-    /// Polars' bare "does not support nested data".
+    /// Binary is base64 at any depth, with its nulls, and the same in a copy,
+    /// a CSV cell and an NDJSON export.
     #[test]
-    fn a_nested_binary_column_is_refused_by_name() {
-        let bytes = Series::new(
+    fn binary_is_base64_everywhere() {
+        let blob = Series::new("blob".into(), [Some(b"hi\xff".as_slice()), None]);
+        let blobs = Series::new(
             "blobs".into(),
-            [Some(Series::new("".into(), [b"x".as_slice()]))],
+            [Some(Series::new("".into(), [b"x".as_slice()])), None],
         );
-        let df = DataFrame::new_infer_height(vec![bytes.into()]).unwrap();
-        let out = frame_as_json(&df).unwrap();
-        assert!(matches!(
-            out.column("blobs").unwrap().dtype(),
-            DataType::List(_)
-        ));
-        let Err(export) = lazy_as_json(df.clone().lazy()) else {
-            panic!("a CSV export of a nested binary column plans")
-        };
-        let export = export.to_string();
-        assert!(
-            export.contains("\"blobs\"") && export.contains("Parquet"),
-            "{export}"
+        let pair = Series::new(
+            "pair".into(),
+            [
+                Some(Series::new("".into(), [b"a".as_slice(), b"b".as_slice()])),
+                None,
+            ],
+        )
+        .cast(&DataType::Array(Box::new(DataType::Binary), 2))
+        .unwrap();
+        let meta = StructChunked::from_series(
+            "meta".into(),
+            2,
+            [Series::new(
+                "raw".into(),
+                [b"ab".as_slice(), b"".as_slice()],
+            )]
+            .iter(),
+        )
+        .unwrap()
+        .with_outer_validity(Some([true, false].into_iter().collect()))
+        .into_series();
+        let df =
+            DataFrame::new_infer_height(vec![blob.into(), blobs.into(), pair.into(), meta.into()])
+                .unwrap();
+
+        for column in df.columns() {
+            let text = binary_as_base64(column.as_materialized_series()).unwrap();
+            assert_eq!(text.dtype(), &base64_dtype(column.dtype()));
+            assert_eq!(text.null_count(), 1, "{text}");
+        }
+
+        let cells = frame_as_json(&df).unwrap();
+        let cell = |name: &str| cells.column(name).unwrap().str().unwrap().get(0);
+        assert_eq!(cell("blob"), Some("aGn/"));
+        assert_eq!(cell("blobs"), Some(r#"["eA=="]"#));
+        assert_eq!(cell("pair"), Some(r#"["YQ==","Yg=="]"#));
+        assert_eq!(cell("meta"), Some(r#"{"raw":"YWI="}"#));
+        let lazy = lazy_as_json(df.clone().lazy()).unwrap().collect().unwrap();
+        assert!(cells.equals_missing(&lazy), "{cells}\n{lazy}");
+
+        let mut ndjson = Vec::new();
+        JsonWriter::new(&mut ndjson)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(
+                &mut lazy_binary_as_base64(df.clone().lazy())
+                    .unwrap()
+                    .collect()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(ndjson).unwrap().lines().next(),
+            Some(
+                r#"{"blob":"aGn/","blobs":["eA=="],"pair":["YQ==","Yg=="],"meta":{"raw":"YWI="}}"#
+            )
         );
+
         let copy = crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Tsv, true)
-            .unwrap_err();
-        assert_eq!(copy, export);
-        assert!(
-            crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Markdown, true)
-                .is_ok(),
-            "Markdown writes any cell as text"
+            .unwrap();
+        let row: Vec<&str> = copy.text.lines().nth(1).unwrap().split('\t').collect();
+        assert_eq!(
+            row,
+            [
+                "aGn/",
+                r#""[""eA==""]""#,
+                r#""[""YQ=="",""Yg==""]""#,
+                r#""{""raw"":""YWI=""}""#
+            ]
         );
     }
 }

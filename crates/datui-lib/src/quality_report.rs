@@ -584,12 +584,13 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
     };
     let values_read = !report.metadata_only;
     // Columns behind the findings a check produces, by the findings' titles.
+    // Nothing to look at is known from the schema, whatever the run read.
     let outcome = |titles: &[&str], applies: usize, none: &'static str| {
-        if !values_read {
-            return Outcome::Unavailable("values not read");
-        }
         if applies == 0 {
             return Outcome::Skipped(none);
+        }
+        if !values_read {
+            return Outcome::Unavailable("values not read");
         }
         found(report, titles)
     };
@@ -691,7 +692,7 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             name: "Nearly unique",
             looks_for: "a would-be key whose values repeat",
             applies_to: reach(keys, "integer/text"),
-            outcome: if values_read && results.precision != QualityPrecision::Exact {
+            outcome: if keys > 0 && values_read && results.precision != QualityPrecision::Exact {
                 Outcome::Unavailable("needs every row checked")
             } else {
                 outcome(&["Nearly unique"], keys, "no integer or text columns")
@@ -1629,6 +1630,24 @@ mod tests {
         assert_eq!(found.checks(), ["2 metadata", "8 unavailable"]);
         assert_eq!(found.rows, ["none read, file metadata only"]);
         assert_eq!(found.limits(), ["8 checks: values not read"]);
+
+        // A check with no column of its kind is skipped whatever was read: the schema
+        // says so without the values.
+        let floats_only = vec![profile("price", DataType::Float64)];
+        let mut metadata = measured(results(floats_only.clone(), Vec::new()));
+        metadata.precision = QualityPrecision::Metadata;
+        let report = build_report(&metadata);
+        let found = coverage(&metadata, &checks(&metadata, &report), &plan);
+        assert_eq!(found.checks(), ["6 skipped", "4 unavailable"], "{found:?}");
+        let mut sampled = measured(results(floats_only, Vec::new()));
+        sampled.precision = QualityPrecision::Sampled;
+        let report = build_report(&sampled);
+        let list = checks(&sampled, &report);
+        let nearly = list.iter().find(|c| c.name == "Nearly unique").unwrap();
+        assert_eq!(
+            nearly.outcome,
+            Outcome::Skipped("no integer or text columns")
+        );
     }
 
     #[test]

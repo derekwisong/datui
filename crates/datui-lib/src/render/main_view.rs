@@ -297,13 +297,13 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         ];
     }
     // The tool list has the cursor, the narrow terminal's picker included: its keys
-    // are the list's, not the page's.
+    // are the list's, not the page's. Sample stays second, as on every tool's bar.
     if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
         return vec![
             ("Esc", "Back"),
+            ("s", "Sample"),
             ("Enter", "Select"),
             (g.updown, "Tools"),
-            ("s", "Sample"),
             ("Tab", "Focus"),
             ("?", "Help"),
         ];

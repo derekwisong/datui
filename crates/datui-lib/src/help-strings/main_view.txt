@@ -55,7 +55,8 @@ While busy:
   queued and replayed in order once the work is done — except a bare Enter
   or Esc, which is dropped. At most 32 keys are held, and held keys die
   with the screen they were typed at. At the loading screen nothing is
-  held: the allowed keys act, the rest are dropped.
+  held: the allowed keys act, the rest are dropped. While a view is being
+  applied, Esc stops it and keeps the table as it was.
 
 Empty cells:
   A directory of Parquet files may hold files that disagree, so an empty cell

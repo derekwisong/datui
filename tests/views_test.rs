@@ -59,6 +59,32 @@ fn pump_open_until_loaded(
     }
 }
 
+/// Handle events until no background work is left.
+fn settle(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    // Only a hang guard; nothing here is timed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        let event = match rx.try_recv() {
+            Ok(event) => event,
+            Err(_) if !work_pending(app) => return,
+            Err(_) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "background work never reported back"
+                );
+                match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(event) => event,
+                    Err(_) => continue,
+                }
+            }
+        };
+        let mut next = app.event(&event);
+        while let Some(event) = next.take() {
+            next = app.event(&event);
+        }
+    }
+}
+
 /// One sequential walk through the surface, so the views it saves never race
 /// another test's list.
 #[test]
@@ -170,9 +196,11 @@ fn the_views_surface_saves_applies_and_deletes() {
         "editing an unapplied view leaves its settings alone"
     );
 
-    // Enter applies the selected view and closes the list.
+    // Enter applies the selected view and closes the list; its rows are read in
+    // the background.
     press(&mut app, KeyCode::Enter);
     assert!(!app.template_modal.active, "apply closes the list");
+    settle(&mut app, &rx);
 
     // Applied, the view follows the table: adjust the sort and re-save
     // through edit, and the view carries the new state.

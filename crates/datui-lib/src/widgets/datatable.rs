@@ -421,12 +421,14 @@ pub struct ViewRollback {
     last_pivot_spec: Option<PivotSpec>,
     last_melt_spec: Option<MeltSpec>,
     reshape_source: Option<ReshapeSource>,
+    group_source: Option<GroupSource>,
     drilled_down_group_index: Option<usize>,
     drilled_down_group_key: Option<Vec<String>>,
     drilled_down_group_key_columns: Option<Vec<String>>,
     drift_column_present: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     notes: Vec<crate::notes::Note>,
+    notes_seen: bool,
     view_notes: Vec<crate::notes::Note>,
     observed_bytes_per_row: Option<usize>,
     buffered_start_row: usize,
@@ -4880,19 +4882,6 @@ impl DataTableState {
         self.drift_groups.clone()
     }
 
-    /// Put back what a frame was carrying, alongside the frame itself. Rolling one
-    /// back without this would leave the flag and the frame disagreeing.
-    pub fn restore_drift(
-        &mut self,
-        present: bool,
-        groups: Arc<Vec<crate::schema_union::DriftGroup>>,
-        notes: Vec<crate::notes::Note>,
-    ) {
-        self.drift_column_present = present;
-        self.drift_groups = groups;
-        self.notes = notes;
-    }
-
     /// The name of the column an export adds when asked to say where each row is from.
     pub const SOURCE_FILE_COLUMN: &'static str = "source_file";
 
@@ -6085,21 +6074,6 @@ impl DataTableState {
         self.reshaped_lf.clone()
     }
 
-    /// Put back a reshape taken with `reshaped_lf_clone` / `last_pivot_spec` /
-    /// `last_melt_spec` / `reshape_source`, e.g. when a template fails to apply.
-    pub fn restore_reshape(
-        &mut self,
-        lf: Option<LazyFrame>,
-        pivot: Option<PivotSpec>,
-        melt: Option<MeltSpec>,
-        source: Option<ReshapeSource>,
-    ) {
-        self.reshaped_lf = lf;
-        self.last_pivot_spec = pivot;
-        self.last_melt_spec = melt;
-        self.reshape_source = source;
-    }
-
     pub fn get_column_order(&self) -> &[String] {
         &self.column_order
     }
@@ -6132,6 +6106,17 @@ impl DataTableState {
         &self.active_sql_query
     }
 
+    /// Whether the rows on screen can be read at all: a sort, a filter or a column
+    /// named in the layout that the frame does not have fails here. Resolves the plan
+    /// and reads no rows.
+    pub fn check_plan(&self) -> PolarsResult<()> {
+        self.lf
+            .clone()
+            .select(self.binary_stub_exprs())
+            .collect_schema()
+            .map(|_| ())
+    }
+
     /// The view as it is now, to go back to if a query fails while running.
     pub fn rollback_point(&self) -> ViewRollback {
         ViewRollback {
@@ -6161,12 +6146,14 @@ impl DataTableState {
             last_pivot_spec: self.last_pivot_spec.clone(),
             last_melt_spec: self.last_melt_spec.clone(),
             reshape_source: self.reshape_source.clone(),
+            group_source: self.group_source.clone(),
             drilled_down_group_index: self.drilled_down_group_index,
             drilled_down_group_key: self.drilled_down_group_key.clone(),
             drilled_down_group_key_columns: self.drilled_down_group_key_columns.clone(),
             drift_column_present: self.drift_column_present,
             drift_groups: self.drift_groups.clone(),
             notes: self.notes.clone(),
+            notes_seen: self.notes_seen,
             view_notes: self.view_notes.clone(),
             observed_bytes_per_row: self.observed_bytes_per_row,
             buffered_start_row: self.buffered_start_row,
@@ -6205,12 +6192,14 @@ impl DataTableState {
         self.last_pivot_spec = saved.last_pivot_spec;
         self.last_melt_spec = saved.last_melt_spec;
         self.reshape_source = saved.reshape_source;
+        self.group_source = saved.group_source;
         self.drilled_down_group_index = saved.drilled_down_group_index;
         self.drilled_down_group_key = saved.drilled_down_group_key;
         self.drilled_down_group_key_columns = saved.drilled_down_group_key_columns;
         self.drift_column_present = saved.drift_column_present;
         self.drift_groups = saved.drift_groups;
         self.notes = saved.notes;
+        self.notes_seen = saved.notes_seen;
         self.view_notes = saved.view_notes;
         self.observed_bytes_per_row = saved.observed_bytes_per_row;
         self.buffered_start_row = saved.buffered_start_row;
@@ -6250,16 +6239,6 @@ impl DataTableState {
 
     pub fn get_active_fuzzy_query(&self) -> &str {
         &self.active_fuzzy_query
-    }
-
-    /// The frame filters and sort are applied to (see `base_lf`).
-    pub fn base_lf_clone(&self) -> LazyFrame {
-        self.base_lf.clone()
-    }
-
-    /// Restore a `base_lf` taken with `base_lf_clone`, e.g. when a template fails to apply.
-    pub fn set_base_lf(&mut self, lf: LazyFrame) {
-        self.base_lf = lf;
     }
 
     pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
@@ -6762,9 +6741,8 @@ impl DataTableState {
         self.replace_lf_after_reshape(pivoted.lazy())
     }
 
-    /// Pivot the view here and now, reading it on this thread: for a view, which
-    /// applies each of its steps in turn. The Pivot & Melt modal runs the [`PivotJob`]
-    /// in the background instead.
+    /// Pivot the view here and now, reading it on this thread. The Pivot & Melt modal
+    /// and views run the [`PivotJob`] in the background instead.
     pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
         let pivoted = self.plan_pivot(spec).run()?;
         self.install_pivot(spec, pivoted)

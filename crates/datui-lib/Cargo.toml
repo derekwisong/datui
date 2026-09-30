@@ -113,6 +113,8 @@ features = [
     "regex",
     "abs",
     "round_series",
+    # log and exp in the q-style query language.
+    "log",
     "strings",
 ]
 # "sql" enabled via optional feature sql = ["polars/sql", "dep:polars-sql"]

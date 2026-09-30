@@ -1,0 +1,1 @@
+select trips: count VendorID by tpep_pickup_datetime.hour

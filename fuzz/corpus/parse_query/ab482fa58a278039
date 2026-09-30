@@ -1,0 +1,1 @@
+select stations: nunique ID, var x, dev x by ELEMENT

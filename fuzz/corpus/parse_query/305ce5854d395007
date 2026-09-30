@@ -1,0 +1,1 @@
+select trips: count fare_amount by b: 5 xbar fare_amount

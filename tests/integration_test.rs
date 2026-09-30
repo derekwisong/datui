@@ -8016,6 +8016,38 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     );
 }
 
+/// The q-style additions run through the app: `distinct`, the word operators and a
+/// computed group key.
+#[test]
+fn test_q_style_distinct_like_mod_and_xbar() {
+    let (mut app, rx, tx) = open_query_filter_fixture("query_q_style_additions.csv");
+
+    app.event(&AppEvent::Search("select distinct c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().error.is_none());
+    assert_eq!(current_rows(&app), 3);
+
+    // alpha_0 .. alpha_8, then 0 = (a mod 4) keeps 0, 4 and 8.
+    app.event(&AppEvent::Search(
+        "select where name like \"alpha_?\", 0 = a mod 4".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 3);
+
+    app.event(&AppEvent::Search(
+        "select n: count a by b: 10 xbar a".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 10);
+    assert_eq!(df.column("b").unwrap().get(9).unwrap(), AnyValue::Int64(90));
+    assert_eq!(
+        df.column("n").unwrap().get(9).unwrap(),
+        AnyValue::UInt32(10)
+    );
+}
+
 /// Same for a fuzzy search: sort and filter stack on it, and clearing them keeps it.
 #[test]
 fn test_sidebar_filter_and_sort_keep_fuzzy_query() {

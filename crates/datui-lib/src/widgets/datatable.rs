@@ -6989,7 +6989,7 @@ impl DataTableState {
         }
 
         match parse_query(&query) {
-            Ok((cols, filter, group_by_cols, group_by_col_names)) => {
+            Ok((cols, filter, group_by_cols, group_by_col_names, distinct)) => {
                 let mut lf = self.query_source();
                 let mut schema_opt: Option<Arc<Schema>> = None;
 
@@ -7045,6 +7045,10 @@ impl DataTableState {
                     lf = lf.sort_by_exprs(sort_exprs, options);
                 } else if !cols.is_empty() {
                     lf = lf.select(cols);
+                }
+                if distinct {
+                    // Stable, so a grouped result keeps its sorted order.
+                    lf = lf.unique_stable(None, UniqueKeepStrategy::First);
                 }
 
                 let schema = match schema_opt {

@@ -142,4 +142,66 @@ mod tests {
             "there is no compute budget any more"
         );
     }
+
+    /// Every keyed row in a help section, as written (UTF-8), puts its
+    /// description at the section's one column, at least two spaces past its
+    /// key. A key followed by a single space reads as prose to the ASCII
+    /// re-padding and sits out of line on screen, so it counts as a row too.
+    #[test]
+    fn every_help_section_shares_one_description_column() {
+        use crate::glyphs::display_width;
+        fn indent(line: &str) -> usize {
+            line.len() - line.trim_start_matches(' ').len()
+        }
+        // Where a row's description starts: past the first run of two or
+        // more spaces after the indent, with text after it.
+        fn description(line: &str) -> Option<usize> {
+            let lead = indent(line);
+            let gap = lead + line[lead..].find("  ")?;
+            let start = line.len() - line[gap..].trim_start_matches(' ').len();
+            (start < line.len()).then_some(start)
+        }
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/help-strings");
+        let mut rows = 0;
+        let mut misaligned = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("help-strings dir") {
+            let path = entry.expect("dir entry").path();
+            let name = path.file_name().expect("file name").to_string_lossy();
+            let text = std::fs::read_to_string(&path).expect("help file");
+            let lines: Vec<&str> = text.lines().collect();
+            for section in lines.split(|line| line.trim().is_empty()) {
+                let keyed: Vec<(&str, usize)> = section
+                    .iter()
+                    .filter_map(|line| description(line).map(|at| (*line, at)))
+                    .collect();
+                let Some(&(first, at)) = keyed.first() else {
+                    continue;
+                };
+                let column = display_width(&first[..at]);
+                let key_indent = indent(first);
+                for &(line, at) in &keyed {
+                    rows += 1;
+                    if display_width(&line[..at]) != column {
+                        misaligned.push(format!("{name}: {line:?} (section at {column})"));
+                    }
+                }
+                for &line in section.iter().filter(|line| description(line).is_none()) {
+                    // A key and one space, then its description. Prose that
+                    // runs on after a colon goes on in lower case.
+                    let Some(colon) = line.find(": ") else {
+                        continue;
+                    };
+                    let prose = line[colon + 2..].starts_with(|c: char| c.is_lowercase());
+                    if indent(line) == key_indent
+                        && !prose
+                        && display_width(&line[..colon]) + 3 > column
+                    {
+                        misaligned.push(format!("{name}: {line:?} (section at {column})"));
+                    }
+                }
+            }
+        }
+        assert!(rows > 100, "the help files' keyed rows were checked");
+        assert!(misaligned.is_empty(), "{}", misaligned.join("\n"));
+    }
 }

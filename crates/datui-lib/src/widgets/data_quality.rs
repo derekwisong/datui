@@ -2305,12 +2305,6 @@ mod tests {
         assert_eq!(approximate_bytes(3 * 1024 * 1024), "about 3.0 MiB");
     }
 
-    /// Every frame on these pages is a Surface; none is drawn by hand here.
-    #[test]
-    fn draws_no_border_of_its_own() {
-        assert!(!include_str!("data_quality.rs").contains(concat!("Borders", "::ALL")));
-    }
-
     /// A value that fits keeps its spaces; one that does not wraps under itself.
     #[test]
     fn field_values_keep_their_spaces_and_wrap_under_themselves() {

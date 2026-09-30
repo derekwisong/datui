@@ -15,11 +15,11 @@ panel on the Notes tab; after that, on Schema.
   rail marks focus: beside the active tab, or on the schema's current row.
 
 Tabs:
-  Schema:     Every column, its type, and which footers the schema came from
-  Resources:  What the data costs to hold and to read
-  Partitions: The layout of a partitioned dataset. Only when it has one
-  Notes:      What datui noticed about the data while reading it. Only when
-              there is something to say
+  Schema:      Every column, its type, and which footers the schema came from
+  Resources:   What the data costs to hold and to read
+  Partitions:  The layout of a partitioned dataset. Only when it has one
+  Notes:       What datui noticed about the data while reading it. Only when
+               there is something to say
 
 Notes:
   A note is an observation, not a fault: a column that is not in every file,

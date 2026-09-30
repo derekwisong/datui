@@ -1,30 +1,30 @@
 Distribution Analysis identifies the distribution type for each numeric column and provides key statistical measures.
 
 Columns:
-  Column:        Name of the numeric column
-  Distribution:  Inferred distribution type, one of 14: Normal, Log-Normal,
-                 Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared,
-                 Student's t, Poisson, Bernoulli, Binomial, Geometric, Weibull.
-                 "Constant" when the column has one value; "No clear fit"
-                 when every family is rejected (p below 0.01). Among the
-                 families not rejected, the one with the lowest AIC; a
-                 simpler family that holds is named instead unless the
-                 richer one is decisively better: Uniform rather than Beta,
-                 Exponential rather than Gamma
-  P-value:       How surprising the values would be if they came from the
-                 fitted distribution: a Kolmogorov-Smirnov test on up to
-                 500 values, calibrated against 199 samples drawn from the
-                 fit and refitted. "<0.005" when none of them came close.
-                 Not the probability that the distribution is right. With
-                 no clear fit, the best any family managed
-  Shapiro-Francia: W' statistic of the Shapiro-Francia normality test (0-1,
-                 higher = more normal), on up to 5,000 values
-  SF p-value:    Royston's approximation: how likely a W' this low is if
-                 the values were normal
-  CV:            Coefficient of variation (std/mean, relative variability independent of scale)
-  Outliers:      Count and percentage of outliers (IQR method)
-  Skewness:      Asymmetry measure (positive = right-tailed, negative = left-tailed)
-  Kurtosis:      Tail heaviness compared to normal distribution (3.0 = normal)
+  Column:           Name of the numeric column
+  Distribution:     Inferred distribution type, one of 14: Normal, Log-Normal,
+                    Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared,
+                    Student's t, Poisson, Bernoulli, Binomial, Geometric,
+                    Weibull. "Constant" when the column has one value;
+                    "No clear fit" when every family is rejected (p below
+                    0.01). Among the families not rejected, the one with the
+                    lowest AIC; a simpler family that holds is named instead
+                    unless the richer one is decisively better: Uniform
+                    rather than Beta, Exponential rather than Gamma
+  P-value:          How surprising the values would be if they came from the
+                    fitted distribution: a Kolmogorov-Smirnov test on up to
+                    500 values, calibrated against 199 samples drawn from the
+                    fit and refitted. "<0.005" when none of them came close.
+                    Not the probability that the distribution is right. With
+                    no clear fit, the best any family managed
+  Shapiro-Francia:  W' statistic of the Shapiro-Francia normality test (0-1,
+                    higher = more normal), on up to 5,000 values
+  SF p-value:       Royston's approximation: how likely a W' this low is if
+                    the values were normal
+  CV:               Coefficient of variation (std/mean, relative variability independent of scale)
+  Outliers:         Count and percentage of outliers (IQR method)
+  Skewness:         Asymmetry measure (positive = right-tailed, negative = left-tailed)
+  Kurtosis:         Tail heaviness compared to normal distribution (3.0 = normal)
 
 Color Coding:
   Green/Cyan:    A p-value of 0.05 or more

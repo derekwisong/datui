@@ -6,17 +6,18 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Widget, Wrap},
+    widgets::{Chart, Dataset, GraphType, Paragraph, Widget, Wrap},
 };
 
 use crate::chart_data::{
-    BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    format_axis_label, format_x_axis_label, segments,
+    BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, axis_label_at,
+    format_axis_label, segments, x_axis_label_at,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::render::context::RenderContext;
+use crate::widgets::axes::{AxisSpec, PlotAxes, cut, fit_x_labels};
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
 use unicode_width::UnicodeWidthStr;
 
@@ -347,7 +348,7 @@ fn render_plot(
             render_kde_chart(area, buf, modal, theme, data, text_secondary, g)
         }
         ChartRenderData::Heatmap { data } => {
-            render_heatmap_chart(area, buf, theme, data, text_secondary)
+            render_heatmap_chart(area, buf, theme, data, text_secondary, g)
         }
         ChartRenderData::Bar { data } => {
             let picked =
@@ -556,34 +557,15 @@ fn render_xy_chart(
             .map(|s| s.as_str())
             .unwrap_or("X");
         let y_names: String = modal.effective_y_columns().join(", ");
-        let axis_label_style = Style::default().fg(theme.get("text_primary"));
         const PLACEHOLDER_MIN: f64 = 0.0;
         const PLACEHOLDER_MAX: f64 = 1.0;
         let (x_min, x_max) = x_bounds.unwrap_or((PLACEHOLDER_MIN, PLACEHOLDER_MAX));
-        let format_x = |v: f64| format_x_axis_label(v, x_axis_kind);
-        let x_labels = vec![
-            Span::styled(format_x(x_min), axis_label_style),
-            Span::styled(format_x((x_min + x_max) / 2.0), axis_label_style),
-            Span::styled(format_x(x_max), axis_label_style),
-        ];
-        let y_labels = vec![
-            Span::styled(format_axis_label(PLACEHOLDER_MIN), axis_label_style),
-            Span::styled(
-                format_axis_label((PLACEHOLDER_MIN + PLACEHOLDER_MAX) / 2.0),
-                axis_label_style,
-            ),
-            Span::styled(format_axis_label(PLACEHOLDER_MAX), axis_label_style),
-        ];
-        let x_axis = Axis::default()
-            .title(x_name)
-            .bounds([x_min, x_max])
-            .style(Style::default().fg(theme.get("text_primary")))
-            .labels(x_labels);
-        let y_axis = Axis::default()
-            .title(y_names)
-            .bounds([PLACEHOLDER_MIN, PLACEHOLDER_MAX])
-            .style(Style::default().fg(theme.get("text_primary")))
-            .labels(y_labels);
+        let x_label = |v, level| x_axis_label_at(v, x_axis_kind, (x_min, x_max), level);
+        let axes = plot_axes(
+            theme,
+            AxisSpec::ends_and_middle([x_min, x_max], &x_label, x_name),
+            AxisSpec::ends_and_middle([PLACEHOLDER_MIN, PLACEHOLDER_MAX], &axis_label_at, &y_names),
+        );
         let empty_dataset = Dataset::default()
             .name("")
             .data(&[])
@@ -592,16 +574,8 @@ fn render_xy_chart(
                 ChartType::Scatter => GraphType::Scatter,
                 ChartType::Bar => GraphType::Bar,
             });
-        let mut chart = Chart::new(vec![empty_dataset])
-            .x_axis(x_axis)
-            .y_axis(y_axis);
-        if show_legend {
-            chart = chart.legend_position(Some(ratatui::widgets::LegendPosition::TopRight));
-        } else {
-            chart = chart.legend_position(None);
-        }
-        chart.render(area, buf);
-        g.plot.redraw_axes(area, buf);
+        let chart = Chart::new(vec![empty_dataset]).legend_position(legend(show_legend));
+        axes.render(chart, area, buf, g);
         return;
     }
 
@@ -733,50 +707,21 @@ fn render_xy_chart(
                 all_x_min + 0.5
             };
 
-            let axis_label_style = Style::default().fg(theme.get("text_primary"));
-            let format_x = |v: f64| format_x_axis_label(v, x_axis_kind);
-            let x_labels = vec![
-                Span::styled(format_x(x_min_bounds), axis_label_style),
-                Span::styled(
-                    format_x((x_min_bounds + x_max_bounds) / 2.0),
-                    axis_label_style,
-                ),
-                Span::styled(format_x(x_max_bounds), axis_label_style),
-            ];
-            let format_y_label = |log_v: f64| {
+            let x_bounds = (x_min_bounds, x_max_bounds);
+            let x_label = |v, level| x_axis_label_at(v, x_axis_kind, x_bounds, level);
+            let y_label = |log_v: f64, level| {
                 let v = if log_scale { log_v.exp_m1() } else { log_v };
-                format_axis_label(v)
+                axis_label_at(v, level)
             };
-            let y_labels = vec![
-                Span::styled(format_y_label(y_min_bounds), axis_label_style),
-                Span::styled(
-                    format_y_label((y_min_bounds + y_max_bounds) / 2.0),
-                    axis_label_style,
-                ),
-                Span::styled(format_y_label(y_max_bounds), axis_label_style),
-            ];
-
             let x_axis_title = modal.effective_x_column().map(|s| s.as_str()).unwrap_or("");
             let y_axis_title = y_columns.join(", ");
-            let x_axis = Axis::default()
-                .title(x_axis_title)
-                .bounds([x_min_bounds, x_max_bounds])
-                .style(Style::default().fg(theme.get("text_primary")))
-                .labels(x_labels);
-            let y_axis = Axis::default()
-                .title(y_axis_title)
-                .bounds([y_min_bounds, y_max_bounds])
-                .style(Style::default().fg(theme.get("text_primary")))
-                .labels(y_labels);
-
-            let mut chart = Chart::new(datasets).x_axis(x_axis).y_axis(y_axis);
-            if show_legend {
-                chart = chart.legend_position(Some(ratatui::widgets::LegendPosition::TopRight));
-            } else {
-                chart = chart.legend_position(None);
-            }
-            chart.render(area, buf);
-            g.plot.redraw_axes(area, buf);
+            let axes = plot_axes(
+                theme,
+                AxisSpec::ends_and_middle([x_min_bounds, x_max_bounds], &x_label, x_axis_title),
+                AxisSpec::ends_and_middle([y_min_bounds, y_max_bounds], &y_label, &y_axis_title),
+            );
+            let chart = Chart::new(datasets).legend_position(legend(show_legend));
+            axes.render(chart, area, buf, g);
         }
     } else {
         Paragraph::new("Select X and Y columns in the sidebar.")
@@ -784,6 +729,22 @@ fn render_xy_chart(
             .centered()
             .render(area, buf);
     }
+}
+
+/// Axes drawn in the theme's primary text color.
+fn plot_axes<'a>(theme: &Theme, x: AxisSpec<'a>, y: AxisSpec<'a>) -> PlotAxes<'a> {
+    let style = Style::default().fg(theme.get("text_primary"));
+    PlotAxes {
+        x,
+        y,
+        line: style,
+        labels: style,
+        titles: style,
+    }
+}
+
+fn legend(show: bool) -> Option<ratatui::widgets::LegendPosition> {
+    show.then_some(ratatui::widgets::LegendPosition::TopRight)
 }
 
 /// The widest of the legend's names, in cells.
@@ -838,34 +799,15 @@ fn render_histogram_chart(
         1.0
     };
 
-    let axis_label_style = Style::default().fg(theme.get("text_primary"));
-    let x_labels = vec![
-        Span::styled(format_axis_label(x_min_bounds), axis_label_style),
-        Span::styled(
-            format_axis_label((x_min_bounds + x_max_bounds) / 2.0),
-            axis_label_style,
+    let axes = plot_axes(
+        theme,
+        AxisSpec::ends_and_middle(
+            [x_min_bounds, x_max_bounds],
+            &axis_label_at,
+            data.column.as_str(),
         ),
-        Span::styled(format_axis_label(x_max_bounds), axis_label_style),
-    ];
-    let y_labels = vec![
-        Span::styled(format_axis_label(y_min_bounds), axis_label_style),
-        Span::styled(
-            format_axis_label((y_min_bounds + y_max_bounds) / 2.0),
-            axis_label_style,
-        ),
-        Span::styled(format_axis_label(y_max_bounds), axis_label_style),
-    ];
-
-    let x_axis = Axis::default()
-        .title(data.column.as_str())
-        .bounds([x_min_bounds, x_max_bounds])
-        .style(Style::default().fg(theme.get("text_primary")))
-        .labels(x_labels);
-    let y_axis = Axis::default()
-        .title("Count")
-        .bounds([y_min_bounds, y_max_bounds])
-        .style(Style::default().fg(theme.get("text_primary")))
-        .labels(y_labels);
+        AxisSpec::ends_and_middle([y_min_bounds, y_max_bounds], &axis_label_at, "Count"),
+    );
 
     let style = Style::default().fg(theme.get("primary_chart_series_color"));
     let dataset = Dataset::default()
@@ -875,11 +817,7 @@ fn render_histogram_chart(
         .style(style)
         .data(&series[0]);
 
-    Chart::new(vec![dataset])
-        .x_axis(x_axis)
-        .y_axis(y_axis)
-        .render(area, buf);
-    g.plot.redraw_axes(area, buf);
+    axes.render(Chart::new(vec![dataset]), area, buf, g);
 }
 
 fn render_kde_chart(
@@ -936,51 +874,13 @@ fn render_kde_chart(
         })
         .collect();
 
-    let x_axis = Axis::default()
-        .title("Value")
-        .bounds([data.x_min, data.x_max])
-        .style(Style::default().fg(theme.get("text_primary")))
-        .labels(vec![
-            Span::styled(
-                format_axis_label(data.x_min),
-                Style::default().fg(theme.get("text_primary")),
-            ),
-            Span::styled(
-                format_axis_label((data.x_min + data.x_max) / 2.0),
-                Style::default().fg(theme.get("text_primary")),
-            ),
-            Span::styled(
-                format_axis_label(data.x_max),
-                Style::default().fg(theme.get("text_primary")),
-            ),
-        ]);
-    let y_axis = Axis::default()
-        .title("Density")
-        .bounds([0.0, data.y_max])
-        .style(Style::default().fg(theme.get("text_primary")))
-        .labels(vec![
-            Span::styled(
-                format_axis_label(0.0),
-                Style::default().fg(theme.get("text_primary")),
-            ),
-            Span::styled(
-                format_axis_label(data.y_max / 2.0),
-                Style::default().fg(theme.get("text_primary")),
-            ),
-            Span::styled(
-                format_axis_label(data.y_max),
-                Style::default().fg(theme.get("text_primary")),
-            ),
-        ]);
-
-    let mut chart = Chart::new(datasets).x_axis(x_axis).y_axis(y_axis);
-    if modal.show_legend {
-        chart = chart.legend_position(Some(ratatui::widgets::LegendPosition::TopRight));
-    } else {
-        chart = chart.legend_position(None);
-    }
-    chart.render(area, buf);
-    g.plot.redraw_axes(area, buf);
+    let axes = plot_axes(
+        theme,
+        AxisSpec::ends_and_middle([data.x_min, data.x_max], &axis_label_at, "Value"),
+        AxisSpec::ends_and_middle([0.0, data.y_max], &axis_label_at, "Density"),
+    );
+    let chart = Chart::new(datasets).legend_position(legend(modal.show_legend));
+    axes.render(chart, area, buf, g);
 }
 
 fn render_box_plot_chart(
@@ -1064,37 +964,19 @@ fn render_box_plot_chart(
 
     let x_min_bounds = -0.5;
     let x_max_bounds = (data.stats.len() as f64 - 1.0).max(0.0) + 0.5;
-    let axis_label_style = Style::default().fg(theme.get("text_primary"));
-    let x_labels: Vec<Span> = data
-        .stats
-        .iter()
-        .map(|s| Span::styled(s.name.as_str(), axis_label_style))
-        .collect();
-    let y_labels = vec![
-        Span::styled(format_axis_label(data.y_min), axis_label_style),
-        Span::styled(
-            format_axis_label((data.y_min + data.y_max) / 2.0),
-            axis_label_style,
-        ),
-        Span::styled(format_axis_label(data.y_max), axis_label_style),
-    ];
-
-    let x_axis = Axis::default()
-        .title("Columns")
-        .bounds([x_min_bounds, x_max_bounds])
-        .style(Style::default().fg(theme.get("text_primary")))
-        .labels(x_labels);
-    let y_axis = Axis::default()
-        .title("Value")
-        .bounds([data.y_min, data.y_max])
-        .style(Style::default().fg(theme.get("text_primary")))
-        .labels(y_labels);
-
-    Chart::new(datasets)
-        .x_axis(x_axis)
-        .y_axis(y_axis)
-        .render(area, buf);
-    g.plot.redraw_axes(area, buf);
+    // A box's name sits under the box, at its index.
+    let name = |i: f64, level| {
+        let stat = data.stats.get(i as usize)?;
+        (level == 0).then(|| stat.name.clone())
+    };
+    let x = AxisSpec {
+        bounds: [x_min_bounds, x_max_bounds],
+        ticks: (0..data.stats.len()).map(|i| i as f64).collect(),
+        label: &name,
+        title: "Columns",
+    };
+    let y = AxisSpec::ends_and_middle([data.y_min, data.y_max], &axis_label_at, "Value");
+    plot_axes(theme, x, y).render(Chart::new(datasets), area, buf, g);
 }
 
 fn render_heatmap_chart(
@@ -1103,6 +985,7 @@ fn render_heatmap_chart(
     theme: &Theme,
     data: Option<&HeatmapData>,
     text_secondary: ratatui::style::Color,
+    g: &Glyphs,
 ) {
     let Some(data) = data else {
         Paragraph::new("Select X and Y columns for heatmap")
@@ -1183,37 +1066,27 @@ fn render_heatmap_chart(
         }
     }
 
-    let x_labels = [
-        format_axis_label(data.x_min),
-        format_axis_label((data.x_min + data.x_max) / 2.0),
-        format_axis_label(data.x_max),
-    ];
     let x_label_area = layout[2];
-    let mid_x = x_label_area.x + x_label_area.width / 2;
-    let right_x = x_label_area.x + x_label_area.width.saturating_sub(1);
-    buf.set_string(x_label_area.x, x_label_area.y, &x_labels[0], label_style);
-    buf.set_string(
-        mid_x.saturating_sub((x_labels[1].len() / 2) as u16),
-        x_label_area.y,
-        &x_labels[1],
-        label_style,
-    );
-    buf.set_string(
-        right_x.saturating_sub(x_labels[2].len() as u16),
-        x_label_area.y,
-        &x_labels[2],
-        label_style,
-    );
-    let x_title = format!("X: {}", data.x_column);
-    let y_title = format!("Y: {}", data.y_column);
+    let x_axis = AxisSpec::ends_and_middle([data.x_min, data.x_max], &axis_label_at, "");
+    let span = (x_label_area.left(), x_label_area.right());
+    for (x, label) in fit_x_labels(&x_axis, span, (plot_area.x, plot_area.width)) {
+        buf.set_string(x, x_label_area.y, label, label_style);
+    }
     if x_label_area.height > 1 {
-        buf.set_string(x_label_area.x, x_label_area.y + 1, &x_title, label_style);
-        buf.set_string(
-            x_label_area.x + x_label_area.width.saturating_sub(y_title.len() as u16),
-            x_label_area.y + 1,
-            &y_title,
-            label_style,
-        );
+        // Each title keeps half the row when both do not fit, a space between them.
+        let x_title = format!("X: {}", data.x_column);
+        let y_title = format!("Y: {}", data.y_column);
+        let width = x_label_area.width as usize;
+        let (x_title, y_title) = if x_title.width() + y_title.width() < width {
+            (x_title, y_title)
+        } else {
+            let half = width.saturating_sub(1) / 2;
+            (cut(&x_title, half, g), cut(&y_title, half, g))
+        };
+        let row = x_label_area.y + 1;
+        buf.set_string(x_label_area.x, row, &x_title, label_style);
+        let y_x = x_label_area.right() - y_title.width() as u16;
+        buf.set_string(y_x, row, &y_title, label_style);
     }
 }
 
@@ -1607,10 +1480,18 @@ mod tests {
     }
 
     fn plot_text(modal: &ChartModal, data: ChartRenderData<'_>, g: &Glyphs) -> String {
+        plot_text_in(modal, data, g, Rect::new(0, 0, 60, 20))
+    }
+
+    fn plot_text_in(
+        modal: &ChartModal,
+        data: ChartRenderData<'_>,
+        g: &Glyphs,
+        area: Rect,
+    ) -> String {
         let ctx = RenderContext::for_test();
         let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
             .expect("default theme colors must resolve");
-        let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);
         render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
         (0..area.height)
@@ -1621,6 +1502,137 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// At 40, 60 and 80 columns, in both glyph sets, every plot's x labels stand a
+    /// space apart with both ends kept, and its axis titles sit on rows of their own
+    /// that hold nothing of the plot.
+    #[test]
+    fn axis_labels_stand_apart_and_titles_keep_their_rows() {
+        /// A plot, its x and y titles, and what its x labels look like.
+        type Case<'a> = (
+            &'a str,
+            ChartRenderData<'a>,
+            &'a str,
+            &'a str,
+            &'a dyn Fn(&str) -> bool,
+        );
+        use crate::chart_data::{HistogramBin, KdeSeries};
+        // 2020-01-01 to 2024-12-31, in days since the epoch.
+        let dates: Vec<Vec<(f64, f64)>> = vec![
+            (0..=100)
+                .map(|i| (18262.0 + f64::from(i) * 18.26, f64::from(i % 7) * 1000.0))
+                .collect(),
+        ];
+        let numbers: Vec<Vec<(f64, f64)>> = vec![
+            (0..20)
+                .map(|i| (i as f64 * 1234.5, (i * i) as f64))
+                .collect(),
+        ];
+        let histogram = HistogramData {
+            column: "price".to_string(),
+            bins: (0..10)
+                .map(|i| HistogramBin {
+                    center: i as f64 * 250.0 + 125.0,
+                    count: (1 + i % 4) as f64 * 1000.0,
+                })
+                .collect(),
+            x_min: 0.0,
+            x_max: 2500.0,
+            max_count: 4000.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let kde = KdeData {
+            series: vec![KdeSeries {
+                name: "price".to_string(),
+                points: (0..=100)
+                    .map(|i| {
+                        let x = i as f64 * 100.0 - 5000.0;
+                        (x, (-x * x / 2e6).exp())
+                    })
+                    .collect(),
+            }],
+            x_min: -5000.0,
+            x_max: 5000.0,
+            y_max: 1.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let is_date = |t: &str| {
+            [4, 5, 7, 10].contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit() || c == '-')
+        };
+        let is_number = |t: &str| {
+            t.trim_end_matches(['k', 'M', 'G', 'T'])
+                .parse::<f64>()
+                .is_ok()
+        };
+
+        let mut modal = open_modal();
+        modal.y_columns = vec!["price".to_string()];
+        modal.show_legend = false;
+        for columns in [40u16, 60, 80] {
+            let area = Rect::new(0, 0, columns - SIDEBAR_WIDTH.min(columns / 2), 18);
+            for g in [crate::glyphs::ascii(), crate::glyphs::unicode()] {
+                let cases: [Case; 4] = [
+                    (
+                        "date",
+                        ChartRenderData::XY {
+                            series: Some(&dates),
+                            breaks: None,
+                            x_axis_kind: XAxisTemporalKind::Date,
+                            x_bounds: None,
+                        },
+                        "date",
+                        "price",
+                        &is_date,
+                    ),
+                    (
+                        "number",
+                        ChartRenderData::XY {
+                            series: Some(&numbers),
+                            breaks: None,
+                            x_axis_kind: XAxisTemporalKind::Numeric,
+                            x_bounds: None,
+                        },
+                        "volume",
+                        "price",
+                        &is_number,
+                    ),
+                    (
+                        "histogram",
+                        ChartRenderData::Histogram {
+                            data: Some(&histogram),
+                        },
+                        "price",
+                        "Count",
+                        &is_number,
+                    ),
+                    (
+                        "KDE",
+                        ChartRenderData::Kde { data: Some(&kde) },
+                        "Value",
+                        "Density",
+                        &is_number,
+                    ),
+                ];
+                for (what, data, x_title, y_title, is_label) in cases {
+                    modal.x_column = Some(x_title.to_string());
+                    let text = plot_text_in(&modal, data, g, area);
+                    let rows: Vec<&str> = text.lines().collect();
+                    let what = format!("{what} at {columns} columns:\n{text}");
+                    let axis = rows
+                        .iter()
+                        .rposition(|r| r.contains(g.plot.axis.bottom_left))
+                        .expect(&what);
+                    let labels: Vec<&str> = rows[axis + 1].split_whitespace().collect();
+                    assert!(labels.len() >= 2, "both ends: {what}");
+                    assert!(labels.iter().all(|l| is_label(l)), "apart: {what}");
+                    assert_eq!(rows[0].trim_end(), y_title, "y title row: {what}");
+                    assert_eq!(rows[axis + 2].trim_start(), x_title, "x title row: {what}");
+                }
+            }
+        }
     }
 
     /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,
@@ -1661,8 +1673,8 @@ mod tests {
             modal.chart_type = chart_type;
             let text = plot_text(&modal, xy(Some(&series)), ascii);
             check(chart_type.as_str(), &text, &[mark]);
-            // The legend's frame, top right.
-            assert!(text.lines().next().unwrap().ends_with('+'), "{text}");
+            // The legend's frame, top right under the y title's row.
+            assert!(text.lines().nth(1).unwrap().ends_with('+'), "{text}");
             let text = plot_text(&modal, xy(Some(&series)), unicode);
             assert!(text.contains('└') && text.contains('┐'), "{text}");
         }
@@ -1759,14 +1771,15 @@ mod tests {
             );
             let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
             let corner = g.plot.axis.top_left.chars().next().unwrap();
-            let left = rows[0].iter().position(|c| *c == corner).expect(&text);
+            // The frame's first row is under the y title's.
+            let left = rows[1].iter().position(|c| *c == corner).expect(&text);
             let interior = |y: usize| {
                 rows[y][left + 1..rows[y].len() - 1]
                     .iter()
                     .collect::<String>()
             };
-            assert_eq!(interior(1), "price ", "{text}");
-            assert_eq!(interior(2), "volume", "{text}");
+            assert_eq!(interior(2), "price ", "{text}");
+            assert_eq!(interior(3), "volume", "{text}");
         }
     }
 

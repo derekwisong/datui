@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Axis, Bar, BarChart, BarGroup, Block, Cell, Chart, Dataset, GraphType, HighlightSpacing,
+        Bar, BarChart, BarGroup, Block, Cell, Chart, Dataset, GraphType, HighlightSpacing,
         Paragraph, Row, StatefulWidget, Table, TableState, Widget,
     },
 };
@@ -12,6 +12,7 @@ use ratatui::{
 use crate::analysis_modal::{
     AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
 };
+use crate::chart_data::axis_label_at;
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::glyphs::PlotMarks;
@@ -21,6 +22,7 @@ use crate::statistics::{
     AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics,
     DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
 };
+use crate::widgets::axes::{AxisSpec, PlotAxes};
 use crate::widgets::datatable::DataTableState;
 use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
@@ -1522,20 +1524,6 @@ struct DistributionPlotConfig<'a> {
     glyphs: &'a crate::glyphs::Glyphs,
 }
 
-/// A chart's min, middle and max x labels, without the middle one where the
-/// plot is too narrow for it to sit clear of the ends. The chart draws the ends
-/// flush with the plot's edges and centers the middle.
-fn fit_x_labels(mut labels: Vec<Span<'_>>, area: Rect, y_label_width: u16) -> Vec<Span<'_>> {
-    // The block's left padding and the y axis line.
-    let plot = area.width.saturating_sub(y_label_width + 2) as usize;
-    if let [first, middle, last] = labels.as_slice()
-        && 2 * first.width().max(last.width()) + middle.width() + 2 > plot
-    {
-        labels.remove(1);
-    }
-    labels
-}
-
 /// The family list's least width: the frame, the rail, "Exponential" and a p-value.
 const SELECTOR_WIDTH: u16 = 24;
 
@@ -1807,18 +1795,11 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // Normalize values for display (find the maximum for scaling)
     let max_data = data_bin_counts.iter().cloned().fold(0, usize::max);
     let max_theory = theory_bin_counts.iter().cloned().fold(0.0, f64::max);
-    // A row of headroom above the tallest bar, where the axis title sits; the labels
-    // are read off this, so the scale stays true.
-    let plot_rows = area.height.saturating_sub(3).max(2) as f64;
-    let global_max =
-        (max_data.max(max_theory as usize).max(1) as f64 * plot_rows / (plot_rows - 1.0)).ceil();
+    let global_max = max_data.max(max_theory as usize).max(1) as f64;
 
     // Use the shared label width calculated in the caller
     // This ensures both histogram and Q-Q plot use the same padding for alignment
     let y_axis_label_width = shared_y_axis_label_width;
-
-    // Recalculate total_y_axis_space using the shared width
-    let total_y_axis_space = y_axis_label_width + y_axis_gap;
 
     // Bin centers for x-axis positioning (value at center of each bin)
     let bin_centers: Vec<f64> = (0..num_bins)
@@ -1874,26 +1855,25 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         bar_width
     };
 
-    // Render data bars using BarChart
-    // The rows of the chart's plot: below its title, above its axis line and labels.
-    let title_height = 1u16;
-    let x_axis_height = 2u16;
-    let chart_inner_top = area.top() + title_height;
-    let chart_inner_height = area
-        .height
-        .saturating_sub(title_height)
-        .saturating_sub(x_axis_height);
+    // The labels are padded to the width shared with the Q-Q plot, so both plots
+    // start in the same column.
+    let label_width = y_axis_label_width as usize;
+    // The bars stand on a 0-100 scale; their labels read counts.
+    let count_label = |v: f64, level| {
+        (level == 0).then(|| format!("{:>label_width$}", (v * global_max / 100.0) as usize))
+    };
+    let axes = distribution_axes(
+        theme,
+        AxisSpec::ends_and_middle([hist_min, hist_max], &distribution_x_label, ""),
+        AxisSpec::ends_and_middle([0.0, 100.0], &count_label, "Counts"),
+    );
+    let block = distribution_block(format!("Histogram vs {dist_type}"));
+    let chart_area = block.inner(area);
 
     // Exactly the overlay's plot area: bar `i` starts where bin `i` does. Shifting the
     // bars right to meet the overlay put the first bin's bar over the second bin and
     // drew the last one past the axis, onto whatever sits beside the chart.
-    let bar_plot_left = area.left().saturating_add(total_y_axis_space + 1);
-    let bar_plot_area = Rect::new(
-        bar_plot_left,
-        chart_inner_top,
-        available_width.min(area.right().saturating_sub(bar_plot_left)),
-        chart_inner_height,
-    );
+    let bar_plot_area = axes.frame(chart_area).graph;
 
     let barchart = BarChart::default()
         .block(Block::default()) // No borders in sub-area - borders handled separately
@@ -1947,83 +1927,8 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         .style(Style::default().fg(theme.get("secondary_chart_series_color")))
         .data(&theory_points);
 
-    // Create Chart widget with scatter plot overlay
-    // Configure axes to match BarChart coordinate system exactly:
-    // - X-axis: range (hist_min to hist_max) - matches bin range
-    // - Y-axis: normalized height range (0 to 100) - matches bar normalization
-    // Use same border style as BarChart for coordinate alignment
-    // Add x-axis labels with more tick marks for better readability
-    // Use same x-axis label format as Q-Q plot: 3 labels (min, middle, max) with {:.1} formatting
-    // Use histogram range values to align with bars
-    // hist_min is already clamped to >= 0 for non-negative data, so use it directly
-    let x_labels = vec![
-        Span::styled(
-            format!("{:.1}", hist_min),
-            Style::default()
-                .fg(theme.get("text_secondary"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("{:.1}", (hist_min + hist_max) / 2.0)),
-        Span::styled(
-            format!("{:.1}", hist_max),
-            Style::default()
-                .fg(theme.get("text_secondary"))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-
     let theory_chart = Chart::new(vec![theory_dataset])
-        .block(
-            Block::default()
-                .title(format!("Histogram vs {dist_type}"))
-                .title_style(ratatui::style::Style::reset())
-                .title_alignment(ratatui::layout::Alignment::Center)
-                .padding(ratatui::widgets::Padding::new(1, 0, 0, 0)), // Extra top padding to separate title from chart
-        )
-        .x_axis(
-            Axis::default()
-                .bounds([hist_min, hist_max]) // Use histogram range to align with bars (hist_min already clamped for non-negative data)
-                .style(Style::default().fg(theme.get("text_secondary")))
-                .labels(fit_x_labels(x_labels, area, shared_y_axis_label_width)),
-        )
-        .y_axis(
-            Axis::default()
-                .title("Counts")
-                .style(Style::default().fg(theme.get("text_secondary")))
-                .bounds([0.0, 100.0])
-                .labels({
-                    // Use dynamic label width calculated earlier
-                    // y_axis_label_width already includes +1 for padding, so use it directly for formatting
-                    // This ensures alignment with Q-Q plot using actual label lengths
-                    let label_width = y_axis_label_width as usize;
-                    vec![
-                        // Bottom label: 0 counts (right-aligned to fixed width)
-                        Span::styled(
-                            format!("{:>width$}", 0, width = label_width),
-                            Style::default()
-                                .fg(theme.get("text_secondary"))
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        // Middle label: half of max counts (right-aligned)
-                        Span::styled(
-                            format!(
-                                "{:>width$}",
-                                (global_max / 2.0) as usize,
-                                width = label_width
-                            ),
-                            Style::default().fg(theme.get("text_secondary")),
-                        ),
-                        // Top label: max counts (right-aligned)
-                        Span::styled(
-                            format!("{:>width$}", global_max as usize, width = label_width),
-                            Style::default()
-                                .fg(theme.get("text_secondary"))
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]
-                }),
-        )
-        .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0))); // Hide legend
+        .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0)));
 
     // Render Chart overlay to full area (no borders)
     // Chart widget will automatically handle its own inner layout for x-axis labels
@@ -2033,8 +1938,8 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // drawn under them, the bar chart's blank cells erased the curve and the axis title.
     barchart.render(bar_plot_area, buf);
     let mut overlay = Buffer::empty(area);
-    theory_chart.render(area, &mut overlay);
-    g.plot.redraw_axes(area, &mut overlay);
+    block.render(area, &mut overlay);
+    axes.render(theory_chart, chart_area, &mut overlay, g);
     let is_bar = |symbol: &str| g.plot.column_eighths.contains(&symbol);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
@@ -2204,67 +2109,53 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
             .data(&qq_data),
     ];
 
-    // Create X-axis labels using plot range
-    let x_labels = vec![
-        Span::styled(
-            format!("{:.1}", theory_min_plot),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("{:.1}", (theory_min_plot + theory_max_plot) / 2.0)),
-        Span::styled(
-            format!("{:.1}", theory_max_plot),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ];
-
-    // Use the shared label width calculated in the caller
-    // This ensures both histogram and Q-Q plot use the same padding for alignment
+    // Padded to the width shared with the histogram, so both plots start in the same
+    // column.
     let label_width = shared_y_axis_label_width as usize;
-    let y_labels = vec![
-        // Bottom label: data_min (right-aligned to fixed width)
-        Span::styled(
-            format!("{:>width$.1}", data_min, width = label_width),
-            Style::default().add_modifier(Modifier::BOLD),
+    let value_label = |v: f64, level| (level == 0).then(|| format!("{v:>label_width$.1}"));
+    let axes = distribution_axes(
+        theme,
+        AxisSpec::ends_and_middle(
+            [theory_min_plot, theory_max_plot],
+            &distribution_x_label,
+            "Theoretical Values",
         ),
-        // Middle label: average (right-aligned)
-        Span::raw(format!(
-            "{:>width$.1}",
-            (data_min + data_max) / 2.0,
-            width = label_width
-        )),
-        // Top label: data_max (right-aligned)
-        Span::styled(
-            format!("{:>width$.1}", data_max, width = label_width),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ];
-
+        AxisSpec::ends_and_middle([data_min, data_max], &value_label, "Data Values"),
+    );
+    let block = distribution_block(format!("Q-Q Plot vs {dist_type}"));
+    let chart_area = block.inner(area);
+    block.render(area, buf);
     let chart = Chart::new(datasets)
-        .block(
-            Block::default()
-                .title(format!("Q-Q Plot vs {dist_type}"))
-                .title_style(ratatui::style::Style::reset())
-                .title_alignment(ratatui::layout::Alignment::Center)
-                .padding(ratatui::widgets::Padding::new(1, 0, 0, 0)), // Extra top padding to separate title from chart
-        )
-        .x_axis(
-            Axis::default()
-                .title("Theoretical Values")
-                .style(Style::default().fg(theme.get("text_secondary")))
-                .bounds([theory_min_plot, theory_max_plot])
-                .labels(fit_x_labels(x_labels, area, shared_y_axis_label_width)),
-        )
-        .y_axis(
-            Axis::default()
-                .title("Data Values")
-                .style(Style::default().fg(theme.get("text_secondary"))) // Axis line should be gray
-                .bounds([data_min, data_max])
-                .labels(y_labels), // Labels styled cyan explicitly above
-        )
-        .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0))); // Hide legend
+        .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0)));
+    axes.render(chart, chart_area, buf, g);
+}
 
-    chart.render(area, buf);
-    g.plot.redraw_axes(area, buf);
+/// A Distribution plot's frame: its title centered above, a cell of air on the left.
+fn distribution_block<'a>(title: String) -> Block<'a> {
+    Block::default()
+        .title(title)
+        .title_style(ratatui::style::Style::reset())
+        .title_alignment(ratatui::layout::Alignment::Center)
+        .padding(ratatui::widgets::Padding::left(1))
+}
+
+/// A Distribution plot's x ticks: one decimal, or three figures when that is too wide.
+fn distribution_x_label(v: f64, level: usize) -> Option<String> {
+    match level {
+        0 => Some(format!("{v:.1}")),
+        level => axis_label_at(v, level),
+    }
+}
+
+fn distribution_axes<'a>(theme: &Theme, x: AxisSpec<'a>, y: AxisSpec<'a>) -> PlotAxes<'a> {
+    let secondary = Style::default().fg(theme.get("text_secondary"));
+    PlotAxes {
+        x,
+        y,
+        line: secondary,
+        labels: secondary,
+        titles: Style::default(),
+    }
 }
 
 /// The detail's key figures, label and value: the fit found, Shapiro-Francia,
@@ -2425,6 +2316,15 @@ mod tests {
         g: &crate::glyphs::Glyphs,
         render: fn(DistributionPlotConfig, &mut Buffer),
     ) -> Buffer {
+        render_distribution_plot_in(dist, g, render, 60)
+    }
+
+    fn render_distribution_plot_in(
+        dist: &DistributionAnalysis,
+        g: &crate::glyphs::Glyphs,
+        render: fn(DistributionPlotConfig, &mut Buffer),
+        width: u16,
+    ) -> Buffer {
         let theme =
             crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
@@ -2432,7 +2332,7 @@ mod tests {
             DistributionPlotConfig {
                 dist,
                 dist_type: DistributionType::Normal,
-                area: Rect::new(0, 0, 60, 20),
+                area: Rect::new(0, 0, width, 20),
                 shared_y_axis_label_width: 5,
                 theme: &theme,
                 unified_x_range: Some((23.0, 341.1)),
@@ -2501,6 +2401,52 @@ mod tests {
         }
         let qq = rendered_text(&render_distribution_plot(&dist, g, render_qq_plot));
         assert!(qq.contains('*'), "the Q-Q points:\n{qq}");
+    }
+
+    /// The Distribution plots follow the rule every chart does: x labels a space
+    /// apart with both ends kept, and axis titles on rows that hold nothing else.
+    #[test]
+    fn distribution_axes_follow_the_chart_rule() {
+        let mut dist = skewed_normal_fit();
+        let qq: Vec<f64> = (0..dist.sorted_sample_values.len())
+            .map(|i| 23.0 + 318.0 * i as f64 / 499.0)
+            .collect();
+        dist.qq = vec![(DistributionType::Normal, qq)];
+        let is_number = |t: &str| t.trim_end_matches(['k', 'M']).parse::<f64>().is_ok();
+        for width in [40, 60, 80] {
+            for g in [crate::glyphs::ascii(), crate::glyphs::unicode()] {
+                for (name, render, y_title, x_title) in [
+                    (
+                        "histogram",
+                        render_distribution_histogram as fn(DistributionPlotConfig, &mut Buffer),
+                        "Counts",
+                        None,
+                    ),
+                    (
+                        "Q-Q plot",
+                        render_qq_plot,
+                        "Data Values",
+                        Some("Theoretical Values"),
+                    ),
+                ] {
+                    let text = rendered_text(&render_distribution_plot_in(&dist, g, render, width));
+                    let rows: Vec<&str> = text.lines().collect();
+                    let what = format!("{name} at {width}:\n{text}");
+                    let axis = rows
+                        .iter()
+                        .rposition(|r| r.contains(g.plot.axis.bottom_left))
+                        .expect(&what);
+                    let labels: Vec<&str> = rows[axis + 1].split_whitespace().collect();
+                    assert!(labels.len() >= 2, "both ends: {what}");
+                    assert!(labels.iter().all(|l| is_number(l)), "apart: {what}");
+                    // The plot's title, then the y axis's on a row of its own.
+                    assert_eq!(rows[1].trim(), y_title, "{what}");
+                    if let Some(x_title) = x_title {
+                        assert_eq!(rows[axis + 2].trim(), x_title, "{what}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

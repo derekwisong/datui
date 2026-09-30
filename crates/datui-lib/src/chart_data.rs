@@ -6,7 +6,7 @@
 //! table and not its first rows. What was read comes back as [`RowsRead`], so the chart
 //! can say when it shows a sample.
 
-use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 use color_eyre::Result;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
@@ -55,40 +55,117 @@ pub fn format_axis_label(v: f64) -> String {
     }
 }
 
+/// A numeric tick at `level` of detail: 0 is [`format_axis_label`], 1 three
+/// significant figures with a k/M/G/T suffix, for an axis too narrow for the first.
+pub fn axis_label_at(v: f64, level: usize) -> Option<String> {
+    match level {
+        0 => Some(format_axis_label(v)),
+        1 => Some(compact_number(v)),
+        _ => None,
+    }
+}
+
+/// Three significant figures at most, trailing zeros dropped: `12.3k`, `5`, `0.05`.
+fn compact_number(v: f64) -> String {
+    let a = v.abs();
+    if !v.is_finite() || a >= 1e15 || (a < 1e-2 && v != 0.0) {
+        return format!("{v:.0e}");
+    }
+    let (scaled, suffix) = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")]
+        .into_iter()
+        .find(|(unit, _)| a >= *unit)
+        .map_or((v, ""), |(unit, suffix)| (v / unit, suffix));
+    let places = match scaled.abs() {
+        x if x >= 100.0 => 0,
+        x if x >= 10.0 => 1,
+        _ => 2,
+    };
+    let text = format!("{scaled:.places$}");
+    let text = if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        &text
+    };
+    format!("{text}{suffix}")
+}
+
+/// An x value as the date and time it stands for, when `kind` is a date or datetime.
+fn x_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTime> {
+    const UNIX_EPOCH_CE_DAYS: i32 = 719_163;
+    match kind {
+        XAxisTemporalKind::Date => NaiveDate::from_num_days_from_ce_opt(
+            UNIX_EPOCH_CE_DAYS.saturating_add(v.trunc() as i32),
+        )
+        .map(|d| d.and_time(NaiveTime::MIN)),
+        XAxisTemporalKind::DatetimeUs => {
+            DateTime::from_timestamp_micros(v.trunc() as i64).map(|dt| dt.naive_utc())
+        }
+        XAxisTemporalKind::DatetimeMs => {
+            DateTime::from_timestamp_millis(v.trunc() as i64).map(|dt| dt.naive_utc())
+        }
+        XAxisTemporalKind::DatetimeNs => {
+            DateTime::from_timestamp_millis((v.trunc() as i64) / 1_000_000).map(|dt| dt.naive_utc())
+        }
+        XAxisTemporalKind::Numeric | XAxisTemporalKind::Time => None,
+    }
+}
+
+/// An x value as a time of day, when `kind` is a time.
+fn x_time(v: f64) -> Option<NaiveTime> {
+    let nsecs = v.trunc() as u64;
+    NaiveTime::from_num_seconds_from_midnight_opt(
+        (nsecs / 1_000_000_000) as u32,
+        (nsecs % 1_000_000_000) as u32,
+    )
+}
+
 /// Format x-axis tick: dates/datetimes/times when kind is temporal, else numeric. Used by chart widget and export.
 pub fn format_x_axis_label(v: f64, kind: XAxisTemporalKind) -> String {
-    match kind {
-        XAxisTemporalKind::Numeric => format_axis_label(v),
-        XAxisTemporalKind::Date => {
-            const UNIX_EPOCH_CE_DAYS: i32 = 719_163;
-            let days = v.trunc() as i32;
-            match NaiveDate::from_num_days_from_ce_opt(UNIX_EPOCH_CE_DAYS.saturating_add(days)) {
-                Some(d) => d.format("%Y-%m-%d").to_string(),
-                None => format_axis_label(v),
-            }
-        }
-        XAxisTemporalKind::DatetimeUs => DateTime::from_timestamp_micros(v.trunc() as i64)
-            .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| format_axis_label(v)),
-        XAxisTemporalKind::DatetimeMs => DateTime::from_timestamp_millis(v.trunc() as i64)
-            .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| format_axis_label(v)),
-        XAxisTemporalKind::DatetimeNs => {
-            let millis = (v.trunc() as i64) / 1_000_000;
-            DateTime::from_timestamp_millis(millis)
-                .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_else(|| format_axis_label(v))
-        }
-        XAxisTemporalKind::Time => {
-            let nsecs = v.trunc() as u64;
-            let secs = (nsecs / 1_000_000_000) as u32;
-            let subsec = (nsecs % 1_000_000_000) as u32;
-            match NaiveTime::from_num_seconds_from_midnight_opt(secs, subsec) {
-                Some(t) => t.format("%H:%M:%S").to_string(),
-                None => format_axis_label(v),
-            }
-        }
+    x_axis_label_at(v, kind, (v, v), 0).unwrap_or_else(|| format_axis_label(v))
+}
+
+/// An x tick at `level` of detail, 0 the fullest, or `None` past the shortest form.
+/// A narrow axis steps down until its labels fit: a date to year-month and then the
+/// year, or to month-day when both ends of the axis, `bounds`, fall in one year; a
+/// datetime first to its date, or to the minute when the axis spans one day; a time
+/// to the minute.
+pub fn x_axis_label_at(
+    v: f64,
+    kind: XAxisTemporalKind,
+    bounds: (f64, f64),
+    level: usize,
+) -> Option<String> {
+    if kind == XAxisTemporalKind::Numeric {
+        return axis_label_at(v, level);
     }
+    if kind == XAxisTemporalKind::Time {
+        let pattern = ["%H:%M:%S", "%H:%M"].get(level)?;
+        return Some(match x_time(v) {
+            Some(t) => t.format(pattern).to_string(),
+            None => axis_label_at(v, level)?,
+        });
+    }
+    let Some(at) = x_datetime(v, kind) else {
+        return axis_label_at(v, level);
+    };
+    let ends = x_datetime(bounds.0, kind).zip(x_datetime(bounds.1, kind));
+    let one_day = ends.is_some_and(|(a, b)| a.date() == b.date());
+    let one_year = ends.is_some_and(|(a, b)| a.year() == b.year());
+    let dates: &[&str] = if one_year {
+        &["%Y-%m-%d", "%m-%d"]
+    } else {
+        &["%Y-%m-%d", "%Y-%m", "%Y"]
+    };
+    let patterns: Vec<&str> = if kind == XAxisTemporalKind::Date {
+        dates.to_vec()
+    } else if one_day {
+        vec!["%Y-%m-%d %H:%M", "%H:%M"]
+    } else {
+        std::iter::once("%Y-%m-%d %H:%M")
+            .chain(dates.iter().copied())
+            .collect()
+    };
+    patterns.get(level).map(|p| at.format(p).to_string())
 }
 
 /// How a chart reads its rows.
@@ -1375,6 +1452,45 @@ fn stream_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each form a narrow axis steps down to, and the full form unchanged.
+    #[test]
+    fn axis_labels_step_down_to_shorter_forms() {
+        let at = |v, level| axis_label_at(v, level);
+        assert_eq!(at(12345.0, 0).as_deref(), Some("12345.00"));
+        let compact: Vec<_> = [12345.0, -1500.0, 5.0, 0.05, 0.0, 2.5e9, 0.001]
+            .map(|v| at(v, 1).unwrap())
+            .into();
+        assert_eq!(
+            compact,
+            ["12.3k", "-1.5k", "5", "0.05", "0", "2.5G", "1e-3"]
+        );
+        assert_eq!(at(1.0, 2), None);
+
+        // 2020-01-01 and 2024-12-31 in days; the same instants in microseconds.
+        let (lo, hi) = (18262.0, 20088.0);
+        let date = |v, level| x_axis_label_at(v, XAxisTemporalKind::Date, (lo, hi), level);
+        let forms: Vec<_> = (0..).map_while(|level| date(hi, level)).collect();
+        assert_eq!(forms, ["2024-12-31", "2024-12", "2024"]);
+        assert_eq!(
+            format_x_axis_label(hi, XAxisTemporalKind::Date),
+            "2024-12-31"
+        );
+        // Inside one year, month and day tell the ticks apart.
+        let date = |v, level| x_axis_label_at(v, XAxisTemporalKind::Date, (lo, lo + 30.0), level);
+        assert_eq!(date(lo, 1).as_deref(), Some("01-01"));
+
+        let us = 86_400.0 * 1e6;
+        let kind = XAxisTemporalKind::DatetimeUs;
+        let at = |v, bounds, level| x_axis_label_at(v, kind, bounds, level);
+        let forms: Vec<_> = (0..)
+            .map_while(|level| at(lo * us, (lo * us, hi * us), level))
+            .collect();
+        assert_eq!(forms, ["2020-01-01 00:00", "2020-01-01", "2020-01", "2020"]);
+        // Inside one day, the time of day.
+        let day = (lo * us, lo * us + 3600e6);
+        assert_eq!(at(lo * us + 3600e6, day, 1).as_deref(), Some("01:00"));
+    }
 
     fn all_rows() -> ChartSampling {
         ChartSampling::rows(Some(10_000))

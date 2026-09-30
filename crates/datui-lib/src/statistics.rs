@@ -2890,6 +2890,29 @@ mod normality_tests {
         assert!(p.unwrap() > 0.5, "{p:?}");
     }
 
+    /// Royston's approximation is calibrated: normal samples fall below 0.05 about one
+    /// time in twenty, and skewed ones nearly always.
+    #[test]
+    fn the_normality_p_value_is_calibrated() {
+        let mut rng = crate::distribution_fit::Rng::new(2_026);
+        let mut sample = |skewed: bool| -> Vec<f64> {
+            (0..100)
+                .map(|_| {
+                    let z = rng.normal();
+                    if skewed { z.exp() } else { z }
+                })
+                .collect()
+        };
+        let below = |values: Vec<f64>| approximate_shapiro_wilk(&values).1.unwrap() < 0.05;
+        let false_alarms = (0..400).filter(|_| below(sample(false))).count();
+        assert!(
+            (8..=36).contains(&false_alarms),
+            "{false_alarms} of 400 normal samples below 0.05"
+        );
+        let caught = (0..100).filter(|_| below(sample(true))).count();
+        assert!(caught >= 95, "{caught} of 100 log-normal samples caught");
+    }
+
     /// NaN and infinities never reach a fit: one NaN left a `partial_cmp` sort out of
     /// order and folded the Q-Q plot.
     #[test]

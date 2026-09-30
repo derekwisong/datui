@@ -6,9 +6,9 @@ filters).
   Enter:            Apply everything staged and close
                     (on the Filters tab, Enter adds or edits instead; see below)
   a:                On the Filters tab, outside the row editor: apply and close
-  Ctrl+Enter:       Apply from anywhere, including mid-edit (the row in progress
-                    is saved). Needs a terminal that tells Ctrl+Enter from Enter;
-                    elsewhere finish the row with Enter, then press a.
+  Ctrl+J:           Apply from anywhere, including mid-edit (the row in progress
+                    is saved). Ctrl+Enter does the same, on a terminal that
+                    tells it from Enter.
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Cancel and close; staged changes are discarded, and
                     reopening shows what is applied

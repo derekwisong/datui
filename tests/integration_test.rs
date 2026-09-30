@@ -12276,3 +12276,101 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
     assert!(screen.contains("Copied 3 rows as TSV"), "no flash drawn");
 }
+
+/// Press `c` with Ctrl held, as a text field receives it.
+fn press_ctrl(app: &mut App, c: char) -> Option<AppEvent> {
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::CONTROL,
+    )))
+}
+
+fn screen_text(app: &mut App) -> String {
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    rendered_text(&buffer)
+}
+
+/// Ctrl+U kills from the cursor back to the start of the line, keeping what
+/// follows, and Ctrl+Z puts it back: readline's bindings, in the query prompt.
+#[test]
+fn test_query_prompt_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
+    let (mut app, rx, tx) = open_query_filter_fixture("ctrl_u_query_prompt.csv");
+
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(app.input_mode, InputMode::Editing);
+    for c in "select name where c = 1".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    for _ in 0.."where c = 1".len() {
+        press(&mut app, KeyCode::Left);
+    }
+
+    press_ctrl(&mut app, 'u');
+    let screen = screen_text(&mut app);
+    assert!(
+        screen.contains("where c = 1"),
+        "the text after the cursor stays"
+    );
+    assert!(
+        !screen.contains("select name"),
+        "the text before it is gone"
+    );
+
+    press_ctrl(&mut app, 'z');
+    assert!(screen_text(&mut app).contains("select name where c = 1"));
+
+    // What runs is what the field holds after the undo.
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().get_active_query(),
+        "select name where c = 1"
+    );
+    assert_eq!(current_rows(&app), 33);
+}
+
+/// The same bindings in a form field: the view save form's name.
+#[test]
+fn test_form_field_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("ctrl_u_form_field.csv");
+    // The save gate wants something to save.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["a".to_string()], vec![false]);
+
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(
+        app.template_modal.form_focus,
+        datui::widgets::template_modal::FormFocus::Name
+    );
+    let suggested = app.template_modal.name_input.value().to_string();
+    for c in " by a".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    for _ in 0.." by a".len() {
+        press(&mut app, KeyCode::Left);
+    }
+
+    press_ctrl(&mut app, 'u');
+    assert_eq!(app.template_modal.name_input.value(), " by a");
+    assert_eq!(app.template_modal.name_input.cursor(), 0);
+
+    press_ctrl(&mut app, 'z');
+    assert_eq!(
+        app.template_modal.name_input.value(),
+        format!("{suggested} by a")
+    );
+
+    // Esc discards the form, so the test saves nothing.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.template_modal.mode,
+        datui::widgets::template_modal::TemplateModalMode::List
+    );
+}

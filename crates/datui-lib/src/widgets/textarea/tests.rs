@@ -356,7 +356,7 @@ fn key_input_drives_editing() {
     assert_eq!(area.text(), "h");
     press(&mut area, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(area.lines().len(), 2);
-    press(&mut area, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    press(&mut area, KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(area.lines().len(), 1);
 }
 

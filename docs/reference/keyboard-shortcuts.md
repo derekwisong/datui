@@ -104,9 +104,10 @@ and <kbd>Esc</kbd>.
 | <kbd>Ctrl</kbd>+<kbd>←</kbd> <kbd>Ctrl</kbd>+<kbd>→</kbd> or <kbd>Alt</kbd>+<kbd>B</kbd> <kbd>Alt</kbd>+<kbd>F</kbd> | Move a word |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> <kbd>Ctrl</kbd>+<kbd>E</kbd> | Start and end of line |
 | <kbd>Ctrl</kbd>+<kbd>W</kbd> <kbd>Alt</kbd>+<kbd>D</kbd> | Delete the word before or after the cursor |
-| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Delete to the end of the line |
+| <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>K</kbd> | Delete to the start or the end of the line |
 | <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Paste the last deletion |
-| <kbd>Ctrl</kbd>+<kbd>U</kbd> | Undo |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> <kbd>Ctrl</kbd>+<kbd>R</kbd> | Undo, redo |
+| <kbd>Ctrl</kbd>+<kbd>J</kbd> | The same as <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on every terminal: saves a view from its description and applies Sort & Filter. In the query and go-to-line prompts it submits, like <kbd>Enter</kbd> |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection (does not quit while a text field is focused) |
 | <kbd>F1</kbd> | Help |
 
@@ -118,7 +119,7 @@ and <kbd>Esc</kbd>.
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus between the tab bar and the body |
 | <kbd>Enter</kbd> | Apply and close (on the Filters tab, add or edit a filter instead) |
 | <kbd>a</kbd> | On the Filters tab, outside the row editor, apply and close |
-| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. Needs a terminal that tells <kbd>Ctrl</kbd>+<kbd>Enter</kbd> from <kbd>Enter</kbd>; elsewhere finish the row with <kbd>Enter</kbd>, then press <kbd>a</kbd> |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or <kbd>Ctrl</kbd>+<kbd>J</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> needs a terminal that tells it from <kbd>Enter</kbd>; <kbd>Ctrl</kbd>+<kbd>J</kbd> works on every terminal |
 | <kbd>Esc</kbd> | Close without applying |
 
 On the Columns tab, with a column highlighted:
@@ -272,7 +273,7 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>d</kbd> | Delete it, after confirming (<kbd>Enter</kbd>, <kbd>d</kbd> or <kbd>D</kbd> confirms) |
 | <kbd>i</kbd> | Show how the selected view's score was computed; <kbd>Esc</kbd> closes it |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | In the save and edit form, move between rows (<kbd>↑</kbd> <kbd>↓</kbd> too, outside the description) |
-| <kbd>Enter</kbd> in the form | Save. In the description <kbd>Enter</kbd> types: <kbd>Tab</kbd> out of it, then <kbd>Enter</kbd> — or <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on a terminal that tells it from <kbd>Enter</kbd> |
+| <kbd>Enter</kbd> in the form | Save. In the description <kbd>Enter</kbd> types: <kbd>Tab</kbd> out of it, then <kbd>Enter</kbd> — or press <kbd>Ctrl</kbd>+<kbd>J</kbd>, or <kbd>Ctrl</kbd>+<kbd>Enter</kbd> on a terminal that tells it from <kbd>Enter</kbd> |
 | <kbd>Space</kbd> in the form | Expand or collapse Matching; toggle schema match |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> in the form | Move five lines in the description |
 | <kbd>Esc</kbd> | In the form, back to the list discarding edits; in the list, close |

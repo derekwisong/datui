@@ -21,8 +21,9 @@ Views list:
 Save and edit form:
   Tab / Shift+Tab:  Move between rows (↑/↓ outside the description)
   Enter:            Save. In the description Enter types: Tab out of it,
-                    then Enter — or Ctrl+Enter, on a terminal that tells
-                    Ctrl+Enter from Enter
+                    then Enter
+  Ctrl+J:           Save from anywhere, the description included; so does
+                    Ctrl+Enter, on a terminal that tells it from Enter
   PgUp / PgDn:      Move five lines in the description
   Space:            Expand or collapse Matching; toggle schema match
   Esc:              Back to the list, discarding edits

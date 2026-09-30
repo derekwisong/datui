@@ -194,6 +194,37 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Esc);
     assert!(!app.template_modal.active);
 
+    // Ctrl+J saves from the description, the same as Ctrl+Enter: a terminal
+    // without the keyboard-enhancement protocol sends one as the other, so it
+    // must never delete the line being typed.
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.template_modal.form_focus, FormFocus::Description);
+    for c in "first".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    for c in "second".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.template_modal.mode, TemplateModalMode::List, "saved");
+    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(
+        app.template_modal.rows[0].template.description.as_deref(),
+        Some("first\nsecond"),
+        "the description is saved whole"
+    );
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.template_modal.rows.is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.template_modal.active);
+
     // A view's schema criterion belongs to the view: editing it while a
     // different table is open must not swap in that table's columns.
     press(&mut app, KeyCode::Char('v'));

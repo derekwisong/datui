@@ -18,7 +18,7 @@ With the [quick-start penguin data](../getting-started/quick-start.md):
 | Key | Does |
 |---|---|
 | <kbd>Enter</kbd> | Apply everything staged and close (on the Filters tab it adds or edits; <kbd>a</kbd> applies there, outside the row editor) |
-| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. Needs a terminal that tells it from <kbd>Enter</kbd> |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or <kbd>Ctrl</kbd>+<kbd>J</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> needs a terminal that tells it from <kbd>Enter</kbd>; <kbd>Ctrl</kbd>+<kbd>J</kbd> works on every terminal |
 | <kbd>Esc</kbd> | Close without changing anything |
 | <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
 

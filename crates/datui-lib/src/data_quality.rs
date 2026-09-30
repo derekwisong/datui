@@ -7244,7 +7244,7 @@ mod tests {
     }
 
     /// A finished full run counts the rows every pass traversed; a sampled run the
-    /// rows its sampler streamed; a run that cuts the kept sample reads nothing.
+    /// rows its sampler streamed; a run that uses rows already read reads nothing.
     #[test]
     fn a_run_counts_the_rows_its_reads_traverse() {
         let (_dir, lf) = csv_source(10_000);

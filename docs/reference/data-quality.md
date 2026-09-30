@@ -15,7 +15,7 @@ from its seed, so the count the finding gave is the count in the table.
 | Coverage line | Says |
 |---|---|
 | Checks | The ten checks by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, or a sample where the answer needs every row) |
-| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run cut the kept sample |
+| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read |
 | Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval` |
 
 The coverage comes from what the run measured; showing it reads nothing.

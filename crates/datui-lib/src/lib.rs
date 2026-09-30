@@ -6070,9 +6070,12 @@ pub enum InputType {
     GoToLine,
 }
 
-/// A SQL statement whose rows are being read while the prompt stays open.
-struct SqlRun {
-    sql: String,
+/// A query whose first rows are being read. It planned, but can still fail on the
+/// data — a value that will not cast — and until the rows are in, the view it
+/// replaced is kept to go back to.
+struct QueryRun {
+    mode: QueryMode,
+    text: String,
     rollback: crate::widgets::datatable::ViewRollback,
     /// The App's count markers as they were, for the frame the rollback restores.
     len_count_inflight: Option<u64>,
@@ -7066,9 +7069,9 @@ pub struct App {
     sql_columns: Vec<(String, DataType)>,
     /// A Tab completion in progress in the SQL input.
     sql_completion: Option<sql_assist::Cycle>,
-    /// A statement running with the prompt still open, and the view to go back to if
-    /// it fails.
-    sql_running: Option<SqlRun>,
+    /// A query whose first collect is running, and the view to go back to if it
+    /// fails. From the prompt, the prompt stays open until it is done.
+    query_running: Option<QueryRun>,
     /// Why the last statement failed once it ran, shown under it in the prompt.
     query_run_error: Option<String>,
     /// Bumped when a running statement's failure lands in the prompt. Keys typed while
@@ -9175,7 +9178,7 @@ impl App {
             query_focus: QueryFocus::Input,
             sql_columns: Vec::new(),
             sql_completion: None,
-            sql_running: None,
+            query_running: None,
             query_run_error: None,
             inline_failures: 0,
             sort_filter_modal: SortFilterModal::new(),
@@ -18093,8 +18096,8 @@ impl App {
                         self.loading_state = LoadingState::Idle;
                         self.status_message = None;
                         self.busy = false;
-                        if self.sql_running.take().is_some()
-                            && self.query_prompt_mode() == Some(QueryMode::Sql)
+                        if let Some(run) = self.query_running.take()
+                            && self.query_prompt_mode() == Some(run.mode)
                         {
                             self.leave_query_prompt_after_run();
                         }
@@ -18112,10 +18115,9 @@ impl App {
                 if *generation != self.task_generation {
                     return None;
                 }
-                // A statement that failed once it ran stays in the prompt with the
-                // reason under it, and the table goes back to what it showed.
-                if let Some(run) = self.sql_running.take()
-                    && self.query_prompt_mode() == Some(QueryMode::Sql)
+                // A query that failed on its first rows is not applied: the table,
+                // its schema and its row count go back to what they were (#400).
+                if let Some(run) = self.query_running.take()
                     && let Some(state) = self.data_table_state.as_mut()
                 {
                     state.roll_back(run.rollback);
@@ -18125,16 +18127,25 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
+                    // Run from the prompt, the reason goes under the query, which
+                    // stays open to be fixed. Sent any other way — a view applied —
+                    // there is nothing to edit, and the error modal says why.
+                    if self.query_prompt_mode() != Some(run.mode) {
+                        self.error_modal.show(message.clone());
+                        return None;
+                    }
+                    let sql = run.mode == QueryMode::Sql;
                     self.query_run_error = Some(match conversion {
-                        Some(failure) => failure.sql_message(run.rows),
-                        None => message.clone(),
+                        Some(failure) if sql => failure.sql_message(run.rows),
+                        _ => message.clone(),
                     });
                     self.inline_failures = self.inline_failures.wrapping_add(1);
-                    if let Some(failure) = conversion
+                    if sql
+                        && let Some(failure) = conversion
                         && let Some(rows) = run.rows
                         && failure.checked != rows
                     {
-                        self.count_sql_failure(run.sql, rows);
+                        self.count_sql_failure(run.text, rows);
                     }
                     return None;
                 }
@@ -18655,48 +18666,11 @@ impl App {
                 None
             }
             AppEvent::Search(query) => {
-                let query_succeeded = if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.query(query.clone());
-                    state.defer_collect = false;
-                    state.error.is_none()
-                } else {
-                    false
-                };
-
-                if query_succeeded {
-                    self.input_mode = InputMode::Normal;
-                    self.input_type = None;
-                    self.query_input.set_focused(false);
-                    if let Some(state) = &mut self.data_table_state {
-                        state.suppress_error_display = false;
-                    }
-                    self.spawn_async_collect("Applying query...");
-                }
+                self.run_query(QueryMode::QStyle, query, "Applying query...");
                 None
             }
             AppEvent::SqlSearch(sql) => {
-                self.query_run_error = None;
-                let state = self.data_table_state.as_mut()?;
-                // A statement can plan and still fail on the data, so the prompt stays
-                // open until its rows are in; see `BackgroundCollectFailed`.
-                let rollback = state.rollback_point();
-                let rows = state.sql_table_rows();
-                state.sql_query(sql.clone());
-                if state.error.is_some() {
-                    return None;
-                }
-                self.sql_running = Some(SqlRun {
-                    sql: sql.clone(),
-                    rollback,
-                    len_count_inflight: self.len_count_inflight,
-                    len_count_failed: self.len_count_failed,
-                    rows,
-                });
-                if !self.spawn_async_collect("Applying SQL query...") {
-                    self.sql_running = None;
-                    self.leave_query_prompt_after_run();
-                }
+                self.run_query(QueryMode::Sql, sql, "Applying SQL query...");
                 None
             }
             AppEvent::SqlFailureCounted {
@@ -18714,23 +18688,7 @@ impl App {
                 None
             }
             AppEvent::FuzzySearch(query) => {
-                let fuzzy_succeeded = if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.fuzzy_search(query.clone());
-                    state.defer_collect = false;
-                    state.error.is_none()
-                } else {
-                    false
-                };
-                if fuzzy_succeeded {
-                    self.input_mode = InputMode::Normal;
-                    self.input_type = None;
-                    self.fuzzy_input.set_focused(false);
-                    if let Some(state) = &mut self.data_table_state {
-                        state.suppress_error_display = false;
-                    }
-                    self.spawn_async_collect("Searching...");
-                }
+                self.run_query(QueryMode::Search, query, "Searching...");
                 None
             }
             AppEvent::Filter(statements) => {
@@ -20200,12 +20158,52 @@ impl App {
         let _ = sql;
     }
 
-    /// A statement ran and its rows are in: the prompt closes on them.
+    /// Plan a query in `mode` and read its first rows in the background. A query that
+    /// cannot be planned leaves its error on the state, where the prompt shows it. One
+    /// that plans stays pending — the prompt open, when it came from there — until its
+    /// rows are in; if they fail, the view it replaced comes back.
+    fn run_query(&mut self, mode: QueryMode, text: &str, status: &str) {
+        self.query_run_error = None;
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        let rollback = state.rollback_point();
+        let rows = state.sql_table_rows();
+        state.defer_collect = true;
+        match mode {
+            QueryMode::Sql => state.sql_query(text.to_string()),
+            QueryMode::QStyle => state.query(text.to_string()),
+            QueryMode::Search => state.fuzzy_search(text.to_string()),
+        }
+        state.defer_collect = false;
+        if state.error.is_some() {
+            return;
+        }
+        self.query_running = Some(QueryRun {
+            mode,
+            text: text.to_string(),
+            rollback,
+            len_count_inflight: self.len_count_inflight,
+            len_count_failed: self.len_count_failed,
+            rows,
+        });
+        if !self.spawn_async_collect(status) {
+            // Nothing to read: the rows on hand already show it.
+            self.query_running = None;
+            if self.query_prompt_mode() == Some(mode) {
+                self.leave_query_prompt_after_run();
+            }
+        }
+    }
+
+    /// A query ran and its rows are in: the prompt closes on them.
     fn leave_query_prompt_after_run(&mut self) {
         self.sql_completion = None;
         self.input_mode = InputMode::Normal;
         self.input_type = None;
         self.sql_input.set_focused(false);
+        self.query_input.set_focused(false);
+        self.fuzzy_input.set_focused(false);
         if let Some(state) = &mut self.data_table_state {
             state.suppress_error_display = false;
         }

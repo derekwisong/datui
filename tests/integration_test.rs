@@ -12953,6 +12953,100 @@ fn a_date_that_does_not_parse_is_explained_in_the_prompt() {
     assert!(!error.contains("strict=False"), "{error}");
 }
 
+/// #400: a query that plans but fails on its first rows is not applied. The
+/// table, its schema and its row count stay those of the view before it, and a
+/// sort afterwards works on that view instead of failing the same way again.
+#[cfg(feature = "sql")]
+#[test]
+fn a_query_that_fails_when_collected_is_not_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dated.csv");
+    let mut csv = String::from("id,ds,v\n");
+    for i in 0..30 {
+        csv.push_str(&format!("{i},2024-01-{:02},{}\n", i % 28 + 1, 30 - i));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let names = |app: &App| -> Vec<String> {
+        let state = app.data_table_state.as_ref().unwrap();
+        state.schema.iter_names().map(|n| n.to_string()).collect()
+    };
+    assert_eq!(names(&app), ["id", "ds", "v"]);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().schema.get("ds"),
+        Some(&DataType::Date),
+        "the repro needs ds read as a date"
+    );
+
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    type_text(
+        &mut app,
+        "SELECT CAST(SUBSTR(ds, 1, 10) AS DATE) AS d, COUNT(*) FROM df GROUP BY d",
+    );
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+
+    // The prompt says why, with the statement still there to fix.
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+    assert!(!app.modal_showing());
+    let error = app.query_prompt_error().expect("the reason is shown");
+    assert!(error.contains("String"), "{error}");
+    // Nothing of the failed query is installed.
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(names(&app), ["id", "ds", "v"]);
+    assert!(state.get_active_sql_query().is_empty());
+    assert!(
+        state.is_num_rows_valid(),
+        "the row count is not left unknown"
+    );
+    assert_eq!(state.num_rows, 30);
+
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    let screen = screen_at(&mut app, 80, 24);
+    assert!(!screen.contains("? rows"), "{screen}");
+    assert!(screen.contains("30 rows"), "{screen}");
+
+    // A sort works on the data as it was.
+    run_and_settle(
+        &mut app,
+        AppEvent::Sort(vec!["v".to_string()], vec![false]),
+        &rx,
+        &tx,
+    );
+    assert!(!app.modal_showing(), "the sort does not fail");
+    let state = app.data_table_state.as_ref().unwrap();
+    let sorted = state.lf.clone().collect().unwrap();
+    assert_eq!(sorted.height(), 30);
+    assert_eq!(
+        sorted.column("v").unwrap().i64().unwrap().get(0),
+        Some(1),
+        "sorted ascending on v"
+    );
+}
+
+/// The same holds for a query sent without the prompt, as a view applies one:
+/// the failure is a dialog, over the view as it was.
+#[cfg(feature = "sql")]
+#[test]
+fn a_query_sent_without_the_prompt_that_fails_leaves_the_view() {
+    let (mut app, rx, tx) = open_query_filter_fixture("query_fails_no_prompt.csv");
+    run_and_settle(
+        &mut app,
+        AppEvent::SqlSearch("SELECT CAST(name AS INT) AS n FROM df".to_string()),
+        &rx,
+        &tx,
+    );
+    assert!(app.modal_showing(), "no prompt to put it in: a dialog");
+    let state = app.data_table_state.as_ref().unwrap();
+    let names: Vec<String> = state.schema.iter_names().map(|n| n.to_string()).collect();
+    assert_eq!(names, ["a", "c", "name"]);
+    assert!(state.get_active_sql_query().is_empty());
+    assert_eq!(current_rows(&app), 100);
+}
+
 /// Reopening `/` restores the last query selected, so typing states a new
 /// question instead of appending to the tail of the old one.
 #[test]

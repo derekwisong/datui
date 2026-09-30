@@ -813,9 +813,9 @@ mod tests {
         );
         assert_eq!(held(&p), vec![KeyCode::Char('G')], "G waits for it");
 
-        // The drain runs the Search (and whatever it spawns) with G still held.
+        // The drain runs the Search (and whatever it spawns) with G still held. The
+        // prompt stays up until the result's rows are in.
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
-        assert_eq!(p.app.input_mode, InputMode::Normal);
         assert_eq!(
             p.app.data_table_state.as_ref().unwrap().get_active_query(),
             "select name where age > 40"
@@ -827,6 +827,7 @@ mod tests {
         );
 
         settle(&mut p);
+        assert_eq!(p.app.input_mode, InputMode::Normal);
         let state = p.app.data_table_state.as_ref().unwrap();
         assert_eq!(state.get_active_query(), "select name where age > 40");
         assert_eq!(state.num_rows, 2);
@@ -1106,6 +1107,7 @@ mod tests {
         }
 
         settle(&mut p);
+        assert_eq!(p.app.input_mode, InputMode::Normal);
         let state = p.app.data_table_state.as_ref().unwrap();
         assert_eq!(state.get_active_query(), "select name where age > 40");
         assert_eq!(state.num_rows, 2);

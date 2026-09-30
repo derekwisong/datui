@@ -23,10 +23,6 @@ impl TextArea {
         self.wrap = wrap;
     }
 
-    pub fn wraps(&self) -> bool {
-        self.wrap
-    }
-
     /// Wrapping, and drawn at least once: before the first frame there is no
     /// width to wrap to, and movement goes by buffer line.
     pub(super) fn wraps_now(&self) -> bool {

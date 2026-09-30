@@ -889,21 +889,38 @@ impl QualityStage {
     }
 }
 
-/// A stage, and whether it reads the source or works on rows already read.
+/// A stage, whether it reads the source or works on rows already read, and whether
+/// a cancel stops it partway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QualityPhase {
     pub stage: QualityStage,
     pub reads_source: bool,
+    /// A cancel ends this stage within a batch. A stage that is one collect Polars
+    /// cannot watch runs to its end, and the screen says so while it does.
+    pub interruptible: bool,
 }
 
-/// A run's line to the screen: its stages as it enters them, the rows its sampler
-/// has seen, and a stop the run checks between stages and its reads check between
+/// What a run's reads of the source were seen to do, counted as the rows went by.
+/// Bytes and requests are not counted: a Polars scan does not report them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObservedReads {
+    /// Stages that read the source.
+    pub reads: usize,
+    /// Of those, the ones whose rows were counted as they came.
+    pub counted: usize,
+    /// Rows the counted reads passed through from the scope, over every pass.
+    pub rows: usize,
+}
+
+/// A run's line to the screen: its stages as it enters them, the rows its reads
+/// have seen, and a stop the run checks between stages and its reads check between
 /// batches.
 #[derive(Clone, Default)]
 pub struct QualityWatch {
     read: crate::sampling::ReadWatch,
     report: Option<Arc<dyn Fn(QualityPhase) + Send + Sync>>,
-    last: Arc<std::sync::Mutex<Option<QualityPhase>>>,
+    /// The stage under way, and what the stages before it read.
+    last: Arc<std::sync::Mutex<(Option<QualityPhase>, ObservedReads)>>,
 }
 
 impl std::fmt::Debug for QualityWatch {
@@ -931,30 +948,89 @@ impl QualityWatch {
         self.read.stopped()
     }
 
-    /// The sampler's side: its stop and its row count.
+    /// The reads' side: the stop, and the rows the stage under way has seen.
     pub fn read(&self) -> &crate::sampling::ReadWatch {
         &self.read
     }
 
+    /// What the run's reads were seen to do, the one under way included.
+    pub fn observed(&self) -> ObservedReads {
+        let Ok(last) = self.last.lock() else {
+            return ObservedReads::default();
+        };
+        let (phase, mut observed) = *last;
+        if phase.is_some_and(|phase| phase.reads_source) {
+            observed.reads += 1;
+            if let Some(rows) = self.read.rows_seen() {
+                observed.counted += 1;
+                observed.rows += rows;
+            }
+        }
+        observed
+    }
+
+    /// `lf`, watched: every batch that reaches its top is counted, and once the run
+    /// is cancelled the next one fails the query. On the streaming engine a collect
+    /// of it stops within a batch rather than at its end; in memory the scope
+    /// arrives as one batch, after the read. Projections and filters pass through
+    /// to the scan as they would without it.
+    fn watched(&self, lf: &LazyFrame) -> LazyFrame {
+        let read = self.read.clone();
+        lf.clone().map(
+            move |df: DataFrame| {
+                if read.stopped() {
+                    return Err(PolarsError::ComputeError(crate::sampling::CANCELLED.into()));
+                }
+                read.saw(df.height());
+                Ok(df)
+            },
+            OptFlags::PROJECTION_PUSHDOWN | OptFlags::PREDICATE_PUSHDOWN | OptFlags::STREAMING,
+            None,
+            Some("quality watch"),
+        )
+    }
+
     /// Enter `stage`. Said once however often it is entered, and refused once the run
-    /// is cancelled: between stages is where a run stops.
-    fn stage(&self, stage: QualityStage, reads_source: bool) -> Result<()> {
+    /// is cancelled: between stages is where a run stops. Leaving a stage that read
+    /// the source adds the rows it counted to what was observed.
+    fn stage(&self, stage: QualityStage, reads_source: bool, interruptible: bool) -> Result<()> {
         self.read.check()?;
         let phase = QualityPhase {
             stage,
             reads_source,
+            interruptible,
         };
         let mut last = self
             .last
             .lock()
             .map_err(|_| Report::msg("quality progress lock failed"))?;
-        if *last != Some(phase) {
-            *last = Some(phase);
+        let (previous, observed) = &mut *last;
+        if *previous != Some(phase) {
+            // Rows on screen are the stage's own, so each read counts from zero.
+            let seen = self.read.restart();
+            if previous.is_some_and(|phase| phase.reads_source) {
+                observed.reads += 1;
+                if let Some(rows) = seen {
+                    observed.counted += 1;
+                    observed.rows += rows;
+                }
+            }
+            *previous = Some(phase);
             if let Some(report) = &self.report {
                 report(phase);
             }
         }
         Ok(())
+    }
+
+    /// A watched collect's error, or the cancel that caused it: stopped partway, it
+    /// fails as a stopped sampler does.
+    fn failed(&self, error: impl Into<Report>) -> Report {
+        if self.cancelled() {
+            Report::msg(crate::sampling::CANCELLED)
+        } else {
+            error.into()
+        }
     }
 }
 
@@ -1602,6 +1678,12 @@ pub struct DataQualityResults {
     pub source_files: Option<usize>,
     /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
     pub per_value: Option<usize>,
+    /// How many of `source_files` had their footers read: fewer on a dataset too
+    /// large to read every footer, where the file checks cover only those.
+    pub footers_read: Option<usize>,
+    /// What the run's reads of the source were seen to do. `None` for results no
+    /// watched run produced.
+    pub reads: Option<ObservedReads>,
 }
 
 impl DataQualityResults {
@@ -1690,6 +1772,8 @@ impl DataQualityResults {
             shared_nulls: Vec::new(),
             source_files: None,
             per_value: None,
+            footers_read: None,
+            reads: None,
         }
     }
 }
@@ -2013,18 +2097,20 @@ fn profile_quality(
         polars_streaming,
         watch,
     } = inputs;
-    watch.stage(QualityStage::Preparing, false)?;
+    watch.stage(QualityStage::Preparing, false, false)?;
     let collected_schema = lf.clone().collect_schema()?;
     let schema = visible_schema(&collected_schema, source);
     // What the footers already said: which files have which columns. Free at every
     // compute budget, including the one that reads no values at all.
     if plan.compute == QualityCompute::Metadata {
-        watch.stage(QualityStage::Assembling, false)?;
+        watch.stage(QualityStage::Assembling, false, false)?;
         let mut results = DataQualityResults::empty(total_rows, plan, &schema);
         if let Some(source) = source {
-            results.observations = drift_observations(source, None, polars_streaming);
+            results.observations = drift_observations(source, None, polars_streaming, watch);
         }
         results.source_files = source.map(|source| source.file_names.len());
+        results.footers_read = source.map(|source| source.footers_read);
+        results.reads = Some(watch.observed());
         return Ok(results);
     }
     let grain_column = match &plan.grain {
@@ -2050,7 +2136,9 @@ fn profile_quality(
         let total_rows = match total_rows {
             Some(rows) => rows,
             None => {
-                watch.stage(QualityStage::CountingRows, true)?;
+                // Unwatched: Parquet and IPC answer a count from their metadata, which
+                // a watch between the count and the scan would turn into a read.
+                watch.stage(QualityStage::CountingRows, true, false)?;
                 let count = collect_lazy(
                     crate::widgets::datatable::row_count_lf(lf),
                     polars_streaming,
@@ -2085,11 +2173,14 @@ fn profile_quality(
     // run reads no more than the sample says and measures the rows every tool reads.
     let kept = acquired.insert(match kept {
         Some(kept) => {
-            watch.stage(QualityStage::ReusingSample, false)?;
+            watch.stage(QualityStage::ReusingSample, false, false)?;
             kept.clone()
         }
         None => {
-            watch.stage(QualityStage::ReadingSample, true)?;
+            // The first rows are one collect; every other method streams in batches
+            // or reads seeded runs, and stops between them.
+            let interruptible = plan.method != crate::sampling::SampleMethod::FirstRows;
+            watch.stage(QualityStage::ReadingSample, true, interruptible)?;
             read_quality_sample(lf, total_rows, plan, polars_streaming, watch)?
         }
     });
@@ -2105,7 +2196,7 @@ fn profile_quality(
         return Err(crate::sampling::no_rows_error(&plan.scope));
     }
     let profile_df = attach_source_file(profile_df, source)?;
-    watch.stage(QualityStage::ProfilingColumns, false)?;
+    watch.stage(QualityStage::ProfilingColumns, false, false)?;
     let mut columns = profile_columns(&profile_df, &schema, polars_streaming)?;
     // The same Polars aggregations a full scan uses, over the rows the sample kept:
     // they scale to any sample the shared form asks for, where a walk over rows did
@@ -2118,7 +2209,7 @@ fn profile_quality(
     } else {
         collect_lazy(profile_lf.clone().select(formats), polars_streaming).map_err(Report::from)?
     };
-    watch.stage(QualityStage::CheckingDuplicates, false)?;
+    watch.stage(QualityStage::CheckingDuplicates, false, false)?;
     let identity = profile_identity_lazy(
         &profile_lf,
         &schema,
@@ -2126,7 +2217,7 @@ fn profile_quality(
         precision,
         polars_streaming,
     )?;
-    watch.stage(QualityStage::CheckingSpellings, false)?;
+    watch.stage(QualityStage::CheckingSpellings, false, false)?;
     let category_variants = profile_category_variants_lazy(&profile_lf, &schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns, precision);
     observations.extend(interpretation_observations(
@@ -2138,7 +2229,7 @@ fn profile_quality(
     // A sampled run does not promise the extra reads, so the counts come without the
     // values behind them.
     if let Some(source) = source {
-        observations.extend(drift_observations(source, None, polars_streaming));
+        observations.extend(drift_observations(source, None, polars_streaming, watch));
     }
     let totals = {
         let mut totals = known_segment_totals(plan, total_rows, source);
@@ -2153,7 +2244,7 @@ fn profile_quality(
         }
         totals
     };
-    watch.stage(QualityStage::ProfilingSegments, false)?;
+    watch.stage(QualityStage::ProfilingSegments, false, false)?;
     let segments = profile_segments(
         &profile_df,
         total_rows,
@@ -2166,12 +2257,12 @@ fn profile_quality(
         },
         polars_streaming,
     )?;
-    watch.stage(QualityStage::ComputingIntervals, false)?;
+    watch.stage(QualityStage::ComputingIntervals, false, false)?;
     let temporal = profile_temporal(&profile_df, plan, Some(sample_positions.as_slice()))?;
-    watch.stage(QualityStage::CheckingSharedNulls, false)?;
+    watch.stage(QualityStage::CheckingSharedNulls, false, false)?;
     let shared_nulls = profile_shared_nulls(&profile_df.lazy(), &columns, polars_streaming)?;
     let per_value = kept.per_value.as_ref().map(|per_value| per_value.kept);
-    watch.stage(QualityStage::Assembling, false)?;
+    watch.stage(QualityStage::Assembling, false, false)?;
 
     let results = DataQualityResults {
         total_rows,
@@ -2187,6 +2278,8 @@ fn profile_quality(
         shared_nulls,
         source_files: source.map(|source| source.file_names.len()),
         per_value,
+        footers_read: source.map(|source| source.footers_read),
+        reads: Some(watch.observed()),
     };
     Ok(results)
 }
@@ -2287,8 +2380,9 @@ fn sampled_segment_totals(
         kept.counted.push((key, counts));
         return Ok(totals);
     }
-    watch.stage(QualityStage::CountingSegments, true)?;
-    let counts = counted_segment_totals(lf, plan, polars_streaming)?;
+    watch.stage(QualityStage::CountingSegments, true, polars_streaming)?;
+    let counts = counted_segment_totals(&watch.watched(lf), plan, polars_streaming)
+        .map_err(|error| watch.failed(error))?;
     if counts.len() > crate::sampling::MAX_COUNTED_KEYS {
         kept.too_many.push(key);
         return Err(too_many_segments(plan));
@@ -2355,53 +2449,72 @@ fn compute_full_quality(
     polars_streaming: bool,
     watch: &QualityWatch,
 ) -> Result<DataQualityResults> {
-    watch.stage(QualityStage::ProfilingColumns, true)?;
     let full_schema = lf.clone().collect_schema()?;
+    // Every pass reads through the watch, so a cancel stops it within a batch on the
+    // streaming engine, and the rows each pass traverses are counted.
+    let lf = &watch.watched(lf);
+    let failed = |error: Report| watch.failed(error);
+    watch.stage(QualityStage::ProfilingColumns, true, polars_streaming)?;
     // Text read as time is counted in the same pass as every column's profile.
     let mut exprs = build_profile_exprs(schema);
     exprs.extend(interpretation_exprs(plan, &full_schema));
-    let aggregate =
-        collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
+    let aggregate = collect_lazy(lf.clone().select(exprs), polars_streaming)
+        .map_err(|error| watch.failed(error))?;
     let mut columns = parse_profiles(&aggregate, schema, total_rows);
-    add_dominance_lazy(lf, &mut columns, polars_streaming)?;
-    watch.stage(QualityStage::CheckingDuplicates, true)?;
+    add_dominance_lazy(lf, &mut columns, polars_streaming).map_err(failed)?;
+    watch.stage(QualityStage::CheckingDuplicates, true, polars_streaming)?;
     let identity = profile_identity_lazy(
         lf,
         schema,
         total_rows,
         QualityPrecision::Exact,
         polars_streaming,
-    )?;
-    watch.stage(QualityStage::CheckingSpellings, true)?;
-    let category_variants = profile_category_variants_lazy(lf, schema, polars_streaming)?;
+    )
+    .map_err(failed)?;
+    let texts = schema
+        .iter_values()
+        .any(|dtype| matches!(dtype, DataType::String | DataType::Categorical(..)));
+    watch.stage(QualityStage::CheckingSpellings, texts, polars_streaming)?;
+    let category_variants =
+        profile_category_variants_lazy(lf, schema, polars_streaming).map_err(failed)?;
     let mut observations = observations_from_profiles(&columns, QualityPrecision::Exact);
     observations.extend(interpretation_observations(&aggregate, plan, &full_schema));
     observations.extend(identity_observations(&identity, &category_variants));
     // Only a run that already reads every value pays for the conflicting values, and
-    // only that run's access plan promised the read.
+    // only that run's access plan promised the read. Each file is read on its own,
+    // so a cancel stops them between files.
     if let Some(source) = source {
         if source.conflict_scan.is_some() {
-            watch.stage(QualityStage::ReadingConflicts, true)?;
+            watch.stage(QualityStage::ReadingConflicts, true, true)?;
         }
         observations.extend(drift_observations(
             source,
             source.conflict_scan.as_ref(),
             polars_streaming,
+            watch,
         ));
     }
-    watch.stage(QualityStage::ProfilingSegments, true)?;
-    let segments = if unsegmented(plan, source) {
+    let whole = unsegmented(plan, source);
+    watch.stage(QualityStage::ProfilingSegments, !whole, polars_streaming)?;
+    let segments = if whole {
         // The whole scope is one segment, and its profile is the one just measured:
         // reading it again would be a second pass for the same numbers.
         vec![whole_segment(plan, total_rows, &columns, schema.len())]
     } else {
-        profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)?
+        profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)
+            .map_err(failed)?
     };
-    watch.stage(QualityStage::ComputingIntervals, true)?;
-    let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming)?;
-    watch.stage(QualityStage::CheckingSharedNulls, true)?;
-    let shared_nulls = profile_shared_nulls(lf, &columns, polars_streaming)?;
-    watch.stage(QualityStage::Assembling, false)?;
+    let intervals = !resolved_intervals(plan, &full_schema).is_empty();
+    watch.stage(
+        QualityStage::ComputingIntervals,
+        intervals,
+        polars_streaming,
+    )?;
+    let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming).map_err(failed)?;
+    let shared = !shared_null_groups(&columns).is_empty();
+    watch.stage(QualityStage::CheckingSharedNulls, shared, polars_streaming)?;
+    let shared_nulls = profile_shared_nulls(lf, &columns, polars_streaming).map_err(failed)?;
+    watch.stage(QualityStage::Assembling, false, false)?;
     Ok(DataQualityResults {
         total_rows: Some(total_rows),
         evaluated_rows: total_rows,
@@ -2416,7 +2529,25 @@ fn compute_full_quality(
         shared_nulls,
         source_files: source.map(|source| source.file_names.len()),
         per_value: None,
+        footers_read: source.map(|source| source.footers_read),
+        reads: Some(watch.observed()),
     })
+}
+
+/// Columns sharing a nonzero null count, by the count: the sets worth checking for
+/// rows null in all of them.
+fn shared_null_groups(columns: &[ColumnQualityProfile]) -> Vec<(usize, Vec<String>)> {
+    let mut by_count = BTreeMap::<usize, Vec<String>>::new();
+    for profile in columns.iter().filter(|profile| profile.null_count > 0) {
+        by_count
+            .entry(profile.null_count)
+            .or_default()
+            .push(profile.name.clone());
+    }
+    by_count
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .collect()
 }
 
 /// For every set of two or more columns with the same nonzero null count, how many
@@ -2429,17 +2560,7 @@ fn profile_shared_nulls(
     columns: &[ColumnQualityProfile],
     polars_streaming: bool,
 ) -> Result<Vec<SharedNulls>> {
-    let mut by_count = BTreeMap::<usize, Vec<String>>::new();
-    for profile in columns.iter().filter(|profile| profile.null_count > 0) {
-        by_count
-            .entry(profile.null_count)
-            .or_default()
-            .push(profile.name.clone());
-    }
-    let groups = by_count
-        .into_iter()
-        .filter(|(_, names)| names.len() > 1)
-        .collect::<Vec<_>>();
+    let groups = shared_null_groups(columns);
     if groups.is_empty() {
         return Ok(Vec::new());
     }
@@ -4314,6 +4435,7 @@ fn drift_observations(
     source: &QualitySourceContext,
     conflicts: Option<&QualityConflictScan>,
     polars_streaming: bool,
+    watch: &QualityWatch,
 ) -> Vec<QualityObservation> {
     let mut absent = BTreeMap::<String, DriftTally>::new();
     let mut unread = BTreeMap::<String, DriftTally>::new();
@@ -4357,7 +4479,7 @@ fn drift_observations(
             if kind == ObservationKind::TypeConflict
                 && let Some(scan) = conflicts
             {
-                read_conflict_examples(scan, &column, &mut files, polars_streaming);
+                read_conflict_examples(scan, &column, &mut files, polars_streaming, watch);
             }
             let named = if tally.files > files.len() {
                 format!(", largest {} named", files.len())
@@ -4407,9 +4529,13 @@ fn read_conflict_examples(
     column: &str,
     files: &mut [QualityFileEvidence],
     polars_streaming: bool,
+    watch: &QualityWatch,
 ) {
     let name = PlSmallStr::from(column);
     for file in files.iter_mut() {
+        if watch.cancelled() {
+            return;
+        }
         let Ok(lf) = (scan.0)(
             std::slice::from_ref(&file.name),
             std::slice::from_ref(&name),
@@ -5403,7 +5529,7 @@ mod tests {
             ..QualitySourceContext::default()
         };
 
-        let observations = drift_observations(&source, None, false);
+        let observations = drift_observations(&source, None, false, &QualityWatch::default());
         assert_eq!(observations.len(), 1);
         let absent = &observations[0];
         assert_eq!(absent.kind, ObservationKind::Absent);
@@ -7061,5 +7187,111 @@ mod tests {
             panic!("a stopped read returned rows");
         };
         assert_eq!(error.to_string(), crate::sampling::CANCELLED);
+    }
+
+    /// A CSV of `rows` rows on disk: a source whose read takes many batches.
+    fn csv_source(rows: usize) -> (tempfile::TempDir, LazyFrame) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.csv");
+        let ids = (0..rows as i64).collect::<Vec<_>>();
+        let labels = (0..rows)
+            .map(|row| if row % 7 == 0 { "b" } else { "a" })
+            .collect::<Vec<_>>();
+        let mut df = df!("id" => ids, "label" => labels).unwrap();
+        CsvWriter::new(std::fs::File::create(&path).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        let lf = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        (dir, lf)
+    }
+
+    /// A full run's passes stop within a batch when cancelled mid-read, rather than
+    /// running their collect to its end, and say they can.
+    #[test]
+    fn a_full_run_stops_inside_its_read() {
+        const ROWS: usize = 2_000_000;
+        let (_dir, lf) = csv_source(ROWS);
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&stages);
+        let watch = QualityWatch::new(move |phase| seen.lock().unwrap().push(phase));
+        let stopper = watch.clone();
+        let cancel = std::thread::spawn(move || {
+            // Cancel once the first pass has counted rows, while it is still reading.
+            while stopper.read().rows_seen().is_none_or(|rows| rows == 0) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            stopper.cancel();
+        });
+        let (results, _) =
+            compute_data_quality_watched(&lf, Some(ROWS), &plan, None, true, None, &watch);
+        cancel.join().unwrap();
+        assert_eq!(results.unwrap_err().to_string(), crate::sampling::CANCELLED);
+        let stages = stages.lock().unwrap().clone();
+        let last = stages.last().unwrap();
+        assert_eq!(last.stage, QualityStage::ProfilingColumns, "{stages:?}");
+        assert!(last.reads_source && last.interruptible);
+        let observed = watch.observed();
+        assert!(
+            observed.rows < ROWS,
+            "stopped partway through the first pass: {observed:?}"
+        );
+    }
+
+    /// A finished full run counts the rows every pass traversed; a sampled run the
+    /// rows its sampler streamed; a run that uses rows already read reads nothing.
+    #[test]
+    fn a_run_counts_the_rows_its_reads_traverse() {
+        let (_dir, lf) = csv_source(10_000);
+        let full = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let watch = QualityWatch::default();
+        let (results, _) =
+            compute_data_quality_watched(&lf, Some(10_000), &full, None, true, None, &watch);
+        let reads = results.unwrap().reads.unwrap();
+        assert_eq!(reads.reads, reads.counted, "every pass counted: {reads:?}");
+        assert!(reads.reads >= 2, "{reads:?}");
+        assert_eq!(reads.rows % 10_000, 0, "whole passes: {reads:?}");
+        assert!(reads.rows >= 2 * 10_000, "{reads:?}");
+
+        let sampled = DataQualityPlan {
+            dataset_rows: 100,
+            ..DataQualityPlan::default()
+        };
+        let (results, kept) = compute_data_quality_watched(
+            &lf,
+            Some(10_000),
+            &sampled,
+            None,
+            true,
+            None,
+            &QualityWatch::default(),
+        );
+        assert_eq!(
+            results.unwrap().reads,
+            Some(ObservedReads {
+                reads: 1,
+                counted: 1,
+                rows: 10_000,
+            }),
+            "the sampler streamed the scope once"
+        );
+        let (results, _) = compute_data_quality_watched(
+            &lf,
+            Some(10_000),
+            &sampled,
+            None,
+            true,
+            kept.as_ref(),
+            &QualityWatch::default(),
+        );
+        assert_eq!(results.unwrap().reads, Some(ObservedReads::default()));
     }
 }

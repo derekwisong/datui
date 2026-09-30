@@ -1049,6 +1049,8 @@ fn test_stale_background_events_are_ignored() {
             shared_nulls: vec![],
             source_files: None,
             per_value: None,
+            footers_read: None,
+            reads: None,
         },
         kept: None,
         plan: Box::default(),
@@ -3207,6 +3209,64 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
             assert_eq!(reads, [QualityStage::ReadingSample], "{name} {scope:?}");
         }
     }
+}
+
+/// Every report carries its coverage under the verdict: a sampled run says which
+/// checks ran on the sample, which it could not answer and why, and the rows behind
+/// it; a full run says every row was read and how many rows its passes traversed.
+#[test]
+fn data_quality_coverage_sits_under_every_verdict() {
+    use datui::data_quality::{QualityCompute, QualityPage};
+
+    let (mut app, rx, _tx) = open_text_times_fixture("dq_coverage.parquet");
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    let draw = |app: &mut App| {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+
+    app.analysis_modal.data_quality_plan.dataset_rows = 100;
+    let next = press(&mut app, KeyCode::Enter);
+    drain_quality(&mut app, &rx, next);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    let text = draw(&mut app);
+    assert!(text.contains("Checks  "), "{text}");
+    assert!(text.contains("unavailable"), "{text}");
+    assert!(text.contains("100 of 600 sampled (16.7%)"), "{text}");
+    assert!(
+        text.contains("100 traversed"),
+        "seeded runs of one Parquet file read only the rows they keep: {text}"
+    );
+    assert!(
+        text.contains("Nearly unique: needs every row checked"),
+        "{text}"
+    );
+
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.analysis_modal.data_quality_confirm_run);
+    let next = press(&mut app, KeyCode::Enter);
+    drain_quality(&mut app, &rx, next);
+    let text = draw(&mut app);
+    assert!(text.contains("all 600 read, exact"), "{text}");
+    assert!(!text.contains("unavailable"), "{text}");
+    let reads = app
+        .analysis_modal
+        .data_quality_results
+        .as_ref()
+        .and_then(|results| results.reads)
+        .unwrap();
+    assert!(
+        reads.counted > 0 && reads.rows >= 600,
+        "every watched pass counted: {reads:?}"
+    );
 }
 
 /// However Setup is reached, Esc discards what was staged in it: after Esc handed

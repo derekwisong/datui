@@ -177,7 +177,7 @@ fn render_body(
                 unchanged,
                 edited: app.analysis_modal.setup_edited(),
                 note: note.as_deref(),
-                cancelling: app.cancelled_analysis_running(),
+                cancelling: app.cancelled_run_shown(),
             };
             let modal = &mut app.analysis_modal;
             let config = data_quality::DataQualityWidgetConfig {

@@ -408,6 +408,24 @@ mod tests {
 
     /// Every row of a help screen as the overlay lays it out in `area`, read
     /// off the buffer one scroll position at a time.
+    /// The width the help overlay wraps its text to in `area`.
+    fn help_text_width(area: Rect) -> usize {
+        let mut popup = centered_rect(area, 80, 80);
+        popup.width = popup.width.min(100);
+        let text_area = Rect {
+            width: popup.width.saturating_sub(1),
+            ..popup
+        };
+        let mut scratch = Buffer::empty(area);
+        let footer = crate::widgets::ui::HintBar::from_ctx(&RenderContext::for_test())
+            .hint("Esc", "Close")
+            .hint(crate::glyphs::get().updown, "Scroll");
+        crate::widgets::ui::Surface::new("Help")
+            .footer(&footer)
+            .render(text_area, &mut scratch, &RenderContext::for_test())
+            .width as usize
+    }
+
     fn help_rows(area: Rect, text: &str) -> Vec<String> {
         let ctx = RenderContext::for_test();
         let draw = |scroll: usize| {
@@ -489,9 +507,17 @@ mod tests {
                         } else {
                             0
                         };
-                        let hang = crate::glyphs::key_gap(line)
+                        // As `wrap_help_line` decides: under the description while
+                        // that leaves a readable measure, else under the indent.
+                        let width = help_text_width(area);
+                        let fits = |lead: usize| width.saturating_sub(lead) >= MIN_HELP_MEASURE;
+                        let hang = match crate::glyphs::key_gap(line)
                             .map(|(_, desc)| crate::glyphs::display_width(&line[..desc]))
-                            .unwrap_or_else(|| indent(line) + bullet);
+                        {
+                            Some(desc) if fits(desc) => desc,
+                            _ if fits(indent(line) + bullet) => indent(line) + bullet,
+                            _ => 0,
+                        };
                         while shown.len() < words.len() {
                             let next = rows.next().expect("the rest of a wrapped line");
                             assert_eq!(

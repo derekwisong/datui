@@ -7830,6 +7830,13 @@ impl App {
         self.task_generation
     }
 
+    /// Keep recents, histories and measurements in `cache` from now on. For a test that
+    /// reads its store back: every test in a process shares one, and fifty opens
+    /// elsewhere push its entries out of the capped recents list.
+    pub fn use_cache(&mut self, cache: CacheManager) {
+        self.cache = cache;
+    }
+
     /// Path of the dataset currently installed, if any. Exposed for tests that need to
     /// assert an abandoned load did not swap a dataset in after the fact.
     pub fn open_path(&self) -> Option<&Path> {

@@ -6862,6 +6862,9 @@ fn a_load_chosen_at_home_fails_at_home() {
     let area = Rect::new(0, 0, 120, 40);
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
+    // Its own recents: in the shared store, fifty opens elsewhere push these out.
+    let cache = datui::CacheManager::with_dir(dir.path().join("cache"));
+    app.use_cache(cache.clone());
     tx.send(AppEvent::Open(vec![first], OpenOptions::default()))
         .unwrap();
     for _tick in ticks() {
@@ -6898,7 +6901,6 @@ fn a_load_chosen_at_home_fails_at_home() {
 
     // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
     // The one that did load is, and recording is off-thread, so that is waited for.
-    let cache = datui::CacheManager::new("datui").expect("cache");
     let recorded = |path: &std::path::Path| {
         let path = datui::canonical::canonicalize(path).unwrap();
         cache.load_recents().contains(&path)
@@ -8596,15 +8598,15 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
 
 /// Recents grouped by place: two recents in one directory, one in another, so the
 /// home screen shows two place rows. Returns the app with the cursor on the first
-/// place row, and the three recents.
+/// place row, the three recents, and the app's cache.
 ///
 /// `seed_store` records them in the recents store too, for a test that reads it back.
-/// Tests share one isolated store, and every open writes to it, so a test that reads
-/// it asks whether its own paths are there rather than what else is.
+/// The store is this test's own, under `tmp`: the one the process shares is capped at
+/// fifty recents, and tests opening files in parallel push these out of it.
 fn app_with_recents_in_two_places(
     tmp: &tempfile::TempDir,
     seed_store: bool,
-) -> (App, Vec<PathBuf>) {
+) -> (App, Vec<PathBuf>, datui::CacheManager) {
     common::isolate_cache();
     // As the store keeps them: `/var` is `/private/var` on macOS, and a Windows temp
     // directory is named `RUNNER~1` until canonicalized.
@@ -8623,15 +8625,19 @@ fn app_with_recents_in_two_places(
     }
     // Recorded the way an open records them, so what the test forgets is what the
     // store holds. Oldest first: `push_recent` puts each at the front.
+    let cache = datui::CacheManager::with_dir(root.join("cache"));
     if seed_store {
-        let cache = datui::CacheManager::new("datui").expect("cache");
         for path in recents.iter().rev() {
-            cache.push_recent(path);
+            assert_eq!(
+                cache.push_recent(path),
+                datui::cache::HistoryUpdate::Written
+            );
         }
     }
 
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
+    app.use_cache(cache.clone());
     app.enter_home();
     app.home.rebuild(&[], &recents);
     let row = app
@@ -8641,7 +8647,7 @@ fn app_with_recents_in_two_places(
         .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
         .expect("the directory two recents live in is a place row");
     app.home.selected = row;
-    (app, recents)
+    (app, recents, cache)
 }
 
 /// `Enter` on a place row browses the place: the way back to a directory found by
@@ -8649,7 +8655,7 @@ fn app_with_recents_in_two_places(
 #[test]
 fn test_enter_on_a_place_row_browses_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let (mut app, recents, _) = app_with_recents_in_two_places(&tmp, false);
     let here = recents[0].parent().unwrap().to_path_buf();
 
     // The bar says → goes inside, the same as on any directory.
@@ -8688,8 +8694,7 @@ fn test_enter_on_a_place_row_browses_it() {
 #[test]
 fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents) = app_with_recents_in_two_places(&tmp, true);
-    let cache = datui::CacheManager::new("datui").expect("cache");
+    let (mut app, recents, cache) = app_with_recents_in_two_places(&tmp, true);
     let holds =
         |cache: &datui::CacheManager, path: &Path| cache.load_recents().iter().any(|p| p == path);
     assert!(recents.iter().all(|p| holds(&cache, p)));
@@ -8741,10 +8746,9 @@ fn ctrl(c: char) -> AppEvent {
 #[test]
 fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents) = app_with_recents_in_two_places(&tmp, false);
+    let (mut app, recents, cache) = app_with_recents_in_two_places(&tmp, false);
     let here = recents[0].parent().unwrap().to_path_buf();
     let there = recents[2].parent().unwrap().to_path_buf();
-    let cache = datui::CacheManager::new("datui").expect("cache");
     let kept = |cache: &datui::CacheManager, path: &Path| {
         cache.load_remembered_places().iter().any(|p| p == path)
     };
@@ -8773,7 +8777,6 @@ fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
     app.home.selected = row;
     app.event(&ctrl('d'));
     assert!(kept(&cache, &there), "a file row remembers its directory");
-    cache.forget_place(&there);
 }
 
 /// A remembered directory is listed like a configured one, marked `remembered`, and

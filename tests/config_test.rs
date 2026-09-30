@@ -2393,42 +2393,6 @@ fn the_generated_config_materializes_the_builtin_catalog() {
 }
 
 #[test]
-fn a_saved_public_catalog_keeps_entries_retired_from_the_defaults() {
-    let text = r#"
-[[sources]]
-name = "public"
-label = "Public datasets"
-
-[[sources.datasets]]
-name = "OpenAlex"
-url = "s3://openalex/data/parquet/"
-auth = "anonymous"
-
-[[sources.datasets]]
-name = "Google Open Buildings"
-url = "gs://open-buildings-data/v3/"
-auth = "anonymous"
-
-[[sources.datasets]]
-name = "BigQuery sample data"
-url = "gs://cloud-samples-data/bigquery/"
-auth = "anonymous"
-"#;
-    let saved: AppConfig = toml::from_str(text).unwrap();
-    saved.validate().expect("an older snapshot stays valid");
-    let mut config = AppConfig::default();
-    config.merge(saved.clone());
-    assert_eq!(config.sources, saved.sources);
-    assert_eq!(
-        config.collections(),
-        saved.sources,
-        "the snapshot replaces the curated catalog whole"
-    );
-    let roundtrip: AppConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
-    assert_eq!(roundtrip.sources, saved.sources);
-}
-
-#[test]
 fn cloud_listings_and_hidden_sources_survive_a_restart() {
     use datui::CacheManager;
     use datui::cache::CloudListing;

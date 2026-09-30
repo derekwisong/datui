@@ -86,11 +86,6 @@ edit. It is a snapshot: later datui releases do not change it. Run
 `datui --generate-config --force` for a new one, after saving any edits you want
 to keep.
 
-A snapshot taken before the catalog changed keeps the datasets it had, such as
-OpenAlex, Google Open Buildings or BigQuery sample data. Delete its `public`
-collection from the config to use the current catalog, or edit it to keep your own
-selection.
-
 Across [imported files](settings.md#importing-other-config-files), collections are listed in
 the order defined, imports first. A later collection with the same name replaces
 the earlier one whole; datasets are never merged. `hide_sources` adds up across

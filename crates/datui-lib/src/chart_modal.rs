@@ -4,10 +4,10 @@
 //! edited through the one shared Picker, so the state here is the choices
 //! themselves plus which row holds focus.
 
-use crate::chart_data::ValueRange;
+use crate::chart_data::{BarOrder, ValueRange};
 use crate::widgets::ui::PickerState;
 
-/// Chart kind: full chart category shown as tabs, switched with 1-5 or [ ].
+/// Chart kind: full chart category shown as tabs, switched with 1-6 or [ ].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChartKind {
     #[default]
@@ -16,15 +16,18 @@ pub enum ChartKind {
     BoxPlot,
     Kde,
     Heatmap,
+    /// One horizontal bar per category.
+    Bar,
 }
 
 impl ChartKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::XY,
         Self::Histogram,
         Self::BoxPlot,
         Self::Kde,
         Self::Heatmap,
+        Self::Bar,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -34,6 +37,7 @@ impl ChartKind {
             Self::BoxPlot => "Box Plot",
             Self::Kde => "KDE",
             Self::Heatmap => "Heatmap",
+            Self::Bar => "Bar",
         }
     }
 }
@@ -60,7 +64,7 @@ impl ChartType {
 }
 
 /// Focus: one row of the active chart kind's options form. The tab bar is not
-/// focusable — the chart kind switches from anywhere with 1-5 and [ ].
+/// focusable — the chart kind switches from anywhere with 1-6 and [ ].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChartFocus {
     /// XY plot style: Line / Scatter / Bar, cycled in place.
@@ -84,6 +88,12 @@ pub enum ChartFocus {
     Bandwidth,
     /// Which values the Histogram, Box Plot, or KDE draws: all, or a percentile range.
     Range,
+    /// Bar chart: the category column, one bar per value (single pick).
+    Category,
+    /// Bar chart: the numeric column that sets each bar's length (single pick).
+    Value,
+    /// Bar chart: bars by value or by label.
+    Order,
     /// Sample size shared by every chart kind; the last row of each form.
     LimitRows,
 }
@@ -135,6 +145,15 @@ fn format_usize_with_commas(n: usize) -> String {
     out
 }
 
+/// The view's columns a chart can take, by role.
+#[derive(Clone, Copy, Default)]
+pub struct ChartColumns<'a> {
+    pub numeric: &'a [String],
+    pub datetime: &'a [String],
+    /// Bar chart categories (see `chart_data::is_category_dtype`).
+    pub category: &'a [String],
+}
+
 /// Chart view state: chart kind, axes/columns, and options.
 #[derive(Default)]
 pub struct ChartModal {
@@ -156,6 +175,8 @@ pub struct ChartModal {
     pub x_candidates: Vec<String>,
     /// Numeric columns: the pool for every other column row.
     pub numeric_candidates: Vec<String>,
+    /// Bar chart categories: text, categorical, boolean and integer columns.
+    pub category_candidates: Vec<String>,
     /// Histogram: remembered column (single selection).
     pub hist_column: Option<String>,
     pub hist_bins: usize,
@@ -170,6 +191,10 @@ pub struct ChartModal {
     pub heatmap_bins: usize,
     /// Histogram, Box Plot and KDE: which values are drawn.
     pub value_range: ValueRange,
+    /// Bar chart: remembered category and value columns, and the bar order.
+    pub bar_category: Option<String>,
+    pub bar_value: Option<String>,
+    pub bar_order: BarOrder,
     /// Rows a chart reads: up to this many, sampled across the table. None = every row.
     pub row_limit: Option<usize>,
     /// The dataset the choices were made on (`App::dataset_generation`). Reopening the
@@ -188,11 +213,15 @@ impl ChartModal {
     /// config); None = every row.
     pub fn open(
         &mut self,
-        numeric_columns: &[String],
-        datetime_columns: &[String],
+        columns: ChartColumns<'_>,
         default_row_limit: Option<usize>,
         dataset: u64,
     ) {
+        let ChartColumns {
+            numeric: numeric_columns,
+            datetime: datetime_columns,
+            category: category_columns,
+        } = columns;
         self.active = true;
         self.picker = None;
         // x_candidates: datetime first, then numeric (for list order).
@@ -203,6 +232,7 @@ impl ChartModal {
             }
         }
         self.numeric_candidates = numeric_columns.to_vec();
+        self.category_candidates = category_columns.to_vec();
         if self.dataset == Some(dataset) {
             self.keep_existing_choices();
             self.focus = self.row_order()[0];
@@ -232,6 +262,9 @@ impl ChartModal {
         self.heatmap_x_column = None;
         self.heatmap_y_column = None;
         self.heatmap_bins = HEATMAP_DEFAULT_BINS;
+        self.bar_category = None;
+        self.bar_value = None;
+        self.bar_order = BarOrder::Value;
         self.focus = self.row_order()[0];
     }
 
@@ -255,6 +288,11 @@ impl ChartModal {
         keep(&mut self.kde_column, &self.numeric_candidates);
         keep(&mut self.heatmap_x_column, &self.numeric_candidates);
         keep(&mut self.heatmap_y_column, &self.numeric_candidates);
+        keep(&mut self.bar_category, &self.category_candidates);
+        keep(&mut self.bar_value, &self.numeric_candidates);
+        if self.bar_value.is_some() && self.bar_value == self.bar_category {
+            self.bar_value = None;
+        }
         let (numeric, x) = (&self.numeric_candidates, &self.x_column);
         self.y_columns
             .retain(|c| numeric.contains(c) && Some(c) != x.as_ref());
@@ -279,6 +317,7 @@ impl ChartModal {
             ChartKind::BoxPlot => &[Column, Range, LimitRows],
             ChartKind::Kde => &[Column, Bandwidth, Range, LimitRows],
             ChartKind::Heatmap => &[HeatmapX, HeatmapY, Bins, LimitRows],
+            ChartKind::Bar => &[Category, Value, Order, LimitRows],
         }
     }
 
@@ -299,7 +338,7 @@ impl ChartModal {
         };
     }
 
-    /// Switch the chart kind directly (the 1-5 keys). Focus lands on the new
+    /// Switch the chart kind directly (the 1-6 keys). Focus lands on the new
     /// form's first row; a Picker open for the old form dies with it.
     pub fn set_chart_kind(&mut self, kind: ChartKind) {
         self.chart_kind = kind;
@@ -339,6 +378,8 @@ impl ChartModal {
                 | ChartFocus::Column
                 | ChartFocus::HeatmapX
                 | ChartFocus::HeatmapY
+                | ChartFocus::Category
+                | ChartFocus::Value
         )
     }
 
@@ -364,7 +405,8 @@ impl ChartModal {
     // ----- Picker -----
 
     /// What the focused row's Picker offers. The Y series leave out the X column:
-    /// charted against itself it is only a diagonal.
+    /// charted against itself it is only a diagonal. The bar value leaves out the
+    /// category for the same reason.
     pub fn picker_items(&self) -> Vec<String> {
         match self.focus {
             ChartFocus::XColumn => self.x_candidates.clone(),
@@ -377,6 +419,13 @@ impl ChartModal {
             ChartFocus::Column | ChartFocus::HeatmapX | ChartFocus::HeatmapY => {
                 self.numeric_candidates.clone()
             }
+            ChartFocus::Category => self.category_candidates.clone(),
+            ChartFocus::Value => self
+                .numeric_candidates
+                .iter()
+                .filter(|c| Some(*c) != self.bar_category.as_ref())
+                .cloned()
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -394,6 +443,8 @@ impl ChartModal {
             },
             ChartFocus::HeatmapX => self.heatmap_x_column.as_deref(),
             ChartFocus::HeatmapY => self.heatmap_y_column.as_deref(),
+            ChartFocus::Category => self.bar_category.as_deref(),
+            ChartFocus::Value => self.bar_value.as_deref(),
             _ => None,
         }
     }
@@ -448,6 +499,14 @@ impl ChartModal {
             },
             ChartFocus::HeatmapX => self.heatmap_x_column = Some(item),
             ChartFocus::HeatmapY => self.heatmap_y_column = Some(item),
+            ChartFocus::Category => {
+                // The value cannot be the category too.
+                if self.bar_value.as_ref() == Some(&item) {
+                    self.bar_value = None;
+                }
+                self.bar_category = Some(item);
+            }
+            ChartFocus::Value => self.bar_value = Some(item),
             _ => {}
         }
     }
@@ -535,6 +594,29 @@ impl ChartModal {
         self.heatmap_y_column.clone()
     }
 
+    /// The bar chart's category: the open Picker's cursor previews.
+    pub fn effective_bar_category(&self) -> Option<String> {
+        if self.focus == ChartFocus::Category
+            && let Some(item) = self.picker_cursor_item()
+        {
+            return Some(item);
+        }
+        self.bar_category.clone()
+    }
+
+    /// The bar chart's value column: the open Picker's cursor previews, and a value
+    /// that is the category is none.
+    pub fn effective_bar_value(&self) -> Option<String> {
+        if self.focus == ChartFocus::Value
+            && let Some(item) = self.picker_cursor_item()
+        {
+            return Some(item);
+        }
+        self.bar_value
+            .clone()
+            .filter(|v| Some(v) != self.effective_bar_category().as_ref())
+    }
+
     // ----- Toggles and numbers -----
 
     pub fn toggle_y_starts_at_zero(&mut self) {
@@ -564,6 +646,14 @@ impl ChartModal {
             ChartType::Scatter => ChartType::Line,
             ChartType::Bar => ChartType::Scatter,
         };
+    }
+
+    /// Step the bar order (the Order row) forward or back.
+    pub fn cycle_bar_order(&mut self, delta: i32) {
+        let all = BarOrder::ALL;
+        let i = all.iter().position(|&o| o == self.bar_order).unwrap_or(0) as i32;
+        let n = all.len() as i32;
+        self.bar_order = all[(i + delta).rem_euclid(n) as usize];
     }
 
     /// Step the value range (the Range row) forward or back.
@@ -613,6 +703,7 @@ impl ChartModal {
                 self.adjust_kde_bandwidth_factor(delta as f64 * KDE_BANDWIDTH_STEP)
             }
             ChartFocus::Range => self.cycle_value_range(delta),
+            ChartFocus::Order => self.cycle_bar_order(delta),
             ChartFocus::LimitRows => self.adjust_row_limit(delta),
             _ => {}
         }
@@ -672,19 +763,31 @@ impl ChartModal {
                 self.effective_heatmap_x_column().is_some()
                     && self.effective_heatmap_y_column().is_some()
             }
+            ChartKind::Bar => {
+                self.effective_bar_category().is_some() && self.effective_bar_value().is_some()
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
+    use super::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
+    use crate::chart_data::BarOrder;
+
+    fn columns<'a>(numeric: &'a [String], datetime: &'a [String]) -> ChartColumns<'a> {
+        ChartColumns {
+            numeric,
+            datetime,
+            category: &[],
+        }
+    }
 
     fn open_modal() -> ChartModal {
         let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
         let mut modal = ChartModal::new();
-        modal.open(&numeric, &datetime, Some(10_000), 1);
+        modal.open(columns(&numeric, &datetime), Some(10_000), 1);
         modal
     }
 
@@ -757,9 +860,15 @@ mod tests {
         modal.next_chart_kind();
         assert_eq!(modal.chart_kind, ChartKind::Heatmap);
         assert_eq!(modal.focus, ChartFocus::HeatmapX);
+        modal.next_chart_kind();
+        assert_eq!(modal.chart_kind, ChartKind::Bar);
+        assert_eq!(modal.focus, ChartFocus::Category);
+        modal.next_chart_kind();
+        assert_eq!(modal.chart_kind, ChartKind::XY, "wraps");
         modal.prev_chart_kind();
         modal.prev_chart_kind();
-        assert_eq!(modal.chart_kind, ChartKind::BoxPlot);
+        modal.prev_chart_kind();
+        assert_eq!(modal.chart_kind, ChartKind::Kde);
     }
 
     /// Each kind keeps its own column choice while the tabs change.
@@ -790,7 +899,7 @@ mod tests {
     fn y_picker_toggles_and_caps_at_the_series_max() {
         let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
         let mut modal = ChartModal::new();
-        modal.open(&cols, &[], Some(10_000), 1);
+        modal.open(columns(&cols, &[]), Some(10_000), 1);
         modal.focus = ChartFocus::YColumns;
         modal.open_picker();
         for _ in 0..=Y_SERIES_MAX {
@@ -879,7 +988,7 @@ mod tests {
 
         let numeric = vec!["a".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
-        modal.open(&numeric, &datetime, Some(10_000), 1);
+        modal.open(columns(&numeric, &datetime), Some(10_000), 1);
         assert_eq!(modal.chart_kind, ChartKind::Histogram);
         assert_eq!(modal.x_column.as_deref(), Some("date"));
         assert_eq!(modal.y_columns, ["a"], "b is gone from the view");
@@ -890,7 +999,7 @@ mod tests {
         );
         modal.close();
 
-        modal.open(&numeric, &datetime, Some(10_000), 2);
+        modal.open(columns(&numeric, &datetime), Some(10_000), 2);
         assert_eq!(modal.chart_kind, ChartKind::XY);
         assert!(modal.x_column.is_none() && modal.y_columns.is_empty());
         assert!(modal.hist_column.is_none());
@@ -933,5 +1042,81 @@ mod tests {
         modal.focus = ChartFocus::LimitRows;
         modal.adjust_number_row(-1);
         assert_eq!(modal.row_limit, Some(9_000));
+    }
+
+    /// The bar form: a category from the category pool, a value from the numeric pool
+    /// less the category, and the order cycling by value or label.
+    #[test]
+    fn the_bar_form_picks_a_category_and_a_value() {
+        let numeric = vec!["year".to_string(), "delay".to_string()];
+        let category = vec!["carrier".to_string(), "year".to_string()];
+        let mut modal = ChartModal::new();
+        modal.open(
+            ChartColumns {
+                numeric: &numeric,
+                datetime: &[],
+                category: &category,
+            },
+            Some(10_000),
+            1,
+        );
+        modal.set_chart_kind(ChartKind::Bar);
+        assert_eq!(
+            modal.row_order(),
+            [
+                ChartFocus::Category,
+                ChartFocus::Value,
+                ChartFocus::Order,
+                ChartFocus::LimitRows
+            ]
+        );
+        assert!(!modal.can_export());
+        assert_eq!(modal.picker_items(), ["carrier", "year"]);
+        modal.open_picker();
+        assert_eq!(modal.effective_bar_category().as_deref(), Some("carrier"));
+        modal.picker.as_mut().unwrap().select_original(1);
+        modal.picker_choose();
+        assert_eq!(modal.bar_category.as_deref(), Some("year"));
+
+        modal.next_focus();
+        assert_eq!(
+            modal.picker_items(),
+            ["delay"],
+            "the category is not a value"
+        );
+        modal.open_picker();
+        modal.picker_choose();
+        assert_eq!(modal.bar_value.as_deref(), Some("delay"));
+        assert!(modal.can_export());
+
+        modal.next_focus();
+        assert_eq!(modal.bar_order, BarOrder::Value);
+        modal.adjust_number_row(1);
+        assert_eq!(modal.bar_order, BarOrder::Label);
+        modal.adjust_number_row(1);
+        assert_eq!(modal.bar_order, BarOrder::Value);
+    }
+
+    /// Picking the value column as the category takes it out of the value.
+    #[test]
+    fn a_value_picked_as_the_category_is_cleared() {
+        let numeric = vec!["year".to_string(), "delay".to_string()];
+        let category = vec!["year".to_string()];
+        let mut modal = ChartModal::new();
+        modal.open(
+            ChartColumns {
+                numeric: &numeric,
+                datetime: &[],
+                category: &category,
+            },
+            None,
+            1,
+        );
+        modal.set_chart_kind(ChartKind::Bar);
+        modal.bar_value = Some("year".to_string());
+        modal.open_picker();
+        modal.picker_choose();
+        assert_eq!(modal.bar_category.as_deref(), Some("year"));
+        assert!(modal.bar_value.is_none());
     }
 }

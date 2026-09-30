@@ -86,6 +86,12 @@ pub fn render(
                 _ => None,
             },
         },
+        (ChartKind::Bar, prepared) => ChartRenderData::Bar {
+            data: match prepared {
+                Some(ChartPrepared::Bar(d)) => Some(d),
+                _ => None,
+            },
+        },
     };
 
     widgets::chart::render_chart_view(

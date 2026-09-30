@@ -11,8 +11,8 @@ use ratatui::{
 };
 
 use crate::chart_data::{
-    BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, format_axis_label,
-    format_x_axis_label, segments,
+    BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
+    format_axis_label, format_bar_value, format_x_axis_label, segments,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
@@ -56,6 +56,9 @@ pub enum ChartRenderData<'a> {
     Heatmap {
         data: Option<&'a HeatmapData>,
     },
+    Bar {
+        data: Option<&'a BarData>,
+    },
 }
 
 fn row_label(focus: ChartFocus) -> &'static str {
@@ -71,6 +74,9 @@ fn row_label(focus: ChartFocus) -> &'static str {
         ChartFocus::Bins => "Bins:",
         ChartFocus::Bandwidth => "Bandwidth:",
         ChartFocus::Range => "Range:",
+        ChartFocus::Category => "Category:",
+        ChartFocus::Value => "Value:",
+        ChartFocus::Order => "Order:",
         ChartFocus::LimitRows => "Sample size:",
     }
 }
@@ -84,7 +90,7 @@ fn echo_or_placeholder<'a>(value: &'a str, placeholder: &'a str) -> FormValue<'a
 }
 
 /// The tab line: every chart kind, the active one on the accent. It is state,
-/// not a focus stop — 1-5 and [ ] switch from anywhere.
+/// not a focus stop — 1-6 and [ ] switch from anywhere.
 fn render_tab_line(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -171,6 +177,13 @@ fn render_sidebar(
                 FormValue::Choice(&number)
             }
             ChartFocus::Range => FormValue::Choice(modal.value_range.label()),
+            ChartFocus::Category => {
+                echo_or_placeholder(modal.bar_category.as_deref().unwrap_or(""), "none")
+            }
+            ChartFocus::Value => {
+                echo_or_placeholder(modal.bar_value.as_deref().unwrap_or(""), "none")
+            }
+            ChartFocus::Order => FormValue::Choice(modal.bar_order.label()),
             ChartFocus::LimitRows => {
                 number = modal.row_limit_display();
                 FormValue::Choice(&number)
@@ -309,6 +322,158 @@ pub fn render_chart_view(
         ChartRenderData::Heatmap { data } => {
             render_heatmap_chart(chart_inner, buf, theme, data, text_secondary)
         }
+        ChartRenderData::Bar { data } => {
+            let picked =
+                modal.effective_bar_category().is_some() && modal.effective_bar_value().is_some();
+            render_bar_chart(chart_inner, buf, ctx, data, picked)
+        }
+    }
+}
+
+/// One horizontal bar per category: the label, the value, then the bar, from a zero
+/// line that sits at the left edge unless some value is negative. The bars that fit
+/// are drawn and the rest are counted on a `+ 212 more` chip, never squeezed in.
+fn render_bar_chart(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    ctx: &RenderContext,
+    data: Option<&BarData>,
+    picked: bool,
+) {
+    let hint = |text: &str, buf: &mut ratatui::buffer::Buffer| {
+        Paragraph::new(text.to_string())
+            .style(Style::default().fg(ctx.text_secondary))
+            .centered()
+            .render(area, buf);
+    };
+    // Picked but not here yet: the control bar spins; the canvas waits blank.
+    let Some(data) = data else {
+        if !picked {
+            hint("Select a category and a value", buf);
+        }
+        return;
+    };
+    if data.bars.is_empty() {
+        hint("No data for bar chart", buf);
+        return;
+    }
+    if area.height < 2 || area.width < 5 {
+        return;
+    }
+    // A cell of air between the sidebar and the labels.
+    let area = Rect {
+        x: area.x + 1,
+        width: area.width - 1,
+        ..area
+    };
+    let g = crate::glyphs::get();
+    let width = area.width as usize;
+
+    // A header row, then a row per bar; when they do not all fit, the last row is
+    // the count of the rest.
+    let rows = area.height as usize - 1;
+    let total = data.bars.len() + data.more;
+    let shown = if total <= rows {
+        data.bars.len()
+    } else {
+        rows.saturating_sub(1).min(data.bars.len())
+    };
+    let bars = &data.bars[..shown];
+    let hidden = total - shown;
+
+    let values: Vec<String> = bars.iter().map(|b| format_bar_value(b.value)).collect();
+    let value_w = values
+        .iter()
+        .map(|v| crate::glyphs::display_width(v))
+        .max()
+        .unwrap_or(0);
+    let label_cap = (width * 2 / 5).max(4);
+    // Wide enough for the column's name above the labels, too.
+    let label_w = bars
+        .iter()
+        .map(|b| crate::glyphs::display_width(b.label.as_deref().unwrap_or(g.null)))
+        .chain([crate::glyphs::display_width(&data.category)])
+        .max()
+        .unwrap_or(0)
+        .clamp(1, label_cap);
+    let value_x = label_w + 1;
+    let bar_x = value_x + value_w + 1;
+    let bar_w = width.saturating_sub(bar_x);
+
+    let header = Style::default().fg(ctx.text_secondary);
+    let text = Style::default().fg(ctx.text_primary);
+    let bar_style = Style::default().fg(ctx.primary_chart_series_color);
+    let put = |buf: &mut ratatui::buffer::Buffer, x: usize, y: u16, s: &str, style: Style| {
+        if x < width {
+            buf.set_stringn(area.x + x as u16, y, s, width - x, style);
+        }
+    };
+    let fit = |s: &str, w: usize| -> String {
+        if crate::glyphs::display_width(s) <= w {
+            return s.to_string();
+        }
+        let room = w.saturating_sub(crate::glyphs::display_width(g.ellipsis));
+        format!("{}{}", crate::glyphs::take_columns(s, room), g.ellipsis)
+    };
+
+    // The value column's name ends where the values end, or starts where they start
+    // when it is the wider of the two.
+    put(buf, 0, area.y, &fit(&data.category, label_w), header);
+    let name_w = crate::glyphs::display_width(&data.value_column);
+    let name_x = if name_w <= value_w {
+        value_x + value_w - name_w
+    } else {
+        value_x
+    };
+    put(buf, name_x, area.y, &data.value_column, header);
+
+    let lo = bars.iter().map(|b| b.value).fold(0.0_f64, f64::min);
+    let hi = bars.iter().map(|b| b.value).fold(0.0_f64, f64::max);
+    let span = if hi > lo { hi - lo } else { 1.0 };
+    let zero = ((-lo / span) * bar_w as f64).round() as usize;
+    for (i, (bar, value)) in bars.iter().zip(&values).enumerate() {
+        let y = area.y + 1 + i as u16;
+        match &bar.label {
+            Some(label) => put(buf, 0, y, &fit(label, label_w), text),
+            None => put(buf, 0, y, g.null, Style::default().fg(ctx.dimmed)),
+        }
+        let pad = value_w - crate::glyphs::display_width(value);
+        put(buf, value_x + pad, y, value, text);
+        if bar_w == 0 {
+            continue;
+        }
+        if bar.value >= 0.0 {
+            // Eighths of a cell, so short bars still differ.
+            let eighths = ((bar.value / span) * bar_w as f64 * 8.0).round() as usize;
+            let eighths = eighths.min((bar_w - zero.min(bar_w)) * 8);
+            let mut body = g.bar_eighths[7].repeat(eighths / 8);
+            if let Some(part) = (eighths % 8).checked_sub(1) {
+                body.push_str(g.bar_eighths[part]);
+            }
+            put(buf, bar_x + zero, y, &body, bar_style);
+        } else {
+            // Leftward from zero in whole cells: the eighths fill from the left.
+            let cells = ((-bar.value / span) * bar_w as f64).round() as usize;
+            let cells = cells.min(zero);
+            put(
+                buf,
+                bar_x + zero - cells,
+                y,
+                &g.bar_eighths[7].repeat(cells),
+                bar_style,
+            );
+        }
+    }
+    if hidden > 0 {
+        let y = area.y + 1 + shown as u16;
+        let chip = format!(" + {} more ", crate::numfmt::group_chrome(hidden));
+        put(
+            buf,
+            0,
+            y,
+            &chip,
+            Style::default().bg(ctx.controls_bg).fg(ctx.text_primary),
+        );
     }
 }
 
@@ -1002,8 +1167,11 @@ mod tests {
     fn open_modal() -> ChartModal {
         let mut modal = ChartModal::new();
         modal.open(
-            &["price".to_string(), "volume".to_string()],
-            &["date".to_string()],
+            crate::chart_modal::ChartColumns {
+                numeric: &["price".to_string(), "volume".to_string()],
+                datetime: &["date".to_string()],
+                category: &["carrier".to_string()],
+            },
             Some(10_000),
             1,
         );
@@ -1244,6 +1412,104 @@ mod tests {
         );
     }
 
+    fn bar_data(n: usize) -> BarData {
+        use crate::chart_data::Bar;
+        BarData {
+            category: "carrier".to_string(),
+            value_column: "delay".to_string(),
+            bars: (0..n)
+                .map(|i| Bar {
+                    label: Some(format!("C{i}")),
+                    value: (n - i) as f64,
+                })
+                .collect(),
+            more: 0,
+            no_value: 0,
+            rows: Default::default(),
+        }
+    }
+
+    fn render_bars(data: &BarData, w: u16, h: u16) -> Vec<String> {
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::Bar);
+        render_view(
+            &mut modal,
+            ChartView {
+                data: ChartRenderData::Bar { data: Some(data) },
+                notes: Vec::new(),
+                error: None,
+            },
+            w,
+            h,
+        )
+    }
+
+    /// A bar per category: its label, its value beside it, and a bar as long as the
+    /// value, the largest filling the width.
+    #[test]
+    fn bars_draw_label_value_and_length() {
+        let g = crate::glyphs::get();
+        let full = g.bar_eighths[7];
+        let data = bar_data(3);
+        let rows = render_bars(&data, 100, 24);
+        // The canvas starts past the 42-column sidebar.
+        let canvas: Vec<String> = rows.iter().map(|r| r.chars().skip(42).collect()).collect();
+        assert!(canvas[1].trim_start().starts_with("carrier") && canvas[1].contains("delay"));
+        let bar_len = |row: &str| row.matches(full).count();
+        let words = |row: &str| row.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+        assert_eq!(words(&canvas[2]), "C0 3", "{:?}", canvas[2]);
+        assert_eq!(words(&canvas[4]), "C2 1", "{:?}", canvas[4]);
+        let (a, c) = (bar_len(&canvas[2]), bar_len(&canvas[4]));
+        assert!(
+            a > 40 && (a as f64 / c as f64 - 3.0).abs() < 0.2,
+            "{a} vs {c}"
+        );
+    }
+
+    /// More bars than rows: the ones that fit, then a chip counting the rest, which
+    /// includes those the preparation already left out.
+    #[test]
+    fn bars_past_the_height_are_counted_on_a_chip() {
+        let mut data = bar_data(50);
+        data.more = 200;
+        let rows = render_bars(&data, 80, 24);
+        let body = rows.join("\n");
+        // 23 rows under the tab line: a header, 21 bars, the chip.
+        assert!(body.contains("C20 "), "{body}");
+        assert!(!body.contains("C21 "), "{body}");
+        assert!(rows[23].contains(" + 229 more "), "{:?}", rows[23]);
+    }
+
+    /// A negative value draws left of the zero line; a null category reads as null.
+    #[test]
+    fn negative_bars_grow_left_and_null_categories_show() {
+        use crate::chart_data::Bar;
+        let g = crate::glyphs::get();
+        let full = g.bar_eighths[7];
+        let mut data = bar_data(0);
+        data.bars = vec![
+            Bar {
+                label: Some("UA".to_string()),
+                value: 10.0,
+            },
+            Bar {
+                label: None,
+                value: -10.0,
+            },
+        ];
+        let rows = render_bars(&data, 100, 24);
+        let canvas: Vec<String> = rows.iter().map(|r| r.chars().skip(42).collect()).collect();
+        let first = |row: &str| row.find(full).map(|i| row[..i].chars().count());
+        let pos = first(&canvas[2]).unwrap();
+        let neg = first(&canvas[3]).unwrap();
+        assert!(neg < pos, "the negative bar starts left of zero");
+        assert!(
+            canvas[3].trim_start().starts_with(g.null),
+            "{:?}",
+            canvas[3]
+        );
+    }
+
     #[test]
     fn a_tiny_area_never_panics() {
         for (w, h) in [(0, 0), (3, 2), (10, 4), (20, 6), (60, 20), (80, 24)] {
@@ -1251,6 +1517,10 @@ mod tests {
             modal.focus = ChartFocus::XColumn;
             modal.open_picker();
             let _ = render_rows(&mut modal, w, h);
+            let mut data = bar_data(30);
+            data.bars[3].value = -4.0;
+            data.bars[4].label = Some("a label longer than the whole canvas is".to_string());
+            let _ = render_bars(&data, w, h);
         }
     }
 }

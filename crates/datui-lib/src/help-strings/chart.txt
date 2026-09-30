@@ -1,11 +1,11 @@
-Chart view: XY, Histogram, Box Plot, KDE, Heatmap.
+Chart view: XY, Histogram, Box Plot, KDE, Heatmap, Bar.
 
-  1-5:              Switch chart type directly ([ / ] cycle)
+  1-6:              Switch chart type directly ([ / ] cycle)
   Tab / Shift+Tab:  Move between the option rows (↑/↓ too)
   Enter / Space:    Open a column row's picker, toggle an option,
-                    or cycle the plot style or range
-  ← / → (h/l):      Cycle the plot style or range; adjust bins,
-                    bandwidth, or Sample size (+ / - too)
+                    or cycle the plot style, range or order
+  ← / → (h/l):      Cycle the plot style, range or order; adjust
+                    bins, bandwidth, or Sample size (+ / - too)
   PgUp/PgDn:        Adjust Sample size in bigger steps
   Sample size:      Rows a chart reads. A larger table is sampled
                     across all of it, and the chart says so below
@@ -13,6 +13,10 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap.
   Range:            Histogram, Box Plot and KDE: all values, or p1-p99
                     (the 1st to 99th percentile); the chart counts
                     the values left out
+  Bar:              One bar per category: a text, categorical,
+                    boolean or integer column, one row per category
+                    (group first with a query). Order by value or
+                    label; bars that do not fit are counted
   e:                Export the chart to PNG or EPS. Needs the chart's
                     required columns picked first
   ? / F1:           Show this help (with a picker open ? types into the

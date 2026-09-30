@@ -12779,6 +12779,162 @@ fn ctrl_t_switches_the_query_mode() {
     assert_eq!(current_rows(&app), 50);
 }
 
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        press_key(app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+}
+
+fn screen_at(app: &mut App, width: u16, height: u16) -> String {
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Under a SQL statement the prompt lists the columns of `df` with their types,
+/// narrowed to the word being typed, and Tab completes it: the one name that
+/// fits, then the table name. Shift+Tab is the way to the tab bar.
+#[cfg(feature = "sql")]
+#[test]
+fn tab_completes_column_names_in_sql() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sql_complete.csv");
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+    let screen = screen_at(&mut app, 80, 24);
+    assert!(screen.contains("Columns"), "{screen}");
+    assert!(
+        screen.contains("a i64") && screen.contains("name str"),
+        "{screen}"
+    );
+
+    type_text(&mut app, "SELECT na");
+    let screen = screen_at(&mut app, 80, 24);
+    assert!(
+        screen.contains("name str") && !screen.contains("a i64"),
+        "{screen}"
+    );
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_text(), Some("SELECT name"));
+    type_text(&mut app, " FROM d");
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_text(), Some("SELECT name FROM df"));
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.query_prompt_mode(), None, "the statement ran");
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_active_sql_query(),
+        "SELECT name FROM df"
+    );
+
+    // Shift+Tab reaches the tab bar, where ←/→ change mode.
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Search));
+}
+
+/// Alt+Enter breaks the line; Enter runs the statement, line breaks and all.
+#[cfg(feature = "sql")]
+#[test]
+fn alt_enter_breaks_a_sql_line_and_enter_runs_it() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sql_newline.csv");
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    type_text(&mut app, "SELECT a FROM df");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+    type_text(&mut app, "WHERE a < 10");
+    assert_eq!(
+        app.query_prompt_text(),
+        Some("SELECT a FROM df\nWHERE a < 10")
+    );
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql), "not run yet");
+    let screen = screen_at(&mut app, 80, 24);
+    assert!(
+        screen.contains("SELECT a FROM df") && screen.contains("WHERE a < 10"),
+        "{screen}"
+    );
+
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.query_prompt_mode(), None);
+    assert_eq!(current_rows(&app), 10);
+}
+
+/// A statement that plans but fails on the data keeps the prompt open with the
+/// reason under it, in datui's words; the table stays as it was, no modal
+/// takes the keys, and the statement can be fixed where it is.
+#[cfg(feature = "sql")]
+#[test]
+fn a_sql_statement_that_fails_while_running_stays_in_the_prompt() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sql_runtime_error.csv");
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    type_text(&mut app, "SELECT CAST(name AS INT) AS n FROM df");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+    assert!(!app.modal_showing(), "no modal over the prompt");
+    let error = app.query_prompt_error().expect("the reason is shown");
+    // Counted in the batch that failed, so "100 of 100" or, read in pieces, a floor.
+    assert!(
+        error.starts_with("name: 100 of 100 values are not") || error.starts_with("At least"),
+        "{error}"
+    );
+    assert!(
+        error.contains("in name are not whole numbers, such as \"alpha_0\"")
+            || error.contains("values are not whole numbers, such as \"alpha_0\""),
+        "{error}"
+    );
+    assert!(error.contains("TRY_CAST(name AS INT)"), "{error}");
+    let screen = screen_at(&mut app, 80, 24);
+    assert!(screen.contains("are not whole numbers"), "{screen}");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.get_active_sql_query().is_empty(), "nothing ran");
+    assert_eq!(current_rows(&app), 100, "the table is as it was");
+
+    // Fixed in place: the statement is still there to edit.
+    press_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    for _ in 0.."SELECT ".len() {
+        press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    }
+    type_text(&mut app, "TRY_");
+    assert_eq!(
+        app.query_prompt_text(),
+        Some("SELECT TRY_CAST(name AS INT) AS n FROM df")
+    );
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.query_prompt_mode(), None);
+    assert_eq!(app.query_prompt_error(), None);
+    assert_eq!(current_rows(&app), 100);
+}
+
+/// A date that does not parse is said as a format problem, with the values.
+#[cfg(feature = "sql")]
+#[test]
+fn a_date_that_does_not_parse_is_explained_in_the_prompt() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sql_date_error.csv");
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    type_text(&mut app, "SELECT STRPTIME(name, '%Y-%m-%d') AS d FROM df");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
+    let error = app.query_prompt_error().expect("the reason is shown");
+    assert!(error.contains("do not match the format"), "{error}");
+    assert!(error.contains("SUBSTR(name, 1, n)"), "{error}");
+    assert!(!error.contains("strict=False"), "{error}");
+}
+
 /// Reopening `/` restores the last query selected, so typing states a new
 /// question instead of appending to the tail of the old one.
 #[test]

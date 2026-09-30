@@ -58,6 +58,177 @@ fn polars_words(err: &PolarsError) -> String {
     }
 }
 
+/// Values that would not convert, from a strict CAST or a STRPTIME, as the failed
+/// run reported them. Nothing more is read to find these: Polars counts the failures
+/// in the batch it was converting and quotes a few.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionFailure {
+    pub column: String,
+    /// The target type as Polars spells it: `i32`, `date`, `datetime[μs]`.
+    pub to: String,
+    pub failed: usize,
+    /// Values in the batch the failures were counted in. The whole column only when
+    /// it fit in one batch.
+    pub checked: usize,
+    /// Distinct offending values, at most three, without their quotes.
+    pub examples: Vec<String>,
+    /// Parsed with a format (STRPTIME) rather than cast.
+    pub parsing: bool,
+}
+
+/// The conversion that failed, if that is what `err` is.
+pub fn conversion_failure(err: &PolarsError) -> Option<ConversionFailure> {
+    let mut parsing = false;
+    let mut err = err;
+    loop {
+        match err {
+            PolarsError::ExprContext { error, expr } => {
+                parsing |= expr.contains("strptime") || expr.contains("to_date");
+                err = error;
+            }
+            PolarsError::Context { error, .. } => err = error,
+            _ => break,
+        }
+    }
+    let PolarsError::InvalidOperation(msg) = err else {
+        return None;
+    };
+    parse_conversion(msg, parsing)
+}
+
+/// `conversion from `str` to `i32` failed in column 'FT' for 8 out of 380 values:
+/// ["n/a", "n/a", … "n/a"]`, the shape `handle_casting_failures` writes.
+fn parse_conversion(msg: &str, parsing: bool) -> Option<ConversionFailure> {
+    let rest = msg.strip_prefix("conversion from `")?;
+    let (_, rest) = rest.split_once("` to `")?;
+    let (to, rest) = rest.split_once("` failed in column '")?;
+    let (column, rest) = rest.split_once("' for ")?;
+    let (failed, rest) = rest.split_once(" out of ")?;
+    let (checked, rest) = rest.split_once(" values: ")?;
+    let list = rest.lines().next().unwrap_or("");
+    let list = list.strip_prefix('[').unwrap_or(list);
+    let list = list.strip_suffix(']').unwrap_or(list);
+    let mut examples: Vec<String> = Vec::new();
+    for item in list.split(", ") {
+        // The truncation marker Polars puts before the last value.
+        let item = item.trim_start_matches('…').trim();
+        let item = item
+            .strip_prefix('"')
+            .and_then(|i| i.strip_suffix('"'))
+            .unwrap_or(item);
+        if !item.is_empty() && !examples.iter().any(|e| e == item) && examples.len() < 3 {
+            examples.push(item.to_string());
+        }
+    }
+    Some(ConversionFailure {
+        column: column.to_string(),
+        to: to.to_string(),
+        failed: failed.trim().parse().ok()?,
+        checked: checked.trim().parse().ok()?,
+        examples,
+        parsing,
+    })
+}
+
+impl ConversionFailure {
+    /// What a SQL writer can act on: the column, how many values, a few of them, and
+    /// the SQL that would get past them. `rows` is how many rows the query read, when
+    /// known; the count is only given as "of N" when Polars checked all of them.
+    pub fn sql_message(&self, rows: Option<usize>) -> String {
+        let column = crate::sql_assist::sql_name(&self.column);
+        let count = if rows == Some(self.checked) {
+            format!(
+                "{} of {} values",
+                crate::numfmt::group_chrome(self.failed),
+                crate::numfmt::group_chrome(self.checked)
+            )
+        } else if self.failed == 1 && rows.is_none_or(|r| r == 1) {
+            "1 value".to_string()
+        } else {
+            format!(
+                "At least {} values",
+                crate::numfmt::group_chrome(self.failed)
+            )
+        };
+        let temporal = self.to == "date" || self.to == "time" || self.to.starts_with("datetime");
+        let what = if temporal && self.parsing {
+            "do not match the format"
+        } else if self.to == "date" {
+            "are not dates written YYYY-MM-DD"
+        } else if self.to == "time" {
+            "are not times written HH:MM:SS"
+        } else if temporal {
+            "are not timestamps written YYYY-MM-DD HH:MM:SS"
+        } else if self.to.starts_with('i') || self.to.starts_with('u') {
+            "are not whole numbers"
+        } else if self.to.starts_with('f') || self.to.starts_with("decimal") {
+            "are not numbers"
+        } else if self.to == "bool" {
+            "are not true or false"
+        } else {
+            "cannot be converted"
+        };
+        let quoted: Vec<String> = self.examples.iter().map(|e| format!("\"{e}\"")).collect();
+        let such_as = match quoted.as_slice() {
+            [] => String::new(),
+            [one] => format!(", such as {one}"),
+            [init @ .., last] => format!(", such as {} and {last}", init.join(", ")),
+        };
+        let lead = if count.starts_with("At") {
+            format!("{count} in {column} {what}{such_as}.")
+        } else {
+            format!("{column}: {count} {what}{such_as}.")
+        };
+        let hint = if temporal && self.parsing {
+            format!(
+                "Try: a format that fits them all, or trim the text first with \
+                 SUBSTR({column}, 1, n) or REPLACE({column}, 'text', '')."
+            )
+        } else if temporal {
+            format!(
+                "Try: STRPTIME({column}, '%d/%m/%Y') with the format the values are \
+                 written in."
+            )
+        } else {
+            let sql_type = sql_type_for(&self.to);
+            format!(
+                "Try: TRY_CAST({column} AS {sql_type}) to read them as null, or clean \
+                 the text first with REPLACE or SUBSTR."
+            )
+        };
+        format!("{lead}\n{hint}")
+    }
+}
+
+/// The SQL type name for a Polars one, for a TRY_CAST suggestion.
+fn sql_type_for(polars: &str) -> &'static str {
+    match polars {
+        "i8" => "TINYINT",
+        "i16" => "SMALLINT",
+        "i32" => "INT",
+        "i64" => "BIGINT",
+        "i128" => "HUGEINT",
+        "u8" => "UTINYINT",
+        "u16" => "USMALLINT",
+        "u32" => "INT UNSIGNED",
+        "u64" => "UBIGINT",
+        "f32" => "REAL",
+        "f64" => "DOUBLE",
+        "bool" => "BOOLEAN",
+        t if t.starts_with("decimal") => "DECIMAL",
+        _ => "VARCHAR",
+    }
+}
+
+/// A SQL error as the query prompt shows it: a failed conversion in datui's words,
+/// anything else as Polars says it.
+pub fn sql_error_message(err: &PolarsError, rows: Option<usize>) -> String {
+    match conversion_failure(err) {
+        Some(failure) => failure.sql_message(rows),
+        None => user_message_from_polars(err),
+    }
+}
+
 /// Format an io::Error as a user-facing message by matching on ErrorKind.
 pub fn user_message_from_io(err: &io::Error, context: Option<&str>) -> String {
     use std::io::ErrorKind;
@@ -493,6 +664,90 @@ mod tests {
             !msg.contains("Original error"),
             "should not regurgitate Polars: {}",
             msg
+        );
+    }
+
+    /// A SQL statement's failure as the run reports it.
+    #[cfg(feature = "sql")]
+    fn sql_failure(sql: &str, df: polars::prelude::DataFrame) -> PolarsError {
+        use polars::prelude::IntoLazy;
+        let mut ctx = polars_sql::SQLContext::new();
+        ctx.register("df", df.lazy());
+        ctx.execute(sql)
+            .expect("plans")
+            .collect()
+            .expect_err("fails at run time")
+    }
+
+    /// The Premier League date column: a few postponed matches carry a marker.
+    #[cfg(feature = "sql")]
+    fn matches() -> polars::prelude::DataFrame {
+        let dates: Vec<String> = (0..380)
+            .map(|i| match i % 30 {
+                0 => "Tue Jan 12 2021(P)".to_string(),
+                10 => "Sat Feb 20 2021(P)".to_string(),
+                _ => "Sun Sep 13 2020".to_string(),
+            })
+            .collect();
+        let scores: Vec<String> = (0..380)
+            .map(|i| if i % 50 == 0 { "n/a" } else { "3" }.to_string())
+            .collect();
+        polars::prelude::df!("Date" => dates, "Team 1" => scores).unwrap()
+    }
+
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_date_that_does_not_parse_is_said_in_sql_terms() {
+        let err = sql_failure(
+            "SELECT STRPTIME(Date, '%a %b %d %Y') AS d FROM df",
+            matches(),
+        );
+        let failure = conversion_failure(&err).expect("a conversion");
+        assert_eq!(failure.column, "Date");
+        assert!(failure.parsing);
+        assert_eq!(failure.failed, 26);
+        let msg = sql_error_message(&err, Some(380));
+        assert!(
+            msg.starts_with(
+                "Date: 26 of 380 values do not match the format, such as \"Tue Jan 12 2021(P)\""
+            ),
+            "{msg}"
+        );
+        assert!(msg.contains("SUBSTR(Date, 1, n)"), "{msg}");
+        assert!(
+            !msg.contains("strict=False") && !msg.contains("str.strptime"),
+            "{msg}"
+        );
+        // Read in batches, the count is a floor.
+        let msg = sql_error_message(&err, Some(1000));
+        assert!(
+            msg.starts_with("At least 26 values in Date do not match"),
+            "{msg}"
+        );
+    }
+
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_cast_that_fails_names_the_column_and_suggests_try_cast() {
+        let err = sql_failure(
+            "SELECT CAST(\"Team 1\" AS INT) + 1 AS goals FROM df ORDER BY goals",
+            matches(),
+        );
+        let msg = sql_error_message(&err, Some(380));
+        assert!(
+            msg.starts_with("\"Team 1\": 8 of 380 values are not whole numbers, such as \"n/a\"."),
+            "{msg}"
+        );
+        assert!(msg.contains("TRY_CAST(\"Team 1\" AS INT)"), "{msg}");
+    }
+
+    #[test]
+    fn anything_else_is_said_as_polars_says_it() {
+        let err = PolarsError::InvalidOperation("something else".into());
+        assert_eq!(conversion_failure(&err), None);
+        assert_eq!(
+            sql_error_message(&err, None),
+            user_message_from_polars(&err)
         );
     }
 }

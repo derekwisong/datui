@@ -78,6 +78,22 @@ impl RenderContext {
         }
     }
 
+    /// A column type's color, from the palette the table uses, so a column reads
+    /// the same wherever it is listed.
+    pub fn type_color(&self, dtype: &polars::prelude::DataType) -> ratatui::style::Color {
+        use polars::prelude::DataType as D;
+        match dtype {
+            D::String | D::Categorical(_, _) | D::Enum(_, _) => self.str_col,
+            D::Int8 | D::Int16 | D::Int32 | D::Int64 | D::Int128 => self.int_col,
+            D::UInt8 | D::UInt16 | D::UInt32 | D::UInt64 => self.int_col,
+            D::Float32 | D::Float64 | D::Decimal(_, _) => self.float_col,
+            D::Boolean => self.bool_col,
+            D::Date | D::Datetime(_, _) | D::Duration(_) | D::Time => self.temporal_col,
+            D::Binary | D::BinaryOffset => self.binary_col,
+            _ => self.text_secondary,
+        }
+    }
+
     /// The same context with the type row switched on or off.
     pub fn with_dtype_row(mut self, on: bool) -> Self {
         self.dtype_row = on;

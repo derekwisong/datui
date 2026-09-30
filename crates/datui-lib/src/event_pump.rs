@@ -44,11 +44,13 @@ pub enum Drained {
 
 /// The screen the held keys were typed at. A change means they were meant for
 /// something that is no longer there: the modal that ended the work and has not been
-/// seen yet, or the dataset left for the home screen.
+/// seen yet, the dataset left for the home screen, or a statement's failure put
+/// under it in the query prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Screen {
     generation: u64,
     modal: bool,
+    inline_failures: u64,
 }
 
 /// Owns the app, its channel and the keys held while it was busy.
@@ -317,7 +319,8 @@ impl EventPump {
         let now = Self::screen_of(&self.app);
         let abandoned = now.generation != self.held_for.generation;
         let new_modal = now.modal && !self.held_for.modal;
-        if abandoned || new_modal {
+        let failed_inline = now.inline_failures != self.held_for.inline_failures;
+        if abandoned || new_modal || failed_inline {
             self.held.clear();
             self.app.set_input_dropped(false);
         }
@@ -327,6 +330,7 @@ impl EventPump {
         Screen {
             generation: app.screen_generation(),
             modal: app.modal_showing(),
+            inline_failures: app.inline_failures(),
         }
     }
 }
@@ -895,6 +899,31 @@ mod tests {
         assert!(held(&p).is_empty());
         settle(&mut p);
         assert!(p.app.error_modal.active, "the error is still on screen");
+    }
+
+    /// A statement that fails while running puts its reason under it in the prompt.
+    /// Keys typed while it ran were not answers to that, and are not typed into it.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn keys_held_while_a_statement_runs_are_dropped_when_it_fails() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.app_config.query.default_mode = crate::QueryMode::Sql;
+        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        let sql = "SELECT CAST(name AS INT) AS n FROM df";
+        type_keys(&mut p, sql);
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        // The statement starts running on the next pass over the channel.
+        p.drain().unwrap();
+        assert!(p.app.is_busy());
+        type_keys(&mut p, "jj");
+        assert_eq!(held(&p).len(), 2);
+
+        settle(&mut p);
+        assert!(held(&p).is_empty());
+        assert!(!p.app.error_modal.active);
+        assert_eq!(p.app.query_prompt_mode(), Some(crate::QueryMode::Sql));
+        assert_eq!(p.app.query_prompt_text(), Some(sql));
+        assert!(p.app.query_prompt_error().is_some());
     }
 
     // --- Fixes from the high-effort review of #162 --------------------------------

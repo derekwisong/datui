@@ -73,6 +73,20 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                     Some(crate::InputType::GoToLine) => {
                         vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")]
                     }
+                    // In the SQL input Tab completes and Alt+Enter breaks the line;
+                    // the tab bar is Shift+Tab or ^T away.
+                    _ if app.query_mode == crate::QueryMode::Sql
+                        && app.query_focus == crate::QueryFocus::Input =>
+                    {
+                        vec![
+                            ("Enter", "Run"),
+                            ("Tab", "Complete"),
+                            ("Alt+Enter", "Newline"),
+                            ("^T", "Mode"),
+                            ("F1", "Help"),
+                            ("Esc", "Cancel"),
+                        ]
+                    }
                     _ => vec![
                         ("Enter", "Run"),
                         ("^T", "Mode"),

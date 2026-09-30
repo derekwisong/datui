@@ -744,6 +744,30 @@ mod tests {
         assert_eq!(p.app.query_input.value(), "helloquery");
     }
 
+    /// Ctrl+T typed at a spinner waits its turn like the letters around it: the
+    /// prompt opens, switches mode, and the text lands in the mode switched to.
+    #[test]
+    fn a_mode_chord_typed_while_busy_switches_before_the_text() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        type_keys(&mut p, "/");
+        p.terminal_key(ctrl('t')).unwrap();
+        type_keys(&mut p, "ada");
+        assert_eq!(held(&p).len(), 5, "the chord is held with the text");
+        p.app.busy = false;
+        settle(&mut p);
+
+        let mode = crate::QueryMode::QStyle.next();
+        assert_eq!(p.app.query_prompt_mode(), Some(mode));
+        let typed = match mode {
+            crate::QueryMode::Sql => &p.app.sql_input,
+            crate::QueryMode::Search => &p.app.fuzzy_input,
+            crate::QueryMode::QStyle => &p.app.query_input,
+        };
+        assert_eq!(typed.value(), "ada");
+        assert_eq!(p.app.query_input.value(), "");
+    }
+
     /// A key that arrives behind the event that ended the busy state is handled after
     /// the keys typed before it, not before them.
     #[test]

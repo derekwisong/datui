@@ -3,62 +3,72 @@
 Press <kbd>a</kbd>, choose **Data Quality**, and press <kbd>Enter</kbd>.
 Use it to find missing values, repeated values and changes across files or time.
 
-| Source | What opens |
-|---|---|
-| Local file | Results from the default plan; <kbd>e</kbd> edits the plan |
-| Remote source | The plan first; review it and press <kbd>Enter</kbd> to read values |
+The first time, the pane is the [Sample](analysis-features.md#sampling) form:
+which rows, how they are picked, how many. Press <kbd>Enter</kbd> to run with it
+as it stands; nothing is read before that. Every analysis tool reads the same
+sample, so the next tool you open runs at once.
 
 ## Check missing values
 
 Open the [quick-start penguin data](../getting-started/quick-start.md#1-open-the-data)
 with `--null-value NA`, then:
 
-1. Open **Data Quality** and press <kbd>e</kbd> to edit the plan.
-2. Use **Current view** scope, **dataset** grain and **Full scan** compute.
-3. Press <kbd>Enter</kbd> and confirm the full scan.
-4. Open **Columns** with <kbd>2</kbd> and inspect `body_mass_g`.
+1. Press <kbd>a</kbd>, choose **Data Quality** and press <kbd>Enter</kbd>.
+2. Press <kbd>Enter</kbd> in the Sample form. The table is smaller than the
+   sample size, so every row is read.
+3. Open **Columns** with <kbd>2</kbd> and inspect `body_mass_g`.
 
 The source has 344 rows and two null body-mass values: a null rate of
-`2 / 344`, about **0.58%**. A filter changes the current-view denominator.
-Use **whole source** when you want to ignore the query and filters.
+`2 / 344`, about **0.58%**. A filter changes the rows checked; to ignore it,
+press <kbd>s</kbd> and set **Rows from** to the unfiltered source.
 
 ## Inspect a finding
 
-On **Overview**, select an observation and press <kbd>Enter</kbd> to see
-its definition, row counts and examples. For supported exact observations,
-press <kbd>Enter</kbd> again to open the matching rows; <kbd>Esc</kbd> returns.
-A sampled observation may require a full profile before this drill-down is available.
+On **Overview**, select a finding and press <kbd>Enter</kbd>: its numbers, the
+evidence and what to check. Press <kbd>Enter</kbd> again to open the matching
+rows; on a sampled run these are the sample's rows, the ones the finding
+counted. <kbd>Esc</kbd> returns.
 
-| Result tab | Use it for |
+| Page | Use it for |
 |---|---|
-| **1 Overview** | Findings and their supporting rows |
-| **2 Columns** | Nulls, distinct values, parse rates and ranges |
-| **3 Segments** | Compare files, partitions, row chunks or time windows |
-| **4 Trends** | Plot changes across ordered segments and inspect time-role latency |
+| **Overview** | Problems, notes and clean columns, most important first |
+| **Columns** | Each column's findings, nulls, distinct values, parse rates and ranges |
+| **Segments** | Compare files, partitions, days or row chunks |
+| **Trends** | Each column across the whole range, and the time between dates |
+| **Plan** | How the rows are split and compared |
+
+<kbd>←</kbd> <kbd>→</kbd> move between the pages.
 
 ## Compare parts of a dataset
 
-Press <kbd>e</kbd> to edit the plan. Choose the source or row range in
-**Scope**, then choose how to divide it in **Grain**. Set **Comparison** to
-the previous segment or first-segment baseline and run it.
+Press <kbd>e</kbd> for the plan. Move to **Grain**, press <kbd>Space</kbd> and
+choose how to split the rows: by file, by a partition column, by day, week or
+month of a date column, or in chunks of rows. Set **Compare** to the segment
+before or a baseline the same way, then press <kbd>Enter</kbd> to run.
 
-On **Segments** or **Trends**, <kbd>[</kbd> / <kbd>]</kbd> selects a column,
-<kbd>m</kbd> changes the metric and <kbd>b</kbd> uses the selected segment as
-the baseline. For time windows, assign a date/datetime column under **Time roles**;
-datui does not infer a column's business meaning from its name.
+**Segments** lists each segment's rows, its share of null cells and its
+largest change: a row count that halved or doubled, or a column's rate that
+moved past sampling noise. <kbd>o</kbd> puts the largest changes first,
+<kbd>Enter</kbd> shows a segment's columns beside the one it is compared with,
+and <kbd>b</kbd> makes the selected segment the baseline.
+
+**Trends** draws each column across the whole range, the rows per segment
+first, pooling consecutive segments into bars; <kbd>m</kbd> changes the
+measure. A sample thin per segment, such as 100,000 rows over years of days,
+names only large changes on Segments; Trends shows the smaller ones. To judge
+single days, sample **Equal per value** of the date, or read every row.
+
+For the time between dates, assign **Time roles** on the plan: datui does not
+infer a column's meaning from its name.
 
 ## Check the read size
 
-Press <kbd>p</kbd> for the access plan. Full scans require confirmation.
-Sampling has different costs depending on grain:
+Press <kbd>p</kbd> for the access plan. Reading every row asks for
+confirmation first. The header says what each result was measured on:
+`Data Quality · sample of 100,000 of 36,839,175 rows`.
 
-- **Whole dataset:** samples from a bounded prefix, so later rows may not be represented.
-- **Files, partitions, chunks or windows:** reads the entire selected scope and keeps a sample per segment.
+Missing-column and type-conflict findings describe the loaded source's
+footers, whatever rows the sample covers.
 
-Results label the evaluated rows and whether the values are sampled, exact,
-or metadata-only. Sampled distinct counts cannot establish uniqueness.
-Missing-column and type-conflict findings always describe the loaded source's
-footer metadata, even when value checks use a narrower scope.
-
-See the [reference](../reference/data-quality.md) for scope syntax, metric
+See the [reference](../reference/data-quality.md) for the plan, keys, metric
 formulas and budgets, or the [key list](../reference/keyboard-shortcuts.md#analysis).

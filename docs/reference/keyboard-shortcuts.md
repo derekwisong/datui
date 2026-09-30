@@ -54,6 +54,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, or on a place row under `RECENT`, goes inside it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section. The control bar names which, for the row you are on |
 | <kbd>Enter</kbd> on `(all files)` | Read the whole directory as one table, whatever its label. The first row inside a directory with something openable — `(all partitions)` in a hive directory; hidden while a filter is typed |
+| <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | type | Filter by name or column name, and search below the directory you are inside |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes, <kbd>Enter</kbd> opens, <kbd>Esc</kbd> closes |
 | <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows — the control bar names the order in effect |
@@ -169,31 +170,45 @@ In the chart export dialog:
 | <kbd>Tab</kbd> | Switch focus between the tool list and the result |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
-| <kbd>Enter</kbd> | Run the highlighted tool, or open the detail of a column or a correlation pair |
-| <kbd>s</kbd> | In the distribution detail, toggle the histogram between linear and log |
-| <kbd>r</kbd> | On a sampled result, draw another sample (from the main analysis view, not inside a detail) |
-| <kbd>a</kbd> | On a sampled result, read every row instead, after confirming |
+| <kbd>Enter</kbd> | Pick the highlighted tool: its result, or a run on the shared sample; the first run on a dataset starts in the Sample form, where Enter runs it. In a result, open the detail of a column or a correlation pair |
+| <kbd>s</kbd> | On a tool's main view, open the Sample form: the rows every tool reads. In the distribution detail, toggle the histogram between linear and log |
+| <kbd>v</kbd> | On a tool's main view, show the sample's rows in the table viewer; <kbd>Esc</kbd> returns to the tool |
+| <kbd>r</kbd> | On a sampled result, draw another sample for every tool (from the main analysis view, not inside a detail) |
+| <kbd>a</kbd> | On a sampled result, read every row instead, after confirming; the sample's method becomes Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress; otherwise back one level |
+
+In the Sample form:
+
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> | Apply the sample and run the tool on screen again |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> | Move between the settings |
+| <kbd>←</kbd> <kbd>→</kbd> | Change the focused choice |
+| typing | On Values, Files, From row, To row, From, Before and Random seed: the value |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | On Files, scroll the numbered source files |
+| <kbd>Esc</kbd> | Discard the edit |
 
 In Data Quality:
 
 | Key | Action |
 |---|---|
-| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview, Columns, Segments, or Trends |
-| <kbd>Enter</kbd> | Run the plan, apply the edit in progress, inspect an observation, open its exact matching rows, or close an open popup |
-| <kbd>e</kbd> | Edit the plan's seven fields — Scope, Grain, Compute, Compare, Time roles, Latency threshold, Sample rows — in a copy of the plan |
-| <kbd>←</kbd> <kbd>→</kbd> | In the plan editor, change the focused field's value; on Time roles, cycle the column |
-| <kbd>Enter</kbd> on Scope | Open the precise scope entry |
-| <kbd>Enter</kbd> on Time roles | Open the role editor: <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> the column, <kbd>Enter</kbd> done |
-| <kbd>←</kbd> <kbd>→</kbd> on Sample rows | Cycle 1,000 to 50,000 rows kept per segment (default: `[performance] quality_sample_rows`) |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> on Scope | Scroll the numbered source-file inventory |
+| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends, Plan |
+| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends directly |
+| <kbd>Enter</kbd> | On the Plan, run it, from any field. Elsewhere, open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the plan setting that fills it |
+| <kbd>e</kbd> | Go to the Plan |
+| <kbd>Space</kbd> on the Plan | Open the field under the cursor: the Sample form, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
+| <kbd>s</kbd> | Open the shared Sample form |
+| <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
+| In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date or time column there is nothing to assign, and the row says so |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> in a finding | Scroll a finding taller than the screen; its frame counts the lines below |
 | <kbd>p</kbd> | Show the detailed access plan |
-| <kbd>[</kbd> <kbd>]</kbd> | In Segments/Trends, choose a column |
-| <kbd>m</kbd> | In Segments/Trends, choose a measurement |
+| <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
+| <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
+| <kbd>m</kbd> | In Trends, choose the measure the table draws |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
-| <kbd>r</kbd> | Rerun with a new seed |
+| <kbd>r</kbd> | Rerun with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, the edit (on Time roles, restoring the whole pre-edit plan), a column's Detail back to the Plan, an evidence drill back to its observation, then Analysis itself |
+| <kbd>Esc</kbd> | Back out one layer: a popup or a list of choices, the plan's edits (back to the plan the report was measured with), the Time roles editor, a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself |
 
 ## Pivot and melt
 

@@ -232,8 +232,9 @@ leaving:
 - The feature keys: `/ s c a p e i v V r R N F D H`, Enter-to-drill.
   (#317 moved the views list from `t`/`T` to `v`/`V` with the rename.)
 - Text fields keep their readline bindings.
-- Home's type-to-filter: every printable except `?` (empty filter only) and
-  `~` goes to the filter. Never assign a letter key on the home screen.
+- Home's type-to-filter: every printable except `?` and Space (empty filter
+  only) and `~` goes to the filter. Never assign a letter key on the home
+  screen.
 
 Any other key may move, with the help string, the docs key table and a
 release-notes line updated in the same PR.

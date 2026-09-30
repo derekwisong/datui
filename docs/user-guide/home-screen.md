@@ -29,8 +29,9 @@ To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
 | `Found` | Recursive search results while you type |
 
 Folded sections stay folded between runs. Path sections show why they are
-listed and their status: for example `configured`, `nfs4`, `listing`,
-`unavailable`, or `first 5000` when a listing is incomplete.
+listed and their status: for example `configured`, `nfs4`, `listing` (with
+`1,200 so far` once a slow share sends its first rows, which show as they
+arrive), `unavailable`, or `first 5,000` when a listing is incomplete.
 
 ### Recent
 
@@ -239,6 +240,7 @@ These commands do not delete data files.
 | <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
+| <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
@@ -266,7 +268,8 @@ The bottom bar shows the available action for the selected row.
 | Recursive search | Depth 8; 20,000 results; 1.5 seconds |
 
 Entries beyond an inspection limit remain browsable. The listing or search
-heading marks incomplete results.
+heading marks incomplete results: a directory cut short reads `first 5,000`
+beside its name, whether it is local or on a share.
 
 ## Narrow and plain terminals
 

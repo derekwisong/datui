@@ -85,17 +85,12 @@ values. Locale-based formatting requires the `"system"` preset.
 
 ```toml
 [performance]
-analysis_sample_rows = 100000    # Rows analyzed from a larger table; 0 reads every row
+analysis_sample_rows = 100000    # The analysis sample's starting size; 0 starts at every row
 event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
-quality_sample_rows = 10000      # Data Quality rows kept per segment, 1 to 50_000
 ```
 
 `--sample-rows N` overrides `analysis_sample_rows` for a run. See
 [Analysis](../user-guide/analysis-features.md#sampling).
-
-`quality_sample_rows` is the default for the Data Quality plan's
-[Sample rows field](data-quality.md#sampling-and-budgets); the plan
-editor changes it per run.
 
 ## Charts
 

@@ -854,6 +854,10 @@ pub struct HomeState {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// The rows of network directories still being listed, read so far.
+    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    /// Network directories whose listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
+    pub cut_short: std::collections::HashSet<PathBuf>,
     /// Why a cloud listing was refused, when the service said.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
@@ -967,6 +971,8 @@ impl Default for HomeState {
             peeking: std::collections::HashSet::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
+            listing_so_far: std::collections::HashMap::new(),
+            cut_short: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
             peek_failed: std::collections::HashSet::new(),
@@ -993,6 +999,10 @@ pub struct ListingRequest {
     pub browsing: Option<PathBuf>,
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// Rows of network directories still being listed. See [`HomeState::listing_so_far`].
+    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    /// See [`HomeState::cut_short`].
+    pub cut_short: std::collections::HashSet<PathBuf>,
     /// Why a cloud listing was refused.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     pub network_check: fn(&Path) -> bool,
@@ -1027,45 +1037,66 @@ pub fn look_into(entry: &Entry) -> Entry {
 /// looks. The listing passes have none and take the defaults, which is what an open
 /// from the home screen is made with.
 pub fn look_into_as(entry: &Entry, as_read: &crate::schema_union::ReadAs) -> Entry {
+    let mut probe = classify_row(entry);
+    measure_row(&mut probe, entry, as_read);
+    probe
+}
+
+/// The first half of [`look_into`]: what a row nothing has looked into is.
+fn classify_row(entry: &Entry) -> Entry {
     let mut probe = entry.clone();
     if probe.kind == EntryKind::Unknown && probe.path.is_dir() {
         let (kind, holds) = discover::look_at_directory(&probe.path);
         probe.kind = kind;
         probe.holds = holds;
     }
-    discover::enrich_as(&mut probe, as_read);
-    probe.size = probe.size.or(entry.size);
-    probe.modified = probe.modified.or(entry.modified);
     probe
 }
 
-/// Look into a batch of rows, and remember what was learned.
+/// The second half of [`look_into`]: what is in it, from the files themselves.
+fn measure_row(probe: &mut Entry, entry: &Entry, as_read: &crate::schema_union::ReadAs) {
+    discover::enrich_as(probe, as_read);
+    probe.size = probe.size.or(entry.size);
+    probe.modified = probe.modified.or(entry.modified);
+}
+
+/// Look into a batch of rows, handing each answer to `each` as it arrives, and
+/// remember what was learned.
 ///
 /// What both background passes do — the one that measures rows on screen and the one
 /// that classifies them — because the difference between them is which rows they pick,
 /// not what is done to one. Runs on a worker; see [`look_into`] for why never here.
+///
+/// Every row is classified before any is measured. A kind costs one directory read and
+/// a count can cost sixty-four footers, so a batch that did both a row at a time kept
+/// the last row's label waiting on every footer above it.
 pub fn look_into_batch(
     rows: Vec<Entry>,
     cache: &crate::cache::CacheManager,
-) -> Vec<(PathBuf, Measured)> {
-    let looked_at: Vec<(Entry, Entry)> = rows
+    mut each: impl FnMut(PathBuf, Measured),
+) {
+    let as_read = crate::schema_union::ReadAs::default();
+    let classified: Vec<(Entry, Entry)> = rows
         .into_iter()
-        .map(|entry| (look_into(&entry), entry))
+        .map(|entry| {
+            let probe = classify_row(&entry);
+            if probe.kind != entry.kind {
+                each(entry.path.clone(), measured_from(&probe, &entry));
+            }
+            (probe, entry)
+        })
         .collect();
 
+    let mut facts = Vec::new();
+    for (mut probe, entry) in classified {
+        measure_row(&mut probe, &entry, &as_read);
+        facts.extend(facts_for(&probe));
+        each(entry.path.clone(), measured_from(&probe, &entry));
+    }
     // Remember what was learned, so the next run has it before reading anything.
     // Purely a cache: every record carries the size and mtime it came from and
     // invalidates itself when those change.
-    let facts: Vec<_> = looked_at
-        .iter()
-        .filter_map(|(probe, _)| facts_for(probe))
-        .collect();
     cache.record_dataset_facts(&facts);
-
-    looked_at
-        .into_iter()
-        .map(|(probe, entry)| (entry.path.clone(), measured_from(&probe, &entry)))
-        .collect()
 }
 
 /// Fold a measured probe into the record kept for a row.
@@ -1110,6 +1141,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         browsing,
         probed,
         unreachable,
+        listing_so_far,
+        cut_short,
         probe_errors,
         network_check,
         cloud,
@@ -1164,10 +1197,33 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // it was missing here, which is why descending into a bucket showed nothing
         // and kept showing nothing.
         let remote = network_check(&dir);
-        let rows = if remote {
-            probed.get(&dir).cloned().unwrap_or_default()
+        // A remote listing still being read shows what it has, and says so.
+        let so_far = remote && !probed.contains_key(&dir) && listing_so_far.contains_key(&dir);
+        let (rows, truncated) = if remote {
+            let rows = probed
+                .get(&dir)
+                .or_else(|| listing_so_far.get(&dir))
+                .cloned()
+                .unwrap_or_default();
+            (rows, cut_short.contains(&dir))
         } else {
-            discover::scan_dir(&dir)
+            let scan = discover::scan_dir_bounded(&dir);
+            (scan.entries, scan.truncated)
+        };
+        // A directory cut off at the cap otherwise looks exactly like one that happens
+        // to hold that many things.
+        let subtitle = if so_far {
+            Some(format!(
+                "{} so far",
+                crate::numfmt::group_chrome(rows.len())
+            ))
+        } else if truncated {
+            Some(format!(
+                "first {}",
+                crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
+            ))
+        } else {
+            None
         };
         let unavailable = remote && unreachable.contains(&dir);
         // The first row inside any directory opens the whole of it, since `Enter` on the
@@ -1194,7 +1250,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                     }
                 }
             },
-            subtitle: None,
+            subtitle,
             origin: None,
             root: Some(dir.clone()),
             rows,
@@ -1203,9 +1259,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // listing was refused says why.
             unavailable_note: probe_errors.get(&dir).cloned(),
             folded_by_default: false,
-            // Its wait is drawn in place of the whole list; see `awaiting_listing`.
+            // Its wait is drawn in place of the whole list until rows arrive (see
+            // `awaiting_listing`), and on the heading once they do.
             remote_root: None,
-            waiting: false,
+            waiting: so_far,
             grouped_by_place: false,
             door,
             place_labels: Default::default(),
@@ -1267,7 +1324,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // where a directory big enough to hit the cap realistically lives.
         let mut truncated = false;
         let rows = if root.network {
-            probed.get(&root.path).cloned().unwrap_or_default()
+            truncated = cut_short.contains(&root.path);
+            probed
+                .get(&root.path)
+                .or_else(|| listing_so_far.get(&root.path))
+                .cloned()
+                .unwrap_or_default()
         } else if root.available {
             let scan = discover::scan_dir_bounded(&root.path);
             truncated = scan.truncated;
@@ -1314,7 +1376,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // looks exactly like one that happens to hold that many things.
         let mut state: Vec<String> = Vec::new();
         if truncated {
-            state.push(format!("first {}", discover::MAX_ENTRIES_PER_DIR));
+            state.push(format!(
+                "first {}",
+                crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
+            ));
         }
         if root.network {
             state.push(fstype);
@@ -1920,6 +1985,8 @@ impl HomeState {
             browsing: self.browsing.clone(),
             probed: self.probed.clone(),
             unreachable: self.unreachable.clone(),
+            listing_so_far: self.listing_so_far.clone(),
+            cut_short: self.cut_short.clone(),
             probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
@@ -2891,6 +2958,8 @@ impl HomeState {
     pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
         self.unreachable.remove(&root);
         self.probe_errors.remove(&root);
+        self.listing_so_far.remove(&root);
+        self.cut_short.remove(&root);
         self.probed.insert(root.clone(), rows);
         self.apply_cloud_kinds(&root);
     }
@@ -2980,6 +3049,7 @@ impl HomeState {
     /// Record that a probe could not read the root.
     pub fn probe_failed(&mut self, root: PathBuf) {
         self.probed.remove(&root);
+        self.listing_so_far.remove(&root);
         self.unreachable.insert(root);
     }
 
@@ -3669,6 +3739,47 @@ mod holds_flow_tests {
             home.sections[0].rows[0].holds.label(),
             "15 parquet",
             "a measurement with nothing to say erased the label"
+        );
+    }
+}
+
+#[cfg(test)]
+mod look_into_batch_tests {
+    use super::*;
+    use polars::prelude::*;
+
+    /// Every row in a batch is labeled before any is measured: a kind is one directory
+    /// read, and a count can be sixty-four footers.
+    #[test]
+    fn every_kind_is_sent_before_any_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        let mut rows = Vec::new();
+        for name in ["a", "b"] {
+            let partition = dir.path().join(name).join("year=2024");
+            std::fs::create_dir_all(&partition).unwrap();
+            let mut frame = df!("x" => [1i32, 2, 3]).unwrap();
+            let file = std::fs::File::create(partition.join("part.parquet")).unwrap();
+            ParquetWriter::new(file).finish(&mut frame).unwrap();
+            rows.push(Entry::new(dir.path().join(name), EntryKind::Unknown));
+        }
+
+        let mut sent = Vec::new();
+        look_into_batch(rows, &cache, |path, m| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            sent.push((name, m.kind, m.rows));
+        });
+
+        let hive = Some(EntryKind::Hive);
+        assert_eq!(
+            sent,
+            vec![
+                ("a".to_string(), hive, None),
+                ("b".to_string(), hive, None),
+                ("a".to_string(), hive, Some(3)),
+                ("b".to_string(), hive, Some(3)),
+            ]
         );
     }
 }

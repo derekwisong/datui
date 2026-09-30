@@ -1307,10 +1307,14 @@ mod chart_prepare_tests {
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Tab);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.chart_modal.picker_items(), ["delay"]);
+        assert_eq!(app.chart_modal.picker_items(), ["Count", "delay"]);
+        key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.chart_modal.bar_category.as_deref(), Some("carrier"));
-        assert_eq!(app.chart_modal.bar_value.as_deref(), Some("delay"));
+        assert_eq!(
+            app.chart_modal.bar_value,
+            Some(chart_data::BarValue::Column("delay".to_string()))
+        );
         app.event(&AppEvent::Resize(100, 24));
         pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
@@ -1382,6 +1386,73 @@ mod chart_prepare_tests {
         for chip in ["1-6", "Chart", "Space", "Edit", "Help", "Esc"] {
             assert!(value.contains(chip), "{chip} in {value:?}");
         }
+    }
+
+    /// Count, first in the Value picker, charts the rows per category of the raw table
+    /// with no query: exact past the sample size, and the note says they are counts of
+    /// every row.
+    #[test]
+    fn a_bar_chart_counts_rows_per_category() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("penguins.csv");
+        let mut body = String::from("species,island\n");
+        for (species, n) in [("Adelie", 152), ("Gentoo", 124), ("Chinstrap", 68)] {
+            for _ in 0..n {
+                body.push_str(&format!("{species},Biscoe\n"));
+            }
+        }
+        body.push_str(",Dream\n");
+        std::fs::write(&path, body).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Char('6'));
+        app.chart_modal.row_limit = Some(100);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.chart_modal.picker_items(), ["species", "island"]);
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.chart_modal.picker_items(),
+            ["Count"],
+            "no numeric column, and still a value to chart"
+        );
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.chart_modal.bar_value, Some(chart_data::BarValue::Count));
+        app.event(&AppEvent::Resize(100, 24));
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+
+        let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buf);
+        let drawn: Vec<String> = (0..24)
+            .map(|y| (42..100).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let starts: Vec<String> = drawn
+            .iter()
+            .filter_map(|r| {
+                let mut words = r.split_whitespace();
+                let label = words.next()?;
+                let value = words.next()?;
+                ["Adelie", "Gentoo", "Chinstrap", "species"]
+                    .contains(&label)
+                    .then(|| format!("{label} {value}"))
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            ["species count", "Adelie 152", "Gentoo 124", "Chinstrap 68"],
+            "{drawn:#?}"
+        );
+        assert!(
+            drawn.iter().any(|r| r.contains("counts of 345 rows")),
+            "{drawn:#?}"
+        );
+        assert!(!drawn.iter().any(|r| r.contains("sample of")), "{drawn:#?}");
     }
 
     /// Esc leaves a worker running that cannot be cancelled; reopening the chart and
@@ -6818,7 +6889,7 @@ pub(crate) enum ChartRequest {
     },
     Bar {
         category: String,
-        value: String,
+        value: chart_data::BarValue,
         order: chart_data::BarOrder,
         row_limit: Option<usize>,
     },
@@ -6945,14 +7016,23 @@ impl ChartRequest {
                 value,
                 order,
                 ..
-            } => ChartPrepared::Bar(chart_data::prepare_bar_data(
-                lf,
-                category,
-                value,
-                *order,
-                chart_data::BAR_CAP,
-                sampling,
-            )?),
+            } => ChartPrepared::Bar(match value {
+                chart_data::BarValue::Count => chart_data::prepare_bar_counts(
+                    lf,
+                    category,
+                    *order,
+                    chart_data::BAR_CAP,
+                    sampling,
+                )?,
+                chart_data::BarValue::Column(value) => chart_data::prepare_bar_data(
+                    lf,
+                    category,
+                    value,
+                    *order,
+                    chart_data::BAR_CAP,
+                    sampling,
+                )?,
+            }),
         })
     }
 }
@@ -6993,6 +7073,12 @@ impl ChartPrepared {
     pub(crate) fn notes(&self) -> Vec<String> {
         if let Self::Bar(d) = self {
             let mut notes = chart_data::chart_notes(&d.rows, None);
+            if let Some(rows) = d.counted {
+                notes.push(format!(
+                    "counts of {} rows",
+                    crate::discover::format_rows(rows)
+                ));
+            }
             if d.no_value > 0 {
                 let noun = if d.no_value == 1 {
                     "category"

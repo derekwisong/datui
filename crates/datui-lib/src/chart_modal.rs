@@ -4,7 +4,7 @@
 //! edited through the one shared Picker, so the state here is the choices
 //! themselves plus which row holds focus.
 
-use crate::chart_data::{BarOrder, ValueRange};
+use crate::chart_data::{BarOrder, BarValue, ValueRange};
 use crate::widgets::ui::PickerState;
 
 /// Chart kind: full chart category shown as tabs, switched with 1-6 or [ ].
@@ -90,7 +90,8 @@ pub enum ChartFocus {
     Range,
     /// Bar chart: the category column, one bar per value (single pick).
     Category,
-    /// Bar chart: the numeric column that sets each bar's length (single pick).
+    /// Bar chart: what sets each bar's length, the rows per category or a numeric
+    /// column (single pick).
     Value,
     /// Bar chart: bars by value or by label.
     Order,
@@ -193,7 +194,7 @@ pub struct ChartModal {
     pub value_range: ValueRange,
     /// Bar chart: remembered category and value columns, and the bar order.
     pub bar_category: Option<String>,
-    pub bar_value: Option<String>,
+    pub bar_value: Option<BarValue>,
     pub bar_order: BarOrder,
     /// Rows a chart reads: up to this many, sampled across the table. None = every row.
     pub row_limit: Option<usize>,
@@ -289,8 +290,9 @@ impl ChartModal {
         keep(&mut self.heatmap_x_column, &self.numeric_candidates);
         keep(&mut self.heatmap_y_column, &self.numeric_candidates);
         keep(&mut self.bar_category, &self.category_candidates);
-        keep(&mut self.bar_value, &self.numeric_candidates);
-        if self.bar_value.is_some() && self.bar_value == self.bar_category {
+        if let Some(BarValue::Column(c)) = &self.bar_value
+            && (!self.numeric_candidates.contains(c) || Some(c) == self.bar_category.as_ref())
+        {
             self.bar_value = None;
         }
         let (numeric, x) = (&self.numeric_candidates, &self.x_column);
@@ -405,8 +407,8 @@ impl ChartModal {
     // ----- Picker -----
 
     /// What the focused row's Picker offers. The Y series leave out the X column:
-    /// charted against itself it is only a diagonal. The bar value leaves out the
-    /// category for the same reason.
+    /// charted against itself it is only a diagonal. The bar value offers Count first,
+    /// then the numeric columns less the category, for the same reason.
     pub fn picker_items(&self) -> Vec<String> {
         match self.focus {
             ChartFocus::XColumn => self.x_candidates.clone(),
@@ -420,11 +422,13 @@ impl ChartModal {
                 self.numeric_candidates.clone()
             }
             ChartFocus::Category => self.category_candidates.clone(),
-            ChartFocus::Value => self
-                .numeric_candidates
-                .iter()
-                .filter(|c| Some(*c) != self.bar_category.as_ref())
-                .cloned()
+            ChartFocus::Value => std::iter::once(BarValue::Count.label().to_string())
+                .chain(
+                    self.numeric_candidates
+                        .iter()
+                        .filter(|c| Some(*c) != self.bar_category.as_ref())
+                        .cloned(),
+                )
                 .collect(),
             _ => Vec::new(),
         }
@@ -444,9 +448,21 @@ impl ChartModal {
             ChartFocus::HeatmapX => self.heatmap_x_column.as_deref(),
             ChartFocus::HeatmapY => self.heatmap_y_column.as_deref(),
             ChartFocus::Category => self.bar_category.as_deref(),
-            ChartFocus::Value => self.bar_value.as_deref(),
             _ => None,
         }
+    }
+
+    /// Where the focused row's current choice sits in `items`, the Picker's list.
+    fn focused_row_index(&self, items: &[String]) -> Option<usize> {
+        if self.focus == ChartFocus::Value {
+            // By place, not name: Count is first, whatever the columns are called.
+            return match self.bar_value.as_ref()? {
+                BarValue::Count => Some(0),
+                BarValue::Column(c) => items.iter().skip(1).position(|i| i == c).map(|i| i + 1),
+            };
+        }
+        let current = self.focused_row_choice()?;
+        items.iter().position(|item| item == current)
     }
 
     /// Open the Picker for the focused row, cursor on the current choice.
@@ -456,9 +472,7 @@ impl ChartModal {
         }
         let items = self.picker_items();
         let mut state = PickerState::new(items.clone());
-        if let Some(current) = self.focused_row_choice()
-            && let Some(i) = items.iter().position(|item| item == current)
-        {
+        if let Some(i) = self.focused_row_index(&items) {
             state.select_original(i);
         }
         self.picker = Some(state);
@@ -470,11 +484,24 @@ impl ChartModal {
         self.picker_items().get(i).cloned()
     }
 
+    /// The bar value under the open Value Picker's cursor: Count is its first item.
+    fn picker_cursor_bar_value(&self) -> Option<BarValue> {
+        if self.focus != ChartFocus::Value {
+            return None;
+        }
+        let i = self.picker.as_ref()?.selected_original()?;
+        if i == 0 {
+            return Some(BarValue::Count);
+        }
+        self.picker_items().get(i).cloned().map(BarValue::Column)
+    }
+
     /// Enter in the Picker: a pick-one row takes the cursor's item; the Y row
     /// keeps its toggled choices, or adopts the cursor's item when none are
     /// toggled, so Enter on a fresh list still charts something. Either way
     /// the Picker closes.
     pub fn picker_choose(&mut self) {
+        let bar_value = self.picker_cursor_bar_value();
         let Some(item) = self.picker_cursor_item() else {
             self.picker = None;
             return;
@@ -501,12 +528,12 @@ impl ChartModal {
             ChartFocus::HeatmapY => self.heatmap_y_column = Some(item),
             ChartFocus::Category => {
                 // The value cannot be the category too.
-                if self.bar_value.as_ref() == Some(&item) {
+                if matches!(&self.bar_value, Some(BarValue::Column(c)) if *c == item) {
                     self.bar_value = None;
                 }
                 self.bar_category = Some(item);
             }
-            ChartFocus::Value => self.bar_value = Some(item),
+            ChartFocus::Value => self.bar_value = bar_value,
             _ => {}
         }
     }
@@ -604,17 +631,17 @@ impl ChartModal {
         self.bar_category.clone()
     }
 
-    /// The bar chart's value column: the open Picker's cursor previews, and a value
+    /// The bar chart's value: the open Picker's cursor previews, and a value column
     /// that is the category is none.
-    pub fn effective_bar_value(&self) -> Option<String> {
-        if self.focus == ChartFocus::Value
-            && let Some(item) = self.picker_cursor_item()
-        {
-            return Some(item);
+    pub fn effective_bar_value(&self) -> Option<BarValue> {
+        if let Some(value) = self.picker_cursor_bar_value() {
+            return Some(value);
         }
-        self.bar_value
-            .clone()
-            .filter(|v| Some(v) != self.effective_bar_category().as_ref())
+        let category = self.effective_bar_category();
+        self.bar_value.clone().filter(|v| match v {
+            BarValue::Count => true,
+            BarValue::Column(c) => Some(c) != category.as_ref(),
+        })
     }
 
     // ----- Toggles and numbers -----
@@ -773,7 +800,7 @@ impl ChartModal {
 #[cfg(test)]
 mod tests {
     use super::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
-    use crate::chart_data::BarOrder;
+    use crate::chart_data::{BarOrder, BarValue};
 
     fn columns<'a>(numeric: &'a [String], datetime: &'a [String]) -> ChartColumns<'a> {
         ChartColumns {
@@ -1081,12 +1108,25 @@ mod tests {
         modal.next_focus();
         assert_eq!(
             modal.picker_items(),
-            ["delay"],
-            "the category is not a value"
+            ["Count", "delay"],
+            "Count first; the category is not a value"
         );
         modal.open_picker();
+        assert_eq!(modal.effective_bar_value(), Some(BarValue::Count));
         modal.picker_choose();
-        assert_eq!(modal.bar_value.as_deref(), Some("delay"));
+        assert_eq!(modal.bar_value, Some(BarValue::Count));
+        assert!(modal.can_export());
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().select_original(1);
+        modal.picker_choose();
+        assert_eq!(modal.bar_value, Some(BarValue::Column("delay".to_string())));
+        modal.open_picker();
+        assert_eq!(
+            modal.picker.as_ref().unwrap().selected_original(),
+            Some(1),
+            "the Picker opens on the value chosen"
+        );
+        modal.picker = None;
         assert!(modal.can_export());
 
         modal.next_focus();
@@ -1113,10 +1153,16 @@ mod tests {
             1,
         );
         modal.set_chart_kind(ChartKind::Bar);
-        modal.bar_value = Some("year".to_string());
+        modal.bar_value = Some(BarValue::Column("year".to_string()));
         modal.open_picker();
         modal.picker_choose();
         assert_eq!(modal.bar_category.as_deref(), Some("year"));
         assert!(modal.bar_value.is_none());
+
+        // Count counts any category.
+        modal.bar_value = Some(BarValue::Count);
+        modal.open_picker();
+        modal.picker_choose();
+        assert_eq!(modal.bar_value, Some(BarValue::Count));
     }
 }

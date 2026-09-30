@@ -1551,6 +1551,7 @@ mod tests {
             no_value: 0,
             rows: Default::default(),
             value_dtype: polars::prelude::DataType::Float64,
+            counted: None,
         }
     }
 

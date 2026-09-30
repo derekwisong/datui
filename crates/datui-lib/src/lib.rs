@@ -565,6 +565,7 @@ mod classify_batch_tests {
         // It lands, and what follows it is about where the viewport is now.
         app.event(&AppEvent::HomeClassified {
             measured: Vec::new(),
+            done: true,
         });
         let next = app.home.unclassified_visible(CLASSIFY_BATCH);
         assert!(
@@ -585,6 +586,7 @@ mod classify_batch_tests {
 
         app.event(&AppEvent::HomeClassified {
             measured: Vec::new(),
+            done: true,
         });
 
         assert!(!app.home.classify_in_flight);
@@ -612,6 +614,7 @@ mod classify_batch_tests {
                     ..Default::default()
                 },
             )],
+            done: true,
         });
 
         let kind = app.home.visible().iter().find_map(|row| match row {
@@ -619,6 +622,35 @@ mod classify_batch_tests {
             _ => None,
         });
         assert_eq!(kind, Some(discover::EntryKind::Hive));
+    }
+
+    /// A row's label shows as soon as its answer lands, not when the batch it was in
+    /// finishes; the slot stays taken until then, so a second batch never overlaps it.
+    #[test]
+    fn a_label_lands_before_its_batch_is_done() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.apply_listing(unlooked_at(4));
+        let path = PathBuf::from("/pretend/share/d0000");
+        app.home.classify_in_flight = true;
+
+        app.event(&AppEvent::HomeClassified {
+            measured: vec![(
+                path.clone(),
+                home::Measured {
+                    kind: Some(discover::EntryKind::Hive),
+                    ..Default::default()
+                },
+            )],
+            done: false,
+        });
+
+        let kind = app.home.visible().iter().find_map(|row| match row {
+            home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
+            _ => None,
+        });
+        assert_eq!(kind, Some(discover::EntryKind::Hive));
+        assert!(app.home.classify_in_flight, "the batch is still out");
     }
 }
 
@@ -5064,19 +5096,23 @@ pub enum AppEvent {
         path: PathBuf,
         preview: Option<crate::discover::SchemaPreview>,
     },
-    /// Measurements for rows the home screen asked about.
+    /// Measurements for rows the home screen asked about, sent as each row is read so
+    /// a slow row does not hold back the ones before it. `done` marks the end of the
+    /// batch and frees the slot for the next one.
     ///
     /// No generation, unlike its neighbors: what a look found is keyed by path and
     /// true of that path whichever listing asked, so an answer that outlives its
     /// listing is still the answer.
     HomeMeasured {
         measured: Vec<(PathBuf, crate::home::Measured)>,
+        done: bool,
     },
     /// What the rows on screen turned out to be. The same payload as
     /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
     /// things a look into a row produces.
     HomeClassified {
         measured: Vec<(PathBuf, crate::home::Measured)>,
+        done: bool,
     },
     /// A batch of datasets found by the background search below the working
     /// directory. Sent repeatedly while the walk runs, so a cold tree fills in
@@ -9113,8 +9149,15 @@ impl App {
         let tx = self.events.clone();
         let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
+            home::look_into_batch(wanted, &cache, |path, m| {
+                let _ = tx.send(AppEvent::HomeMeasured {
+                    measured: vec![(path, m)],
+                    done: false,
+                });
+            });
             let _ = tx.send(AppEvent::HomeMeasured {
-                measured: home::look_into_batch(wanted, &cache),
+                measured: Vec::new(),
+                done: true,
             });
         });
     }
@@ -9176,8 +9219,15 @@ impl App {
         let tx = self.events.clone();
         let cache = self.cache.clone();
         std::thread::spawn(move || {
+            home::look_into_batch(wanted, &cache, |path, m| {
+                let _ = tx.send(AppEvent::HomeClassified {
+                    measured: vec![(path, m)],
+                    done: false,
+                });
+            });
             let _ = tx.send(AppEvent::HomeClassified {
-                measured: home::look_into_batch(wanted, &cache),
+                measured: Vec::new(),
+                done: true,
             });
         });
     }
@@ -16481,17 +16531,18 @@ impl App {
                 self.request_home_classifications();
                 None
             }
-            AppEvent::HomeMeasured { measured } => {
-                self.home.measure_in_flight = false;
+            AppEvent::HomeMeasured { measured, done } => {
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }
                 self.home.apply_measurements();
-                self.request_home_measurements();
+                if *done {
+                    self.home.measure_in_flight = false;
+                    self.request_home_measurements();
+                }
                 None
             }
-            AppEvent::HomeClassified { measured } => {
-                self.home.classify_in_flight = false;
+            AppEvent::HomeClassified { measured, done } => {
                 // Kept even when the listing has been rebuilt since it was asked for. A
                 // probe or a cloud peek landing rebuilds it, and a Recent section full of
                 // buckets lands several in a row: dropping the answer each time left a
@@ -16508,7 +16559,10 @@ impl App {
                 // The next batch is chosen from the viewport as it is now, so a page
                 // that scrolled past four hundred rows while this one was out asks
                 // about the forty it landed on, not the four hundred it left behind.
-                self.request_home_classifications();
+                if *done {
+                    self.home.classify_in_flight = false;
+                    self.request_home_classifications();
+                }
                 None
             }
             AppEvent::HomePathCompleted {

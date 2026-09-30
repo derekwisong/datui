@@ -10,8 +10,8 @@
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    Distinct, Expr, FunctionArguments, GroupByExpr, Ident, Query, Select, SelectItem, SetExpr,
-    Statement, TableFactor, Visit, Visitor,
+    Distinct, Expr, FunctionArguments, GroupByExpr, Ident, ObjectNamePart, Query, Select,
+    SelectItem, SetExpr, Statement, TableFactor, Visit, Visitor, visit_expressions_mut,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::{Parser, ParserOptions};
@@ -100,20 +100,21 @@ pub fn plan(sql: &str, columns: &[&str], result_width: usize) -> Option<GroupPla
         return None;
     }
     // `df.dept` and `t.dept` name the column `dept`.
-    let qualifiers: Vec<&Ident> = name
+    let qualifiers: Vec<&str> = name
         .0
         .last()
         .and_then(|p| p.as_ident())
         .into_iter()
         .chain(alias.as_ref().map(|a| &a.name))
+        .map(|ident| ident.value.as_str())
         .collect();
-    let unqualify = |e: &Expr| unqualified(e, &qualifiers);
+    let normalize = |e: &Expr| normalized(e, &qualifiers);
 
     let mut keys = Vec::with_capacity(group_by.len());
     let mut computed = Vec::new();
     for key in group_by {
-        let (index, expr) = resolve_key(key, &items, columns, &unqualify)?;
-        let source = match unqualify(expr) {
+        let (index, expr) = resolve_key(key, &items, columns, &normalize)?;
+        let source = match normalize(expr) {
             Expr::Identifier(ident) if columns.contains(&ident.value.as_str()) => {
                 KeySource::Column(ident.value)
             }
@@ -152,7 +153,7 @@ fn resolve_key<'a>(
     key: &'a Expr,
     items: &[(&'a Expr, Option<&Ident>)],
     columns: &[&str],
-    unqualify: &impl Fn(&Expr) -> Expr,
+    normalize: &impl Fn(&Expr) -> Expr,
 ) -> Option<(usize, &'a Expr)> {
     if let Expr::Value(value) = key {
         let ordinal: usize = value.to_string().parse().ok()?;
@@ -167,21 +168,43 @@ fn resolve_key<'a>(
     {
         return Some((index, items[index].0));
     }
-    let wanted = unqualify(key);
-    let index = items.iter().position(|(e, _)| unqualify(e) == wanted)?;
+    let wanted = normalize(key);
+    let index = items.iter().position(|(e, _)| normalize(e) == wanted)?;
     Some((index, key))
 }
 
-/// `e` without parentheses around it or the table's name in front of a column.
-fn unqualified(e: &Expr, qualifiers: &[&Ident]) -> Expr {
-    match e {
-        Expr::Nested(inner) => unqualified(inner, qualifiers),
-        Expr::CompoundIdentifier(parts) => match parts.as_slice() {
-            [table, column] if qualifiers.contains(&table) => Expr::Identifier(column.clone()),
-            _ => e.clone(),
-        },
-        _ => e.clone(),
-    }
+/// `e` spelled one way for comparing keys, keeping only what polars-sql reads: no
+/// parentheses, no quotes around names (`"dept"` is `dept`, and case always counts),
+/// no table name in front of a column, and function names in lowercase.
+fn normalized(e: &Expr, qualifiers: &[&str]) -> Expr {
+    let mut e = e.clone();
+    let _ = visit_expressions_mut(&mut e, |e| {
+        match e {
+            Expr::Nested(inner) => *e = inner.as_ref().clone(),
+            Expr::Identifier(ident) => ident.quote_style = None,
+            Expr::CompoundIdentifier(parts) => {
+                for part in parts.iter_mut() {
+                    part.quote_style = None;
+                }
+                if let [table, column] = parts.as_slice()
+                    && qualifiers.contains(&table.value.as_str())
+                {
+                    *e = Expr::Identifier(column.clone());
+                }
+            }
+            Expr::Function(f) => {
+                for part in f.name.0.iter_mut() {
+                    if let ObjectNamePart::Identifier(ident) = part {
+                        ident.value = ident.value.to_lowercase();
+                        ident.quote_style = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    e
 }
 
 /// No clause beyond ORDER BY and LIMIT around the one SELECT.
@@ -353,6 +376,32 @@ mod tests {
             keys("SELECT t.dept, COUNT(*) FROM df AS t GROUP BY dept", 2),
             Some(vec![(0, column("dept"))])
         );
+    }
+
+    /// Quotes, parentheses, a table name and a function name's case do not change what
+    /// polars-sql reads, so they do not stop a key from matching its select item.
+    #[test]
+    fn keys_match_however_they_are_spelled() {
+        assert_eq!(
+            keys("SELECT \"dept\", COUNT(*) FROM df GROUP BY dept", 2),
+            Some(vec![(0, column("dept"))])
+        );
+        assert_eq!(
+            keys(
+                "SELECT t.dept, COUNT(*) FROM df t GROUP BY \"t\".\"dept\"",
+                2
+            ),
+            Some(vec![(0, column("dept"))])
+        );
+        assert_eq!(
+            keys(
+                "SELECT upper(dept) AS u, COUNT(*) FROM df GROUP BY UPPER((df.\"dept\"))",
+                2
+            ),
+            Some(vec![(0, computed(0))])
+        );
+        // Case is part of a name, quoted or not: `Dept` is another column.
+        assert_eq!(keys("SELECT Dept, COUNT(*) FROM df GROUP BY dept", 2), None);
     }
 
     #[test]

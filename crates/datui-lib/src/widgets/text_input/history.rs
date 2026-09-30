@@ -137,7 +137,9 @@ impl InputHistory {
         self.id.as_ref()?;
         if !self.loaded {
             let cache = cache?;
-            self.ensure_loaded(cache).ok()?;
+            self.ensure_loaded(cache)
+                .inspect_err(|e| log::warn!(target: "datui", "read input history: {e:#}"))
+                .ok()?;
         }
         if self.entries.is_empty() {
             return None;

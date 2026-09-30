@@ -14,6 +14,7 @@
 
 pub mod history;
 
+use crate::logging::LogFailure;
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -413,7 +414,7 @@ impl TextInput {
 
     fn submit(&mut self, cache: Option<&CacheManager>) -> TextInputEvent {
         if let Some(cache) = cache {
-            let _ = self.save_to_history(cache);
+            self.save_to_history(cache).or_log("save input history");
         }
         TextInputEvent::Submit
     }

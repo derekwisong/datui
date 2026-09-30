@@ -18,6 +18,9 @@ const FORMAT_WIDTH: u16 = 12;
 /// Shown under the rows of a format that cannot hold lists or structs.
 const NESTED_NOTE: &str = "Lists and structs are written as JSON.";
 
+/// Shown under the rows of an Avro export whose view has a name Avro refuses.
+const AVRO_NAMES_NOTE: &str = "Column names are made valid for Avro.";
+
 fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
     match compression {
         None => "None",
@@ -192,11 +195,14 @@ pub fn render_export_modal(
 
     // The reason the form cannot export yet, inline under the rows: a warning
     // at most, never a modal. Otherwise the line says how a format without
-    // nesting writes the view's list and struct columns.
+    // nesting writes the view's list and struct columns, or that Avro renames.
     let status = match modal.path_error {
         Some(message) => Some((message, ctx.warning)),
         None if modal.nested_columns && !modal.selected_format.holds_nesting() => {
             Some((NESTED_NOTE, ctx.dimmed))
+        }
+        None if modal.avro_renames && modal.selected_format == ExportFormat::Avro => {
+            Some((AVRO_NAMES_NOTE, ctx.dimmed))
         }
         None => None,
     };
@@ -270,6 +276,26 @@ mod tests {
             assert!(!out.contains(NESTED_NOTE), "Parquet keeps them: {out}");
             modal.selected_format = ExportFormat::Csv;
             modal.nested_columns = false;
+        }
+    }
+
+    /// A view with a name Avro refuses hears it is renamed, and only for Avro.
+    #[test]
+    fn avro_says_it_renames_columns() {
+        let mut modal = ExportModal::new();
+        modal.active = true;
+        modal.selected_format = ExportFormat::Avro;
+        for width in [44u16, 70] {
+            let out = painted(&mut modal, width, 12);
+            assert!(!out.contains(AVRO_NAMES_NOTE), "valid names: {out}");
+            modal.avro_renames = true;
+            let out = painted(&mut modal, width, 12);
+            assert!(out.contains(AVRO_NAMES_NOTE), "missing at {width}: {out}");
+            modal.selected_format = ExportFormat::Parquet;
+            let out = painted(&mut modal, width, 12);
+            assert!(!out.contains(AVRO_NAMES_NOTE), "Parquet keeps them: {out}");
+            modal.selected_format = ExportFormat::Avro;
+            modal.avro_renames = false;
         }
     }
 

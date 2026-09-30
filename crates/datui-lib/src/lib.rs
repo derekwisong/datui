@@ -18064,6 +18064,13 @@ impl App {
                             .iter()
                             .filter_map(|name| state.schema.get(name))
                             .any(crate::nested_json::is_nested);
+                        self.export_modal.avro_renames =
+                            state.get_column_order().iter().any(|name| {
+                                state
+                                    .schema
+                                    .get(name)
+                                    .is_some_and(|dtype| crate::avro_types::renames(name, dtype))
+                            });
                     }
                     self.input_mode = InputMode::Export;
                 }
@@ -21669,12 +21676,9 @@ impl App {
                 IpcWriter::new(&mut writer).finish(df)?;
             }
             ExportFormat::Avro => {
-                use polars::io::avro::AvroWriter;
-                let file = File::create(path)?;
-                let mut writer = BufWriter::new(file);
-                // Polars writes a header per chunk, which no reader can open.
-                df.rechunk_mut_par();
-                AvroWriter::new(&mut writer).finish(df)?;
+                let mut writer = BufWriter::new(File::create(path)?);
+                crate::avro_types::write(df, &mut writer)?;
+                writer.flush()?;
             }
         }
 

@@ -70,6 +70,21 @@ columns are converted, inside lists and structs too:
 | Time, duration | 64-bit integer of microseconds (a time counts from midnight) |
 | Null | String |
 
+An Avro name is letters, digits and `_`, and does not start with a digit, so
+Avro export renames columns and struct fields that are not: any other
+character becomes `_`, a leading digit gets a `_` in front, and a name that
+is then taken gets `_2`, `_3` and so on. A valid name is never changed. The
+dialog says so when the view has such a name.
+
+| Column | Avro field |
+|---|---|
+| `my col` | `my_col` |
+| `2024` | `_2024` |
+| `délai` | `d_lai` |
+| `a-b`, beside `a_b` | `a_b_2` |
+
+A renamed field keeps its original name as its `doc` in the file's schema.
+
 ## Keys
 
 | Key | Action |

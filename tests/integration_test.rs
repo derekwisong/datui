@@ -5884,6 +5884,158 @@ fn test_avro_export_writes_arrays_and_categoricals() {
     );
 }
 
+/// The writer schema from an Avro file's header.
+fn avro_schema(path: &Path) -> serde_json::Value {
+    fn long(bytes: &[u8], at: &mut usize) -> i64 {
+        let (mut value, mut shift) = (0u64, 0);
+        loop {
+            let byte = bytes[*at];
+            *at += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return (value >> 1) as i64 ^ -((value & 1) as i64);
+            }
+            shift += 7;
+        }
+    }
+    fn bytes_at<'a>(bytes: &'a [u8], at: &mut usize) -> &'a [u8] {
+        let len = long(bytes, at) as usize;
+        *at += len;
+        &bytes[*at - len..*at]
+    }
+    let bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[..4], b"Obj\x01");
+    let mut at = 4;
+    loop {
+        let count = long(&bytes, &mut at);
+        assert_ne!(count, 0, "no avro.schema in the header");
+        if count < 0 {
+            long(&bytes, &mut at);
+        }
+        for _ in 0..count.abs() {
+            let key = bytes_at(&bytes, &mut at);
+            let value = bytes_at(&bytes, &mut at);
+            if key == b"avro.schema" {
+                return serde_json::from_slice(value).unwrap();
+            }
+        }
+    }
+}
+
+/// Every record and field name in an Avro schema.
+fn avro_schema_names(schema: &serde_json::Value, names: &mut Vec<String>) {
+    use serde_json::Value;
+    match schema {
+        Value::Array(branches) => branches.iter().for_each(|b| avro_schema_names(b, names)),
+        Value::Object(map) => {
+            if let Some(Value::String(name)) = map.get("name") {
+                names.push(name.clone());
+            }
+            for field in map
+                .get("fields")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                names.push(field["name"].as_str().unwrap().to_string());
+                avro_schema_names(&field["type"], names);
+            }
+            for key in ["type", "items"] {
+                if let Some(inner) = map.get(key) {
+                    avro_schema_names(inner, names);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Avro names are `[A-Za-z_][A-Za-z0-9_]*`: the export renames columns and
+/// struct fields to fit, the record gets a name, and the values stay.
+#[test]
+fn test_avro_export_writes_valid_names() {
+    use datui::export_modal::ExportFormat;
+    use polars::io::avro::AvroReader;
+    let dir = tempfile::tempdir().unwrap();
+    let df = df!(
+        "my col" => [1i64, 2],
+        "2024" => ["x", "y"],
+        "a-b" => [1.5f64, 2.5],
+        "a_b" => [true, false],
+    )
+    .unwrap()
+    .lazy()
+    .with_columns([
+        as_struct(vec![col("my col").alias("x y"), col("2024").alias("x-y")]).alias("délai"),
+    ])
+    .collect()
+    .unwrap();
+    write_parquet(dir.path(), "src", df);
+    let (mut app, rx, tx) = open_local_dataset_with_channel(&dir.path().join("src"));
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.export_modal.avro_renames, "the dialog says so");
+    press(&mut app, KeyCode::Esc);
+
+    let out = dir.path().join("out.avro");
+    export_as(&mut app, &rx, &tx, &out, ExportFormat::Avro, false);
+    let schema = avro_schema(&out);
+    let mut names = Vec::new();
+    avro_schema_names(&schema, &mut names);
+    assert!(names.contains(&"Row".to_string()), "{names:?}");
+    for name in &names {
+        let mut chars = name.chars();
+        assert!(
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "{name:?} in {names:?}"
+        );
+    }
+    let docs: Vec<(&str, Option<&str>)> = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap(), f["doc"].as_str()))
+        .collect();
+    assert_eq!(
+        docs,
+        [
+            ("my_col", Some("my col")),
+            ("_2024", Some("2024")),
+            ("a_b_2", Some("a-b")),
+            ("a_b", None),
+            ("d_lai", Some("délai")),
+        ],
+        "the original names stay in the file"
+    );
+
+    let back = AvroReader::new(File::open(&out).unwrap()).finish().unwrap();
+    let columns: Vec<&str> = back.get_column_names().iter().map(|n| n.as_str()).collect();
+    assert_eq!(columns, ["my_col", "_2024", "a_b_2", "a_b", "d_lai"]);
+    assert_eq!(
+        back.column("_2024").unwrap().str().unwrap().get(1),
+        Some("y")
+    );
+    assert_eq!(
+        back.column("a_b_2").unwrap().f64().unwrap().get(0),
+        Some(1.5)
+    );
+    assert_eq!(
+        back.column("a_b").unwrap().bool().unwrap().get(0),
+        Some(true)
+    );
+    let point = back.column("d_lai").unwrap().struct_().unwrap().clone();
+    assert_eq!(
+        point.field_by_name("x_y").unwrap().i64().unwrap().get(1),
+        Some(2)
+    );
+    assert_eq!(
+        point.field_by_name("x_y_2").unwrap().str().unwrap().get(0),
+        Some("x")
+    );
+}
+
 /// Every copy format takes list cells as JSON, the same text a CSV export
 /// writes, instead of failing on them.
 #[test]

@@ -18,8 +18,10 @@ from its seed, so the count the finding gave is the count in the table.
 | Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run cut the kept sample |
 | Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval` |
 
-The coverage comes from what the run measured; showing it reads nothing. A
-Polars scan does not report bytes or requests, so neither is shown. At 60×20
+The coverage comes from what the run measured; showing it reads nothing.
+Traversed rows are counted as each read hands them on, after the filters the
+scan applies, so a pass that skips nulls counts fewer. A Polars scan does not
+report bytes or requests, so neither is shown. At 60×20
 the Rows line gives way first (the header says the rows too), and a line cut
 short counts what it left out (`+2 more`).
 
@@ -72,7 +74,7 @@ other tools' results, taken from the old sample, go. A setup the report on
 screen was measured with shows that report again, and one in the session cache
 shows its cached report; neither reads. A full scan asks first, and
 <kbd>Esc</kbd> there leaves the draft staged and the sample and report as they
-were. While a cancelled read is still finishing, Run waits and Setup says why.
+were. While a cancelled run is still stopping, Run waits and Setup says why.
 
 | Row | Choices |
 |---|---|

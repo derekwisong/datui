@@ -9563,7 +9563,7 @@ impl App {
     /// the plan, and its sample the one every tool reads; then the report for it is
     /// shown if one is already here, and otherwise read, once.
     ///
-    /// Waits, with the reason on Setup, while a cancelled read is still finishing: a
+    /// Waits, with the reason on Setup, while a cancelled run is still stopping: a
     /// second read beside it is how memory runs out. A full scan asks first, and
     /// Esc there leaves the draft staged and the last report as it was.
     fn run_quality_setup(&mut self) -> Option<AppEvent> {
@@ -17167,9 +17167,7 @@ impl App {
                                 == data_quality::QualityCompute::Sample =>
                     {
                         if self.cancelled_analysis_running().is_some() {
-                            self.flash_note(
-                                "A cancelled read is still finishing; try again shortly".into(),
-                            );
+                            self.flash_note(QUALITY_RUN_WAITS.to_string());
                             return None;
                         }
                         let before = self.analysis_modal.data_quality_plan.clone();

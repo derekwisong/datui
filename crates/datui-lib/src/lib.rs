@@ -1980,14 +1980,14 @@ mod template_rollback_tests {
     ) -> Option<DataFrame> {
         use crate::filter_modal::{FilterOperator, LogicalOperator};
         app.event(&AppEvent::Sort(vec!["val".to_string()], vec![true]));
-        crate::chart_prepare_tests::pump(app, rx, tx, |a| !a.is_busy());
+        crate::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
         app.event(&AppEvent::Filter(vec![FilterStatement {
             column: "val".to_string(),
             operator: FilterOperator::Gt,
             value: "0".to_string(),
             logical_op: LogicalOperator::And,
         }]));
-        crate::chart_prepare_tests::pump(app, rx, tx, |a| !a.is_busy());
+        crate::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.num_rows, 8);
         state.display_df().cloned()

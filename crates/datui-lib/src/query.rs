@@ -473,10 +473,12 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
             let weighted = weights.clone().mul(values);
             // Only pairs with both a weight and a value count toward the total weight;
             // a null value would otherwise still pull the average toward zero.
-            let expr = weighted
-                .clone()
-                .sum()
-                .true_div(weights.filter(weighted.is_not_null()).sum());
+            let total = weights.filter(weighted.clone().is_not_null()).sum();
+            // No weight at all (every pair null) is no average, not 0/0 = NaN.
+            let total = when(total.clone().neq(lit(0)))
+                .then(total)
+                .otherwise(lit(NULL));
+            let expr = weighted.sum().true_div(total);
             Ok(match simple_column_name(right_tokens) {
                 Some(column) => expr.alias(format!("wavg_{}", column)),
                 None => expr,
@@ -2641,6 +2643,9 @@ mod tests {
         let out = eval("select w wavg x by g", &df);
         // The null value's weight stays out of the total: (10 + 60) / 4.
         assert_eq!(values(&out, "wavg_x"), ["17.5", "4.0"]);
+        // A group with no complete pair has no average.
+        let out = eval("select w wavg x where null x", &df);
+        assert_eq!(values(&out, "wavg_x"), ["null"]);
         for query in ["select wavg[x]", "select wavg x"] {
             let err = parse_err(query);
             assert!(

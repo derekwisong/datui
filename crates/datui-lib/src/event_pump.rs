@@ -951,9 +951,14 @@ mod tests {
         let (mut p2, _d) = loaded_pump();
         p2.app.input_mode = InputMode::Chart;
         p2.app.chart_modal.active = true;
-        p2.app
-            .chart_modal
-            .open(&["a".to_string(), "b".to_string()], &[], None, 0);
+        p2.app.chart_modal.open(
+            crate::chart_modal::ChartColumns {
+                numeric: &["a".to_string(), "b".to_string()],
+                ..Default::default()
+            },
+            None,
+            0,
+        );
         p2.app.chart_modal.focus = ChartFocus::XColumn;
         assert!(
             !p2.app.text_field_focused(),

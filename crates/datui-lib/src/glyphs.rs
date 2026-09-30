@@ -127,6 +127,9 @@ pub struct Glyphs {
     pub binary_stub: &'static str,
     /// Eight compact levels for inline charts (lowest to highest).
     pub mini_bars: &'static [&'static str; 8],
+    /// A horizontal bar's end, one to eight eighths of a cell filled from the left;
+    /// the last is a whole cell, the bar's body. One column wide in both sets.
+    pub bar_eighths: &'static [&'static str; 8],
     /// The home-screen wordmark, three rows of box drawing. `None` when the terminal
     /// cannot draw it, and the one-line title bar is used instead.
     pub wordmark: Option<&'static [&'static str]>,
@@ -194,6 +197,7 @@ const UNICODE: Glyphs = Glyphs {
     scroll_thumb: "█",
     binary_stub: "‹binary›",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
+    bar_eighths: &["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"],
     wordmark: Some(&[
         "┌──╮ ╭──╮ ╶─┬─╴ ╷  ╷ ╶┬╴",
         "│  │ ├──┤   │   │  │  │ ",
@@ -251,6 +255,8 @@ const ASCII: Glyphs = Glyphs {
     scroll_thumb: "#",
     binary_stub: "<binary>",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
+    // Under half a cell is still a mark, so a small value never reads as zero.
+    bar_eighths: &["-", "-", "-", "=", "=", "=", "=", "#"],
     wordmark: None,
     border: ratatui::symbols::border::Set {
         top_left: "+",
@@ -276,7 +282,7 @@ pub enum UnicodeMode {
 }
 
 /// One `[glyphs]` override from the config: a single glyph, or a list for the
-/// slots that hold one (`spinner`, `score_marks`, `mini_bars`).
+/// slots that hold one (`spinner`, `score_marks`, `mini_bars`, `bar_eighths`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum SlotOverride {
@@ -466,6 +472,7 @@ pub fn validate_overrides(overrides: &BTreeMap<String, SlotOverride>) -> Result<
                     "spinner" => (None, UNICODE.spinner),
                     "score_marks" => (Some(5), &UNICODE.score_marks[..]),
                     "mini_bars" => (Some(8), &UNICODE.mini_bars[..]),
+                    "bar_eighths" => (Some(8), &UNICODE.bar_eighths[..]),
                     _ => return Err(format!("unknown glyph slot `{slot}`")),
                 };
                 let SlotOverride::Many(entries) = value else {
@@ -515,6 +522,9 @@ fn apply_overrides(set: &mut Glyphs, overrides: &BTreeMap<String, SlotOverride>)
             }
             ("mini_bars", SlotOverride::Many(bars)) if bars.len() == 8 => {
                 set.mini_bars = Box::leak(Box::new(std::array::from_fn(|i| leak(&bars[i]))));
+            }
+            ("bar_eighths", SlotOverride::Many(bars)) if bars.len() == 8 => {
+                set.bar_eighths = Box::leak(Box::new(std::array::from_fn(|i| leak(&bars[i]))));
             }
             (name, SlotOverride::One(text)) => {
                 let text = leak(text);
@@ -699,7 +709,14 @@ mod tests {
             (u.expanded, a.expanded),
             (u.sort_asc, a.sort_asc),
             (u.sort_desc, a.sort_desc),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            u.bar_eighths
+                .iter()
+                .copied()
+                .zip(a.bar_eighths.iter().copied()),
+        ) {
             assert_eq!(
                 UnicodeWidthStr::width(left),
                 UnicodeWidthStr::width(right),

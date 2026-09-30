@@ -411,19 +411,30 @@ fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         return keys;
     }
     // "Chart", not "Type": this bar also spells the key name "type" (the
-    // picker's narrow chip), and the label names what 1-5 switch — the same
+    // picker's narrow chip), and the label names what 1-6 switch — the same
     // word as the `c Chart` chip that opened this screen.
-    let mut keys = vec![("1-5", "Chart"), ("Tab", "Options")];
+    //
+    // At 80 columns the row count leaves room for two chips beside Help and Esc:
+    // the chart switch and what the focused row takes. Export is `e`, as at the
+    // table; Tab is one of several ways down a form whose rail shows the rows.
+    use crate::chart_modal::ChartFocus;
+    let mut keys = vec![("1-6", "Chart")];
     if modal.is_picker_row(modal.focus) {
         keys.push(("Space", "Edit"));
     } else if modal.is_toggle_row(modal.focus) {
         keys.push(("Space", "Toggle"));
     } else if modal.is_number_row(modal.focus) {
         keys.push((g.updown_lr, "Adjust"));
-    } else if modal.focus == crate::chart_modal::ChartFocus::Style {
-        keys.push((g.updown_lr, "Style"));
+    } else {
+        match modal.focus {
+            ChartFocus::Style => keys.push((g.updown_lr, "Style")),
+            ChartFocus::Range => keys.push((g.updown_lr, "Range")),
+            ChartFocus::Order => keys.push((g.updown_lr, "Order")),
+            _ => {}
+        }
     }
     keys.push(("e", "Export"));
+    keys.push(("Tab", "Options"));
     keys.push(("?", "Help"));
     keys.push(("Esc", "Back"));
     keys

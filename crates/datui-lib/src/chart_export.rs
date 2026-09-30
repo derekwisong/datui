@@ -6,7 +6,8 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::chart_data::{
-    BoxPlotData, HeatmapData, XAxisTemporalKind, format_axis_label, format_x_axis_label,
+    Bar, BarData, BoxPlotData, HeatmapData, XAxisTemporalKind, format_axis_label,
+    format_x_axis_label,
 };
 use crate::chart_modal::ChartType;
 
@@ -1079,6 +1080,271 @@ pub fn write_heatmap_eps(
     Ok(())
 }
 
+/// A bar chart's value axis: from zero, or from the most negative value, to the
+/// largest.
+fn bar_bounds(data: &BarData) -> (f64, f64) {
+    let lo = data.bars.iter().map(|b| b.value).fold(0.0_f64, f64::min);
+    let hi = data.bars.iter().map(|b| b.value).fold(0.0_f64, f64::max);
+    if hi > lo { (lo, hi) } else { (lo, lo + 1.0) }
+}
+
+/// A bar's category as the export writes it, cut to `max` characters.
+fn bar_label(bar: &Bar, max: usize) -> String {
+    let label = bar.label.as_deref().unwrap_or("null");
+    if label.chars().count() <= max {
+        return label.to_string();
+    }
+    let kept: String = label.chars().take(max.saturating_sub(3)).collect();
+    format!("{kept}...")
+}
+
+/// Longest category label an export writes, so a long one cannot run into the bars.
+const BAR_LABEL_MAX: usize = 30;
+
+/// The category axis title, with the categories past the cap counted.
+fn bar_category_title(data: &BarData) -> String {
+    if data.more > 0 {
+        format!(
+            "{} (+ {} more)",
+            data.category,
+            crate::numfmt::group_chrome(data.more)
+        )
+    } else {
+        data.category.clone()
+    }
+}
+
+/// Write a bar chart to PNG: one horizontal bar per category, top to bottom in the
+/// chart's order, and the chart's notes under it. Size is (width, height) in pixels.
+pub fn write_bar_png(
+    path: &Path,
+    data: &BarData,
+    title: Option<&str>,
+    notes: &[String],
+    (width, height): (u32, u32),
+) -> Result<()> {
+    use plotters::prelude::*;
+
+    if data.bars.is_empty() {
+        return Err(color_eyre::eyre::eyre!("No data to export"));
+    }
+    let n = data.bars.len();
+    let labels: Vec<String> = data
+        .bars
+        .iter()
+        .map(|b| bar_label(b, BAR_LABEL_MAX))
+        .collect();
+    let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(1) as u32;
+    let (lo, hi) = bar_bounds(data);
+    // Air past the longest bars, so none runs into the frame.
+    let pad = (hi - lo) * 0.04;
+    let lo = if lo < 0.0 { lo - pad } else { lo };
+    let hi = if hi > 0.0 { hi + pad } else { hi };
+
+    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
+    root.fill(&WHITE)?;
+    let mut binding = ChartBuilder::on(&root);
+    let builder = binding.margin(30);
+    let builder = match title.filter(|t| !t.is_empty()) {
+        Some(t) => builder.caption(t, ("sans-serif", 20)),
+        None => builder,
+    };
+    let mut chart = builder
+        .x_label_area_size(40)
+        .y_label_area_size((longest * 7 + 30).clamp(50, width / 3))
+        // An i32 range holds both ends, so n segments are 0..n-1.
+        .build_cartesian_2d(lo..hi, (0..n as i32 - 1).into_segmented())?;
+
+    // The first bar sits in the top segment, as on screen.
+    let key_label = |v: &SegmentValue<i32>| match v {
+        SegmentValue::CenterOf(k) => labels
+            .get(n.wrapping_sub(1).wrapping_sub(*k as usize))
+            .cloned()
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let category_title = bar_category_title(data);
+    chart
+        .configure_mesh()
+        .disable_y_mesh()
+        .y_labels(n)
+        .x_desc(data.value_column.as_str())
+        .y_desc(category_title.as_str())
+        .x_label_formatter(&|v: &f64| format_axis_label(*v))
+        .y_label_formatter(&key_label)
+        .draw()?;
+
+    chart.draw_series(data.bars.iter().enumerate().map(|(i, bar)| {
+        let key = (n - 1 - i) as i32;
+        let mut rect = Rectangle::new(
+            [
+                (0.0, SegmentValue::Exact(key)),
+                (bar.value, SegmentValue::Exact(key + 1)),
+            ],
+            CYAN.filled(),
+        );
+        rect.set_margin(2, 2, 0, 0);
+        rect
+    }))?;
+
+    draw_png_notes(&root, notes, 30)?;
+    root.present()?;
+    Ok(())
+}
+
+/// Write a bar chart to EPS: one horizontal bar per category, the value past its end
+/// (right of the zero line for a negative bar, clear of the labels).
+/// The page grows with the number of bars. No external dependencies.
+pub fn write_bar_eps(
+    path: &Path,
+    data: &BarData,
+    values: &[String],
+    title: Option<&str>,
+    notes: &[String],
+) -> Result<()> {
+    if data.bars.is_empty() {
+        return Err(color_eyre::eyre::eyre!("No data to export"));
+    }
+    const W: f64 = 500.0;
+    const ROW_H: f64 = 14.0;
+    const CHAR_W: f64 = 5.0;
+    // Room for the longest value past the longest bar.
+    let longest_value = values.iter().map(|v| v.chars().count()).max().unwrap_or(0) as f64;
+    let margin_right = (longest_value * CHAR_W + 10.0).max(50.0);
+    // Ticks, the axis titles, and the notes below them.
+    const MARGIN_BOTTOM: f64 = 48.0;
+    let title = title.filter(|t| !t.is_empty());
+    let margin_top = if title.is_some() { 30.0 } else { 12.0 };
+
+    let labels: Vec<String> = data
+        .bars
+        .iter()
+        .map(|b| bar_label(b, BAR_LABEL_MAX))
+        .collect();
+    let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(1) as f64;
+    let margin_left = (longest * CHAR_W + 16.0).clamp(40.0, W / 3.0);
+    let plot_w = W - margin_left - margin_right;
+    let plot_h = data.bars.len() as f64 * ROW_H;
+    let h = margin_top + plot_h + MARGIN_BOTTOM;
+    let (lo, hi) = bar_bounds(data);
+    let to_x = |v: f64| margin_left + (v - lo) / (hi - lo) * plot_w;
+
+    let mut f = File::create(path)?;
+    writeln!(f, "%!PS-Adobe-3.0 EPSF-3.0")?;
+    writeln!(
+        f,
+        "%%BoundingBox: 0 0 {} {}",
+        W.ceil() as i32,
+        h.ceil() as i32
+    )?;
+    writeln!(f, "%%Creator: datui")?;
+    writeln!(f, "%%EndComments")?;
+    writeln!(f, "gsave")?;
+    writeln!(f, "1 setlinewidth")?;
+
+    if let Some(title) = title {
+        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
+        let title_w = title.len() as f64 * 6.0;
+        let tx = (W / 2.0 - title_w / 2.0).max(4.0);
+        writeln!(f, "{} {} moveto ({}) show", tx, h - 18.0, ps_escape(title))?;
+    }
+
+    // Value grid and ticks.
+    writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
+    for v in nice_ticks(lo, hi, 6) {
+        let px = to_x(v);
+        if !(margin_left..=margin_left + plot_w).contains(&px) {
+            continue;
+        }
+        writeln!(f, "0.9 setgray 0.5 setlinewidth")?;
+        writeln!(
+            f,
+            "{} {} moveto 0 {} rlineto stroke",
+            px, MARGIN_BOTTOM, plot_h
+        )?;
+        writeln!(f, "0 setgray 1 setlinewidth")?;
+        let s = format_axis_label(v);
+        let label_w = s.len() as f64 * CHAR_W;
+        writeln!(
+            f,
+            "{} {} moveto ({}) show",
+            px - label_w / 2.0,
+            MARGIN_BOTTOM - 12.0,
+            ps_escape(&s)
+        )?;
+    }
+
+    // Bars, first at the top, each with its category left of the plot and its value
+    // past its end.
+    for (i, ((bar, label), value)) in data.bars.iter().zip(&labels).zip(values).enumerate() {
+        let top = MARGIN_BOTTOM + plot_h - i as f64 * ROW_H;
+        let (x0, x1) = (to_x(bar.value.min(0.0)), to_x(bar.value.max(0.0)));
+        writeln!(f, "0.0 0.7 0.9 setrgbcolor")?;
+        writeln!(
+            f,
+            "{} {} {} {} rectfill",
+            x0,
+            top - ROW_H + 2.0,
+            x1 - x0,
+            ROW_H - 4.0
+        )?;
+        writeln!(f, "0 setgray")?;
+        let baseline = top - ROW_H / 2.0 - 3.0;
+        let label_w = label.chars().count() as f64 * CHAR_W;
+        writeln!(
+            f,
+            "{} {} moveto ({}) show",
+            (margin_left - 6.0 - label_w).max(2.0),
+            baseline,
+            ps_escape(label)
+        )?;
+        let value_x = x1 + 4.0;
+        writeln!(
+            f,
+            "{} {} moveto ({}) show",
+            value_x,
+            baseline,
+            ps_escape(value)
+        )?;
+    }
+
+    // The zero line and the plot's bottom edge.
+    writeln!(
+        f,
+        "{} {} moveto 0 {} rlineto stroke",
+        to_x(0.0),
+        MARGIN_BOTTOM,
+        plot_h
+    )?;
+    writeln!(
+        f,
+        "{} {} moveto {} 0 rlineto stroke",
+        margin_left, MARGIN_BOTTOM, plot_w
+    )?;
+
+    writeln!(f, "/Helvetica findfont 10 scalefont setfont")?;
+    let value_title = &data.value_column;
+    writeln!(
+        f,
+        "{} {} moveto ({}) show",
+        margin_left + plot_w / 2.0 - value_title.len() as f64 * CHAR_W / 2.0,
+        MARGIN_BOTTOM - 26.0,
+        ps_escape(value_title)
+    )?;
+    writeln!(
+        f,
+        "4 {} moveto ({}) show",
+        MARGIN_BOTTOM - 26.0,
+        ps_escape(&bar_category_title(data))
+    )?;
+
+    write_eps_notes(&mut f, notes, margin_left + plot_w)?;
+    writeln!(f, "grestore")?;
+    writeln!(f, "%%EOF")?;
+    f.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1261,5 +1527,74 @@ mod tests {
         assert_eq!(ps_escape("back\\slash"), "back\\\\slash");
         assert_eq!(ps_escape("\\)"), "\\\\\\)");
         assert_eq!(ps_escape("plain"), "plain");
+    }
+
+    fn bar_data() -> BarData {
+        BarData {
+            category: "carrier".to_string(),
+            value_column: "delay".to_string(),
+            bars: vec![
+                Bar {
+                    label: Some("F9".to_string()),
+                    value: 21.92,
+                },
+                Bar {
+                    label: None,
+                    value: 3.0,
+                },
+                Bar {
+                    label: Some("AS) INJECTED (".to_string()),
+                    value: -9.93,
+                },
+            ],
+            more: 12,
+            no_value: 0,
+            rows: Default::default(),
+            value_dtype: polars::prelude::DataType::Float64,
+        }
+    }
+
+    /// A bar chart exports to both formats: every category and value in the EPS, the
+    /// categories past the cap counted, a label unable to escape its string.
+    #[test]
+    fn bar_charts_export_to_png_and_eps() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data = bar_data();
+        let png = dir.path().join("bars.png");
+        let notes = ["sample of 10,000 of 50k rows".to_string()];
+        write_bar_png(&png, &data, Some("Delay by carrier"), &notes, (640, 480)).expect("png");
+        assert!(std::fs::metadata(&png).unwrap().len() > 0);
+
+        let eps = dir.path().join("bars.eps");
+        let values = ["21,92", "3,00", "-9,93"].map(String::from);
+        write_bar_eps(&eps, &data, &values, Some("Delay by carrier"), &notes).expect("eps");
+        let content = std::fs::read_to_string(&eps).unwrap();
+        for text in [
+            "(sample of 10,000 of 50k rows)",
+            "(F9)",
+            "(null)",
+            "(21,92)",
+            "(-9,93)",
+            "(delay)",
+            "(carrier (+ 12 more))",
+        ] {
+            let text = text.replace("carrier (+ 12 more)", "carrier \\(+ 12 more\\)");
+            assert!(content.contains(&text), "{text} in {content}");
+        }
+        for line in content.lines().filter(|l| !l.starts_with('%')) {
+            assert!(!code_outside_strings(line).contains("INJECTED"), "{line}");
+        }
+    }
+
+    /// A long category is cut rather than run into the bars.
+    #[test]
+    fn a_long_bar_label_is_cut() {
+        let long = Bar {
+            label: Some("x".repeat(80)),
+            value: 1.0,
+        };
+        let cut = bar_label(&long, BAR_LABEL_MAX);
+        assert_eq!(cut.chars().count(), BAR_LABEL_MAX);
+        assert!(cut.ends_with("..."), "{cut}");
     }
 }

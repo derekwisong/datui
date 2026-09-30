@@ -106,12 +106,12 @@ pub use config::{
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
 use chart_export::{
-    BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportSeries,
-    write_box_plot_eps, write_box_plot_png, write_chart_eps, write_chart_png, write_heatmap_eps,
-    write_heatmap_png,
+    BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportSeries, write_bar_eps,
+    write_bar_png, write_box_plot_eps, write_box_plot_png, write_chart_eps, write_chart_png,
+    write_heatmap_eps, write_heatmap_png,
 };
 use chart_export_modal::{ChartExportFocus, ChartExportModal};
-use chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
+use chart_modal::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType};
 pub use error_display::{ErrorKindForPython, error_for_python};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterEditStep, FilterStatement};
@@ -1245,6 +1245,130 @@ mod chart_prepare_tests {
         assert!(matches!(app.chart_cache.get(&request), Some(Err(_))));
         let text = screen(&mut app);
         assert!(text.contains("gone"), "the error names the column: {text}");
+    }
+
+    /// The Bar tab charts a grouped result: a query averages a string column's groups,
+    /// the category and value are picked with the keys, and one bar per carrier is drawn
+    /// with its value beside it, largest first, then A to Z once the order changes.
+    #[test]
+    fn a_bar_chart_draws_a_grouped_string_column() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flights.csv");
+        let mut body = String::from("carrier,arr_delay\n");
+        for (carrier, delays) in [
+            ("UA", [3.0, 4.0]),
+            ("AS", [-10.0, -9.0]),
+            ("F9", [20.0, 24.0]),
+            ("AA", [0.0, 1.0]),
+        ] {
+            for d in delays {
+                body.push_str(&format!("{carrier},{d}\n"));
+            }
+        }
+        std::fs::write(&path, body).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+        if let Some(next) = app.event(&AppEvent::Search(
+            "select delay: avg arr_delay by carrier".to_string(),
+        )) {
+            let _ = tx.send(next);
+        }
+        pump(&mut app, &rx, &tx, |a| {
+            !a.is_busy()
+                && a.data_table_state
+                    .as_ref()
+                    .is_some_and(|s| s.schema.get("delay").is_some())
+        });
+
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Char('6'));
+        assert_eq!(app.chart_modal.chart_kind, ChartKind::Bar);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.chart_modal.picker_items(),
+            ["carrier"],
+            "text is a category"
+        );
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.chart_modal.picker_items(), ["delay"]);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.chart_modal.bar_category.as_deref(), Some("carrier"));
+        assert_eq!(app.chart_modal.bar_value.as_deref(), Some("delay"));
+        app.event(&AppEvent::Resize(100, 24));
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+
+        let rows = |app: &mut App| -> Vec<String> {
+            let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            app.render(area, &mut buf);
+            (0..24)
+                .map(|y| (42..100).map(|x| buf[(x, y)].symbol()).collect())
+                .collect()
+        };
+        let starts = |rows: &[String]| -> Vec<String> {
+            rows.iter()
+                .filter_map(|r| {
+                    let mut words = r.split_whitespace();
+                    let label = words.next()?;
+                    let value = words.next()?;
+                    ["UA", "AS", "F9", "AA"]
+                        .contains(&label)
+                        .then(|| format!("{label} {value}"))
+                })
+                .collect()
+        };
+        let drawn = rows(&mut app);
+        assert!(
+            drawn
+                .iter()
+                .any(|r| r.contains("carrier") && r.contains("delay")),
+            "{drawn:#?}"
+        );
+        assert_eq!(
+            starts(&drawn),
+            ["F9 22.00", "UA 3.50", "AA 0.50", "AS -9.50"],
+            "{drawn:#?}"
+        );
+        let full = crate::glyphs::get().bar_eighths[7];
+        let f9 = drawn
+            .iter()
+            .find(|r| r.trim_start().starts_with("F9"))
+            .unwrap();
+        assert!(
+            f9.matches(full).count() > 20,
+            "the largest bar is long: {f9:?}"
+        );
+
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.chart_modal.bar_order, chart_data::BarOrder::Label);
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+        assert_eq!(
+            starts(&rows(&mut app)),
+            ["AA 0.50", "AS -9.50", "F9 22.00", "UA 3.50"]
+        );
+
+        // At 80 columns the control bar keeps the chart switch and what the focused
+        // row takes, beside Help and the way out.
+        let bar = |app: &mut App| -> String {
+            let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            app.render(area, &mut buf);
+            (0..80).map(|x| buf[(x, 23)].symbol()).collect()
+        };
+        let order = bar(&mut app);
+        for chip in ["1-6", "Chart", "Order", "Help", "Esc"] {
+            assert!(order.contains(chip), "{chip} in {order:?}");
+        }
+        key(&mut app, KeyCode::Up);
+        let value = bar(&mut app);
+        for chip in ["1-6", "Chart", "Space", "Edit", "Help", "Esc"] {
+            assert!(value.contains(chip), "{chip} in {value:?}");
+        }
     }
 
     /// Esc leaves a worker running that cannot be cancelled; reopening the chart and
@@ -6353,6 +6477,12 @@ pub(crate) enum ChartRequest {
         bins: usize,
         row_limit: Option<usize>,
     },
+    Bar {
+        category: String,
+        value: String,
+        order: chart_data::BarOrder,
+        row_limit: Option<usize>,
+    },
 }
 
 impl ChartRequest {
@@ -6397,6 +6527,12 @@ impl ChartRequest {
                 x_column: modal.effective_heatmap_x_column()?,
                 y_column: modal.effective_heatmap_y_column()?,
                 bins: modal.heatmap_bins,
+                row_limit,
+            }),
+            ChartKind::Bar => Some(Self::Bar {
+                category: modal.effective_bar_category()?,
+                value: modal.effective_bar_value()?,
+                order: modal.bar_order,
                 row_limit,
             }),
         }
@@ -6465,6 +6601,19 @@ impl ChartRequest {
             } => ChartPrepared::Heatmap(chart_data::prepare_heatmap_data(
                 lf, x_column, y_column, *bins, sampling,
             )?),
+            Self::Bar {
+                category,
+                value,
+                order,
+                ..
+            } => ChartPrepared::Bar(chart_data::prepare_bar_data(
+                lf,
+                category,
+                value,
+                *order,
+                chart_data::BAR_CAP,
+                sampling,
+            )?),
         })
     }
 }
@@ -6497,11 +6646,27 @@ pub(crate) enum ChartPrepared {
     BoxPlot(chart_data::BoxPlotData),
     Kde(chart_data::KdeData),
     Heatmap(chart_data::HeatmapData),
+    Bar(chart_data::BarData),
 }
 
 impl ChartPrepared {
     /// What the chart says under the plot about the rows and values it drew.
     pub(crate) fn notes(&self) -> Vec<String> {
+        if let Self::Bar(d) = self {
+            let mut notes = chart_data::chart_notes(&d.rows, None);
+            if d.no_value > 0 {
+                let noun = if d.no_value == 1 {
+                    "category"
+                } else {
+                    "categories"
+                };
+                notes.push(format!(
+                    "{} {noun} without a value",
+                    numfmt::group_chrome(d.no_value)
+                ));
+            }
+            return notes;
+        }
         let (rows, clipped) = match self {
             Self::XY(c) => (&c.rows, None),
             Self::XRange(c) => (&c.rows, None),
@@ -6509,6 +6674,7 @@ impl ChartPrepared {
             Self::BoxPlot(d) => (&d.rows, d.clipped.as_ref()),
             Self::Kde(d) => (&d.rows, d.clipped.as_ref()),
             Self::Heatmap(d) => (&d.rows, None),
+            Self::Bar(d) => (&d.rows, None),
         };
         chart_data::chart_notes(rows, clipped)
     }
@@ -6529,6 +6695,13 @@ enum ChartExportJob {
     Heatmap {
         data: chart_data::HeatmapData,
         bounds: ChartExportBounds,
+    },
+    Bar {
+        data: chart_data::BarData,
+        /// Each bar's value in the table's number format.
+        values: Vec<String>,
+        title: Option<String>,
+        notes: Vec<String>,
     },
 }
 
@@ -6563,6 +6736,21 @@ impl ChartExportJob {
             (Self::Heatmap { data, bounds }, ChartExportFormat::Eps) => {
                 write_heatmap_eps(path, data, bounds)
             }
+            (
+                Self::Bar {
+                    data, title, notes, ..
+                },
+                ChartExportFormat::Png,
+            ) => write_bar_png(path, data, title.as_deref(), notes, size),
+            (
+                Self::Bar {
+                    data,
+                    values,
+                    title,
+                    notes,
+                },
+                ChartExportFormat::Eps,
+            ) => write_bar_eps(path, data, values, title.as_deref(), notes),
         }
     }
 }
@@ -14627,10 +14815,10 @@ impl App {
             }
 
             match event.code {
-                // The chart kind switches from anywhere: 1-5 name a tab in
+                // The chart kind switches from anywhere: 1-6 name a tab in
                 // order, [ and ] cycle. Safe as plain keys — with the Picker
                 // closed, nothing on this screen types.
-                KeyCode::Char(c @ '1'..='5') if event.is_press() => {
+                KeyCode::Char(c @ '1'..='6') if event.is_press() => {
                     let idx = c as usize - '1' as usize;
                     self.chart_modal.set_chart_kind(ChartKind::ALL[idx]);
                 }
@@ -14671,6 +14859,7 @@ impl App {
                         ChartFocus::ShowLegend => self.chart_modal.toggle_show_legend(),
                         ChartFocus::Style => self.chart_modal.next_chart_type(),
                         ChartFocus::Range => self.chart_modal.cycle_value_range(1),
+                        ChartFocus::Order => self.chart_modal.cycle_bar_order(1),
                         focus if self.chart_modal.is_picker_row(focus) => {
                             self.chart_modal.open_picker();
                         }
@@ -16351,9 +16540,18 @@ impl App {
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();
+                    let category_columns: Vec<String> = state
+                        .schema
+                        .iter()
+                        .filter(|(_, dtype)| chart_data::is_category_dtype(dtype))
+                        .map(|(name, _)| name.to_string())
+                        .collect();
                     self.chart_modal.open(
-                        &numeric_columns,
-                        &datetime_columns,
+                        ChartColumns {
+                            numeric: &numeric_columns,
+                            datetime: &datetime_columns,
+                            category: &category_columns,
+                        },
                         self.app_config.chart.row_limit,
                         self.dataset_generation,
                     );
@@ -18781,6 +18979,11 @@ impl App {
             (None, ChartKind::Heatmap) => {
                 return Err(color_eyre::eyre::eyre!("No heatmap columns selected"));
             }
+            (None, ChartKind::Bar) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "No bar category and value selected"
+                ));
+            }
             (Some(request), _) => request,
         };
         let prepared = match self.chart_cache.get(&request) {
@@ -18980,6 +19183,17 @@ impl App {
                 ChartExportJob::Heatmap {
                     data: data.clone(),
                     bounds,
+                }
+            }
+            ChartPrepared::Bar(data) => {
+                if data.bars.is_empty() {
+                    return Err(no_points());
+                }
+                ChartExportJob::Bar {
+                    values: data.value_labels(&self.number_format),
+                    data: data.clone(),
+                    title: chart_title,
+                    notes,
                 }
             }
             // Rejected above, since a single X column has nothing to export; never

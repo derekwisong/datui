@@ -35,6 +35,37 @@ longer has is dropped from the chart. Opening another dataset starts over.
 | **Box Plot** | Quartiles and outliers | One numeric column | Range |
 | **KDE** | A smoothed density curve | One numeric column | Bandwidth, range |
 | **Heatmap** | Density of two variables | Numeric X and Y | Bins |
+| **Bar** | One horizontal bar per category | A text, categorical, boolean or integer category, and a numeric value | Order |
+
+XY's **Bar** style draws vertical bars at a numeric X; the **Bar** tab is for
+categories.
+
+## Chart one value per category
+
+The Bar tab charts a grouped result: one row per category. Group first with a
+[query](querying-data.md), then chart it. With the
+[quick-start penguin data](../getting-started/quick-start.md):
+
+1. Press <kbd>/</kbd> and run `select avg body_mass_g by species`.
+2. Press <kbd>c</kbd>, then <kbd>6</kbd> for **Bar**.
+3. Choose `species` for **Category** and `avg_body_mass_g` for **Value**.
+
+| Option | What it does |
+|---|---|
+| **Category** | One bar per value. Text, categorical, boolean and integer columns |
+| **Value** | The bar's length, printed beside it in the table's number format. Any numeric column but the category |
+| **Order** | **Value**, largest first, or **Label**: text A to Z, numbers ascending |
+
+| Case | What happens |
+|---|---|
+| A category repeats | Refused: the chart says how many rows and categories it found and suggests the query that groups them. Bars are not summed or averaged for you |
+| More bars than rows | The bars that fit, then `+ 212 more` counting the rest |
+| Negative values | Bars grow left of zero |
+| A null category | Its own bar, labeled `∅` |
+| A null value | That category is left out and counted under the plot |
+
+A chart reads at most **Sample size** rows, so a grouped result with more
+categories than that is sampled, and says so.
 
 ## Large tables
 
@@ -55,10 +86,10 @@ comes from `row_limit` in the
 
 | Key | Action |
 |---|---|
-| <kbd>1</kbd>–<kbd>5</kbd> | Switch chart type directly, from anywhere (<kbd>[</kbd> <kbd>]</kbd> cycle) |
+| <kbd>1</kbd>–<kbd>6</kbd> | Switch chart type directly, from anywhere (<kbd>[</kbd> <kbd>]</kbd> cycle) |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style or range |
-| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style or range, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
+| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style, range or bar order |
+| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, range or bar order, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
 | <kbd>e</kbd> | Export the chart |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table |
@@ -72,9 +103,11 @@ the picker alone.
 
 <kbd>e</kbd> in the chart view opens the export dialog. Choose **PNG** or
 **EPS**, type a path, and press <kbd>Enter</kbd>. The extension is added when
-missing, and you are asked before an existing file is overwritten.
+missing, and you are asked before an existing file is overwritten. A bar chart
+exports up to its first 100 bars; the category axis counts the rest.
 
 ## Colors
 
 Series take `chart_series_color_1` through `chart_series_color_7` from the
-[theme](../reference/settings.md#colors).
+[theme](../reference/settings.md#colors); bars and histograms take
+`primary_chart_series_color`.

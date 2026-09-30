@@ -195,7 +195,7 @@ darkened. Set any slot to change it.
 | `sidebar_border`, `modal_border_active`, `modal_border_error` | Borders | `#565f89`, `#7dcfff`, `#f7768e` |
 | `str_col`, `int_col`, `float_col`, `bool_col`, `temporal_col`, `binary_col` | Cells and headers by type | `#9ece6a`, `#7aa2f7`, `#2ac3de`, `#e0af68`, `#bb9af7`, `#565f89` |
 | `success`, `warning`, `error`, `dimmed` | Status colors; nulls and axes use `dimmed` | `#9ece6a`, `#e0af68`, `#f7768e`, `#565f89` |
-| `primary_chart_series_color`, `secondary_chart_series_color` | Histogram bars and Q-Q points; theoretical overlays | `#7dcfff`, `#565f89` |
+| `primary_chart_series_color`, `secondary_chart_series_color` | Histogram bars, bar charts and Q-Q points; theoretical overlays | `#7dcfff`, `#565f89` |
 | `chart_series_color_1` to `chart_series_color_7` | Series in the chart view | `#7dcfff`, `#bb9af7`, `#9ece6a`, `#e0af68`, `#7aa2f7`, `#f7768e`, `#ff9e64` |
 | `distribution_normal`, `distribution_skewed`, `distribution_other`, `outlier_marker` | Analysis view | `#9ece6a`, `#e0af68`, `#c0caf5`, `#f7768e` |
 | `cursor_focused`, `cursor_dimmed` | The text cursor, focused and not | `default` |
@@ -276,7 +276,7 @@ the theme.
 ```toml
 [glyphs]
 in_object_store = "☁"                  # the cloud marker, for fonts that have it
-spinner = ["◐", "◓", "◑", "◒"]  # spinner, score_marks and mini_bars take lists
+spinner = ["◐", "◓", "◑", "◒"]  # spinner, score_marks, mini_bars and bar_eighths take lists
 ```
 
 Anything the font renders at the right width works, Nerd Font icons included —
@@ -288,7 +288,7 @@ datui's defaults avoid them only because it cannot know your font.
 - Overrides apply only when the Unicode set is active. In a C locale (`unicode
   = "never"`, or no UTF-8 in the environment) the ASCII set draws, untouched.
 - `spinner` takes any number of frames; `score_marks` takes exactly 5,
-  `mini_bars` exactly 8. The wordmark cannot be overridden.
+  `mini_bars` and `bar_eighths` exactly 8. The wordmark cannot be overridden.
 
 ## Importing other config files
 

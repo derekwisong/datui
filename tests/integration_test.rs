@@ -276,7 +276,7 @@ fn test_chart_q_does_not_exit() {
     assert_eq!(app.input_mode, InputMode::Chart);
 }
 
-/// The chart type switches from anywhere: 1-5 name a tab in order, [ and ]
+/// The chart type switches from anywhere: 1-6 name a tab in order, [ and ]
 /// cycle, with no focus dance through a tab bar.
 #[test]
 fn test_chart_type_switches_from_anywhere() {
@@ -309,6 +309,17 @@ fn test_chart_type_switches_from_anywhere() {
     assert_eq!(app.chart_modal.chart_kind, ChartKind::BoxPlot);
     press(&mut app, '[');
     press(&mut app, '[');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
+    press(&mut app, '[');
+    assert_eq!(
+        app.chart_modal.chart_kind,
+        ChartKind::Bar,
+        "[ wraps to the last tab"
+    );
+    press(&mut app, '6');
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::Bar);
+    assert_eq!(app.chart_modal.focus, ChartFocus::Category);
+    press(&mut app, ']');
     assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
 
     // While the column Picker is open, digits narrow instead of switching.

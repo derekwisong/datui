@@ -9,8 +9,12 @@ use polars::prelude::DataType;
 /// The table name SQL runs against.
 pub const TABLE: &str = "df";
 
-/// Words that must be quoted to name a column, however they are cased.
+/// Words that must be quoted to name a column, however they are cased: those
+/// Polars SQL will not read as a bare column name somewhere in a statement.
 const RESERVED: &[&str] = &[
+    "&[",
+    "&str]",
+    "=",
     "all",
     "and",
     "as",
@@ -19,13 +23,20 @@ const RESERVED: &[&str] = &[
     "by",
     "case",
     "cross",
+    "cube",
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "current_user",
     "desc",
     "distinct",
     "else",
     "end",
     "except",
+    "exclude",
     "exists",
     "false",
+    "fetch",
     "from",
     "full",
     "group",
@@ -33,11 +44,17 @@ const RESERVED: &[&str] = &[
     "in",
     "inner",
     "intersect",
+    "interval",
+    "into",
     "is",
     "join",
+    "lateral",
     "left",
     "like",
     "limit",
+    "localtime",
+    "localtimestamp",
+    "minus",
     "natural",
     "not",
     "null",
@@ -46,12 +63,19 @@ const RESERVED: &[&str] = &[
     "or",
     "order",
     "outer",
+    "returning",
     "right",
+    "rollup",
     "select",
+    "session_user",
+    "struct",
     "then",
+    "top",
     "true",
     "union",
+    "user",
     "using",
+    "values",
     "when",
     "where",
     "with",
@@ -71,11 +95,20 @@ pub struct Word {
 /// a string literal, where a column name would be the wrong thing to offer.
 pub fn word_before(line: &str, col: usize) -> Option<Word> {
     let before: Vec<char> = line.chars().take(col).collect();
-    if before.iter().filter(|&&c| c == '\'').count() % 2 == 1 {
+    // Each kind of quote is literal inside the other: `"O'Brien"`, `'say "hi"'`.
+    let mut in_string = false;
+    let mut open_name = None;
+    for (i, &c) in before.iter().enumerate() {
+        match c {
+            '\'' if open_name.is_none() => in_string = !in_string,
+            '"' if !in_string => open_name = if open_name.is_some() { None } else { Some(i) },
+            _ => {}
+        }
+    }
+    if in_string {
         return None;
     }
-    if before.iter().filter(|&&c| c == '"').count() % 2 == 1 {
-        let open = before.iter().rposition(|&c| c == '"')?;
+    if let Some(open) = open_name {
         return Some(Word {
             text: before[open + 1..].iter().collect(),
             span: before.len() - open,
@@ -255,6 +288,12 @@ mod tests {
         assert_eq!((w.text.as_str(), w.span), ("Team ", 6));
         // Inside a string literal nothing is a column.
         assert_eq!(word_before("WHERE carrier = 'A", 18), None);
+        // A quote of the other kind is part of the name or the string.
+        let line = "WHERE \"O'Brien\" = 'say \"x' AND na";
+        let w = word_before(line, line.chars().count()).unwrap();
+        assert_eq!((w.text.as_str(), w.span), ("na", 2));
+        let w = word_before("SELECT \"O'Br", 12).unwrap();
+        assert_eq!((w.text.as_str(), w.span), ("O'Br", 5));
     }
 
     #[test]
@@ -262,6 +301,8 @@ mod tests {
         assert_eq!(sql_name("dep_delay"), "dep_delay");
         assert_eq!(sql_name("Team 1"), "\"Team 1\"");
         assert_eq!(sql_name("order"), "\"order\"");
+        assert_eq!(sql_name("User"), "\"User\"");
+        assert_eq!(sql_name("values"), "\"values\"");
         assert_eq!(sql_name("1st"), "\"1st\"");
         assert_eq!(sql_name("say \"hi\""), "\"say \"\"hi\"\"\"");
     }

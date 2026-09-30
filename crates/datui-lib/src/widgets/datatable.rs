@@ -6739,7 +6739,7 @@ impl DataTableState {
         #[cfg(not(feature = "sql"))]
         {
             self.error = Some(PolarsError::ComputeError(
-                format!("SQL support not compiled in (build with --features sql)").into(),
+                "SQL support not compiled in (build with --features sql)".into(),
             ));
         }
     }
@@ -8421,13 +8421,16 @@ mod tests {
             "a query's columns are its own"
         );
 
-        let mut sql = fresh();
-        sql.sql_query("SELECT id FROM df".to_string());
-        assert!(sql.error.is_none(), "the statement runs: {:?}", sql.error);
-        assert!(
-            sql.join_dataset_schema(found()).is_err(),
-            "and a SQL statement's are too"
-        );
+        #[cfg(feature = "sql")]
+        {
+            let mut sql = fresh();
+            sql.sql_query("SELECT id FROM df".to_string());
+            assert!(sql.error.is_none(), "the statement runs: {:?}", sql.error);
+            assert!(
+                sql.join_dataset_schema(found()).is_err(),
+                "and a SQL statement's are too"
+            );
+        }
 
         let mut fuzzy = fresh();
         fuzzy.fuzzy_search("10".to_string());

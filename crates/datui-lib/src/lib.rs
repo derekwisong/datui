@@ -101,7 +101,7 @@ pub mod widgets;
 pub use cache::CacheManager;
 pub use cli::Args;
 pub use config::{
-    AppConfig, ColorParser, ConfigManager, Theme, rgb_to_256_color, rgb_to_basic_ansi,
+    AppConfig, ColorParser, ConfigManager, QueryMode, Theme, rgb_to_256_color, rgb_to_basic_ansi,
 };
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
@@ -5829,44 +5829,10 @@ pub enum InputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
     Search,
-    Filter,
     GoToLine,
 }
 
-/// Query dialog tab: Query (current parser), Fuzzy, or SQL (future).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QueryTab {
-    #[default]
-    SqlLike,
-    Fuzzy,
-    Sql,
-}
-
-impl QueryTab {
-    fn next(self) -> Self {
-        match self {
-            QueryTab::SqlLike => QueryTab::Fuzzy,
-            QueryTab::Fuzzy => QueryTab::Sql,
-            QueryTab::Sql => QueryTab::SqlLike,
-        }
-    }
-    fn prev(self) -> Self {
-        match self {
-            QueryTab::SqlLike => QueryTab::Sql,
-            QueryTab::Fuzzy => QueryTab::SqlLike,
-            QueryTab::Sql => QueryTab::Fuzzy,
-        }
-    }
-    fn index(self) -> usize {
-        match self {
-            QueryTab::SqlLike => 0,
-            QueryTab::Fuzzy => 1,
-            QueryTab::Sql => 2,
-        }
-    }
-}
-
-/// Focus within the query dialog: tab bar or input (Query only).
+/// Focus within the query prompt: the tab bar or the current mode's input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryFocus {
     TabBar,
@@ -6711,12 +6677,15 @@ pub struct App {
     debug: DebugState,
     pub info_modal: InfoModal,
     parquet_metadata_cache: Option<ParquetMetadataCache>,
-    query_input: TextInput, // Query input widget with history support
-    sql_input: TextInput,   // SQL tab input with its own history (id "sql")
-    fuzzy_input: TextInput, // Fuzzy tab input with its own history (id "fuzzy")
+    // One input per query mode, each with its own history. The history ids
+    // ("query", "sql", "fuzzy") name files already on disk; they stay as they
+    // are so no history is lost or read as another mode's.
+    query_input: TextInput, // q-style, history id "query"; also borrowed by go-to-line
+    sql_input: TextInput,   // SQL, history id "sql"
+    fuzzy_input: TextInput, // Search, history id "fuzzy"
     pub input_mode: InputMode,
     input_type: Option<InputType>,
-    query_tab: QueryTab,
+    query_mode: QueryMode,
     query_focus: QueryFocus,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
@@ -8789,7 +8758,7 @@ impl App {
                 .with_history("fuzzy".to_string()),
             input_mode: InputMode::Normal,
             input_type: None,
-            query_tab: QueryTab::SqlLike,
+            query_mode: QueryMode::default().resolve(),
             query_focus: QueryFocus::Input,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
@@ -15626,6 +15595,17 @@ impl App {
                 const RIGHT_KEYS: [KeyCode; 2] = [KeyCode::Right, KeyCode::Char('l')];
                 const LEFT_KEYS: [KeyCode; 2] = [KeyCode::Left, KeyCode::Char('h')];
 
+                // One chord switches the mode from anywhere in the prompt: in
+                // the input ←/→ belong to the cursor, so the tab bar alone
+                // cost four keys.
+                if event.is_press()
+                    && event.modifiers == KeyModifiers::CONTROL
+                    && event.code == KeyCode::Char('t')
+                {
+                    self.set_query_mode(self.query_mode.next());
+                    return None;
+                }
+
                 if self.query_focus == QueryFocus::TabBar && event.is_press() {
                     // Enter included: it must never dead-end, so from the tab
                     // bar it returns to the input, one keystroke from running.
@@ -15635,72 +15615,19 @@ impl App {
                             && !event.modifiers.contains(KeyModifiers::SHIFT))
                     {
                         self.query_focus = QueryFocus::Input;
-                        if let Some(state) = &self.data_table_state {
-                            if self.query_tab == QueryTab::SqlLike {
-                                self.query_input.set_value(state.get_active_query());
-                                self.sql_input.set_focused(false);
-                                self.fuzzy_input.set_focused(false);
-                                self.query_input.set_focused(true);
-                            } else if self.query_tab == QueryTab::Fuzzy {
-                                self.fuzzy_input.set_value(state.get_active_fuzzy_query());
-                                self.query_input.set_focused(false);
-                                self.sql_input.set_focused(false);
-                                self.fuzzy_input.set_focused(true);
-                            } else if self.query_tab == QueryTab::Sql {
-                                self.sql_input.set_value(state.get_active_sql_query());
-                                self.query_input.set_focused(false);
-                                self.fuzzy_input.set_focused(false);
-                                self.sql_input.set_focused(true);
-                            }
-                        }
+                        self.sync_query_focus();
                         return None;
                     }
                     if RIGHT_KEYS.contains(&event.code) {
-                        self.query_tab = self.query_tab.next();
-                        if let Some(state) = &self.data_table_state {
-                            if self.query_tab == QueryTab::SqlLike {
-                                self.query_input.set_value(state.get_active_query());
-                            } else if self.query_tab == QueryTab::Fuzzy {
-                                self.fuzzy_input.set_value(state.get_active_fuzzy_query());
-                            } else if self.query_tab == QueryTab::Sql {
-                                self.sql_input.set_value(state.get_active_sql_query());
-                            }
-                        }
-                        self.query_input.set_focused(false);
-                        self.sql_input.set_focused(false);
-                        self.fuzzy_input.set_focused(false);
+                        self.set_query_mode(self.query_mode.next());
                         return None;
                     }
                     if LEFT_KEYS.contains(&event.code) {
-                        self.query_tab = self.query_tab.prev();
-                        if let Some(state) = &self.data_table_state {
-                            if self.query_tab == QueryTab::SqlLike {
-                                self.query_input.set_value(state.get_active_query());
-                            } else if self.query_tab == QueryTab::Fuzzy {
-                                self.fuzzy_input.set_value(state.get_active_fuzzy_query());
-                            } else if self.query_tab == QueryTab::Sql {
-                                self.sql_input.set_value(state.get_active_sql_query());
-                            }
-                        }
-                        self.query_input.set_focused(false);
-                        self.sql_input.set_focused(false);
-                        self.fuzzy_input.set_focused(false);
+                        self.set_query_mode(self.query_mode.prev());
                         return None;
                     }
                     if event.code == KeyCode::Esc {
-                        self.query_input.clear();
-                        self.sql_input.clear();
-                        self.fuzzy_input.clear();
-                        self.query_input.set_focused(false);
-                        self.sql_input.set_focused(false);
-                        self.fuzzy_input.set_focused(false);
-                        self.input_mode = InputMode::Normal;
-                        self.input_type = None;
-                        if let Some(state) = &mut self.data_table_state {
-                            state.error = None;
-                            state.suppress_error_display = false;
-                        }
-                        return None;
+                        self.close_query_prompt();
                     }
                     return None;
                 }
@@ -15710,9 +15637,7 @@ impl App {
                     && !event.modifiers.contains(KeyModifiers::SHIFT)
                 {
                     self.query_focus = QueryFocus::TabBar;
-                    self.query_input.set_focused(false);
-                    self.sql_input.set_focused(false);
-                    self.fuzzy_input.set_focused(false);
+                    self.sync_query_focus();
                     return None;
                 }
 
@@ -15720,94 +15645,25 @@ impl App {
                     return None;
                 }
 
-                if self.query_tab == QueryTab::Sql {
-                    self.query_input.set_focused(false);
-                    self.fuzzy_input.set_focused(false);
-                    self.sql_input.set_focused(true);
-                    let result = self.sql_input.handle_key(event, Some(&self.cache));
-                    match result {
-                        TextInputEvent::Submit => {
-                            let _ = self.sql_input.save_to_history(&self.cache);
-                            let sql = self.sql_input.value().to_string();
-                            self.sql_input.set_focused(false);
-                            return Some(AppEvent::SqlSearch(sql));
-                        }
-                        TextInputEvent::Cancel => {
-                            self.sql_input.clear();
-                            self.sql_input.set_focused(false);
-                            self.input_mode = InputMode::Normal;
-                            self.input_type = None;
-                            if let Some(state) = &mut self.data_table_state {
-                                state.error = None;
-                                state.suppress_error_display = false;
-                            }
-                        }
-                        TextInputEvent::HistoryChanged | TextInputEvent::None => {}
-                    }
-                    return None;
-                }
-
-                if self.query_tab == QueryTab::Fuzzy {
-                    self.query_input.set_focused(false);
-                    self.sql_input.set_focused(false);
-                    self.fuzzy_input.set_focused(true);
-                    let result = self.fuzzy_input.handle_key(event, Some(&self.cache));
-                    match result {
-                        TextInputEvent::Submit => {
-                            let _ = self.fuzzy_input.save_to_history(&self.cache);
-                            let query = self.fuzzy_input.value().to_string();
-                            self.fuzzy_input.set_focused(false);
-                            return Some(AppEvent::FuzzySearch(query));
-                        }
-                        TextInputEvent::Cancel => {
-                            self.fuzzy_input.clear();
-                            self.fuzzy_input.set_focused(false);
-                            self.input_mode = InputMode::Normal;
-                            self.input_type = None;
-                            if let Some(state) = &mut self.data_table_state {
-                                state.error = None;
-                                state.suppress_error_display = false;
-                            }
-                        }
-                        TextInputEvent::HistoryChanged | TextInputEvent::None => {}
-                    }
-                    return None;
-                }
-
-                if self.query_tab != QueryTab::SqlLike {
-                    return None;
-                }
-
-                self.sql_input.set_focused(false);
-                self.fuzzy_input.set_focused(false);
-                self.query_input.set_focused(true);
-                let result = self.query_input.handle_key(event, Some(&self.cache));
-
-                match result {
+                self.sync_query_focus();
+                let mode = self.query_mode;
+                let input = match mode {
+                    QueryMode::Sql => &mut self.sql_input,
+                    QueryMode::Search => &mut self.fuzzy_input,
+                    QueryMode::QStyle => &mut self.query_input,
+                };
+                match input.handle_key(event, Some(&self.cache)) {
                     TextInputEvent::Submit => {
-                        // Save to history and execute query
-                        let _ = self.query_input.save_to_history(&self.cache);
-                        let query = self.query_input.value().to_string();
-                        self.query_input.set_focused(false);
-                        return Some(AppEvent::Search(query));
+                        let _ = input.save_to_history(&self.cache);
+                        let text = input.value().to_string();
+                        return Some(match mode {
+                            QueryMode::Sql => AppEvent::SqlSearch(text),
+                            QueryMode::Search => AppEvent::FuzzySearch(text),
+                            QueryMode::QStyle => AppEvent::Search(text),
+                        });
                     }
-                    TextInputEvent::Cancel => {
-                        // Clear and exit input mode
-                        self.query_input.clear();
-                        self.query_input.set_focused(false);
-                        self.input_mode = InputMode::Normal;
-                        if let Some(state) = &mut self.data_table_state {
-                            // Clear error and re-enable error display in main view
-                            state.error = None;
-                            state.suppress_error_display = false;
-                        }
-                    }
-                    TextInputEvent::HistoryChanged => {
-                        // History navigation occurred, nothing special needed
-                    }
-                    TextInputEvent::None => {
-                        // Regular input, nothing special needed
-                    }
+                    TextInputEvent::Cancel => self.close_query_prompt(),
+                    TextInputEvent::HistoryChanged | TextInputEvent::None => {}
                 }
                 return None;
             }
@@ -15857,8 +15713,6 @@ impl App {
                 return None;
             }
 
-            // For other input types (Filter, etc.), keep old behavior for now
-            // TODO: Migrate these in later phases
             return None;
         }
 
@@ -16199,7 +16053,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Editing;
                 self.input_type = Some(InputType::Search);
-                self.query_tab = QueryTab::SqlLike;
+                self.query_mode = self.opening_query_mode();
                 self.query_focus = QueryFocus::Input;
                 if let Some(state) = &mut self.data_table_state {
                     self.query_input.set_value(state.active_query.clone());
@@ -16217,9 +16071,7 @@ impl App {
                     self.sql_input.clear();
                     self.fuzzy_input.clear();
                 }
-                self.sql_input.set_focused(false);
-                self.fuzzy_input.set_focused(false);
-                self.query_input.set_focused(true);
+                self.sync_query_focus();
                 None
             }
             KeyCode::Char(':') if event.is_press() => {
@@ -18312,6 +18164,7 @@ impl App {
 
                 if query_succeeded {
                     self.input_mode = InputMode::Normal;
+                    self.input_type = None;
                     self.query_input.set_focused(false);
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
@@ -18329,6 +18182,7 @@ impl App {
                 };
                 if sql_succeeded {
                     self.input_mode = InputMode::Normal;
+                    self.input_type = None;
                     self.sql_input.set_focused(false);
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
@@ -18348,6 +18202,7 @@ impl App {
                 };
                 if fuzzy_succeeded {
                     self.input_mode = InputMode::Normal;
+                    self.input_type = None;
                     self.fuzzy_input.set_focused(false);
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
@@ -19648,6 +19503,84 @@ impl App {
 
         self.template_manager
             .create_template(name, description, match_criteria, settings)
+    }
+
+    /// The query prompt's mode while it is open.
+    pub fn query_prompt_mode(&self) -> Option<QueryMode> {
+        (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Search))
+            .then_some(self.query_mode)
+    }
+
+    /// The mode `/` opens on: the active query's own, so editing never
+    /// reinterprets it in another language; otherwise the configured default.
+    fn opening_query_mode(&self) -> QueryMode {
+        let active = self.data_table_state.as_ref().and_then(|state| {
+            if !state.get_active_sql_query().trim().is_empty() {
+                Some(QueryMode::Sql)
+            } else if !state.get_active_fuzzy_query().trim().is_empty() {
+                Some(QueryMode::Search)
+            } else if !state.get_active_query().trim().is_empty() {
+                Some(QueryMode::QStyle)
+            } else {
+                None
+            }
+        });
+        active
+            .unwrap_or(self.app_config.query.default_mode)
+            .resolve()
+    }
+
+    /// Switch the prompt's mode. Each mode keeps its own text; an error from the
+    /// last run belongs to the mode that ran it.
+    fn set_query_mode(&mut self, mode: QueryMode) {
+        self.query_mode = mode.resolve();
+        if let Some(state) = &mut self.data_table_state {
+            state.error = None;
+        }
+        self.sync_query_focus();
+    }
+
+    /// Only the current mode's input carries the cursor, and only while the
+    /// input, not the tab bar, has focus.
+    fn sync_query_focus(&mut self) {
+        let input = self.query_focus == QueryFocus::Input;
+        let mode = self.query_mode;
+        self.sql_input.set_focused(input && mode == QueryMode::Sql);
+        self.fuzzy_input
+            .set_focused(input && mode == QueryMode::Search);
+        self.query_input
+            .set_focused(input && mode == QueryMode::QStyle);
+    }
+
+    /// Esc from anywhere in the prompt: nothing runs and nothing typed survives.
+    fn close_query_prompt(&mut self) {
+        self.query_input.clear();
+        self.sql_input.clear();
+        self.fuzzy_input.clear();
+        self.query_input.set_focused(false);
+        self.sql_input.set_focused(false);
+        self.fuzzy_input.set_focused(false);
+        self.input_mode = InputMode::Normal;
+        self.input_type = None;
+        if let Some(state) = &mut self.data_table_state {
+            state.error = None;
+            state.suppress_error_display = false;
+        }
+    }
+
+    /// Rows the active search matched, once the count is settled, while the
+    /// Search input still holds the words that ran. A sidebar filter on top
+    /// makes the row count something else, so then there is none to show.
+    pub(crate) fn search_match_count(&self) -> Option<usize> {
+        let state = self.data_table_state.as_ref()?;
+        let ran = state.get_active_fuzzy_query();
+        (!ran.trim().is_empty()
+            && self.fuzzy_input.value() == ran
+            && state.get_filters().is_empty()
+            && !state.is_drilled_down()
+            && state.is_num_rows_valid()
+            && !self.row_count_pending())
+        .then_some(state.num_rows)
     }
 
     fn get_help_info(&self) -> (String, String) {

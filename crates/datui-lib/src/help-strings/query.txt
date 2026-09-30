@@ -2,21 +2,40 @@ Keys:
   Enter:            Run the query (reopening / restores the last query,
                     selected: typing replaces it, arrows edit it).
                     On the tab bar, Enter returns to the input
+  Ctrl+T:           Next mode: SQL, Search, q-style (from the input too)
   Tab / Shift+Tab:  Move focus between the input and the tab bar
-  ← / → (h/l):      On the tab bar: switch Query / Fuzzy / SQL
+  ← / → (h/l):      On the tab bar: switch mode
   ↑ / ↓:            Earlier and later queries from the history
-                    (Ctrl+P / Ctrl+N too; each tab keeps its own)
+                    (Ctrl+P / Ctrl+N too; each mode keeps its own)
   Ctrl+U / Ctrl+K:  Delete to the start / end of the line
   Ctrl+Z / Ctrl+R:  Undo / redo
   Ctrl+J:           Run, the same as Enter
   F1:               Show this help (works from the input)
   Esc:              Close
 
+/ opens on SQL, or on the mode of the query that is running.
+[query] default_mode in the config chooses another starting mode.
+
 Running a query — or clearing one — starts a fresh view: sidebar filters,
 sort, frozen columns and pivot/melt are dropped. This is deliberate; apply
 them after the query.
 
-Query Syntax:
+SQL:
+  Full SQL over the loaded, drilled or reshaped data; the table name is df.
+  Example: SELECT city, count(*) FROM df GROUP BY city
+
+Search:
+  Rows containing all words, in any text column. A word matches when a
+  text column holds its characters in order, not necessarily adjacent, so
+  "smth" finds "Smith". Case-insensitive; needs at least one text column.
+  Reopened after a search, the prompt shows how many rows matched.
+
+q-style:
+  A subset of the q language, datui's own: it evaluates right to left and
+  is not a complete q or q-sql. The syntax follows; the user guide's
+  Query syntax page is the full reference.
+
+q-style Syntax:
   select [columns] [by group_cols] [where conditions]
 
 Basic Examples:
@@ -110,12 +129,3 @@ Function Syntax:
   - Brackets optional: not a=b (same as not[a=b])
   - Use parentheses for grouping: (a+b)*2
   - Example: b:avg[(1%c)+a] or b:avg (1%c)+a
-
-Fuzzy tab:
-  A row matches when its string columns contain the characters of every
-  word, in order but not necessarily adjacent, so "smth" finds "Smith".
-  Case-insensitive; needs at least one string column.
-
-SQL tab:
-  Full SQL over the loaded, drilled or reshaped data; the table name is df.
-  Example: SELECT city, count(*) FROM df GROUP BY city

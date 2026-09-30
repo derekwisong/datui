@@ -428,6 +428,8 @@ mod tests {
         drop(file);
 
         let mut pump = pump();
+        // The queries typed here are q-style.
+        pump.app.app_config.query.default_mode = crate::QueryMode::QStyle;
         pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
             .unwrap();
         settle(&mut pump);

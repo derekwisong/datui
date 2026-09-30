@@ -27,20 +27,8 @@ missing-value marker as null, shown as `∅`.
 
 ## 2. Group by species
 
-Which species has the highest average body mass? Press <kbd>/</kbd>, type this
-on the **Query** tab, then press <kbd>Enter</kbd>:
-
-```text
-select mean_mass_g: avg body_mass_g by species
-```
-
-You get three rows, one per species. `avg` ignores null values; Gentoo has the
-highest mean, about 5,076 g. Press <kbd>s</kbd> to open **Sort & Filter**,
-select `mean_mass_g` on **Columns**, and press <kbd>Space</kbd> twice for
-descending order, then <kbd>Enter</kbd> to apply.
-
-Prefer SQL? Open <kbd>/</kbd>, press <kbd>Tab</kbd> to focus the tab bar,
-select **SQL** with the arrow keys, then <kbd>Tab</kbd> back to the input:
+Which species has the highest average body mass? Press <kbd>/</kbd>; the
+prompt opens on **SQL**. Type this, then press <kbd>Enter</kbd>:
 
 ```sql
 SELECT species, AVG(body_mass_g) AS mean_mass_g
@@ -49,9 +37,23 @@ GROUP BY species
 ORDER BY mean_mass_g DESC
 ```
 
+You get three rows, one per species, highest first. `AVG` ignores null values;
+Gentoo has the highest mean, about 5,076 g.
+
+Know q? Press <kbd>Ctrl</kbd>+<kbd>T</kbd> twice for **q-style**, a subset of
+q that evaluates right to left:
+
+```text
+select mean_mass_g: avg body_mass_g by species
+```
+
+Then press <kbd>s</kbd> to open **Sort & Filter**, select `mean_mass_g` on
+**Columns**, and press <kbd>Space</kbd> twice for descending order, then
+<kbd>Enter</kbd> to apply.
+
 The loaded table is named `df`. A new query starts a fresh view, clearing
 sidebar filters and sort. See [querying](../user-guide/querying-data.md) for
-fuzzy search, expressions and grouped drill-down.
+search, expressions and grouped drill-down.
 
 ## 3. Plot individual measurements
 

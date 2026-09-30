@@ -59,7 +59,7 @@ schemas with extra columns. Other match rules and usage history also affect
 the score. Press <kbd>i</kbd> to inspect it.
 <kbd>V</kbd> and automatic application use only views with a matching rule.
 
-Only the active query tab is saved: **Query**, **SQL** or **Fuzzy**. Filters,
+Only the active query is saved, in its own mode: **SQL**, **Search** or **q-style**. Filters,
 sort, column order and reshape are saved regardless.
 
 Editing (<kbd>e</kbd>) changes a view's name, description and matching. Its

@@ -141,6 +141,7 @@ discovery settings and credential options.
 [query]
 history_limit = 1000     # Queries remembered
 enable_history = true
+default_mode = "sql"     # Where / opens: "sql", "search" or "q-style"
 
 [templates]
 auto_apply = false       # Apply the best-matching view when a file opens
@@ -151,6 +152,9 @@ show_performance = true
 show_query = true
 show_transformations = true
 ```
+
+`default_mode` applies when no query is active; editing one reopens its own
+mode. A build without SQL opens on `"search"` in place of `"sql"`.
 
 ## Theme
 

@@ -1,6 +1,7 @@
 # Query Syntax
 
-The grammar of the Query tab of the query prompt. For a walkthrough with
+The grammar of the q-style mode of the query prompt: a subset of the q
+language, evaluated right to left. For a walkthrough with
 examples, see [Querying Data](../user-guide/querying-data.md).
 
 ## Structure of a query

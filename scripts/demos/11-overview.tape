@@ -48,9 +48,12 @@ Type "k"
 Sleep 0.08s
 Sleep 0.5s
 
-# Query down to the last decade.
+# Query down to the last decade, in q-style: / starts on SQL.
 Type "/"
 Sleep 0.5s
+Ctrl+T
+Ctrl+T
+Sleep 0.3s
 Type "select date, tmax_c, tmin_c, precip_mm, snow_mm where date >= 2016.01.01"
 Sleep 0.3s
 Enter

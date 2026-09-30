@@ -2,6 +2,7 @@
 
 use crate::CompressionFormat;
 use crate::widgets::text_input::TextInput;
+use polars::prelude::{LazyFrame, PolarsResult};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -63,6 +64,16 @@ impl ExportFormat {
     /// The others get them as JSON text (`nested_json`).
     pub fn holds_nesting(self) -> bool {
         !matches!(self, Self::Csv)
+    }
+
+    /// `lf` as this format can write it: nested columns as JSON for CSV, and
+    /// the types Avro lacks cast to ones it has. Planned, not run.
+    pub fn prepare(self, lf: LazyFrame) -> PolarsResult<LazyFrame> {
+        match self {
+            Self::Csv => crate::nested_json::lazy_as_json(lf),
+            Self::Avro => crate::avro_types::lazy_for_avro(lf),
+            Self::Parquet | Self::Json | Self::Ndjson | Self::Ipc => Ok(lf),
+        }
     }
 
     pub fn supports_compression(self) -> bool {

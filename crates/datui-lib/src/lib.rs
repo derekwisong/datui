@@ -38,6 +38,7 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui::widgets::{Block, Clear};
 
 pub mod analysis_modal;
+pub mod avro_types;
 #[cfg(feature = "cloud")]
 pub mod aws_profiles;
 #[cfg(feature = "cloud")]
@@ -19324,11 +19325,7 @@ impl App {
                     let format = *format;
                     let options = options.clone();
                     self.spawn_bg("Collecting data for export...", move |task_gen, tx| {
-                        let lf = if format.holds_nesting() {
-                            Ok(lf)
-                        } else {
-                            crate::nested_json::lazy_as_json(lf)
-                        };
+                        let lf = format.prepare(lf);
                         match lf.and_then(|lf| crate::statistics::collect_lazy(lf, streaming)) {
                             Ok(df) => {
                                 let _ = tx.send(AppEvent::BackgroundExportCollected {
@@ -20369,6 +20366,8 @@ impl App {
                 use polars::io::avro::AvroWriter;
                 let file = File::create(path)?;
                 let mut writer = BufWriter::new(file);
+                // Polars writes a header per chunk, which no reader can open.
+                df.rechunk_mut_par();
                 AvroWriter::new(&mut writer).finish(df)?;
             }
         }
@@ -20383,11 +20382,7 @@ impl App {
         format: ExportFormat,
         options: &ExportOptions,
     ) -> Result<()> {
-        let lf = if format.holds_nesting() {
-            state.visible_lf()
-        } else {
-            crate::nested_json::lazy_as_json(state.visible_lf())?
-        };
+        let lf = format.prepare(state.visible_lf())?;
         let mut df = crate::statistics::collect_lazy(lf, state.polars_streaming)?;
         Self::export_data_from_df(&mut df, path, format, options)
     }

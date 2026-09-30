@@ -5294,6 +5294,69 @@ fn test_csv_export_writes_sql_arrays_and_structs_as_json() {
     );
 }
 
+/// Avro has no fixed-size array or categorical type: the export writes them as
+/// a list and as strings, inside a list too, and a view read from two files
+/// (two chunks) still makes one readable file.
+#[test]
+fn test_avro_export_writes_arrays_and_categoricals() {
+    use datui::export_modal::ExportFormat;
+    use polars::io::avro::AvroReader;
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for (file, offset) in [("a.parquet", 0i64), ("b.parquet", 2)] {
+        let mut df = df!(
+            "id" => [offset, offset + 1],
+            "tag" => ["x", "y"],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("tag").cast(DataType::from_categories(Categories::global())),
+            concat_list([col("id"), col("id")])
+                .unwrap()
+                .cast(DataType::Array(Box::new(DataType::Int64), 2))
+                .alias("pair"),
+        ])
+        .with_columns([concat_list([col("tag")]).unwrap().alias("tags")])
+        .collect()
+        .unwrap();
+        ParquetWriter::new(File::create(src.join(file)).unwrap())
+            .finish(&mut df)
+            .unwrap();
+    }
+    let (mut app, rx, tx) = open_local_dataset_with_channel(&src);
+    let schema = app.data_table_state.as_ref().unwrap().schema.clone();
+    assert!(
+        matches!(schema.get("pair"), Some(DataType::Array(..)))
+            && matches!(schema.get("tag"), Some(DataType::Categorical(..))),
+        "the view has the types Avro lacks: {schema:?}"
+    );
+
+    let out = dir.path().join("out.avro");
+    export_as(&mut app, &rx, &tx, &out, ExportFormat::Avro, false);
+    let back = AvroReader::new(File::open(&out).unwrap())
+        .finish()
+        .unwrap()
+        .sort(["id"], Default::default())
+        .unwrap();
+    assert_eq!(back.height(), 4);
+    assert_eq!(
+        back.column("pair").unwrap().dtype(),
+        &DataType::List(Box::new(DataType::Int64))
+    );
+    assert_eq!(back.column("tag").unwrap().dtype(), &DataType::String);
+    assert_eq!(
+        back.column("tags").unwrap().dtype(),
+        &DataType::List(Box::new(DataType::String))
+    );
+    let tag = back.column("tag").unwrap().str().unwrap().clone();
+    assert_eq!(
+        (0..4).map(|i| tag.get(i)).collect::<Vec<_>>(),
+        [Some("x"), Some("y"), Some("x"), Some("y")]
+    );
+}
+
 /// Every copy format takes list cells as JSON, the same text a CSV export
 /// writes, instead of failing on them.
 #[test]
@@ -5842,6 +5905,44 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
         &plain_lines[1..],
         ["2024-01-01,1,", "2024-01-02,2,"],
         "and without it both are still null, and nothing else has appeared"
+    );
+}
+
+/// Avro widens the hidden row index along with every other `u32`; the files are
+/// still named from it.
+#[test]
+fn test_an_avro_export_can_name_the_file_each_row_came_from() {
+    use polars::io::avro::AvroReader;
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &[None::<&str>]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+
+    let out = dir.path().join("named.avro");
+    export_as(
+        &mut app,
+        &rx,
+        &tx,
+        &out,
+        datui::export_modal::ExportFormat::Avro,
+        true,
+    );
+    let back = AvroReader::new(File::open(&out).unwrap()).finish().unwrap();
+    let files = back.column("source_file").unwrap().str().unwrap().clone();
+    assert!(
+        files
+            .get(0)
+            .unwrap()
+            .ends_with(&native("date=2024-01-01/data.parquet"))
+            && files
+                .get(1)
+                .unwrap()
+                .ends_with(&native("date=2024-01-02/data.parquet")),
+        "{files:?}"
     );
 }
 

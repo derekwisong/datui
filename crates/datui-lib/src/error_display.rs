@@ -132,41 +132,39 @@ fn parse_conversion(msg: &str, parsing: bool) -> Option<ConversionFailure> {
 
 impl ConversionFailure {
     /// What a SQL writer can act on: the column, how many values, a few of them, and
-    /// the SQL that would get past them. `rows` is how many rows the query read, when
-    /// known; the count is only given as "of N" when Polars checked all of them.
+    /// the SQL that would get past them. `rows` is how many rows `df` holds, when
+    /// known. The count is "N of M" only when Polars checked all of them; otherwise it
+    /// covers the batch the run stopped in, and is said as a lower bound.
     pub fn sql_message(&self, rows: Option<usize>) -> String {
         let column = crate::sql_assist::sql_name(&self.column);
-        let count = if rows == Some(self.checked) {
-            format!(
-                "{} of {} values",
-                crate::numfmt::group_chrome(self.failed),
-                crate::numfmt::group_chrome(self.checked)
-            )
-        } else if self.failed == 1 && rows.is_none_or(|r| r == 1) {
-            "1 value".to_string()
-        } else {
-            format!(
-                "At least {} values",
-                crate::numfmt::group_chrome(self.failed)
-            )
-        };
+        let exact = rows == Some(self.checked);
+        let one = !exact && self.failed == 1;
         let temporal = self.to == "date" || self.to == "time" || self.to.starts_with("datetime");
-        let what = if temporal && self.parsing {
-            "do not match the format"
+        let (many, single) = if temporal && self.parsing {
+            ("do not match the format", "does not match the format")
         } else if self.to == "date" {
-            "are not dates written YYYY-MM-DD"
+            (
+                "are not dates written YYYY-MM-DD",
+                "is not a date written YYYY-MM-DD",
+            )
         } else if self.to == "time" {
-            "are not times written HH:MM:SS"
+            (
+                "are not times written HH:MM:SS",
+                "is not a time written HH:MM:SS",
+            )
         } else if temporal {
-            "are not timestamps written YYYY-MM-DD HH:MM:SS"
+            (
+                "are not timestamps written YYYY-MM-DD HH:MM:SS",
+                "is not a timestamp written YYYY-MM-DD HH:MM:SS",
+            )
         } else if self.to.starts_with('i') || self.to.starts_with('u') {
-            "are not whole numbers"
+            ("are not whole numbers", "is not a whole number")
         } else if self.to.starts_with('f') || self.to.starts_with("decimal") {
-            "are not numbers"
+            ("are not numbers", "is not a number")
         } else if self.to == "bool" {
-            "are not true or false"
+            ("are not true or false", "is not true or false")
         } else {
-            "cannot be converted"
+            ("cannot be converted", "cannot be converted")
         };
         let quoted: Vec<String> = self.examples.iter().map(|e| format!("\"{e}\"")).collect();
         let such_as = match quoted.as_slice() {
@@ -174,10 +172,19 @@ impl ConversionFailure {
             [one] => format!(", such as {one}"),
             [init @ .., last] => format!(", such as {} and {last}", init.join(", ")),
         };
-        let lead = if count.starts_with("At") {
-            format!("{count} in {column} {what}{such_as}.")
+        let lead = if exact {
+            format!(
+                "{column}: {} of {} values {many}{such_as}.",
+                crate::numfmt::group_chrome(self.failed),
+                crate::numfmt::group_chrome(self.checked)
+            )
+        } else if one {
+            format!("At least 1 value in {column} {single}{such_as}.")
         } else {
-            format!("{column}: {count} {what}{such_as}.")
+            format!(
+                "At least {} values in {column} {many}{such_as}.",
+                crate::numfmt::group_chrome(self.failed)
+            )
         };
         let hint = if temporal && self.parsing {
             format!(
@@ -210,7 +217,7 @@ fn sql_type_for(polars: &str) -> &'static str {
         "i128" => "HUGEINT",
         "u8" => "UTINYINT",
         "u16" => "USMALLINT",
-        "u32" => "INT UNSIGNED",
+        "u32" => "UINTEGER",
         "u64" => "UBIGINT",
         "f32" => "REAL",
         "f64" => "DOUBLE",
@@ -739,6 +746,35 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("TRY_CAST(\"Team 1\" AS INT)"), "{msg}");
+    }
+
+    /// Without the whole table in the batch, one failure is a floor too.
+    #[test]
+    fn a_count_short_of_the_table_is_a_lower_bound() {
+        let failure = ConversionFailure {
+            column: "FT".to_string(),
+            to: "i32".to_string(),
+            failed: 1,
+            checked: 1,
+            examples: vec!["0–3".to_string()],
+            parsing: false,
+        };
+        let lead = |rows| {
+            failure
+                .sql_message(rows)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            lead(None),
+            "At least 1 value in FT is not a whole number, such as \"0–3\"."
+        );
+        assert_eq!(
+            lead(Some(1)),
+            "FT: 1 of 1 values are not whole numbers, such as \"0–3\"."
+        );
     }
 
     #[test]

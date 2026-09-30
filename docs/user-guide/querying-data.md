@@ -67,8 +67,8 @@ the column, the values that failed and SQL that gets past them:
 | `CAST` meets text that is not a number | `TRY_CAST(col AS INT)`, which reads it as null |
 | `CAST(col AS DATE)` meets a date not written `YYYY-MM-DD` | `STRPTIME(col, '%d/%m/%Y')` with the format it is written in |
 
-On a table of up to 100,000 rows the count is exact a moment later; on a
-larger one it says "at least", from the rows read before the run stopped.
+The count is exact when the whole column was checked before the run stopped.
+Otherwise it says "At least N", from the rows read so far.
 
 ## Search
 

@@ -13444,8 +13444,8 @@ impl App {
             // The status line is about the last key; this one replaces it.
             self.sort_filter_modal.sort.status = None;
 
-            // Ctrl+J is the apply chord beside Ctrl+Enter: a terminal without the
-            // keyboard-enhancement protocol sends one as the other.
+            // Ctrl+J is the apply chord beside Ctrl+Enter: it works on every
+            // terminal, and some send Ctrl+Enter as Ctrl+J.
             let apply_chord = ctrl && matches!(event.code, KeyCode::Enter | KeyCode::Char('j'));
 
             // The inline filter editor owns the keys while it is up: a small form
@@ -13564,7 +13564,7 @@ impl App {
                 // On the Filters tab Enter means add/edit wherever focus sits — the
                 // sidebar opens on the tab bar, and Enter closing the dialog from
                 // there is how a first filter never gets added. The footer says
-                // ^Enter is the apply here.
+                // ^J is the apply here.
                 KeyCode::Enter if filter_tab => {
                     self.sort_filter_modal.focus = SortFilterFocus::Body;
                     let history_limit = self.history_limit;
@@ -15454,12 +15454,12 @@ impl App {
                 // The form.
                 KeyCode::Tab if form => self.template_modal.next_focus(),
                 KeyCode::BackTab if form => self.template_modal.prev_focus(),
-                // Ctrl+J too: a terminal without the keyboard-enhancement
-                // protocol sends Ctrl+Enter as Ctrl+J.
+                // Ctrl+J too: it works on every terminal, and some send
+                // Ctrl+Enter as Ctrl+J.
                 KeyCode::Enter | KeyCode::Char('j') if form && ctrl => self.save_view_form(),
                 KeyCode::Enter if form => {
                     // Enter saves from anywhere; inside the multiline
-                    // description it types, and the footer names Ctrl+Enter.
+                    // description it types, and the footer names Ctrl+J.
                     if self.template_modal.form_focus == FormFocus::Description {
                         let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
                         self.template_modal

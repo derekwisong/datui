@@ -125,9 +125,8 @@ fn enter_inserts_a_newline_in_a_multiline_input() {
     assert_eq!(input.cursor_col(), 3);
 }
 
-/// Ctrl+J is the save chord beside Ctrl+Enter, in both modes: a terminal
-/// without the keyboard-enhancement protocol sends one as the other. It never
-/// edits the text.
+/// Ctrl+J is the save chord beside Ctrl+Enter, in both modes: some terminals
+/// send one as the other. It never edits the text.
 #[test]
 fn ctrl_j_and_ctrl_enter_submit_in_both_modes() {
     for mut input in [TextInput::new(), TextInput::multiline()] {

@@ -323,9 +323,9 @@ impl TextInput {
             KeyCode::Esc => TextInputEvent::Cancel,
             KeyCode::Enter if single_line => self.submit(cache),
             KeyCode::Char('m' | 'M') if ctrl && single_line => self.submit(cache),
-            // The save chord, in either mode. A terminal without the
-            // keyboard-enhancement protocol sends Ctrl+Enter as Ctrl+J, so the
-            // two must mean the same thing; in a multiline field plain Enter types.
+            // The save chord, in either mode. Without the keyboard-enhancement
+            // protocol some terminals send Ctrl+Enter as Ctrl+J, so the two must
+            // mean the same thing; in a multiline field plain Enter types.
             KeyCode::Enter | KeyCode::Char('j' | 'J') if ctrl => self.submit(cache),
             KeyCode::Up if single_line && recall => {
                 self.navigate_history_up(cache);

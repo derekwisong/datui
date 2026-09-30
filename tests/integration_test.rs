@@ -11699,6 +11699,38 @@ fn test_filter_editor_keyboard_flow() {
     assert_eq!(current_rows(&app), 100);
 }
 
+/// Ctrl+J applies mid-edit on every terminal, committing the row in progress,
+/// and the editor's footer names it.
+#[test]
+fn test_ctrl_j_applies_from_the_filter_editor() {
+    let (mut app, rx, tx) = open_query_filter_fixture("filter_editor_ctrl_j.csv");
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Right); // Columns -> Filters
+    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
+    press(&mut app, KeyCode::Enter); // open the editor
+    for ch in "na".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Enter); // the column
+    for ch in "co".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Enter); // the operator
+    for ch in "alpha".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    let screen = screen_text(&mut app);
+    assert!(screen.contains("^J") && screen.contains("Apply"));
+
+    if let Some(next) = press_ctrl(&mut app, 'j') {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.sort_filter_modal.active);
+    assert_eq!(current_rows(&app), 50, "the row in progress was applied");
+}
+
 /// In the filter editor's column and operator steps, Space chooses like
 /// Enter instead of typing into the narrow filter, where a space matches
 /// nothing and blanks the list. The value field below keeps Space for typing.

@@ -624,6 +624,37 @@ mod classify_batch_tests {
         assert_eq!(kind, Some(discover::EntryKind::Hive));
     }
 
+    /// Space folds the header under the cursor, and never starts a filter: a filter of
+    /// one space is invisible at the prompt and searched below the working directory.
+    /// Once typing has started it types.
+    #[test]
+    fn space_folds_a_header_and_types_only_mid_filter() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.input_mode = InputMode::Home;
+        app.home.apply_listing(unlooked_at(3));
+        let space = || AppEvent::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.home.selected = 0;
+        assert!(app.home.selection_is_header());
+
+        app.event(&space());
+        assert!(app.home.is_collapsed(0));
+        app.event(&space());
+        assert!(!app.home.is_collapsed(0));
+
+        app.home.selected = 1;
+        app.event(&space());
+        assert_eq!(app.home.filter, "", "a space on a row is nothing");
+        assert!(!app.home.is_collapsed(0));
+
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::NONE,
+        )));
+        app.event(&space());
+        assert_eq!(app.home.filter, "d ");
+    }
+
     /// A row's label shows as soon as its answer lands, not when the batch it was in
     /// finishes; the slot stays taken until then, so a second batch never overlaps it.
     #[test]
@@ -9517,6 +9548,15 @@ impl App {
     ///
     /// Collapsing moves the cursor to the header, so the section the user just folded
     /// is what stays selected rather than whatever row happens to fall into place.
+    /// Fold or unfold the section whose header is highlighted.
+    fn home_toggle_fold(&mut self) {
+        if let Some(section) = self.home.selected_section() {
+            self.home.toggle_collapsed(section);
+            self.home.clamp_selection();
+            self.cache.save_folds(&self.home.folds);
+        }
+    }
+
     fn home_collapse(&mut self, collapse: bool) {
         // The listing browsed into is the whole screen. It never folds, and the fold
         // must not be remembered for its path either — see `set_collapsed`.
@@ -9872,11 +9912,7 @@ impl App {
             _ => {}
         }
         if self.home.selection_is_header() {
-            if let Some(section) = self.home.selected_section() {
-                self.home.toggle_collapsed(section);
-                self.home.clamp_selection();
-                self.cache.save_folds(&self.home.folds);
-            }
+            self.home_toggle_fold();
             return None;
         }
         let entry = self.home.selected_entry()?;
@@ -10455,6 +10491,14 @@ impl App {
             // is where a new user asks for the keys. F1 opens help mid-filter.
             KeyCode::Char('?') if self.home.filter.is_empty() && !ctrl => {
                 self.open_help_overlay();
+            }
+            // Space before typing starts folds a header, as Enter does, and is otherwise
+            // nothing: a filter of one space is invisible at the prompt and matched every
+            // name with a space in it, below the working directory too.
+            KeyCode::Char(' ') if self.home.filter.is_empty() && !ctrl => {
+                if self.home.selection_is_header() {
+                    self.home_toggle_fold();
+                }
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);

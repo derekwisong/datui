@@ -1918,38 +1918,6 @@ fn powerlaw_cdf(x: f64, xmin: f64, alpha: f64) -> f64 {
     1.0 - (x / xmin).powf(-alpha + 1.0)
 }
 
-// Stirling's approximation for ln(gamma(z))
-fn ln_gamma_approx(z: f64) -> f64 {
-    if z <= 0.0 {
-        return f64::NAN;
-    }
-    // Stirling's approximation: ln(Gamma(z)) ≈ (z - 0.5)*ln(z) - z + 0.5*ln(2π) + 1/(12z)
-    if z > 50.0 {
-        (z - 0.5) * z.ln() - z + 0.5 * (2.0 * std::f64::consts::PI).ln() + 1.0 / (12.0 * z)
-    } else {
-        // For smaller z, use iterative calculation (NO RECURSION)
-        let mut result = 0.0;
-        let mut z_val = z;
-        // Cap iterations to prevent issues
-        let max_iter = 100;
-        let mut iter = 0;
-        while z_val < 50.0 && iter < max_iter {
-            result -= z_val.ln();
-            z_val += 1.0;
-            iter += 1;
-        }
-        // Use Stirling's approximation for final value (no recursion)
-        if z_val >= 50.0 {
-            result
-                + ((z_val - 0.5) * z_val.ln() - z_val
-                    + 0.5 * (2.0 * std::f64::consts::PI).ln()
-                    + 1.0 / (12.0 * z_val))
-        } else {
-            result
-        }
-    }
-}
-
 /// The regularized incomplete beta function `I_x(a, b)`, by its continued fraction
 /// (Lentz's method), flipped to the side where the fraction converges fast.
 fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
@@ -1959,9 +1927,8 @@ fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
     if x >= 1.0 {
         return 1.0;
     }
-    let ln_front = ln_gamma_approx(a + b) - ln_gamma_approx(a) - ln_gamma_approx(b)
-        + a * x.ln()
-        + b * (1.0 - x).ln();
+    let ln_gamma = crate::distribution_fit::ln_gamma;
+    let ln_front = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln();
     let front = ln_front.exp();
     if x < (a + 1.0) / (a + b + 2.0) {
         front * beta_continued_fraction(x, a, b) / a
@@ -2679,26 +2646,19 @@ fn compute_pearson_correlation(values1: &[f64], values2: &[f64]) -> f64 {
     numerator / (var1.sqrt() * var2.sqrt())
 }
 
+/// The two-sided p-value of Pearson's r over `n` pairs: Student's t with `n - 2`
+/// degrees of freedom. With `t² = r²·df / (1 - r²)`, both tails together are
+/// `I_x(df/2, 1/2)` at `x = df / (df + t²) = 1 - r²`, taken directly so that a small p
+/// is not lost to `1 - cdf`.
 fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
-    // t-test for correlation coefficient
-    // t = r * sqrt((n-2) / (1-r^2))
-    // Then use t-distribution to get p-value
-    if correlation.abs() >= 1.0 || n < 3 {
+    if n < 3 || correlation.is_nan() {
         return 1.0;
     }
-
-    let t_statistic = correlation * ((n - 2) as f64 / (1.0 - correlation * correlation)).sqrt();
-    let _degrees_of_freedom = (n - 2) as f64;
-
-    // Approximate p-value using t-distribution
-    // Simplified approximation: p ≈ 2 * (1 - normal_cdf(|t|))
-    let normal_cdf = |x: f64| -> f64 {
-        // Approximation of normal CDF
-        0.5 * (1.0 + (x / std::f64::consts::SQRT_2).tanh())
-    };
-
-    let p_value = 2.0 * (1.0 - normal_cdf(t_statistic.abs()));
-    p_value.clamp(0.0, 1.0)
+    if correlation.abs() >= 1.0 {
+        return 0.0;
+    }
+    let df = (n - 2) as f64;
+    regularized_incomplete_beta(1.0 - correlation * correlation, df / 2.0, 0.5).clamp(0.0, 1.0)
 }
 
 /// Computes correlation statistics for a pair of columns.
@@ -2998,6 +2958,33 @@ mod sampling_tests {
 #[cfg(test)]
 mod normality_tests {
     use super::*;
+
+    /// Against SciPy's `2 * t.sf(|t|, n - 2)`. A normal CDF standing in for the t,
+    /// and a tanh standing in for the normal, gave r = 0.01 over 100,000 pairs p = 0.023
+    /// where it is 0.0016.
+    #[test]
+    fn correlation_p_values_are_students_t() {
+        let cases = [
+            (0.5, 10, 0.14111328125000006),
+            (-0.2, 50, 0.16375308124541754),
+            (0.3, 30, 0.10724594805795436),
+            (0.9, 5, 0.03738607346849862),
+            (0.1, 100, 0.32221736303061954),
+            (0.02, 20_000, 0.004676184609440329),
+            (0.01, 100_000, 0.0015651897452783157),
+            (0.005, 1_000_000, 5.732288112893878e-7),
+            (0.1, 10_000, 1.1970504236520445e-23),
+        ];
+        for (r, n, expected) in cases {
+            let p = compute_correlation_p_value(r, n);
+            assert!(
+                (p - expected).abs() <= 1e-9 * expected,
+                "r {r}, n {n}: {p} against {expected}"
+            );
+        }
+        assert_eq!(compute_correlation_p_value(1.0, 10), 0.0);
+        assert_eq!(compute_correlation_p_value(0.0, 10), 1.0);
+    }
 
     /// Shapiro-Francia's p-value is a p-value: a normal sample passes, and a price
     /// series of two regimes, W' = 0.929 over 2,590 values, does not.

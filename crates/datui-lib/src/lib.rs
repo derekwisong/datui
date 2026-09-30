@@ -1330,7 +1330,7 @@ mod chart_prepare_tests {
         );
         assert_eq!(
             starts(&drawn),
-            ["F9 22", "UA 3.50", "AA 0.50", "AS -9.50"],
+            ["F9 22.00", "UA 3.50", "AA 0.50", "AS -9.50"],
             "{drawn:#?}"
         );
         let full = crate::glyphs::get().bar_eighths[7];
@@ -1349,7 +1349,7 @@ mod chart_prepare_tests {
         pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
         assert_eq!(
             starts(&rows(&mut app)),
-            ["AA 0.50", "AS -9.50", "F9 22", "UA 3.50"]
+            ["AA 0.50", "AS -9.50", "F9 22.00", "UA 3.50"]
         );
     }
 
@@ -6680,6 +6680,8 @@ enum ChartExportJob {
     },
     Bar {
         data: chart_data::BarData,
+        /// Each bar's value in the table's number format.
+        values: Vec<String>,
         title: Option<String>,
         notes: Vec<String>,
     },
@@ -6716,12 +6718,21 @@ impl ChartExportJob {
             (Self::Heatmap { data, bounds }, ChartExportFormat::Eps) => {
                 write_heatmap_eps(path, data, bounds)
             }
-            (Self::Bar { data, title, notes }, ChartExportFormat::Png) => {
-                write_bar_png(path, data, title.as_deref(), notes, size)
-            }
-            (Self::Bar { data, title, notes }, ChartExportFormat::Eps) => {
-                write_bar_eps(path, data, title.as_deref(), notes)
-            }
+            (
+                Self::Bar {
+                    data, title, notes, ..
+                },
+                ChartExportFormat::Png,
+            ) => write_bar_png(path, data, title.as_deref(), notes, size),
+            (
+                Self::Bar {
+                    data,
+                    values,
+                    title,
+                    notes,
+                },
+                ChartExportFormat::Eps,
+            ) => write_bar_eps(path, data, values, title.as_deref(), notes),
         }
     }
 }
@@ -19161,6 +19172,7 @@ impl App {
                     return Err(no_points());
                 }
                 ChartExportJob::Bar {
+                    values: data.value_labels(&self.number_format),
                     data: data.clone(),
                     title: chart_title,
                     notes,

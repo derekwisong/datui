@@ -862,26 +862,64 @@ pub struct BarData {
     /// Categories left out because their value is null.
     pub no_value: usize,
     pub rows: RowsRead,
+    /// The value column's type: an integer column prints whole numbers.
+    pub value_dtype: DataType,
 }
 
-/// Format a bar's value for the label beside it: whole numbers grouped, others to two
-/// decimals, very large or small ones in scientific notation.
-pub fn format_bar_value(v: f64) -> String {
-    use crate::numfmt::NumberFormat;
-    let mut out = String::new();
-    if v.abs() >= 1e15 || (v != 0.0 && v.abs() < 1e-2) {
+impl BarData {
+    /// Each bar's value as the table prints the value column: its number format, or
+    /// plain where the table shows the column unformatted.
+    pub fn value_labels(&self, settings: &crate::numfmt::NumberFormatSettings) -> Vec<String> {
+        let format = match settings.formatter_for(&self.value_column, &self.value_dtype) {
+            crate::numfmt::CellFormatter::Number(format) => format,
+            crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
+        };
+        let integer = self.value_dtype.is_integer();
+        self.bars
+            .iter()
+            .map(|b| format_bar_value(b.value, integer, &format))
+            .collect()
+    }
+}
+
+/// Format a bar's value for the label beside it in `format`: an integer column's whole,
+/// anything else to the format's decimal places or two, so every bar shows the same
+/// number of them. Values too large, or too small to show in those places, go to
+/// scientific notation.
+pub fn format_bar_value(v: f64, integer: bool, format: &crate::numfmt::NumberFormat) -> String {
+    let places = format.float_precision.unwrap_or(2);
+    let smallest = 0.5 * 10f64.powi(-i32::from(places));
+    if !v.is_finite() || v.abs() >= 1e15 || (!integer && v != 0.0 && v.abs() < smallest) {
         return format_axis_label(v);
     }
-    if v.fract() == 0.0 {
-        NumberFormat::CHROME.write_i64(v as i64, &mut out);
+    let mut out = String::new();
+    if integer {
+        format.write_i64(v as i64, &mut out);
     } else {
-        let two_places = NumberFormat {
-            float_precision: Some(2),
-            ..NumberFormat::CHROME
+        let fixed = crate::numfmt::NumberFormat {
+            float_precision: Some(places),
+            ..format.clone()
         };
-        two_places.write_f64(v, &mut String::new(), &mut out);
+        fixed.write_f64(v, &mut String::new(), &mut out);
     }
     out
+}
+
+/// A column name as SQL reads it: bare when it is a plain lowercase identifier, quoted
+/// otherwise.
+fn sql_ident(name: &str) -> String {
+    let plain = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if plain {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
 }
 
 /// Prepare a bar chart: one bar per row, the category from `category`, the length from
@@ -907,10 +945,20 @@ pub fn prepare_bar_data(
         *seen.entry(*label).or_default() += 1;
     }
     if seen.len() < labels.len() {
+        let read = match rows.sample_size {
+            Some(n) => format!("a sample of {} rows", crate::numfmt::group_chrome(n)),
+            None => format!("{} rows", crate::numfmt::group_chrome(labels.len())),
+        };
+        let (c, v) = (sql_ident(category), sql_ident(value));
+        // The q form only where it reads the names as they are.
+        let q = if c == category && v == value {
+            format!(" (or select avg {value} by {category})")
+        } else {
+            String::new()
+        };
         return Err(color_eyre::eyre::eyre!(
-            "{category} repeats ({} rows, {} categories). Bars take one row per category: \
-             group first, e.g. select avg {value} by {category}",
-            crate::numfmt::group_chrome(labels.len()),
+            "{category} repeats: {} categories in {read}. A bar takes one row per category, \
+             so group first: SELECT {c}, AVG({v}) FROM df GROUP BY {c}{q}",
             crate::numfmt::group_chrome(seen.len()),
         ));
     }
@@ -956,6 +1004,7 @@ pub fn prepare_bar_data(
         more,
         no_value,
         rows,
+        value_dtype: df.column(value)?.dtype().clone(),
     })
 }
 
@@ -1435,10 +1484,59 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("species repeats (3 rows, 2 categories)"),
+            err.contains("species repeats: 2 categories in 3 rows"),
             "{err}"
         );
-        assert!(err.contains("select avg body_mass_g by species"), "{err}");
+        assert!(
+            err.contains("SELECT species, AVG(body_mass_g) FROM df GROUP BY species"),
+            "SQL first: {err}"
+        );
+        assert!(
+            err.contains("(or select avg body_mass_g by species)"),
+            "{err}"
+        );
+
+        // A name SQL cannot read bare is quoted, and the q form, which cannot, is left out.
+        let lf = df!("Species" => &["a", "a"], "mass g" => &[1_i64, 2])
+            .unwrap()
+            .lazy();
+        let err = prepare_bar_data(
+            &lf,
+            "Species",
+            "mass g",
+            BarOrder::Value,
+            BAR_CAP,
+            &all_rows(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.ends_with(r#"SELECT "Species", AVG("mass g") FROM df GROUP BY "Species""#),
+            "{err}"
+        );
+    }
+
+    /// Another order draws from the rows already read: the file is not read again.
+    #[test]
+    fn a_new_bar_order_does_not_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delays.csv");
+        std::fs::write(&path, "carrier,delay\nUA,3.5\nAA,0.4\n").unwrap();
+        let lf = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let sampling = all_rows();
+        let first =
+            prepare_bar_data(&lf, "carrier", "delay", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(labels(&first), [Some("UA"), Some("AA")]);
+        std::fs::write(&path, "carrier,delay\nZZ,1.0\n").unwrap();
+        let again =
+            prepare_bar_data(&lf, "carrier", "delay", BarOrder::Label, BAR_CAP, &sampling).unwrap();
+        assert_eq!(
+            labels(&again),
+            [Some("AA"), Some("UA")],
+            "from the rows held"
+        );
     }
 
     /// Booleans and categoricals are categories too.
@@ -1464,11 +1562,42 @@ mod tests {
         assert!(is_category_dtype(&DataType::UInt8));
     }
 
+    /// Bar values print in the table's number format: an integer column whole, any
+    /// other to the format's places or two, the same for every bar.
     #[test]
-    fn bar_values_read_plainly() {
-        assert_eq!(format_bar_value(1_234_567.0), "1,234,567");
-        assert_eq!(format_bar_value(-9.9296), "-9.93");
-        assert_eq!(format_bar_value(4213.7), "4,213.70");
-        assert_eq!(format_bar_value(0.0), "0");
+    fn bar_values_follow_the_table_number_format() {
+        use crate::numfmt::NumberFormat;
+        let plain = NumberFormat::PLAIN;
+        let thousands = NumberFormat::preset("thousands").unwrap();
+        let european = NumberFormat::preset("european").unwrap();
+        assert_eq!(format_bar_value(1_234_567.0, true, &plain), "1234567");
+        assert_eq!(format_bar_value(1_234_567.0, true, &thousands), "1,234,567");
+        assert_eq!(format_bar_value(22.0, false, &plain), "22.00");
+        assert_eq!(format_bar_value(-9.9296, false, &plain), "-9.93");
+        assert_eq!(format_bar_value(4213.7, false, &thousands), "4,213.70");
+        assert_eq!(format_bar_value(4213.7, false, &european), "4.213,70");
+        let one_place = NumberFormat {
+            float_precision: Some(1),
+            ..thousands
+        };
+        assert_eq!(format_bar_value(4213.74, false, &one_place), "4,213.7");
+        assert_eq!(format_bar_value(0.0, false, &plain), "0.00");
+        assert_eq!(format_bar_value(0.001, false, &plain), "1.00e-3");
+
+        let lf = df!("carrier" => &["UA", "AA"], "delay" => &[1234.5_f64, 7.0])
+            .unwrap()
+            .lazy();
+        let data = bars(&lf, BarOrder::Value, BAR_CAP);
+        let mut settings = crate::numfmt::NumberFormatSettings {
+            format: NumberFormat::preset("thousands").unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(data.value_labels(&settings), ["1,234.50", "7.00"]);
+        settings.enabled = false;
+        assert_eq!(
+            data.value_labels(&settings),
+            ["1234.50", "7.00"],
+            "F turns it off"
+        );
     }
 }

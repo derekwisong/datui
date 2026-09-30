@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::chart_data::{
     BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    format_axis_label, format_bar_value, format_x_axis_label, segments,
+    format_axis_label, format_x_axis_label, segments,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
@@ -381,7 +381,8 @@ fn render_bar_chart(
     let bars = &data.bars[..shown];
     let hidden = total - shown;
 
-    let values: Vec<String> = bars.iter().map(|b| format_bar_value(b.value)).collect();
+    let mut values = data.value_labels(&ctx.number_format);
+    values.truncate(shown);
     let value_w = values
         .iter()
         .map(|v| crate::glyphs::display_width(v))
@@ -1431,6 +1432,7 @@ mod tests {
             more: 0,
             no_value: 0,
             rows: Default::default(),
+            value_dtype: polars::prelude::DataType::Float64,
         }
     }
 
@@ -1462,8 +1464,8 @@ mod tests {
         assert!(canvas[1].trim_start().starts_with("carrier") && canvas[1].contains("delay"));
         let bar_len = |row: &str| row.matches(full).count();
         let words = |row: &str| row.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-        assert_eq!(words(&canvas[2]), "C0 3", "{:?}", canvas[2]);
-        assert_eq!(words(&canvas[4]), "C2 1", "{:?}", canvas[4]);
+        assert_eq!(words(&canvas[2]), "C0 3.00", "{:?}", canvas[2]);
+        assert_eq!(words(&canvas[4]), "C2 1.00", "{:?}", canvas[4]);
         let (a, c) = (bar_len(&canvas[2]), bar_len(&canvas[4]));
         assert!(
             a > 40 && (a as f64 / c as f64 - 3.0).abs() < 0.2,

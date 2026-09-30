@@ -1088,10 +1088,18 @@ fn bar_bounds(data: &BarData) -> (f64, f64) {
     if hi > lo { (lo, hi) } else { (lo, lo + 1.0) }
 }
 
-/// A bar's category as the export writes it.
-fn bar_label(bar: &Bar) -> String {
-    bar.label.clone().unwrap_or_else(|| "null".to_string())
+/// A bar's category as the export writes it, cut to `max` characters.
+fn bar_label(bar: &Bar, max: usize) -> String {
+    let label = bar.label.as_deref().unwrap_or("null");
+    if label.chars().count() <= max {
+        return label.to_string();
+    }
+    let kept: String = label.chars().take(max.saturating_sub(3)).collect();
+    format!("{kept}...")
 }
+
+/// Longest category label an export writes, so a long one cannot run into the bars.
+const BAR_LABEL_MAX: usize = 30;
 
 /// The category axis title, with the categories past the cap counted.
 fn bar_category_title(data: &BarData) -> String {
@@ -1121,7 +1129,11 @@ pub fn write_bar_png(
         return Err(color_eyre::eyre::eyre!("No data to export"));
     }
     let n = data.bars.len();
-    let labels: Vec<String> = data.bars.iter().map(bar_label).collect();
+    let labels: Vec<String> = data
+        .bars
+        .iter()
+        .map(|b| bar_label(b, BAR_LABEL_MAX))
+        .collect();
     let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(1) as u32;
     let (lo, hi) = bar_bounds(data);
     // Air past the longest bars, so none runs into the frame.
@@ -1186,6 +1198,7 @@ pub fn write_bar_png(
 pub fn write_bar_eps(
     path: &Path,
     data: &BarData,
+    values: &[String],
     title: Option<&str>,
     notes: &[String],
 ) -> Result<()> {
@@ -1195,16 +1208,22 @@ pub fn write_bar_eps(
     const W: f64 = 500.0;
     const ROW_H: f64 = 14.0;
     const CHAR_W: f64 = 5.0;
-    const MARGIN_RIGHT: f64 = 50.0;
+    // Room for the longest value past the longest bar.
+    let longest_value = values.iter().map(|v| v.chars().count()).max().unwrap_or(0) as f64;
+    let margin_right = (longest_value * CHAR_W + 10.0).max(50.0);
     // Ticks, the axis titles, and the notes below them.
     const MARGIN_BOTTOM: f64 = 48.0;
     let title = title.filter(|t| !t.is_empty());
     let margin_top = if title.is_some() { 30.0 } else { 12.0 };
 
-    let labels: Vec<String> = data.bars.iter().map(bar_label).collect();
+    let labels: Vec<String> = data
+        .bars
+        .iter()
+        .map(|b| bar_label(b, BAR_LABEL_MAX))
+        .collect();
     let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(1) as f64;
     let margin_left = (longest * CHAR_W + 16.0).clamp(40.0, W / 3.0);
-    let plot_w = W - margin_left - MARGIN_RIGHT;
+    let plot_w = W - margin_left - margin_right;
     let plot_h = data.bars.len() as f64 * ROW_H;
     let h = margin_top + plot_h + MARGIN_BOTTOM;
     let (lo, hi) = bar_bounds(data);
@@ -1257,7 +1276,7 @@ pub fn write_bar_eps(
 
     // Bars, first at the top, each with its category left of the plot and its value
     // past its end.
-    for (i, (bar, label)) in data.bars.iter().zip(&labels).enumerate() {
+    for (i, ((bar, label), value)) in data.bars.iter().zip(&labels).zip(values).enumerate() {
         let top = MARGIN_BOTTOM + plot_h - i as f64 * ROW_H;
         let (x0, x1) = (to_x(bar.value.min(0.0)), to_x(bar.value.max(0.0)));
         writeln!(f, "0.0 0.7 0.9 setrgbcolor")?;
@@ -1279,14 +1298,13 @@ pub fn write_bar_eps(
             baseline,
             ps_escape(label)
         )?;
-        let value = crate::chart_data::format_bar_value(bar.value);
         let value_x = x1 + 4.0;
         writeln!(
             f,
             "{} {} moveto ({}) show",
             value_x,
             baseline,
-            ps_escape(&value)
+            ps_escape(value)
         )?;
     }
 
@@ -1532,6 +1550,7 @@ mod tests {
             more: 12,
             no_value: 0,
             rows: Default::default(),
+            value_dtype: polars::prelude::DataType::Float64,
         }
     }
 
@@ -1547,14 +1566,15 @@ mod tests {
         assert!(std::fs::metadata(&png).unwrap().len() > 0);
 
         let eps = dir.path().join("bars.eps");
-        write_bar_eps(&eps, &data, Some("Delay by carrier"), &notes).expect("eps");
+        let values = ["21,92", "3,00", "-9,93"].map(String::from);
+        write_bar_eps(&eps, &data, &values, Some("Delay by carrier"), &notes).expect("eps");
         let content = std::fs::read_to_string(&eps).unwrap();
         for text in [
             "(sample of 10,000 of 50k rows)",
             "(F9)",
             "(null)",
-            "(21.92)",
-            "(-9.93)",
+            "(21,92)",
+            "(-9,93)",
             "(delay)",
             "(carrier (+ 12 more))",
         ] {
@@ -1564,5 +1584,17 @@ mod tests {
         for line in content.lines().filter(|l| !l.starts_with('%')) {
             assert!(!code_outside_strings(line).contains("INJECTED"), "{line}");
         }
+    }
+
+    /// A long category is cut rather than run into the bars.
+    #[test]
+    fn a_long_bar_label_is_cut() {
+        let long = Bar {
+            label: Some("x".repeat(80)),
+            value: 1.0,
+        };
+        let cut = bar_label(&long, BAR_LABEL_MAX);
+        assert_eq!(cut.chars().count(), BAR_LABEL_MAX);
+        assert!(cut.ends_with("..."), "{cut}");
     }
 }

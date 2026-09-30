@@ -53,14 +53,14 @@ The Bar tab charts a grouped result: one row per category. Group first with a
 | Option | What it does |
 |---|---|
 | **Category** | One bar per value. Text, categorical, boolean and integer columns |
-| **Value** | The bar's length, printed beside it. Any numeric column but the category |
+| **Value** | The bar's length, printed beside it in the table's number format. Any numeric column but the category |
 | **Order** | **Value**, largest first, or **Label**: text A to Z, numbers ascending |
 
 | Case | What happens |
 |---|---|
 | A category repeats | Refused: the chart says how many rows and categories it found and suggests the query that groups them. Bars are not summed or averaged for you |
 | More bars than rows | The bars that fit, then `+ 212 more` counting the rest |
-| Negative values | Bars grow left from a zero line |
+| Negative values | Bars grow left of zero |
 | A null category | Its own bar, labeled `∅` |
 | A null value | That category is left out and counted under the plot |
 

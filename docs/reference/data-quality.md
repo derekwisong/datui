@@ -116,8 +116,9 @@ sampled, or metadata-only.
   findings first, then what was measured on it, one aligned row each (type,
   missing, distinct, empty and blank text, NaN, range, most common value, text
   length, what the text parses as, spellings). Values read as the table shows
-  them, number format included. <kbd>↑</kbd> <kbd>↓</kbd> move to the next
-  column; <kbd>Enter</kbd> or <kbd>Esc</kbd> returns to the list.
+  them, number format included; spellings are quoted, so a trailing space
+  shows. <kbd>↑</kbd> <kbd>↓</kbd> move to the next column; <kbd>Enter</kbd>
+  or <kbd>Esc</kbd> returns to the list.
 - **Segments** — needs a Grain other than the whole dataset; until then the
   page says so and <kbd>Enter</kbd> opens the plan on Grain. One row per
   segment (`year=2019`, a file, a row chunk, a window) in the order its name

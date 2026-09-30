@@ -1778,6 +1778,10 @@ fn render_detail(
 /// The widest a reading surface's text runs, however wide the terminal.
 const DETAIL_MEASURE: usize = 100;
 
+/// The most of one value the Detail page shows: a range's end, the most common
+/// value, a spelling.
+const END_WIDTH: usize = 32;
+
 /// A label and its value on one row, with an optional mark in the lead.
 struct FieldRow {
     mark: Option<Span<'static>>,
@@ -1801,7 +1805,15 @@ fn field_lines(
         let mut values = row
             .value
             .lines()
-            .flat_map(|line| crate::widgets::info::wrap_to(line, value_width))
+            // A value that fits is kept as written: wrapping splits on whitespace
+            // and would drop the leading, trailing or doubled spaces a value holds.
+            .flat_map(|line| {
+                if glyphs::display_width(line) <= value_width {
+                    vec![line.to_string()]
+                } else {
+                    crate::widgets::info::wrap_to(line, value_width)
+                }
+            })
             .collect::<Vec<_>>()
             .into_iter();
         let mut spans = Vec::new();
@@ -1854,7 +1866,9 @@ fn detail_measurements(
     results: &DataQualityResults,
     profile: &ColumnQualityProfile,
 ) -> Vec<FieldRow> {
-    let value = |text: &str| table_value(ctx, profile, text);
+    // Long text is cut, so both ends of a range and a count after a value stay
+    // in view.
+    let value = |text: &str| fit(&table_value(ctx, profile, text), END_WIDTH);
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),
@@ -1961,12 +1975,20 @@ fn detail_measurements(
         .filter(|group| group.column == profile.name)
         .take(3)
     {
+        // Spellings differ by case and by spaces the table does not show, so they are
+        // quoted as the finding quotes them: "West " and "West" read apart.
         rows.push(row(
             "Spellings",
             group
                 .variants
                 .iter()
-                .map(|(variant, count)| format!("{variant} ({})", numfmt::group_chrome(*count)))
+                .map(|(variant, count)| {
+                    format!(
+                        "{} ({})",
+                        crate::quality_report::quoted(variant, END_WIDTH),
+                        numfmt::group_chrome(*count)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
         ));
@@ -2283,6 +2305,30 @@ mod tests {
         assert_eq!(approximate_bytes(3 * 1024 * 1024), "about 3.0 MiB");
     }
 
+    /// A value that fits keeps its spaces; one that does not wraps under itself.
+    #[test]
+    fn field_values_keep_their_spaces_and_wrap_under_themselves() {
+        let row = |value: &str| FieldRow {
+            mark: None,
+            label: "Range".to_string(),
+            value: value.to_string(),
+        };
+        let text = |lines: Vec<Line<'static>>| {
+            lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            text(field_lines(&[row(" South to New  York")], 7, 40, false)),
+            ["Range   South to New  York"]
+        );
+        assert_eq!(
+            text(field_lines(&[row("one two three four")], 7, 17, false)),
+            ["Range  one two", "       three four"]
+        );
+    }
+
     use crate::data_quality::compute_data_quality;
     use polars::prelude::*;
 
@@ -2290,7 +2336,7 @@ mod tests {
         df!(
             "id" => &[1i64, 2, 3, 4, 5, 6, 7, 8],
             "region" => &[
-                Some("West"), Some("west"), Some("West"), Some("East"),
+                Some("West"), Some("west"), Some("West"), Some("West "),
                 Some("East"), None, Some("North"), Some("West"),
             ],
             "amount" => &[1.5f64, 2.0, 3.25, 4.0, 5.0, 6.0, 7.0, 8.0],
@@ -2436,13 +2482,21 @@ mod tests {
             assert_eq!(value_column(label), column, "{label} aligned:\n{text}");
         }
 
-        let measurements = rows[type_row..].join("\n");
+        let spellings = rows
+            .iter()
+            .position(|row| row.contains("Spellings"))
+            .unwrap();
+        let measurements = rows[type_row..spellings].join("\n");
         assert!(
             !measurements.contains('"'),
             "values as the table shows them, not debug quoted:\n{text}"
         );
         assert!(measurements.contains("West, 3 rows"), "{text}");
-        assert!(measurements.contains("West (3)"), "{text}");
+        // Spellings differ by what the table cannot show; quoted, they read apart.
+        let spellings = rows[spellings..].join("\n");
+        for spelling in ["\"West\" (3)", "\"West \" (1)", "\"west\" (1)"] {
+            assert!(spellings.contains(spelling), "{spelling}:\n{text}");
+        }
         assert!(
             !text.contains("Evaluated") && !text.contains("sampled"),
             "the header says what was evaluated:\n{text}"

@@ -178,46 +178,84 @@ fn render_scrollable_message(
     let _ = ctx;
 }
 
-/// Renders the help overlay with wrapped text and scrollbar. Clamps and updates `scroll` so the caller can persist it.
-/// Wrap one help line to `width` columns, breaking at word boundaries and
-/// measuring characters, not bytes; a single overlong word is split hard.
+/// The fewest columns a wrapped help line's text keeps beside its hanging
+/// indent; narrower than this, the indent gives way instead.
+const MIN_HELP_MEASURE: usize = 16;
+
+/// Wrap one help line to `width` display columns at word boundaries; a
+/// single overlong word is split hard. Continuations hang under the text
+/// they continue: a keyed row's under its description, a bullet's past its
+/// dash, any other line under its own indent, so a wrapped row still reads
+/// as one row of its table.
 fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
+    use crate::glyphs::{display_width, take_columns};
     if width == 0 {
         return vec![String::new()];
     }
+    let fits = |lead: usize| width.saturating_sub(lead) >= MIN_HELP_MEASURE;
+    let mut indent = line.len() - line.trim_start_matches(' ').len();
+    // A bullet's text hangs past its dash, as the help files lay one out.
+    if line[indent..].starts_with("- ") {
+        indent += 2;
+    }
+    let head_end = match crate::glyphs::key_gap(line) {
+        Some((_, desc)) if fits(display_width(&line[..desc])) => desc,
+        _ if fits(indent) => indent,
+        _ => 0,
+    };
+    let (head, body) = line.split_at(head_end);
+    let hang = display_width(head);
     let mut out = Vec::new();
-    let mut current = String::new();
-    let mut current_len = 0usize;
-    for word in line.split(' ') {
-        let word_len = crate::glyphs::display_width(word);
-        let sep = usize::from(current_len > 0);
-        if current_len + sep + word_len <= width {
-            if sep == 1 {
-                current.push(' ');
-            }
-            current.push_str(word);
-            current_len += sep + word_len;
+    let mut row = head.to_string();
+    let mut used = hang;
+    let mut empty = true;
+    // Runs of spaces inside the text survive as empty words, except where
+    // they would start a row.
+    for word in body.trim_start_matches(' ').split(' ') {
+        if empty && word.is_empty() {
             continue;
         }
-        if current_len > 0 {
-            out.push(std::mem::take(&mut current));
+        let sep = usize::from(!empty);
+        let word_width = display_width(word);
+        if used + sep + word_width <= width {
+            if sep == 1 {
+                row.push(' ');
+            }
+            row.push_str(word);
+            used += sep + word_width;
+            empty = false;
+            continue;
+        }
+        if !empty {
+            out.push(row.trim_end().to_string());
+            row = " ".repeat(hang);
+            used = hang;
         }
         // A word wider than the line is split hard rather than lost, on a
         // character boundary measured in columns.
         let mut rest = word;
-        while crate::glyphs::display_width(rest) > width {
-            let head = crate::glyphs::take_columns(rest, width);
-            let cut = head.len().max(1);
-            out.push(rest[..cut].to_string());
+        while display_width(rest) > width - used {
+            let cut = match take_columns(rest, width - used).len() {
+                0 => rest.chars().next().map_or(rest.len(), char::len_utf8),
+                n => n,
+            };
+            row.push_str(&rest[..cut]);
+            out.push(std::mem::replace(&mut row, " ".repeat(hang)));
+            used = hang;
             rest = &rest[cut..];
         }
-        current = rest.to_string();
-        current_len = crate::glyphs::display_width(rest);
+        row.push_str(rest);
+        used += display_width(rest);
+        empty = rest.is_empty();
     }
-    out.push(current);
+    if !empty || out.is_empty() {
+        out.push(row);
+    }
     out
 }
 
+/// Renders the help overlay with wrapped text and scrollbar. Clamps and
+/// updates `scroll` so the caller can persist it.
 pub fn render_help_overlay(
     area: Rect,
     buf: &mut Buffer,
@@ -339,6 +377,137 @@ mod tests {
             wrapped.join(""),
             "see/a/very/long/path/that/never/ends".replace(' ', "")
         );
+    }
+
+    /// A keyed row hangs under its description, a bullet past its dash, a
+    /// prose line at its indent; a column too narrow to hang in gives way to
+    /// the indent.
+    #[test]
+    fn help_wrap_hangs_under_the_text_it_continues() {
+        let row = "  Enter:      Open a finding, then its rows";
+        assert_eq!(
+            wrap_help_line(row, 32),
+            [
+                "  Enter:      Open a finding,",
+                "              then its rows"
+            ]
+        );
+        assert_eq!(
+            wrap_help_line("  A note is an observation, not a fault", 24),
+            ["  A note is an", "  observation, not a", "  fault"]
+        );
+        assert_eq!(
+            wrap_help_line("  - Empty select: select (all columns)", 24),
+            ["  - Empty select: select", "    (all columns)"]
+        );
+        assert_eq!(
+            wrap_help_line(row, 24),
+            ["  Enter:      Open a", "  finding, then its rows"]
+        );
+    }
+
+    /// Every row of a help screen as the overlay lays it out in `area`, read
+    /// off the buffer one scroll position at a time.
+    fn help_rows(area: Rect, text: &str) -> Vec<String> {
+        let ctx = RenderContext::for_test();
+        let draw = |scroll: usize| {
+            let mut buf = Buffer::empty(area);
+            let mut at = scroll;
+            render_help_overlay(area, &mut buf, "Help", text, &mut at, &ctx);
+            (at, grid(&buf, area))
+        };
+        // The first word is enough to find the text's corner.
+        let first = text.split_whitespace().next().expect("a first word");
+        let (_, top) = draw(0);
+        let y0 = top
+            .iter()
+            .position(|r| r.contains(first))
+            .expect("first word");
+        let x0 = top[y0].find(first).expect("first word");
+        let height = top[y0..]
+            .iter()
+            .position(|r| r.contains("Close"))
+            .expect("the footer");
+        // Every cell holds one character here, so columns are char counts.
+        let x0 = top[y0][..x0].chars().count();
+        let right = top[y0]
+            .chars()
+            .collect::<Vec<_>>()
+            .iter()
+            .rposition(|&c| c == '│')
+            .expect("frame");
+        let cells = |row: &str| -> String {
+            let text: String = row.chars().take(right).skip(x0).collect();
+            text.trim_end().to_string()
+        };
+        let mut rows = Vec::new();
+        let mut last = top;
+        for scroll in 0.. {
+            let (at, g) = draw(scroll);
+            if at < scroll {
+                break;
+            }
+            rows.push(cells(&g[y0]));
+            last = g;
+        }
+        rows.extend(last[y0 + 1..y0 + height].iter().map(|r| cells(r)));
+        rows
+    }
+
+    /// At 80×24 and 60×20, in UTF-8 and in ASCII, a wrapped help row
+    /// continues under its description, a bullet past its dash, a prose line
+    /// under its own indent, and no word goes missing.
+    #[test]
+    fn wrapped_help_rows_hang_under_their_description() {
+        fn indent(line: &str) -> usize {
+            line.len() - line.trim_start_matches(' ').len()
+        }
+        let screens = [
+            crate::help_strings::main_view(),
+            crate::help_strings::home(),
+            crate::help_strings::sort_filter(),
+            crate::help_strings::query(),
+            crate::help_strings::analysis_data_quality(),
+        ];
+        let mut wrapped = 0;
+        for (w, h) in [(80, 24), (60, 20)] {
+            let area = Rect::new(0, 0, w, h);
+            for help in screens {
+                for text in [help.to_string(), crate::glyphs::instructions_in_ascii(help)] {
+                    let rows = help_rows(area, &text);
+                    let mut rows = rows.iter();
+                    for line in text.lines().map(str::trim_end) {
+                        let first = rows.next().expect("a row per line");
+                        assert!(line.starts_with(first.as_str()), "{first:?} for {line:?}");
+                        let words: Vec<&str> = line.split_whitespace().collect();
+                        let mut shown: Vec<&str> = first.split_whitespace().collect();
+                        if shown.len() == words.len() {
+                            continue;
+                        }
+                        let bullet = if line.trim_start().starts_with("- ") {
+                            2
+                        } else {
+                            0
+                        };
+                        let hang = crate::glyphs::key_gap(line)
+                            .map(|(_, desc)| crate::glyphs::display_width(&line[..desc]))
+                            .unwrap_or_else(|| indent(line) + bullet);
+                        while shown.len() < words.len() {
+                            let next = rows.next().expect("the rest of a wrapped line");
+                            assert_eq!(
+                                indent(next),
+                                hang,
+                                "{w}x{h}: {next:?} does not hang under {line:?}"
+                            );
+                            shown.extend(next.split_whitespace());
+                            wrapped += 1;
+                        }
+                        assert_eq!(shown, words, "{w}x{h}");
+                    }
+                }
+            }
+        }
+        assert!(wrapped > 20, "long lines were wrapped: {wrapped}");
     }
 
     /// The overlay says how to leave it, and caps its measure on wide

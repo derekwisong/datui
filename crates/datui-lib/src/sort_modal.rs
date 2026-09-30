@@ -32,6 +32,13 @@ pub struct SortModal {
     /// Why the last key did nothing, for the sidebar's status line; the next key
     /// clears it.
     pub status: Option<String>,
+    /// The column order last applied, hidden columns included. The table keeps only
+    /// the visible order, so this is where a hidden column is listed, and returns
+    /// to, when the sidebar reopens.
+    pub applied_order: Vec<String>,
+    /// How many leading columns of `applied_order` were frozen, hidden ones included:
+    /// the table's count leaves out a hidden column that ended the span.
+    pub applied_locked: usize,
 }
 
 impl Default for SortModal {
@@ -45,6 +52,8 @@ impl Default for SortModal {
             has_unapplied_changes: false,
             history_limit: 1000,
             status: None,
+            applied_order: Vec::new(),
+            applied_locked: 0,
         }
     }
 }
@@ -73,15 +82,40 @@ impl SortModal {
         cols.into_iter().map(|c| c.name.clone()).collect()
     }
 
+    /// How many visible columns the table freezes: those at or before the last locked
+    /// column in the order. A hidden column inside that span keeps its place but is
+    /// not counted, since the table never draws it.
     pub fn get_locked_columns_count(&self) -> usize {
-        // Count locked columns by checking display_order
-        let mut locked_count = 0;
-        for col in &self.columns {
-            if col.is_locked {
-                locked_count = locked_count.max(col.display_order + 1);
-            }
-        }
-        locked_count
+        let Some(last_locked) = self
+            .columns
+            .iter()
+            .filter(|c| c.is_locked)
+            .map(|c| c.display_order)
+            .max()
+        else {
+            return 0;
+        };
+        self.columns
+            .iter()
+            .filter(|c| c.is_visible && c.display_order <= last_locked)
+            .count()
+    }
+
+    /// How many leading columns of the full order are frozen, hidden ones included.
+    pub fn get_locked_span(&self) -> usize {
+        self.columns
+            .iter()
+            .filter(|c| c.is_locked)
+            .map(|c| c.display_order + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Every column of the order: all columns, hidden included, sorted by place.
+    pub fn get_full_column_order(&self) -> Vec<String> {
+        let mut cols: Vec<_> = self.columns.iter().collect();
+        cols.sort_by_key(|c| c.display_order);
+        cols.into_iter().map(|c| c.name.clone()).collect()
     }
 
     pub fn get_sorted_columns(&self) -> Vec<String> {
@@ -435,38 +469,14 @@ impl SortModal {
         self.has_unapplied_changes = true;
     }
 
+    /// Hide or show the column under the cursor. Visibility only: the column keeps
+    /// its place in the order and its lock, so showing it puts it back where it was.
     pub fn toggle_visibility(&mut self) {
         if let Some(idx) = self.table_state.selected() {
             let filtered = self.filtered_columns();
-            if let Some((real_idx, _)) = filtered.get(idx) {
-                let real_idx = *real_idx;
-
-                // Calculate max order before mutating
-                let max_order = if self.columns[real_idx].is_visible {
-                    0 // Will be recalculated if showing
-                } else {
-                    self.columns
-                        .iter()
-                        .filter(|c| c.is_visible)
-                        .map(|c| c.display_order)
-                        .max()
-                        .unwrap_or(0)
-                };
-
+            if let Some(&(real_idx, _)) = filtered.get(idx) {
                 let col = &mut self.columns[real_idx];
-
-                if col.is_visible {
-                    // Hiding: clear display order (set to a high value to push to end) and remove locked status
-                    col.is_visible = false;
-                    col.display_order = 9999; // High value to push hidden columns to end
-                    col.is_locked = false; // Remove locked status when hiding
-                    col.is_to_be_locked = false; // Remove to-be-locked status when hiding
-                } else {
-                    // Showing: assign next available display order (don't restore locked status)
-                    col.is_visible = true;
-                    col.display_order = max_order + 1;
-                    // Don't restore locked status - it stays false
-                }
+                col.is_visible = !col.is_visible;
                 self.has_unapplied_changes = true;
             }
         }
@@ -578,6 +588,34 @@ impl SortModal {
             }
         }
     }
+}
+
+/// The sidebar's full order: `visible` as the table applies it, with each column of
+/// `all` it leaves out (a hidden one) put back right after the column it followed in
+/// `reference`, the order last applied, or in `all` when `reference` does not name
+/// it. A hidden column with nothing before it goes first.
+pub fn order_with_hidden(visible: &[String], all: &[String], reference: &[String]) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut order = visible.to_vec();
+    let mut placed: HashSet<&str> = visible.iter().map(String::as_str).collect();
+    for name in all {
+        if placed.contains(name.as_str()) {
+            continue;
+        }
+        let earlier = match reference.iter().position(|r| r == name) {
+            Some(i) => &reference[..i],
+            None => &all[..all.iter().position(|a| a == name).unwrap_or(0)],
+        };
+        let at = earlier
+            .iter()
+            .rev()
+            .find(|e| placed.contains(e.as_str()))
+            .and_then(|e| order.iter().position(|o| o == e))
+            .map_or(0, |p| p + 1);
+        order.insert(at, name.clone());
+        placed.insert(name.as_str());
+    }
+    order
 }
 
 #[cfg(test)]
@@ -762,5 +800,57 @@ mod tests {
         assert!(modal.columns[0].sort_order.is_none());
         assert!(!modal.columns[0].sort_descending);
         assert!(modal.columns[1].sort_order.is_none());
+    }
+
+    fn names(order: &[&str]) -> Vec<String> {
+        order.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn hiding_and_showing_keeps_the_column_in_place() {
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["A", "B", "C", "D"]);
+        modal.table_state.select(Some(1));
+        modal.toggle_visibility();
+        assert_eq!(modal.get_column_order(), names(&["A", "C", "D"]));
+        // The list does not move under the cursor: the next row is still C.
+        let listed: Vec<&str> = modal
+            .filtered_columns()
+            .iter()
+            .map(|(_, c)| c.name.as_str())
+            .collect();
+        assert_eq!(listed, ["A", "B", "C", "D"]);
+        modal.toggle_visibility();
+        assert_eq!(modal.get_column_order(), names(&["A", "B", "C", "D"]));
+    }
+
+    #[test]
+    fn a_hidden_column_keeps_its_lock_but_is_not_counted() {
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["A", "B", "C", "D"]);
+        modal.table_state.select(Some(2));
+        modal.toggle_lock_at_column();
+        assert_eq!(modal.get_locked_columns_count(), 3);
+        modal.table_state.select(Some(1));
+        modal.toggle_visibility();
+        assert_eq!(modal.get_locked_columns_count(), 2, "A and C stay frozen");
+        modal.toggle_visibility();
+        assert_eq!(modal.get_locked_columns_count(), 3, "B is frozen again");
+    }
+
+    #[test]
+    fn hidden_columns_go_back_after_the_column_they_followed() {
+        let all = names(&["a", "b", "c", "d", "e"]);
+        // Last applied as c, a, b, d, e with b and d hidden.
+        let reference = names(&["c", "a", "b", "d", "e"]);
+        assert_eq!(
+            order_with_hidden(&names(&["c", "a", "e"]), &all, &reference),
+            names(&["c", "a", "b", "d", "e"])
+        );
+        // Nothing applied from the sidebar: schema order places them.
+        assert_eq!(
+            order_with_hidden(&names(&["c", "e"]), &all, &[]),
+            names(&["a", "b", "c", "d", "e"])
+        );
     }
 }

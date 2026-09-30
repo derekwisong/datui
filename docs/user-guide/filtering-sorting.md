@@ -47,7 +47,7 @@ list, then:
 | <kbd>[</kbd> <kbd>]</kbd> | Move this column earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move this column left or right in the table |
 | <kbd>L</kbd> | Freeze this column and every column above it on the left |
-| <kbd>v</kbd> | Hide or show this column (it stays in the list, dimmed) |
+| <kbd>v</kbd> | Hide or show this column (it keeps its place in the list, dimmed) |
 
 Every column carries its own direction, so `salary` can run descending while
 `start_date` runs ascending. Nulls go last in either direction.

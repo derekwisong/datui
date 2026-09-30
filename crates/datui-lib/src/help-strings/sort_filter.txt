@@ -24,7 +24,7 @@ Columns tab:
   + / - (= / _):    Move the column's display position
   L:                Freeze this column and every column up to it at the left
                     edge; on a column already frozen, pull the boundary back
-  v:                Show or hide the column (hidden columns stay listed, dimmed)
+  v:                Show or hide the column (it keeps its place, dimmed)
   C:                Clear the staged sort, order, locks and hidden columns
 
 Filters tab:

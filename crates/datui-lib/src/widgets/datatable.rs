@@ -13,7 +13,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
+        Block, Borders, Cell, HighlightSpacing, Padding, Paragraph, Row, StatefulWidget, Table,
+        TableState, Widget,
     },
 };
 
@@ -7482,13 +7483,16 @@ impl DataTable {
     /// Render the dataframe into `area`, returning the number of columns that were actually
     /// shown (which may be fewer than `df`'s column count when they don't all fit). The caller
     /// uses this to decide whether to draw an "more columns off-screen" indicator.
+    ///
+    /// `leading_gap` keeps the first column one cell off the left edge: the columns right
+    /// of the frozen separator, which would otherwise touch it.
     fn render_dataframe(
         &self,
         df: &DataFrame,
         area: Rect,
         buf: &mut Buffer,
         state: &mut TableState,
-        _row_numbers: bool,
+        leading_gap: bool,
         _start_row_offset: usize,
     ) -> usize {
         // make each column as wide as it needs to be to fit the content
@@ -7528,7 +7532,7 @@ impl DataTable {
             })
             .collect();
 
-        let mut used_width = 0;
+        let mut used_width = u16::from(leading_gap);
 
         // rows is a vector initialized to a vector of lenth "height" empty rows
         let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
@@ -7719,15 +7723,19 @@ impl DataTable {
             })
             .collect();
 
-        StatefulWidget::render(
-            Table::new(rows, widths)
-                .column_spacing(self.table_cell_padding)
-                .header(Row::new(headers).style(header_row_style).height(header_h))
-                .row_highlight_style(self.highlight_style()),
-            area,
-            buf,
-            state,
-        );
+        let mut table = Table::new(rows, widths)
+            .column_spacing(self.table_cell_padding)
+            .header(Row::new(headers).style(header_row_style).height(header_h))
+            .row_highlight_style(self.highlight_style());
+        if leading_gap {
+            // A blank selection column on every row: the Table offsets the header and
+            // the cells past it and paints each row's tint across it, so the gap
+            // stripes and highlights like the rest of the row.
+            table = table
+                .highlight_symbol(" ")
+                .highlight_spacing(HighlightSpacing::Always);
+        }
+        StatefulWidget::render(table, area, buf, state);
 
         visible_columns
     }
@@ -8026,7 +8034,7 @@ impl StatefulWidget for DataTable {
                         adjusted_scrollable_area,
                         buf,
                         &mut state.table_state,
-                        false,
+                        true,
                         start_row,
                     );
                     scroll_indicator = Some((
@@ -12066,5 +12074,54 @@ mod tests {
             !header2.contains(g.sort_asc),
             "the old direction is gone: {header2:?}"
         );
+    }
+
+    /// Every cell right of the frozen separator sits one cell off it, as the cells
+    /// left of it do, and the gap takes its row's tint. A right-aligned number as
+    /// wide as its column, a negative one most often, used to touch the line:
+    /// `│-9.930889` (#386).
+    #[test]
+    fn the_frozen_separator_has_a_gap_on_both_sides() {
+        let lf = df!(
+            "carrier" => &["AA", "UA", "9E"],
+            "delay" => &[-9.930889f64, 3.5, 12.25],
+            "name" => &["American", "United", "Endeavor"],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.set_locked_columns(1);
+        state.table_state.select(Some(0));
+
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        let table = DataTable {
+            header_bg: Color::Indexed(238),
+            alternate_row_bg: Some(Color::Indexed(236)),
+            selection_style: Style::default().bg(Color::Indexed(24)),
+            ..DataTable::default()
+        };
+        table.render(area, &mut buf, &mut state);
+
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| row_string(&buf, area, y))
+            .collect();
+        assert!(rows[1].contains("│ -9.930889"), "{rows:#?}");
+        let sep = rows[0].chars().position(|c| c == '│').expect("a separator") as u16;
+        for y in 0..area.height {
+            let row = &rows[y as usize];
+            assert_eq!(buf[(sep - 1, y)].symbol(), " ", "row {y}: {row:?}");
+            assert_eq!(buf[(sep + 1, y)].symbol(), " ", "row {y}: {row:?}");
+            assert_eq!(
+                buf[(sep + 1, y)].bg,
+                buf[(sep + 2, y)].bg,
+                "row {y}'s gap takes the row's tint: {row:?}"
+            );
+        }
+        // The header, the highlight and the stripe, not only unstyled rows.
+        assert_eq!(buf[(sep + 1, 0)].bg, Color::Indexed(238));
+        assert_eq!(buf[(sep + 1, 1)].bg, Color::Indexed(24));
+        assert_eq!(buf[(sep + 1, 2)].bg, Color::Indexed(236));
     }
 }

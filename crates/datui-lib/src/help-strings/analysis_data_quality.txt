@@ -1,6 +1,42 @@
 Data Quality checks the rows of the shared sample and
-reports what it found. The header says which rows were
-checked and whether they were a sample.
+reports what it found. Setup comes first: every
+setting a run takes, staged until Enter runs it.
+Nothing in Setup reads the data; only Run does.
+
+Setup:
+  Rows & sample: The sample every tool reads
+  Columns:      Text read as time, and time roles
+  Study:        Grain, comparison, values, latency
+  Read:         What Run will read, before it reads
+
+  ↑ / ↓, Tab:   Move between rows
+  ← / →:        Change a short list's choice
+  Space:        Open the row: the Sample form, a
+                list (type to narrow), or Time roles
+  s:            The Sample form; its Enter applies
+                to Setup and returns there
+  p:            The access plan: what a run reads
+  Enter:        Run, from any row. A full read asks
+                first; the report on screen or in the
+                session cache is shown, not read again
+  Esc:          Discard every staged edit
+
+Text as time:
+  A text column that holds times is read through a
+  format you choose, for grain and time roles only;
+  every other check sees the text. Each format says
+  how many values on screen it reads. Values it does
+  not read are counted as Unparsed times, never as
+  missing.
+
+Time roles:
+  ↑ / ↓:        Choose the role
+  ← / →:        Choose its column
+  Enter:        Done
+  Esc:          Put back the roles as they were
+  Measured intervals: event to published, received
+  or processed; period end to published; published
+  to received; received to processed.
 
 Pages:
   Overview:     The report: problems, notes and clean
@@ -11,41 +47,30 @@ Pages:
                 largest change. Needs a Grain
   Trends:       Each column's measure across segments,
                 and the time between dates
-  Plan:         What the next run reads, and how it
-                splits and compares the rows
 
-Keys:
+Keys on the report:
   ← / → (h/l):  Previous or next page
   1 - 4:        Overview, Columns, Segments, Trends
-  e:            Go to the Plan
+  e:            Setup
   ↑ / ↓ (j/k):  Move, or scroll a tall finding
   PgUp/PgDn:    Page; Home/End jump to either end
   Enter:        Open a finding, then its rows. On an
                 empty page, open the setting it needs
-  s:            Choose the sample every tool reads
+  s:            Setup, with the Sample form open
   v:            View the sample's rows; Esc returns
   p:            Show the access plan: what a run reads
-  r:            Rerun with a new sample seed
+  r:            Run again with a new sample seed
   Tab:          Move between the result and the tools
-  Esc:          Back one level; from the Plan, close.
-                While a run reads, cancel it
+  Esc:          Back one level; from a page, close
   ? / F1:       Show this help
 
-The Plan:
-  ↑ / ↓:        Move between fields
-  Space:        Open the field: the Sample form, the
-                Time roles, or a list (type to narrow)
-  Enter:        Run, from any field
-  Esc:          Put back the plan the report used;
-                with no edits, close
-  An edited plan waits for Enter. Until then the
-  report keeps the plan it was measured with.
-
-Time roles:
-  ↑ / ↓:        Choose the role
-  ← / →:        Choose its column
-  Enter:        Done
-  Esc:          Put back the roles as they were
+While a run reads:
+  The progress names the stage, whether it reads the
+  source, and the rows seen where the read counts
+  them. Esc cancels. A read that cannot stop at once
+  is said to be finishing, in the header and in
+  Setup, until it ends, and Run waits for it. The
+  last report stays.
 
 Segments:
   Enter:        A segment's columns beside the one it

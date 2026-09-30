@@ -348,6 +348,31 @@ pub fn compute_statistics_with_options(
     compute_statistics_for_sample(lf, &sample, None, options)
 }
 
+/// Describe's temporal statistics for one collected column, through the same
+/// aggregation the lazy path runs.
+fn temporal_stats_of(series: &Series) -> Result<Option<TemporalStatistics>> {
+    if !is_temporal_type(series.dtype()) {
+        return Ok(None);
+    }
+    let frame = DataFrame::new_infer_height(vec![series.clone().into()])?;
+    let schema = frame.schema().clone();
+    let agg_df = frame
+        .lazy()
+        .select(build_describe_aggregation_exprs(&schema))
+        .collect()?;
+    Ok(parse_describe_agg_row(&agg_df, &schema)
+        .pop()
+        .and_then(|stats| stats.temporal_stats))
+}
+
+/// A value as the table writes it; `None` for a null.
+fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
+    match df.column(col_name).ok()?.get(row).ok()? {
+        AnyValue::Null => None,
+        v => Some(v.str_value().to_string()),
+    }
+}
+
 /// [`compute_statistics_with_options`] over the rows a [`crate::sampling::Sample`]
 /// picks from `lf`, which is already cut to the sample's scope.
 pub fn compute_statistics_for_sample(

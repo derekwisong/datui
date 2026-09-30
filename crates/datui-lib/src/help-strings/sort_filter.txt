@@ -18,7 +18,7 @@ Columns tab:
   Space:            Cycle the column's sort: none → ascending → descending
                     (each column carries its own direction)
   1-9:              Put the column at that place in the sort order; 0 removes
-                    it (digits past the end of the order do nothing)
+                    it (a digit past the end of the order says so)
   Del:              Remove the column from the sort
   [ / ]:            Move the column earlier or later in the sort order
   + / - (= / _):    Move the column's display position

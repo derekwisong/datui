@@ -128,7 +128,7 @@ On the Columns tab, with a column highlighted:
 |---|---|
 | type | In the find field, narrow the column list |
 | <kbd>Space</kbd> | Cycle its sort: none, ascending, descending |
-| <kbd>1</kbd> to <kbd>9</kbd> | Put it at that position in the sort order; <kbd>0</kbd> removes it (digits past the end of the order do nothing) |
+| <kbd>1</kbd> to <kbd>9</kbd> | Put it at that position in the sort order; <kbd>0</kbd> removes it. A digit past the end of the order says so on the sidebar's status line |
 | <kbd>Del</kbd> | Remove it from the sort |
 | <kbd>[</kbd> <kbd>]</kbd> | Move it earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move it left or right in the table |

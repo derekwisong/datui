@@ -29,6 +29,9 @@ pub struct SortModal {
     pub focus: SortFocus,
     pub has_unapplied_changes: bool,
     pub history_limit: usize,
+    /// Why the last key did nothing, for the sidebar's status line; the next key
+    /// clears it.
+    pub status: Option<String>,
 }
 
 impl Default for SortModal {
@@ -41,6 +44,7 @@ impl Default for SortModal {
             focus: SortFocus::default(),
             has_unapplied_changes: false,
             history_limit: 1000,
+            status: None,
         }
     }
 }
@@ -529,7 +533,9 @@ impl SortModal {
                     self.has_unapplied_changes = true;
                 } else if new_order == 0 {
                     // User wants to unset sort order
-                    self.columns[real_idx].sort_order = None;
+                    if self.columns[real_idx].sort_order.take().is_some() {
+                        self.has_unapplied_changes = true;
+                    }
                     // Re-number to ensure continuous sequence
                     let mut current_sorted_cols: Vec<(&mut SortColumn, usize)> = self
                         .columns
@@ -549,6 +555,21 @@ impl SortModal {
                     {
                         self.table_state.select(Some(new_selected_idx));
                     }
+                } else {
+                    // Past the end of the order: say so rather than doing nothing.
+                    let last = if self.columns[real_idx].sort_order.is_some() {
+                        max_order
+                    } else {
+                        max_order + 1
+                    };
+                    let range = if last == 1 {
+                        "1".to_string()
+                    } else {
+                        format!("1-{last}")
+                    };
+                    self.status = Some(format!(
+                        "Position {new_order} is past the end; use {range}."
+                    ));
                 }
             }
         }
@@ -642,6 +663,48 @@ mod tests {
         let (names, directions) = modal.sorted_columns_and_directions();
         assert_eq!(names, ["A", "C"]);
         assert_eq!(directions, [true, false]);
+    }
+
+    /// `0` takes a sorted column out and stages the change; on an unsorted
+    /// column it changes nothing and stages nothing.
+    #[test]
+    fn zero_removes_a_column_and_stages_the_change() {
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["A", "B"]);
+        modal.columns[0].sort_order = Some(1);
+        modal.table_state.select(Some(1));
+        modal.jump_selection_to_order(0);
+        assert!(!modal.has_unapplied_changes, "B was not sorted");
+
+        modal.table_state.select(Some(0));
+        modal.jump_selection_to_order(0);
+        assert_eq!(modal.columns[0].sort_order, None);
+        assert!(modal.has_unapplied_changes);
+    }
+
+    /// A digit past the end of the order changes nothing and says which
+    /// positions exist.
+    #[test]
+    fn a_digit_past_the_end_says_why() {
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["A", "B", "C"]);
+        modal.columns[0].sort_order = Some(1);
+        modal.table_state.select(Some(1));
+        modal.jump_selection_to_order(5);
+        assert_eq!(modal.columns[1].sort_order, None);
+        assert!(!modal.has_unapplied_changes);
+        assert_eq!(
+            modal.status.as_deref(),
+            Some("Position 5 is past the end; use 1-2.")
+        );
+
+        // The sorted column itself has only the positions already there.
+        modal.table_state.select(Some(0));
+        modal.jump_selection_to_order(3);
+        assert_eq!(
+            modal.status.as_deref(),
+            Some("Position 3 is past the end; use 1.")
+        );
     }
 
     #[test]

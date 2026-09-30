@@ -43,7 +43,7 @@ list, then:
 |---|---|
 | <kbd>Space</kbd> | Cycle this column's sort: none, ascending, descending |
 | <kbd>Del</kbd> | Remove this column from the sort |
-| <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it |
+| <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it. A digit past the end of the order says so on the status line |
 | <kbd>[</kbd> <kbd>]</kbd> | Move this column earlier or later in the sort order |
 | <kbd>+</kbd> <kbd>-</kbd> | Move this column left or right in the table |
 | <kbd>L</kbd> | Freeze this column and every column above it on the left |

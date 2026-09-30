@@ -93,6 +93,14 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     };
     let hints = if sort_tab {
         render_columns_tab(body, buf, modal, ctx);
+        // Why the last key did nothing takes the hint line until the next key,
+        // so arriving and leaving move nothing.
+        if let Some(status) = &modal.sort.status {
+            Paragraph::new(status.as_str())
+                .style(Style::default().fg(ctx.warning))
+                .render(hints_area, buf);
+            return;
+        }
         HintBar::from_ctx(ctx)
             .hint_weighted("Space", "Sort", 5)
             .hint_weighted("1-9", "Jump", 4)

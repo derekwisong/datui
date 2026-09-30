@@ -12374,3 +12374,71 @@ fn test_form_field_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
         datui::widgets::template_modal::TemplateModalMode::List
     );
 }
+
+/// `0` takes a column out of the sort and stages that as a change, so Apply
+/// has something to apply; a digit past the end of the order says why it did
+/// nothing, on the sidebar's own status line, until the next key.
+#[test]
+fn test_sort_digits_stage_zero_and_explain_out_of_range() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_digits.csv");
+
+    // Sort by the first column through its digit, and apply.
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab); // tab bar -> find
+    press(&mut app, KeyCode::Tab); // find -> column list
+    press(&mut app, KeyCode::Char('1'));
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().view_sort_columns(),
+        vec!["a".to_string()]
+    );
+
+    // Reopen: the applied sort arrives staged and nothing is pending.
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert!(!app.sort_filter_modal.sort.has_unapplied_changes);
+
+    // A digit past the end of the order does nothing and says so.
+    press(&mut app, KeyCode::Char('5'));
+    assert_eq!(
+        app.sort_filter_modal.sort.columns[0].sort_order,
+        Some(1),
+        "an out-of-range digit changes nothing"
+    );
+    assert!(!app.sort_filter_modal.sort.has_unapplied_changes);
+    assert!(
+        screen_text(&mut app).contains("Position 5 is past the end; use 1."),
+        "the status line says why"
+    );
+    assert!(!app.modal_showing(), "validation is not a modal");
+
+    // `0` removes it and stages the change.
+    press(&mut app, KeyCode::Char('0'));
+    assert!(
+        app.sort_filter_modal.sort.status.is_none(),
+        "the next key clears the status line"
+    );
+    assert!(!screen_text(&mut app).contains("past the end"));
+    assert_eq!(app.sort_filter_modal.sort.columns[0].sort_order, None);
+    assert!(
+        app.sort_filter_modal.sort.has_unapplied_changes,
+        "0 is a change to apply"
+    );
+
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .view_sort_columns()
+            .is_empty(),
+        "Apply took the column out of the sort"
+    );
+}

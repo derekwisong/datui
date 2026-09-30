@@ -13441,6 +13441,8 @@ impl App {
                 on_body && sort_tab && self.sort_filter_modal.sort.focus == SortFocus::Filter;
             let on_column_list =
                 on_body && sort_tab && self.sort_filter_modal.sort.focus == SortFocus::ColumnList;
+            // The status line is about the last key; this one replaces it.
+            self.sort_filter_modal.sort.status = None;
 
             // Ctrl+J is the apply chord beside Ctrl+Enter: a terminal without the
             // keyboard-enhancement protocol sends one as the other.

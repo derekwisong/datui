@@ -7,12 +7,12 @@ use ratatui::{
     style::{Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Widget},
+    widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Widget, Wrap},
 };
 
 use crate::chart_data::{
     BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, format_axis_label,
-    format_x_axis_label,
+    format_x_axis_label, segments,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
@@ -26,9 +26,21 @@ const LABEL_WIDTH: u16 = 14;
 const HEATMAP_TITLE_HEIGHT: u16 = 1;
 const HEATMAP_X_LABEL_HEIGHT: u16 = 2;
 
+/// What the chart area shows: the plot, the notes under it about its input, or the
+/// reason it could not be prepared.
+pub struct ChartView<'a> {
+    pub data: ChartRenderData<'a>,
+    /// One line each, dimmed under the plot: a sample, values a range left out.
+    pub notes: Vec<String>,
+    /// Preparing the selection failed; shown in place of an empty plot.
+    pub error: Option<&'a str>,
+}
+
 pub enum ChartRenderData<'a> {
     XY {
         series: Option<&'a Vec<Vec<(f64, f64)>>>,
+        /// Per series, where its line starts again after a gap.
+        breaks: Option<&'a Vec<Vec<usize>>>,
         x_axis_kind: XAxisTemporalKind,
         x_bounds: Option<(f64, f64)>,
     },
@@ -58,7 +70,8 @@ fn row_label(focus: ChartFocus) -> &'static str {
         ChartFocus::Column => "Column:",
         ChartFocus::Bins => "Bins:",
         ChartFocus::Bandwidth => "Bandwidth:",
-        ChartFocus::LimitRows => "Limit rows:",
+        ChartFocus::Range => "Range:",
+        ChartFocus::LimitRows => "Sample size:",
     }
 }
 
@@ -157,6 +170,7 @@ fn render_sidebar(
                 number = format!("x{:.1}", modal.kde_bandwidth_factor);
                 FormValue::Choice(&number)
             }
+            ChartFocus::Range => FormValue::Choice(modal.value_range.label()),
             ChartFocus::LimitRows => {
                 number = modal.row_limit_display();
                 FormValue::Choice(&number)
@@ -214,7 +228,7 @@ pub fn render_chart_view(
     modal: &mut ChartModal,
     theme: &Theme,
     ctx: &RenderContext,
-    render_data: ChartRenderData<'_>,
+    view: ChartView<'_>,
 ) {
     let text_secondary = theme.get("text_secondary");
 
@@ -233,10 +247,33 @@ pub fn render_chart_view(
         .split(layout[1]);
     render_sidebar(main_layout[0], buf, modal, ctx);
 
-    let chart_inner = main_layout[1];
-    match render_data {
+    let mut chart_inner = main_layout[1];
+    if let Some(message) = view.error {
+        Paragraph::new(message)
+            .style(Style::default().fg(ctx.error))
+            .wrap(Wrap { trim: true })
+            .centered()
+            .render(chart_inner, buf);
+        return;
+    }
+    // The notes sit under the plot, one line each, where the axis ends: the plot
+    // gives up the rows, never the notes, so the chart cannot look whole when it is not.
+    let note_rows = (view.notes.len() as u16).min(chart_inner.height / 2);
+    if note_rows > 0 {
+        let [plot, notes] = Layout::vertical([Constraint::Fill(1), Constraint::Length(note_rows)])
+            .areas(chart_inner);
+        let lines: Vec<Line> = view
+            .notes
+            .iter()
+            .map(|note| Line::styled(note.as_str(), Style::default().fg(ctx.dimmed)))
+            .collect();
+        Paragraph::new(lines).right_aligned().render(notes, buf);
+        chart_inner = plot;
+    }
+    match view.data {
         ChartRenderData::XY {
             series,
+            breaks,
             x_axis_kind,
             x_bounds,
         } => render_xy_chart(
@@ -244,9 +281,12 @@ pub fn render_chart_view(
             buf,
             modal,
             theme,
-            series,
-            x_axis_kind,
-            x_bounds,
+            XYData {
+                series,
+                breaks,
+                x_axis_kind,
+                x_bounds,
+            },
             text_secondary,
         ),
         ChartRenderData::Histogram { data } => {
@@ -264,17 +304,35 @@ pub fn render_chart_view(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The XY chart's prepared series, as `ChartRenderData::XY` carries them.
+struct XYData<'a> {
+    series: Option<&'a Vec<Vec<(f64, f64)>>>,
+    breaks: Option<&'a Vec<Vec<usize>>>,
+    x_axis_kind: XAxisTemporalKind,
+    x_bounds: Option<(f64, f64)>,
+}
+
+/// One XY series with where its line breaks.
+struct SeriesRuns<'a> {
+    name: &'a str,
+    points: &'a [(f64, f64)],
+    breaks: &'a [usize],
+}
+
 fn render_xy_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
     theme: &Theme,
-    chart_data: Option<&Vec<Vec<(f64, f64)>>>,
-    x_axis_kind: XAxisTemporalKind,
-    x_bounds: Option<(f64, f64)>,
+    xy: XYData<'_>,
     text_secondary: ratatui::style::Color,
 ) {
+    let XYData {
+        series: chart_data,
+        breaks,
+        x_axis_kind,
+        x_bounds,
+    } = xy;
     let chart_type = modal.chart_type;
     let y_starts_at_zero = modal.y_starts_at_zero;
     let log_scale = modal.log_scale;
@@ -369,18 +427,25 @@ fn render_xy_chart(
             let mut all_y_max = f64::NEG_INFINITY;
 
             // Data is already in display form (log-scaled when log_scale) from cache; use as-is.
-            let names_and_points: Vec<(&str, &[(f64, f64)])> = data
+            let no_breaks = Vec::new();
+            let names_and_points: Vec<SeriesRuns> = data
                 .iter()
                 .zip(y_columns.iter())
-                .filter_map(|(points, name)| {
+                .enumerate()
+                .filter_map(|(i, (points, name))| {
                     if points.is_empty() {
                         return None;
                     }
-                    Some((name.as_str(), points.as_slice()))
+                    let series_breaks = breaks.and_then(|b| b.get(i)).unwrap_or(&no_breaks);
+                    Some(SeriesRuns {
+                        name: name.as_str(),
+                        points: points.as_slice(),
+                        breaks: series_breaks.as_slice(),
+                    })
                 })
                 .collect();
 
-            for (_, points) in &names_and_points {
+            for SeriesRuns { points, .. } in &names_and_points {
                 let (x_min, x_max) = points
                     .iter()
                     .map(|&(x, _)| x)
@@ -399,21 +464,32 @@ fn render_xy_chart(
                 all_y_max = all_y_max.max(y_max);
             }
 
+            // A series is drawn as its runs between gaps, so a line never bridges a
+            // missing value; only the first run is named, which keeps one legend entry.
             let datasets: Vec<Dataset> = names_and_points
                 .iter()
                 .enumerate()
-                .map(|(i, (name, points))| {
+                .flat_map(|(i, series)| {
                     let color_key = series_colors
                         .get(i)
                         .copied()
                         .unwrap_or("primary_chart_series_color");
                     let style = Style::default().fg(theme.get(color_key));
-                    Dataset::default()
-                        .name(*name)
-                        .marker(marker)
-                        .graph_type(graph_type)
-                        .style(style)
-                        .data(points)
+                    segments(series.points, series.breaks)
+                        .into_iter()
+                        .enumerate()
+                        .map(move |(j, run)| {
+                            let dataset = Dataset::default()
+                                .marker(marker)
+                                .graph_type(graph_type)
+                                .style(style)
+                                .data(run);
+                            if j == 0 {
+                                dataset.name(series.name)
+                            } else {
+                                dataset
+                            }
+                        })
                 })
                 .collect();
 
@@ -921,6 +997,7 @@ mod tests {
             &["price".to_string(), "volume".to_string()],
             &["date".to_string()],
             Some(10_000),
+            1,
         );
         modal
     }
@@ -937,10 +1014,15 @@ mod tests {
             modal,
             &theme,
             &ctx,
-            ChartRenderData::XY {
-                series: None,
-                x_axis_kind: XAxisTemporalKind::Numeric,
-                x_bounds: None,
+            ChartView {
+                data: ChartRenderData::XY {
+                    series: None,
+                    breaks: None,
+                    x_axis_kind: XAxisTemporalKind::Numeric,
+                    x_bounds: None,
+                },
+                notes: Vec::new(),
+                error: None,
             },
         );
         (0..height)
@@ -981,7 +1063,7 @@ mod tests {
         assert!(rows[5].contains("Y from zero:"));
         assert!(rows[6].contains("Log scale:"));
         assert!(rows[7].contains("Legend:"));
-        assert!(rows[8].contains("Limit rows:") && rows[8].contains("10,000"));
+        assert!(rows[8].contains("Sample size:") && rows[8].contains("10,000"));
     }
 
     /// Only the active chart kind's options render.
@@ -1019,6 +1101,108 @@ mod tests {
         assert!(
             body.contains(&format!("{} volume", g.checkbox_off)),
             "other items unchecked: {body}"
+        );
+    }
+
+    fn render_view(modal: &mut ChartModal, view: ChartView<'_>, w: u16, h: u16) -> Vec<String> {
+        let ctx = RenderContext::for_test();
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
+            .expect("default theme colors must resolve");
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        render_chart_view(area, &mut buf, modal, &theme, &ctx, view);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    /// A sampled or clipped chart says so under the plot, even at 80x24.
+    #[test]
+    fn notes_sit_under_the_plot() {
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["volume".to_string()];
+        let series = vec![vec![(0.0, 1.0), (1.0, 2.0)]];
+        let rows = render_view(
+            &mut modal,
+            ChartView {
+                data: ChartRenderData::XY {
+                    series: Some(&series),
+                    breaks: None,
+                    x_axis_kind: XAxisTemporalKind::Numeric,
+                    x_bounds: None,
+                },
+                notes: vec!["sample of 10,000 of 3.5M rows".to_string()],
+                error: None,
+            },
+            80,
+            24,
+        );
+        assert!(
+            rows[23].contains("sample of 10,000 of 3.5M rows"),
+            "{:?}",
+            rows[23]
+        );
+    }
+
+    /// A failed preparation shows its message where the plot would be.
+    #[test]
+    fn an_error_replaces_the_plot() {
+        let mut modal = open_modal();
+        let rows = render_view(
+            &mut modal,
+            ChartView {
+                data: ChartRenderData::XY {
+                    series: None,
+                    breaks: None,
+                    x_axis_kind: XAxisTemporalKind::Numeric,
+                    x_bounds: None,
+                },
+                notes: Vec::new(),
+                error: Some("column not found: gone"),
+            },
+            100,
+            24,
+        );
+        assert!(rows.join("\n").contains("column not found: gone"));
+    }
+
+    /// A line breaks at a gap: nothing is drawn between the runs on either side.
+    #[test]
+    fn a_line_does_not_bridge_a_gap() {
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["volume".to_string()];
+        modal.show_legend = false;
+        let series = vec![vec![(0.0, 0.0), (1.0, 0.0), (9.0, 0.0), (10.0, 0.0)]];
+        let draw = |modal: &mut ChartModal, breaks: &Vec<Vec<usize>>| {
+            render_view(
+                modal,
+                ChartView {
+                    data: ChartRenderData::XY {
+                        series: Some(&series),
+                        breaks: Some(breaks),
+                        x_axis_kind: XAxisTemporalKind::Numeric,
+                        x_bounds: None,
+                    },
+                    notes: Vec::new(),
+                    error: None,
+                },
+                100,
+                24,
+            )
+        };
+        let blank = |c: char| c == ' ' || c == '\u{2800}';
+        let marks = |rows: &[String]| -> usize {
+            rows.iter()
+                .map(|r| r.chars().skip(44).filter(|c| !blank(*c)).count())
+                .sum()
+        };
+        let joined = draw(&mut modal, &vec![Vec::new()]);
+        let broken = draw(&mut modal, &vec![vec![2]]);
+        assert!(
+            marks(&broken) < marks(&joined),
+            "the run from 1 to 9 is not drawn"
         );
     }
 

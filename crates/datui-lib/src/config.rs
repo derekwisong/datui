@@ -1884,14 +1884,15 @@ pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChartConfig {
-    /// Maximum rows for chart data. None (null in TOML) = unlimited; Some(n) = cap at n. Default 10000.
+    /// Rows a chart reads: every row up to n, and a sample of n spread across the table past
+    /// it. None (null in TOML) = every row. Default 10000.
     pub row_limit: Option<usize>,
 }
 
 // Field comments for ChartConfig
 const CHART_COMMENTS: &[(&str, &str)] = &[(
     "row_limit",
-    "Maximum rows used when building charts (display and export).\nSet to null for unlimited (uses full dataset). Set to a number (e.g. 10000) to cap. Can also be changed in chart view (Limit Rows). Example: row_limit = 10000",
+    "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nSet to null to read every row. Can also be changed in the chart view (Sample size). Example: row_limit = 10000",
 )];
 
 impl Default for ChartConfig {

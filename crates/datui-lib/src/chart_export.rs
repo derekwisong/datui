@@ -91,6 +91,8 @@ pub struct BoxPlotExportBounds {
 pub struct ChartExportSeries {
     pub name: String,
     pub points: Vec<(f64, f64)>,
+    /// Where a line starts again after a gap (see `chart_data::segments`).
+    pub breaks: Vec<usize>,
 }
 
 /// Export format for chart: PNG or EPS.
@@ -323,12 +325,14 @@ pub fn write_chart_eps(
 
         match chart_type {
             ChartType::Line => {
-                let (px, py) = s.points[0];
-                writeln!(f, "{} {} moveto", to_x(px), to_y(py))?;
-                for &(px, py) in &s.points[1..] {
-                    writeln!(f, "{} {} lineto", to_x(px), to_y(py))?;
+                for segment in crate::chart_data::segments(&s.points, &s.breaks) {
+                    let (px, py) = segment[0];
+                    writeln!(f, "{} {} moveto", to_x(px), to_y(py))?;
+                    for &(px, py) in &segment[1..] {
+                        writeln!(f, "{} {} lineto", to_x(px), to_y(py))?;
+                    }
+                    writeln!(f, "stroke")?;
                 }
-                writeln!(f, "stroke")?;
             }
             ChartType::Scatter => {
                 let rad = 3.0;
@@ -424,10 +428,17 @@ pub fn write_chart_png(
         let color = colors[idx % colors.len()];
         match chart_type {
             ChartType::Line => {
-                chart
-                    .draw_series(LineSeries::new(s.points.iter().copied(), color))?
-                    .label(s.name.as_str())
-                    .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+                // One line per run between gaps; the legend names the first.
+                let segments = crate::chart_data::segments(&s.points, &s.breaks);
+                for (i, segment) in segments.into_iter().enumerate() {
+                    let drawn =
+                        chart.draw_series(LineSeries::new(segment.iter().copied(), color))?;
+                    if i == 0 {
+                        drawn.label(s.name.as_str()).legend(move |(x, y)| {
+                            PathElement::new(vec![(x, y), (x + 20, y)], color)
+                        });
+                    }
+                }
             }
             ChartType::Scatter => {
                 chart.draw_series(PointSeries::of_element(
@@ -1024,6 +1035,7 @@ mod tests {
         let series = vec![ChartExportSeries {
             name: "s1".to_string(),
             points: vec![(0.0, 1.0), (1.0, 2.0), (2.0, 1.5)],
+            breaks: Vec::new(),
         }];
         let bounds = ChartExportBounds {
             x_min: 0.0,
@@ -1131,6 +1143,7 @@ mod tests {
             let series = vec![ChartExportSeries {
                 name: payload.to_string(),
                 points: vec![(0.0, 1.0), (1.0, 2.0)],
+                breaks: Vec::new(),
             }];
             let bounds = ChartExportBounds {
                 x_min: 0.0,

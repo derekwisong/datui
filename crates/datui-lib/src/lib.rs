@@ -812,6 +812,7 @@ mod chart_prepare_tests {
             dataset: None,
             request: request.clone(),
             stale: false,
+            cancel: Arc::default(),
         }
     }
 
@@ -958,6 +959,49 @@ mod chart_prepare_tests {
         app.chart_modal.row_limit = None;
         assert_eq!(ChartRequest::from_modal(&app.chart_modal), Some(request));
         assert!(!app.chart_request_pending(), "not asked for again");
+    }
+
+    /// Moving past the selection in flight tells it to stop, so a count streaming the
+    /// whole view does not hold up the next chart. A count stopped part way is dropped,
+    /// not remembered as a failure; a result that finished anyway is kept.
+    #[test]
+    fn moving_on_cancels_the_preparation_in_flight() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let a = histogram_request("a");
+        app.input_mode = InputMode::Chart;
+        app.chart_modal.active = true;
+        app.chart_modal.chart_kind = ChartKind::Histogram;
+        app.chart_modal.hist_column = Some("a".to_string());
+        app.chart_modal.hist_bins = 10;
+        app.chart_modal.row_limit = None;
+        app.chart_inflight = Some(inflight(&a));
+        let cancelled = |app: &App| {
+            app.chart_inflight
+                .as_ref()
+                .unwrap()
+                .cancel
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        app.ensure_chart_data();
+        assert!(!cancelled(&app), "still the selection on screen");
+        app.chart_modal.hist_column = Some("b".to_string());
+        app.ensure_chart_data();
+        assert!(cancelled(&app), "moved past");
+
+        *app.pending_chart_result.lock().unwrap() = Some(Err("count cancelled".into()));
+        app.event(&AppEvent::BackgroundChartReady);
+        assert!(
+            app.chart_cache.get(&a).is_none(),
+            "not remembered as failed"
+        );
+
+        app.chart_inflight = Some(inflight(&a));
+        app.ensure_chart_data();
+        *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+        app.event(&AppEvent::BackgroundChartReady);
+        assert!(app.chart_cache.satisfies(&a), "a finished read is kept");
     }
 
     /// Two selections that alternate stay prepared: neither is collected again when
@@ -4975,6 +5019,7 @@ pub mod tests {
                         row_limit: None,
                     },
                     stale: false,
+                    cancel: Default::default(),
                 });
                 None
             }),
@@ -7054,6 +7099,9 @@ struct ChartInflight {
     /// cancelled, so the record stays until its result lands and is discarded; the next
     /// request waits for it, which is what keeps the number of collects at one.
     stale: bool,
+    /// Set when the selection moves past the request or its view goes. A streamed count
+    /// stops at its next batch; every other read is bounded and runs to the end.
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A prepared chart, ready to go into the cache. Each payload names the columns it
@@ -17272,6 +17320,9 @@ impl App {
         self.chart_cache.clear();
         if let Some(inflight) = self.chart_inflight.as_mut() {
             inflight.stale = true;
+            inflight
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
@@ -17302,7 +17353,17 @@ impl App {
         if self.input_mode != InputMode::Chart || !self.chart_modal.active {
             return;
         }
-        let Some(request) = ChartRequest::from_modal(&self.chart_modal) else {
+        let request = ChartRequest::from_modal(&self.chart_modal);
+        if let Some(inflight) = self.chart_inflight.as_ref()
+            && request.as_ref() != Some(&inflight.request)
+        {
+            // A count streaming a large view for a selection the cursor has moved
+            // past would hold up the next chart for as long as it reads.
+            inflight
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let Some(request) = request else {
             return;
         };
         if self.chart_cache.get(&request).is_some() {
@@ -17326,11 +17387,13 @@ impl App {
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.polars_streaming,
             held: self.chart_cache.held_rows(dataset),
+            cancel: Arc::default(),
         };
         self.chart_inflight = Some(ChartInflight {
             dataset,
             request: request.clone(),
             stale: false,
+            cancel: Arc::clone(&sampling.cancel),
         });
         let slot = self.pending_chart_result.clone();
         let tx = self.events.clone();
@@ -19416,6 +19479,11 @@ impl App {
                     .take()
                     .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
                 if inflight.stale {
+                    return None;
+                }
+                // A count stopped part way is no answer, and must not be remembered as
+                // a failure; the selection is prepared again when it comes back.
+                if outcome.is_err() && inflight.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     return None;
                 }
                 let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());

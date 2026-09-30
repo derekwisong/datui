@@ -11,6 +11,7 @@ use color_eyre::Result;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Describes how x-axis numeric values map to temporal types for label formatting.
@@ -102,6 +103,8 @@ pub struct ChartSampling {
     pub streaming: bool,
     /// The rows already read from this view.
     pub held: HeldRows,
+    /// Set once nobody wants the result: a streamed count stops at its next batch.
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl ChartSampling {
@@ -113,6 +116,7 @@ impl ChartSampling {
             seed: crate::sampling::Sample::default().seed,
             streaming: false,
             held: HeldRows::default(),
+            cancel: Arc::default(),
         }
     }
 }
@@ -1107,7 +1111,7 @@ fn count_bars(
             };
             let counted = match whole {
                 Some(df) => count_frame(&df, category, max_categories)?,
-                None => stream_counts(lf, category, max_categories)?,
+                None => stream_counts(lf, category, max_categories, &sampling.cancel)?,
             };
             hold_counts(sampling, category, &counted);
             counted
@@ -1184,6 +1188,10 @@ fn held_counts(
 
 fn hold_counts(sampling: &ChartSampling, category: &str, counted: &Counted) {
     let mut holding = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
+    holding.counts.retain(|h| h.category != category);
+    if holding.counts.len() >= HELD_COUNTS {
+        holding.counts.remove(0);
+    }
     holding.counts.push(HeldCounts {
         category: category.to_string(),
         counted: counted.clone(),
@@ -1210,6 +1218,10 @@ enum Counted {
 
 const COUNT_COLUMN: &str = "__datui_bar_count";
 
+/// Counts held per view: enough to go back and forth between a few categories, each
+/// up to [`COUNT_CATEGORY_CAP`] rows.
+const HELD_COUNTS: usize = 4;
+
 /// Rows piled up unmerged before a merge, at least: a run of new categories costs a
 /// merge now and then rather than one per batch.
 const MERGE_AFTER: usize = 1 << 16;
@@ -1224,6 +1236,8 @@ struct Tally {
     merged: usize,
     rows: usize,
     too_many: bool,
+    /// Stopped before the end of the view because nobody wants the count.
+    cancelled: bool,
 }
 
 impl Tally {
@@ -1235,6 +1249,7 @@ impl Tally {
             merged: 0,
             rows: 0,
             too_many: false,
+            cancelled: false,
         }
     }
 
@@ -1305,16 +1320,28 @@ fn group_counts(df: &DataFrame, category: &str, summed: bool) -> PolarsResult<Da
     DataFrame::new_infer_height(columns)
 }
 
-/// Count the view's categories in one streamed pass, stopping past `max` of them.
-fn stream_counts(lf: &LazyFrame, category: &str, max: usize) -> Result<Counted> {
+/// Count the view's categories in one streamed pass, stopping past `max` of them, or
+/// as soon as `cancel` is set: a pass over a large table can take minutes, and the
+/// next chart waits for it.
+fn stream_counts(
+    lf: &LazyFrame,
+    category: &str,
+    max: usize,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Counted> {
     let state = Arc::new(Mutex::new(Tally::new(category, max)));
     let callback_state = Arc::clone(&state);
+    let callback_cancel = Arc::clone(cancel);
     let sink = lf.clone().select([col(category)]).sink_batches(
         PlanCallback::new(move |batch: DataFrame| {
-            callback_state
+            let mut tally = callback_state
                 .lock()
-                .map_err(|_| PolarsError::ComputeError("count lock failed".into()))?
-                .observe(&batch)
+                .map_err(|_| PolarsError::ComputeError("count lock failed".into()))?;
+            if callback_cancel.load(Ordering::Relaxed) {
+                tally.cancelled = true;
+                return Ok(true);
+            }
+            tally.observe(&batch)
         }),
         false,
         None,
@@ -1325,6 +1352,11 @@ fn stream_counts(lf: &LazyFrame, category: &str, max: usize) -> Result<Counted> 
         &mut *state.lock().unwrap_or_else(|e| e.into_inner()),
         Tally::new(category, max),
     );
+    // Part of the view counted is not a count of it. A pass that finished before it
+    // was told to stop is whole, and kept.
+    if tally.cancelled {
+        return Err(color_eyre::eyre::eyre!("count cancelled"));
+    }
     Ok(tally.finish()?)
 }
 
@@ -2076,6 +2108,32 @@ mod tests {
             "past the cap: stop reading"
         );
         assert!(matches!(tally.finish().unwrap(), Counted::TooMany));
+    }
+
+    /// Through the streamed pass: past the cap the read stops and the count says so; a
+    /// cancelled count is an error and is not held as the view's counts.
+    #[test]
+    fn a_streamed_count_stops_past_its_cap_or_when_cancelled() {
+        let ids = df!("id" => (0..200_000i64).collect::<Vec<_>>())
+            .unwrap()
+            .lazy();
+        let cancel = Arc::default();
+        assert!(matches!(
+            stream_counts(&ids, "id", 1_000, &cancel).unwrap(),
+            Counted::TooMany
+        ));
+
+        let lf = species(30_000, 15_000, 4_999, 1);
+        let sampling = ChartSampling::rows(Some(1_000));
+        sampling.cancel.store(true, Ordering::Relaxed);
+        let err = prepare_bar_counts(&lf, "species", BarOrder::Value, BAR_CAP, &sampling)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "count cancelled");
+        assert!(sampling.held.0.lock().unwrap().counts.is_empty());
+        sampling.cancel.store(false, Ordering::Relaxed);
+        let data = prepare_bar_counts(&lf, "species", BarOrder::Value, BAR_CAP, &sampling).unwrap();
+        assert_eq!(data.counted, Some(50_000));
     }
 
     /// When the rows held are the whole view, Count counts them rather than reading

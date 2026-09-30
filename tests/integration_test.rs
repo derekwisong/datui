@@ -2663,10 +2663,11 @@ fn e_moves_the_cursor_into_the_plan_editor() {
     assert_eq!(app.analysis_modal.data_quality_plan_field, 0);
 }
 
-/// r works from the sidebar too, and when the plan needs a confirmation the
-/// prompt it raises is answered with Enter — so the cursor moves in with it.
+/// r works from the sidebar too, on a sampled report: it runs at once, with a new
+/// seed. A plan that reads every row has no sample to draw again, so r there
+/// raises no confirmation over the report and changes nothing.
 #[test]
-fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
+fn r_from_the_sidebar_runs_a_sampled_report_again() {
     use datui::analysis_modal::AnalysisFocus;
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_run_key_focus.csv");
@@ -2685,25 +2686,24 @@ fn r_from_the_sidebar_hands_enter_to_the_confirmation() {
         next = app.event(&ev);
     }
     drain_events(&mut app, &rx);
-    // From the tool list, which is where r has to bring the cursor along from.
     app.analysis_modal.focus = AnalysisFocus::Sidebar;
 
-    // A plan that reads every row asks first.
-    app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
-    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('r'),
-        KeyModifiers::NONE,
-    )));
-    assert!(next.is_none(), "a confirming plan asks before running");
-    assert!(app.analysis_modal.data_quality_confirm_run);
-    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    let full = {
+        let mut plan = app.analysis_modal.data_quality_plan.clone();
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = datui::data_quality::QualityCompute::Full;
+        plan
+    };
+    let sampled = std::mem::replace(&mut app.analysis_modal.data_quality_plan, full.clone());
+    assert!(press(&mut app, KeyCode::Char('r')).is_none());
+    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert_eq!(app.analysis_modal.data_quality_plan, full);
 
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
+    app.analysis_modal.data_quality_plan = sampled;
+    let seed = app.analysis_modal.data_quality_plan.sample_seed;
+    let next = press(&mut app, KeyCode::Char('r'));
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert_ne!(app.analysis_modal.data_quality_plan.sample_seed, seed);
 }
 
 /// A table whose times are text in a US format, the way many CSV exports write
@@ -2973,6 +2973,19 @@ fn data_quality_setup_edits_never_outlive_esc() {
     let plan = &app.analysis_modal.data_quality_plan;
     assert_ne!(plan.sample_seed, seed);
     assert_eq!(plan.comparison, QualityComparison::None);
+
+    // A report of every row has no sample to draw again: r does nothing there.
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
+    press(&mut app, KeyCode::Enter);
+    let next = press(&mut app, KeyCode::Enter);
+    drain_quality(&mut app, &rx, next);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    let full = app.analysis_modal.data_quality_plan.clone();
+    assert!(press(&mut app, KeyCode::Char('r')).is_none());
+    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert_eq!(app.analysis_modal.data_quality_plan, full);
 }
 
 /// Time stored as text: a role on it says, before Run, that it needs a format;

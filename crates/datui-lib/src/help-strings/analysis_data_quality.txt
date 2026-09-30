@@ -59,7 +59,8 @@ Keys on the report:
   s:            Setup, with the Sample form open
   v:            View the sample's rows; Esc returns
   p:            Show the access plan: what a run reads
-  r:            Run again with a new sample seed
+  r:            On a sample, run again with a new
+                seed
   Tab:          Move between the result and the tools
   Esc:          Back one level; from a page, close
   ? / F1:       Show this help

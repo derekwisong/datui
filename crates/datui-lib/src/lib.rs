@@ -16730,11 +16730,14 @@ impl App {
                         self.analysis_modal.toggle_segment_order();
                         return None;
                     }
-                    // Another sample, run at once: a new seed for every tool. On a report
-                    // only, never over a draft, and not beside a cancelled read.
+                    // Another sample, run at once: a new seed for every tool. On a sampled
+                    // report only, as on every tool, never over a draft, and not beside
+                    // a cancelled read.
                     KeyCode::Char('r')
                         if !self.analysis_modal.data_quality_page.is_setup()
-                            && self.analysis_modal.data_quality_results.is_some() =>
+                            && self.analysis_modal.data_quality_results.is_some()
+                            && self.analysis_modal.data_quality_plan.compute
+                                == data_quality::QualityCompute::Sample =>
                     {
                         if self.cancelled_analysis_running().is_some() {
                             self.flash_note(
@@ -16742,9 +16745,17 @@ impl App {
                             );
                             return None;
                         }
+                        let before = self.analysis_modal.data_quality_plan.clone();
                         self.analysis_modal.data_quality_plan.sample_seed =
                             sample_modal::new_seed();
-                        return self.run_quality_setup();
+                        let event = self.run_quality_setup();
+                        // Refused, with the reason on Setup's line: the plan stays the
+                        // one the report was run with, and the reason is said here.
+                        if let Some(note) = self.analysis_modal.data_quality_setup_note.take() {
+                            self.analysis_modal.data_quality_plan = before;
+                            self.flash_note(note);
+                        }
+                        return event;
                     }
                     KeyCode::Enter
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>

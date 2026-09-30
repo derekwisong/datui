@@ -140,7 +140,7 @@ page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
 | <kbd>o</kbd> | On Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | Cycle the measure Trends draws: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
-| <kbd>r</kbd> | Run again with a new sample seed, for every tool; waits while a cancelled read finishes |
+| <kbd>r</kbd> | On a sampled report, run again with a new sample seed, for every tool; waits while a cancelled read finishes |
 | <kbd>Tab</kbd> | Move between the result and the tool list |
 | <kbd>Esc</kbd> | Back one level; from a page, close Analysis |
 

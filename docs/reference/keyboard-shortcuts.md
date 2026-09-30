@@ -229,7 +229,7 @@ In the Data Quality report:
 | <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | In Trends, choose the measure the table draws |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
-| <kbd>r</kbd> | Run again with a new seed, for every tool |
+| <kbd>r</kbd> | On a sampled report, run again with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
 | <kbd>Esc</kbd> | Back out one layer: a popup, a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself. While a run reads, cancel it |
 

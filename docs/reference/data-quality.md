@@ -21,9 +21,9 @@ from its seed, so the count the finding gave is the count in the table.
 The coverage comes from what the run measured; showing it reads nothing.
 Traversed rows are counted as each read hands them on, after the filters the
 scan applies, so a pass that skips nulls counts fewer. A Polars scan does not
-report bytes or requests, so neither is shown. At 60×20
-the Rows line gives way first (the header says the rows too), and a line cut
-short counts what it left out (`+2 more`).
+report bytes or requests, so neither is shown. On a terminal under 19 rows the
+coverage keeps two lines and Rows gives way first (the header says the rows
+too); a line cut short counts what it left out (`+2 more`).
 
 <kbd>Enter</kbd> on the **Clean** entry lists the checks the run made: the
 columns each covered, what it found, or why it was skipped or unavailable.

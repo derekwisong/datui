@@ -13,6 +13,8 @@ Navigation:
                     "Open" loads a file, "Look" finds out first. On a section
                     header, fold or unfold it; on the More row, show the rest;
                     on the hidden-files row, show them
+  Space:            While the filter is empty: fold or unfold the section
+                    header under the cursor. With a filter typed, it types
   Backspace:        Delete a filter character; on an empty filter, up a
                     level (from a bucket, back to its cloud source)
   Tab:              Cycle the sort; the control bar names the order in effect

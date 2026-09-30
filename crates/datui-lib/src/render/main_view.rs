@@ -151,6 +151,41 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         AnalysisView::CorrelationDetail => return vec![("Esc", "Back"), ("?", "Help")],
         AnalysisView::Main => {}
     }
+    // The Sample form owns the keys over whichever tool; its footer names the rest.
+    if let Some(form) = &modal.sample_form {
+        let listing = modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar;
+        return match (form.inline, listing) {
+            // A tool's first run, from the list: Enter takes the form as it stands.
+            (true, true) => vec![
+                ("Enter", "Run"),
+                ("Tab", "Sample"),
+                (crate::glyphs::get().updown, "Tools"),
+                ("?", "Help"),
+                ("Esc", "Back"),
+            ],
+            // The form has the cursor: the bar is its only hint surface, so it names
+            // what the focused row takes.
+            (inline, false) | (inline @ false, _) => {
+                let g = crate::glyphs::get();
+                let mut keys = vec![
+                    ("Enter", if inline { "Run" } else { "Apply" }),
+                    (g.updown, "Row"),
+                ];
+                if form.field.is_text() {
+                    keys.push(("type", "Edit"));
+                } else {
+                    keys.push((g.updown_lr, "Change"));
+                }
+                if form.field == crate::sample_modal::SampleField::Files
+                    && form.context.files.len() > crate::widgets::sample_form::FILES_SHOWN
+                {
+                    keys.push(("PgUp/PgDn", "Files"));
+                }
+                keys.push(("Esc", if inline { "Back" } else { "Cancel" }));
+                keys
+            }
+        };
+    }
     if modal.selected_tool == Some(AnalysisTool::DataQuality) {
         return data_quality_control_keys(app);
     }
@@ -177,6 +212,13 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             ("Enter", "Select"),
         ]
     };
+    // Which rows: the shared sample, for any tool on its main view. Second, right
+    // after the way out: the bar keeps its leading chips, and a sample the bar
+    // never names is a feature nobody finds.
+    if modal.view == crate::analysis_modal::AnalysisView::Main && modal.selected_tool.is_some() {
+        pairs.insert(1, ("s", "Sample"));
+        pairs.insert(2, ("v", "View Rows"));
+    }
     // On a sample: another one, or every row.
     if modal.view == crate::analysis_modal::AnalysisView::Main
         && app
@@ -207,65 +249,129 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         return vec![("Enter", "Run"), ("Esc", "Cancel")];
     }
     if modal.data_quality_observation_detail {
-        return vec![("Enter", "Evidence"), ("Esc", "Back")];
+        if modal.quality_selected_is_clean() {
+            return vec![
+                (
+                    "Enter",
+                    if modal.data_quality_checks_expanded {
+                        "Fewer Checks"
+                    } else {
+                        "All Checks"
+                    },
+                ),
+                ("Esc", "Back"),
+            ]
+            .into_iter()
+            .chain((modal.data_quality_detail_scroll.max > 0).then_some((g.updown, "Scroll")))
+            .collect();
+        }
+        // Enter opens the rows when there are exact rows to open, and otherwise
+        // only closes the popup; the chip says which.
+        let opens = modal.data_quality_results.as_ref().is_some_and(|results| {
+            let report = crate::quality_report::build_report(results);
+            modal
+                .data_quality_table_state
+                .selected()
+                .and_then(|index| report.findings.get(index))
+                .is_some_and(|finding| finding.can_open_rows(results))
+        });
+        let mut keys = if opens {
+            vec![("Enter", "Show Rows"), ("Esc", "Back")]
+        } else {
+            vec![("Enter", "Close"), ("Esc", "Back")]
+        };
+        if modal.data_quality_detail_scroll.max > 0 {
+            keys.push((g.updown, "Scroll"));
+        }
+        return keys;
     }
-    if modal.data_quality_page == QualityPage::Scope {
-        return vec![("Enter", "Apply"), ("PgUp/PgDn", "Files"), ("Esc", "Back")];
+    if modal.data_quality_picker.is_some() {
+        return vec![
+            ("Enter", "Choose"),
+            (g.updown, "Move"),
+            ("type", "Narrow"),
+            ("Esc", "Cancel"),
+        ];
     }
     if modal.data_quality_page == QualityPage::TimeRoles {
         return vec![
             (g.updown, "Role"),
             (g.updown_lr, "Column"),
             ("Enter", "Done"),
-            ("Esc", "Back"),
-        ];
-    }
-    if modal.data_quality_editing {
-        return vec![
-            (g.updown, "Field"),
-            (g.updown_lr, "Value"),
-            ("Enter", "Apply"),
             ("Esc", "Cancel"),
         ];
     }
-    match modal.data_quality_page {
-        QualityPage::Plan => vec![
-            ("Enter", "Run"),
-            ("e", "Edit"),
-            ("p", "Access"),
-            ("Tab", "Focus"),
-            ("Esc", "Back"),
-            ("?", "Help"),
-        ],
-        QualityPage::Segments => vec![
-            ("[ ]", "Column"),
-            ("m", "Metric"),
-            ("b", "Baseline"),
-            ("1-4", "Page"),
-            ("e", "Plan"),
-            ("Esc", "Back"),
-        ],
-        QualityPage::Trends => vec![
-            ("[ ]", "Column"),
-            ("m", "Metric"),
-            ("1-4", "Page"),
-            ("e", "Plan"),
-            ("Esc", "Back"),
-        ],
-        _ => vec![
-            ("1", "Overview"),
-            ("2", "Columns"),
-            ("3", "Segments"),
-            ("4", "Trends"),
-            ("Enter", "Inspect"),
-            ("e", "Plan"),
-            ("Tab", "Focus"),
-            ("?", "Help"),
-            // Every other page carries it; the overview is not the one place
-            // without a way out.
-            ("Esc", "Back"),
-        ],
+    // One shape on every page: the way out, then what this page is for, then the
+    // keys every page shares in one order, then the rest of this page's. The bar is
+    // cut by position, so the page's own action and the sample, which every tool's
+    // bar names, are what survive 80 columns; the tabs on screen name the pages.
+    let page = modal.data_quality_page;
+    let results = modal.data_quality_results.as_ref();
+    // Column and metric pick what the segments show; with nothing split they would
+    // change nothing, so they are not offered.
+    let measured = modal.quality_result_plan();
+    let segmented =
+        results.is_some() && measured.grain != crate::data_quality::QualityGrain::Dataset;
+    let trend = results.is_some_and(|results| crate::data_quality::shows_trend(measured, results));
+    let mut own: Vec<(&'static str, &'static str)> = Vec::new();
+    // An empty page says which plan setting fills it, and Enter opens that.
+    if let Some(setup) = app.quality_page_setup() {
+        own.push(("Enter", setup.label()));
     }
+    match page {
+        // Enter runs from any field; Space opens the one under the cursor.
+        QualityPage::Plan => {
+            own.push(("Enter", "Run"));
+            match modal
+                .data_quality_plan_field
+                .min(modal.quality_plan_rows() - 1)
+            {
+                0 => own.push(("Space", "Sample Form")),
+                4 if app.has_quality_time_columns() => own.push(("Space", "Time Roles")),
+                4 => {}
+                _ => own.push(("Space", "Choose")),
+            }
+            own.extend([(g.updown, "Field"), ("p", "Access")]);
+        }
+        QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
+        QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
+        QualityPage::Detail => own.push(("Enter", "Columns")),
+        QualityPage::Segments if segmented => own.extend([
+            ("Enter", "Details"),
+            (
+                "o",
+                if modal.data_quality_segments_by_change {
+                    "In Order"
+                } else {
+                    "By Change"
+                },
+            ),
+            ("b", "Baseline"),
+        ]),
+        QualityPage::SegmentDetail => own.push(("Enter", "Segments")),
+        QualityPage::Trends if trend => own.push(("m", "Measure")),
+        _ => {}
+    }
+    let mut own = own.into_iter();
+    // Esc on an edited plan puts back what the last run used.
+    let back = if page == QualityPage::Plan && modal.quality_plan_pending() {
+        "Discard"
+    } else {
+        "Back"
+    };
+    let mut keys = vec![("Esc", back)];
+    keys.extend(own.next());
+    // The plan is an editor: what the field under the cursor takes leads too.
+    if page == QualityPage::Plan {
+        keys.extend(own.next());
+    }
+    keys.extend([("s", "Sample"), (g.updown_lr, "Page"), ("v", "View Rows")]);
+    if page != QualityPage::Plan {
+        keys.push(("e", "Plan"));
+    }
+    keys.extend(own);
+    keys.extend([("Tab", "Focus"), ("?", "Help")]);
+    keys
 }
 
 /// Control bar keys for the chart view: what works right now, most-needed
@@ -455,7 +561,6 @@ mod tests {
         app.analysis_modal.selected_tool = Some(AnalysisTool::DataQuality);
         for page in [
             QualityPage::Plan,
-            QualityPage::Scope,
             QualityPage::TimeRoles,
             QualityPage::Overview,
             QualityPage::Columns,

@@ -99,6 +99,8 @@ Grouping:
   - Group with aliases: by region_name:region, total:sales+tax
   - Empty select with grouping: select by city, state
   - All non-group columns collected as lists
+  - Enter on a result row drills into its rows, aggregated or not;
+    Esc comes back
 
 Where Conditions:
   - Multiple conditions: a > 10, b < 5 (AND)

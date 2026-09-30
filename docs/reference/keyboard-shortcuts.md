@@ -15,7 +15,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
-| <kbd>Enter</kbd> | On a grouped row, drill into the group. <kbd>Esc</kbd> comes back |
+| <kbd>Enter</kbd> | On a row of a `by` query, grouped or aggregated, drill into its rows. <kbd>Esc</kbd> comes back |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
 | <kbd>r</kbd> | Reverse the sort; with no sort, reverse the row order |

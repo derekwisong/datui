@@ -121,7 +121,7 @@ use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus};
 pub use template::{Template, TemplateManager};
 use widgets::controls::Controls;
-use widgets::datatable::DataTableState;
+use widgets::datatable::{DataTableState, DrillRow};
 use widgets::debug::DebugState;
 use widgets::template_modal::{FormFocus, TemplateModal, TemplateModalMode, ViewRow};
 use widgets::text_input::{TextInput, TextInputEvent};
@@ -5607,6 +5607,13 @@ pub enum AppEvent {
         /// happens to sit.
         jump: bool,
     },
+    /// The row of a grouped view that Enter drills into, read off the UI thread because
+    /// the buffer did not hold it. The error is a message for the user.
+    DrillRowRead {
+        generation: u64,
+        group_index: usize,
+        row: std::result::Result<DataFrame, String>,
+    },
     /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
     /// there.
     BackgroundKindReady {
@@ -7599,6 +7606,28 @@ impl App {
         self.flash_note("Analysis cancelled".to_string());
     }
 
+    /// Drill into the group on row `group_index` of the table, whose values are `row`,
+    /// and fetch its rows off the UI thread. A drill that fails says why on the control
+    /// bar and leaves the grouped view as it was.
+    fn drill_into(&mut self, group_index: usize, row: &DataFrame) {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        state.defer_collect = true;
+        let drilled = state.drill_down_with_row(group_index, row);
+        state.defer_collect = false;
+        match drilled {
+            Ok(()) => {
+                self.sync_sort_filter_modal();
+                self.spawn_async_collect(Self::LOADING_BUFFER);
+            }
+            Err(e) => self.flash_note(format!(
+                "Could not drill in: {}",
+                crate::error_display::user_message_from_report(&e, None)
+            )),
+        }
+    }
+
     /// Show a completion flash on the control bar.
     fn flash_note(&mut self, message: String) {
         self.flash = Some(Flash::new(message));
@@ -7976,6 +8005,9 @@ impl App {
 
     /// The wait while the rows for the view are fetched.
     pub const LOADING_BUFFER: &'static str = "Loading buffer...";
+
+    /// The wait while a grouped row the buffer does not hold is read to drill into.
+    const READING_GROUP: &'static str = "Reading the group...";
 
     /// How long a fetch goes unmentioned. A local page lands well inside it, and the key
     /// chips staying put is the difference between paging and a bar that blinks a
@@ -15995,33 +16027,30 @@ impl App {
                 }
             }
             KeyCode::Enter if event.is_press() => {
-                // Only drill down if not in a modal and viewing grouped data
-                let drilled = if self.input_mode == InputMode::Normal {
-                    if let Some(ref mut state) = self.data_table_state {
-                        if state.is_grouped() && !state.is_drilled_down() {
-                            if let Some(selected) = state.table_state.selected() {
-                                let group_index = state.start_row + selected;
-                                state.defer_collect = true;
-                                let ok = state.drill_down_into_group(group_index).is_ok();
-                                state.defer_collect = false;
-                                if ok {
-                                    self.sync_sort_filter_modal();
-                                }
-                                ok
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
+                if self.input_mode != InputMode::Normal {
+                    return None;
+                }
+                let state = self.data_table_state.as_ref()?;
+                let selected = state.table_state.selected()?;
+                let group_index = state.start_row + selected;
+                match state.drill_row(group_index) {
+                    None if state.is_drilled_down() => {
+                        self.flash_note("Already in a group; Esc goes back".to_string());
                     }
-                } else {
-                    false
-                };
-                if drilled {
-                    self.spawn_async_collect(Self::LOADING_BUFFER);
+                    None => self.flash_note("Nothing to drill into".to_string()),
+                    Some(DrillRow::Buffered(row)) => self.drill_into(group_index, &row),
+                    Some(DrillRow::Read(lf)) => {
+                        let streaming = state.polars_streaming;
+                        self.spawn_bg(Self::READING_GROUP, move |task_gen, tx| {
+                            let row = crate::statistics::collect_lazy(*lf, streaming)
+                                .map_err(|e| crate::error_display::user_message_from_polars(&e));
+                            let _ = tx.send(AppEvent::DrillRowRead {
+                                generation: task_gen,
+                                group_index,
+                                row,
+                            });
+                        });
+                    }
                 }
                 None
             }
@@ -18057,6 +18086,25 @@ impl App {
                         jump,
                     });
                 });
+                None
+            }
+            AppEvent::DrillRowRead {
+                generation,
+                group_index,
+                row,
+            } => {
+                // A bump means something replaced the view; its owner has the busy state.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                self.busy = false;
+                if self.status_message.as_deref() == Some(Self::READING_GROUP) {
+                    self.status_message = None;
+                }
+                match row {
+                    Ok(row) => self.drill_into(*group_index, row),
+                    Err(message) => self.flash_note(format!("Could not drill in: {message}")),
+                }
                 None
             }
             AppEvent::BackgroundKindReady {

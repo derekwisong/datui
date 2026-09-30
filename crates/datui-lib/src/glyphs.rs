@@ -16,6 +16,7 @@
 //! overrides, where the risk is theirs. The ASCII fallback exists for terminals
 //! that are not doing UTF-8 at all.
 
+use ratatui::symbols::{Marker, line};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
@@ -136,6 +137,88 @@ pub struct Glyphs {
     /// The one border every Surface draws. Not a `[glyphs]` override slot:
     /// its eight pieces must agree with each other, and ratatui draws them.
     pub border: ratatui::symbols::border::Set<'static>,
+    /// What the plots draw with. Not a `[glyphs]` override slot: ratatui draws
+    /// these, and the Unicode marks are whole blocks of braille and eighths.
+    pub plot: PlotMarks,
+}
+
+/// The marks ratatui's `Chart`, `Canvas` and `BarChart` put on a plot, and the lines
+/// of its axes and legend frame. ratatui picks none of these from the locale, so each
+/// set names its own.
+#[derive(Debug, Clone, Copy)]
+pub struct PlotMarks {
+    /// A line: an XY line, a density curve, a fit drawn over bars, a dense Q-Q plot.
+    pub line: Marker,
+    /// One mark per point: a scatter, a box plot's strokes, a sparse Q-Q plot.
+    pub point: Marker,
+    /// A column from zero up to each point: the XY bar style and the histogram.
+    pub bar: Marker,
+    /// A vertical bar's top, one to eight eighths of a cell filled from the bottom;
+    /// the last is a whole cell, the bar's body.
+    pub column_eighths: &'static [&'static str; 8],
+    /// The axes and the legend frame.
+    pub axis: line::Set<'static>,
+}
+
+impl PlotMarks {
+    /// The vertical bars a `BarChart` draws with.
+    pub fn column_set(&self) -> ratatui::symbols::bar::Set<'static> {
+        let e = self.column_eighths;
+        ratatui::symbols::bar::Set {
+            full: e[7],
+            seven_eighths: e[6],
+            three_quarters: e[5],
+            five_eighths: e[4],
+            half: e[3],
+            three_eighths: e[2],
+            one_quarter: e[1],
+            one_eighth: e[0],
+            empty: " ",
+        }
+    }
+
+    /// Whether a canvas drawing with `marker` put this symbol in its cell, rather
+    /// than an axis or a label. Braille's blank pattern counts: the grid draws it.
+    pub fn is_mark(marker: Marker, symbol: &str) -> bool {
+        let mut chars = symbol.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return false;
+        };
+        match marker {
+            Marker::Braille => ('\u{2800}'..='\u{28ff}').contains(&c),
+            Marker::Dot => symbol == ratatui::symbols::DOT,
+            Marker::Custom(mark) => c == mark,
+            _ => false,
+        }
+    }
+
+    /// ratatui's `Chart` draws its axes and legend frame from `line::NORMAL`
+    /// whatever the set; this redraws them from the set's own `axis` lines. Nothing
+    /// changes under the Unicode set. Only box-drawing cells change: a label holding
+    /// one changes too, which a terminal without UTF-8 could not draw anyway.
+    pub fn redraw_axes(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let (from, to) = (line::NORMAL, self.axis);
+        if from == to {
+            return;
+        }
+        let pairs = [
+            (from.vertical, to.vertical),
+            (from.horizontal, to.horizontal),
+            (from.top_left, to.top_left),
+            (from.top_right, to.top_right),
+            (from.bottom_left, to.bottom_left),
+            (from.bottom_right, to.bottom_right),
+        ];
+        let area = area.intersection(buf.area);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let cell = &mut buf[(x, y)];
+                if let Some((_, twin)) = pairs.iter().find(|(line, _)| cell.symbol() == *line) {
+                    cell.set_symbol(twin);
+                }
+            }
+        }
+    }
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -204,6 +287,13 @@ const UNICODE: Glyphs = Glyphs {
         "└──╯ ╵  ╵   ╵   ╰──╯ ╶┴╴",
     ]),
     border: ratatui::symbols::border::ROUNDED,
+    plot: PlotMarks {
+        line: Marker::Braille,
+        point: Marker::Dot,
+        bar: Marker::HalfBlock,
+        column_eighths: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
+        axis: line::NORMAL,
+    },
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -267,6 +357,26 @@ const ASCII: Glyphs = Glyphs {
         vertical_right: "|",
         horizontal_top: "-",
         horizontal_bottom: "-",
+    },
+    plot: PlotMarks {
+        line: Marker::Custom('*'),
+        point: Marker::Custom('o'),
+        bar: Marker::Custom('#'),
+        // Where the bar's top edge sits in its last cell: low, halfway, full.
+        column_eighths: &["_", "_", "-", "-", "-", "#", "#", "#"],
+        axis: line::Set {
+            vertical: "|",
+            horizontal: "-",
+            top_right: "+",
+            top_left: "+",
+            bottom_right: "+",
+            bottom_left: "+",
+            vertical_left: "+",
+            vertical_right: "+",
+            horizontal_down: "+",
+            horizontal_up: "+",
+            cross: "+",
+        },
     },
 };
 
@@ -722,6 +832,41 @@ mod tests {
                 UnicodeWidthStr::width(right),
                 "{left:?} and {right:?} are different widths"
             );
+        }
+    }
+
+    /// ratatui draws the plot marks, so the audit script cannot see the ASCII
+    /// set's marker characters; this checks them, and that each column eighth is
+    /// one cell in both sets.
+    #[test]
+    fn the_ascii_plot_marks_are_ascii() {
+        let p = ascii().plot;
+        for marker in [p.line, p.point, p.bar] {
+            let Marker::Custom(c) = marker else {
+                panic!("{marker:?} is drawn by ratatui from its own Unicode set");
+            };
+            assert!(c.is_ascii_graphic(), "{c:?}");
+        }
+        let a = p.axis;
+        for piece in [
+            a.vertical,
+            a.horizontal,
+            a.top_right,
+            a.top_left,
+            a.bottom_right,
+            a.bottom_left,
+            a.vertical_left,
+            a.vertical_right,
+            a.horizontal_down,
+            a.horizontal_up,
+            a.cross,
+        ] {
+            assert!(piece.is_ascii(), "{piece:?}");
+        }
+        for set in [unicode(), ascii()] {
+            for eighth in set.plot.column_eighths {
+                assert_eq!(UnicodeWidthStr::width(*eighth), 1, "{eighth:?}");
+            }
         }
     }
 

@@ -10,8 +10,114 @@
 //! It also writes decimals, but wrongly: it drops the sign byte of a positive
 //! value whose leading byte is 0x80 or more, so every reader sees 327.68 as
 //! -327.68. Decimals are written as their exact text instead.
+//!
+//! And it writes names as they are, but an Avro name is `[A-Za-z_][A-Za-z0-9_]*`:
+//! strict readers refuse `my col` or `2024`. Columns and struct fields are
+//! renamed to valid names; the writer has no way to keep the originals in the
+//! schema's `aliases` or `doc`.
 
 use polars::prelude::*;
+
+/// The record name of an export. Polars' default is empty, which strict readers
+/// refuse; its nested records are `r1`, `r2`, ..., so this never clashes.
+pub const RECORD_NAME: &str = "Row";
+
+fn is_avro_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Valid Avro names for `names`, in order. A valid name is kept; in any other,
+/// each character outside `[A-Za-z0-9_]` becomes `_`, a leading digit gets a
+/// `_` in front, and a name then taken gets the first free `_2`, `_3`, ...
+/// Valid names are reserved first, so a column already valid is never renamed.
+fn avro_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let names: Vec<&str> = names.into_iter().collect();
+    let mut taken: PlHashSet<String> = names
+        .iter()
+        .filter(|name| is_avro_name(name))
+        .map(|name| name.to_string())
+        .collect();
+    names
+        .iter()
+        .map(|&name| {
+            if is_avro_name(name) {
+                return name.to_string();
+            }
+            let mut base: String = name
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            if !base.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                base.insert(0, '_');
+            }
+            let name = if taken.contains(&base) {
+                (2..)
+                    .map(|n| format!("{base}_{n}"))
+                    .find(|candidate| !taken.contains(candidate))
+                    .expect("some suffix is free")
+            } else {
+                base
+            };
+            taken.insert(name.clone());
+            name
+        })
+        .collect()
+}
+
+/// `dtype` with the fields of every struct in it under valid Avro names.
+fn avro_named(dtype: &DataType) -> DataType {
+    match dtype {
+        DataType::List(inner) => DataType::List(Box::new(avro_named(inner))),
+        DataType::Array(inner, width) => DataType::Array(Box::new(avro_named(inner)), *width),
+        DataType::Struct(fields) => {
+            let names = avro_names(fields.iter().map(|f| f.name().as_str()));
+            DataType::Struct(
+                fields
+                    .iter()
+                    .zip(names)
+                    .map(|(f, name)| Field::new(name.into(), avro_named(f.dtype())))
+                    .collect(),
+            )
+        }
+        dtype => dtype.clone(),
+    }
+}
+
+/// Whether an Avro export renames this column or a struct field inside it.
+pub fn renames(name: &str, dtype: &DataType) -> bool {
+    !is_avro_name(name) || &avro_named(dtype) != dtype
+}
+
+/// `series` with its struct fields renamed as in `dtype`, by position, at any
+/// depth. A cast would not do: Polars casts a struct by field name, so a
+/// renamed field would come out all null.
+fn rename_fields(series: &Series, dtype: &DataType) -> PolarsResult<Series> {
+    Ok(match dtype {
+        DataType::List(inner) => series
+            .list()?
+            .apply_to_inner(&|s| rename_fields(&s, inner))?
+            .into_series(),
+        DataType::Array(inner, _) => series
+            .array()?
+            .apply_to_inner(&|s| rename_fields(&s, inner))?
+            .into_series(),
+        DataType::Struct(fields) => {
+            let mut targets = fields.iter();
+            series
+                .struct_()?
+                .try_apply_fields(|field| {
+                    let target = targets.next().expect("one target per field");
+                    Ok(rename_fields(field, target.dtype())?.with_name(target.name().clone()))
+                })?
+                .into_series()
+        }
+        _ => series.clone(),
+    })
+}
 
 /// What `dtype` is written as. `durations` keeps times and durations as
 /// microsecond durations, the step before they become plain integers: a
@@ -45,9 +151,43 @@ fn writable(dtype: &DataType, durations: bool) -> DataType {
     }
 }
 
+/// `lf` with every column Avro cannot hold cast to one it can, and every name
+/// valid in Avro. Planned, not run.
+pub fn lazy_for_avro(lf: LazyFrame) -> PolarsResult<LazyFrame> {
+    let mut lf = lazy_casts(lf)?;
+    let schema = lf.collect_schema()?;
+    let renamed: Vec<Expr> = schema
+        .iter()
+        .filter(|(_, dtype)| &avro_named(dtype) != *dtype)
+        .map(|(name, _)| {
+            col(name.clone()).map(
+                |c| {
+                    let series = c.as_materialized_series();
+                    rename_fields(series, &avro_named(series.dtype())).map(Column::from)
+                },
+                |_, field| Ok(Field::new(field.name().clone(), avro_named(field.dtype()))),
+            )
+        })
+        .collect();
+    if !renamed.is_empty() {
+        lf = lf.with_columns(renamed);
+    }
+    let (old, new): (Vec<_>, Vec<_>) = schema
+        .iter_names()
+        .map(|name| name.as_str())
+        .zip(avro_names(schema.iter_names().map(|name| name.as_str())))
+        .filter(|(old, new)| old != new)
+        .unzip();
+    Ok(if old.is_empty() {
+        lf
+    } else {
+        lf.rename(old, new, true)
+    })
+}
+
 /// `lf` with every column Avro cannot hold cast to one it can, under its own
-/// name. Planned, not run.
-pub fn lazy_for_avro(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
+/// name.
+fn lazy_casts(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let schema = lf.collect_schema()?;
     let exprs: Vec<Expr> = schema
         .iter()
@@ -175,6 +315,74 @@ mod tests {
                 Field::new("n".into(), DataType::Int64),
             ])
         );
+    }
+
+    /// A name Avro refuses is made valid; a valid one never moves, even when a
+    /// renamed one would land on it.
+    #[test]
+    fn names_are_made_valid_and_unique() {
+        let names = avro_names(["my col", "2024", "a-b", "a_b", "délai", "", "_2024", "ok_1"]);
+        assert_eq!(
+            names,
+            [
+                "my_col", "_2024_2", "a_b_2", "a_b", "d_lai", "_", "_2024", "ok_1"
+            ]
+        );
+        assert!(!renames("ok_1", &DataType::Int64));
+        assert!(renames("my col", &DataType::Int64));
+        let fields = |name: &str| {
+            DataType::List(Box::new(DataType::Struct(vec![Field::new(
+                name.into(),
+                DataType::Int64,
+            )])))
+        };
+        assert!(renames("ok", &fields("x y")));
+        assert!(!renames("ok", &fields("x_y")));
+    }
+
+    /// Struct fields are renamed inside a list too, with their values and
+    /// nulls, and the columns under them.
+    #[test]
+    fn struct_fields_are_renamed_at_any_depth() {
+        let lf = df!("n" => [Some(1i64), None, Some(3)])
+            .unwrap()
+            .lazy()
+            .select([
+                as_struct(vec![col("n").alias("x y"), col("n").alias("x-y")])
+                    .implode(true)
+                    .alias("my list"),
+                when(col("n").is_null())
+                    .then(lit(NULL).cast(DataType::Struct(vec![Field::new(
+                        "1st".into(),
+                        DataType::Int64,
+                    )])))
+                    .otherwise(as_struct(vec![col("n").alias("1st")]))
+                    .alias("point"),
+            ]);
+        let back = round_trip(lf);
+        assert_eq!(
+            back.column("my_list").unwrap().dtype(),
+            &DataType::List(Box::new(DataType::Struct(vec![
+                Field::new("x_y".into(), DataType::Int64),
+                Field::new("x_y_2".into(), DataType::Int64),
+            ])))
+        );
+        let items = back
+            .column("my_list")
+            .unwrap()
+            .list()
+            .unwrap()
+            .get_as_series(0)
+            .unwrap();
+        let x = items.struct_().unwrap().field_by_name("x_y_2").unwrap();
+        assert_eq!(
+            x.i64().unwrap().iter().collect::<Vec<_>>(),
+            [Some(1), None, Some(3)]
+        );
+        let point = back.column("point").unwrap();
+        assert_eq!(point.null_count(), 1, "{point:?}");
+        let first = point.struct_().unwrap().field_by_name("_1st").unwrap();
+        assert_eq!(first.i64().unwrap().get(2), Some(3));
     }
 
     /// A value that does not fit fails by column name rather than turning null.

@@ -1352,6 +1352,7 @@ dependencies = [
  "fs2",
  "polars",
  "ratatui",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",

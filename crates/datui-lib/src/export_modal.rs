@@ -132,6 +132,9 @@ pub struct ExportModal {
     /// Whether the view has list, array or struct columns, which a format
     /// without nesting writes as JSON; the dialog says so. Set when it opens.
     pub nested_columns: bool,
+    /// Whether a column or struct field of the view has a name Avro does not
+    /// allow; the dialog says those are renamed. Set when it opens.
+    pub avro_renames: bool,
     pub csv_compression: Option<CompressionFormat>,
     // JSON options
     pub json_compression: Option<CompressionFormat>,
@@ -178,6 +181,7 @@ impl ExportModal {
         self.source_file = false;
         self.offer_source_file = false;
         self.nested_columns = false;
+        self.avro_renames = false;
         self.csv_compression = None;
         self.json_compression = None;
         self.ndjson_compression = None;
@@ -425,6 +429,7 @@ impl Default for ExportModal {
             source_file: false,
             offer_source_file: false,
             nested_columns: false,
+            avro_renames: false,
             csv_compression: None,
             json_compression: None,
             ndjson_compression: None,

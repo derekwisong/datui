@@ -43,7 +43,9 @@ Formats:
   keep the bytes.
 
   Avro writes arrays as lists, categoricals and decimals as strings,
-  times and durations as microseconds, and zoned datetimes in UTC.
+  times and durations as microseconds, and zoned datetimes in UTC. It
+  renames columns and struct fields Avro does not allow: other characters
+  become _, a leading digit gets a _ first, and a clash gets _2.
 
 Source file:
   Only offered for a directory of Parquet files that disagree, local or in

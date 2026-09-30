@@ -25,8 +25,9 @@ Compares each numeric column against fourteen distributions — Normal, Log-Norm
 Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
 Poisson, Bernoulli, Binomial, Geometric and Weibull — and names the one the
 values are consistent with, along with the Shapiro-Francia normality statistic
-and p-value, coefficient of variation, outlier count (IQR method), skewness
-and kurtosis.
+and p-value, coefficient of variation, outlier count (past 1.5 IQR from the
+quartiles or 3 standard deviations from the mean, over every value in the
+sample), skewness and kurtosis.
 
 | What | How |
 |---|---|

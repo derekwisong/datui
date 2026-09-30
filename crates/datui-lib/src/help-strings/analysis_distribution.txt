@@ -22,7 +22,8 @@ Columns:
   SF p-value:       Royston's approximation: how likely a W' this low is if
                     the values were normal
   CV:               Coefficient of variation (std/mean, relative variability independent of scale)
-  Outliers:         Count and percentage of outliers (IQR method)
+  Outliers:         Values past 1.5 IQR from the quartiles or 3 standard
+                    deviations from the mean, and their share of the sample
   Skewness:         Asymmetry measure (positive = right-tailed, negative = left-tailed)
   Kurtosis:         Tail heaviness compared to normal distribution (3.0 = normal)
 

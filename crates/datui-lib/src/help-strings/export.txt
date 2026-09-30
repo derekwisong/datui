@@ -28,12 +28,12 @@ If the file exists:
   the filled form, path intact.
 
 Formats:
-  CSV:     Comma-separated values (configurable delimiter, header)
-  Parquet: Columnar format (efficient, compressed)
-  JSON:    JSON array format
-  NDJSON:  Newline-delimited JSON (one object per line)
-  Arrow:   Arrow IPC / Feather v2
-  Avro:    Avro row format
+  CSV:              Comma-separated values (configurable delimiter, header)
+  Parquet:          Columnar format (efficient, compressed)
+  JSON:             JSON array format
+  NDJSON:           Newline-delimited JSON (one object per line)
+  Arrow:            Arrow IPC / Feather v2
+  Avro:             Avro row format
 
   CSV has no lists or structs: those columns are written as JSON text,
   [1,2] or {"x":1}, and the dialog says so when the view has one.

@@ -42,19 +42,19 @@ Finding:
   Shift+Delete:     Forget every recent entry, after confirming
 
 Sections, in order:
-  Recent:           Datasets opened before, grouped under the directory each
-                    lives in, newest place first
-  Current directory: Where datui was launched
-  Cloud:            One row per cloud source; Enter lists its buckets
-  Collections:      Each [[sources]] collection under its label: named
-                    datasets, local or remote. Enter opens a file and
-                    steps into a directory or a bucket prefix
-  Configured:       Directories from [data] directories in the config,
-                    then those remembered with Ctrl+D
-  Public datasets:  The built-in collection, after your own. Its data stays
-                    with the publisher until you open it
-  Elsewhere:        Directories your desktop recorded; starts folded
-  Found:            Search results, shown while typing
+  Recent:             Datasets opened before, grouped under the directory each
+                      lives in, newest place first
+  Current directory:  Where datui was launched
+  Cloud:              One row per cloud source; Enter lists its buckets
+  Collections:        Each [[sources]] collection under its label: named
+                      datasets, local or remote. Enter opens a file and
+                      steps into a directory or a bucket prefix
+  Configured:         Directories from [data] directories in the config,
+                      then those remembered with Ctrl+D
+  Public datasets:    The built-in collection, after your own. Its data stays
+                      with the publisher until you open it
+  Elsewhere:          Directories your desktop recorded; starts folded
+  Found:              Search results, shown while typing
 
 Reading a row:
   A directory's label says what is directly inside: a count and format

@@ -20601,6 +20601,36 @@ impl App {
         }
     }
 
+    /// The table's format for `column` when it holds whole numbers, for an export's
+    /// axis ticks; `None` for any other column.
+    fn whole_number_format(&self, column: &str) -> Option<crate::numfmt::NumberFormat> {
+        let dtype = self.data_table_state.as_ref()?.schema.get(column)?;
+        dtype
+            .is_integer()
+            .then(|| self.table_number_format(column, dtype))
+    }
+
+    /// The first column's format when every one of `columns` holds whole numbers.
+    fn whole_numbers_format(&self, columns: &[String]) -> Option<crate::numfmt::NumberFormat> {
+        let formats: Option<Vec<_>> = columns
+            .iter()
+            .map(|c| self.whole_number_format(c))
+            .collect();
+        formats?.into_iter().next()
+    }
+
+    /// The format the table prints a count in.
+    fn count_format(&self) -> crate::numfmt::NumberFormat {
+        self.table_number_format("Count", &DataType::UInt64)
+    }
+
+    fn table_number_format(&self, column: &str, dtype: &DataType) -> crate::numfmt::NumberFormat {
+        match self.number_format.formatter_for(column, dtype) {
+            crate::numfmt::CellFormatter::Number(format) => format,
+            crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
+        }
+    }
+
     /// Build the export from the prepared chart for the current selection. `Ok(None)`
     /// means that chart is still being prepared and the caller should wait for it.
     /// Exports what is visible (effective x + y); a blank title means no title.
@@ -20720,6 +20750,14 @@ impl App {
                     log_scale,
                     chart_title,
                     notes,
+                    x_whole: (cache.x_axis_kind == chart_data::XAxisTemporalKind::Numeric)
+                        .then(|| self.whole_number_format(&cache.x_column))
+                        .flatten(),
+                    y_whole: if log_scale {
+                        None
+                    } else {
+                        self.whole_numbers_format(&cache.y_columns)
+                    },
                 };
                 ChartExportJob::Series {
                     series,
@@ -20759,6 +20797,8 @@ impl App {
                     log_scale: false,
                     chart_title,
                     notes,
+                    x_whole: self.whole_number_format(&data.column),
+                    y_whole: Some(self.count_format()),
                 };
                 ChartExportJob::Series {
                     series,
@@ -20778,6 +20818,13 @@ impl App {
                     y_label: "Value".to_string(),
                     chart_title,
                     notes,
+                    y_whole: self.whole_numbers_format(
+                        &data
+                            .stats
+                            .iter()
+                            .map(|s| s.name.clone())
+                            .collect::<Vec<_>>(),
+                    ),
                 };
                 ChartExportJob::BoxPlot {
                     data: data.clone(),
@@ -20812,6 +20859,8 @@ impl App {
                     log_scale: false,
                     chart_title,
                     notes,
+                    x_whole: None,
+                    y_whole: None,
                 };
                 ChartExportJob::Series {
                     series,
@@ -20834,6 +20883,8 @@ impl App {
                     log_scale: false,
                     chart_title,
                     notes,
+                    x_whole: self.whole_number_format(&data.x_column),
+                    y_whole: self.whole_number_format(&data.y_column),
                 };
                 ChartExportJob::Heatmap {
                     data: data.clone(),

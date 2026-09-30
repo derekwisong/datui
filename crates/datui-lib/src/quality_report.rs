@@ -6,8 +6,8 @@
 //! only groups and ranks them.
 
 use crate::data_quality::{
-    ColumnQualityProfile, DataQualityResults, ObservationKind, QualityPrecision, QualityScope,
-    TextReading, text_reading,
+    ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityPrecision,
+    QualityScope, TextReading, text_reading,
 };
 use crate::numfmt;
 use polars::prelude::Expr;
@@ -523,12 +523,26 @@ pub fn columns_label(columns: &[String], width: usize) -> String {
     label
 }
 
-/// What one check found: nothing, something, or nothing because it could not look.
+/// What one check found: nothing, something, nothing because there was nothing for
+/// it to look at, or nothing because this run could not look.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Passed,
-    Found { tier: Severity, detail: String },
-    NotRun(&'static str),
+    Found {
+        tier: Severity,
+        detail: String,
+    },
+    /// Nothing in the data for it: no column of its kind, or one file.
+    Skipped(&'static str),
+    /// It applies, and this run could not answer it: no values read, or a sample
+    /// where the answer needs every row.
+    Unavailable(&'static str),
+}
+
+impl Outcome {
+    pub fn ran(&self) -> bool {
+        matches!(self, Self::Passed | Self::Found { .. })
+    }
 }
 
 /// One check the run makes: what it looks for, how far it reached, what it found.
@@ -539,6 +553,8 @@ pub struct Check {
     pub looks_for: &'static str,
     pub applies_to: String,
     pub outcome: Outcome,
+    /// What its numbers were read from: every row, a sample, or file footers.
+    pub basis: QualityPrecision,
 }
 
 /// How many checks the collapsed list shows before "more".
@@ -570,21 +586,29 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
     // Columns behind the findings a check produces, by the findings' titles.
     let outcome = |titles: &[&str], applies: usize, none: &'static str| {
         if !values_read {
-            return Outcome::NotRun("values not read");
+            return Outcome::Unavailable("values not read");
         }
         if applies == 0 {
-            return Outcome::NotRun(none);
+            return Outcome::Skipped(none);
         }
         found(report, titles)
     };
     let files = results.source_files.filter(|files| *files > 1);
     let by_files = |titles: &[&str]| match files {
         Some(_) => found(report, titles),
-        None => Outcome::NotRun("needs several files"),
+        None => Outcome::Skipped("needs several files"),
     };
-    let files_reach = files
-        .map(|files| format!("{} files", numfmt::group_chrome(files)))
-        .unwrap_or_else(|| "files".to_string());
+    // A dataset too large to read every footer is checked over the footers read.
+    let files_reach = match (files, results.footers_read) {
+        (Some(files), Some(read)) if read < files => format!(
+            "{} of {} files",
+            numfmt::group_chrome(read),
+            numfmt::group_chrome(files)
+        ),
+        (Some(files), _) => format!("{} files", numfmt::group_chrome(files)),
+        (None, _) => "files".to_string(),
+    };
+    let values = results.precision;
     vec![
         Check {
             name: "Missing values",
@@ -600,50 +624,57 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
                 all,
                 "no columns",
             ),
+            basis: values,
         },
         Check {
             name: "NaN or infinite",
             looks_for: "NaN or +/-infinity in float columns",
             applies_to: reach(floats, "float"),
             outcome: outcome(&["NaN or infinite"], floats, "no float columns"),
+            basis: values,
         },
         Check {
             name: "Duplicate rows",
             looks_for: "rows identical in every column",
             applies_to: "whole rows".to_string(),
             outcome: match results.identity.as_ref() {
-                _ if !values_read => Outcome::NotRun("values not read"),
+                _ if !values_read => Outcome::Unavailable("values not read"),
                 Some(identity) if identity.extra_rows > 0 => Outcome::Found {
                     tier: Severity::Problem,
                     detail: format!("{} extra rows", numfmt::group_chrome(identity.extra_rows)),
                 },
                 Some(_) => Outcome::Passed,
-                None => Outcome::NotRun("not measured"),
+                None => Outcome::Unavailable("not measured"),
             },
+            basis: values,
         },
         Check {
             name: "Blank text",
             looks_for: "text that is empty or only whitespace",
             applies_to: reach(texts, "text"),
             outcome: outcome(&["Blank text", "Empty text"], texts, "no text columns"),
+            basis: values,
         },
         Check {
             name: "Mixed spellings",
             looks_for: "one value in several cases or spacings",
             applies_to: reach(texts, "text"),
             outcome: outcome(&["Mixed spellings"], texts, "no text columns"),
+            basis: values,
         },
         Check {
             name: "Type mismatch",
             looks_for: "a column typed differently by some files",
             applies_to: files_reach.clone(),
             outcome: by_files(&["Type mismatch"]),
+            basis: QualityPrecision::Metadata,
         },
         Check {
             name: "Missing in files",
             looks_for: "a column some files do not have",
             applies_to: files_reach,
             outcome: by_files(&["Missing in files"]),
+            basis: QualityPrecision::Metadata,
         },
         Check {
             name: "Numbers as text",
@@ -654,22 +685,25 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
                 texts,
                 "no text columns",
             ),
+            basis: values,
         },
         Check {
             name: "Nearly unique",
             looks_for: "a would-be key whose values repeat",
             applies_to: reach(keys, "integer/text"),
             outcome: if values_read && results.precision != QualityPrecision::Exact {
-                Outcome::NotRun("needs every row checked")
+                Outcome::Unavailable("needs every row checked")
             } else {
                 outcome(&["Nearly unique"], keys, "no integer or text columns")
             },
+            basis: values,
         },
         Check {
             name: "Single value",
             looks_for: "a column with one value throughout",
             applies_to: reach(all, ""),
             outcome: outcome(&["Single value"], all, "no columns"),
+            basis: values,
         },
     ]
 }
@@ -700,6 +734,170 @@ fn found(report: &QualityReport, titles: &[&str]) -> Outcome {
             ),
         },
     }
+}
+
+/// A segment with fewer sampled rows than this is thin: only a large change in it
+/// clears the sampling noise, and a clean one says little.
+pub const THIN_SEGMENT_ROWS: usize = 30;
+
+/// How far the findings reach, beside them on every report: the checks that ran
+/// and what they read, the ones that did not and why, the rows behind the numbers,
+/// and what else bounds them. From what the run measured and saw; nothing here
+/// reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Coverage {
+    /// Checks that ran over every row in scope.
+    pub exact: usize,
+    /// Checks that ran over a sample.
+    pub sampled: usize,
+    /// Checks that ran over file footers.
+    pub metadata: usize,
+    /// Checks with nothing in the data to look at.
+    pub skipped: usize,
+    /// Checks that apply and this run could not answer: each reason, and the checks
+    /// it kept from running.
+    pub unavailable: Vec<(&'static str, Vec<&'static str>)>,
+    /// The rows the numbers are over, with their denominator, and what the run's
+    /// reads were seen to traverse.
+    pub rows: Vec<String>,
+    /// What else bounds the findings: thin segments, footers not read, time roles
+    /// that measure nothing.
+    pub limits: Vec<String>,
+}
+
+impl Coverage {
+    /// Checks by what they read, then the ones that did not run: "6 sampled ·
+    /// 2 metadata · 1 skipped · 1 unavailable".
+    pub fn checks(&self) -> Vec<String> {
+        let unavailable = self
+            .unavailable
+            .iter()
+            .map(|(_, names)| names.len())
+            .sum::<usize>();
+        [
+            (self.exact, QualityPrecision::Exact.label()),
+            (self.sampled, QualityPrecision::Sampled.label()),
+            (self.metadata, QualityPrecision::Metadata.label()),
+            (self.skipped, "skipped"),
+            (unavailable, "unavailable"),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, label)| format!("{} {label}", numfmt::group_chrome(count)))
+        .collect()
+    }
+
+    /// Why each unavailable check did not run, then the other limits.
+    pub fn limits(&self) -> Vec<String> {
+        self.unavailable
+            .iter()
+            .map(|(reason, names)| match names.as_slice() {
+                [name] => format!("{name}: {reason}"),
+                _ => format!("{} checks: {reason}", names.len()),
+            })
+            .chain(self.limits.iter().cloned())
+            .collect()
+    }
+}
+
+pub fn coverage(
+    results: &DataQualityResults,
+    checks: &[Check],
+    plan: &DataQualityPlan,
+) -> Coverage {
+    let mut coverage = Coverage::default();
+    for check in checks {
+        match &check.outcome {
+            Outcome::Skipped(_) => coverage.skipped += 1,
+            Outcome::Unavailable(reason) => {
+                match coverage
+                    .unavailable
+                    .iter_mut()
+                    .find(|(known, _)| known == reason)
+                {
+                    Some((_, names)) => names.push(check.name),
+                    None => coverage.unavailable.push((reason, vec![check.name])),
+                }
+            }
+            Outcome::Passed | Outcome::Found { .. } => match check.basis {
+                QualityPrecision::Exact => coverage.exact += 1,
+                QualityPrecision::Metadata => coverage.metadata += 1,
+                QualityPrecision::Sampled | QualityPrecision::Estimated => coverage.sampled += 1,
+            },
+        }
+    }
+
+    let count = numfmt::group_chrome;
+    let evaluated = results.evaluated_rows;
+    coverage
+        .rows
+        .push(match (results.precision, results.total_rows) {
+            (QualityPrecision::Metadata, _) => "none read, file metadata only".to_string(),
+            (QualityPrecision::Exact, _) => format!("all {} read, exact", count(evaluated)),
+            (_, Some(total)) => format!(
+                "{} of {} sampled ({})",
+                count(evaluated),
+                count(total),
+                percent(evaluated, total)
+            ),
+            (_, None) => format!("{} sampled, total not counted", count(evaluated)),
+        });
+    if let Some(each) = results.per_value {
+        coverage
+            .rows
+            .push(format!("up to {} per value", count(each)));
+    }
+    // Only what the reads were seen to do: a read that counted nothing says nothing.
+    if let Some(reads) = results
+        .reads
+        .filter(|_| results.precision != QualityPrecision::Metadata)
+    {
+        if reads.reads == 0 {
+            coverage.rows.push("no source read".to_string());
+        } else if reads.counted == reads.reads {
+            coverage
+                .rows
+                .push(format!("{} traversed", count(reads.rows)));
+        } else if reads.counted > 0 {
+            coverage
+                .rows
+                .push(format!("at least {} traversed", count(reads.rows)));
+        }
+    }
+
+    let segments = &results.segments;
+    if matches!(
+        results.precision,
+        QualityPrecision::Sampled | QualityPrecision::Estimated
+    ) && segments.len() > 1
+    {
+        let thin = segments
+            .iter()
+            .filter(|segment| segment.evaluated_rows < THIN_SEGMENT_ROWS)
+            .count();
+        if thin > 0 {
+            coverage.limits.push(format!(
+                "{} of {} segments under {THIN_SEGMENT_ROWS} sampled rows",
+                count(thin),
+                count(segments.len())
+            ));
+        }
+    }
+    if let (Some(files), Some(read)) = (results.source_files, results.footers_read)
+        && read < files
+    {
+        coverage.limits.push(format!(
+            "footers of {} of {} files read",
+            count(read),
+            count(files)
+        ));
+    }
+    if !plan.temporal_roles.is_empty() && plan.interval_pairs().is_empty() {
+        coverage
+            .limits
+            .push("time roles form no interval".to_string());
+    }
+    coverage
 }
 
 /// What a finding means for the data and what to do about it, a fragment a line.
@@ -1295,12 +1493,12 @@ mod tests {
         );
         assert_eq!(
             by_name("Nearly unique").outcome,
-            Outcome::NotRun("needs every row checked"),
+            Outcome::Unavailable("needs every row checked"),
             "a sample cannot say a column is nearly a key"
         );
         assert_eq!(
             by_name("Type mismatch").outcome,
-            Outcome::NotRun("needs several files")
+            Outcome::Skipped("needs several files")
         );
 
         results.precision = QualityPrecision::Metadata;
@@ -1310,10 +1508,127 @@ mod tests {
         let by_name = |name: &str| list.iter().find(|check| check.name == name).unwrap();
         assert_eq!(
             by_name("Missing values").outcome,
-            Outcome::NotRun("values not read")
+            Outcome::Unavailable("values not read")
         );
         assert_eq!(by_name("Type mismatch").outcome, Outcome::Passed);
         assert_eq!(by_name("Type mismatch").applies_to, "3 files");
+    }
+
+    /// Coverage tells a clean sample from an exhaustive run: which checks ran over
+    /// what, which had nothing to look at, which this run could not answer and why,
+    /// and what else bounds the result, each count beside its denominator.
+    #[test]
+    fn coverage_separates_checked_skipped_and_unavailable() {
+        use crate::data_quality::{
+            ObservedReads, SegmentQualityProfile, TemporalRole, TemporalRoleAssignment,
+        };
+        let columns = vec![
+            profile("price", DataType::Float64),
+            profile("region", DataType::String),
+            profile("id", DataType::Int64),
+        ];
+        let plan = DataQualityPlan::default();
+        let measured = |mut results: DataQualityResults| {
+            results.identity = Some(crate::data_quality::IdentityProfile {
+                duplicate_groups: 0,
+                extra_rows: 0,
+                rows_involved: 0,
+                evaluated_rows: results.evaluated_rows,
+                precision: results.precision,
+            });
+            results
+        };
+
+        // A clean sampled run of one file, its sample streamed from 1,000 rows.
+        let mut sampled = measured(results(columns.clone(), Vec::new()));
+        sampled.precision = QualityPrecision::Sampled;
+        sampled.total_rows = Some(1_000);
+        sampled.reads = Some(ObservedReads {
+            reads: 1,
+            counted: 1,
+            rows: 1_000,
+        });
+        let report = build_report(&sampled);
+        assert_eq!(report.problems + report.notes, 0, "a clean report");
+        let found = coverage(&sampled, &checks(&sampled, &report), &plan);
+        assert_eq!(
+            found.checks(),
+            ["7 sampled", "2 skipped", "1 unavailable"],
+            "{found:?}"
+        );
+        assert_eq!(
+            found.rows,
+            ["100 of 1,000 sampled (10.0%)", "1,000 traversed"]
+        );
+        assert_eq!(found.limits(), ["Nearly unique: needs every row checked"]);
+
+        // Thin segments, footers read for only some files, roles that pair nothing.
+        let segment = |label: &str, rows: usize| SegmentQualityProfile {
+            label: label.to_string(),
+            total_rows: Some(500),
+            evaluated_rows: rows,
+            columns: Vec::new(),
+            null_cells: 0,
+            null_rate: 0.0,
+            compared_with: None,
+            largest_change: None,
+            change_size: None,
+        };
+        sampled.segments = vec![segment("a", 90), segment("b", 10), segment("c", 0)];
+        sampled.source_files = Some(400);
+        sampled.footers_read = Some(100);
+        let roles = DataQualityPlan {
+            temporal_roles: vec![TemporalRoleAssignment {
+                role: TemporalRole::Event,
+                column: "id".to_string(),
+                timezone: None,
+            }],
+            ..plan.clone()
+        };
+        let report = build_report(&sampled);
+        let list = checks(&sampled, &report);
+        let type_mismatch = list.iter().find(|c| c.name == "Type mismatch").unwrap();
+        assert_eq!(type_mismatch.applies_to, "100 of 400 files");
+        assert_eq!(type_mismatch.basis, QualityPrecision::Metadata);
+        let found = coverage(&sampled, &list, &roles);
+        assert_eq!(found.checks(), ["7 sampled", "2 metadata", "1 unavailable"]);
+        assert_eq!(
+            found.limits(),
+            [
+                "Nearly unique: needs every row checked",
+                "2 of 3 segments under 30 sampled rows",
+                "footers of 100 of 400 files read",
+                "time roles form no interval",
+            ]
+        );
+
+        // Every row read: nothing unavailable, and the passes' rows beside the total.
+        let mut full = measured(results(columns.clone(), Vec::new()));
+        full.reads = Some(ObservedReads {
+            reads: 4,
+            counted: 3,
+            rows: 300,
+        });
+        let report = build_report(&full);
+        let found = coverage(&full, &checks(&full, &report), &plan);
+        assert_eq!(found.checks(), ["8 exact", "2 skipped"]);
+        assert_eq!(
+            found.rows,
+            ["all 100 read, exact", "at least 300 traversed"]
+        );
+        assert!(found.limits().is_empty());
+
+        // No values read: the footers are all that was checked.
+        let mut metadata = measured(results(columns, Vec::new()));
+        metadata.precision = QualityPrecision::Metadata;
+        metadata.source_files = Some(3);
+        metadata.footers_read = Some(3);
+        metadata.reads = Some(ObservedReads::default());
+        let report = build_report(&metadata);
+        let found = coverage(&metadata, &checks(&metadata, &report), &plan);
+        assert_eq!(found.checks(), ["2 metadata", "8 unavailable"]);
+        assert_eq!(found.rows, ["none read, file metadata only"]);
+        assert_eq!(found.limits(), ["8 checks: values not read"]);
     }
 
     #[test]

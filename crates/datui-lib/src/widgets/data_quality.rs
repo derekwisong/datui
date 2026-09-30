@@ -8,8 +8,8 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
-    CHECKS_SHOWN, Check, Outcome, QualityReport, Severity, advice, build_report, checks, describe,
-    verdict,
+    CHECKS_SHOWN, Check, Coverage, Outcome, QualityReport, Severity, advice, build_report, checks,
+    coverage, describe, verdict,
 };
 use crate::render::context::RenderContext;
 use crate::widgets::datatable::DataTableState;
@@ -730,16 +730,25 @@ fn render_overview(
         return;
     };
     let report = build_report(results);
+    let all_checks = checks(results, &report);
     let notes = config.state.notes();
     let notes_height = if notes.is_empty() {
         0
     } else {
         (notes.len() as u16).min(3) + 2
     };
+    // Coverage sits under the verdict on every report, clean or not: four lines
+    // where there is room, two on a short terminal.
+    let coverage = coverage_lines(
+        &coverage(results, &all_checks, config.measured),
+        area.width.saturating_sub(2),
+        if area.height >= 16 { 4 } else { 2 },
+        config.theme,
+    );
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(2 + coverage.len() as u16),
             Constraint::Length(notes_height),
             Constraint::Fill(1),
         ])
@@ -747,6 +756,14 @@ fn render_overview(
         .vertical_margin(1)
         .split(area);
     render_verdict(config, &report, sections[0], buf);
+    Paragraph::new(coverage).render(
+        Rect {
+            y: sections[0].y + 1,
+            height: sections[0].height.saturating_sub(1),
+            ..sections[0]
+        },
+        buf,
+    );
     if !notes.is_empty() {
         let mut lines = vec![rule_line(
             "Dataset notes",
@@ -787,13 +804,8 @@ fn render_overview(
             .constraints([Constraint::Length(3), Constraint::Fill(1)])
             .split(list);
         render_findings(config, &report, table_state, parts[0], buf);
-        Paragraph::new(check_lines(
-            &checks(results, &report),
-            parts[1].width,
-            None,
-            config.theme,
-        ))
-        .render(parts[1], buf);
+        Paragraph::new(check_lines(&all_checks, parts[1].width, None, config.theme))
+            .render(parts[1], buf);
         return;
     }
     render_findings(config, &report, table_state, list, buf);
@@ -824,6 +836,94 @@ fn render_verdict(
         ),
     ]))
     .render(area, buf);
+}
+
+/// The label gutter of the coverage lines, as wide as its longest label and a gap.
+const COVERAGE_LABEL: usize = 8;
+
+/// The coverage under the verdict: checks, rows and limits, each a labeled line of
+/// facts that wraps between facts. Within `max_lines` the rows give way first, since
+/// the header states them too, and a section cut short counts what it left out.
+fn coverage_lines(
+    coverage: &Coverage,
+    width: u16,
+    max_lines: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut sections = [
+        ("Checks", coverage.checks()),
+        ("Rows", coverage.rows.clone()),
+        ("Limits", coverage.limits()),
+    ]
+    .into_iter()
+    .filter(|(_, facts)| !facts.is_empty())
+    .collect::<Vec<_>>();
+    if sections.len() > max_lines {
+        sections.retain(|(label, _)| *label != "Rows");
+    }
+    sections.truncate(max_lines);
+    let text_width = (width as usize).saturating_sub(COVERAGE_LABEL).max(1);
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let plain = Style::default().fg(theme.get("text_primary"));
+    let mut lines = Vec::new();
+    for (index, (label, facts)) in sections.iter().enumerate() {
+        // Every later section keeps one line; this one may take the rest.
+        let later = sections.len() - index - 1;
+        let room = max_lines.saturating_sub(lines.len() + later).max(1);
+        for (row, text) in pack_facts(facts, text_width, room).into_iter().enumerate() {
+            let gutter = if row == 0 {
+                format!("{label:<COVERAGE_LABEL$}")
+            } else {
+                " ".repeat(COVERAGE_LABEL)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(gutter, dimmed),
+                Span::styled(text, plain),
+            ]));
+        }
+    }
+    lines
+}
+
+/// `facts` joined by middots into at most `room` lines of `width`, breaking between
+/// facts. What does not fit is counted at the end of the last line: "+2 more".
+fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
+    let sep = format!(" {} ", glyphs::get().middot);
+    let join = |line: &[String]| line.join(&sep);
+    let mut lines: Vec<Vec<String>> = vec![Vec::new()];
+    let mut placed = 0;
+    for fact in facts {
+        let fact = fit(fact, width);
+        let current = lines.last_mut().expect("one line at least");
+        let mut joined = current.clone();
+        joined.push(fact.clone());
+        if current.is_empty() || glyphs::display_width(&join(&joined)) <= width {
+            *current = joined;
+        } else if lines.len() < room {
+            lines.push(vec![fact]);
+        } else {
+            break;
+        }
+        placed += 1;
+    }
+    let left = facts.len() - placed;
+    let last = lines.last_mut().expect("one line at least");
+    if left > 0 {
+        // Make room for the count by giving up facts from the end of the line.
+        let mut dropped = left;
+        loop {
+            let more = format!("+{dropped} more");
+            let mut line = last.clone();
+            line.push(more);
+            if glyphs::display_width(&join(&line)) <= width || last.is_empty() {
+                *last = line;
+                break;
+            }
+            last.pop();
+            dropped += 1;
+        }
+    }
+    lines.iter().map(|line| join(line)).collect()
 }
 
 /// A title on a rule with a flat count chip, as `SectionRule` draws it, from the
@@ -1011,7 +1111,8 @@ fn check_lines(
     let outcome = |check: &Check| match &check.outcome {
         Outcome::Passed => "passed".to_string(),
         Outcome::Found { detail, .. } => format!("{detail} flagged"),
-        Outcome::NotRun(reason) => format!("not run: {reason}"),
+        Outcome::Skipped(reason) => format!("skipped: {reason}"),
+        Outcome::Unavailable(reason) => format!("unavailable: {reason}"),
     };
     // Each column as wide as its widest entry across every check, so showing all
     // of them moves nothing; what a check looks for takes the rest, and wraps under
@@ -1050,7 +1151,7 @@ fn check_lines(
                 severity_mark(*tier, theme),
                 Style::default().fg(theme.get("text_primary")),
             ),
-            Outcome::NotRun(_) => (Span::styled(g.dash, dimmed), dimmed),
+            Outcome::Skipped(_) | Outcome::Unavailable(_) => (Span::styled(g.dash, dimmed), dimmed),
         };
         let beside = looks_indent == lead;
         let mut spans = vec![
@@ -2985,6 +3086,89 @@ mod tests {
                 assert!(frame.contains('╮'), "{title}:\n{text}");
             }
         }
+    }
+
+    /// Coverage sits under the verdict whether the report found problems or none, at
+    /// the baseline size and the smallest, with the findings still on screen below
+    /// it and every character outside ASCII a glyph slot.
+    #[test]
+    fn coverage_accompanies_every_verdict_at_80x24_and_60x20() {
+        let screen = Screen::new();
+        let g = glyphs::get();
+        let slots = [
+            g.rail, g.rule_h, g.middot, g.ellipsis, g.warning, g.check, g.dash,
+        ]
+        .concat();
+        // The same rows sampled, and found clean: a report with nothing to fix.
+        let mut clean = screen.results.clone();
+        clean.observations.clear();
+        clean.precision = QualityPrecision::Sampled;
+        clean.total_rows = Some(80);
+        clean.reads = Some(crate::data_quality::ObservedReads {
+            reads: 1,
+            counted: 1,
+            rows: 80,
+        });
+        for (results, verdict) in [(&screen.results, "problem"), (&clean, "No problems found")] {
+            for (width, height) in [(80, 24), (60, 20)] {
+                let mut config = screen.config(QualityPage::Overview);
+                config.results = Some(results);
+                let rows = screen.draw(config, 0, width, height);
+                let text = rows.join("\n");
+                let at = rows
+                    .iter()
+                    .position(|row| row.contains(verdict))
+                    .unwrap_or_else(|| panic!("verdict at {width}x{height}:\n{text}"));
+                assert!(
+                    rows[at + 1].trim_start().starts_with("Checks"),
+                    "coverage under the verdict at {width}x{height}:\n{text}"
+                );
+                assert!(
+                    text.contains("Problems") || text.contains("Clean"),
+                    "findings still on screen at {width}x{height}:\n{text}"
+                );
+                if results.precision == QualityPrecision::Exact {
+                    assert!(
+                        rows[at + 1].contains("exact") && text.contains("all 8 read, exact"),
+                        "{text}"
+                    );
+                } else {
+                    // Clean, and not everything could be looked at: it says so.
+                    assert!(rows[at + 1].contains("1 unavailable"), "{text}");
+                    assert!(text.contains("8 of 80 sampled (10.0%)"), "{text}");
+                    assert!(
+                        text.contains("Nearly unique: needs every row checked"),
+                        "{text}"
+                    );
+                }
+                for c in text.chars().filter(|c| !c.is_ascii()) {
+                    assert!(
+                        slots.contains(c) || "╭╮╰╯│─".contains(c),
+                        "{c:?} is not a glyph slot at {width}x{height}:\n{text}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Facts wrap between facts, never inside one, and what does not fit is counted.
+    #[test]
+    fn coverage_facts_wrap_whole_and_count_the_rest() {
+        let facts = ["one fact", "another fact", "a third fact", "a fourth"]
+            .map(String::from)
+            .to_vec();
+        let dot = glyphs::get().middot;
+        assert_eq!(
+            pack_facts(&facts, 24, 2),
+            [
+                format!("one fact {dot} another fact"),
+                format!("a third fact {dot} a fourth")
+            ]
+        );
+        assert_eq!(
+            pack_facts(&facts, 24, 1),
+            [format!("one fact {dot} +3 more")]
+        );
     }
 
     /// Setup at the baseline size and the smallest: every row in its section, the

@@ -12932,6 +12932,24 @@ fn a_date_that_does_not_parse_is_explained_in_the_prompt() {
     let error = app.query_prompt_error().expect("the reason is shown");
     assert!(error.contains("do not match the format"), "{error}");
     assert!(error.contains("SUBSTR(name, 1, n)"), "{error}");
+
+    // The run stopped at its first failing batch; a small table is then counted
+    // whole in the background, and the reason says exactly how many.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !app
+        .query_prompt_error()
+        .is_some_and(|e| e.starts_with("name: 100 of 100 values do not match the format"))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            app.query_prompt_error()
+        );
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let _ = app.event(&ev);
+        }
+    }
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
     assert!(!error.contains("strict=False"), "{error}");
 }
 

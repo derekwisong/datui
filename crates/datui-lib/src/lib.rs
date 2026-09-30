@@ -5719,6 +5719,13 @@ pub enum AppEvent {
         /// prompt to say in its own words.
         conversion: Option<Box<crate::error_display::ConversionFailure>>,
     },
+    /// The failed conversion counted over the whole of a small `df`, for the reason
+    /// under the statement. `failure` is the `inline_failures` it belongs to.
+    SqlFailureCounted {
+        failure: u64,
+        conversion: Box<crate::error_display::ConversionFailure>,
+        rows: usize,
+    },
     /// Background task completed: exact row count for the current LazyFrame. Applied to
     /// `data_table_state` only if `len_generation` still matches (the data is unchanged).
     /// Runs concurrently with — and independently of — the first buffer paint, so the
@@ -6065,6 +6072,7 @@ pub enum InputType {
 
 /// A SQL statement whose rows are being read while the prompt stays open.
 struct SqlRun {
+    sql: String,
     rollback: crate::widgets::datatable::ViewRollback,
     /// The App's count markers as they were, for the frame the rollback restores.
     len_count_inflight: Option<u64>,
@@ -18122,6 +18130,12 @@ impl App {
                         None => message.clone(),
                     });
                     self.inline_failures = self.inline_failures.wrapping_add(1);
+                    if let Some(failure) = conversion
+                        && let Some(rows) = run.rows
+                        && failure.checked != rows
+                    {
+                        self.count_sql_failure(run.sql, rows);
+                    }
                     return None;
                 }
                 let waited_on = self
@@ -18673,6 +18687,7 @@ impl App {
                     return None;
                 }
                 self.sql_running = Some(SqlRun {
+                    sql: sql.clone(),
                     rollback,
                     len_count_inflight: self.len_count_inflight,
                     len_count_failed: self.len_count_failed,
@@ -18681,6 +18696,20 @@ impl App {
                 if !self.spawn_async_collect("Applying SQL query...") {
                     self.sql_running = None;
                     self.leave_query_prompt_after_run();
+                }
+                None
+            }
+            AppEvent::SqlFailureCounted {
+                failure,
+                conversion,
+                rows,
+            } => {
+                // Only onto the reason it was counted for, still on screen.
+                if *failure == self.inline_failures
+                    && self.query_run_error.is_some()
+                    && self.query_prompt_mode() == Some(QueryMode::Sql)
+                {
+                    self.query_run_error = Some(conversion.sql_message(Some(*rows)));
                 }
                 None
             }
@@ -20128,6 +20157,47 @@ impl App {
     /// Bumped each time a running statement's failure is put in the prompt.
     pub fn inline_failures(&self) -> u64 {
         self.inline_failures
+    }
+
+    /// Count a failed conversion over the whole of `df`, off the UI thread.
+    ///
+    /// The run that failed counted only the batch it was converting when it stopped,
+    /// so its "at least 2" can be "12 of 380". Only for a table small enough that
+    /// reading it again costs nothing worth noticing; above that the floor stands.
+    fn count_sql_failure(&mut self, sql: String, rows: usize) {
+        const SMALL_TABLE: usize = 100_000;
+        if rows > SMALL_TABLE {
+            return;
+        }
+        #[cfg(feature = "sql")]
+        {
+            let Some(state) = self.data_table_state.as_ref() else {
+                return;
+            };
+            let root = state.query_root();
+            let failure = self.inline_failures;
+            let tx = self.events.clone();
+            // Not `spawn_bg`: nothing waits on this, and the statement stays editable
+            // while it runs.
+            self.runtime.spawn_blocking(move || {
+                let mut ctx = polars_sql::SQLContext::new();
+                ctx.register("df", root);
+                // In memory rather than streamed, so the conversion sees the whole
+                // column at once and counts every value that fails.
+                let Err(err) = ctx.execute(&sql).and_then(|lf| lf.collect()) else {
+                    return;
+                };
+                if let Some(conversion) = crate::error_display::conversion_failure(&err) {
+                    let _ = tx.send(AppEvent::SqlFailureCounted {
+                        failure,
+                        conversion: Box::new(conversion),
+                        rows,
+                    });
+                }
+            });
+        }
+        #[cfg(not(feature = "sql"))]
+        let _ = sql;
     }
 
     /// A statement ran and its rows are in: the prompt closes on them.

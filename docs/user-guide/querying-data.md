@@ -65,8 +65,8 @@ that gets past them:
 | `CAST` meets text that is not a number | `TRY_CAST(col AS INT)`, which reads it as null |
 | `CAST(col AS DATE)` meets a date not written `YYYY-MM-DD` | `STRPTIME(col, '%d/%m/%Y')` with the format it is written in |
 
-The count is exact when the run checked every value; on a large table it
-says "at least", from the rows read before it failed.
+On a table of up to 100,000 rows the count is exact a moment later; on a
+larger one it says "at least", from the rows read before the run stopped.
 
 ## Search
 

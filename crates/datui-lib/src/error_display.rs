@@ -59,8 +59,8 @@ fn polars_words(err: &PolarsError) -> String {
 }
 
 /// Values that would not convert, from a strict CAST or a STRPTIME, as the failed
-/// run reported them. Nothing more is read to find these: Polars counts the failures
-/// in the batch it was converting and quotes a few.
+/// run reported them: Polars counts the failures in the batch it was converting and
+/// quotes a few.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionFailure {
     pub column: String,

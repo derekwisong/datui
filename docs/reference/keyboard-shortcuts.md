@@ -157,8 +157,8 @@ On the Filters tab:
 |---|---|
 | <kbd>1</kbd>–<kbd>5</kbd> | Switch chart type directly (<kbd>[</kbd> <kbd>]</kbd> cycle) |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style |
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Cycle the plot style, or adjust bins, bandwidth or the row limit (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>=</kbd> works as <kbd>+</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the row limit) |
+| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style or range |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Cycle the plot style or range, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>=</kbd> works as <kbd>+</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
 | type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Enter</kbd> or <kbd>Space</kbd> | In the picker: narrow, move, choose (on the Y series row <kbd>Space</kbd> toggles a series in or out; <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> choose and move to the next or previous row) |
 | <kbd>e</kbd> | Export to PNG or EPS; needs the chart's required columns picked |
 | <kbd>Esc</kbd> | Back to the table, or out of the open picker |

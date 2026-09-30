@@ -8003,9 +8003,10 @@ impl StatefulWidget for DataTable {
             } else {
                 separator_x
             };
+            let rule = crate::glyphs::get().rule;
             for y in area.y..area.y + area.height {
                 let cell = &mut buf[(separator_x_adjusted, y)];
-                cell.set_char('│');
+                cell.set_symbol(rule);
                 cell.set_style(Style::default().fg(self.separator_fg));
             }
 
@@ -12107,8 +12108,14 @@ mod tests {
         let rows: Vec<String> = (0..area.height)
             .map(|y| row_string(&buf, area, y))
             .collect();
-        assert!(rows[1].contains("│ -9.930889"), "{rows:#?}");
-        let sep = rows[0].chars().position(|c| c == '│').expect("a separator") as u16;
+        assert!(
+            rows[1].contains(&format!("{} -9.930889", crate::glyphs::get().rule)),
+            "{rows:#?}"
+        );
+        let rule = crate::glyphs::get().rule;
+        let sep = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == rule)
+            .expect("a separator");
         for y in 0..area.height {
             let row = &rows[y as usize];
             assert_eq!(buf[(sep - 1, y)].symbol(), " ", "row {y}: {row:?}");
@@ -12149,7 +12156,9 @@ mod tests {
             let mut buf = Buffer::empty(area);
             DataTable::default().render(area, &mut buf, &mut state);
             let row = row_string(&buf, area, data_row);
-            let (_, scrolled) = row.split_once('│').expect("a separator");
+            let (_, scrolled) = row
+                .split_once(crate::glyphs::get().rule)
+                .expect("a separator");
             for token in scrolled.split_whitespace() {
                 assert!(
                     values.contains(&token),

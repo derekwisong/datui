@@ -1680,6 +1680,98 @@ mod template_rollback_tests {
     }
 }
 
+#[cfg(all(test, feature = "sql"))]
+mod view_matching_tests {
+    use super::chart_prepare_tests::open;
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A view saved on a remote dataset under a query that renames its columns
+    /// records the URL and the columns as loaded: it matches the same URL as the
+    /// same file, and another file with the source columns by schema.
+    #[test]
+    fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tmax.csv");
+        std::fs::write(
+            &path,
+            "ID,DATE,DATA_VALUE\nUSW1,20240101,55\nUSW1,20240102,61\n",
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+        // Views of this test's own, so no other test's saved views show in the list.
+        let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
+        app.template_manager = TemplateManager::new(&config).unwrap();
+
+        // Stand in for an S3 dataset: only the path decides how a view records it.
+        let url = PathBuf::from("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/");
+        app.path = Some(url.clone());
+        app.data_table_state.as_mut().unwrap().sql_query(
+            "SELECT DATE AS day, DATA_VALUE / 10.0 AS high_c FROM df WHERE ID = 'USW1'".to_string(),
+        );
+        assert!(app.data_table_state.as_ref().unwrap().error.is_none());
+
+        app.open_save_view_form();
+        assert_eq!(
+            app.template_modal.exact_path_input.value(),
+            url.to_string_lossy(),
+            "the URL, not the working directory joined to it"
+        );
+        assert_eq!(
+            app.template_modal.relative_path_input.value(),
+            "",
+            "a URL has no relative form"
+        );
+        app.save_view_form();
+        let saved = &app.template_manager.all_templates()[0].match_criteria;
+        assert_eq!(saved.exact_path.as_deref(), Some(url.as_path()));
+        assert_eq!(saved.relative_path, None);
+        assert_eq!(
+            saved.schema_columns.as_deref(),
+            Some(
+                &[
+                    "ID".to_string(),
+                    "DATE".to_string(),
+                    "DATA_VALUE".to_string()
+                ][..]
+            ),
+            "the columns as loaded, not the query's output"
+        );
+
+        app.refresh_view_list();
+        assert_eq!(
+            app.template_modal.rows[0].reason,
+            Some(template::MatchReason::SameFile)
+        );
+
+        // The next year's file, freshly opened: its columns are the source columns.
+        let next = dir.path().join("tmax_2023.csv");
+        std::fs::write(&next, "ID,DATE,DATA_VALUE\nUSW1,20230101,40\n").unwrap();
+        open(&mut app, &rx, &tx, next);
+        app.path = Some(PathBuf::from(
+            "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2023/ELEMENT=TMAX/",
+        ));
+        app.refresh_view_list();
+        assert_eq!(
+            app.template_modal.rows[0].reason,
+            Some(template::MatchReason::SameColumns)
+        );
+
+        // `V` applies it there: the next year's rows under the saved query.
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('V'),
+            KeyModifiers::NONE,
+        )));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(app.active_template_id.is_some(), "the view is applied");
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["day", "high_c"]);
+    }
+}
+
 #[cfg(all(test, feature = "cloud"))]
 mod peek_answer_tests {
     use crate::discover::{EntryKind, Holds};
@@ -8187,7 +8279,7 @@ impl App {
             && let Some(path) = self.path.clone()
             && let Some(template) = self.data_table_state.as_ref().and_then(|state| {
                 self.template_manager
-                    .get_most_relevant(&path, &state.schema)
+                    .get_most_relevant(&path, state.source_schema())
             })
             && let Err(e) = self.apply_template(&template)
         {
@@ -12739,10 +12831,10 @@ impl App {
         };
         let rows: Vec<ViewRow> = self
             .template_manager
-            .find_relevant_templates(path, &state.schema)
+            .find_relevant_templates(path, state.source_schema())
             .into_iter()
             .map(|(template, score)| {
-                let reason = template::match_reason(&template, path, &state.schema);
+                let reason = template::match_reason(&template, path, state.source_schema());
                 ViewRow {
                     template,
                     score,
@@ -12782,41 +12874,33 @@ impl App {
         );
 
         if let Some(ref path) = self.path {
-            // Pin this file: its absolute path, its path relative to the
-            // working directory when under it, and glob suggestions.
-            let absolute_path = if path.is_absolute() {
-                crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-            } else if let Ok(cwd) = std::env::current_dir() {
-                let abs = cwd.join(path);
-                crate::canonical::canonicalize(&abs).unwrap_or(abs)
-            } else {
-                path.to_path_buf()
-            };
+            // Pin this file: its absolute path or URL, its path relative to the
+            // working directory when it is local and under it, and glob suggestions.
+            let absolute_path = template::exact_location(path);
             self.template_modal
                 .exact_path_input
                 .set_value(absolute_path.to_string_lossy());
-
-            if let Ok(cwd) = std::env::current_dir() {
-                let canonical_cwd = crate::canonical::canonicalize(&cwd).unwrap_or(cwd);
-                if let Ok(rel_path) = absolute_path.strip_prefix(&canonical_cwd) {
-                    let rel_str = rel_path.to_string_lossy().to_string();
-                    self.template_modal
-                        .relative_path_input
-                        .set_value(rel_str.strip_prefix('/').unwrap_or(&rel_str));
-                }
+            if let Some(relative) = template::relative_location(path) {
+                self.template_modal.relative_path_input.set_value(relative);
             }
 
             // Suggest a path pattern from the absolute path: the parent of a
             // bare relative name is "", and ""/*.parquet is a pattern that
-            // matches every parquet file anywhere, forever.
+            // matches every parquet file anywhere, forever. The separator is the
+            // path's own, or a Windows path never fits its pattern.
             if let Some(parent) = absolute_path.parent()
                 && let Some(parent_str) = parent.to_str()
                 && !parent_str.is_empty()
                 && let Some(ext) = absolute_path.extension()
             {
+                let separator = if crate::source::is_remote_url(path) {
+                    '/'
+                } else {
+                    std::path::MAIN_SEPARATOR
+                };
                 self.template_modal.path_pattern_input.set_value(format!(
-                    "{}/*.{}",
-                    parent_str,
+                    "{}{separator}*.{}",
+                    parent_str.trim_end_matches(separator),
                     ext.to_string_lossy()
                 ));
             }
@@ -12841,7 +12925,7 @@ impl App {
         // reason views exist, and the columns are the only criterion that
         // says similar.
         if let Some(ref state) = self.data_table_state
-            && !state.schema.is_empty()
+            && !state.source_schema().is_empty()
         {
             self.template_modal.schema_match_enabled = true;
         }
@@ -12881,10 +12965,16 @@ impl App {
             relative_path: non_empty(&self.template_modal.relative_path_input),
             path_pattern: non_empty(&self.template_modal.path_pattern_input),
             filename_pattern: non_empty(&self.template_modal.filename_pattern_input),
+            // The columns the view's settings run on, not the query's output: the
+            // next file is matched as loaded.
             schema_columns: if self.template_modal.schema_match_enabled {
-                self.data_table_state
-                    .as_ref()
-                    .map(|state| state.schema.iter_names().map(|s| s.to_string()).collect())
+                self.data_table_state.as_ref().map(|state| {
+                    state
+                        .source_schema()
+                        .iter_names()
+                        .map(|s| s.to_string())
+                        .collect()
+                })
             } else {
                 None
             },
@@ -12962,24 +13052,13 @@ impl App {
         let row = self.template_modal.rows.get(idx)?;
         let template = &row.template;
 
-        let exact_path_match = template
-            .match_criteria
-            .exact_path
-            .as_ref()
-            .is_some_and(|exact| exact == path);
-        let relative_path_match =
-            template
-                .match_criteria
-                .relative_path
-                .as_ref()
-                .is_some_and(|relative| {
-                    std::env::current_dir().is_ok_and(|cwd| {
-                        path.strip_prefix(&cwd)
-                            .is_ok_and(|rel| rel.to_string_lossy() == *relative)
-                    })
-                });
-        let file_cols: std::collections::HashSet<&str> =
-            state.schema.iter_names().map(|s| s.as_str()).collect();
+        let exact_path_match = template::exact_path_matches(&template.match_criteria, path);
+        let relative_path_match = template::relative_path_matches(&template.match_criteria, path);
+        let file_cols: std::collections::HashSet<&str> = state
+            .source_schema()
+            .iter_names()
+            .map(|s| s.as_str())
+            .collect();
         let exact_schema_match =
             template
                 .match_criteria
@@ -13003,21 +13082,10 @@ impl App {
         } else if exact_schema_match {
             details.push_str("Exact schema: 900.0\n");
         } else {
-            if let Some(pattern) = &template.match_criteria.path_pattern
-                && path
-                    .to_str()
-                    .map(|p| p.contains(pattern.trim_end_matches("/*")))
-                    .unwrap_or(false)
-            {
+            if template::path_pattern_matches(&template.match_criteria, path) {
                 details.push_str("Path pattern match: 50.0+\n");
             }
-            if let Some(pattern) = &template.match_criteria.filename_pattern
-                && path
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .map(|f| f.contains(pattern.trim_end_matches('*')) || pattern == "*")
-                    .unwrap_or(false)
-            {
+            if template::filename_pattern_matches(&template.match_criteria, path) {
                 details.push_str("Filename pattern match: 30.0+\n");
             }
             if let Some(required_cols) = &template.match_criteria.schema_columns {
@@ -16159,7 +16227,10 @@ impl App {
                 if let Some(ref state) = self.data_table_state
                     && let Some(ref path) = self.path
                 {
-                    match self.template_manager.get_most_relevant(path, &state.schema) {
+                    match self
+                        .template_manager
+                        .get_most_relevant(path, state.source_schema())
+                    {
                         Some(template) => {
                             if let Err(e) = self.apply_template(&template) {
                                 self.error_modal.show(format!("Error applying view: {}", e));

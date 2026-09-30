@@ -5018,6 +5018,16 @@ fn test_the_hidden_drift_column_is_never_part_of_the_data() {
         ["date", "id", "extra"],
         "no hidden column in the schema"
     );
+    let source: Vec<&str> = state
+        .source_schema()
+        .iter_names()
+        .map(|n| n.as_str())
+        .collect();
+    assert_eq!(
+        source,
+        ["date", "id", "extra"],
+        "nor in the columns a saved view matches on"
+    );
     assert!(
         !state.get_column_order().iter().any(|c| c.starts_with("__")),
         "nor in the column order"

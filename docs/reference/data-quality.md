@@ -5,17 +5,28 @@ Data Quality reads the shared analysis [sample](../user-guide/analysis-features.
 
 ## Reading the report
 
-The first line counts problems, notes and clean columns. Below it, findings
-are grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
+The first line counts problems, notes and clean columns. Under it, on every
+report, the coverage says how far that verdict reaches. Below, findings are
+grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
 finding lists its numbers, evidence and what to check; <kbd>Enter</kbd>
 again shows its rows. On a sampled run those are the sample's rows, drawn again
 from its seed, so the count the finding gave is the count in the table.
 
+| Coverage line | Says |
+|---|---|
+| Checks | The ten checks by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, or a sample where the answer needs every row) |
+| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run cut the kept sample |
+| Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval` |
+
+The coverage comes from what the run measured; showing it reads nothing. A
+Polars scan does not report bytes or requests, so neither is shown. At 60×20
+the Rows line gives way first (the header says the rows too), and a line cut
+short counts what it left out (`+2 more`).
+
 <kbd>Enter</kbd> on the **Clean** entry lists the checks the run made: the
-columns each covered, what it found, or why it did not run (Nearly unique
-needs every row checked; the file checks need a source of several files).
+columns each covered, what it found, or why it was skipped or unavailable.
 The six most important show first and <kbd>Enter</kbd> shows all ten. When a
-run finds nothing, the list is on the page under the verdict.
+run finds nothing, the list is on the page under the coverage.
 
 | Finding | Tier | Means |
 |---|---|---|
@@ -155,13 +166,23 @@ The progress names the stage the run is in (preparing, reading the sample or
 reusing the last one, counting rows or segment rows, profiling columns,
 checking duplicates and spellings, profiling segments, computing intervals,
 assembling the report), whether that stage reads the source or works on rows
-already read, and the rows seen where the read can count them. There is no
-percentage: a run has no total to measure against.
+already read, and the rows the stage has seen where its read can count them.
+There is no percentage: a run has no total to measure against.
 
-<kbd>Esc</kbd> cancels. A streamed sample stops at its next batch, and a run
-stops between stages; a single read in the middle of a stage runs to its end.
-Until the worker exits, the header and Setup say
-`Cancellation requested; source read finishing`, and Run and <kbd>r</kbd> wait
+<kbd>Esc</kbd> cancels, and a run stops between stages. Inside a stage:
+
+| Read | On <kbd>Esc</kbd> |
+|---|---|
+| Random or Equal per value sample | Stops at its next batch, or between seeded runs |
+| Full scan's passes (profiles, duplicates, spellings, segments, intervals, shared nulls) and a segment count | Stop at the next batch on the streaming engine (`[performance] polars_streaming`, on by default); with it off, each runs to its end |
+| Values a type conflict hides | Stop between files |
+| First rows sample; a full scan's row count when the total is not known | Runs to its end |
+
+A run that stops at its next batch flashes `Run cancelled`. For a read that
+runs to its end, the header and Setup say
+`Cancellation requested; source read finishing` until the worker exits; a run
+that should have stopped and is still going after a second says
+`Cancellation requested; run stopping`. Either way Run and <kbd>r</kbd> wait
 rather than start a second read beside it. The last report stays, labeled with
 the setup it was measured with, and Setup opens on the setup that was running.
 A sample read before the cancel is kept for the next run.

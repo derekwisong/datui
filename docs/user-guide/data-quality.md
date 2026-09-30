@@ -103,8 +103,23 @@ they were.
 
 While a run reads, the progress names its stage, whether that stage reads the
 source, and the rows seen where the read can count them. <kbd>Esc</kbd>
-cancels. A read that cannot stop at once is shown as finishing, in the header
-and in Setup, until it ends; until then Run waits, and the last report stays.
+cancels: a sampling pass, or a full scan's passes, stop at the next batch. A
+read that cannot stop is shown as finishing, in the header and in Setup, until
+it ends; until then Run waits, and the last report stays.
+
+Under the verdict, every report says what it covers:
+
+```text
+✓ No problems found  12 of 12 columns clean
+Checks  7 sampled · 2 metadata · 1 unavailable
+Rows    100,000 of 36,839,175 sampled (0.27%) · 36,839,175 traversed
+Limits  Nearly unique: needs every row checked
+```
+
+`No problems found` on a sample is not the same as on every row: **Checks**
+counts what ran and over what, and what could not run; **Limits** says why, and
+names thin segments and unread footers. **Rows** gives the rows behind the
+numbers, and the rows the run's reads passed through to get them.
 
 The header says what each result was measured on:
 `Data Quality · sample of 100,000 of 36,839,175 rows`. Missing-column and

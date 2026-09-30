@@ -47,7 +47,8 @@ Time roles:
   to received; received to processed.
 
 Pages:
-  Overview:     The report: problems, notes and clean
+  Overview:     The report: the verdict, its coverage,
+                then problems, notes and clean
                 columns, most important first
   Columns:      Each column's mark and findings; Enter
                 opens its detail, Enter again returns
@@ -73,13 +74,26 @@ Keys on the report:
   Esc:          Back one level; from a page, close
   ? / F1:       Show this help
 
+Coverage, under the verdict:
+  Checks:       How many ran over every row (exact),
+                a sample (sampled) or file footers
+                (metadata); how many had nothing to
+                look at (skipped) and how many this
+                run could not answer (unavailable)
+  Rows:         The rows read of the total, and the
+                rows the run's reads passed through
+  Limits:       Why a check was unavailable, thin
+                segments, footers not all read, and
+                time roles that form no interval
+
 While a run reads:
   The progress names the stage, whether it reads the
   source, and the rows seen where the read counts
-  them. Esc cancels. A read that cannot stop at once
-  is said to be finishing, in the header and in
-  Setup, until it ends, and Run waits for it. The
-  last report stays.
+  them. Esc cancels: a streamed read, a full run's
+  passes included, stops at its next batch. A read
+  that cannot stop is said to be finishing, in the
+  header and in Setup, until it ends, and Run waits
+  for it. The last report stays.
 
 Segments:
   Enter:        A segment's columns beside the one it

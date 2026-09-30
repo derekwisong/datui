@@ -348,6 +348,31 @@ pub fn compute_statistics_with_options(
     compute_statistics_for_sample(lf, &sample, None, options)
 }
 
+/// Describe's temporal statistics for one collected column, through the same
+/// aggregation the lazy path runs.
+fn temporal_stats_of(series: &Series) -> Result<Option<TemporalStatistics>> {
+    if !is_temporal_type(series.dtype()) {
+        return Ok(None);
+    }
+    let frame = DataFrame::new_infer_height(vec![series.clone().into()])?;
+    let schema = frame.schema().clone();
+    let agg_df = frame
+        .lazy()
+        .select(build_describe_aggregation_exprs(&schema))
+        .collect()?;
+    Ok(parse_describe_agg_row(&agg_df, &schema)
+        .pop()
+        .and_then(|stats| stats.temporal_stats))
+}
+
+/// A value as the table writes it; `None` for a null.
+fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
+    match df.column(col_name).ok()?.get(row).ok()? {
+        AnyValue::Null => None,
+        v => Some(v.str_value().to_string()),
+    }
+}
+
 /// [`compute_statistics_with_options`] over the rows a [`crate::sampling::Sample`]
 /// picks from `lf`, which is already cut to the sample's scope.
 pub fn compute_statistics_for_sample(
@@ -460,66 +485,6 @@ pub fn compute_statistics_for_sample(
     })
 }
 
-/// Computes describe statistics for a single column of an already-collected DataFrame.
-///
-/// Used by the UI to compute stats per column and yield between columns for progress display.
-/// No progress or chunk types; the library only exposes granularity.
-pub fn compute_describe_column(
-    df: &DataFrame,
-    schema: &Schema,
-    column_index: usize,
-    options: &ComputeOptions,
-    actual_sample_size: Option<usize>,
-    is_sampled: bool,
-) -> Result<ColumnStatistics> {
-    let (name, dtype) = schema
-        .iter()
-        .nth(column_index)
-        .ok_or_else(|| color_eyre::eyre::eyre!("column index {} out of range", column_index))?;
-    let col = df.column(name)?;
-    let series = col.as_materialized_series();
-    let count = series.len();
-    let null_count = series.null_count();
-
-    let numeric_stats = if is_numeric_type(dtype) {
-        Some(compute_numeric_stats(
-            series,
-            options.include_skewness_kurtosis_outliers,
-        )?)
-    } else {
-        None
-    };
-
-    let categorical_stats = if is_categorical_type(dtype) {
-        Some(compute_categorical_stats(series)?)
-    } else {
-        None
-    };
-
-    let distribution_info =
-        if options.include_distribution_info && is_numeric_type(dtype) && null_count < count {
-            Some(infer_distribution(
-                series,
-                series,
-                actual_sample_size.unwrap_or(count),
-                is_sampled,
-            ))
-        } else {
-            None
-        };
-
-    Ok(ColumnStatistics {
-        name: name.to_string(),
-        dtype: dtype.clone(),
-        count,
-        null_count,
-        numeric_stats,
-        categorical_stats,
-        temporal_stats: temporal_stats_of(series)?,
-        distribution_info,
-    })
-}
-
 /// Builds describe-only AnalysisResults from a list of column statistics.
 ///
 /// Used when completing chunked describe; correlation and distribution analyses stay empty/None.
@@ -558,18 +523,24 @@ fn build_describe_aggregation_exprs(schema: &Schema) -> Vec<Expr> {
             exprs.push(c.clone().mean().alias(format!("{}mean", prefix)));
             exprs.push(c.clone().std(1).alias(format!("{}std", prefix)));
             exprs.push(c.clone().min().alias(format!("{}min", prefix)));
+            // Without NaN, which sorts above every number and would be the upper
+            // quantiles of a column holding enough of it.
+            let numbers = c.clone().drop_nans();
             exprs.push(
-                c.clone()
+                numbers
+                    .clone()
                     .quantile(lit(0.25), QuantileMethod::Nearest)
                     .alias(format!("{}q25", prefix)),
             );
             exprs.push(
-                c.clone()
+                numbers
+                    .clone()
                     .quantile(lit(0.5), QuantileMethod::Nearest)
                     .alias(format!("{}median", prefix)),
             );
             exprs.push(
-                c.clone()
+                numbers
+                    .clone()
                     .quantile(lit(0.75), QuantileMethod::Nearest)
                     .alias(format!("{}q75", prefix)),
             );
@@ -775,129 +746,6 @@ fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
     df.column(col_name)
         .ok()
         .and_then(|s| s.get(row).ok().map(|v| v.str_value().to_string()))
-}
-
-/// A value as the table writes it; `None` for a null.
-fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
-    match df.column(col_name).ok()?.get(row).ok()? {
-        AnyValue::Null => None,
-        v => Some(v.str_value().to_string()),
-    }
-}
-
-/// Describe's temporal statistics for one collected column, through the same
-/// aggregation the lazy path runs.
-fn temporal_stats_of(series: &Series) -> Result<Option<TemporalStatistics>> {
-    if !is_temporal_type(series.dtype()) {
-        return Ok(None);
-    }
-    let frame = DataFrame::new_infer_height(vec![series.clone().into()])?;
-    let schema = frame.schema().clone();
-    let agg_df = frame
-        .lazy()
-        .select(build_describe_aggregation_exprs(&schema))
-        .collect()?;
-    Ok(parse_describe_agg_row(&agg_df, &schema)
-        .pop()
-        .and_then(|stats| stats.temporal_stats))
-}
-
-/// Computes distribution statistics for numeric columns.
-///
-/// - Infers distribution types for numeric columns missing distribution_info
-/// - Computes advanced statistics (skewness, kurtosis, outliers) if missing
-/// - Generates distribution_analyses for columns with detected distributions
-pub fn compute_distribution_statistics(
-    results: &mut AnalysisResults,
-    lf: &LazyFrame,
-    sample: &crate::sampling::Sample,
-    polars_streaming: bool,
-) -> Result<()> {
-    let rows = crate::sampling::read(lf, sample, Some(results.total_rows), polars_streaming)?;
-    let actual_sample_size = rows.sample_size;
-    let should_sample = actual_sample_size.is_some();
-    let df = rows.df;
-
-    for col_stat in &mut results.column_statistics {
-        if col_stat.distribution_info.is_none()
-            && is_numeric_type(&col_stat.dtype)
-            && col_stat.null_count < col_stat.count
-        {
-            let series = df.column(&col_stat.name)?.as_materialized_series();
-            col_stat.distribution_info = Some(infer_distribution(
-                series,
-                series,
-                actual_sample_size.unwrap_or(col_stat.count),
-                should_sample,
-            ));
-        }
-
-        if let Some(ref mut num_stats) = col_stat.numeric_stats {
-            let needs_advanced_stats = num_stats.skewness == 0.0
-                && num_stats.kurtosis == 3.0
-                && num_stats.outliers_iqr == 0
-                && num_stats.outliers_zscore == 0
-                && col_stat.count > 0;
-            if needs_advanced_stats {
-                let series = df.column(&col_stat.name)?.as_materialized_series();
-                num_stats.skewness = compute_skewness(series);
-                num_stats.kurtosis = compute_kurtosis(series);
-                let (out_iqr, out_zscore) = detect_outliers(
-                    series,
-                    num_stats.q25,
-                    num_stats.q75,
-                    num_stats.median,
-                    num_stats.mean,
-                    num_stats.std,
-                );
-                num_stats.outliers_iqr = out_iqr;
-                num_stats.outliers_zscore = out_zscore;
-            }
-        }
-    }
-
-    if results.distribution_analyses.is_empty() {
-        results.distribution_analyses = results
-            .column_statistics
-            .iter()
-            .filter_map(|col_stat| {
-                if let (Some(numeric_stats), Some(dist_info)) =
-                    (&col_stat.numeric_stats, &col_stat.distribution_info)
-                {
-                    if let Ok(series_col) = df.column(&col_stat.name) {
-                        let series = series_col.as_materialized_series();
-                        Some(compute_advanced_distribution_analysis(
-                            &col_stat.name,
-                            series,
-                            numeric_stats,
-                            dist_info,
-                            actual_sample_size.unwrap_or(results.total_rows),
-                            should_sample,
-                        ))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect();
-    }
-
-    Ok(())
-}
-
-/// Computes correlation matrix if not already present in results.
-pub fn compute_correlation_statistics(
-    results: &mut AnalysisResults,
-    lf: &LazyFrame,
-    polars_streaming: bool,
-) -> Result<()> {
-    if results.correlation_matrix.is_none() {
-        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
-        results.correlation_matrix = compute_correlation_matrix(&df).ok();
-    }
-    Ok(())
 }
 
 /// Uses Polars' definition so Int128, UInt128, Decimal, and future numeric types are included.
@@ -1361,57 +1209,48 @@ fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
     }
 }
 
+/// Every finite value of a numeric column as `f64`: nulls, NaN and infinities left out.
+fn finite_values(series: &Series) -> Vec<f64> {
+    let Ok(floats) = series.cast(&DataType::Float64) else {
+        return Vec::new();
+    };
+    let Ok(floats) = floats.f64() else {
+        return Vec::new();
+    };
+    floats.iter().flatten().filter(|v| v.is_finite()).collect()
+}
+
 fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<NumericStatistics> {
-    let mean = series.mean().unwrap_or(f64::NAN);
-    let std = series.std(1).unwrap_or(f64::NAN); // Sample std (ddof=1)
+    // Cast and aggregate as Describe does (`build_describe_aggregation_exprs`), so a
+    // sample's median is one number wherever it is shown.
+    let floats = series.cast(&DataType::Float64)?;
+    let mean = floats.mean().unwrap_or(f64::NAN);
+    let std = floats.std(1).unwrap_or(f64::NAN);
+    let min = floats.min::<f64>()?.unwrap_or(f64::NAN);
+    let max = floats.max::<f64>()?.unwrap_or(f64::NAN);
 
-    let min = if let Ok(min_val) = series.min::<f64>() {
-        min_val.unwrap_or(f64::NAN)
-    } else if let Ok(min_val) = series.min::<i64>() {
-        min_val.map(|v| v as f64).unwrap_or(f64::NAN)
-    } else if let Ok(min_val) = series.min::<i32>() {
-        min_val.map(|v| v as f64).unwrap_or(f64::NAN)
-    } else {
-        f64::NAN
-    };
+    // NaN sorts above every number, so a column with some would have them as its
+    // upper percentiles and fences; Describe leaves them out too. One sort for all.
+    let floats = floats.f64()?;
+    let numbers = floats.filter(&floats.is_not_nan())?;
+    const PERCENTILES: [u8; 7] = [1, 5, 25, 50, 75, 95, 99];
+    let quantiles = PERCENTILES.map(|p| f64::from(p) / 100.0);
+    let values = numbers.quantiles(&quantiles, QuantileMethod::Nearest)?;
+    let percentiles: HashMap<u8, f64> = PERCENTILES
+        .into_iter()
+        .zip(values)
+        .map(|(p, value)| (p, value.unwrap_or(f64::NAN)))
+        .collect();
 
-    let max = if let Ok(max_val) = series.max::<f64>() {
-        max_val.unwrap_or(f64::NAN)
-    } else if let Ok(max_val) = series.max::<i64>() {
-        max_val.map(|v| v as f64).unwrap_or(f64::NAN)
-    } else if let Ok(max_val) = series.max::<i32>() {
-        max_val.map(|v| v as f64).unwrap_or(f64::NAN)
-    } else {
-        f64::NAN
-    };
-
-    let mut percentiles = HashMap::new();
-    let values: Vec<f64> = get_numeric_values_as_f64(series);
-
-    if !values.is_empty() {
-        let mut sorted = values.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let n = sorted.len();
-
-        for p in &[1, 5, 25, 50, 75, 95, 99] {
-            let idx = ((*p as f64 / 100.0) * (n - 1) as f64).round() as usize;
-            let idx = idx.min(n - 1);
-            percentiles.insert(*p, sorted[idx]);
-        }
-    }
-
-    let median = percentiles.get(&50).copied().unwrap_or(f64::NAN);
-    let q25 = percentiles.get(&25).copied().unwrap_or(f64::NAN);
-    let q75 = percentiles.get(&75).copied().unwrap_or(f64::NAN);
+    let median = percentiles[&50];
+    let q25 = percentiles[&25];
+    let q75 = percentiles[&75];
 
     let (skewness, kurtosis, outliers_iqr, outliers_zscore) = if include_advanced {
-        let (out_iqr, out_zscore) = detect_outliers(series, q25, q75, median, mean, std);
-        (
-            compute_skewness(series),
-            compute_kurtosis(series),
-            out_iqr,
-            out_zscore,
-        )
+        let values = finite_values(series);
+        let (skewness, kurtosis) = skewness_and_kurtosis(&values);
+        let (out_iqr, out_zscore) = detect_outliers(&values, q25, q75);
+        (skewness, kurtosis, out_iqr, out_zscore)
     } else {
         (0.0, 3.0, 0, 0) // Default values when not computed
     };
@@ -1432,100 +1271,97 @@ fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<Nume
     })
 }
 
-fn compute_skewness(series: &Series) -> f64 {
-    let mean = series.mean().unwrap_or(0.0);
-    let std = series.std(1).unwrap_or(1.0);
-    let n = series.len() as f64;
-
-    if std == 0.0 || n < 3.0 {
-        return 0.0;
+/// Mean and sample standard deviation (ddof 1) of a set of values.
+fn mean_and_std(values: &[f64]) -> (f64, f64) {
+    let n = values.len() as f64;
+    if values.len() < 2 {
+        return (values.first().copied().unwrap_or(f64::NAN), f64::NAN);
     }
-
-    let values: Vec<f64> = get_numeric_values_as_f64(series);
-
-    if values.is_empty() {
-        return 0.0;
-    }
-
-    let sum_cubed_deviations: f64 = values
-        .iter()
-        .map(|v| {
-            let deviation = (v - mean) / std;
-            deviation * deviation * deviation
-        })
-        .sum();
-
-    (n / ((n - 1.0) * (n - 2.0))) * sum_cubed_deviations
+    let mean = values.iter().sum::<f64>() / n;
+    let sum_squares: f64 = values.iter().map(|v| (v - mean).powi(2)).sum();
+    (mean, (sum_squares / (n - 1.0)).sqrt())
 }
 
-fn compute_kurtosis(series: &Series) -> f64 {
-    let mean = series.mean().unwrap_or(0.0);
-    let std = series.std(1).unwrap_or(1.0);
-    let n = series.len() as f64;
-
-    if std == 0.0 || n < 4.0 {
-        return 3.0; // Normal distribution kurtosis
+/// Skewness and kurtosis of one set of values, `n` being their count: the
+/// bias-corrected forms of Polars' `skew(bias=False)` and `kurtosis(bias=False)`,
+/// kurtosis on the scale where a normal is 3. One value throughout, or too few to
+/// say, is 0 and 3.
+fn skewness_and_kurtosis(values: &[f64]) -> (f64, f64) {
+    let count = values.len();
+    if count < 3 || values.iter().all(|v| *v == values[0]) {
+        return (0.0, 3.0);
     }
-
-    let values: Vec<f64> = get_numeric_values_as_f64(series);
-
-    if values.is_empty() {
-        return 3.0;
+    let n = count as f64;
+    let (mean, std) = mean_and_std(values);
+    let (mut cubes, mut fourths) = (0.0, 0.0);
+    for v in values {
+        let z = (v - mean) / std;
+        let z2 = z * z;
+        cubes += z2 * z;
+        fourths += z2 * z2;
     }
-
-    let sum_fourth_deviations: f64 = values
-        .iter()
-        .map(|v| {
-            let deviation = (v - mean) / std;
-            let d2 = deviation * deviation;
-            d2 * d2
-        })
-        .sum();
-
-    let k = (n * (n + 1.0) / ((n - 1.0) * (n - 2.0) * (n - 3.0))) * sum_fourth_deviations
+    let skewness = n / ((n - 1.0) * (n - 2.0)) * cubes;
+    if count < 4 {
+        return (skewness, 3.0);
+    }
+    let excess = n * (n + 1.0) / ((n - 1.0) * (n - 2.0) * (n - 3.0)) * fourths
         - 3.0 * (n - 1.0) * (n - 1.0) / ((n - 2.0) * (n - 3.0));
-
-    k + 3.0 // Excess kurtosis -> kurtosis
+    (skewness, excess + 3.0)
 }
 
-fn detect_outliers(
-    series: &Series,
-    q25: f64,
-    q75: f64,
-    _median: f64,
+/// Where a value falls against the IQR fences and three standard deviations.
+struct OutlierTest {
+    lower_fence: f64,
+    upper_fence: f64,
     mean: f64,
     std: f64,
-) -> (usize, usize) {
-    if q25.is_nan() || q75.is_nan() {
-        return (0, 0);
+}
+
+impl OutlierTest {
+    /// Fences from the quartiles; the z-score from the values' own mean and std, so
+    /// a NaN elsewhere in the column cannot void it.
+    fn new(values: &[f64], q25: f64, q75: f64) -> Option<Self> {
+        let (mean, std) = mean_and_std(values);
+        if q25.is_nan() || q75.is_nan() || std.is_nan() || std == 0.0 {
+            return None;
+        }
+        let iqr = q75 - q25;
+        Some(Self {
+            lower_fence: q25 - 1.5 * iqr,
+            upper_fence: q75 + 1.5 * iqr,
+            mean,
+            std,
+        })
     }
 
-    let iqr = q75 - q25;
-    let lower_fence = q25 - 1.5 * iqr;
-    let upper_fence = q75 + 1.5 * iqr;
-
-    let mut outliers_iqr = 0;
-    let mut outliers_zscore = 0;
-
-    if std > 0.0 {
-        // Get values as f64, handling both integer and float types
-        let values: Vec<f64> = get_numeric_values_as_f64(series);
-
-        for v in values {
-            // IQR method
-            if v < lower_fence || v > upper_fence {
-                outliers_iqr += 1;
-            }
-
-            // Z-score method (3 sigma rule)
-            let z = (v - mean).abs() / std;
-            if z > 3.0 {
-                outliers_zscore += 1;
-            }
+    fn iqr_position(&self, value: f64) -> Option<IqrPosition> {
+        if value < self.lower_fence {
+            Some(IqrPosition::BelowLowerFence)
+        } else if value > self.upper_fence {
+            Some(IqrPosition::AboveUpperFence)
+        } else {
+            None
         }
     }
 
-    (outliers_iqr, outliers_zscore)
+    fn z_score(&self, value: f64) -> f64 {
+        (value - self.mean).abs() / self.std
+    }
+}
+
+const Z_THRESHOLD: f64 = 3.0;
+
+/// IQR and z-score outliers among every value given.
+fn detect_outliers(values: &[f64], q25: f64, q75: f64) -> (usize, usize) {
+    let Some(test) = OutlierTest::new(values, q25, q75) else {
+        return (0, 0);
+    };
+    values.iter().fold((0, 0), |(iqr, zscore), &v| {
+        (
+            iqr + usize::from(test.iqr_position(v).is_some()),
+            zscore + usize::from(test.z_score(v) > Z_THRESHOLD),
+        )
+    })
 }
 
 fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
@@ -1803,7 +1639,7 @@ fn compute_advanced_distribution_analysis(
         })
         .collect();
 
-    let outliers = compute_outlier_analysis(series, numeric_stats);
+    let outliers = compute_outlier_analysis(&finite_values(series), numeric_stats);
 
     let percentiles = PercentileBreakdown {
         p1: numeric_stats
@@ -1932,38 +1768,6 @@ fn powerlaw_cdf(x: f64, xmin: f64, alpha: f64) -> f64 {
     1.0 - (x / xmin).powf(-alpha + 1.0)
 }
 
-// Stirling's approximation for ln(gamma(z))
-fn ln_gamma_approx(z: f64) -> f64 {
-    if z <= 0.0 {
-        return f64::NAN;
-    }
-    // Stirling's approximation: ln(Gamma(z)) ≈ (z - 0.5)*ln(z) - z + 0.5*ln(2π) + 1/(12z)
-    if z > 50.0 {
-        (z - 0.5) * z.ln() - z + 0.5 * (2.0 * std::f64::consts::PI).ln() + 1.0 / (12.0 * z)
-    } else {
-        // For smaller z, use iterative calculation (NO RECURSION)
-        let mut result = 0.0;
-        let mut z_val = z;
-        // Cap iterations to prevent issues
-        let max_iter = 100;
-        let mut iter = 0;
-        while z_val < 50.0 && iter < max_iter {
-            result -= z_val.ln();
-            z_val += 1.0;
-            iter += 1;
-        }
-        // Use Stirling's approximation for final value (no recursion)
-        if z_val >= 50.0 {
-            result
-                + ((z_val - 0.5) * z_val.ln() - z_val
-                    + 0.5 * (2.0 * std::f64::consts::PI).ln()
-                    + 1.0 / (12.0 * z_val))
-        } else {
-            result
-        }
-    }
-}
-
 /// The regularized incomplete beta function `I_x(a, b)`, by its continued fraction
 /// (Lentz's method), flipped to the side where the fraction converges fast.
 fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
@@ -1973,9 +1777,8 @@ fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
     if x >= 1.0 {
         return 1.0;
     }
-    let ln_front = ln_gamma_approx(a + b) - ln_gamma_approx(a) - ln_gamma_approx(b)
-        + a * x.ln()
-        + b * (1.0 - x).ln();
+    let ln_gamma = crate::distribution_fit::ln_gamma;
+    let ln_front = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln();
     let front = ln_front.exp();
     if x < (a + 1.0) / (a + b + 2.0) {
         front * beta_continued_fraction(x, a, b) / a
@@ -2447,106 +2250,61 @@ pub fn calculate_theoretical_probability_in_interval(
     }
 }
 
-fn compute_outlier_analysis(series: &Series, numeric_stats: &NumericStatistics) -> OutlierAnalysis {
-    let values: Vec<f64> = get_numeric_values_as_f64(series);
-    let q25 = numeric_stats.q25;
-    let q75 = numeric_stats.q75;
-    let mean = numeric_stats.mean;
-    let std = numeric_stats.std;
+/// How many outlier examples an analysis keeps, most extreme first.
+const OUTLIER_EXAMPLES: usize = 100;
 
-    if q25.is_nan() || q75.is_nan() || std == 0.0 {
-        return OutlierAnalysis {
-            total_count: 0,
-            percentage: 0.0,
-            iqr_count: 0,
-            zscore_count: 0,
-            outlier_rows: Vec::new(),
-        };
-    }
-
-    let iqr = q75 - q25;
-    let lower_fence = q25 - 1.5 * iqr;
-    let upper_fence = q75 + 1.5 * iqr;
-    let z_threshold = 3.0;
-
-    let mut outlier_rows = Vec::new();
-
-    for (idx, &value) in values.iter().enumerate() {
-        let mut methods = Vec::new();
-        let mut z_score = None;
-        let mut iqr_position = None;
-
-        // Check IQR
-        if value < lower_fence {
-            methods.push(OutlierMethod::IQR);
-            iqr_position = Some(IqrPosition::BelowLowerFence);
-        } else if value > upper_fence {
-            methods.push(OutlierMethod::IQR);
-            iqr_position = Some(IqrPosition::AboveUpperFence);
-        }
-
-        // Check Z-Score
-        if std > 0.0 {
-            let z = (value - mean).abs() / std;
-            z_score = Some(z);
-            if z > z_threshold {
-                methods.push(OutlierMethod::ZScore);
-            }
-        }
-
-        if !methods.is_empty() {
-            outlier_rows.push(OutlierRow {
-                row_index: idx,
-                column_value: value,
-                context_data: HashMap::new(), // Will be populated by caller if needed
-                detection_method: if methods.len() == 2 {
-                    OutlierMethod::Both
-                } else {
-                    methods[0].clone()
-                },
-                z_score,
-                iqr_position,
-            });
-        }
-    }
-
-    // Sort by absolute deviation from mean (most extreme first)
-    outlier_rows.sort_by(|a, b| {
-        let a_dev = (a.column_value - mean).abs();
-        let b_dev = (b.column_value - mean).abs();
-        b_dev
-            .partial_cmp(&a_dev)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Limit to top 100 for performance
-    outlier_rows.truncate(100);
-
-    let total_count = outlier_rows.len();
-    let percentage = if values.is_empty() {
-        0.0
-    } else {
-        (total_count as f64 / values.len() as f64) * 100.0
+/// Outliers among every finite value of the column. The counts and the percentage
+/// cover all of them; only the list of examples is cut to [`OUTLIER_EXAMPLES`].
+fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -> OutlierAnalysis {
+    let mut analysis = OutlierAnalysis {
+        total_count: 0,
+        percentage: 0.0,
+        iqr_count: 0,
+        zscore_count: 0,
+        outlier_rows: Vec::new(),
+    };
+    let Some(test) = OutlierTest::new(values, numeric_stats.q25, numeric_stats.q75) else {
+        return analysis;
     };
 
-    OutlierAnalysis {
-        total_count,
-        percentage,
-        iqr_count: outlier_rows
-            .iter()
-            .filter(|r| matches!(r.detection_method, OutlierMethod::IQR | OutlierMethod::Both))
-            .count(),
-        zscore_count: outlier_rows
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.detection_method,
-                    OutlierMethod::ZScore | OutlierMethod::Both
-                )
-            })
-            .count(),
-        outlier_rows,
+    for (idx, &value) in values.iter().enumerate() {
+        let iqr_position = test.iqr_position(value);
+        let z_score = test.z_score(value);
+        let detection_method = match (iqr_position.is_some(), z_score > Z_THRESHOLD) {
+            (true, true) => OutlierMethod::Both,
+            (true, false) => OutlierMethod::IQR,
+            (false, true) => OutlierMethod::ZScore,
+            (false, false) => continue,
+        };
+        analysis.total_count += 1;
+        analysis.iqr_count += usize::from(iqr_position.is_some());
+        analysis.zscore_count += usize::from(z_score > Z_THRESHOLD);
+        analysis.outlier_rows.push(OutlierRow {
+            row_index: idx,
+            column_value: value,
+            context_data: HashMap::new(),
+            detection_method,
+            z_score: Some(z_score),
+            iqr_position,
+        });
     }
+
+    analysis.percentage = analysis.total_count as f64 / values.len() as f64 * 100.0;
+    // Most extreme first; a z-score is the distance from the mean in one scale. The
+    // hundred are picked before sorting: a long tail has tens of thousands.
+    let most_extreme = |a: &OutlierRow, b: &OutlierRow| {
+        b.z_score
+            .unwrap_or(0.0)
+            .total_cmp(&a.z_score.unwrap_or(0.0))
+    };
+    if analysis.outlier_rows.len() > OUTLIER_EXAMPLES {
+        analysis
+            .outlier_rows
+            .select_nth_unstable_by(OUTLIER_EXAMPLES, most_extreme);
+        analysis.outlier_rows.truncate(OUTLIER_EXAMPLES);
+    }
+    analysis.outlier_rows.sort_by(most_extreme);
+    analysis
 }
 
 // Correlation matrix computation
@@ -2569,46 +2327,58 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
         ));
     }
 
+    let columns = numeric_cols
+        .iter()
+        .map(|name| Ok(Centered::new(df.column(name)?.as_materialized_series())))
+        .collect::<Result<Vec<_>>>()?;
+
     let n = numeric_cols.len();
     let mut correlations = vec![vec![1.0; n]; n];
     let mut p_values = vec![vec![0.0; n]; n];
     let mut sample_sizes = vec![vec![0; n]; n];
 
-    // Compute pairwise correlations
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let col1 = df.column(&numeric_cols[i])?;
-            let col2 = df.column(&numeric_cols[j])?;
+    // Every pair is one pass over two columns; fifty columns are 1,225 pairs, so the
+    // rows of the matrix are shared out across threads, interleaved to even the load.
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(n - 1);
+    let pairs: Vec<(usize, usize, f64, usize)> = std::thread::scope(|scope| {
+        let columns = &columns;
+        let handles: Vec<_> = (0..threads)
+            .map(|thread| {
+                scope.spawn(move || {
+                    let mut pairs = Vec::new();
+                    for i in (thread..n).step_by(threads) {
+                        for j in (i + 1)..n {
+                            let (correlation, count) = pearson(&columns[i], &columns[j]);
+                            pairs.push((i, j, correlation, count));
+                        }
+                    }
+                    pairs
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
 
-            // Remove nulls for this pair
-            let mask = col1.is_not_null() & col2.is_not_null();
-            let col1_clean = col1.filter(&mask)?;
-            let col2_clean = col2.filter(&mask)?;
-
-            let sample_size = col1_clean.len();
-            sample_sizes[i][j] = sample_size;
-            sample_sizes[j][i] = sample_size;
-
-            if sample_size < 3 {
-                // Not enough data for correlation
-                correlations[i][j] = f64::NAN;
-                correlations[j][i] = f64::NAN;
-                continue;
-            }
-
-            // Compute Pearson correlation
-            let col1_series = col1_clean.as_materialized_series();
-            let col2_series = col2_clean.as_materialized_series();
-            let correlation = compute_pearson_correlation(col1_series, col2_series)?;
-            correlations[i][j] = correlation;
-            correlations[j][i] = correlation; // Symmetric
-
-            // Compute p-value (statistical significance)
-            if sample_size >= 3 && !correlation.is_nan() {
-                let p_value = compute_correlation_p_value(correlation, sample_size);
-                p_values[i][j] = p_value;
-                p_values[j][i] = p_value;
-            }
+    for (i, j, correlation, sample_size) in pairs {
+        sample_sizes[i][j] = sample_size;
+        sample_sizes[j][i] = sample_size;
+        // Fewer than three pairs say nothing.
+        let correlation = if sample_size < 3 {
+            f64::NAN
+        } else {
+            correlation
+        };
+        correlations[i][j] = correlation;
+        correlations[j][i] = correlation;
+        if !correlation.is_nan() {
+            let p_value = compute_correlation_p_value(correlation, sample_size);
+            p_values[i][j] = p_value;
+            p_values[j][i] = p_value;
         }
     }
 
@@ -2620,13 +2390,89 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
     })
 }
 
-fn compute_pearson_correlation(col1: &Series, col2: &Series) -> Result<f64> {
-    // Compute Pearson correlation manually
-    let values1: Vec<f64> = get_numeric_values_as_f64(col1);
-    let values2: Vec<f64> = get_numeric_values_as_f64(col2);
+/// A numeric column ready to correlate: its finite values less their mean, NaN where
+/// a value is null or not finite. Centering once keeps the one-pass sums below exact
+/// enough, and each pair is then one pass with no copies.
+struct Centered {
+    values: Vec<f64>,
+    /// No value is missing, so every row pairs.
+    complete: bool,
+}
 
+impl Centered {
+    fn new(series: &Series) -> Self {
+        let floats = series.cast(&DataType::Float64).ok();
+        let mut values: Vec<f64> = match floats.as_ref().and_then(|floats| floats.f64().ok()) {
+            Some(floats) => floats
+                .iter()
+                .map(|v| v.filter(|v| v.is_finite()).unwrap_or(f64::NAN))
+                .collect(),
+            None => vec![f64::NAN; series.len()],
+        };
+        let (sum, count) = values
+            .iter()
+            .filter(|v| !v.is_nan())
+            .fold((0.0, 0usize), |(sum, count), v| (sum + v, count + 1));
+        if count > 0 {
+            let mean = sum / count as f64;
+            values.iter_mut().for_each(|v| *v -= mean);
+        }
+        let complete = count == values.len();
+        Self { values, complete }
+    }
+}
+
+/// Pearson r over the rows where both columns have a value, and how many rows those
+/// are. NaN when either is one value throughout those rows.
+fn pearson(a: &Centered, b: &Centered) -> (f64, usize) {
+    let (mut x, mut y, mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut count = 0usize;
+    let pairs = a.values.iter().zip(&b.values);
+    let both = a.complete && b.complete;
+    for (&v1, &v2) in pairs {
+        if !both && (v1.is_nan() || v2.is_nan()) {
+            continue;
+        }
+        count += 1;
+        x += v1;
+        y += v2;
+        xx += v1 * v1;
+        yy += v2 * v2;
+        xy += v1 * v2;
+    }
+    let n = count as f64;
+    let (sxx, syy, sxy) = (xx - x * x / n, yy - y * y / n, xy - x * y / n);
+    // Measured against the sums of squares: what a column with one value leaves
+    // behind is rounding, not spread.
+    if count < 2 || sxx <= xx * 1e-12 || syy <= yy * 1e-12 {
+        return (f64::NAN, count);
+    }
+    ((sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0), count)
+}
+
+/// The rows where both columns hold a finite value, as two aligned lists: every pair,
+/// so the correlation and the count beside it describe the same rows.
+fn finite_pairs(col1: &Series, col2: &Series) -> (Vec<f64>, Vec<f64>) {
+    let (Ok(floats1), Ok(floats2)) = (col1.cast(&DataType::Float64), col2.cast(&DataType::Float64))
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let (Ok(floats1), Ok(floats2)) = (floats1.f64(), floats2.f64()) else {
+        return (Vec::new(), Vec::new());
+    };
+    floats1
+        .iter()
+        .zip(floats2.iter())
+        .filter_map(|pair| match pair {
+            (Some(v1), Some(v2)) if v1.is_finite() && v2.is_finite() => Some((v1, v2)),
+            _ => None,
+        })
+        .unzip()
+}
+
+fn compute_pearson_correlation(values1: &[f64], values2: &[f64]) -> f64 {
     if values1.len() != values2.len() || values1.len() < 2 {
-        return Err(color_eyre::eyre::eyre!("Invalid data for correlation"));
+        return f64::NAN;
     }
 
     let mean1: f64 = values1.iter().sum::<f64>() / values1.len() as f64;
@@ -2644,33 +2490,25 @@ fn compute_pearson_correlation(col1: &Series, col2: &Series) -> Result<f64> {
     // A column with one value has no correlation with anything: undefined, not 0,
     // which reads as a finding.
     if var1 == 0.0 || var2 == 0.0 {
-        return Ok(f64::NAN);
+        return f64::NAN;
     }
 
-    let correlation = numerator / (var1.sqrt() * var2.sqrt());
-    Ok(correlation)
+    numerator / (var1.sqrt() * var2.sqrt())
 }
 
+/// The two-sided p-value of Pearson's r over `n` pairs: Student's t with `n - 2`
+/// degrees of freedom. With `t² = r²·df / (1 - r²)`, both tails together are
+/// `I_x(df/2, 1/2)` at `x = df / (df + t²) = 1 - r²`, taken directly so that a small p
+/// is not lost to `1 - cdf`.
 fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
-    // t-test for correlation coefficient
-    // t = r * sqrt((n-2) / (1-r^2))
-    // Then use t-distribution to get p-value
-    if correlation.abs() >= 1.0 || n < 3 {
+    if n < 3 || correlation.is_nan() {
         return 1.0;
     }
-
-    let t_statistic = correlation * ((n - 2) as f64 / (1.0 - correlation * correlation)).sqrt();
-    let _degrees_of_freedom = (n - 2) as f64;
-
-    // Approximate p-value using t-distribution
-    // Simplified approximation: p ≈ 2 * (1 - normal_cdf(|t|))
-    let normal_cdf = |x: f64| -> f64 {
-        // Approximation of normal CDF
-        0.5 * (1.0 + (x / std::f64::consts::SQRT_2).tanh())
-    };
-
-    let p_value = 2.0 * (1.0 - normal_cdf(t_statistic.abs()));
-    p_value.clamp(0.0, 1.0)
+    if correlation.abs() >= 1.0 {
+        return 0.0;
+    }
+    let df = (n - 2) as f64;
+    regularized_incomplete_beta(1.0 - correlation * correlation, df / 2.0, 0.5).clamp(0.0, 1.0)
 }
 
 /// Computes correlation statistics for a pair of columns.
@@ -2682,69 +2520,29 @@ pub fn compute_correlation_pair(
     col1_name: &str,
     col2_name: &str,
 ) -> Result<CorrelationPair> {
-    let col1 = df.column(col1_name)?;
-    let col2 = df.column(col2_name)?;
+    let (values1, values2) = finite_pairs(
+        df.column(col1_name)?.as_materialized_series(),
+        df.column(col2_name)?.as_materialized_series(),
+    );
 
-    // Remove nulls
-    let mask = col1.is_not_null() & col2.is_not_null();
-    let col1_clean = col1.filter(&mask)?;
-    let col2_clean = col2.filter(&mask)?;
-
-    let sample_size = col1_clean.len();
+    let sample_size = values1.len();
     if sample_size < 3 {
         return Err(color_eyre::eyre::eyre!("Not enough data for correlation"));
     }
 
-    let col1_series = col1_clean.as_materialized_series();
-    let col2_series = col2_clean.as_materialized_series();
-    let correlation = compute_pearson_correlation(col1_series, col2_series)?;
+    let correlation = compute_pearson_correlation(&values1, &values2);
     let p_value = Some(compute_correlation_p_value(correlation, sample_size));
 
-    // Compute covariance
-    let mean1 = col1_series.mean().unwrap_or(0.0);
-    let mean2 = col2_series.mean().unwrap_or(0.0);
-    let values1: Vec<f64> = get_numeric_values_as_f64(col1_series);
-    let values2: Vec<f64> = get_numeric_values_as_f64(col2_series);
-
-    let covariance = if values1.len() == values2.len() {
-        values1
-            .iter()
-            .zip(values2.iter())
-            .map(|(v1, v2)| (v1 - mean1) * (v2 - mean2))
-            .sum::<f64>()
-            / (values1.len() - 1) as f64
-    } else {
-        0.0
-    };
+    let stats1 = column_stats(&values1);
+    let stats2 = column_stats(&values2);
+    let covariance = values1
+        .iter()
+        .zip(values2.iter())
+        .map(|(v1, v2)| (v1 - stats1.mean) * (v2 - stats2.mean))
+        .sum::<f64>()
+        / (sample_size - 1) as f64;
 
     let r_squared = correlation * correlation;
-
-    // Compute stats for both columns
-    let stats1 = ColumnStats {
-        mean: mean1,
-        std: col1_series.std(1).unwrap_or(0.0),
-        min: col1_series
-            .min::<f64>()
-            .unwrap_or(Some(f64::NAN))
-            .unwrap_or(f64::NAN),
-        max: col1_series
-            .max::<f64>()
-            .unwrap_or(Some(f64::NAN))
-            .unwrap_or(f64::NAN),
-    };
-
-    let stats2 = ColumnStats {
-        mean: mean2,
-        std: col2_series.std(1).unwrap_or(0.0),
-        min: col2_series
-            .min::<f64>()
-            .unwrap_or(Some(f64::NAN))
-            .unwrap_or(f64::NAN),
-        max: col2_series
-            .max::<f64>()
-            .unwrap_or(Some(f64::NAN))
-            .unwrap_or(f64::NAN),
-    };
 
     Ok(CorrelationPair {
         column1: col1_name.to_string(),
@@ -2757,6 +2555,16 @@ pub fn compute_correlation_pair(
         stats1,
         stats2,
     })
+}
+
+fn column_stats(values: &[f64]) -> ColumnStats {
+    let (mean, std) = mean_and_std(values);
+    ColumnStats {
+        mean,
+        std,
+        min: values.iter().copied().fold(f64::NAN, f64::min),
+        max: values.iter().copied().fold(f64::NAN, f64::max),
+    }
 }
 
 #[cfg(test)]
@@ -2921,11 +2729,18 @@ mod sampling_tests {
         let df = df!(
             "year" => vec![2020.0f64; 50],
             "value" => (0..50).map(|i| i as f64).collect::<Vec<_>>(),
-            "double" => (0..50).map(|i| 2.0 * i as f64).collect::<Vec<_>>()
+            "double" => (0..50).map(|i| 2.0 * i as f64).collect::<Vec<_>>(),
+            // Its mean is not exactly 0.1, so centering leaves rounding behind.
+            "tenth" => vec![0.1f64; 50]
         )
         .unwrap();
         let matrix = compute_correlation_matrix(&df).unwrap();
         assert!(matrix.correlations[0][1].is_nan(), "undefined, not 0");
+        assert!(
+            matrix.correlations[3][1].is_nan(),
+            "{}",
+            matrix.correlations[3][1]
+        );
         assert!((matrix.correlations[1][2] - 1.0).abs() < 1e-9);
     }
 
@@ -2994,6 +2809,33 @@ mod sampling_tests {
 mod normality_tests {
     use super::*;
 
+    /// Against SciPy's `2 * t.sf(|t|, n - 2)`. A normal CDF standing in for the t,
+    /// and a tanh standing in for the normal, gave r = 0.01 over 100,000 pairs p = 0.023
+    /// where it is 0.0016.
+    #[test]
+    fn correlation_p_values_are_students_t() {
+        let cases = [
+            (0.5, 10, 0.14111328125000006),
+            (-0.2, 50, 0.16375308124541754),
+            (0.3, 30, 0.10724594805795436),
+            (0.9, 5, 0.03738607346849862),
+            (0.1, 100, 0.32221736303061954),
+            (0.02, 20_000, 0.004676184609440329),
+            (0.01, 100_000, 0.0015651897452783157),
+            (0.005, 1_000_000, 5.732288112893878e-7),
+            (0.1, 10_000, 1.1970504236520445e-23),
+        ];
+        for (r, n, expected) in cases {
+            let p = compute_correlation_p_value(r, n);
+            assert!(
+                (p - expected).abs() <= 1e-9 * expected,
+                "r {r}, n {n}: {p} against {expected}"
+            );
+        }
+        assert_eq!(compute_correlation_p_value(1.0, 10), 0.0);
+        assert_eq!(compute_correlation_p_value(0.0, 10), 1.0);
+    }
+
     /// Shapiro-Francia's p-value is a p-value: a normal sample passes, and a price
     /// series of two regimes, W' = 0.929 over 2,590 values, does not.
     #[test]
@@ -3037,6 +2879,19 @@ mod normality_tests {
     fn non_finite_values_are_left_out() {
         let series = Series::new("x".into(), &[3.0, f64::NAN, 1.0, f64::INFINITY, 2.0]);
         assert_eq!(get_numeric_values_as_f64(&series), vec![3.0, 1.0, 2.0]);
+        assert_eq!(finite_values(&series), vec![3.0, 1.0, 2.0]);
+        let integers = Series::new("i".into(), &[Some(4i16), None, Some(-2)]);
+        assert_eq!(finite_values(&integers), vec![4.0, -2.0]);
+    }
+
+    /// One value throughout, even one a float cannot hold exactly, has no skew; and a
+    /// symmetric set has none either.
+    #[test]
+    fn a_constant_has_no_shape() {
+        assert_eq!(skewness_and_kurtosis(&[0.1; 50]), (0.0, 3.0));
+        assert_eq!(skewness_and_kurtosis(&[1.0, 2.0]), (0.0, 3.0));
+        let (skewness, _) = skewness_and_kurtosis(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(skewness.abs() < 1e-12);
     }
 }
 
@@ -3145,12 +3000,6 @@ pub(crate) mod describe_tests {
         let sampled = compute_describe_single_aggregation(&df, &schema, 6, None, 0, false)
             .unwrap()
             .column_statistics;
-        let per_column: Vec<ColumnStatistics> = (0..df.width())
-            .map(|i| {
-                compute_describe_column(&df, &schema, i, &ComputeOptions::default(), None, false)
-                    .unwrap()
-            })
-            .collect();
         let expected = [
             [
                 "2025-01-03",
@@ -3181,7 +3030,7 @@ pub(crate) mod describe_tests {
             ],
             ["3m", "1m", "2m", "3m", "4m", "5m"],
         ];
-        for stats in [&lazy, &sampled, &per_column] {
+        for stats in [&lazy, &sampled] {
             assert_eq!(stats.len(), expected.len());
             for (column, want) in stats.iter().zip(expected) {
                 assert!(column.numeric_stats.is_none(), "{}", column.name);

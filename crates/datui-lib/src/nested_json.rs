@@ -18,7 +18,7 @@ pub fn is_nested(dtype: &DataType) -> bool {
 
 /// Whether the JSON writer handles every leaf of `dtype`. It has no binary
 /// encoding and panics on one, so a nested binary column is left as it is and
-/// the delimited writer refuses it with an error instead.
+/// refused by `ensure_delimitable` instead.
 fn json_writable(dtype: &DataType) -> bool {
     match dtype {
         DataType::List(inner) | DataType::Array(inner, _) => json_writable(inner),
@@ -30,6 +30,22 @@ fn json_writable(dtype: &DataType) -> bool {
 
 fn converts(dtype: &DataType) -> bool {
     is_nested(dtype) && json_writable(dtype)
+}
+
+/// An error naming the first nested column with binary inside, which neither
+/// the delimited writer nor JSON can write. Polars' own "does not support
+/// nested data" would name neither the column nor a way out.
+pub fn ensure_delimitable(schema: &Schema) -> PolarsResult<()> {
+    match schema
+        .iter()
+        .find(|(_, dtype)| is_nested(dtype) && !json_writable(dtype))
+    {
+        Some((name, _)) => polars_bail!(
+            ComputeError: "Column \"{name}\" has binary data inside a list or struct, \
+            which CSV and TSV cannot hold. Hide the column (s), or export as Parquet or Arrow"
+        ),
+        None => Ok(()),
+    }
 }
 
 /// One nested column as a String column of JSON, null where the value is null.
@@ -49,6 +65,7 @@ pub fn column_as_json(column: &Column) -> PolarsResult<Column> {
 /// its own name. Planned, not run: the text is built as the rows are collected.
 pub fn lazy_as_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let schema = lf.collect_schema()?;
+    ensure_delimitable(&schema)?;
     let exprs: Vec<Expr> = schema
         .iter()
         .filter(|(_, dtype)| converts(dtype))
@@ -141,17 +158,85 @@ mod tests {
         assert!(eager.equals_missing(&lazy), "{eager}\n{lazy}");
     }
 
+    /// Dates, datetimes and categoricals inside a struct or list read the same
+    /// in a CSV cell as in an NDJSON export of the same frame.
     #[test]
-    fn a_nested_binary_column_is_left_alone() {
+    fn cells_match_an_ndjson_export() {
+        let df = df!(
+            "d" => [Some("2024-01-02"), None],
+            "c" => [Some("a"), None],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("d").str().to_date(StrptimeOptions::default()),
+            col("c").cast(DataType::from_categories(Categories::global())),
+        ])
+        .with_columns([col("d")
+            .cast(DataType::Datetime(
+                TimeUnit::Microseconds,
+                Some(TimeZone::UTC),
+            ))
+            .alias("dt")])
+        .select([
+            as_struct(vec![col("d"), col("dt"), col("c")]).alias("s"),
+            col("c").implode(true).alias("lc"),
+        ])
+        .collect()
+        .unwrap();
+        let mut ndjson = Vec::new();
+        JsonWriter::new(&mut ndjson)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(&mut df.clone())
+            .unwrap();
+        let cells = frame_as_json(&df).unwrap();
+        let (s, lc) = (
+            cells.column("s").unwrap().str().unwrap(),
+            cells.column("lc").unwrap().str().unwrap(),
+        );
+        let rebuilt: String = (0..cells.height())
+            .map(|i| {
+                format!(
+                    "{{\"s\":{},\"lc\":{}}}\n",
+                    s.get(i).unwrap(),
+                    lc.get(i).unwrap()
+                )
+            })
+            .collect();
+        assert_eq!(rebuilt, String::from_utf8(ndjson).unwrap());
+        assert!(rebuilt.contains(r#""dt":"2024-01-02T00:00:00+00:00","c":"a""#));
+    }
+
+    /// Binary inside a list has no JSON spelling: the frame keeps it, and a
+    /// CSV export or a TSV copy says which column and what to do instead of
+    /// Polars' bare "does not support nested data".
+    #[test]
+    fn a_nested_binary_column_is_refused_by_name() {
         let bytes = Series::new(
-            "b".into(),
+            "blobs".into(),
             [Some(Series::new("".into(), [b"x".as_slice()]))],
         );
         let df = DataFrame::new_infer_height(vec![bytes.into()]).unwrap();
         let out = frame_as_json(&df).unwrap();
         assert!(matches!(
-            out.column("b").unwrap().dtype(),
+            out.column("blobs").unwrap().dtype(),
             DataType::List(_)
         ));
+        let Err(export) = lazy_as_json(df.clone().lazy()) else {
+            panic!("a CSV export of a nested binary column plans")
+        };
+        let export = export.to_string();
+        assert!(
+            export.contains("\"blobs\"") && export.contains("Parquet"),
+            "{export}"
+        );
+        let copy = crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Tsv, true)
+            .unwrap_err();
+        assert_eq!(copy, export);
+        assert!(
+            crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Markdown, true)
+                .is_ok(),
+            "Markdown writes any cell as text"
+        );
     }
 }

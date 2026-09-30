@@ -5908,6 +5908,44 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
     );
 }
 
+/// Avro widens the hidden row index along with every other `u32`; the files are
+/// still named from it.
+#[test]
+fn test_an_avro_export_can_name_the_file_each_row_came_from() {
+    use polars::io::avro::AvroReader;
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &[None::<&str>]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+
+    let out = dir.path().join("named.avro");
+    export_as(
+        &mut app,
+        &rx,
+        &tx,
+        &out,
+        datui::export_modal::ExportFormat::Avro,
+        true,
+    );
+    let back = AvroReader::new(File::open(&out).unwrap()).finish().unwrap();
+    let files = back.column("source_file").unwrap().str().unwrap().clone();
+    assert!(
+        files
+            .get(0)
+            .unwrap()
+            .ends_with(&native("date=2024-01-01/data.parquet"))
+            && files
+                .get(1)
+                .unwrap()
+                .ends_with(&native("date=2024-01-02/data.parquet")),
+        "{files:?}"
+    );
+}
+
 /// A dataset may already have a column called `source_file` — a directory of per-file
 /// extracts is exactly this feature's audience — and adding one by that name would
 /// replace it, silently, in the file the user takes away.

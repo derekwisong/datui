@@ -4854,7 +4854,10 @@ impl DataTableState {
     /// from. The frame must have been collected with the index still on it.
     pub fn name_source_files(&self, mut df: DataFrame) -> PolarsResult<DataFrame> {
         let name = Self::free_source_file_name(&df);
-        let rows = df.drop_in_place(crate::schema_union::DRIFT_COLUMN)?;
+        // An Avro export has widened the index to i64 along with every other u32.
+        let rows = df
+            .drop_in_place(crate::schema_union::DRIFT_COLUMN)?
+            .strict_cast(&DataType::UInt32)?;
         let rows = rows.u32()?;
         let names: Vec<Option<&str>> = rows
             .iter()

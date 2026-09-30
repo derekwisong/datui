@@ -593,9 +593,9 @@ fn push_section(lines: &[&str], out: &mut String) {
 
 /// Columns `text` takes once its instructional characters are ASCII.
 fn ascii_width(text: &str) -> usize {
-    text.chars()
-        .map(|c| ascii_twin(c).map_or(1, str::len))
-        .sum()
+    let mut ascii = String::new();
+    push_ascii(text, &mut ascii);
+    ascii.len()
 }
 
 /// Where a help row's key ends and its description starts: the first run of
@@ -609,7 +609,20 @@ fn key_gap(line: &str) -> Option<(usize, usize)> {
 }
 
 fn push_ascii(text: &str, out: &mut String) {
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        // A paired arrow is one key, spelled as the glyph set spells it;
+        // twin by twin it would read "UpDn".
+        let pair = match (c, chars.peek()) {
+            ('↑', Some('↓')) => Some(ASCII.updown),
+            ('←', Some('→')) => Some(ASCII.updown_lr),
+            _ => None,
+        };
+        if let Some(pair) = pair {
+            chars.next();
+            out.push_str(pair);
+            continue;
+        }
         match ascii_twin(c) {
             Some(twin) => out.push_str(twin),
             None if c.is_ascii() => out.push(c),
@@ -916,6 +929,17 @@ mod tests {
         assert_eq!(
             instructions_in_ascii(text),
             "Keys:\n  Up / Dn:    Move\n  Enter:      Open, Rt on a folder\n"
+        );
+    }
+
+    /// Paired arrows read as the glyph set's pair, not as two words run
+    /// together, and the row still keeps its column.
+    #[test]
+    fn paired_arrows_read_as_one_key() {
+        let text = "  ↑↓ / j/k:      Rows\n  ←→ / h/l:      Columns\n  Home/End:      Ends";
+        assert_eq!(
+            instructions_in_ascii(text),
+            "  Up/Dn / j/k:   Rows\n  Lt/Rt / h/l:   Columns\n  Home/End:      Ends"
         );
     }
 

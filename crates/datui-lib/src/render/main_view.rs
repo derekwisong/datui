@@ -107,7 +107,11 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             {
                 return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
             }
-            // Esc stops a view being applied, like any other cancellable wait.
+            // Esc stops a pivot or a view being read, like any other cancellable
+            // wait. At the form only the hard escapes act meanwhile.
+            if app.pivot_computing() {
+                return ControlBarSpec::Custom(vec![("Esc", "Cancel"), ("^O", "Home")]);
+            }
             if app.view_applying() {
                 return ControlBarSpec::Custom(vec![
                     ("Esc", "Cancel"),

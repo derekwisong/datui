@@ -1787,6 +1787,31 @@ mod template_rollback_tests {
         }
     }
 
+    /// The Pivot & Melt form's pivot says the same while it is read.
+    #[test]
+    fn the_bar_offers_esc_while_a_pivot_is_computed() {
+        let (mut app, rx, tx, _dir) = long_csv_app();
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.input_mode, InputMode::PivotMelt);
+        app.event(&AppEvent::Pivot(pivot_melt_modal::PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: pivot_melt_modal::PivotAggregation::First,
+            sort_columns: None,
+        }));
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Computing pivot") && bar.contains("Esc") && bar.contains("Cancel"),
+            "{bar}"
+        );
+        assert!(!bar.contains("Help"), "? is held at the form: {bar}");
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    }
+
     /// Esc while a view's pivot is read acts at once, even with keys held, and keeps
     /// the table; the pivot's answer is dropped when it lands.
     #[test]
@@ -8812,7 +8837,7 @@ impl App {
     }
 
     /// Whether the Pivot & Melt modal is waiting on a pivot it started.
-    fn pivot_computing(&self) -> bool {
+    pub(crate) fn pivot_computing(&self) -> bool {
         self.input_mode == InputMode::PivotMelt
             && self.pivot_generation == Some(self.task_generation)
     }

@@ -600,7 +600,8 @@ fn ascii_width(text: &str) -> usize {
 
 /// Where a help row's key ends and its description starts: the first run of
 /// two or more spaces after the indent, with text after it. `None` for a
-/// line without one (prose, a heading, a blank line).
+/// line without one (prose, a heading, a blank line). Help prose takes one
+/// space between sentences, so the first double space is always a key gap.
 fn key_gap(line: &str) -> Option<(usize, usize)> {
     let lead = line.len() - line.trim_start_matches(' ').len();
     let key_end = lead + line[lead..].find("  ")?;
@@ -987,6 +988,10 @@ mod tests {
             let ascii = instructions_in_ascii(&text);
             assert!(ascii.is_ascii(), "{path:?}");
             assert_eq!(ascii.lines().count(), text.lines().count(), "{path:?}");
+            // Two spaces after a sentence would read as a key gap.
+            for line in text.lines() {
+                assert!(!line.contains(".  "), "{path:?}: {line:?}");
+            }
             let pairs: Vec<(&str, &str)> = text.lines().zip(ascii.lines()).collect();
             for section in pairs.split(|(utf8, _)| utf8.trim().is_empty()) {
                 let mut shift = None;

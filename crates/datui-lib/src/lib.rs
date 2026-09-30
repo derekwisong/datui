@@ -18791,6 +18791,7 @@ impl App {
             None => return Ok(None),
         };
         let no_points = || color_eyre::eyre::eyre!("No valid data points to export");
+        let notes = prepared.notes();
 
         let job = match prepared {
             ChartPrepared::XY(cache) => {
@@ -18860,6 +18861,7 @@ impl App {
                     x_axis_kind: cache.x_axis_kind,
                     log_scale,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Series {
                     series,
@@ -18898,6 +18900,7 @@ impl App {
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Series {
                     series,
@@ -18916,6 +18919,7 @@ impl App {
                     x_label: "Columns".to_string(),
                     y_label: "Value".to_string(),
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::BoxPlot {
                     data: data.clone(),
@@ -18949,6 +18953,7 @@ impl App {
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Series {
                     series,
@@ -18970,6 +18975,7 @@ impl App {
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
+                    notes,
                 };
                 ChartExportJob::Heatmap {
                     data: data.clone(),

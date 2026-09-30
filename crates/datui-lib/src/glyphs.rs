@@ -16,6 +16,8 @@
 //! overrides, where the risk is theirs. The ASCII fallback exists for terminals
 //! that are not doing UTF-8 at all.
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::symbols::{Marker, line};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -193,13 +195,77 @@ impl PlotMarks {
     }
 
     /// ratatui's `Chart` draws its axes and legend frame from `line::NORMAL`
-    /// whatever the set; this redraws them from the set's own `axis` lines. Nothing
-    /// changes under the Unicode set. Only box-drawing cells change: a label holding
-    /// one changes too, which a terminal without UTF-8 could not draw anyway.
-    pub fn redraw_axes(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+    /// whatever the set, and exposes neither; this finds them by shape and redraws
+    /// them from the set's own `axis` lines. The axes are the `└` with `│` above it
+    /// and a `─` run to its right that no `┘` closes; the legend is a closed box.
+    /// A label, title or name holding the same characters is left alone. A chart
+    /// too small for both axes has no corner to find them by, so there every line
+    /// cell changes. Nothing changes under the Unicode set.
+    pub fn redraw_axes(&self, area: Rect, buf: &mut Buffer) {
         let (from, to) = (line::NORMAL, self.axis);
         if from == to {
             return;
+        }
+        let area = area.intersection(buf.area);
+        let at = |x: u16, y: u16| buf[(x, y)].symbol();
+        // How many cells in a row hold `symbol`, stepping from (x, y) by (dx, dy).
+        let run = |x: u16, y: u16, (dx, dy): (i32, i32), symbol: &str| {
+            let mut n = 0;
+            let (mut cx, mut cy) = (i32::from(x) + dx, i32::from(y) + dy);
+            while (i32::from(area.left())..i32::from(area.right())).contains(&cx)
+                && (i32::from(area.top())..i32::from(area.bottom())).contains(&cy)
+                && at(cx as u16, cy as u16) == symbol
+            {
+                n += 1;
+                cx += dx;
+                cy += dy;
+            }
+            n
+        };
+        let (up, down, right) = ((0, -1), (0, 1), (1, 0));
+        let mut frame = Vec::new();
+        let mut found_axes = false;
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let symbol = at(x, y);
+                if symbol == from.bottom_left {
+                    let (high, wide) = (
+                        run(x, y, up, from.vertical),
+                        run(x, y, right, from.horizontal),
+                    );
+                    let end = x + wide + 1;
+                    let boxed = end < area.right() && at(end, y) == from.bottom_right;
+                    if high > 0 && wide > 0 && !boxed {
+                        found_axes = true;
+                        frame.extend((y - high..=y).map(|y| (x, y)));
+                        frame.extend((x + 1..end).map(|x| (x, y)));
+                    }
+                } else if symbol == from.top_left {
+                    let wide = run(x, y, right, from.horizontal);
+                    let high = run(x, y, down, from.vertical);
+                    let (r, b) = (x + wide + 1, y + high + 1);
+                    let closed = r < area.right()
+                        && b < area.bottom()
+                        && at(r, y) == from.top_right
+                        && at(x, b) == from.bottom_left
+                        && at(r, b) == from.bottom_right
+                        && run(r, y, down, from.vertical) == high
+                        && run(x, b, right, from.horizontal) == wide;
+                    if closed {
+                        for i in x..=r {
+                            frame.extend([(i, y), (i, b)]);
+                        }
+                        for j in y + 1..b {
+                            frame.extend([(x, j), (r, j)]);
+                        }
+                    }
+                }
+            }
+        }
+        if !found_axes {
+            frame = (area.top()..area.bottom())
+                .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+                .collect();
         }
         let pairs = [
             (from.vertical, to.vertical),
@@ -209,13 +275,10 @@ impl PlotMarks {
             (from.bottom_left, to.bottom_left),
             (from.bottom_right, to.bottom_right),
         ];
-        let area = area.intersection(buf.area);
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                let cell = &mut buf[(x, y)];
-                if let Some((_, twin)) = pairs.iter().find(|(line, _)| cell.symbol() == *line) {
-                    cell.set_symbol(twin);
-                }
+        for (x, y) in frame {
+            let cell = &mut buf[(x, y)];
+            if let Some((_, twin)) = pairs.iter().find(|(line, _)| cell.symbol() == *line) {
+                cell.set_symbol(twin);
             }
         }
     }
@@ -868,6 +931,77 @@ mod tests {
                 assert_eq!(UnicodeWidthStr::width(*eighth), 1, "{eighth:?}");
             }
         }
+    }
+
+    fn chart_buffer(width: u16, height: u16, x_title: &str, name: &str) -> Buffer {
+        use ratatui::widgets::{Axis, Chart, Dataset, LegendPosition, Widget};
+        let labels = || vec!["0", "5", "10"];
+        let chart = Chart::new(vec![
+            Dataset::default()
+                .name(name)
+                .marker(Marker::Custom('o'))
+                .data(&[(5.0, 5.0)]),
+        ])
+        .x_axis(
+            Axis::default()
+                .title(x_title)
+                .bounds([0.0, 10.0])
+                .labels(labels()),
+        )
+        .y_axis(Axis::default().bounds([0.0, 10.0]).labels(labels()))
+        .legend_position(Some(LegendPosition::TopRight))
+        .hidden_legend_constraints((
+            ratatui::layout::Constraint::Percentage(100),
+            ratatui::layout::Constraint::Percentage(100),
+        ));
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        chart.render(area, &mut buf);
+        buf
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let a = buf.area;
+        (a.top()..a.bottom())
+            .map(|y| {
+                (a.left()..a.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The swap finds the axes and the legend frame by shape: a title or a legend
+    /// name holding the same characters keeps them, and Unicode changes nothing.
+    #[test]
+    fn redraw_axes_changes_only_the_frame() {
+        let before = chart_buffer(40, 12, "a│b└─c", "x─│y");
+        let mut buf = before.clone();
+        unicode().plot.redraw_axes(buf.area, &mut buf);
+        assert_eq!(buf, before);
+
+        ascii().plot.redraw_axes(buf.area, &mut buf);
+        let text = buffer_text(&buf);
+        let rows: Vec<&str> = text.lines().collect();
+        assert!(rows[0].ends_with("+----+"), "the legend frame:\n{text}");
+        assert!(rows[1].ends_with("|x─│y|"), "the legend name:\n{text}");
+        assert!(rows[2].ends_with("+----+"), "the legend frame:\n{text}");
+        assert!(text.contains("a│b└─c"), "the axis title:\n{text}");
+        assert!(rows[10].contains("+-------"), "the axis corner:\n{text}");
+        let kept: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert_eq!(kept, "─││└─", "only the name and the title:\n{text}");
+    }
+
+    /// Under three rows the chart has no x axis, so no corner to find the y axis by;
+    /// every line cell changes then, and the plot is still ASCII.
+    #[test]
+    fn redraw_axes_in_a_chart_too_small_for_both_axes() {
+        let mut buf = chart_buffer(20, 2, "", "");
+        assert!(!buffer_text(&buf).is_ascii());
+        ascii().plot.redraw_axes(buf.area, &mut buf);
+        let text = buffer_text(&buf);
+        assert!(text.is_ascii() && text.contains('|'), "{text}");
     }
 
     /// `get()` stores a copy of a const, so no address can identify the active

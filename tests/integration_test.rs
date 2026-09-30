@@ -66,21 +66,30 @@ fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<App
 
 /// Ticks for a loop that polls the way `run()` does until what it waits for is true.
 /// Bounded by a hang guard rather than a count: on a loaded machine a count of ticks
-/// runs out before the work does.
+/// runs out before the work does. The guard fails the test instead of ending the loop,
+/// so a wait that never came true cannot fall through to asserts that pass anyway.
+#[track_caller]
 fn ticks() -> impl Iterator<Item = usize> {
+    let caller = std::panic::Location::caller();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    (0..).take_while(move |_| std::time::Instant::now() < deadline)
+    (0..).inspect(move |_| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wait at {caller} never finished"
+        );
+    })
 }
 
 /// Hand results and their follow-ups back through the channel, as `run()` does, until
 /// `done`. Waits on the channel between checks, so a slow machine costs time and
 /// never the answer.
+#[track_caller]
 fn pump_until(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
     done: impl Fn(&App) -> bool,
-) -> bool {
+) {
     for _ in ticks() {
         while let Ok(ev) = rx.try_recv() {
             if let Some(next) = app.event(&ev) {
@@ -88,7 +97,7 @@ fn pump_until(
             }
         }
         if done(app) {
-            return true;
+            return;
         }
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
             && let Some(next) = app.event(&ev)
@@ -96,7 +105,6 @@ fn pump_until(
             let _ = tx.send(next);
         }
     }
-    false
 }
 
 /// Pumps the load event chain until complete, including background task results from the channel.
@@ -489,15 +497,13 @@ fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<A
 }
 
 /// Feed background results back until the chart for the current selection is prepared.
+#[track_caller]
 fn pump_until_chart_ready(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
 ) {
-    assert!(
-        pump_until(app, rx, tx, App::chart_data_ready),
-        "chart data was never prepared"
-    );
+    pump_until(app, rx, tx, App::chart_data_ready);
 }
 
 /// Chart data is prepared off the render path: selecting columns starts a background
@@ -2933,7 +2939,6 @@ fn test_scroll_past_end_does_not_hang_busy() {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("app never settled");
     };
     settle(&mut app, &rx, &tx);
 
@@ -3142,8 +3147,10 @@ fn write_parquet(dir: &std::path::Path, sub: &str, mut df: polars::prelude::Data
 
 /// Render a loaded app until no collect is owed and no background work is still to
 /// report, and return what the table area shows. Idle alone is not enough: a row
-/// count landing later can widen the buffer after the app first goes quiet. Drains the app's events each pass: a buffer fill lands as one, so without it
-/// the screen is whatever the first synchronous collect managed.
+/// count landing later can widen the buffer after the app first goes quiet. Drains the
+/// app's events each pass: a buffer fill lands as one, so without it the screen is
+/// whatever the first synchronous collect managed.
+#[track_caller]
 fn painted(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -6199,10 +6206,10 @@ fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
     let mut pump = EventPump::new(app, tx, rx);
     pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while (pump.app.is_busy() || pump.app.data_table_state.is_none())
-        && std::time::Instant::now() < deadline
-    {
+    for _ in ticks() {
+        if !pump.app.is_busy() && pump.app.data_table_state.is_some() {
+            break;
+        }
         pump.wait_and_drain(std::time::Duration::from_millis(100))
             .unwrap();
     }
@@ -6614,6 +6621,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
 /// Draw, ask for what the frame needs, take one answer, draw again — the shape of
 /// `run()` around `terminal.draw`, so a state the real loop passes through for one
 /// frame can be caught here too.
+#[track_caller]
 fn pump_home(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -6634,7 +6642,6 @@ fn pump_home(
             app.event(&next);
         }
     }
-    panic!("the home screen never settled");
 }
 
 /// Everything a buffer has drawn, as lines.
@@ -7075,11 +7082,9 @@ fn test_escape_after_backspace_above_the_start_returns_home() {
 }
 
 /// Feed background results back into the app until it is no longer busy.
+#[track_caller]
 fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
-    assert!(
-        pump_until(app, rx, tx, |app| !app.is_busy()),
-        "app never settled"
-    );
+    pump_until(app, rx, tx, |app| !app.is_busy());
 }
 
 /// A 100-row table: `a` 0..100, `c` = a % 3, `name` "alpha_N" for even and "beta_N" for odd `a`.

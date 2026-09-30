@@ -256,18 +256,26 @@ pub fn render_chart_view(
             .render(chart_inner, buf);
         return;
     }
-    // The notes sit under the plot, one line each, where the axis ends: the plot
-    // gives up the rows, never the notes, so the chart cannot look whole when it is not.
-    let note_rows = (view.notes.len() as u16).min(chart_inner.height / 2);
+    // The notes sit under the plot, where the axis ends, wrapped rather than cut on a
+    // narrow canvas: the plot gives up the rows, never the notes, so the chart cannot
+    // look whole when it is not.
+    let lines: Vec<Line> = view
+        .notes
+        .iter()
+        .map(|note| Line::styled(note.as_str(), Style::default().fg(ctx.dimmed)))
+        .collect();
+    let wrapped: usize = lines
+        .iter()
+        .map(|line| crate::render::home_view::wrapped_rows(line, chart_inner.width as usize))
+        .sum();
+    let note_rows = (wrapped as u16).min(chart_inner.height / 2);
     if note_rows > 0 {
         let [plot, notes] = Layout::vertical([Constraint::Fill(1), Constraint::Length(note_rows)])
             .areas(chart_inner);
-        let lines: Vec<Line> = view
-            .notes
-            .iter()
-            .map(|note| Line::styled(note.as_str(), Style::default().fg(ctx.dimmed)))
-            .collect();
-        Paragraph::new(lines).right_aligned().render(notes, buf);
+        Paragraph::new(lines)
+            .right_aligned()
+            .wrap(Wrap { trim: true })
+            .render(notes, buf);
         chart_inner = plot;
     }
     match view.data {
@@ -1143,6 +1151,36 @@ mod tests {
             "{:?}",
             rows[23]
         );
+    }
+
+    /// On a canvas narrower than a note, the note wraps; nothing of it is cut.
+    #[test]
+    fn notes_wrap_on_a_narrow_canvas() {
+        let mut modal = open_modal();
+        modal.set_chart_kind(ChartKind::Histogram);
+        let notes = [
+            "sample of 1,000,000 of 36.8M rows",
+            "1,207 values outside p1-p99",
+        ];
+        let rows = render_view(
+            &mut modal,
+            ChartView {
+                data: ChartRenderData::Histogram { data: None },
+                notes: notes.iter().map(|n| n.to_string()).collect(),
+                error: None,
+            },
+            60,
+            20,
+        );
+        // The canvas is the right half; read its last rows as one line of words.
+        let text = rows[14..]
+            .iter()
+            .map(|r| r.chars().skip(30).collect::<String>().trim().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for note in notes {
+            assert!(text.contains(note), "{note:?} whole in {text:?}");
+        }
     }
 
     /// A failed preparation shows its message where the plot would be.

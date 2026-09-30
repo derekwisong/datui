@@ -161,7 +161,7 @@ impl ValueRange {
     pub fn label(self) -> &'static str {
         match self {
             Self::All => "All",
-            Self::Percentile1To99 => "1st-99th pct",
+            Self::Percentile1To99 => "p1-p99",
         }
     }
 
@@ -1138,14 +1138,16 @@ mod tests {
         let clipped =
             prepare_histogram_data(&lf, "fare", 10, ValueRange::Percentile1To99, &all_rows())
                 .unwrap();
-        assert!(clipped.x_min > 0.0 && clipped.x_max <= 100.0);
+        // Of 102 values the 1st percentile falls at 1.01 and the 99th at 99.99: each
+        // tail loses its outlier and the value next to it.
+        assert_eq!((clipped.x_min, clipped.x_max), (2.0, 99.0));
         let outside = clipped.clipped.unwrap().outside;
-        assert!(outside >= 2, "both outliers are out, got {outside}");
+        assert_eq!(outside, 4);
         let counted: f64 = clipped.bins.iter().map(|b| b.count).sum();
         assert_eq!(counted as usize + outside, 102);
         assert_eq!(
             chart_notes(&clipped.rows, clipped.clipped.as_ref()),
-            [format!("{outside} values outside 1st-99th pct")]
+            ["4 values outside p1-p99"]
         );
     }
 

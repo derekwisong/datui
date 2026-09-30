@@ -10,9 +10,9 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap.
   Sample size:      Rows a chart reads. A larger table is sampled
                     across all of it, and the chart says so below
                     the plot
-  Range:            Histogram, Box Plot and KDE: all values, or the
-                    1st to 99th percentile; the chart counts the
-                    values left out
+  Range:            Histogram, Box Plot and KDE: all values, or p1-p99
+                    (the 1st to 99th percentile); the chart counts
+                    the values left out
   e:                Export the chart to PNG or EPS. Needs the chart's
                     required columns picked first
   ? / F1:           Show this help (with a picker open ? types into the

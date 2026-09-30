@@ -36,6 +36,9 @@ pub struct SortModal {
     /// the visible order, so this is where a hidden column is listed, and returns
     /// to, when the sidebar reopens.
     pub applied_order: Vec<String>,
+    /// How many leading columns of `applied_order` were frozen, hidden ones included:
+    /// the table's count leaves out a hidden column that ended the span.
+    pub applied_locked: usize,
 }
 
 impl Default for SortModal {
@@ -50,6 +53,7 @@ impl Default for SortModal {
             history_limit: 1000,
             status: None,
             applied_order: Vec::new(),
+            applied_locked: 0,
         }
     }
 }
@@ -95,6 +99,16 @@ impl SortModal {
             .iter()
             .filter(|c| c.is_visible && c.display_order <= last_locked)
             .count()
+    }
+
+    /// How many leading columns of the full order are frozen, hidden ones included.
+    pub fn get_locked_span(&self) -> usize {
+        self.columns
+            .iter()
+            .filter(|c| c.is_locked)
+            .map(|c| c.display_order + 1)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Every column of the order: all columns, hidden included, sorted by place.

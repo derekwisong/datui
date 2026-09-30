@@ -12283,6 +12283,60 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
     );
 }
 
+/// Sort & Filter (#379): a column hidden after the sidebar reordered the table
+/// comes back after the column it followed there, not where the file has it; and
+/// hiding the last frozen column keeps its lock for when it is shown again.
+#[test]
+fn a_hidden_column_returns_to_the_applied_order_and_lock() {
+    let (mut app, rx, tx) = open_query_filter_fixture("sort_unhide_applied_order.csv");
+    let apply = |app: &mut App| {
+        if let Some(next) = press(app, KeyCode::Enter) {
+            let _ = tx.send(next);
+        }
+        pump_until_idle(app, &rx, &tx);
+    };
+    let open_list = |app: &mut App| {
+        press(app, KeyCode::Char('s'));
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+    };
+    let select = |app: &mut App, name: &str| {
+        let sort = &mut app.sort_filter_modal.sort;
+        let row = sort
+            .filtered_columns()
+            .iter()
+            .position(|(_, c)| c.name == name)
+            .unwrap();
+        sort.table_state.select(Some(row));
+    };
+
+    // name moves to the front, name and a freeze, then a is hidden.
+    open_list(&mut app);
+    select(&mut app, "name");
+    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Char('+'));
+    select(&mut app, "a");
+    press(&mut app, KeyCode::Char('L'));
+    press(&mut app, KeyCode::Char('v'));
+    apply(&mut app);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.headers(), ["name", "c"]);
+    assert_eq!(state.locked_columns_count(), 1);
+
+    open_list(&mut app);
+    assert_eq!(
+        app.sort_filter_modal.sort.get_full_column_order(),
+        ["name", "a", "c"],
+        "a is listed after name, where it was applied"
+    );
+    select(&mut app, "a");
+    press(&mut app, KeyCode::Char('v'));
+    apply(&mut app);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.headers(), ["name", "a", "c"]);
+    assert_eq!(state.locked_columns_count(), 2, "a is frozen again");
+}
+
 /// Each column of a multi-sort runs its own way: Space cycles one column
 /// none → ascending → descending, Enter applies from the list, and the header
 /// carries each column's own mark. `r` still reverses the whole view.

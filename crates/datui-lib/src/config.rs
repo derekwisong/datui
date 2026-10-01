@@ -1858,6 +1858,10 @@ pub struct PerformanceConfig {
     pub event_poll_interval_ms: u64,
     /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
     pub polars_streaming: bool,
+    /// The most a Data Quality full scan of a remote dataset may copy into the cache
+    /// directory, in MiB, to read the objects once instead of once per pass. 0 never
+    /// copies.
+    pub quality_local_copy_mb: u64,
 }
 
 // Field comments for PerformanceConfig
@@ -1874,7 +1878,14 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
         "polars_streaming",
         "Use Polars streaming engine for LazyFrame collect when available (default: true). Reduces memory and can improve performance on large or partitioned data.",
     ),
+    (
+        "quality_local_copy_mb",
+        "Data Quality full scans of a remote dataset (default 2048): up to this many MiB are\nfetched once into the cache directory and every pass reads the copy. A larger dataset,\nor one past the free disk, is read in its passes from the source. 0 never copies.",
+    ),
 ];
+
+/// Default for `performance.quality_local_copy_mb`: 2 GiB.
+pub const DEFAULT_QUALITY_LOCAL_COPY_MB: u64 = 2048;
 
 /// Default maximum rows used for chart data when not overridden by config or UI.
 pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
@@ -2709,6 +2720,7 @@ impl Default for PerformanceConfig {
             analysis_sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
             event_poll_interval_ms: 25,
             polars_streaming: true,
+            quality_local_copy_mb: DEFAULT_QUALITY_LOCAL_COPY_MB,
         }
     }
 }
@@ -3371,6 +3383,9 @@ impl PerformanceConfig {
         }
         if other.polars_streaming != default.polars_streaming {
             self.polars_streaming = other.polars_streaming;
+        }
+        if other.quality_local_copy_mb != default.quality_local_copy_mb {
+            self.quality_local_copy_mb = other.quality_local_copy_mb;
         }
     }
 }

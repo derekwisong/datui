@@ -834,6 +834,7 @@ impl TimeInterpretation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QualityStage {
     Preparing,
+    CopyingSource,
     ReusingSample,
     ReadingSample,
     CountingRows,
@@ -853,6 +854,7 @@ impl QualityStage {
     pub fn label(self) -> &'static str {
         match self {
             Self::Preparing => "Preparing the plan",
+            Self::CopyingSource => "Copying the source locally",
             Self::ReusingSample => "Reusing the retained sample",
             Self::ReadingSample => "Reading the sample",
             Self::CountingRows => "Counting rows",
@@ -891,6 +893,17 @@ pub struct ObservedReads {
     pub counted: usize,
     /// Rows the counted reads passed through from the scope, over every pass.
     pub rows: usize,
+    /// The local copy a full scan's passes read instead of the source, when they did.
+    pub copy: Option<CopyRead>,
+}
+
+/// A local copy of a remote source that a full scan's passes read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyRead {
+    pub bytes: u64,
+    pub objects: usize,
+    /// This run fetched it; otherwise an earlier run did and this one reused it.
+    pub fetched: bool,
 }
 
 /// A run's line to the screen: its stages as it enters them, the rows its reads
@@ -902,6 +915,8 @@ pub struct QualityWatch {
     report: Option<Arc<dyn Fn(QualityPhase) + Send + Sync>>,
     /// The stage under way, and what the stages before it read.
     last: Arc<std::sync::Mutex<(Option<QualityPhase>, ObservedReads)>>,
+    /// Set once the scope reads a local copy: its passes then read no source.
+    copy: Arc<std::sync::OnceLock<CopyRead>>,
 }
 
 impl std::fmt::Debug for QualityWatch {
@@ -947,7 +962,18 @@ impl QualityWatch {
                 observed.rows += rows;
             }
         }
+        observed.copy = self.copy.get().copied();
         observed
+    }
+
+    /// The scope is read from a local copy from here on.
+    pub(crate) fn use_copy(&self, copy: CopyRead) {
+        let _ = self.copy.set(copy);
+    }
+
+    /// Whether a pass over the scope reads the source: not once it reads a copy.
+    fn scope_reads(&self, reads: bool) -> bool {
+        reads && self.copy.get().is_none()
     }
 
     /// `lf`, watched: every batch that reaches its top is counted, and once the run
@@ -974,7 +1000,12 @@ impl QualityWatch {
     /// Enter `stage`. Said once however often it is entered, and refused once the run
     /// is cancelled: between stages is where a run stops. Leaving a stage that read
     /// the source adds the rows it counted to what was observed.
-    fn stage(&self, stage: QualityStage, reads_source: bool, interruptible: bool) -> Result<()> {
+    pub(crate) fn stage(
+        &self,
+        stage: QualityStage,
+        reads_source: bool,
+        interruptible: bool,
+    ) -> Result<()> {
         self.read.check()?;
         let phase = QualityPhase {
             stage,
@@ -2398,6 +2429,40 @@ fn segment_key(plan: &DataQualityPlan) -> SegmentKey {
     (plan.grain.clone(), format)
 }
 
+/// How a full scan of a remote source gets its rows, as Setup says before Run: one
+/// fetch into a local copy that every pass reads, a copy fetched earlier, or a pass
+/// over the source for each check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyPlan {
+    /// Not a full scan of a remote source read in place.
+    #[default]
+    NotApplicable,
+    /// Every pass reads the source, for the reason given.
+    Passes(NoCopy),
+    /// The objects are fetched once into the cache directory first.
+    Fetch { bytes: u64, objects: usize },
+    /// A copy fetched earlier this session serves every pass.
+    Kept { bytes: u64, objects: usize },
+}
+
+/// Why a remote full scan reads the source in each pass instead of a local copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoCopy {
+    /// `performance.quality_local_copy_mb` is 0.
+    Off,
+    /// The open did not learn every object's size.
+    SizeUnknown,
+    /// A copy fetched this session did not read as the source.
+    Unusable,
+    /// The scope reads only some of the rows or columns: its passes may read less
+    /// than the whole objects a copy would fetch.
+    PartOfTheSource,
+    /// Larger than `performance.quality_local_copy_mb`.
+    TooLarge { bytes: u64, limit: u64 },
+    /// More than the cache directory has free, or its free space is unknown.
+    NoRoom { bytes: u64, free: Option<u64> },
+}
+
 /// Where a run's exact segment totals come from, as Setup says before Run.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SegmentCount {
@@ -2721,7 +2786,7 @@ fn profile_quality(
             None => {
                 // Unwatched: Parquet and IPC answer a count from their metadata, which
                 // a watch between the count and the scan would turn into a read.
-                watch.stage(QualityStage::CountingRows, true, false)?;
+                watch.stage(QualityStage::CountingRows, watch.scope_reads(true), false)?;
                 let count = collect_lazy(
                     crate::widgets::datatable::row_count_lf(lf),
                     polars_streaming,
@@ -3068,7 +3133,11 @@ fn compute_full_quality(
     // streaming engine, and the rows each pass traverses are counted.
     let lf = &watch.watched(lf);
     let failed = |error: Report| watch.failed(error);
-    watch.stage(QualityStage::ProfilingColumns, true, polars_streaming)?;
+    watch.stage(
+        QualityStage::ProfilingColumns,
+        watch.scope_reads(true),
+        polars_streaming,
+    )?;
     // Text read as time is counted in the same pass as every column's profile.
     let mut exprs = build_profile_exprs(schema);
     exprs.extend(interpretation_exprs(plan, &full_schema));
@@ -3078,7 +3147,11 @@ fn compute_full_quality(
         .map_err(|error| watch.failed(error))?;
     let mut columns = parse_profiles(&aggregate, schema, total_rows);
     add_dominance_lazy(lf, &mut columns, polars_streaming).map_err(failed)?;
-    watch.stage(QualityStage::CheckingDuplicates, true, polars_streaming)?;
+    watch.stage(
+        QualityStage::CheckingDuplicates,
+        watch.scope_reads(true),
+        polars_streaming,
+    )?;
     let identity = profile_identity_lazy(
         lf,
         schema,
@@ -3090,13 +3163,21 @@ fn compute_full_quality(
     let texts = schema
         .iter_values()
         .any(|dtype| matches!(dtype, DataType::String | DataType::Categorical(..)));
-    watch.stage(QualityStage::CheckingSpellings, texts, polars_streaming)?;
+    watch.stage(
+        QualityStage::CheckingSpellings,
+        watch.scope_reads(texts),
+        polars_streaming,
+    )?;
     let category_variants =
         profile_category_variants_lazy(lf, schema, polars_streaming).map_err(failed)?;
     // The declared key is one grouping of its columns: a pass of its own, which
     // Setup counts among the passes before Run.
     let keyed = !plan.intent.key.is_empty();
-    watch.stage(QualityStage::CheckingKey, keyed, polars_streaming)?;
+    watch.stage(
+        QualityStage::CheckingKey,
+        watch.scope_reads(keyed),
+        polars_streaming,
+    )?;
     let repeats =
         crate::quality_intent::key_repeats(lf, plan, schema, polars_streaming).map_err(failed)?;
     let intent = crate::quality_intent::IntentResults::from_counts(
@@ -3131,7 +3212,11 @@ fn compute_full_quality(
         ));
     }
     let whole = unsegmented(plan, source);
-    watch.stage(QualityStage::ProfilingSegments, !whole, polars_streaming)?;
+    watch.stage(
+        QualityStage::ProfilingSegments,
+        watch.scope_reads(!whole),
+        polars_streaming,
+    )?;
     let segments = if whole {
         // The whole scope is one segment, and its profile is the one just measured:
         // reading it again would be a second pass for the same numbers.
@@ -3143,12 +3228,16 @@ fn compute_full_quality(
     let intervals = !resolved_intervals(plan, &full_schema).is_empty();
     watch.stage(
         QualityStage::ComputingIntervals,
-        intervals,
+        watch.scope_reads(intervals),
         polars_streaming,
     )?;
     let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming).map_err(failed)?;
     let shared = !shared_null_groups(&columns).is_empty();
-    watch.stage(QualityStage::CheckingSharedNulls, shared, polars_streaming)?;
+    watch.stage(
+        QualityStage::CheckingSharedNulls,
+        watch.scope_reads(shared),
+        polars_streaming,
+    )?;
     let shared_nulls = profile_shared_nulls(lf, &columns, polars_streaming).map_err(failed)?;
     watch.stage(QualityStage::Assembling, false, false)?;
     Ok(DataQualityResults {
@@ -8417,6 +8506,7 @@ mod tests {
                 reads: 1,
                 counted: 1,
                 rows: 10_000,
+                copy: None,
             }),
             "the sampler streamed the scope once"
         );

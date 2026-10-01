@@ -5,7 +5,8 @@ Runs `tests/quality_bench_test.rs` (ignored in CI) in this tree and in a
 worktree of an earlier commit, one scenario per process so each peak memory
 is that scenario's own, and prints a markdown table: wall time, requests and
 bytes at the source, peak resident memory and spill, for a first run and for
-role and grain edits, sampled and full.
+role and grain edits, sampled and full, and the disk a full scan's local copy
+holds.
 
 Both builds use the same fixtures (written once under the bench directory),
 the same sample size, seed, scopes and steps, and the same build profile. The
@@ -36,6 +37,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SCENARIOS = ["remote_prefix", "local_csv", "local_parquet"]
 TEST = "quality_bench_test"
+# What each BENCH line measures, in order. Disk is what Data Quality's local copies
+# held in the cache directory during the step.
+NAMES = ["wall_ms", "requests", "bytes", "peak_rss_kib", "spill_bytes", "disk_bytes"]
 # The same profile for both builds: release, without the LTO and single codegen
 # unit that make a release build slow to compile and change nothing compared here.
 PROFILE_ENV = {
@@ -86,10 +90,12 @@ def measure(tree: Path, label: str, bench: Path, runs: int, scenarios: list[str]
                 if not line.startswith("BENCH\t"):
                     continue
                 _, name, step, *fields = line.split("\t")
-                values = dict(
-                    field.split("=", 1) for field in fields[:5] if "=" in field
-                )
-                values["outcome"] = "\t".join(fields[5:])
+                # The measured fields, then the outcome. An older harness has no
+                # disk field: its copies, if any, were not measured.
+                measured = [f for f in fields if f.split("=", 1)[0] in NAMES]
+                values = dict(field.split("=", 1) for field in measured)
+                values.setdefault("disk_bytes", "unknown")
+                values["outcome"] = "\t".join(fields[len(measured):])
                 rows.setdefault((name, step), []).append(values)
     return rows
 
@@ -118,10 +124,10 @@ def summary(rows: list[dict[str, str]], name: str) -> str:
 
 def table(before, after) -> str:
     lines = [
-        "| Scenario | Step | Wall ms | Requests | Bytes | Peak RSS MiB | Spill bytes |",
-        "|---|---|---|---|---|---|---|",
+        "| Scenario | Step | Wall ms | Requests | Bytes | Peak RSS MiB | Spill bytes | Disk bytes |",
+        "|---|---|---|---|---|---|---|---|",
     ]
-    names = ["wall_ms", "requests", "bytes", "peak_rss_kib", "spill_bytes"]
+    names = NAMES
     for key in after:
         scenario, step = key
         cells = [

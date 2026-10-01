@@ -20,6 +20,9 @@ pub struct Wire {
     gets: AtomicU64,
     /// Body bytes sent in answer to GETs.
     bytes: AtomicU64,
+    /// Milliseconds each GET waits before it answers: a slow bucket, for a test
+    /// that cancels a read partway.
+    get_delay_ms: AtomicU64,
 }
 
 /// One reading of [`Wire`].
@@ -68,6 +71,7 @@ pub struct FakeS3 {
     pub wire: Arc<Wire>,
     address: std::net::SocketAddr,
     stopped: Arc<AtomicBool>,
+    objects: Arc<RwLock<Objects>>,
 }
 
 impl FakeS3 {
@@ -86,7 +90,7 @@ impl FakeS3 {
             })
             .collect();
         let objects = Arc::new(RwLock::new(objects));
-        let served = (wire.clone(), objects, bucket.to_string());
+        let served = (wire.clone(), objects.clone(), bucket.to_string());
         let stop = stopped.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -104,7 +108,30 @@ impl FakeS3 {
             wire,
             address,
             stopped,
+            objects,
         }
+    }
+
+    /// Delete `key`: requests for it are answered 404 from now on.
+    #[allow(dead_code)]
+    pub fn remove(&self, key: &str) {
+        self.objects.write().expect("objects").remove(key);
+    }
+
+    /// Write `bytes` at `key`, as a new version with its own tag.
+    #[allow(dead_code)]
+    pub fn put(&self, key: &str, bytes: Vec<u8>) {
+        let tag = etag(&bytes);
+        self.objects
+            .write()
+            .expect("objects")
+            .insert(key.to_string(), (bytes, tag));
+    }
+
+    /// Every GET waits `ms` before it answers.
+    #[allow(dead_code)]
+    pub fn slow_gets(&self, ms: u64) {
+        self.wire.get_delay_ms.store(ms, Ordering::SeqCst);
     }
 
     /// The configuration that points datui at this bucket.
@@ -179,6 +206,10 @@ fn answer(stream: TcpStream, bucket: &str, objects: &RwLock<Objects>, wire: &Wir
                 respond_head(&mut out, &headers)
             } else {
                 wire.gets.fetch_add(1, Ordering::SeqCst);
+                let delay = wire.get_delay_ms.load(Ordering::SeqCst);
+                if delay > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
                 let (start, end) = byte_range(range.as_deref(), bytes.len());
                 let body = &bytes[start..end];
                 wire.bytes.fetch_add(body.len() as u64, Ordering::SeqCst);

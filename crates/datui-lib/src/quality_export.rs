@@ -358,6 +358,17 @@ pub struct ReadsJson {
     pub counted: usize,
     /// Rows the counted reads passed through, over every pass.
     pub rows_traversed: usize,
+    /// The local copy of a remote source a full scan's passes read, when they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_copy: Option<LocalCopyJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalCopyJson {
+    pub bytes: u64,
+    pub objects: usize,
+    /// This run fetched it; false when an earlier run did.
+    pub fetched_by_this_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -645,6 +656,11 @@ pub fn report_file(
                 source_reads: reads.reads,
                 counted: reads.counted,
                 rows_traversed: reads.rows,
+                local_copy: reads.copy.map(|copy| LocalCopyJson {
+                    bytes: copy.bytes,
+                    objects: copy.objects,
+                    fetched_by_this_run: copy.fetched,
+                }),
             }),
         },
         verdict: verdict(&report),

@@ -1,10 +1,10 @@
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, EvidenceRead, SetupRow};
 use crate::config::Theme;
 use crate::data_quality::{
-    ColumnQualityProfile, DataQualityPlan, DataQualityResults, IntervalClock, IntervalFact,
-    ObservationKind, QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage,
-    QualityPrecision, QualityScope, SegmentCount, TemporalLatencyProfile, TemporalRole,
-    interval_label, window_cadence,
+    ColumnQualityProfile, CopyPlan, DataQualityPlan, DataQualityResults, IntervalClock,
+    IntervalFact, NoCopy, ObservationKind, QualityComparison, QualityCompute, QualityGrain,
+    QualityMetric, QualityPage, QualityPrecision, QualityScope, SegmentCount,
+    TemporalLatencyProfile, TemporalRole, interval_label, window_cadence,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -56,6 +56,10 @@ pub struct SetupView<'a> {
     pub cancelling: Option<Cancelling>,
     /// The rows runs kept for reuse, which `d` releases.
     pub kept: Option<KeptRows>,
+    /// How a full scan of a remote source reads it: see [`CopyPlan`].
+    pub copy: CopyPlan,
+    /// This dataset's local copy was released, so a Run fetches it again.
+    pub copy_released: bool,
 }
 
 /// The rows Data Quality's sampled runs kept this session, for later runs to reuse.
@@ -66,20 +70,35 @@ pub struct KeptRows {
     pub rows: usize,
     /// Near enough to budget by: [`crate::data_quality::QualitySample::estimated_bytes`].
     pub bytes: usize,
+    /// Bytes on disk in a full scan's local copy of a remote source; 0 for none.
+    pub copy_bytes: u64,
 }
 
 impl KeptRows {
-    /// `100,000 rows kept · 12.4 MiB`, or `2 samples, 200,000 rows kept · …`.
+    /// `100,000 rows kept · 12.4 MiB`, or `2 samples, 200,000 rows kept · …`, with
+    /// `, local copy · 17.3 MiB` after it when a full scan's copy is kept.
     pub fn label(&self) -> String {
+        let middot = glyphs::get().middot;
+        let copy = format!(
+            "local copy {middot} {}",
+            crate::widgets::info::format_bytes(self.copy_bytes)
+        );
+        if self.samples == 0 {
+            return copy;
+        }
         let rows = format!(
-            "{} {} kept {} {}",
+            "{} {} kept {middot} {}",
             numfmt::group_chrome(self.rows),
             if self.rows == 1 { "row" } else { "rows" },
-            glyphs::get().middot,
             crate::widgets::info::format_bytes(self.bytes as u64)
         );
-        if self.samples > 1 {
+        let rows = if self.samples > 1 {
             format!("{} samples, {rows}", numfmt::group_chrome(self.samples))
+        } else {
+            rows
+        };
+        if self.copy_bytes > 0 {
+            format!("{rows}, {copy}")
         } else {
             rows
         }
@@ -729,10 +748,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             return lines;
         }
         QualityCompute::Full => {
-            lines.push(format!(
-                "Every eligible row, in up to {} passes over the scope: one per check",
-                full_passes(config)
-            ));
+            lines.extend(copy_lines(view, full_passes(config)));
             // Each column an interval is windowed by is a grouping of its own.
             let clocks =
                 crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
@@ -811,6 +827,8 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         "the grain's column, for the count".to_string()
     } else if sampled && view.reuses_sample {
         "none".to_string()
+    } else if let Some(transfer) = copy_transfer(view.copy, state) {
+        transfer
     } else if state.is_remote_source() {
         "unknown".to_string()
     } else if sampled
@@ -833,6 +851,98 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         }
     ));
     lines
+}
+
+/// A full scan's first lines in Read: one pass per check, over the source, over a
+/// local copy fetched first, or over one fetched earlier, and why no copy where none.
+fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
+    let bytes = crate::widgets::info::format_bytes;
+    let over_source =
+        format!("Every eligible row, in up to {passes} passes over the source: one per check");
+    match view.copy {
+        CopyPlan::NotApplicable => vec![format!(
+            "Every eligible row, in up to {passes} passes over the scope: one per check"
+        )],
+        CopyPlan::Fetch {
+            bytes: size,
+            objects,
+        } => {
+            let mut lines = vec![
+                format!(
+                    "One fetch of {} ({size}) into a local copy, then up to {passes} passes over it",
+                    objects_label(objects),
+                    size = bytes(size)
+                ),
+                "The copy stays for later full scans until d releases it".to_string(),
+            ];
+            if view.copy_released {
+                lines.push("Copied before; released, so fetched again".to_string());
+            }
+            lines
+        }
+        CopyPlan::Kept { bytes: size, .. } => vec![format!(
+            "Every eligible row, in up to {passes} passes over the local copy ({}): no source read",
+            bytes(size)
+        )],
+        CopyPlan::Passes(why) => vec![
+            over_source,
+            match why {
+                NoCopy::Off => "Local copies are off: quality_local_copy_mb is 0".to_string(),
+                NoCopy::SizeUnknown => {
+                    "Object sizes unknown when it opened, so no local copy".to_string()
+                }
+                NoCopy::Unusable => {
+                    "The local copy did not read as the source, so no local copy".to_string()
+                }
+                NoCopy::PartOfTheSource => {
+                    "The scope reads part of the source, so no local copy".to_string()
+                }
+                NoCopy::TooLarge { bytes: size, limit } => format!(
+                    "Too large to keep a local copy: {} over the {} limit",
+                    bytes(size),
+                    bytes(limit)
+                ),
+                NoCopy::NoRoom {
+                    bytes: size,
+                    free: Some(free),
+                } => format!(
+                    "No local copy: {} is more than the {} free on disk",
+                    bytes(size),
+                    bytes(free)
+                ),
+                NoCopy::NoRoom { free: None, .. } => {
+                    "No local copy: free disk space unknown".to_string()
+                }
+            },
+        ],
+    }
+}
+
+fn objects_label(objects: usize) -> String {
+    if objects == 1 {
+        "1 object".to_string()
+    } else {
+        format!("{} objects", numfmt::group_chrome(objects))
+    }
+}
+
+/// What a full scan takes from a remote source when it reads a local copy: the
+/// objects once, or nothing. `None` when its passes read the source.
+fn copy_transfer(copy: CopyPlan, state: &DataTableState) -> Option<String> {
+    let conflicts = if state.quality_conflict_reads() > 0 {
+        ", plus the conflict reads"
+    } else {
+        ""
+    };
+    match copy {
+        CopyPlan::Fetch { bytes, .. } => Some(format!(
+            "{}, one request per object{conflicts}",
+            crate::widgets::info::format_bytes(bytes)
+        )),
+        CopyPlan::Kept { .. } if conflicts.is_empty() => Some("none".to_string()),
+        CopyPlan::Kept { .. } => Some("only the conflict reads".to_string()),
+        _ => None,
+    }
 }
 
 /// What the declared intent costs, said before Run: nothing past the rows read, but
@@ -4013,6 +4123,8 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let state = config.state;
     let plan = config.plan;
     let remote = state.is_remote_source();
+    let copy = config.setup.copy;
+    let format_bytes = crate::widgets::info::format_bytes;
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),
@@ -4041,15 +4153,29 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         ),
         row(
             "Value reads",
-            if remote {
-                "unknown".to_string()
-            } else {
-                planned_read_label(state, plan)
+            match copy {
+                CopyPlan::Fetch { bytes, .. } => format!(
+                    "{}, fetched once; every pass reads the copy",
+                    format_bytes(bytes)
+                ),
+                CopyPlan::Kept { bytes, .. } => {
+                    format!(
+                        "none: every pass reads the local copy ({})",
+                        format_bytes(bytes)
+                    )
+                }
+                _ if remote => "unknown".to_string(),
+                _ => planned_read_label(state, plan),
             },
         ),
         row(
             "Requests",
-            if remote { "unknown" } else { "none" }.to_string(),
+            match copy {
+                CopyPlan::Fetch { objects, .. } => format!("{objects}, one per object"),
+                CopyPlan::Kept { .. } => "none".to_string(),
+                _ if remote => "unknown".to_string(),
+                _ => "none".to_string(),
+            },
         ),
         row(
             "Known source files",
@@ -4068,7 +4194,17 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             },
         ),
         row("Remote writes", "none".to_string()),
-        row("Local file writes", "none".to_string()),
+        row(
+            "Local file writes",
+            match copy {
+                CopyPlan::Fetch { bytes, .. } => format!(
+                    "a copy of {} in the cache directory, kept until released (d), \
+                     reopened or datui exits",
+                    format_bytes(bytes)
+                ),
+                _ => "none".to_string(),
+            },
+        ),
         row("Passes", passes_label(config)),
         row("Column intent", {
             let every_row =
@@ -4091,6 +4227,10 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                 QualityCompute::Metadata => "file footers read when the data opened".to_string(),
                 QualityCompute::Sample => {
                     "rows: the sample; bytes: a ceiling, the whole scope".to_string()
+                }
+                QualityCompute::Full if matches!(copy, CopyPlan::Fetch { .. }) => {
+                    "rows: every eligible row; bytes: the object sizes listed when it opened"
+                        .to_string()
                 }
                 QualityCompute::Full => {
                     "rows: every eligible row; what each pass re-reads depends on the \
@@ -4122,7 +4262,19 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
     match plan.compute {
         _ if view.unchanged || view.cached => "none: the report is already here".to_string(),
         QualityCompute::Metadata => "none".to_string(),
-        QualityCompute::Full => format!("up to {}, one per check", full_passes(config)),
+        QualityCompute::Full => match view.copy {
+            CopyPlan::Fetch { .. } => format!(
+                "one fetch, then up to {} over the copy, one per check",
+                full_passes(config)
+            ),
+            CopyPlan::Kept { .. } => {
+                format!(
+                    "up to {} over the local copy, one per check",
+                    full_passes(config)
+                )
+            }
+            _ => format!("up to {}, one per check", full_passes(config)),
+        },
         QualityCompute::Sample => {
             let sample = if view.reuses_sample {
                 "none for the sample: rows already read"
@@ -4143,13 +4295,25 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
 /// A full scan asks first: it may read the whole source.
 fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let width = 60.min(area.width.saturating_sub(2));
+    let fetch = match config.setup.copy {
+        CopyPlan::Fetch { bytes, .. } => Some(format!(
+            "It fetches {} once into a local copy, and every pass reads the copy.",
+            crate::widgets::info::format_bytes(bytes)
+        )),
+        _ => None,
+    };
     let lines = [
-        "This setup reads every eligible row and may read the whole source.",
-        "The source stays read-only; remote writes are 0 B.",
+        Some("This setup reads every eligible row and may read the whole source.".to_string()),
+        fetch,
+        Some("The source stays read-only; remote writes are 0 B.".to_string()),
     ]
-    .iter()
-    .flat_map(|text| crate::widgets::info::wrap_to(text, width.saturating_sub(4) as usize))
+    .into_iter()
+    .flatten()
     .collect::<Vec<_>>();
+    let lines = lines
+        .iter()
+        .flat_map(|text| crate::widgets::info::wrap_to(text, width.saturating_sub(4) as usize))
+        .collect::<Vec<_>>();
     let popup = centered_rect(width, lines.len() as u16 + 2, area);
     let content = Surface::new("Full Scan")
         .border_style(Style::default().fg(config.ctx.modal_border_active))
@@ -4617,6 +4781,7 @@ mod tests {
             reads: 1,
             counted: 1,
             rows: 80,
+            copy: None,
         });
         for (results, verdict) in [(&screen.results, "problem"), (&clean, "No problems found")] {
             for (width, height) in [(80, 24), (60, 20)] {
@@ -5248,6 +5413,126 @@ mod interval_tests {
         plan.interval_clock = IntervalClock::Grain;
         let text = Screen::new(plan).draw(QualityPage::Setup, 0, 0, (120, 40));
         assert!(!text.contains("of those passes for intervals"), "{text}");
+    }
+
+    /// A full scan's Read says how it gets the rows of a remote source before Run:
+    /// one fetch into a copy, a copy fetched earlier, or the source in every pass
+    /// with the reason there is no copy.
+    #[test]
+    fn setup_says_how_a_full_scan_reads_a_remote_source() {
+        const MIB: u64 = 1024 * 1024;
+        let lines = |copy: CopyPlan, copy_released: bool| {
+            let view = SetupView {
+                copy,
+                copy_released,
+                ..SetupView::default()
+            };
+            copy_lines(&view, 7).join("\n")
+        };
+        let fetch = CopyPlan::Fetch {
+            bytes: 17 * MIB,
+            objects: 8,
+        };
+        let text = lines(fetch, false);
+        assert!(
+            text.starts_with(
+                "One fetch of 8 objects (17.0 MiB) into a local copy, then up to 7 passes over it"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("until d releases it"), "{text}");
+        assert!(!text.contains("released, so"), "{text}");
+        assert!(lines(fetch, true).contains("Copied before; released, so fetched again"));
+        let one = CopyPlan::Fetch {
+            bytes: MIB,
+            objects: 1,
+        };
+        assert!(lines(one, false).starts_with("One fetch of 1 object (1.0 MiB)"));
+        assert_eq!(
+            lines(
+                CopyPlan::Kept {
+                    bytes: 17 * MIB,
+                    objects: 8
+                },
+                false
+            ),
+            "Every eligible row, in up to 7 passes over the local copy (17.0 MiB): no source read"
+        );
+        assert!(lines(CopyPlan::NotApplicable, false).contains("passes over the scope"));
+        for (why, says) in [
+            (
+                NoCopy::Off,
+                "Local copies are off: quality_local_copy_mb is 0",
+            ),
+            (
+                NoCopy::SizeUnknown,
+                "Object sizes unknown when it opened, so no local copy",
+            ),
+            (
+                NoCopy::Unusable,
+                "The local copy did not read as the source, so no local copy",
+            ),
+            (
+                NoCopy::PartOfTheSource,
+                "The scope reads part of the source, so no local copy",
+            ),
+            (
+                NoCopy::TooLarge {
+                    bytes: 3 * 1024 * MIB,
+                    limit: 2 * 1024 * MIB,
+                },
+                "Too large to keep a local copy: 3.0 GiB over the 2.0 GiB limit",
+            ),
+            (
+                NoCopy::NoRoom {
+                    bytes: 17 * MIB,
+                    free: Some(MIB),
+                },
+                "No local copy: 17.0 MiB is more than the 1.0 MiB free on disk",
+            ),
+            (
+                NoCopy::NoRoom {
+                    bytes: 17 * MIB,
+                    free: None,
+                },
+                "No local copy: free disk space unknown",
+            ),
+        ] {
+            let text = lines(CopyPlan::Passes(why), false);
+            assert!(
+                text.starts_with("Every eligible row, in up to 7 passes over the source"),
+                "{text}"
+            );
+            assert!(text.ends_with(says), "{text}");
+        }
+    }
+
+    /// The Read rule names a kept copy beside kept rows, or alone.
+    #[test]
+    fn the_read_rule_names_a_kept_copy() {
+        let rows = KeptRows {
+            samples: 1,
+            rows: 100_000,
+            bytes: 13 * 1024 * 1024,
+            copy_bytes: 0,
+        };
+        let middot = glyphs::get().middot;
+        assert_eq!(rows.label(), format!("100,000 rows kept {middot} 13.0 MiB"));
+        let both = KeptRows {
+            copy_bytes: 17 * 1024 * 1024,
+            ..rows
+        };
+        assert_eq!(
+            both.label(),
+            format!("100,000 rows kept {middot} 13.0 MiB, local copy {middot} 17.0 MiB")
+        );
+        let copy = KeptRows {
+            samples: 0,
+            rows: 0,
+            bytes: 0,
+            ..both
+        };
+        assert_eq!(copy.label(), format!("local copy {middot} 17.0 MiB"));
     }
 
     /// Valid from to valid to is a validity period: no end is open, an end before

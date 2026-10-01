@@ -20,6 +20,7 @@ use ratatui::{
 
 use crate::error_display::user_message_from_polars;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::local_copy::RemoteObject;
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::query::{ParsedQuery, parse_query};
@@ -218,6 +219,10 @@ pub struct DataTableState {
     row_group_offsets: Option<Vec<usize>>,
     /// The files of a remote dataset, when it is many. See `RemoteFiles`.
     remote_files: Option<RemoteFiles>,
+    /// Each remote object the dataset reads, by URL, with its size and tag from the
+    /// listing or the footer read that opened it. What a Data Quality local copy
+    /// would fetch.
+    remote_objects: Option<Arc<std::collections::HashMap<String, RemoteObject>>>,
     /// What the footers said about a many-file dataset's columns: where the schema came
     /// from, and which columns are not in every file. `None` for a single file.
     dataset_schema: Option<crate::schema_union::DatasetSchema>,
@@ -812,6 +817,7 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             remote_files: None,
+            remote_objects: None,
             dataset_schema: None,
             drift_column_present: false,
             drift_groups: Arc::new(Vec::new()),
@@ -931,6 +937,7 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             remote_files: None,
+            remote_objects: None,
             dataset_schema: None,
             drift_column_present: false,
             drift_groups: Arc::new(Vec::new()),
@@ -4695,6 +4702,79 @@ impl DataTableState {
     /// Record that the data is a remote dataset of many files. See `RemoteFiles`.
     pub fn set_remote_files(&mut self, files: RemoteFiles) {
         self.remote_files = Some(files);
+    }
+
+    /// Record each remote object the dataset reads, as the open found it.
+    pub fn set_remote_objects(&mut self, objects: impl IntoIterator<Item = RemoteObject>) {
+        self.remote_objects = Some(Arc::new(
+            objects
+                .into_iter()
+                .map(|object| (object.url.clone(), object))
+                .collect(),
+        ));
+    }
+
+    /// Whether a Data Quality run over `scope` reads every row and every byte-bearing
+    /// column of the source: the case where a copy of the whole objects costs no more
+    /// than one of its passes. A filter or a hidden column may let a pass read less
+    /// than the objects, and a binary column is never read at all.
+    pub(crate) fn quality_reads_whole_source(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> bool {
+        use crate::data_quality::QualityScope;
+        let columns = || {
+            self.original_schema
+                .iter()
+                .filter(|(name, _)| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+        };
+        if columns().any(|(_, dtype)| matches!(dtype, DataType::Binary)) {
+            return false;
+        }
+        match scope {
+            QualityScope::WholeSource => true,
+            QualityScope::CurrentView => {
+                let shown = self
+                    .column_order
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<HashSet<_>>();
+                !self.changes_rows() && columns().all(|(name, _)| shown.contains(name.as_str()))
+            }
+            _ => false,
+        }
+    }
+
+    /// Each remote object the dataset reads, in scan order: every file of a remote
+    /// dataset, or the one object. `None` in place of one the open did not size.
+    pub(crate) fn each_remote_object(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = Option<&RemoteObject>> + '_>> {
+        let objects = self.remote_objects.as_ref()?;
+        Some(match &self.remote_files {
+            Some(remote) => Box::new(remote.urls.iter().map(|url| objects.get(url))),
+            None => Box::new(objects.values().map(Some)),
+        })
+    }
+
+    /// The remote objects this dataset reads. `None` when any is unknown.
+    pub(crate) fn remote_objects(&self) -> Option<Vec<RemoteObject>> {
+        let objects = self
+            .each_remote_object()?
+            .map(|object| object.cloned())
+            .collect::<Option<Vec<_>>>()?;
+        (!objects.is_empty()).then_some(objects)
+    }
+
+    /// The bytes and count of [`Self::remote_objects`], without copying them out:
+    /// Setup asks on every frame.
+    pub(crate) fn remote_objects_size(&self) -> Option<(u64, usize)> {
+        let (bytes, count) = self
+            .each_remote_object()?
+            .try_fold((0u64, 0usize), |(bytes, count), object| {
+                object.map(|object| (bytes + object.size, count + 1))
+            })?;
+        (count > 0).then_some((bytes, count))
     }
 
     /// Record what the footers said about the dataset's columns. See `DatasetSchema`.

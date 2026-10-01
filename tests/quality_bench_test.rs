@@ -15,7 +15,8 @@
 //! nothing here counts, so those are reported as unknown. Peak memory is the
 //! process's resident high-water mark over the step (`VmHWM`, reset through
 //! `/proc/self/clear_refs`). Spill is the most the Polars spill directory held,
-//! sampled every few milliseconds.
+//! and disk the most Data Quality's local copies held in the cache directory,
+//! each sampled every few milliseconds.
 //!
 //! The steps press Run as a user would, on each version's own Setup page; the
 //! fixtures are written once, deterministically, under `DATUI_BENCH_DIR`.
@@ -342,14 +343,22 @@ fn bench(scenario: &str, path: &str, config: AppConfig, wire: Option<&fake_s3::W
         "{scenario}: {path} did not open"
     );
     eprintln!("{scenario}: opened in {:?}", opened.elapsed());
+    // Where a full scan's local copy of a remote source goes, under the cache
+    // directory the test harness isolates.
+    let copies = std::env::var_os("DATUI_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("quality-copies");
     for (step, study) in steps() {
         let before = wire.map(fake_s3::Wire::count);
         reset_peak_memory();
         let watch = SpillWatch::start(spill.clone());
+        let disk = SpillWatch::start(copies.clone());
         let started = Instant::now();
         run_study(&mut app, &rx, &study);
         let took = started.elapsed();
         let spilled = watch.stop();
+        let disk = disk.stop();
         let peak = peak_memory_kib()
             .map(|kib| kib.to_string())
             .unwrap_or_else(|| "unknown".into());
@@ -376,7 +385,7 @@ fn bench(scenario: &str, path: &str, config: AppConfig, wire: Option<&fake_s3::W
             None => "no report".to_string(),
         };
         println!(
-            "BENCH\t{scenario}\t{step}\twall_ms={}\trequests={gets}\tbytes={bytes}\tpeak_rss_kib={peak}\tspill_bytes={spilled}\t{outcome}",
+            "BENCH\t{scenario}\t{step}\twall_ms={}\trequests={gets}\tbytes={bytes}\tpeak_rss_kib={peak}\tspill_bytes={spilled}\tdisk_bytes={disk}\t{outcome}",
             took.as_millis()
         );
         assert!(!app.modal_showing(), "{scenario}: {step} failed");

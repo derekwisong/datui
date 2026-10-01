@@ -797,17 +797,28 @@ fn backing_rows(df: &DataFrame, offset: usize, len: usize) -> usize {
 /// A slice keeps the whole of its parent allocated, and neither `rechunk` (a lone chunk
 /// is left as it is) nor `take` (a string column keeps its parent's data buffers) is
 /// sure to let go of it. Polars' builders with `ShareStrategy::Never` copy every
-/// physical type, nested children and string bytes included.
+/// physical type, nested children and string bytes included. A constant column stays
+/// one value: built out, it would be a copy of the value per row.
 fn compact_rows(df: &DataFrame, offset: usize, len: usize) -> DataFrame {
-    let mut builder = polars::frame::builder::DataFrameBuilder::new(df.schema().clone());
-    builder.reserve(len);
-    builder.subslice_extend(
-        df,
-        offset,
-        len,
-        polars_arrow::array::builder::ShareStrategy::Never,
-    );
-    builder.freeze()
+    use polars::series::builder::SeriesBuilder;
+    use polars_arrow::array::builder::ShareStrategy;
+    let len = len.min(df.height().saturating_sub(offset));
+    let columns = df
+        .columns()
+        .iter()
+        .map(|column| match column {
+            Column::Scalar(constant) => {
+                Column::new_scalar(column.name().clone(), constant.scalar().clone(), len)
+            }
+            Column::Series(series) => {
+                let mut builder = SeriesBuilder::new(series.dtype().clone());
+                builder.reserve(len);
+                builder.subslice_extend(series, offset, len, ShareStrategy::Never);
+                builder.freeze(series.name().clone()).into_column()
+            }
+        })
+        .collect();
+    DataFrame::new(len, columns).unwrap_or_else(|_| df.slice(offset as i64, len))
 }
 
 /// Shrink `[buffer_start, buffer_end)` to at most `max_len` rows, kept around the view
@@ -11907,8 +11918,8 @@ mod tests {
     /// cannot pass by skipping a column.
     fn array_storage(arr: &dyn polars_arrow::array::Array, out: &mut Vec<(usize, usize)>) {
         use polars_arrow::array::{
-            BinaryViewArray, BooleanArray, FixedSizeListArray, ListArray, PrimitiveArray,
-            StructArray, Utf8ViewArray,
+            BinaryViewArray, BooleanArray, FixedSizeListArray, ListArray, NullArray,
+            PrimitiveArray, StructArray, Utf8ViewArray,
         };
         fn push<T>(out: &mut Vec<(usize, usize)>, s: &[T]) {
             if !s.is_empty() {
@@ -11916,10 +11927,14 @@ mod tests {
                 out.push((start, start + std::mem::size_of_val(s)));
             }
         }
+        let any = arr.as_any();
+        // A null array's validity is Polars' shared zeroed bitmap, owned by no frame.
+        if any.downcast_ref::<NullArray>().is_some() {
+            return;
+        }
         if let Some(validity) = arr.validity() {
             push(out, validity.as_slice().0);
         }
-        let any = arr.as_any();
         macro_rules! primitive {
             ($($t:ty),*) => {$(
                 if let Some(a) = any.downcast_ref::<PrimitiveArray<$t>>() {
@@ -11973,7 +11988,8 @@ mod tests {
     }
 
     /// Every kind of column a buffer holds: fixed width, booleans, short and long
-    /// strings, nulls in each, a categorical, a datetime, a list of strings and a struct.
+    /// strings, binary, nulls in each, a categorical, an enum, a datetime, a decimal, a
+    /// list of strings, a fixed-size array, a struct and an all-null column.
     fn mixed_frame(start: usize, end: usize) -> DataFrame {
         let rows = start..end;
         let long = |i: usize| format!("{i:>8}-{}", "x".repeat(40));
@@ -12011,11 +12027,45 @@ mod tests {
             ],
         )
         .unwrap();
-        df.with_column(cat).unwrap();
-        df.with_column(when).unwrap();
-        df.with_column(list.with_name("tags".into()).into_column())
+        let labels: Vec<String> = (0..100).map(|i| format!("s{i}")).collect();
+        let labels = FrozenCategories::new(labels.iter().map(String::as_str)).unwrap();
+        let label = df
+            .column("short")
+            .unwrap()
+            .cast(&DataType::from_frozen_categories(labels))
+            .unwrap()
+            .with_name("label".into());
+        let bytes = df
+            .column("long")
+            .unwrap()
+            .cast(&DataType::Binary)
+            .unwrap()
+            .with_name("bytes".into());
+        let price = df
+            .column("maybe")
+            .unwrap()
+            .cast(&DataType::Decimal(18, 2))
+            .unwrap()
+            .with_name("price".into());
+        let tags = list.with_name("tags".into()).into_column();
+        let pair = tags
+            .cast(&DataType::Array(Box::new(DataType::String), 2))
+            .unwrap()
+            .with_name("pair".into());
+        for column in [
+            cat,
+            label,
+            bytes,
+            when,
+            price,
+            tags,
+            pair,
+            nested.into_column(),
+        ] {
+            df.with_column(column).unwrap();
+        }
+        df.with_column(Series::new_null("nothing".into(), n).into_column())
             .unwrap();
-        df.with_column(nested.into_column()).unwrap();
         df
     }
 
@@ -12062,6 +12112,24 @@ mod tests {
             assert!(kept.equals_missing(&stitched.slice(offset as i64, len)));
             assert_eq!(kept.first_col_n_chunks(), 1);
         }
+
+        // A constant column is cut to length, not written out a row at a time.
+        let constant = "k".repeat(200);
+        let with_constant = mixed_frame(0, 2_000)
+            .lazy()
+            .with_column(lit(constant.as_str()).alias("constant"))
+            .collect()
+            .unwrap();
+        assert!(matches!(
+            with_constant.column("constant").unwrap(),
+            Column::Scalar(_)
+        ));
+        let kept = compact_rows(&with_constant, 500, 1_000);
+        let Column::Scalar(cut) = kept.column("constant").unwrap() else {
+            panic!("the constant column was built out");
+        };
+        assert_eq!(cut.len(), 1_000);
+        assert!(kept.equals_missing(&with_constant.slice(500, 1_000)));
     }
 
     /// A state with a 1 MB byte budget and the first column locked.
@@ -12119,7 +12187,9 @@ mod tests {
         assert_view_rows(&state, &source);
 
         // Synchronous: the same fill collected on the spot from an eager source, which
-        // stays held by the frame itself; the buffer's copy does not.
+        // stays held by the frame itself; the buffer's copy does not. A binary column
+        // is drawn as a stub there, so it is left out.
+        let source = source.drop("bytes").unwrap();
         let mut state = trimming_state(source.clone().lazy());
         state.num_rows = N;
         state.num_rows_valid = true;

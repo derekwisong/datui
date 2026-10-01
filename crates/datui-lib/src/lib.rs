@@ -3316,6 +3316,211 @@ mod template_rollback_tests {
         );
         assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
     }
+
+    /// A view of `long.csv` that does nothing yet.
+    fn blank_view(app: &mut App, name: &str) -> Template {
+        let mut template = pivot_view(app, name);
+        template.settings = template::TemplateSettings {
+            query: None,
+            sql_query: None,
+            fuzzy_query: None,
+            filters: Vec::new(),
+            sort_columns: Vec::new(),
+            sort_descending: Vec::new(),
+            sort_ascending: true,
+            column_order: Vec::new(),
+            locked_columns_count: 0,
+            pivot: None,
+            melt: None,
+            reshape_source: None,
+        };
+        template
+    }
+
+    /// Handle events until the app is idle, as if every worker reading for the view —
+    /// its pivot or its first rows — panicked.
+    fn pump_with_dying_workers(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        tx: &mpsc::Sender<AppEvent>,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.is_busy() {
+            assert!(std::time::Instant::now() < deadline, "the view never ended");
+            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
+                continue;
+            };
+            let event = match event {
+                AppEvent::BackgroundCollectReady { generation }
+                | AppEvent::ViewPivotReady { generation, .. } => AppEvent::BackgroundError {
+                    generation,
+                    message: "worker died".to_string(),
+                },
+                event => event,
+            };
+            if let Some(next) = app.event(&event) {
+                let _ = tx.send(next);
+            }
+        }
+    }
+
+    /// #458: a view that fails after any one of its steps — while it is planned, once
+    /// its pivot is read, or when its rows are — puts back all of the view it was
+    /// applied over: the rows each stage of the pipeline reads, the schema, query,
+    /// filters, sort, layout, reshape, notes and selection, and the count and buffer,
+    /// which stay valid for it, so nothing is read again.
+    #[test]
+    fn a_view_failing_after_any_step_puts_the_view_back() {
+        use crate::filter_modal::{FilterOperator, LogicalOperator};
+        let filter = |column: &str| FilterStatement {
+            column: column.to_string(),
+            operator: FilterOperator::Gt,
+            value: "0".to_string(),
+            logical_op: LogicalOperator::And,
+        };
+        let melt = |value: &str| MeltSpec {
+            index: vec!["id".to_string()],
+            value_columns: vec![value.to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        };
+        let pivot = || PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: pivot_melt_modal::PivotAggregation::First,
+            sort_columns: None,
+        };
+        enum Fails {
+            /// While planning: `apply_template` says so and nothing is read.
+            Planning,
+            /// In the background, once the pivot is in or the rows are read.
+            Reading,
+            /// Every step plans; the worker reading the pivot or the rows dies.
+            WorkerDies,
+        }
+        type Steps = Box<dyn Fn(&mut template::TemplateSettings)>;
+        let cases: Vec<(&str, Fails, Steps)> = vec![
+            (
+                "the query",
+                Fails::Planning,
+                Box::new(|s| s.query = Some("select nope".to_string())),
+            ),
+            (
+                "a filter after the query",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.query = Some("select id, val".to_string());
+                    s.filters = vec![filter("key")];
+                }),
+            ),
+            (
+                "a sort after the filter",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.query = Some("select id, val".to_string());
+                    s.filters = vec![filter("val")];
+                    s.sort_columns = vec!["key".to_string()];
+                }),
+            ),
+            (
+                "the query a melt runs over",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.melt = Some(melt("val"));
+                    s.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+                        query: Some("select nope".to_string()),
+                        ..Default::default()
+                    });
+                }),
+            ),
+            (
+                "the melt",
+                Fails::Planning,
+                Box::new(move |s| s.melt = Some(melt("nope"))),
+            ),
+            (
+                "a filter after the melt",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.melt = Some(melt("val"));
+                    s.filters = vec![filter("key")];
+                }),
+            ),
+            (
+                "the layout after the sort",
+                Fails::Planning,
+                Box::new(|s| {
+                    s.sort_columns = vec!["val".to_string()];
+                    s.column_order = vec!["no_such_column".to_string()];
+                }),
+            ),
+            (
+                "a sort after the pivot is read",
+                Fails::Reading,
+                Box::new(move |s| {
+                    s.pivot = Some(pivot());
+                    s.sort_columns = vec!["val".to_string()];
+                }),
+            ),
+            (
+                "reading the pivot",
+                Fails::WorkerDies,
+                Box::new(move |s| s.pivot = Some(pivot())),
+            ),
+            (
+                "reading the rows after a query, filter and sort",
+                Fails::WorkerDies,
+                Box::new(move |s| {
+                    s.query = Some("select id, val where val > 5".to_string());
+                    s.filters = vec![filter("id")];
+                    s.sort_columns = vec!["id".to_string()];
+                }),
+            ),
+        ];
+        for (step, fails, steps) in cases {
+            let (mut app, rx, tx, _dir) = long_csv_app();
+            // The view it is applied over: a query, a sort and a filter, a selection.
+            app.event(&AppEvent::Search(
+                "select id, key, val where val >= 0".to_string(),
+            ));
+            crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+                !crate::tests::work_pending(a)
+            });
+            sorted_and_filtered(&mut app, &rx, &tx);
+            let state = app.data_table_state.as_mut().unwrap();
+            state.table_state.select(Some(2));
+            let before = state.snapshot();
+            assert!(before.has_rows(), "{step}: the view's rows are on hand");
+
+            let mut template = blank_view(&mut app, step);
+            steps(&mut template.settings);
+            let applied = app.apply_template(&template);
+            match fails {
+                Fails::Planning => assert!(applied.is_err(), "{step}: fails as it plans"),
+                Fails::Reading => {
+                    assert!(applied.is_ok(), "{step}: plans: {applied:?}");
+                    crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+                    assert!(app.error_modal.active, "{step}: the failure is said");
+                }
+                Fails::WorkerDies => {
+                    assert!(applied.is_ok(), "{step}: plans: {applied:?}");
+                    pump_with_dying_workers(&mut app, &rx, &tx);
+                    assert!(app.error_modal.active, "{step}: the failure is said");
+                }
+            }
+
+            assert!(app.query_running.is_none(), "{step}");
+            assert!(app.view_pivot.is_none(), "{step}");
+            assert!(!app.is_busy(), "{step}: nothing is left to read");
+            assert!(
+                app.active_template_id.is_none(),
+                "{step}: not marked applied"
+            );
+            let state = app.data_table_state.as_ref().unwrap();
+            assert_eq!(state.snapshot(), before, "{step}: the view is put back");
+        }
+    }
 }
 
 #[cfg(all(test, feature = "sql"))]

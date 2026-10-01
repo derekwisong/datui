@@ -8,10 +8,11 @@ filters, sort, column layout, frozen columns and reshape settings.
 Central Park's daily highs, in NOAA's public weather data, for 2024 and then
 2023:
 
-1. Open `s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/`: from the
-   home screen, **Public datasets** › **NOAA daily weather (GHCN-D)** ›
-   `by_year` › `YEAR=2024` › `ELEMENT=TMAX`, or as the `datui` argument.
-2. Run the [station query](remote-data.md#public-data): 366 rows.
+1. Open `s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/`, as the
+   `datui` argument or from the home screen: <kbd>Enter</kbd> on **NOAA daily
+   weather (GHCN-D)**, <kbd>→</kbd> on `by_year` and on `YEAR=2024`, then
+   <kbd>Enter</kbd> on `ELEMENT=TMAX`. Typing narrows each list.
+2. Run the [station query](remote-data.md#examples-on-public-data): 366 rows.
 3. Press <kbd>v</kbd>, then <kbd>s</kbd>. Name it `Central Park highs` and
    press <kbd>Enter</kbd> to save.
 4. Open `YEAR=2023/ELEMENT=TMAX/` the same way. Press <kbd>v</kbd>: the view is

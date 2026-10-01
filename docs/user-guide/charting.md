@@ -110,7 +110,7 @@ Each starts from the dataset of that name under **Public datasets**.
 | A year of delays | NYC flights, the [daily query](querying-data.md#dates-and-messy-text) | XY, Line; X axis `flight_date`, Y series `delay` | 2013 on a date axis; the peak is 83.54 on 2013-03-08 |
 | Three names | US baby names, the [pivot](reshaping.md#pivot) of Emma, Jennifer and Olivia | XY, Line; X axis `year`, Y series `Emma`, `Jennifer`, `Olivia` | Jennifer's peak of 63,604 in 1972; Emma and Olivia rising after 2000. Emma and Olivia start in 1880; Jennifer, with no published counts before 1916, starts there |
 | Launches per year | Space launches, the [count pivot](reshaping.md#count-with-a-pivot) | XY, Line; X axis `launch_year`, Y series `F`, `O` | `O`, launches that reached orbit, near 130 a year from the late 1960s to the mid-1980s, then a slump in the 1990s; `F`, failures, along the bottom |
-| Central Park highs | NOAA daily weather, `by_year/YEAR=2024/ELEMENT=TMAX`, the [station query](remote-data.md#public-data) | XY, Line; X axis `day`, Y series `high_c` | 366 daily highs from −6.0 to 35.0 °C |
+| Central Park highs | NOAA daily weather, `by_year/YEAR=2024/ELEMENT=TMAX`, the [station query](remote-data.md#examples-on-public-data) | XY, Line; X axis `day`, Y series `high_c` | 366 daily highs from −6.0 to 35.0 °C |
 | Earthquakes on a map | Earthquakes (past month), no query | XY, Scatter; X axis `longitude`, Y series `latitude` | The Pacific Ring of Fire. A sample of 10,000; set **Sample size** to **Every row** for all of them |
 | Calories by chain | Food nutrition, the [restaurant summary](copying.md#copy-a-table-into-a-note) | Bar; Category `restaurant`, Value `avg_calories` | Mcdonalds first at 640, Chick Fil-A last at 384 |
 

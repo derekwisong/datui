@@ -136,7 +136,8 @@
           <div class="terminal-body">
             <pre><span class="prompt">$</span> datui</pre>
             <pre class="query">SELECT species, AVG(body_mass_g) AS mean_mass_g
-FROM df GROUP BY species ORDER BY mean_mass_g DESC</pre>
+FROM df GROUP BY species
+ORDER BY mean_mass_g DESC</pre>
             <table aria-label="Mean penguin body mass by species, rounded to one decimal">
               <thead><tr><th>species</th><th>mean_mass_g</th></tr></thead>
               <tbody><tr><td>Gentoo</td><td>5,076.0</td></tr><tr><td>Chinstrap</td><td>3,733.1</td></tr><tr><td>Adelie</td><td>3,700.7</td></tr></tbody>

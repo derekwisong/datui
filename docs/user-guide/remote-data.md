@@ -230,8 +230,9 @@ another tenant.
 ### Examples on public data
 
 NOAA's daily weather for 2024 is one Hive partition in S3, `by_year/YEAR=2024/`,
-with an `ELEMENT=` directory per measurement. Open it from **Public datasets** › **NOAA daily
-weather (GHCN-D)**, or:
+with an `ELEMENT=` directory per measurement. From **Public datasets**, press
+<kbd>Enter</kbd> on **NOAA daily weather (GHCN-D)**, <kbd>→</kbd> on `by_year`
+and <kbd>Enter</kbd> on `YEAR=2024`. Or:
 
 ```bash
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
@@ -264,8 +265,9 @@ ORDER BY day
 366 days, from −6.0 to 35.0 °C. Chart `day` against `high_c` as a line, or
 save it as a [view](views.md) for another year.
 
-Bitcoin blocks are partitioned by day, one directory per date, under
-**Public datasets** › **Bitcoin and Ethereum** › `btc` › `blocks`:
+Bitcoin blocks are partitioned by day, one directory per date. From
+**Public datasets**, press <kbd>Enter</kbd> on **Bitcoin and Ethereum**,
+<kbd>→</kbd> on `btc` and <kbd>Enter</kbd> on `blocks`. Or:
 
 ```bash
 datui s3://aws-public-blockchain/v1.0/btc/blocks/

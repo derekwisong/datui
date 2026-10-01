@@ -2144,8 +2144,7 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
 #[serde(default)]
 pub struct ThemeConfig {
     /// Which built-in palette to start from. `None` means the key was absent, which
-    /// is treated as `Auto`; keeping it optional is what lets the layer chain tell
-    /// "unset" from "explicitly dark".
+    /// is treated as `Auto`; a loaded config holds the resolved mode.
     pub mode: Option<ThemeMode>,
     pub colors: ColorConfig,
 }
@@ -4013,6 +4012,144 @@ mod tests {
                 theme_with(Some(tint)).text_selection_style(),
                 Style::default().bg(tint)
             );
+        }
+    }
+
+    /// Every setting the defaults serialize, plus the ones unset by default, as dotted
+    /// paths with their values. Arrays of tables (`[[sources]]`) are not settings.
+    fn leaf_settings() -> Vec<(String, toml::Value)> {
+        fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<(String, toml::Value)>) {
+            for (key, value) in table {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                match value {
+                    toml::Value::Table(inner) => walk(inner, &path, out),
+                    toml::Value::Array(items) if items.iter().any(toml::Value::is_table) => {}
+                    _ => out.push((path, value.clone())),
+                }
+            }
+        }
+        let toml::Value::Table(defaults) = toml::Value::try_from(AppConfig::default()).unwrap()
+        else {
+            unreachable!("a struct serializes to a table")
+        };
+        let mut out = Vec::new();
+        walk(&defaults, "", &mut out);
+        for (path, example) in UNSET_EXAMPLES {
+            let value: toml::Table = toml::from_str(&format!("v = {example}")).unwrap();
+            out.push((path.to_string(), value["v"].clone()));
+        }
+        out
+    }
+
+    /// A layer that writes `value` at the dotted `path` and nothing else.
+    fn layer_at(path: &str, value: toml::Value) -> Result<ConfigLayer> {
+        let table = path.rsplit('.').fold(value, |inner, key| {
+            toml::Value::Table(toml::Table::from_iter([(key.to_string(), inner)]))
+        });
+        ConfigLayer::parse(&toml::to_string(&table)?)
+    }
+
+    fn value_at<'a>(table: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
+        let (parents, key) = path.rsplit_once('.').unwrap_or(("", path));
+        let mut table = table;
+        for part in parents.split('.').filter(|p| !p.is_empty()) {
+            table = table.get(part)?.as_table()?;
+        }
+        table.get(key)
+    }
+
+    #[test]
+    fn every_setting_is_documented_in_the_generated_config() {
+        // A new option needs a comment and a line in the generated config, whether its
+        // default serializes or it is unset and so needs an `UNSET_EXAMPLES` entry.
+        let comments = ConfigManager::collect_all_comments();
+        let generated = ConfigManager::with_dir(PathBuf::new()).generate_default_config();
+        let mut shown = std::collections::HashSet::new();
+        let mut section = String::new();
+        for line in generated.lines() {
+            let Some(line) = line.strip_prefix("# ") else {
+                continue;
+            };
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.to_string();
+            } else if let Some((key, _)) = line.split_once(" = ")
+                && !key.contains(' ')
+            {
+                shown.insert(match section.as_str() {
+                    "" => key.to_string(),
+                    s => format!("{s}.{key}"),
+                });
+            }
+        }
+        let settings = leaf_settings();
+        for (path, _) in &settings {
+            assert!(comments.contains_key(path), "{path} has no comment");
+            assert!(
+                shown.contains(path),
+                "{path} is not in the generated config"
+            );
+        }
+        for path in comments.keys() {
+            assert!(
+                settings.iter().any(|(p, _)| p == path),
+                "{path} is commented but is no setting"
+            );
+        }
+    }
+
+    #[test]
+    fn every_setting_written_as_its_default_overrides_an_import() {
+        // Layers are generic, so no option has merge code of its own; this holds every
+        // one of them to it. The import moves each setting it can off its default, and
+        // the user's file then writes every default back.
+        let defaults = leaf_settings();
+        let mut import = ConfigLayer::default();
+        let mut moved = Vec::new();
+        for (path, value) in &defaults {
+            // These follow their own rules, tested on their own.
+            let blank_is_unset = path
+                .strip_prefix("cloud.")
+                .is_some_and(|key| CLOUD_BLANK_IS_UNSET.contains(&key));
+            if path == "import" || blank_is_unset || COMBINED_KEYS.iter().any(|(p, _)| p == path) {
+                continue;
+            }
+            let other = match value {
+                toml::Value::Boolean(b) => toml::Value::Boolean(!b),
+                toml::Value::Integer(n) => toml::Value::Integer(n + 1),
+                toml::Value::Array(items) if items.is_empty() => vec!["x"].into(),
+                toml::Value::Array(_) => toml::Value::Array(Vec::new()),
+                toml::Value::String(text) => format!("{text}0").into(),
+                other => panic!("{path}: no rule to change {other}"),
+            };
+            // A string naming a choice, such as `unicode`, has no generic other value.
+            if let Ok(layer) = layer_at(path, other.clone()) {
+                import.merge(layer);
+                moved.push((path.clone(), other));
+            }
+        }
+        assert!(moved.len() > 100, "only {} settings moved", moved.len());
+
+        let serialized = |config: AppConfig| match toml::Value::try_from(config).unwrap() {
+            toml::Value::Table(table) => table,
+            _ => unreachable!("a struct serializes to a table"),
+        };
+        let kept = serialized(AppConfig::from_layers([import.clone()]).unwrap());
+        for (path, other) in &moved {
+            assert_eq!(value_at(&kept, path), Some(other), "{path} was not read");
+        }
+
+        let mut own = ConfigLayer::default();
+        for (path, value) in &defaults {
+            own.merge(layer_at(path, value.clone()).unwrap());
+        }
+        let restored = serialized(AppConfig::from_layers([import, own]).unwrap());
+        for (path, _) in &moved {
+            let default = defaults.iter().find(|(p, _)| p == path).map(|(_, v)| v);
+            assert_eq!(value_at(&restored, path), default, "{path} kept the import");
         }
     }
 }

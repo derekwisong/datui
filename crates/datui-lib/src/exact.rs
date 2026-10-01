@@ -98,20 +98,30 @@ const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 /// value written as its stored number, and a list or struct holding one written
 /// as [`nested_compact`] does.
 pub fn str_value<'a>(value: &AnyValue<'a>) -> Cow<'a, str> {
+    match past_calendar_text(value) {
+        Some(text) => Cow::Owned(text),
+        None => value.str_value(),
+    }
+}
+
+/// The text [`str_value`] gives a value Polars panics formatting: a date past
+/// the calendar, or a list or struct holding one. `None` for any other value,
+/// which Polars formats as usual.
+pub fn past_calendar_text(value: &AnyValue) -> Option<String> {
     if let Some(text) = out_of_range(value) {
-        return Cow::Owned(text);
+        return Some(text);
     }
-    if nested_out_of_range(value) {
-        return Cow::Owned(nested_compact(value, CELL_PREVIEW_BYTES).text);
-    }
-    value.str_value()
+    nested_out_of_range(value).then(|| nested_compact(value, CELL_PREVIEW_BYTES).text)
 }
 
 /// Whether a list, array or struct holds a value [`out_of_range`] names. Only one
 /// whose type holds a date, datetime or time is looked into.
 fn nested_out_of_range(value: &AnyValue) -> bool {
+    let holds = |fields: &[Field]| fields.iter().any(|f| holds_calendar(f.dtype()));
     match value {
         AnyValue::List(s) | AnyValue::Array(s, _) => series_out_of_range(s),
+        AnyValue::Struct(_, _, fields) if !holds(fields) => false,
+        AnyValue::StructOwned(payload) if !holds(&payload.1) => false,
         AnyValue::Struct(..) | AnyValue::StructOwned(_) => value
             ._iter_struct_av()
             .any(|field| out_of_range(&field).is_some() || nested_out_of_range(&field)),

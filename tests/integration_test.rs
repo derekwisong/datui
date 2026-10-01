@@ -18700,6 +18700,11 @@ fn out_of_range_dates_draw_on_every_screen() {
         press_through(&mut app, KeyCode::Enter);
         press_through(&mut app, KeyCode::Char('e'));
         assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+        // The time roles list a few of each column's values on screen.
+        app.analysis_modal.data_quality_page = QualityPage::TimeRoles;
+        let screen = draw_wide(&mut app, "time roles");
+        assert!(screen.contains(least[2]), "{screen}");
+        app.analysis_modal.data_quality_page = QualityPage::Setup;
         app.analysis_modal.data_quality_plan.grain = grain.clone();
         press_through(&mut app, KeyCode::Enter);
         drain_events(&mut app, &rx);

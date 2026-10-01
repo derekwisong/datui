@@ -7049,7 +7049,11 @@ impl DataTableState {
             let text = match value {
                 AnyValue::Null => continue,
                 AnyValue::String(text) => text.to_string(),
-                value => value.to_string(),
+                // Drawn on the UI thread: Polars' display panics on a date past
+                // the calendar.
+                value => {
+                    crate::exact::past_calendar_text(&value).unwrap_or_else(|| value.to_string())
+                }
             };
             if !values.contains(&text) {
                 values.push(text);

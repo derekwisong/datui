@@ -348,6 +348,18 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Cancel"),
         ];
     }
+    if modal.data_quality_page == QualityPage::ExpectedWindows {
+        let mut keys = vec![("Enter", "Done")];
+        if modal
+            .data_quality_expected_form
+            .as_ref()
+            .is_some_and(|form| !form.typing())
+        {
+            keys.push((g.updown_lr, "Windows"));
+        }
+        keys.extend([(g.updown, "Field"), ("Esc", "Cancel")]);
+        return keys;
+    }
     if modal.data_quality_page == QualityPage::IntervalPairs {
         let mut keys = Vec::new();
         if !modal.data_quality_plan.candidate_pairs().is_empty() {
@@ -410,7 +422,15 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("b", "Baseline"),
         ]),
         QualityPage::SegmentDetail => own.push(("Enter", "Segments")),
-        QualityPage::Trends if trend => own.push(("m", "Measure")),
+        QualityPage::Trends if trend => {
+            own.extend([("Enter", "Details"), ("m", "Measure")]);
+            own.extend(trend_keys(modal));
+        }
+        QualityPage::TrendDetail => {
+            own.extend([(g.updown, "Bar"), ("Enter", "Trends"), ("m", "Measure")]);
+            own.extend(trend_keys(modal));
+        }
+        QualityPage::Gaps => own.push(("Enter", "Trends")),
         QualityPage::Intervals if results.is_some_and(|results| !results.temporal.is_empty()) => {
             own.push(("Enter", "Details"));
         }
@@ -440,6 +460,27 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     ]);
     keys.extend(own);
     keys.extend([("Tab", "Focus"), ("?", "Help")]);
+    keys
+}
+
+/// The keys Trends adds when they act: a coarser window, staged in Setup, where
+/// segments came out thin or unsampled; the gaps, where windows are expected.
+fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str, &'static str)> {
+    let mut keys = Vec::new();
+    let Some(results) = modal.data_quality_results.as_ref() else {
+        return keys;
+    };
+    let plan = modal.quality_result_plan();
+    if plan.coarser_grain().is_some() {
+        let view = crate::quality_trends::trend_view(results, modal.data_quality_metric, 1);
+        let (unsampled, thin) = view.coverage();
+        if view.sampled && unsampled + thin > 0 {
+            keys.push(("w", "Coarser"));
+        }
+    }
+    if crate::quality_trends::expected_gaps(plan, results).is_some() {
+        keys.push(("g", "Gaps"));
+    }
     keys
 }
 
@@ -475,6 +516,15 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
             keys.push(("Space", "Intervals"));
         }
         SetupRow::Intervals => {}
+        SetupRow::Expected
+            if matches!(
+                modal.data_quality_plan.grain,
+                crate::data_quality::QualityGrain::TimeWindows { .. }
+            ) =>
+        {
+            keys.push(("Space", "Expected"));
+        }
+        SetupRow::Expected => {}
         SetupRow::Latency if !choices => {}
         SetupRow::WindowBy if !modal.data_quality_plan.windows_intervals() => {}
         SetupRow::Grain
@@ -694,6 +744,9 @@ mod tests {
             QualityPage::Setup,
             QualityPage::TimeRoles,
             QualityPage::IntervalPairs,
+            QualityPage::ExpectedWindows,
+            QualityPage::TrendDetail,
+            QualityPage::Gaps,
             QualityPage::Overview,
             QualityPage::Columns,
             QualityPage::Detail,

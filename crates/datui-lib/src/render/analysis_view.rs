@@ -169,6 +169,13 @@ fn render_body(
             let plan = &app.analysis_modal.data_quality_plan;
             let unchanged = app.analysis_modal.data_quality_results.is_some()
                 && app.analysis_modal.data_quality_last_plan.as_ref() == Some(plan);
+            let expectation_only = !unchanged
+                && app.analysis_modal.data_quality_results.is_some()
+                && app
+                    .analysis_modal
+                    .data_quality_last_plan
+                    .as_ref()
+                    .is_some_and(|last| last.same_measurement(plan));
             let setup = data_quality::SetupView {
                 time_candidates: &candidates,
                 reuses_sample: app.quality_kept_serves(plan),
@@ -177,6 +184,7 @@ fn render_body(
                 released: app.quality_released(plan),
                 cached: app.quality_cached(plan),
                 unchanged,
+                expectation_only,
                 edited: app.analysis_modal.setup_edited(),
                 note: note.as_deref(),
                 cancelling: app.cancelled_run_shown(),
@@ -206,6 +214,8 @@ fn render_body(
                 column_index: modal.data_quality_column_index,
                 segment_index: modal.data_quality_segment_index,
                 interval_index: modal.data_quality_interval_index,
+                trend_line: modal.data_quality_trend_line,
+                expected_form: modal.data_quality_expected_form.as_ref(),
                 segments_by_change: modal.data_quality_segments_by_change,
                 page: modal.data_quality_page,
                 setup,

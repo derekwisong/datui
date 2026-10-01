@@ -191,7 +191,7 @@ impl QualityScope {
     }
 }
 
-fn parse_scope_time(text: &str) -> Option<i64> {
+pub(crate) fn parse_scope_time(text: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|value| value.timestamp_micros())
@@ -441,6 +441,13 @@ pub enum QualityPage {
     TimeRoles,
     /// Which starts and ends the intervals are, chosen from the assigned roles.
     IntervalPairs,
+    /// One bar of one Trends line: the segments it pools, what they hold and how
+    /// much of them was read.
+    TrendDetail,
+    /// The expected windows with no rows to show, by why.
+    Gaps,
+    /// Which time windows rows are expected in, edited from Setup.
+    ExpectedWindows,
 }
 
 impl QualityPage {
@@ -459,7 +466,8 @@ impl QualityPage {
             Self::Detail => Self::Columns,
             Self::SegmentDetail => Self::Segments,
             Self::IntervalDetail => Self::Intervals,
-            Self::TimeRoles | Self::IntervalPairs => Self::Setup,
+            Self::TrendDetail | Self::Gaps => Self::Trends,
+            Self::TimeRoles | Self::IntervalPairs | Self::ExpectedWindows => Self::Setup,
             page => page,
         }
     }
@@ -505,113 +513,7 @@ pub fn shows_trend(plan: &DataQualityPlan, results: &DataQualityResults) -> bool
     matches!(
         plan.grain,
         QualityGrain::RowChunks(_) | QualityGrain::TimeWindows { .. } | QualityGrain::Partition(_)
-    ) && results.segments.len() > 1
-}
-
-/// One line of the Trends table: the rows each segment holds, or a column's
-/// measure, pooled into bars of consecutive segments.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TrendRow {
-    /// The columns whose lines are the same line, as columns missing together are.
-    pub names: Vec<String>,
-    /// Whether this is the rows line, counted rather than a rate.
-    pub rows: bool,
-    pub bars: Vec<Option<f64>>,
-    pub low: f64,
-    pub high: f64,
-}
-
-/// The Trends table for `metric`, `bars` wide: rows per segment first, then every
-/// column the measure is above zero in somewhere, the one that moves most first.
-/// Each bar pools consecutive segments (their counts over their rows), so a daily
-/// grain over years reads as years, and a thin day's sample does not make a bar
-/// alone. Also returns how many segments a bar holds.
-pub fn trend_rows(
-    results: &DataQualityResults,
-    metric: QualityMetric,
-    bars: usize,
-) -> (Vec<TrendRow>, usize) {
-    let segments = &results.segments;
-    if segments.is_empty() || bars == 0 {
-        return (Vec::new(), 1);
-    }
-    let per_bar = segments.len().div_ceil(bars);
-    let buckets = segments.chunks(per_bar).collect::<Vec<_>>();
-    let summarize = |name: String, rows: bool, values: Vec<Option<f64>>| {
-        let names = vec![name];
-        let known = values.iter().flatten().copied();
-        let low = known.clone().fold(f64::INFINITY, f64::min);
-        let high = known.fold(0.0, f64::max);
-        TrendRow {
-            names,
-            rows,
-            bars: values,
-            low: if low.is_finite() { low } else { 0.0 },
-            high,
-        }
-    };
-    // Exact rows where every segment's count is known; the sampled rows otherwise.
-    let counted = segments.iter().all(|segment| segment.total_rows.is_some());
-    let mut lines = vec![summarize(
-        if counted { "rows" } else { "sampled rows" }.to_string(),
-        true,
-        buckets
-            .iter()
-            .map(|bucket| {
-                let total = bucket
-                    .iter()
-                    .map(|segment| {
-                        if counted {
-                            segment.total_rows.unwrap_or(0)
-                        } else {
-                            segment.evaluated_rows
-                        }
-                    })
-                    .sum::<usize>();
-                Some(total as f64 / bucket.len() as f64)
-            })
-            .collect(),
-    )];
-    let mut columns = Vec::new();
-    for (index, profile) in segments[0].columns.iter().enumerate() {
-        let values = buckets
-            .iter()
-            .map(|bucket| {
-                let (mut part, mut whole) = (0.0, 0.0);
-                for segment in *bucket {
-                    let Some(column) = segment.columns.get(index) else {
-                        continue;
-                    };
-                    let Some(value) = metric.value(column) else {
-                        continue;
-                    };
-                    let rows = metric.denominator(column) as f64;
-                    part += value * rows;
-                    whole += rows;
-                }
-                (whole > 0.0).then(|| part / whole)
-            })
-            .collect::<Vec<_>>();
-        let row = summarize(profile.name.clone(), false, values);
-        if row.high == 0.0 {
-            continue;
-        }
-        // Columns that go missing together draw the same line; draw it once.
-        match columns
-            .iter_mut()
-            .find(|other: &&mut TrendRow| other.bars == row.bars)
-        {
-            Some(other) => other.names.push(profile.name.clone()),
-            None => columns.push(row),
-        }
-    }
-    columns.sort_by(|left, right| {
-        (right.high - right.low)
-            .total_cmp(&(left.high - left.low))
-            .then_with(|| right.high.total_cmp(&left.high))
-    });
-    lines.extend(columns);
-    (lines, per_bar)
+    ) && results.segments.len() + results.unsampled_segments.len() > 1
 }
 
 /// The plan setting a result page needs before it has anything to show, if any.
@@ -1128,6 +1030,86 @@ pub struct DataQualityPlan {
     pub latency_threshold_seconds: Option<i64>,
     /// Text columns read as time for this study, by grain and roles only.
     pub time_formats: Vec<TimeInterpretation>,
+    /// The time windows rows are expected in, when stated: what makes a window
+    /// with no rows a gap. Read from the segments a run counted, so it changes what
+    /// the report says, never what a run reads.
+    pub expected: Option<ExpectedWindows>,
+}
+
+/// Which time windows a study expects rows in, as stated in Setup: every window of
+/// the grain, or Monday to Friday's only, from one time and before another. Unset,
+/// no window is called a gap: a quiet weekend is not a defect unless someone says so.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExpectedWindows {
+    /// Only Monday to Friday's hours or days are expected.
+    pub weekdays: bool,
+    /// The first expected time, as typed: a date or a UTC timestamp. `None` starts
+    /// at the first window the run found.
+    pub from: Option<String>,
+    /// The time expected windows end before. `None` ends after the last window the
+    /// run found.
+    pub before: Option<String>,
+}
+
+impl ExpectedWindows {
+    /// Whether `every` is a width whose windows can fall on a weekend: an hour or a
+    /// day. A week or a month always holds weekdays.
+    pub fn weekdays_apply(every: &str) -> bool {
+        matches!(every, "1h" | "1d")
+    }
+
+    /// The cadence, in Setup's words: "every day", "weekdays".
+    pub fn cadence_label(&self, every: &str) -> String {
+        if self.weekdays && Self::weekdays_apply(every) {
+            "weekdays".to_string()
+        } else {
+            let unit = match every {
+                "1h" => "hour",
+                "1d" => "day",
+                "1w" => "week",
+                "1mo" => "month",
+                other => other,
+            };
+            format!("every {unit}")
+        }
+    }
+
+    /// The range, in Setup's words: "2024-01-01 to before 2024-04-01", or the windows
+    /// found where a side is not stated.
+    pub fn range_label(&self) -> String {
+        match (self.from.as_deref(), self.before.as_deref()) {
+            (None, None) => "first to last window found".to_string(),
+            (Some(from), None) => format!("{from} to the last window found"),
+            (None, Some(before)) => format!("first window found to before {before}"),
+            (Some(from), Some(before)) => format!("{from} to before {before}"),
+        }
+    }
+
+    /// Why the typed range cannot be read, if it cannot.
+    pub fn problem(&self) -> Option<String> {
+        let read = |text: &Option<String>| match text.as_deref() {
+            None => Ok(None),
+            Some(text) => parse_scope_time(text)
+                .map(Some)
+                .ok_or_else(|| format!("{text} is not a date or UTC timestamp")),
+        };
+        match (read(&self.from), read(&self.before)) {
+            (Err(problem), _) | (_, Err(problem)) => Some(problem),
+            (Ok(Some(from)), Ok(Some(before))) if before <= from => {
+                Some("Before must be after From".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// The typed range in microseconds since the epoch, each side when stated and
+    /// readable.
+    pub fn bounds(&self) -> (Option<i64>, Option<i64>) {
+        (
+            self.from.as_deref().and_then(parse_scope_time),
+            self.before.as_deref().and_then(parse_scope_time),
+        )
+    }
 }
 
 impl Default for DataQualityPlan {
@@ -1146,6 +1128,7 @@ impl Default for DataQualityPlan {
             interval_clock: IntervalClock::Grain,
             latency_threshold_seconds: None,
             time_formats: Vec::new(),
+            expected: None,
         }
     }
 }
@@ -1332,6 +1315,50 @@ impl DataQualityPlan {
         match schema.get(column)? {
             DataType::Datetime(_, zone) => Some(zone.is_some()),
             DataType::Date => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Whether `other` measures what this plan measures: they differ, if at all, only
+    /// in the windows they expect, which a report checks against the counts it
+    /// already holds.
+    pub fn same_measurement(&self, other: &Self) -> bool {
+        Self {
+            expected: None,
+            ..self.clone()
+        } == Self {
+            expected: None,
+            ..other.clone()
+        }
+    }
+
+    /// The windows this plan expects rows in: only on a time-window grain.
+    pub fn expected_windows(&self) -> Option<&ExpectedWindows> {
+        matches!(self.grain, QualityGrain::TimeWindows { .. })
+            .then_some(self.expected.as_ref())
+            .flatten()
+    }
+
+    /// The next coarser grain to offer when segments are thin: a day for an hour, a
+    /// week for a day, a month for a week, and a larger row chunk. Partitions and files
+    /// have none.
+    pub fn coarser_grain(&self) -> Option<QualityGrain> {
+        match &self.grain {
+            QualityGrain::TimeWindows { column, every } => {
+                let coarser = match every.as_str() {
+                    "1h" => "1d",
+                    "1d" => "1w",
+                    "1w" => "1mo",
+                    _ => return None,
+                };
+                Some(QualityGrain::TimeWindows {
+                    column: column.clone(),
+                    every: coarser.to_string(),
+                })
+            }
+            QualityGrain::RowChunks(rows) if *rows < DEFAULT_CHUNK_ROWS => {
+                Some(QualityGrain::RowChunks(DEFAULT_CHUNK_ROWS))
+            }
             _ => None,
         }
     }
@@ -2068,6 +2095,18 @@ pub struct DataQualityResults {
     /// Values behind text findings, from the rows the run kept; empty after a full
     /// scan.
     pub examples: Vec<FindingExamples>,
+    /// Segments a sampled run counted rows in but drew none of, in segment order:
+    /// the rows are there, the sample did not reach them. Not in `segments`, which
+    /// profile only what was read.
+    pub unsampled_segments: Vec<UnsampledSegment>,
+}
+
+/// A segment the scope has rows in and a sample drew none of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsampledSegment {
+    pub label: String,
+    /// The rows the scope holds in it, by exact count.
+    pub total_rows: usize,
 }
 
 impl DataQualityResults {
@@ -2099,9 +2138,15 @@ impl DataQualityResults {
                     + observation.column.len()
             })
             .sum::<usize>();
+        let unsampled = self
+            .unsampled_segments
+            .iter()
+            .map(|segment| std::mem::size_of::<UnsampledSegment>() + segment.label.len())
+            .sum::<usize>();
         std::mem::size_of::<Self>()
             + self.columns.iter().map(profile).sum::<usize>()
             + segments
+            + unsampled
             + observations
             + self.temporal.len() * std::mem::size_of::<TemporalLatencyProfile>()
             + self.category_variants.len() * std::mem::size_of::<CategoryVariantGroup>()
@@ -2159,6 +2204,7 @@ impl DataQualityResults {
             footers_read: None,
             reads: None,
             examples: Vec::new(),
+            unsampled_segments: Vec::new(),
         }
     }
 
@@ -2646,7 +2692,7 @@ fn profile_quality(
         totals
     };
     watch.stage(QualityStage::ProfilingSegments, false, false)?;
-    let segments = profile_segments(
+    let (segments, unsampled_segments) = profile_segments(
         &profile_df,
         total_rows,
         plan,
@@ -2682,6 +2728,7 @@ fn profile_quality(
         footers_read: source.map(|source| source.footers_read),
         reads: Some(watch.observed()),
         examples,
+        unsampled_segments,
     };
     Ok(results)
 }
@@ -2934,6 +2981,7 @@ fn compute_full_quality(
         footers_read: source.map(|source| source.footers_read),
         reads: Some(watch.observed()),
         examples: Vec::new(),
+        unsampled_segments: Vec::new(),
     })
 }
 
@@ -3524,7 +3572,7 @@ fn group_by_time_window(
 
 /// A window by where it starts, to the precision its width needs: an hour to the
 /// minute, a day as its date, a week as the date it starts, a month as the month.
-fn time_window_label(column: &str, every: &str, start: Option<&str>) -> String {
+pub(crate) fn time_window_label(column: &str, every: &str, start: Option<&str>) -> String {
     let Some(start) = start else {
         return format!("{column} ∅");
     };
@@ -3639,7 +3687,7 @@ fn profile_segments(
     schema: &Schema,
     sample: SegmentSampleProvenance<'_>,
     polars_streaming: bool,
-) -> Result<Vec<SegmentQualityProfile>> {
+) -> Result<(Vec<SegmentQualityProfile>, Vec<UnsampledSegment>)> {
     let groups = segment_rows(df, plan, sample.positions)?;
     // Every segment in one grouped query, keyed by the segment each row fell in.
     // A query per segment is thousands of them for a daily grain over years, and
@@ -3708,19 +3756,37 @@ fn profile_segments(
         plan.baseline_segment.as_deref(),
         precision,
     );
-    Ok(profiles)
+    // What the count found and the sample did not: kept apart, so a segment with
+    // rows the sample missed is never read as one with none.
+    let drawn = profiles
+        .iter()
+        .map(|profile| profile.label.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut unsampled = sample
+        .totals
+        .iter()
+        .filter(|(label, rows)| **rows > 0 && !drawn.contains(label.as_str()))
+        .map(|(label, rows)| UnsampledSegment {
+            label: label.clone(),
+            total_rows: *rows,
+        })
+        .collect::<Vec<_>>();
+    unsampled.sort_by(|left, right| segment_cmp(&left.label, &right.label));
+    Ok((profiles, unsampled))
 }
 
 /// Segments in the order their names count: year=9 before year=10, part-2 before
 /// part-10, and the rows no segment could place (`∅`) last. "Previous" means the
 /// segment before in this order, so it has to be the order a person would read.
 fn order_segments(segments: &mut [SegmentQualityProfile]) {
-    segments.sort_by(|left, right| {
-        left.label
-            .ends_with('∅')
-            .cmp(&right.label.ends_with('∅'))
-            .then_with(|| natural_cmp(&left.label, &right.label))
-    });
+    segments.sort_by(|left, right| segment_cmp(&left.label, &right.label));
+}
+
+/// The order of two segments by their labels, as [`order_segments`] puts them.
+pub(crate) fn segment_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    left.ends_with('∅')
+        .cmp(&right.ends_with('∅'))
+        .then_with(|| natural_cmp(left, right))
 }
 
 /// Text compared with its runs of digits compared as numbers.
@@ -3985,7 +4051,7 @@ fn apply_comparisons(
 
 /// How far a measurement has to move between segments before it is worth naming, in
 /// percentage points.
-const MATERIAL_CHANGE_PP: f64 = 1.0;
+pub(crate) const MATERIAL_CHANGE_PP: f64 = 1.0;
 
 /// How many standard errors apart two sampled rates must be before the difference
 /// is named. A segment is dozens of columns and measures, and a daily grain is
@@ -5710,13 +5776,19 @@ mod tests {
         let order = segment_order(&results, true);
         assert!(order[..3].contains(&100) && order[..3].contains(&150));
 
-        let (rows, per_bar) = trend_rows(&results, QualityMetric::NullRate, 20);
+        let view = crate::quality_trends::trend_view(&results, QualityMetric::NullRate, 20);
+        let (rows, per_bar) = (view.lines, view.per_bar);
         assert_eq!(per_bar, 10);
         assert_eq!(rows[0].names, ["rows"]);
         assert_eq!(rows[0].bars[0], Some(50.0));
-        assert_eq!(rows[1].names, ["switched"], "the column that moved leads");
-        assert_eq!(rows[1].bars[0], Some(0.0));
-        assert_eq!(rows[1].bars[19], Some(1.0));
+        assert_eq!(
+            rows[1].names,
+            ["sampled rows"],
+            "the sample's reach beside it"
+        );
+        assert_eq!(rows[2].names, ["switched"], "the column that moved leads");
+        assert_eq!(rows[2].bars[0], Some(0.0));
+        assert_eq!(rows[2].bars[19], Some(1.0));
         assert!(
             rows.iter()
                 .any(|row| row.names == ["noisy".to_string(), "twin".to_string()]),

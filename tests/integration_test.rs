@@ -1052,6 +1052,7 @@ fn test_stale_background_events_are_ignored() {
             footers_read: None,
             reads: None,
             examples: vec![],
+            unsampled_segments: vec![],
         },
         kept: None,
         plan: Box::default(),
@@ -4043,6 +4044,216 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
         app.analysis_modal.data_quality_table_state.selected(),
         Some(index)
     );
+}
+
+/// Weekday rows over eight weeks, forty a day, the second week missing: what a
+/// business feed looks like. Written as CSV, which the sampler streams.
+fn open_weekday_feed(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    // 2024-01-01 is a Monday.
+    let days = (0..56)
+        .filter(|day| day % 7 < 5 && !(7..14).contains(day))
+        .collect::<Vec<i32>>();
+    let day = days
+        .iter()
+        .flat_map(|day| std::iter::repeat_n(19_723 + day, 40))
+        .collect::<Vec<_>>();
+    let rows = day.len();
+    let mut df = df!(
+        "day" => day,
+        "amount" => (0..rows).map(|row| (row % 3 != 0).then_some(row as f64)).collect::<Vec<_>>(),
+    )
+    .unwrap()
+    .lazy()
+    .with_column(col("day").cast(DataType::Date))
+    .collect()
+    .unwrap();
+    CsvWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// #415's trends and gaps. A trend's bar opens to what it spans, how much of it the
+/// sample reached, its rate and how sure that is, with no read. A thin sample offers
+/// a coarser window, staged in Setup for Enter, never run. Gaps appear only once
+/// Setup states which windows rows are expected in, and stating them reads nothing.
+#[test]
+fn trends_and_gaps_are_inspected_without_a_read() {
+    use datui::analysis_modal::SetupRow;
+    use datui::data_quality::{QualityGrain, QualityPage, QualityStage};
+
+    let (mut app, rx, _tx) = open_weekday_feed("dq_trends_gaps.csv");
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    let render = |app: &mut App, width, height| {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let daily = QualityGrain::TimeWindows {
+        column: "day".into(),
+        every: "1d".into(),
+    };
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.dataset_rows = 30;
+        plan.sample_seed = 415;
+        plan.grain = daily.clone();
+    }
+    // No stated windows: the row says so, and Setup reads nothing for it.
+    app.analysis_modal.data_quality_plan_field = SetupRow::Expected.index();
+    assert!(render(&mut app, 100, 30).contains("none: no window is a gap"));
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [QualityStage::ReadingSample],
+        "one pass samples and counts the days"
+    );
+    let results = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert!(
+        !results.unsampled_segments.is_empty(),
+        "thirty rows miss some of 35 days"
+    );
+
+    // Trends says how many days the sample missed, and offers a coarser window.
+    press(&mut app, KeyCode::Char('4'));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    let trends = render(&mut app, 80, 24);
+    assert!(trends.contains("not sampled"), "{trends}");
+    assert!(trends.contains("w stages weekly"), "{trends}");
+    assert!(
+        !trends.contains("Expected"),
+        "no gaps without stated windows"
+    );
+    assert!(press(&mut app, KeyCode::Char('g')).is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+
+    // A bar opens to its facts, and the bars walk, from what the report holds.
+    let amount = datui::quality_trends::trend_view(
+        &results,
+        datui::data_quality::QualityMetric::NullRate,
+        1,
+    )
+    .lines
+    .iter()
+    .position(|line| line.names == ["amount"])
+    .expect("an amount line");
+    app.analysis_modal
+        .data_quality_table_state
+        .select(Some(amount));
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::TrendDetail
+    );
+    assert_eq!(app.analysis_modal.data_quality_trend_line, amount);
+    for size in [(80, 24), (60, 20)] {
+        let detail = render(&mut app, size.0, size.1);
+        for label in ["Span", "Segments", "Rows", "Null rate", "95% interval"] {
+            assert!(detail.contains(label), "{label} at {size:?}:\n{detail}");
+        }
+        assert!(detail.contains("bar 1 of"), "{detail}");
+    }
+    assert!(press(&mut app, KeyCode::Down).is_none());
+    let second = render(&mut app, 80, 24);
+    assert!(second.contains("bar 2 of"), "{second}");
+    assert!(second.contains("Previous bar"), "{second}");
+    assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    assert_eq!(
+        app.analysis_modal.data_quality_table_state.selected(),
+        Some(amount)
+    );
+
+    // `w` stages weeks in Setup: Read says the days' counts serve them, nothing runs,
+    // and Esc puts the grain back.
+    assert!(press(&mut app, KeyCode::Char('w')).is_none());
+    assert!(!app.is_busy());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    assert_eq!(app.analysis_modal.setup_row(), SetupRow::Grain);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.grain,
+        QualityGrain::TimeWindows {
+            column: "day".into(),
+            every: "1w".into(),
+        }
+    );
+    let staged = render(&mut app, 100, 40);
+    assert!(
+        staged.contains("summed from the daily counts already read"),
+        "{staged}"
+    );
+    assert!(staged.contains("Edited: Enter runs it"), "{staged}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.data_quality_plan.grain, daily);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+
+    // Expected windows, stated in Setup: weekdays, typed dates past the data. The
+    // editor's fields type every key, `q` and `?` included.
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan_field = SetupRow::Expected.index();
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        app.analysis_modal.data_quality_page,
+        QualityPage::ExpectedWindows
+    );
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "q?");
+    assert!(app.analysis_modal.active, "q typed, not quit");
+    press(&mut app, KeyCode::Enter);
+    let editor = render(&mut app, 80, 24);
+    assert!(
+        editor.contains("q? is not a date or UTC timestamp"),
+        "{editor}"
+    );
+    for _ in 0..2 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    type_text(&mut app, "2024-01-01");
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "2024-03-04");
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    let expected = app
+        .analysis_modal
+        .data_quality_plan
+        .expected
+        .clone()
+        .unwrap();
+    assert!(expected.weekdays);
+    assert_eq!(expected.before.as_deref(), Some("2024-03-04"));
+    let setup = render(&mut app, 100, 40);
+    assert!(setup.contains("Only Expected changed"), "{setup}");
+
+    // Run checks them against the report on screen: no read, no run.
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    let trends = render(&mut app, 80, 24);
+    assert!(trends.contains("Expected weekdays"), "{trends}");
+    assert!(press(&mut app, KeyCode::Char('g')).is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Gaps);
+    let gaps = render(&mut app, 100, 30);
+    // The missing week and the week after the data are empty; days the sample
+    // missed are not.
+    assert!(gaps.contains("2024-01-08 to 2024-01-12 empty"), "{gaps}");
+    assert!(gaps.contains("2024-02-26 to 2024-03-01 empty"), "{gaps}");
+    assert!(gaps.contains("not sampled"), "{gaps}");
+    assert!(gaps.contains("on weekends, not expected"), "{gaps}");
+    assert!(render(&mut app, 60, 20).contains("empty"));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
 }
 
 #[test]

@@ -16,6 +16,7 @@ pub enum SetupRow {
     TimeRoles,
     Intervals,
     Grain,
+    Expected,
     Compare,
     Values,
     Latency,
@@ -23,12 +24,13 @@ pub enum SetupRow {
 }
 
 impl SetupRow {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Sample,
         Self::TextAsTime,
         Self::TimeRoles,
         Self::Intervals,
         Self::Grain,
+        Self::Expected,
         Self::Compare,
         Self::Values,
         Self::Latency,
@@ -42,6 +44,7 @@ impl SetupRow {
             Self::TimeRoles => "Time roles",
             Self::Intervals => "Intervals",
             Self::Grain => "Grain",
+            Self::Expected => "Expected",
             Self::Compare => "Compare",
             Self::Values => "Values",
             Self::Latency => "Latency over",
@@ -144,6 +147,143 @@ pub fn threshold_label(seconds: Option<i64>) -> &'static str {
         Some(86_400) => "1 day",
         Some(604_800) => "1 week",
         Some(_) => "custom",
+    }
+}
+
+/// Which windows the Expected editor's first row says rows are expected in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedCadence {
+    /// None stated: no window is a gap.
+    None,
+    /// Every window of the grain.
+    Every,
+    /// Monday to Friday's hours or days.
+    Weekdays,
+}
+
+/// The rows of the Expected editor.
+pub const EXPECTED_ROWS: [&str; 3] = ["Windows", "From", "Before"];
+
+/// The Expected editor while it is open: the cadence, and the range as typed. Its
+/// Enter writes them into the draft, and its Esc leaves the draft as it was.
+#[derive(Debug, Clone)]
+pub struct ExpectedForm {
+    /// The row under the cursor, in [`EXPECTED_ROWS`].
+    pub field: usize,
+    pub cadence: ExpectedCadence,
+    pub from: crate::widgets::text_input::TextInput,
+    pub before: crate::widgets::text_input::TextInput,
+    /// Why Enter did not apply, until the next edit.
+    pub error: Option<String>,
+}
+
+impl ExpectedForm {
+    pub fn new(plan: &DataQualityPlan, theme: &crate::config::Theme) -> Self {
+        let input = || crate::widgets::text_input::TextInput::new().with_theme(theme);
+        let (mut from, mut before) = (input(), input());
+        let cadence = match &plan.expected {
+            None => ExpectedCadence::None,
+            Some(expected) => {
+                from.set_value(expected.from.as_deref().unwrap_or_default());
+                before.set_value(expected.before.as_deref().unwrap_or_default());
+                if expected.weekdays {
+                    ExpectedCadence::Weekdays
+                } else {
+                    ExpectedCadence::Every
+                }
+            }
+        };
+        let mut form = Self {
+            field: 0,
+            cadence,
+            from,
+            before,
+            error: None,
+        };
+        form.sync_focus();
+        form
+    }
+
+    /// The choices the Windows row cycles through for windows `every` wide.
+    pub fn cadences(every: &str) -> Vec<ExpectedCadence> {
+        let mut cadences = vec![ExpectedCadence::None, ExpectedCadence::Every];
+        if crate::data_quality::ExpectedWindows::weekdays_apply(every) {
+            cadences.push(ExpectedCadence::Weekdays);
+        }
+        cadences
+    }
+
+    /// The cadence in the editor's words.
+    pub fn cadence_label(&self, every: &str) -> String {
+        match self.cadence {
+            ExpectedCadence::None => "none: no window is a gap".to_string(),
+            ExpectedCadence::Every => {
+                crate::data_quality::ExpectedWindows::default().cadence_label(every)
+            }
+            ExpectedCadence::Weekdays => "weekdays, Monday to Friday".to_string(),
+        }
+    }
+
+    pub fn cycle(&mut self, every: &str, forward: bool) {
+        let cadences = Self::cadences(every);
+        let at = cadences
+            .iter()
+            .position(|cadence| *cadence == self.cadence)
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % cadences.len()
+        } else {
+            (at + cadences.len() - 1) % cadences.len()
+        };
+        self.cadence = cadences[next];
+        self.error = None;
+    }
+
+    pub fn move_field(&mut self, forward: bool) {
+        self.field = if forward {
+            (self.field + 1).min(EXPECTED_ROWS.len() - 1)
+        } else {
+            self.field.saturating_sub(1)
+        };
+        self.sync_focus();
+    }
+
+    /// Whether the row under the cursor is one typed into.
+    pub fn typing(&self) -> bool {
+        self.field > 0
+    }
+
+    pub fn input_mut(&mut self) -> Option<&mut crate::widgets::text_input::TextInput> {
+        match self.field {
+            1 => Some(&mut self.from),
+            2 => Some(&mut self.before),
+            _ => None,
+        }
+    }
+
+    pub fn sync_focus(&mut self) {
+        self.from.set_focused(self.field == 1);
+        self.before.set_focused(self.field == 2);
+    }
+
+    /// What the editor states, or why it cannot be read.
+    pub fn expected(&self) -> Result<Option<crate::data_quality::ExpectedWindows>, String> {
+        if self.cadence == ExpectedCadence::None {
+            return Ok(None);
+        }
+        let typed = |input: &crate::widgets::text_input::TextInput| {
+            let text = input.value().trim();
+            (!text.is_empty()).then(|| text.to_string())
+        };
+        let expected = crate::data_quality::ExpectedWindows {
+            weekdays: self.cadence == ExpectedCadence::Weekdays,
+            from: typed(&self.from),
+            before: typed(&self.before),
+        };
+        match expected.problem() {
+            Some(problem) => Err(problem),
+            None => Ok(Some(expected)),
+        }
     }
 }
 
@@ -338,6 +478,10 @@ pub struct AnalysisModal {
     pub data_quality_findings: FindingsView,
     /// A read for a finding's rows, shown with what it reads until Enter or Esc.
     pub data_quality_evidence_read: Option<EvidenceRead>,
+    /// The Trends line a bar detail shows, and the one Trends selects on the way back.
+    pub data_quality_trend_line: usize,
+    /// The Expected editor, while it is open.
+    pub data_quality_expected_form: Option<ExpectedForm>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -403,6 +547,8 @@ impl AnalysisModal {
         self.data_quality_metric = QualityMetric::NullRate;
         self.data_quality_column_index = 0;
         self.data_quality_interval_index = 0;
+        self.data_quality_trend_line = 0;
+        self.data_quality_expected_form = None;
         self.sample_form = None;
     }
 
@@ -436,6 +582,8 @@ impl AnalysisModal {
         self.data_quality_metric = QualityMetric::NullRate;
         self.data_quality_column_index = 0;
         self.data_quality_interval_index = 0;
+        self.data_quality_trend_line = 0;
+        self.data_quality_expected_form = None;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -588,10 +736,20 @@ impl AnalysisModal {
             }
             // The trend table's lines; the width only changes how many bars.
             QualityPage::Trends => {
-                crate::data_quality::trend_rows(results, self.data_quality_metric, 1)
-                    .0
+                crate::quality_trends::trend_view(results, self.data_quality_metric, 1)
+                    .lines
                     .len()
             }
+            // As many bars as there are segments, at most: the width decides how many
+            // there are, and the page holds the cursor to the last as it draws.
+            QualityPage::TrendDetail => crate::quality_trends::trend_slots(results).len(),
+            QualityPage::Gaps => {
+                match crate::quality_trends::expected_gaps(self.quality_result_plan(), results) {
+                    Some(crate::quality_trends::Gaps::Checked(check)) => check.runs.len(),
+                    _ => 0,
+                }
+            }
+            QualityPage::ExpectedWindows => EXPECTED_ROWS.len(),
         }
     }
 
@@ -724,7 +882,7 @@ impl AnalysisModal {
             && self.data_quality_picker.is_none()
             && !matches!(
                 self.data_quality_page,
-                QualityPage::TimeRoles | QualityPage::IntervalPairs
+                QualityPage::TimeRoles | QualityPage::IntervalPairs | QualityPage::ExpectedWindows
             )
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
@@ -740,6 +898,33 @@ impl AnalysisModal {
             && self.sample_form.as_ref().is_some_and(|form| {
                 form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
             })
+    }
+
+    /// Whether the Expected editor's From or Before has the cursor, so every key
+    /// but its own types there.
+    pub fn quality_expected_typing(&self) -> bool {
+        self.active
+            && self.data_quality_page == QualityPage::ExpectedWindows
+            && self
+                .data_quality_expected_form
+                .as_ref()
+                .is_some_and(ExpectedForm::typing)
+    }
+
+    /// Open the bars of the Trends line under the cursor, the first bar selected.
+    pub fn open_trend_detail(&mut self) {
+        let line = self.data_quality_table_state.selected().unwrap_or(0);
+        self.data_quality_trend_line = line;
+        self.set_quality_page(QualityPage::TrendDetail);
+    }
+
+    /// Back to Trends from a bar detail or the gaps, the line still selected.
+    pub fn close_to_trends(&mut self) {
+        let line = (self.data_quality_page == QualityPage::TrendDetail)
+            .then_some(self.data_quality_trend_line);
+        self.set_quality_page(QualityPage::Trends);
+        self.data_quality_table_state
+            .select(Some(line.unwrap_or(0)));
     }
 
     pub fn set_quality_page(&mut self, page: QualityPage) {
@@ -1060,7 +1245,9 @@ impl AnalysisModal {
                     (label, PlanChoice::TextColumn(column.clone()))
                 })
                 .collect(),
-            SetupRow::Sample | SetupRow::TimeRoles | SetupRow::Intervals => Vec::new(),
+            SetupRow::Sample | SetupRow::TimeRoles | SetupRow::Intervals | SetupRow::Expected => {
+                Vec::new()
+            }
         }
     }
 

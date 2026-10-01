@@ -130,6 +130,11 @@ pub struct Glyphs {
     pub binary_stub: &'static str,
     /// Eight compact levels for inline charts (lowest to highest).
     pub mini_bars: &'static [&'static str; 8],
+    /// In a line of `mini_bars`, a place with nothing measured: segments a sample
+    /// drew no row from. One column wide in both sets, and unlike every bar level.
+    pub unsampled: &'static str,
+    /// Under a line of bars, the one selected. One column wide in both sets.
+    pub pointer: &'static str,
     /// A horizontal bar's end, one to eight eighths of a cell filled from the left;
     /// the last is a whole cell, the bar's body. One column wide in both sets.
     pub bar_eighths: &'static [&'static str; 8],
@@ -343,6 +348,8 @@ const UNICODE: Glyphs = Glyphs {
     scroll_thumb: "█",
     binary_stub: "‹binary›",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
+    unsampled: "·",
+    pointer: "▲",
     bar_eighths: &["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"],
     wordmark: Some(&[
         "┌──╮ ╭──╮ ╶─┬─╴ ╷  ╷ ╶┬╴",
@@ -408,6 +415,8 @@ const ASCII: Glyphs = Glyphs {
     scroll_thumb: "#",
     binary_stub: "<binary>",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
+    unsampled: "?",
+    pointer: "^",
     // Under half a cell is still a mark, so a small value never reads as zero.
     bar_eighths: &["-", "-", "-", "=", "=", "=", "=", "#"],
     wordmark: None,
@@ -513,7 +522,9 @@ macro_rules! with_string_slots {
             check,
             warning,
             scroll_thumb,
-            binary_stub
+            binary_stub,
+            unsampled,
+            pointer
         )
     };
 }

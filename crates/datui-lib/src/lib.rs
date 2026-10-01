@@ -83,6 +83,7 @@ pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
 pub mod quality_report;
+pub mod quality_trends;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
 pub mod sample_modal;
@@ -9119,12 +9120,102 @@ impl App {
                     self.analysis_modal.data_quality_plan_field = 0;
                 }
             }
+            SetupRow::Expected => {
+                // Windows are what a gap is counted in; with no time-window grain
+                // there is nothing to expect yet.
+                if matches!(
+                    self.analysis_modal.data_quality_plan.grain,
+                    data_quality::QualityGrain::TimeWindows { .. }
+                ) {
+                    self.analysis_modal.data_quality_expected_form =
+                        Some(analysis_modal::ExpectedForm::new(
+                            &self.analysis_modal.data_quality_plan,
+                            &self.theme,
+                        ));
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::ExpectedWindows);
+                }
+            }
             row => {
                 let context = self.quality_plan_context();
                 self.analysis_modal.open_plan_picker(row, &context);
             }
         }
         None
+    }
+
+    /// Keys in the Expected editor: ↑↓ the row, ←→ the cadence, typing in From and
+    /// Before. Enter writes it into the draft, or says on its own line why it cannot;
+    /// Esc leaves the draft as it was. Either way back to Setup's Expected row.
+    fn expected_form_key(&mut self, event: &KeyEvent) {
+        let every = match &self.analysis_modal.data_quality_plan.grain {
+            data_quality::QualityGrain::TimeWindows { every, .. } => every.clone(),
+            _ => String::new(),
+        };
+        let Some(form) = self.analysis_modal.data_quality_expected_form.as_mut() else {
+            return;
+        };
+        let typing = form.typing();
+        match event.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => match form.expected() {
+                Ok(expected) => self.analysis_modal.data_quality_plan.expected = expected,
+                Err(problem) => {
+                    form.error = Some(problem);
+                    return;
+                }
+            },
+            KeyCode::Down | KeyCode::Tab => {
+                form.move_field(true);
+                return;
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                form.move_field(false);
+                return;
+            }
+            KeyCode::Char('j') if !typing => {
+                form.move_field(true);
+                return;
+            }
+            KeyCode::Char('k') if !typing => {
+                form.move_field(false);
+                return;
+            }
+            KeyCode::Left | KeyCode::Char('h') if !typing => {
+                form.cycle(&every, false);
+                return;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') if !typing => {
+                form.cycle(&every, true);
+                return;
+            }
+            _ => {
+                if let Some(input) = form.input_mut() {
+                    let _ = input.handle_key(event, None);
+                    form.error = None;
+                }
+                return;
+            }
+        }
+        self.analysis_modal.data_quality_expected_form = None;
+        self.analysis_modal.data_quality_setup_note = None;
+        self.analysis_modal
+            .set_quality_page(data_quality::QualityPage::Setup);
+        self.analysis_modal.data_quality_plan_field = analysis_modal::SetupRow::Expected.index();
+    }
+
+    /// `w` on Trends: the next coarser grain, staged in Setup with the Grain row under
+    /// the cursor, for segments the sample reached too thinly. Nothing runs until
+    /// Enter, and Setup's Read says what that run reads; Esc puts the grain back.
+    fn stage_coarser_grain(&mut self) {
+        let Some(coarser) = self.analysis_modal.quality_result_plan().coarser_grain() else {
+            return;
+        };
+        self.open_quality_setup();
+        let plan = &mut self.analysis_modal.data_quality_plan;
+        plan.grain = coarser;
+        plan.baseline_segment = None;
+        self.analysis_modal.data_quality_plan_field = analysis_modal::SetupRow::Grain.index();
     }
 
     /// Enter in a Setup row's list: take the choice, and after a text column, ask
@@ -9966,6 +10057,20 @@ impl App {
             modal.set_quality_page(back);
             return None;
         }
+        // Only the expected windows changed: the report on screen holds every count
+        // they are checked against, so it is relabeled, not read again.
+        if let (Some(results), Some(last)) = (
+            modal.data_quality_results.as_ref(),
+            modal.data_quality_last_plan.as_ref(),
+        ) && last.same_measurement(&modal.data_quality_plan)
+        {
+            let results = results.clone();
+            let plan = modal.data_quality_plan.clone();
+            modal.data_quality_last_plan = Some(plan.clone());
+            modal.set_quality_page(QualityPage::Trends);
+            self.cache_quality_result(&results, plan);
+            return None;
+        }
         if self.restore_cached_quality() {
             return None;
         }
@@ -10333,6 +10438,7 @@ impl App {
             }
             InputMode::Normal => {
                 self.analysis_modal.sample_scope_typing()
+                    || self.analysis_modal.quality_expected_typing()
                     || (self.template_modal.active
                         && self.template_modal.mode != TemplateModalMode::List
                         && matches!(
@@ -17351,6 +17457,14 @@ impl App {
                     }
                     return None;
                 }
+                // The Expected editor owns the keys; `?` is help unless it types.
+                if self.analysis_modal.data_quality_page == QualityPage::ExpectedWindows
+                    && (event.code != KeyCode::Char('?')
+                        || self.analysis_modal.quality_expected_typing())
+                {
+                    self.expected_form_key(event);
+                    return None;
+                }
                 // The pairs editor owns the keys: which pair, and whether it is measured.
                 if self.analysis_modal.data_quality_page == QualityPage::IntervalPairs
                     && event.code != KeyCode::Char('?')
@@ -17536,6 +17650,15 @@ impl App {
                         return None;
                     }
                     KeyCode::Esc
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::TrendDetail | QualityPage::Gaps
+                        ) =>
+                    {
+                        self.analysis_modal.close_to_trends();
+                        return None;
+                    }
+                    KeyCode::Esc
                         if self.analysis_modal.data_quality_page == QualityPage::Detail =>
                     {
                         self.analysis_modal
@@ -17562,9 +17685,40 @@ impl App {
                         return None;
                     }
                     KeyCode::Char('m')
-                        if self.analysis_modal.data_quality_page == QualityPage::Trends =>
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Trends | QualityPage::TrendDetail
+                        ) =>
                     {
                         self.analysis_modal.cycle_quality_metric();
+                        return None;
+                    }
+                    KeyCode::Char('w')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Trends | QualityPage::TrendDetail
+                        ) && self.analysis_modal.data_quality_results.is_some() =>
+                    {
+                        self.stage_coarser_grain();
+                        return None;
+                    }
+                    KeyCode::Char('g')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Trends | QualityPage::TrendDetail
+                        ) && self
+                            .analysis_modal
+                            .data_quality_results
+                            .as_ref()
+                            .is_some_and(|results| {
+                                crate::quality_trends::expected_gaps(
+                                    self.analysis_modal.quality_result_plan(),
+                                    results,
+                                )
+                                .is_some()
+                            }) =>
+                    {
+                        self.analysis_modal.set_quality_page(QualityPage::Gaps);
                         return None;
                     }
                     KeyCode::Char('b')
@@ -17691,6 +17845,15 @@ impl App {
                             == QualityPage::SegmentDetail
                         {
                             self.analysis_modal.close_segment_detail();
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Trends
+                            && self.analysis_modal.data_quality_results.is_some()
+                        {
+                            self.analysis_modal.open_trend_detail();
+                        } else if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::TrendDetail | QualityPage::Gaps
+                        ) {
+                            self.analysis_modal.close_to_trends();
                         } else if self.analysis_modal.data_quality_page == QualityPage::Intervals {
                             self.analysis_modal.open_interval_detail();
                         } else if self.analysis_modal.data_quality_page

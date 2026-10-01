@@ -254,8 +254,10 @@ the publisher's: check it before you use the data.
 | NYC yellow taxis (January 2025) | [Describe and Distribution](analysis-features.md), [data quality on a sample](data-quality.md) |
 | Earthquakes (past month) | [A map as a scatter chart](charting.md#examples-on-the-built-in-datasets) |
 | NOAA daily weather (GHCN-D) | [Public data in S3](remote-data.md#examples-on-public-data), [views](views.md) |
-| Bitcoin and Ethereum | [Partitions by date](remote-data.md#examples-on-public-data) | A collection named `public`
-replaces this one, `[data] builtin_catalog = false` drops it, and
+| Bitcoin and Ethereum | [Partitions by date](remote-data.md#examples-on-public-data) |
+
+A collection named `public` replaces this one,
+`[data] builtin_catalog = false` drops it, and
 `[data] hide_sources = ["public"]` hides it; see
 [Dataset collections](../reference/sources.md).
 

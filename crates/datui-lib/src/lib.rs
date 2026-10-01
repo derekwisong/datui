@@ -5124,6 +5124,43 @@ pub mod tests {
         );
     }
 
+    /// A read of the rows that fails names the file the user opened, not the temp copy
+    /// the frame scans: here a compressed CSV's decompressed copy (#511).
+    #[test]
+    fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, OpenOptions};
+        use std::io::Write;
+        use std::path::PathBuf;
+
+        let source = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let gz = source.path().join("rows.csv.gz");
+        let mut encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
+        encoder.write_all(b"id\n1\n2\n").unwrap();
+        encoder.finish().unwrap();
+        let options = OpenOptions {
+            temp_dir: Some(scratch.path().to_path_buf()),
+            ..OpenOptions::default()
+        };
+        let state = DataTableState::from_csv(&gz, &options).unwrap();
+        let copy = state.temp_files()[0].to_path_buf();
+        assert!(copy.starts_with(scratch.path()));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.install_for_tests(state, Some(PathBuf::from(&gz)), &options, None);
+        let reason = format!("bad row\nIt stopped at {}.", copy.display());
+        app.rows_failed(true, true, &reason, None);
+        assert_eq!(
+            app.error_message(),
+            Some(format!("bad row\nIt stopped at {}.", gz.display()).as_str())
+        );
+    }
+
     /// A pass that cannot read the footers leaves the dataset working, not waiting.
     ///
     /// While one is pending the dataset declines to count itself, because counting
@@ -16561,11 +16598,9 @@ impl App {
                         &options,
                         &mut report,
                     )
+                    // Named as the dataset is: a download by its URL, not its temp file.
                     .map_err(|e| {
-                        crate::error_display::user_message_from_report(
-                            &e,
-                            paths.first().map(|p| p.as_path()),
-                        )
+                        crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
                     let options = OpenOptions {
                         left_out: report.left_out,
@@ -16605,7 +16640,9 @@ impl App {
                         &runtime,
                         &report,
                     )
-                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    .map_err(|e| {
+                        crate::error_display::user_message_from_report(&e, path.as_deref())
+                    })?;
                     // Everything the open found, given to the dataset as it is built.
                     let state = state.with_open(OpenFacts {
                         #[cfg(any(feature = "http", feature = "cloud"))]
@@ -24625,6 +24662,7 @@ impl App {
         if !current {
             return;
         }
+        let message = &self.named_by_source(message);
         if let Some(run) = self.take_query_run() {
             self.fail_query_run(run, message, conversion);
             return;
@@ -24648,6 +24686,21 @@ impl App {
         }
         self.first_rows_settled();
         self.error_modal.show(message.to_string());
+    }
+
+    /// `message` with the temporary files the dataset on screen reads (a download, a
+    /// decompressed copy) called by what the user opened.
+    fn named_by_source(&self, message: &str) -> String {
+        let (Some(state), Some(source)) = (self.data_table_state.as_ref(), self.path.as_deref())
+        else {
+            return message.to_string();
+        };
+        state
+            .temp_files()
+            .into_iter()
+            .fold(message.to_string(), |message, file| {
+                crate::error_display::named_by_source(&message, file, source)
+            })
     }
 
     /// A view's pivot could not be read or planned: the view before it stays.

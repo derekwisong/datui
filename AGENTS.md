@@ -98,7 +98,7 @@ a frame is built, go through `install_query_result` / `install_base` /
 three frames, the schema and the view state consistent. Outside
 `DataTableState` the pipeline fields are private: read them through accessors,
 run steps with `deferred` (nothing collects; the App then calls
-`spawn_async_collect`), and plan a query or view with `try_transition`, whose
+`spawn_async_collect`), and plan a view's steps with `try_transition`, whose
 checkpoint `roll_back` restores if its rows fail.
 
 **One event loop, background work by generation.** `run()` reads terminal

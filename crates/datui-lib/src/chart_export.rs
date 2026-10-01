@@ -1744,7 +1744,7 @@ mod tests {
         assert_eq!(axis.label(2.000_000_000_000_4).as_deref(), Some("2"));
         assert_eq!(axis.label(0.5), None);
         let axis = TickLabels::numbers(&[0.0, 0.5, 1.0], &AxisNumbers::default());
-        assert_eq!(axis.label(0.5).as_deref(), Some("0.50"));
+        assert_eq!(axis.label(0.5).as_deref(), Some("0.5"));
 
         let dir = tempfile::tempdir().expect("temp dir");
         let counts = |values: &[f64]| BarData {
@@ -1863,7 +1863,7 @@ mod tests {
         let eps = dir.path().join("kde.eps");
         write_chart_eps(&eps, &series, ChartType::Line, &bounds).expect("eps");
         let content = std::fs::read_to_string(&eps).unwrap();
-        for tick in ["(0.0000)", "(0.0060)", "(0.0120)", "(6.000)", "(12.000)"] {
+        for tick in ["(0.000)", "(0.006)", "(0.012)", "(6.000)", "(12.000)"] {
             assert!(content.contains(tick), "{tick} in {content}");
         }
         // Per tick, the lower ones read `(2.00e-3)`.
@@ -1874,7 +1874,7 @@ mod tests {
         // plotters ticks where these say, so its labels are chosen from its ticks.
         assert_eq!(png_ticks(0.0, 0.012, 10).len(), 7);
         let y_axis = bounds.y_axis(&png_ticks(0.0, 0.012, 10));
-        assert_eq!(y_axis.label(0.002).as_deref(), Some("0.0020"));
+        assert_eq!(y_axis.label(0.002).as_deref(), Some("0.002"));
     }
 
     /// A long category is cut rather than run into the bars.

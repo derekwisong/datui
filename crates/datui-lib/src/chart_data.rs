@@ -158,7 +158,7 @@ impl AxisFormat {
         } else if numbers.whole {
             Some(0)
         } else {
-            fixed_places(top, gap)
+            fixed_places(&ticks, top, gap)
         };
         let (full, short) = match places {
             Some(places) => (
@@ -167,7 +167,7 @@ impl AxisFormat {
                     unit: 1.0,
                     suffix: "",
                 },
-                short_notation(top, gap),
+                short_notation(&ticks, top, gap),
             ),
             None => {
                 // Every mantissa to the places that tell the closest ticks apart.
@@ -241,20 +241,35 @@ impl AxisFormat {
     }
 }
 
-/// Decimal places for an axis whose largest tick is `top` and closest two are `gap`
-/// apart: three significant figures of the largest, and enough to tell the closest
-/// apart. `None` for numbers too small to write that way, or ticks too close.
-fn fixed_places(top: f64, gap: f64) -> Option<usize> {
+/// Decimal places for `ticks`, whose largest is `top` and closest two `gap` apart:
+/// three significant figures of the largest, and enough to tell the closest apart.
+/// Fewer when they write every tick exactly, so round ticks read `20`, not `20.0`.
+/// `None` for numbers too small to write that way, or ticks too close.
+fn fixed_places(ticks: &[f64], top: f64, gap: f64) -> Option<usize> {
     let figures = if top > 0.0 { 2 - magnitude(top) } else { 0 };
     let apart = if gap.is_finite() { -magnitude(gap) } else { 0 };
     let places = figures.max(apart).max(0);
-    (places <= MAX_AXIS_PLACES).then_some(places as usize)
+    (places <= MAX_AXIS_PLACES).then(|| fewest_places(ticks, 1.0, apart.max(0), places))
 }
 
-/// The short form of an axis whose largest tick is `top`: counted in the k, M, G or T
-/// of its largest, to two significant figures of it and places enough to tell ticks
-/// `gap` apart, at most two. `None` below a thousand, where there is no shorter form.
-fn short_notation(top: f64, gap: f64) -> Option<Notation> {
+/// The fewest places from `least` to `most` that write every one of `ticks`, counted
+/// in `unit`s, exactly; `most` when none do.
+fn fewest_places(ticks: &[f64], unit: f64, least: i32, most: i32) -> usize {
+    let exact = |places: i32| {
+        ticks.iter().all(|v| {
+            let scaled = v / unit * 10f64.powi(places);
+            // Ticks are stepped in floating point: 0.1 * 3 is 0.30000000000000004.
+            (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0)
+        })
+    };
+    (least..most).find(|&p| exact(p)).unwrap_or(most) as usize
+}
+
+/// The short form of `ticks`, whose largest is `top`: counted in the k, M, G or T of
+/// the largest, to two significant figures of it and places enough to tell ticks
+/// `gap` apart, at most two, or fewer as [`fixed_places`] takes them. `None` below a
+/// thousand, where there is no shorter form.
+fn short_notation(ticks: &[f64], top: f64, gap: f64) -> Option<Notation> {
     let (unit, suffix) = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")]
         .into_iter()
         .find(|(unit, _)| top >= *unit)?;
@@ -264,9 +279,9 @@ fn short_notation(top: f64, gap: f64) -> Option<Notation> {
     } else {
         0
     };
-    let places = figures.max(apart).clamp(0, 2) as usize;
+    let most = figures.max(apart).clamp(0, 2);
     Some(Notation::Fixed {
-        places,
+        places: fewest_places(ticks, unit, apart.clamp(0, most), most),
         unit,
         suffix,
     })
@@ -1720,10 +1735,20 @@ mod tests {
     #[test]
     fn an_axis_keeps_one_notation_and_precision() {
         let plain = AxisNumbers::default();
-        let density = tick_labels(&[0.0, 0.006, 0.012], &plain, 0);
-        assert_eq!(density, ["0.0000", "0.0060", "0.0120"]);
-        let density = tick_labels(&[0.0, 0.0045, 0.009], &plain, 0);
-        assert_eq!(density, ["0.00000", "0.00450", "0.00900"]);
+        let density = tick_labels(&[0.0, 0.00651, 0.01302], &plain, 0);
+        assert_eq!(density, ["0.0000", "0.0065", "0.0130"]);
+        let density = tick_labels(&[0.0, 0.00451, 0.00902], &plain, 0);
+        assert_eq!(density, ["0.00000", "0.00451", "0.00902"]);
+        // Round ticks take the fewest places that write them all: `0.006`, not
+        // `0.0060`; `20`, not `20.0`.
+        let round = tick_labels(&[0.0, 0.006, 0.012], &plain, 0);
+        assert_eq!(round, ["0.000", "0.006", "0.012"]);
+        let round = tick_labels(&[0.0, 0.1 * 3.0, 0.6], &plain, 0);
+        assert_eq!(round, ["0.0", "0.3", "0.6"]);
+        let round = tick_labels(&[0.0, 20.0, 40.0, 60.0, 80.0], &plain, 0);
+        assert_eq!(round, ["0", "20", "40", "60", "80"]);
+        let round = tick_labels(&[0.0, 2_000.0, 4_000.0], &plain, 1);
+        assert_eq!(round, ["0", "2k", "4k"]);
         // Too small to write in places: scientific, all of them.
         let tiny = tick_labels(&[0.0, 2.5e-8, 5e-8], &plain, 0);
         assert_eq!(tiny, ["0.00e0", "2.50e-8", "5.00e-8"]);
@@ -1790,10 +1815,7 @@ mod tests {
             ["12,0k", "12,3k", "12,6k"]
         );
         let ticks = [0.0, 0.25, 0.5];
-        assert_eq!(
-            tick_labels(&ticks, &european, 0),
-            ["0,000", "0,250", "0,500"]
-        );
+        assert_eq!(tick_labels(&ticks, &european, 0), ["0,00", "0,25", "0,50"]);
         assert_eq!(
             tick_labels(&[0.0, 5e-8], &european, 0),
             ["0,00e0", "5,00e-8"]

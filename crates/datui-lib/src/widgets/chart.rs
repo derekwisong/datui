@@ -1752,13 +1752,13 @@ mod tests {
                 points: (0..=100)
                     .map(|i| {
                         let x = f64::from(i);
-                        (x, 0.012 * (-(x - 50.0).powi(2) / 400.0).exp())
+                        (x, 0.0126 * (-(x - 50.0).powi(2) / 400.0).exp())
                     })
                     .collect(),
             }],
             x_min: 0.0,
             x_max: 100.0,
-            y_max: 0.012,
+            y_max: 0.0126,
             rows: Default::default(),
             clipped: None,
         };
@@ -1767,7 +1767,7 @@ mod tests {
             x: AxisNumbers::default(),
         };
         let text = plot_text_in(&modal, data, g, Rect::new(0, 0, 40, 12));
-        assert_eq!(y_labels(&text), ["0.0120", "0.0060", "0.0000"], "{text}");
+        assert_eq!(y_labels(&text), ["0.0126", "0.0063", "0.0000"], "{text}");
 
         let european = NumberFormat::preset("european").unwrap();
         let mut ctx = RenderContext::for_test();
@@ -1843,7 +1843,7 @@ mod tests {
             area,
         );
         assert_eq!(y_labels(&text), ["1", "0"], "{text}");
-        let data = heatmap((0.0, 0.012));
+        let data = heatmap((0.0, 0.0126));
         let text = plot_text_in(
             &modal,
             ChartRenderData::Heatmap {
@@ -1853,7 +1853,7 @@ mod tests {
             g,
             area,
         );
-        assert_eq!(y_labels(&text), ["0.0120", "0.0060", "0.0000"], "{text}");
+        assert_eq!(y_labels(&text), ["0.0126", "0.0063", "0.0000"], "{text}");
     }
 
     /// A count, or an integer column, ticks in whole numbers as the table prints
@@ -1932,7 +1932,7 @@ mod tests {
         assert_eq!(y_labels(&text), ["11", "7", "3"], "{text}");
         assert_eq!(axis_row(&text), "0 3 5", "{text}");
         let text = plot_text_with(&ctx, &modal, xy(PlotNumbers::default()), g, area);
-        assert_eq!(axis_row(&text), "0.00 2.50 5.00", "{text}");
+        assert_eq!(axis_row(&text), "0.0 2.5 5.0", "{text}");
     }
 
     /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,

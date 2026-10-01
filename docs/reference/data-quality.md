@@ -42,6 +42,7 @@ the same rows, so their count is the rows.
 | Unparsed times | Text the chosen time format does not read | Unparsed values | Up to three of them |
 | Nearly unique | Every row whose value repeats | Rows beyond one per value; more open | The most repeated value |
 | Missing in files, Type mismatch | Every row of the named files | Rows of those files | The files and the values a conflict hides |
+| Repeated key | Every row whose declared key another row also holds | Rows sharing a key value | |
 | Any other | Rows matching the check | The finding's rows, or a range for grouped columns | |
 
 Rows open from the rows the run kept, in memory: no read, and the same rows
@@ -64,9 +65,9 @@ parses) says so, and <kbd>Enter</kbd> closes it.
 
 | Coverage line | Says |
 |---|---|
-| Checks | The ten checks by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, or a sample where the answer needs every row) |
+| Checks | The ten checks, and Column intent when any is declared, by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, or a sample where the answer needs every row) |
 | Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read |
-| Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); segments the scope has rows in and the sample drew none of (`3 segments with rows, none sampled`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval` |
+| Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); segments the scope has rows in and the sample drew none of (`3 segments with rows, none sampled`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval`; `key repeats among 10,000 sampled rows only` for a declared key on a sample; `intent on code: not in scope` |
 
 The coverage comes from what the run measured; showing it reads nothing.
 Traversed rows are counted as each read hands them on, after the filters the
@@ -77,7 +78,8 @@ too); a line cut short counts what it left out (`+2 more`).
 
 <kbd>Enter</kbd> on the **Clean** entry lists the checks the run made: the
 columns each covered, what it found, or why it was skipped or unavailable.
-The six most important show first and <kbd>Enter</kbd> shows all ten. When a
+The six most important show first and <kbd>Enter</kbd> shows all of them.
+Column intent, when declared, comes first. When a
 run finds nothing, the list is on the page under the coverage.
 
 | Finding | Tier | Means |
@@ -96,6 +98,12 @@ run finds nothing, the list is on the page under the coverage.
 | Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
 | Unparsed times | Problem | Text read as time whose values the chosen format does not read; <kbd>Enter</kbd> opens their rows |
 | Single value | Note | One value in every row checked |
+| Repeated key | Problem | Rows sharing a value of the declared key; see [Column intent](#column-intent) |
+| Incomplete key | Problem | Rows with no value in some part of the declared key |
+| Required, missing | Problem | Rows with no value in a column declared required |
+| Not allowed | Problem | Values outside a column's declared allowed set |
+| Out of range | Problem | Values below a column's declared minimum or above its maximum |
+| Unparsed numbers | Problem | Text declared to read as a number that does not |
 
 A dataset-grain sample is spread across the whole scope, as Describe's is:
 one Parquet or IPC file is read as a few dozen short runs across it, anything
@@ -113,7 +121,7 @@ runs kept. After a run, <kbd>e</kbd> opens it again.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values, Latency over or Window by in place; on another row, <kbd>→</kbd> opens it |
-| <kbd>Space</kbd> | Open the row: the Sample form, the Time roles, Intervals or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
+| <kbd>Space</kbd> | Open the row: the Sample form, the Time roles, Intervals, Column intent or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup and returns there |
 | <kbd>p</kbd> | Show the access plan |
 | <kbd>Enter</kbd> | Run, from any row |
@@ -132,6 +140,7 @@ were. While a cancelled run is still stopping, Run waits and Setup says why.
 | Text as time | Text columns read as a date or datetime through a chosen format, for this study only |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 | Intervals | Which starts and ends are measured, from every pair the assigned roles make; offered once two roles are assigned |
+| Column intent | What columns must hold: the key, and per column required, allowed values, a range, or text read as a number. See [Column intent](#column-intent) |
 | Grain | Whole dataset; by file, when the dataset has several; by each partition column; by hour, day, week or month of any date or time column, or text read as time (hours only where there are times); or in chunks of 100,000 or 1,000,000 rows |
 | Expected | With a time-window grain: none, every window, or weekdays only (hours and days); From and Before, a date or UTC timestamp each, blank for the first and last window found. See [Expected windows and gaps](#expected-windows-and-gaps) |
 | Compare | None, the segment before (partitions and files in the order their names count), or a baseline segment |
@@ -157,6 +166,10 @@ The Read section says what Run will do, before it does it:
 | Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
 | Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
+| Column intent: checked on the rows read, no extra read | Intent declared on a sampled run: measured on the sample's rows in memory |
+| Key: finds repeats among the N sampled rows only | A declared key on a sample smaller than the scope |
+| Column intent: counted in the profile pass; the key adds one pass over its columns | A full scan with a declared key: one more pass, counted among the passes |
+| Column intent needs values: not checked | Intent declared with Values set to metadata only |
 | Expected windows: checked against the segment counts, no read | Expected is set: gaps come from the counts the run takes anyway |
 
 Before a run, source-scoped setups report unknown row counts and read sizes,
@@ -165,7 +178,8 @@ a ceiling (`up to`); the run reports the exact eligible count. The scope is
 applied before sampling, so sampling never reaches beyond its bounds.
 <kbd>p</kbd> shows the access plan: source, scope, grain, sample, rows
 evaluated, value reads, requests, source files, the extra reads a type conflict
-costs, writes (none), the passes, and the estimate basis. Remote bytes and
+costs, writes (none), the passes, what column intent costs, and the estimate
+basis. Remote bytes and
 requests are unknown until measured, and say so.
 
 The Time roles row opens an explicit mapping table; every role starts
@@ -212,7 +226,7 @@ away, and a time-window grain on the column with it.
 
 The control bar has one shape on every report page: <kbd>Esc</kbd> Back, the
 page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
-<kbd>←</kbd> <kbd>→</kbd> Page and <kbd>v</kbd> View Rows.
+<kbd>←</kbd> <kbd>→</kbd> Page, <kbd>v</kbd> View Rows and <kbd>x</kbd> Export.
 
 | Key | Action |
 |---|---|
@@ -229,6 +243,7 @@ page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
 | <kbd>g</kbd> | On Trends, list the expected windows with no rows; only once Setup states Expected |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | On a sampled report, run again with a new sample seed, for every tool; waits while a cancelled read finishes |
+| <kbd>x</kbd> | Export the report on screen to JSON or Markdown; see [Exported report](#exported-report) |
 | <kbd>Tab</kbd> | Move between the result and the tool list |
 | <kbd>Esc</kbd> | Back one level: a narrowed Overview shows every finding first; from a page, close Analysis |
 
@@ -397,7 +412,7 @@ else in Setup belongs to the report.
 
 | Edit | Reads |
 |---|---|
-| Time roles, text as time on a role, compare, latency threshold | Nothing: the retained rows are measured again |
+| Time roles, text as time on a role, column intent, compare, latency threshold | Nothing: the retained rows are measured again |
 | Expected windows | Nothing: checked against the report on screen |
 | Row chunks | Nothing: each row's position was kept |
 | A coarser window of a grain already counted | Nothing: hours sum into days, weeks and months, and days into weeks and months |
@@ -415,6 +430,88 @@ reports that retained rows can remake go first, then the oldest rows; the newest
 rows and the newest report always stay. Setup names rows that were released and
 will be read again. The rows are a snapshot of the session: a file changed on
 disk is not noticed until it is opened again.
+
+## Column intent
+
+The profile can say a column is nearly unique; only you can say it is a key.
+Column intent declares what columns must hold, and a run counts what breaks it.
+Every rule is optional, and nothing is declared until you declare it. The
+Column intent row in Setup lists the scope's columns with what each must hold;
+<kbd>Space</kbd> opens a column's form.
+
+| Rule | Takes | Offered for |
+|---|---|---|
+| Key | The columns whose values together name one row, in any number | Every column |
+| Required | Every row has a value | Every column |
+| Read as | Whole number or decimal: text read as a number for the range, and text that does not read is counted | Text; text read as time takes its reading from Text as time |
+| Allowed | Values separated by commas, outer spaces dropped, up to 100 | Text, whole numbers, true/false |
+| Minimum, Maximum | A number; a date `2024-01-31`; or a date and time `2024-01-31 08:00:00` | Numbers, dates and times, and text read as either |
+
+A bound the column's type cannot read, or a minimum above the maximum, is said
+on the form's own line, and <kbd>Enter</kbd> does not apply it. A declared
+column the scope does not have is named under Columns before Run and in the
+report's Limits.
+
+Intent is measured on the rows a run reads, in the same pass as the column
+profile: on a sample, over the sample in memory, so the rows a run already read
+serve a new declaration with no read; on a full scan, the rules are sums in the
+profile pass, and the key is one grouping of its columns, a pass of its own
+that Setup counts before Run.
+
+| Run | A key with no repeat says |
+|---|---|
+| Every row | The key is unique in the scope |
+| A sample | No repeat among the sampled rows. Sampled rows are distinct rows, so a repeat found is a repeat in the data, but rows outside the sample are not checked; the coverage says `key repeats among N sampled rows only` |
+| Metadata only | Nothing: the check is unavailable, values not read |
+
+Each violation is a problem with its count and what it is out of, and
+<kbd>Enter</kbd> on it opens its rows as any finding's open: from the rows the
+run kept, or on a full scan after a **Read Rows** dialog. Out of range names the lowest value below the range and
+the highest above it. When the rows are in memory (a sample, or a scope no
+larger than it), Not allowed and Unparsed numbers also list their commonest
+values with their rows; a full scan keeps no rows to list them from. A
+one-column key replaces the Nearly unique note on that column: its repeats are
+counted by the key's own finding, and on an exact run the Nearly unique check
+reports them.
+
+## Exported report
+
+<kbd>x</kbd> on a report page writes the report on screen to a file, from the
+results in memory: nothing is read, and the source may be gone. The dialog
+takes a path and a format; the path gets the format's extension when it has
+none, and changing the format changes a typed `.json` to `.md` or back. A file
+that exists is overwritten only once confirmed, and declining keeps the dialog.
+
+| Format | Holds |
+|---|---|
+| JSON | Every measurement below, versioned |
+| Markdown | The source, rows measured, the verdict, coverage, each finding with its headline and evidence, the checks, the intervals and the setup |
+
+The JSON is one object. `format` is always `datui-data-quality-report`, and
+`version` is `1`. A field may be added within a version; one removed, renamed or
+changed in meaning is a new version.
+
+| Field | Holds |
+|---|---|
+| `format`, `version` | `datui-data-quality-report`, `1` |
+| `datui_version` | The datui that wrote it |
+| `exported_at` | When the file was written, RFC 3339 in UTC; not when the data was read |
+| `source` | `location` (the path or URL as opened), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run began, and `view`: the query, SQL, search, filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
+| `setup` | `scope`, `values` (`sample`, `full` or `metadata`), `sample` (`method`, `rows`, `seed`), `grain`, `comparison`, `baseline_segment`, `time_formats` (`column`, `kind`, `format`), `time_roles` (`role`, `column`), `intervals`, `window_by`, `latency_threshold_seconds`, and `intent` (`key`, and per column `column`, `required`, `allowed`, `min`, `max`, `read_as`) |
+| `run` | `precision` (`exact`, `sampled` or `metadata`), `total_rows`, `evaluated_rows`, `per_value`, `source_files`, `footers_read`, and `reads` (`source_reads`, `counted`, `rows_traversed`) when the run's reads were watched |
+| `verdict` | The headline, as on screen |
+| `coverage` | `exact`, `sampled`, `metadata`, `skipped`, `unavailable` (`reason`, `checks`), `rows`, `limits` |
+| `checks` | Per check: `name`, `looks_for`, `applies_to`, `outcome` (`passed`, `found`, `skipped`, `unavailable`), `detail`, `basis` |
+| `findings` | Per finding: `severity` (`problem`, `note`, `clean`), `title`, `columns`, `affected_rows`, `evaluated_rows`, `summary`, `headline`, `evidence` |
+| `columns` | Per column: `name`, `dtype`, `evaluated_rows`, `null_count`, `distinct_count`, `empty_count`, `whitespace_count`, `nan_count`, `positive_infinity_count`, `negative_infinity_count`, `min`, `max`, `dominant_value`, `dominant_count`, `min_length`, `max_length`, and the integer, decimal, date and datetime parse counts |
+| `duplicates` | `groups`, `extra_rows`, `rows_involved`, `evaluated_rows` |
+| `segments` | Per segment: `label`, `total_rows`, `evaluated_rows`, `null_cells`, `null_rate`, `compared_with`, `largest_change` |
+| `intervals` | Per interval and segment: `interval`, `segment`, `start_column`, `end_column`, `rows`, `both_ends`, `missing_start`, `missing_end`, `unparsed_start`, `unparsed_end`, `negative`, `zero`, `p50_seconds` to `p99_seconds`, `max_seconds`, `threshold_seconds`, `over_threshold` |
+| `intent` | `null` when nothing is declared; otherwise `measured`, `precision`, `evaluated_rows`, `key` (`columns`, `missing`, `groups`, `extra_rows`, `rows_involved`), per column `column`, `dtype`, `values`, `missing`, `unparsed`, `outside`, `compared`, `below`, `above`, `lowest`, `highest`, and `absent` |
+
+A number not measured is `null`, never `0`. With the setup, the source and the
+seed, the same datui draws the same sample and measures the same numbers from
+data that has not changed.
 
 ## Data-quality metric definitions
 
@@ -441,6 +538,11 @@ disk is not noticed until it is opened again.
 | Lifecycle latency | End role timestamp − start role timestamp per row, on rows with both ends present and read; each end's missing count is of all rows (a row can miss both, so both ends is counted, not derived), text the format does not read is counted apart from missing, and negative values are retained |
 | Negative / zero / breach | Durations below zero, of exactly zero, and above the threshold (`duration > threshold`, strictly) ÷ rows with both ends; compared on the exact difference, so half a second early is negative |
 | Unparsed times | Non-null text values the chosen format does not read ÷ non-null values of the column; counted in the pass that profiles the columns |
+| Repeated key | Rows whose complete key value another row also holds ÷ rows checked; groups are key values held by more than one row, extra rows Σ(group size − 1). Rows missing part of the key are left out and counted as Incomplete key |
+| Required, missing | Null values ÷ rows checked |
+| Not allowed | Non-null values not exactly equal to one in the set ÷ non-null values; text compared as stored, whole numbers as numbers |
+| Out of range | Values `< minimum` or `> maximum` ÷ values read; a bound is inclusive. Times compare as instants in UTC, a time with no zone read as UTC |
+| Unparsed numbers | Non-null text that does not cast to the declared number ÷ non-null values, as Numbers as text parses |
 
 Lifecycle percentiles use the evaluated duration values in sorted order. Date
 values are interpreted at midnight; datetime values retain their physical time

@@ -10,7 +10,7 @@ Setup reads the data; <kbd>Enter</kbd> does, once.
 | Section | What you set |
 |---|---|
 | **Rows & sample** | The [sample](analysis-features.md#sampling) every analysis tool reads: which rows, how they are picked, how many, the seed |
-| **Columns** | Text read as time, time roles, and the intervals between them |
+| **Columns** | Text read as time, time roles, the intervals between them, and what each column must hold |
 | **Study** | Grain, the windows rows are expected in, comparison, values or file metadata only, latency threshold, and the window an interval goes in |
 | **Read** | What Run will read: a sampling pass, a count, rows a run already read, or no read at all |
 
@@ -180,13 +180,60 @@ Values the format does not read are reported as **Unparsed times**, not as
 missing values, and <kbd>Enter</kbd> on the finding opens their rows. A role or
 grain on text with no format is named in Setup before you run.
 
+## Declare what a column must hold
+
+The checks above say what looks wrong. To check what you know is wrong, declare
+it: a repeated ID is a defect, a repeated category is not, and only you know
+which column is which.
+
+1. In Setup, move to **Column intent** and press <kbd>Space</kbd>.
+2. Choose a column and press <kbd>Space</kbd> for its form.
+3. Tick **Key** for the columns whose values together name one row, **Required**
+   for a column every row must fill, type the **Allowed** values separated by
+   commas, or a **Minimum** and **Maximum**. Text can be **Read as** a whole
+   number or decimal; a range then compares the number. <kbd>Enter</kbd>
+   applies.
+4. <kbd>Enter</kbd> on the list returns to Setup; <kbd>Enter</kbd> there runs.
+
+| Finding | Counts |
+|---|---|
+| Repeated key | Rows that share their key with another row |
+| Incomplete key | Rows with no value in part of the key |
+| Required, missing | Rows with no value |
+| Not allowed | Values outside the set, out of the column's values |
+| Out of range | Values below the minimum or above the maximum |
+| Unparsed numbers | Text that does not read as the number |
+
+Each is a problem, with its rows one <kbd>Enter</kbd> away. Intent reads nothing
+of its own: it is measured on the rows the run reads, and a change to it reuses
+the rows a run already read. On a sample, a key finds repeats among the sampled
+rows only: a repeat there is a repeat in the data, and no repeat says nothing
+about the rest. Setup's **Read** says so before you run; set the sample's method
+to **Every row** to check every row, which adds one pass over the key's columns.
+
+## Export the report
+
+On any report page, press <kbd>x</kbd>. Type a path, choose **JSON** or
+**Markdown** with <kbd>Tab</kbd> and <kbd>←</kbd> <kbd>→</kbd>, and press
+<kbd>Enter</kbd>.
+
+| Format | Holds |
+|---|---|
+| JSON | Every measurement, the setup it was measured with, the source and the reads, versioned for tools ([schema](../reference/data-quality.md#exported-report)) |
+| Markdown | The verdict, coverage, findings with their evidence, the checks and the setup |
+
+The report is written from what is on screen: nothing is read, and the data
+need not still be there. A file that exists is overwritten only after you
+confirm.
+
 ## Check the read size
 
 Setup's **Read** section says what <kbd>Enter</kbd> will read before it reads:
 one sampling pass (which also counts the grain's segments when it streams), a
 count of the grain's column for exact segment totals, rows a run already read,
 or nothing when the report is already on screen or in the session cache.
-Changing roles, text formats, comparison, expected windows, row chunks or a
+Changing roles, text formats, column intent, comparison, expected windows, row
+chunks or a
 coarser window of a counted grain reads nothing; a new seed, size or scope reads
 a new sample.
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for

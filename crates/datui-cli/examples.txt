@@ -1,9 +1,19 @@
 Examples:
-  datui data.parquet                        open a file
-  datui part-1.csv part-2.csv               several files, as one table
-  datui /data/events/                       a directory, as one table
-  datui --hive s3://bucket/warehouse/       a partitioned dataset in S3
-  datui --format csv --no-header raw.txt    headerless text, whatever the extension
-  datui --generate-config                   write ~/.config/datui/config.toml
+  datui
+      Open the home screen. Public datasets lists the built-in catalog
+  datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
+      Palmer penguins from the web; datui asks before it downloads
+  datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/
+      NOAA daily highs for 2024, one table from public S3
+  datui abfss://release@overturemapswestus2.dfs.core.windows.net/
+      Browse Overture Maps releases in public Azure storage
+  datui jan.csv feb.csv mar.csv
+      Files of the same shape, as one table
+  datui --hive "/data/events/**/*.parquet"
+      A glob, read as one partitioned table
+  datui --format csv --no-header raw.txt
+      Headerless text, whatever the extension
+  datui --generate-config
+      Write ~/.config/datui/config.toml
 
 Docs: https://derekwisong.github.io/datui/

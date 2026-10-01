@@ -199,6 +199,39 @@ pub const NUMBER_FORMAT_VALUES: &[&str] = &[
     "system",
 ];
 
+/// The examples shown after `--help`, in the manpage and in the CLI reference.
+pub const EXAMPLES: &str = include_str!("../examples.txt");
+
+/// One entry of [`EXAMPLES`]: a command and what it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Example {
+    pub command: String,
+    pub description: String,
+}
+
+/// The entries of [`EXAMPLES`], so the manpage and the reference can lay them out
+/// their own way. A command is indented two spaces; its description, on the lines
+/// after it, six.
+pub fn examples() -> Vec<Example> {
+    let mut out: Vec<Example> = Vec::new();
+    for line in EXAMPLES.lines() {
+        if let Some(text) = line.strip_prefix("      ") {
+            if let Some(last) = out.last_mut() {
+                if !last.description.is_empty() {
+                    last.description.push(' ');
+                }
+                last.description.push_str(text.trim());
+            }
+        } else if let Some(command) = line.strip_prefix("  ") {
+            out.push(Example {
+                command: command.trim().to_string(),
+                description: String::new(),
+            });
+        }
+    }
+    out
+}
+
 /// Command-line arguments for datui
 #[derive(Clone, Parser, Debug)]
 #[command(
@@ -206,7 +239,7 @@ pub const NUMBER_FORMAT_VALUES: &[&str] = &[
     version,
     about = "Terminal UI for tabular data",
     long_about = include_str!("../long_about.txt"),
-    after_help = include_str!("../examples.txt")
+    after_help = EXAMPLES
 )]
 pub struct Args {
     /// Path(s) to the data file(s) to open.
@@ -520,12 +553,39 @@ pub fn render_options_markdown() -> String {
         out.push_str(&format!("| `{option_str}` | {help} |\n"));
     }
 
+    out.push_str("\n## Examples\n\n| Command | Does |\n|---------|------|\n");
+    for example in examples() {
+        out.push_str(&format!(
+            "| `{}` | {} |\n",
+            escape_table_cell(&example.command),
+            escape_table_cell(&example.description)
+        ));
+    }
+
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The manpage and the reference read `examples.txt` through `examples()`, so a
+    /// line indented the wrong way would drop or merge an entry there while `--help`
+    /// still looked right.
+    #[test]
+    fn every_example_has_a_command_and_a_description() {
+        let examples = examples();
+        assert!(examples.len() >= 4);
+        for example in &examples {
+            assert!(example.command.starts_with("datui"), "{example:?}");
+            assert!(!example.description.is_empty(), "{example:?}");
+        }
+        let listed = EXAMPLES
+            .lines()
+            .filter(|l| l.trim_start().starts_with("datui"))
+            .count();
+        assert_eq!(listed, examples.len());
+    }
 
     #[test]
     fn test_compression_detection() {

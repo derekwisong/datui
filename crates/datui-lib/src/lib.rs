@@ -17685,12 +17685,15 @@ impl App {
                         return None;
                     }
                     KeyCode::Char('m')
-                        if matches!(
-                            self.analysis_modal.data_quality_page,
-                            QualityPage::Trends | QualityPage::TrendDetail
-                        ) =>
+                        if self.analysis_modal.data_quality_page == QualityPage::Trends =>
                     {
                         self.analysis_modal.cycle_quality_metric();
+                        return None;
+                    }
+                    KeyCode::Char('m')
+                        if self.analysis_modal.data_quality_page == QualityPage::TrendDetail =>
+                    {
+                        self.analysis_modal.cycle_trend_detail_metric();
                         return None;
                     }
                     KeyCode::Char('w')

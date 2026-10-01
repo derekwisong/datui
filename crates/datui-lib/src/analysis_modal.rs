@@ -918,6 +918,40 @@ impl AnalysisModal {
         self.set_quality_page(QualityPage::TrendDetail);
     }
 
+    /// The next measure in a bar's detail, on the same column's line. A column with
+    /// nothing to draw in it has no line, and Trends lists what does.
+    pub fn cycle_trend_detail_metric(&mut self) {
+        let Some(results) = self.data_quality_results.as_ref() else {
+            return;
+        };
+        let view = crate::quality_trends::trend_view(results, self.data_quality_metric, 1);
+        let line = view
+            .lines
+            .get(self.data_quality_trend_line)
+            .map(|line| (line.measure, line.names.clone()));
+        self.cycle_quality_metric();
+        let Some(results) = self.data_quality_results.as_ref() else {
+            return;
+        };
+        let view = crate::quality_trends::trend_view(results, self.data_quality_metric, 1);
+        let found = line.and_then(|(measure, names)| {
+            view.lines.iter().position(|candidate| {
+                candidate.measure == measure
+                    || candidate
+                        .names
+                        .iter()
+                        .any(|name| !candidate.rows() && names.contains(name))
+            })
+        });
+        match found {
+            Some(index) => self.data_quality_trend_line = index,
+            None => {
+                self.data_quality_trend_line = 0;
+                self.close_to_trends();
+            }
+        }
+    }
+
     /// Back to Trends from a bar detail or the gaps, the line still selected.
     pub fn close_to_trends(&mut self) {
         let line = (self.data_quality_page == QualityPage::TrendDetail)

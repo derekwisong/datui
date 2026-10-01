@@ -247,19 +247,10 @@ pub fn trend_view(
             .iter()
             .map(|slot| cell(slot, index))
             .collect::<Vec<_>>();
-        let parts = ranges
-            .iter()
-            .map(|range| {
-                cells[range.clone()]
-                    .iter()
-                    .flatten()
-                    .fold((0.0, 0.0), |(part, whole), (p, w)| (part + p, whole + w))
-            })
-            .collect::<Vec<_>>();
         let row = summarize(
             vec![profile.name.clone()],
             TrendMeasure::Column(index),
-            parts,
+            pool(&cells, &ranges),
         );
         if row.high == 0.0 {
             continue;
@@ -271,13 +262,35 @@ pub fn trend_view(
             None => columns.push((cells, row)),
         }
     }
-    let mut columns = columns.into_iter().map(|(_, row)| row).collect::<Vec<_>>();
-    columns.sort_by(|left, right| {
-        (right.high - right.low)
-            .total_cmp(&(left.high - left.low))
-            .then_with(|| right.high.total_cmp(&left.high))
-    });
-    lines.extend(columns);
+    // The column that moves most first, judged on a fixed pooling rather than the
+    // bars that fit: a line keeps its place at any width, so the line a bar detail
+    // opened is the line it shows.
+    let canonical = (0..slots.len())
+        .step_by(slots.len().div_ceil(ORDER_BARS))
+        .map(|start| start..(start + slots.len().div_ceil(ORDER_BARS)).min(slots.len()))
+        .collect::<Vec<_>>();
+    let spread = |cells: &[Cell]| {
+        let known = pool(cells, &canonical)
+            .into_iter()
+            .filter(|(_, whole)| *whole > 0.0)
+            .map(|(part, whole)| part / whole)
+            .collect::<Vec<_>>();
+        let high = known.iter().copied().fold(0.0, f64::max);
+        let low = known.iter().copied().fold(high, f64::min);
+        (high - low, high)
+    };
+    let mut columns = columns
+        .into_iter()
+        .map(|(cells, row)| (spread(&cells), row))
+        .collect::<Vec<_>>();
+    columns.sort_by(
+        |((left_spread, left_high), _), ((right_spread, right_high), _)| {
+            right_spread
+                .total_cmp(left_spread)
+                .then_with(|| right_high.total_cmp(left_high))
+        },
+    );
+    lines.extend(columns.into_iter().map(|(_, row)| row));
     TrendView {
         slots,
         lines,
@@ -285,6 +298,22 @@ pub fn trend_view(
         per_bar,
         sampled,
     }
+}
+
+/// How many bars the order of Trends lines is judged on, whatever the width.
+const ORDER_BARS: usize = 32;
+
+/// `cells` summed within each of `ranges`: a count over what it is out of.
+fn pool(cells: &[Cell], ranges: &[Range<usize>]) -> Vec<(f64, f64)> {
+    ranges
+        .iter()
+        .map(|range| {
+            cells[range.clone()]
+                .iter()
+                .flatten()
+                .fold((0.0, 0.0), |(part, whole), (p, w)| (part + p, whole + w))
+        })
+        .collect()
 }
 
 /// The 95% Wilson score interval for `count` of `n`: where the whole's rate likely
@@ -993,6 +1022,37 @@ mod tests {
             expected_gaps(&plan, &results),
             Some(Gaps::TooMany { windows: 35_064 })
         );
+    }
+
+    /// Lines keep their order at any width, so the line a bar detail opened is the
+    /// line it shows after a resize.
+    #[test]
+    fn trend_lines_keep_their_order_at_any_width() {
+        let rows: i32 = 60 * 20;
+        let frame = df!(
+            "day" => (0..rows).map(|row| 19_723 + row / 20).collect::<Vec<_>>(),
+            "steady" => (0..rows).map(|row| (row % 10 != 0).then_some(1i64)).collect::<Vec<_>>(),
+            "late" => (0..rows).map(|row| (row < 900 || row % 2 == 0).then_some(1i64)).collect::<Vec<_>>(),
+            "spike" => (0..rows).map(|row| !(400..440).contains(&row)).map(|kept| kept.then_some(1i64)).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy()
+        .with_column(col("day").cast(DataType::Date));
+        let results =
+            compute_data_quality(&frame, None, &daily(QualityCompute::Full, 0), None, false)
+                .unwrap();
+        let order = |bars: usize| {
+            trend_view(&results, QualityMetric::NullRate, bars)
+                .lines
+                .into_iter()
+                .map(|line| line.names)
+                .collect::<Vec<_>>()
+        };
+        let first = order(8);
+        assert_eq!(first.len(), 4, "rows and three columns: {first:?}");
+        for bars in [1, 15, 23, 60, 200] {
+            assert_eq!(order(bars), first, "{bars} bars");
+        }
     }
 
     /// A segment the sample missed sorts among the ones it drew.

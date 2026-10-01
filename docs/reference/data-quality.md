@@ -316,7 +316,7 @@ sampled, or metadata-only.
   | Rows | `412 sampled of 3,210 (12.8%)`, or every row read |
   | The measure | Count of its denominator (rows, or values for a distinct or parse share) and the rate; on a rows line, rows per segment: the mean, the smallest and the largest |
   | 95% interval | The [Wilson interval](#data-quality-metric-definitions) of the rate on a sample, said to rest on under 30 rows when it does; none needed when every row was read, and none for a distinct share |
-  | Previous bar, Baseline bar | Against the bar before, or with a baseline, the bar holding it: before and now, the move in points, and `a clear change`, `within sampling noise` or `under a point`, judged as Segments judges a change |
+  | Previous bar, Baseline bar | Against the bar before, or with a baseline, the bar holding it: before and now, the move in points, and `a clear change`, `within sampling noise` or `under a point`, judged as Segments judges a change (a distinct share is not judged) |
 
   With Expected set in Setup, the page also sums up the expected windows, and
   <kbd>g</kbd> lists them; see [Expected windows and gaps](#expected-windows-and-gaps).
@@ -436,7 +436,7 @@ disk is not noticed until it is opened again.
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
 | Trend bar rate | Σ count ÷ Σ denominator over the bar's segments with sampled rows; rows per segment is Σ rows ÷ segments, a segment the sample missed counting zero sampled rows |
 | 95% interval | Wilson score interval at z = 1.96 on a bar's count of its denominator: centre (p + z²/2n) ÷ (1 + z²/n), half-width z·√(p(1−p)/n + z²/4n²) ÷ (1 + z²/n). It assumes a simple random sample; seeded runs of one file are clustered, so read it as a floor on the uncertainty there |
-| Bar change | Against the previous bar, or the baseline's: clear at 1 pp or more and, on a sample, the two-proportion z-test at 4 or more standard errors |
+| Bar change | Against the previous bar, or the baseline's: clear at 1 pp or more and, on a sample, the two-proportion z-test at 4 or more standard errors; a distinct share is shown, not judged, as on Segments |
 | Largest change | Against the compared segment: a row count that halved or doubled, else the biggest percentage-point move in any column's null, empty, blank or NaN rate, named when it reaches 1 pp and, on a sample, when a two-proportion z-test puts it at 4 or more standard errors; on an exact profile with no such move, the first column whose minimum or maximum moved |
 | Lifecycle latency | End role timestamp − start role timestamp per row, on rows with both ends present and read; each end's missing count is of all rows (a row can miss both, so both ends is counted, not derived), text the format does not read is counted apart from missing, and negative values are retained |
 | Negative / zero / breach | Durations below zero, of exactly zero, and above the threshold (`duration > threshold`, strictly) ÷ rows with both ends; compared on the exact difference, so half a second early is negative |

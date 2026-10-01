@@ -3199,7 +3199,11 @@ fn trend_bar_fields(
                     rate_label(change.before),
                     rate_label(change.now),
                     change.points(),
-                    if change.clear {
+                    // Segments never judge a distinct share: it falls as a segment
+                    // grows, so bars of different sizes differ by it whatever the data.
+                    if config.metric == QualityMetric::DistinctShare {
+                        "not judged for a distinct share"
+                    } else if change.clear {
                         "a clear change"
                     } else if change.points().abs() < crate::data_quality::MATERIAL_CHANGE_PP {
                         "under a point"
@@ -5166,6 +5170,7 @@ mod trend_tests {
         state: DataTableState,
         plan: DataQualityPlan,
         results: DataQualityResults,
+        metric: QualityMetric,
         theme: Theme,
         ctx: RenderContext,
     }
@@ -5202,6 +5207,7 @@ mod trend_tests {
                 state,
                 plan,
                 results,
+                metric: QualityMetric::NullRate,
                 theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
                 ctx: RenderContext::for_test(),
             }
@@ -5223,7 +5229,7 @@ mod trend_tests {
                 measured: &self.plan,
                 results: Some(&self.results),
                 from_cache: false,
-                metric: QualityMetric::NullRate,
+                metric: self.metric,
                 column_index: 0,
                 segment_index: 0,
                 interval_index: 0,
@@ -5270,7 +5276,7 @@ mod trend_tests {
 
         /// The Trends line of the amount column.
         fn amount(&self) -> usize {
-            trend_view(&self.results, QualityMetric::NullRate, 1)
+            trend_view(&self.results, self.metric, 1)
                 .lines
                 .iter()
                 .position(|line| line.names == ["amount"])
@@ -5501,5 +5507,17 @@ mod trend_tests {
             none.contains("Expected       needs a time-window grain"),
             "{none}"
         );
+    }
+
+    /// A distinct share is shown against the bar before but never judged, as
+    /// Segments never judges one: it falls as a segment grows.
+    #[test]
+    fn a_distinct_share_is_not_judged_between_bars() {
+        let mut screen = Screen::sampled();
+        screen.metric = QualityMetric::DistinctShare;
+        let second = screen.draw(QualityPage::TrendDetail, screen.amount(), 1, (100, 30));
+        assert!(second.contains("Previous bar"), "{second}");
+        assert!(second.contains("+0.0 points: not judged"), "{second}");
+        assert!(second.contains("none: a distinct share"), "{second}");
     }
 }

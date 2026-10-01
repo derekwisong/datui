@@ -15849,6 +15849,39 @@ fn a_compressed_csv_over_http_is_its_url() {
     assert_eq!(app.template_modal.exact_path_input.value(), url);
 }
 
+/// A download that will not read is named by the URL in the error, not by the temp
+/// file it landed in: a Parquet that is not one, which fails its scan, and JSON that
+/// is not JSON (#511).
+#[cfg(feature = "http")]
+#[test]
+fn a_download_that_will_not_read_is_named_by_its_url() {
+    common::isolate_cache();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, body) in [
+        ("broken_511.parquet", b"id,v\n1,2\n".to_vec()),
+        ("broken_511.json", b"{not json".to_vec()),
+    ] {
+        let (url, _) = serve_over_http(name, body);
+        let options = OpenOptions {
+            temp_dir: Some(dir.path().to_path_buf()),
+            ..OpenOptions::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        settle_from(
+            &mut app,
+            &rx,
+            AppEvent::Open(vec![PathBuf::from(&url)], options),
+        );
+        let message = app.error_message().expect("the open failed");
+        assert!(message.contains(&url), "{name}: {message}");
+        assert!(
+            !message.contains(&*dir.path().to_string_lossy()),
+            "{name}: {message}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Help on the home screen
 // ---------------------------------------------------------------------------

@@ -314,6 +314,17 @@ pub fn error_for_python(report: &color_eyre::eyre::Report) -> (ErrorKindForPytho
     (ErrorKindForPython::Other, msg)
 }
 
+/// `message` with `file`, a temporary copy datui made, called `source`: what the user
+/// opened. A download or a decompressed CSV is read from a temp path the user never
+/// typed, and Polars names the file it was reading.
+pub fn named_by_source(message: &str, file: &Path, source: &Path) -> String {
+    let file = file.to_string_lossy();
+    if file.is_empty() {
+        return message.to_string();
+    }
+    message.replace(file.as_ref(), &source.to_string_lossy())
+}
+
 /// Format a color_eyre Report by downcasting to known error types.
 /// Walks the cause chain to find PolarsError or io::Error.
 pub fn user_message_from_report(report: &color_eyre::eyre::Report, path: Option<&Path>) -> String {
@@ -492,6 +503,25 @@ fn short_csv_parse_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A temp copy is named by what the user opened, wherever the message says it,
+    /// and a message that does not mention it is left alone.
+    #[test]
+    fn a_temp_copy_is_named_by_its_source() {
+        let file = Path::new("/home/u/tmp/.tmp9tY5X2.parquet");
+        let url = Path::new("http://host/broken.parquet");
+        let said = named_by_source(
+            "Failed to load /home/u/tmp/.tmp9tY5X2.parquet: bad\nIt stopped at /home/u/tmp/.tmp9tY5X2.parquet.",
+            file,
+            url,
+        );
+        assert_eq!(
+            said,
+            "Failed to load http://host/broken.parquet: bad\nIt stopped at http://host/broken.parquet."
+        );
+        assert_eq!(named_by_source("no path here", file, url), "no path here");
+        assert_eq!(named_by_source("x", Path::new(""), url), "x");
+    }
 
     /// The census directory in `cloud-samples-data`: two headerless CSVs and one with a
     /// header, so the names Polars compares are a first row's values.

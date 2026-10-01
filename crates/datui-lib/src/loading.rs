@@ -833,11 +833,19 @@ impl Loader {
             return Step::Nothing;
         }
         let from_home = load.from_home;
+        // A download is read from a temp file the user never typed: the reason names
+        // the URL they did.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        let message = match &load.download {
+            Some(fetched) => {
+                crate::error_display::named_by_source(message, fetched.file.path(), &fetched.url)
+            }
+            None => message.to_string(),
+        };
+        #[cfg(not(any(feature = "http", feature = "cloud")))]
+        let message = message.to_string();
         self.retire();
-        Step::Failed(Failed {
-            message: message.to_string(),
-            from_home,
-        })
+        Step::Failed(Failed { message, from_home })
     }
 
     /// The user agreed to the download: let go of the hold and fetch it.
@@ -1483,7 +1491,19 @@ mod tests {
             },
             &jobs,
         );
-        assert!(matches!(loader.failed(id, "bad csv"), Step::Failed(_)));
+        let reason = format!(
+            "Failed to load {}: bad csv\nIt stopped at {}.",
+            at.display(),
+            at.display()
+        );
+        let Step::Failed(failed) = loader.failed(id, &reason) else {
+            panic!("the open fails");
+        };
+        assert_eq!(
+            failed.message,
+            format!("Failed to load {url}: bad csv\nIt stopped at {url}."),
+            "named by the URL opened, never the temp file (#511)"
+        );
         assert!(!at.exists(), "a failed open keeps no download");
     }
 

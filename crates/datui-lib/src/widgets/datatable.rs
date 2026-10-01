@@ -5776,6 +5776,15 @@ impl DataTableState {
         self.download.is_some()
     }
 
+    /// The temporary files this state holds, which an error from reading it may name:
+    /// a decompressed copy, a download.
+    pub(crate) fn temp_files(&self) -> Vec<&Path> {
+        let files = self.decompress_temp_file.iter().map(|file| file.path());
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        let files = files.chain(self.download.iter().map(|download| download.path()));
+        files.collect()
+    }
+
     /// `lf` without the hidden drift column. A non-strict drop, so it is a no-op on a
     /// frame that never had one and no caller has to know which it holds.
     fn without_drift(lf: LazyFrame) -> LazyFrame {

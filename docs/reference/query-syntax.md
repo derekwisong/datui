@@ -4,6 +4,8 @@ The grammar of the q-style mode of the query prompt: a subset of the q
 language, evaluated right to left. For a walkthrough with
 examples, see [Querying Data](../user-guide/querying-data.md).
 
+q and kdb+ are trademarks of KX Systems. datui is not affiliated with or endorsed by KX.
+
 ## Structure of a query
 
 ```

@@ -6661,6 +6661,7 @@ pub mod tests {
             Job::Rows(InflightCollect::for_tests(0, 100)),
             Job::Pivot,
             Job::DrillRow,
+            Job::InspectRow { frame: 0, row: 0 },
             Job::Export,
             Job::Copy,
             Job::QualityReport,

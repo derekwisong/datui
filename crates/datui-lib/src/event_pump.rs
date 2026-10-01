@@ -78,8 +78,9 @@ pub struct EventPump {
     /// The hold covers the gap the break leaves. A frame is drawn before the
     /// continuation runs, and a key replayed then must not find the generation free.
     next_up: VecDeque<(AppEvent, Hold)>,
-    /// Events that arrived before there was an app to take them — keys typed while
-    /// `run` read the settings — handled first, in the order they came.
+    /// Events that arrived before there was an app to take them, while `run` read the
+    /// settings, then the startup open: handled first, in that order. The keys typed
+    /// meanwhile are in [`Self::typed`].
     backlog: VecDeque<AppEvent>,
     /// Keys read from the terminal and not yet offered to the app, oldest first. Each
     /// waits for what has arrived on the channel behind it, as it did when the loop
@@ -117,8 +118,9 @@ impl EventPump {
         }
     }
 
-    /// Handle `events` before anything on the channel: they arrived first. Keys among
-    /// them are offered, in order, ahead of the channel too.
+    /// Handle `events` before anything on the channel: they arrived first, or are the
+    /// startup open those keys were typed at. Keys among them are offered, in order,
+    /// after the other events and ahead of the channel.
     pub fn handle_first(&mut self, events: impl IntoIterator<Item = AppEvent>) {
         for event in events {
             match event {
@@ -1883,22 +1885,23 @@ mod tests {
         assert!(held(&p).is_empty());
     }
 
-    /// A Ctrl+O typed while the settings were read is offered ahead of the startup
-    /// open on the channel, so that open is put down however fast it would have been:
-    /// nothing opens behind the home screen.
+    /// A Ctrl+O typed while the settings were read is offered once the startup open
+    /// has gone out and before anything it sends back, so that open is put down however
+    /// fast it would have been: nothing opens behind the home screen.
     #[test]
     fn ctrl_o_typed_before_the_app_existed_puts_the_startup_open_down() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
 
-        // As `run_impl` sets it up: the open announced, its look on the channel, and
-        // the keys from the settings read handed over first.
+        // As `run_impl` sets it up: the open announced, then the keys from the settings
+        // read handed over with the open behind them.
         let mut p = pump();
         p.app.set_loading_phase("Scanning input", 10);
-        p.send(AppEvent::OpenNamed(vec![path], OpenOptions::default()))
-            .unwrap();
-        p.handle_first([AppEvent::Terminal(Event::Key(ctrl('o')))]);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(ctrl('o'))),
+            AppEvent::OpenNamed(vec![path], OpenOptions::default()),
+        ]);
         settle(&mut p);
         // Anything that went out anyway is for nobody: let its answer land.
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
@@ -1914,6 +1917,64 @@ mod tests {
             "nothing opened behind home"
         );
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+    }
+
+    /// The same for a frame handed over from Python: it was on the channel too, and
+    /// installed behind the home screen once Ctrl+O was offered first.
+    #[test]
+    fn ctrl_o_typed_before_the_app_existed_puts_a_startup_frame_down() {
+        use polars::prelude::IntoLazy;
+        let lf = polars::df!("a" => [1i64, 2, 3]).expect("frame").lazy();
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(ctrl('o'))),
+            AppEvent::OpenLazyFrame(Box::new(lf), OpenOptions::default()),
+        ]);
+        settle(&mut p);
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while p.app.background_work_in_flight() {
+            assert!(std::time::Instant::now() < deadline, "the read never ended");
+            p.wait_and_drain(Duration::from_millis(50)).unwrap();
+        }
+        settle(&mut p);
+
+        assert_eq!(p.app.input_mode, InputMode::Home);
+        assert!(
+            p.app.data_table_state.is_none(),
+            "nothing opened behind home"
+        );
+    }
+
+    /// Keys typed before the app existed meet the startup open as the loading screen:
+    /// a stray `G` or Esc is dropped, not replayed onto the table once it is up, and
+    /// `q` still quits.
+    #[test]
+    fn keys_typed_before_the_app_existed_meet_the_loading_screen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\nbob,41\n").expect("write csv");
+
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(plain(KeyCode::Char('G')))),
+            AppEvent::Terminal(Event::Key(plain(KeyCode::Esc))),
+            AppEvent::OpenNamed(vec![path.clone()], OpenOptions::default()),
+        ]);
+        assert!(matches!(settle(&mut p), Drained::Continue { .. }));
+        assert!(held(&p).is_empty());
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+        let state = p.app.data_table_state.as_ref().expect("the table opened");
+        assert_eq!(state.table_state.selected(), Some(0), "G was not replayed");
+
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(plain(KeyCode::Char('q')))),
+            AppEvent::OpenNamed(vec![path], OpenOptions::default()),
+        ]);
+        assert!(matches!(settle(&mut p), Drained::Exit), "q quits");
     }
 
     /// The loading screen has nothing to type ahead into, so nothing is held

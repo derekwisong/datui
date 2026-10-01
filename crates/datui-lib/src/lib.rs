@@ -23067,12 +23067,6 @@ impl App {
                 None
             }
             AppEvent::OpenNamed(paths, options) => {
-                // `run` sends this behind the loading screen it puts up. A key typed
-                // before the app existed, offered first, may have left that screen for
-                // home: then nothing is opened.
-                if self.input_mode == InputMode::Home {
-                    return None;
-                }
                 if let Some(event) = Self::route_named_without_looking(paths, options) {
                     return Some(event);
                 }
@@ -26500,10 +26494,13 @@ fn run_impl(
         app.enable_debug();
     }
 
-    // Send initial event and show the first frame immediately.
-    match input {
+    // Show the first frame immediately; the open it announces is handled right after.
+    let open = match input {
         // No paths: open the home screen instead of loading anything.
-        RunInput::Paths(paths, _) if paths.is_empty() => app.enter_home(),
+        RunInput::Paths(paths, _) if paths.is_empty() => {
+            app.enter_home();
+            None
+        }
         RunInput::Paths(paths, opts) => {
             // Whether each path is there, and whether a directory was named, is asked
             // after this frame, on a worker; the frame says what is being opened.
@@ -26511,19 +26508,23 @@ fn run_impl(
             if let [path] = paths.as_slice() {
                 app.name_what_is_loading(path.clone());
             }
-            tx.send(AppEvent::OpenNamed(paths, opts))?;
+            Some(AppEvent::OpenNamed(paths, opts))
         }
         RunInput::LazyFrame(lf, opts) => {
             app.set_loading_phase("Scanning input", 10);
-            tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
+            Some(AppEvent::OpenLazyFrame(lf, opts))
         }
         RunInput::Cli(_) => unreachable!("read_settings resolves the command line"),
-    }
+    };
     // Declared before the pump, so it drops after it: the app's own files go with the
     // app, and this then removes what a worker was still writing.
     let _sweep = app.exit_sweep();
     let mut pump = EventPump::new(app, tx, rx);
-    pump.handle_first(backlog);
+    // The open goes out before the keys typed while the settings were read, so they
+    // meet it as they would any open in flight: Ctrl+O puts it down, `q` quits. Sent
+    // on the channel instead, it lost to a Ctrl+O offered ahead of the channel and
+    // opened behind the home screen, or behind whatever was opened from there.
+    pump.handle_first(backlog.into_iter().chain(open));
     let end = pump.run(|app| {
         terminal
             .get()

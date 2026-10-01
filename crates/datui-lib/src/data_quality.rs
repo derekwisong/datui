@@ -6450,6 +6450,88 @@ mod tests {
         assert!(selected.segments[1].compared_with.is_none());
     }
 
+    /// A comparison worked out from the segments a report holds, as a Compare edit
+    /// does with no read, is the comparison a fresh run with that Compare makes: on a
+    /// full scan and on a sample, against the previous segment, the first, a chosen
+    /// one and one that is not there.
+    #[test]
+    fn a_comparison_from_held_segments_matches_a_fresh_run() {
+        let rows = 2_000usize;
+        // Regions of different sizes and null rates, so both a row count and a rate
+        // move between them.
+        let region = |row: usize| match row % 10 {
+            0..=4 => "a",
+            5..=7 => "b",
+            8 => "c",
+            _ => "d",
+        };
+        let df = df!(
+            "id" => (0..rows as i64).collect::<Vec<_>>(),
+            "region" => (0..rows).map(region).collect::<Vec<_>>(),
+            "amount" => (0..rows)
+                .map(|row| (region(row) != "c" || row % 3 != 0).then_some(row as f64))
+                .collect::<Vec<_>>(),
+            "note" => (0..rows)
+                .map(|row| if region(row) == "d" { "" } else { "ok" })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let comparisons = [
+            (QualityComparison::Previous, None),
+            (QualityComparison::Baseline, None),
+            (QualityComparison::Baseline, Some("region=c")),
+            (QualityComparison::Baseline, Some("region=z")),
+        ];
+        for compute in [QualityCompute::Full, QualityCompute::Sample] {
+            let base = DataQualityPlan {
+                compute,
+                dataset_rows: 1_000,
+                sample_seed: 11,
+                grain: QualityGrain::Partition("region".into()),
+                ..DataQualityPlan::default()
+            };
+            let held = compute_data_quality(&df, Some(rows), &base, None, false).unwrap();
+            assert_eq!(held.segments.len(), 4, "{compute:?}");
+            for (comparison, baseline) in comparisons {
+                let plan = DataQualityPlan {
+                    comparison,
+                    baseline_segment: baseline.map(str::to_string),
+                    ..base.clone()
+                };
+                let fresh = compute_data_quality(&df, Some(rows), &plan, None, false).unwrap();
+                let mut derived = held.clone();
+                derived.compare_segments(&plan);
+                let compared = |results: &DataQualityResults| {
+                    results
+                        .segments
+                        .iter()
+                        .map(|segment| {
+                            (
+                                segment.label.clone(),
+                                segment.compared_with.clone(),
+                                segment.largest_change.clone(),
+                                segment.change_size.map(f64::to_bits),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    compared(&derived),
+                    compared(&fresh),
+                    "{compute:?} {comparison:?} {baseline:?}"
+                );
+                assert!(
+                    fresh
+                        .segments
+                        .iter()
+                        .any(|segment| segment.largest_change.is_some()),
+                    "{compute:?} {comparison:?} {baseline:?}: something to compare"
+                );
+            }
+        }
+    }
+
     #[test]
     fn temporal_roles_produce_latency_without_name_inference() {
         let event = Series::new(

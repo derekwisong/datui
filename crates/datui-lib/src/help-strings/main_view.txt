@@ -8,7 +8,7 @@ Navigation:
   Ctrl+D/Ctrl+U:    Half page down/up
   ::                Go to line number (e.g. :0 Enter for top)
   Enter:            On a row of a by query or a SQL GROUP BY, drill into
-                    its rows (Esc comes back)
+                    its rows (Esc comes back); elsewhere, inspect the row
   Space:            Inspect the row: every field, each value whole and
                     exact (Esc or Space closes)
 
@@ -58,7 +58,8 @@ While busy:
   At the plain table, q, Q, column scroll (←/→, h/l, [ ], { }), ? and F1
   act at once; Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once.
   Other keys are queued and replayed in order once the work is done —
-  except a bare Enter or Esc, which is dropped. At most 32 keys are held,
+  except a bare Esc, or an Enter that would drill, which is dropped; an
+  Enter that would inspect waits as Space. At most 32 keys are held,
   and held keys die with the screen they were typed at. At the loading
   screen nothing is held: the allowed keys act, the rest are dropped.
   While a view is being applied, Esc stops it and keeps the table as it was.

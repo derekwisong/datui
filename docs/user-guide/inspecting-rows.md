@@ -4,6 +4,10 @@ Press <kbd>Space</kbd> at the table to see every field of the current row,
 and the focused field's whole value. <kbd>Esc</kbd> or <kbd>Space</kbd>
 closes it.
 
+<kbd>Enter</kbd> opens it too, except on a row of a `by` query or a SQL
+`GROUP BY`, where <kbd>Enter</kbd>
+[drills into the group](querying-data.md#drill-into-a-group-by) and <kbd>Space</kbd> inspects.
+
 The table cuts long text at the edge of its column and rounds floats to its
 preview. The inspector shows what is stored:
 

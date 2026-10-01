@@ -31,6 +31,8 @@ enum Act {
     Now,
     /// Hold it for replay once the app is idle.
     Hold,
+    /// Hold this key in its place: what it means where it was typed.
+    HoldAs(KeyEvent),
     /// Discard it: a bare Enter/Esc at a busy table confirms nothing.
     Drop,
 }
@@ -151,8 +153,9 @@ impl EventPump {
 
     /// A key read from the terminal. Handled now if it is a hard escape, or the app is
     /// idle with nothing queued ahead of it, or it is one of the view keys that act at a
-    /// busy table; a bare Enter/Esc at a busy table is dropped; otherwise it waits behind
-    /// whatever was typed before it. Returns whether the app changed.
+    /// busy table; Enter with nothing to drill into waits as Space; a bare Enter/Esc at a
+    /// busy table is dropped; otherwise it waits behind whatever was typed before it.
+    /// Returns whether the app changed.
     pub fn terminal_key(&mut self, key: KeyEvent) -> Result<bool> {
         self.discard_stale();
         match self.classify(&key) {
@@ -163,6 +166,10 @@ impl EventPump {
             Act::Drop => Ok(false),
             Act::Hold => {
                 self.hold(key);
+                Ok(false)
+            }
+            Act::HoldAs(meant) => {
+                self.hold(meant);
                 Ok(false)
             }
         }
@@ -190,10 +197,22 @@ impl EventPump {
             }
             return Act::Drop;
         }
+        // Enter with nothing to drill into is Space, and waits as Space does. Held as
+        // Space, so a result that can be drilled by the time it replays is not drilled
+        // into. Only while what is held moves the cursor: after a `/` it is text's Enter.
+        if self.app.is_busy()
+            && key.code == KeyCode::Enter
+            && self.app.in_normal_table_view()
+            && self.app.enter_inspects()
+            && self.held.iter().all(is_navigation)
+        {
+            return Act::HoldAs(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        }
         // Busy, nothing queued yet, at the plain table view: the harmless view keys act
-        // (quit, column scroll, help); a bare Enter/Esc confirms nothing and is dropped;
-        // everything else is type-ahead and waits. Once anything is queued, or the view
-        // is a text field or modal, every key waits to keep the typed order.
+        // (quit, column scroll, help); a bare Enter that would drill, or Esc, confirms
+        // nothing and is dropped; everything else is type-ahead and waits. Once anything
+        // is queued, or the view is a text field or modal, every key waits to keep the
+        // typed order.
         if self.app.is_busy() && !queued && self.app.in_normal_table_view() {
             if self.app.key_acts_while_busy(key) {
                 return Act::Now;
@@ -1668,6 +1687,34 @@ mod tests {
             Some(KeyCode::Enter),
             "the query's Enter is held"
         );
+    }
+
+    /// Enter with nothing to drill into is Space at a busy table too: held, as Space,
+    /// and replayed into the inspector. Where it would drill, a bare Enter is dropped.
+    #[test]
+    fn enter_with_nothing_to_drill_into_waits_as_space() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('j'), KeyCode::Char(' ')]);
+        p.app.busy = false;
+        settle(&mut p);
+        assert!(held(&p).is_empty());
+        assert_eq!(p.app.input_mode, InputMode::Inspect);
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.table_state.selected(), Some(1), "j moved first");
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+
+        p.send(AppEvent::Search("select n: count age by name".to_string()))
+            .unwrap();
+        settle(&mut p);
+        rendered(&mut p.app);
+        assert!(p.app.data_table_state.as_ref().unwrap().can_drill_down());
+        p.app.busy = true;
+        assert!(!p.terminal_key(plain(KeyCode::Enter)).unwrap());
+        assert!(held(&p).is_empty(), "the drilling Enter is dropped");
     }
 
     /// Item 7: column scroll acts live at a busy table rather than queueing, and a held

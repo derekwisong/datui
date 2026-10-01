@@ -18,7 +18,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
-| <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back |
+| <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
@@ -365,11 +365,12 @@ table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
 <kbd>?</kbd> and <kbd>F1</kbd> act at once, and
 <kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and
 <kbd>Ctrl</kbd>+<kbd>O</kbd> act from anywhere. Other keys are queued and
-replayed in order once the work is done — except a bare <kbd>Enter</kbd> or
-<kbd>Esc</kbd>, which is dropped. At most 32 keys are held, and held keys
-die with the screen they were typed at. At the loading screen nothing is
-held: the allowed keys act, the rest are dropped. While a view is being
-applied, <kbd>Esc</kbd> stops it and keeps the table as it was.
+replayed in order once the work is done — except a bare <kbd>Esc</kbd>, or
+an <kbd>Enter</kbd> that would drill, which is dropped; an <kbd>Enter</kbd>
+that would inspect the row waits as <kbd>Space</kbd>. At most 32 keys are
+held, and held keys die with the screen they were typed at. At the loading
+screen nothing is held: the allowed keys act, the rest are dropped. While a
+view is being applied, <kbd>Esc</kbd> stops it and keeps the table as it was.
 
 ## Terminal notes
 

@@ -11224,26 +11224,43 @@ fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
     assert_eq!(df.column("k").unwrap().dtype(), &DataType::String);
 }
 
-/// Enter where there is nothing to drill into says so on the control bar.
+/// Enter where there is nothing to drill into opens the row inspector, as Space does,
+/// and the control bar's inspect chip names it; on a `by` view Enter still drills, and
+/// inside the group, where there is nothing further, it inspects again. Esc closes.
 #[test]
-fn test_enter_with_nothing_to_drill_into_flashes() {
+fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_nothing.csv");
-    let area = Rect::new(0, 0, 100, 30);
-    painted(&mut app, &rx, &tx, area);
+    // Wide enough for the bar to reach its inspect chip.
+    let area = Rect::new(0, 0, 220, 30);
+    // The key on the chip before the Inspect label.
+    let inspect_key = |screen: &str| {
+        let at = screen.find("Inspect").unwrap_or_else(|| panic!("{screen}"));
+        let before = screen[..at].trim_end();
+        before[before.rfind(' ').map_or(0, |i| i + 1)..].to_string()
+    };
+    let plain = painted(&mut app, &rx, &tx, area);
+    assert_eq!(inspect_key(&plain), "Enter");
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(app.flash_message(), Some("Nothing to drill into"));
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert!(app.inspector_modal.active);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.inspector_modal.active);
 
     app.event(&AppEvent::Search("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
-    painted(&mut app, &rx, &tx, area);
+    let grouped = painted(&mut app, &rx, &tx, area);
+    assert_eq!(inspect_key(&grouped), "Space", "Enter drills here");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::Normal, "Enter drilled");
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+
     painted(&mut app, &rx, &tx, area);
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(
-        app.flash_message(),
-        Some("Already in a group; Esc goes back")
-    );
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
@@ -11468,8 +11485,8 @@ fn test_sql_group_by_with_lists_drills_into_source_rows() {
     assert_eq!(state.lf().clone().collect().unwrap().height(), 10);
 }
 
-/// A statement whose rows cannot be traced back reliably does not drill: Enter says
-/// there is nothing to drill into.
+/// A statement whose rows cannot be traced back reliably does not drill: Enter
+/// inspects the row instead.
 #[cfg(feature = "sql")]
 #[test]
 fn test_sql_shapes_without_a_source_do_not_drill() {
@@ -11490,7 +11507,9 @@ fn test_sql_shapes_without_a_source_do_not_drill() {
             "{sql}"
         );
         press_and_send(&mut app, &tx, KeyCode::Enter);
-        assert_eq!(app.flash_message(), Some("Nothing to drill into"), "{sql}");
+        assert_eq!(app.input_mode, InputMode::Inspect, "{sql}");
+        press_and_send(&mut app, &tx, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal, "{sql}");
         assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
     }
 }

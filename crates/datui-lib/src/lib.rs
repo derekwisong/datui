@@ -21838,6 +21838,11 @@ impl App {
                 if self.input_mode != InputMode::Normal {
                     return None;
                 }
+                // With no group to drill into, Enter is Space: the row inspector.
+                if self.enter_inspects() {
+                    self.open_inspector();
+                    return None;
+                }
                 let state = self.data_table_state.as_ref()?;
                 // An empty result has no row selected, and says so like any other.
                 let drill = state
@@ -21846,9 +21851,6 @@ impl App {
                     .map(|selected| state.start_row() + selected)
                     .and_then(|index| Some((index, state.drill_row(index)?)));
                 match drill {
-                    None if state.is_drilled_down() => {
-                        self.flash_note("Already in a group; Esc goes back".to_string());
-                    }
                     None => self.flash_note("Nothing to drill into".to_string()),
                     Some((group_index, DrillRow::Buffered(row))) => {
                         self.drill_into(group_index, &row)
@@ -25102,7 +25104,19 @@ impl App {
             .expect("destination just built"))
     }
 
-    /// Space at the table: the inspector over the selected row.
+    /// Whether Enter at the table opens the inspector, as Space does: there is a table,
+    /// and it is not one whose rows drill into groups (a `by` view, a SQL GROUP BY).
+    /// Inside a drill-down there is nothing further to drill into either.
+    pub fn enter_inspects(&self) -> bool {
+        self.input_mode == InputMode::Normal
+            && self
+                .data_table_state
+                .as_ref()
+                .is_some_and(|state| !state.can_drill_down())
+    }
+
+    /// Space at the table, and Enter where there is nothing to drill into: the
+    /// inspector over the selected row.
     fn open_inspector(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -25872,11 +25886,13 @@ impl Widget for &mut App {
                 dimmed,
                 query_active,
                 q_pops,
+                enter_inspects,
             } => {
                 controls = controls
                     .with_dimmed(dimmed)
                     .with_query_active(query_active)
-                    .with_q_pops(q_pops);
+                    .with_q_pops(q_pops)
+                    .with_enter_inspects(enter_inspects);
             }
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);

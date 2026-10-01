@@ -2106,6 +2106,16 @@ mod chart_prepare_tests {
             "{}",
             bar(&mut app)
         );
+
+        // A count that lands after the export finished brings no progress back.
+        app.event(&AppEvent::BackgroundExportWritten {
+            generation: app.task_generation(),
+            path: PathBuf::from("/tmp/out.csv"),
+        });
+        app.event(&writing(app.task_generation(), 2_000_000));
+        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(!app.is_busy());
+        assert!(bar(&mut app).contains("Exported to"), "{}", bar(&mut app));
     }
 
     /// A selection that cannot be charted is remembered as failed rather than retried

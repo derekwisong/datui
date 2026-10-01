@@ -682,7 +682,8 @@ mod tests {
     }
 
     /// A panic in the plan part way through unwinds out of the export, which
-    /// the worker reports as a failure; the destination is as it was.
+    /// the worker reports as a failure; the destination is as it was, and the
+    /// next export by the same route writes.
     #[test]
     fn a_panic_part_way_keeps_the_destination() {
         for (name, format, compression, streaming) in routes() {
@@ -712,6 +713,15 @@ mod tests {
             assert!(!matches!(ended, Ok(Ok(()))), "{case}");
             assert_eq!(std::fs::read(&path).unwrap(), b"old", "{case}");
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "{case}");
+
+            run(frame().lazy(), &request, streaming, |_| {})
+                .unwrap_or_else(|e| panic!("{case}: the next export: {e}"));
+            let bytes = decompress(std::fs::read(&path).unwrap(), compression);
+            assert_eq!(
+                read_back(bytes, format).height(),
+                frame().height(),
+                "{case}"
+            );
         }
     }
 
@@ -755,7 +765,8 @@ mod tests {
     }
 
     /// A view with what a CSV has to get right: nulls, quotes, separators and
-    /// line breaks inside text, floats, dates, times and booleans.
+    /// line breaks inside text, floats, dates, times, booleans, and the list and
+    /// binary columns [`ExportFormat::prepare`] turns into text.
     fn awkward() -> DataFrame {
         let n = 2_000;
         let mut df = df!(
@@ -780,6 +791,14 @@ mod tests {
                 .unwrap()
         })
         .unwrap();
+        let tags: Vec<Option<Series>> = (0..n)
+            .map(|i| (i % 6 != 0).then(|| Series::new("".into(), [format!("t{i}"), "x,y".into()])))
+            .collect();
+        df.with_column(Column::new("tags".into(), tags)).unwrap();
+        let raw: Vec<Option<Vec<u8>>> = (0..n)
+            .map(|i| (i % 5 != 0).then(|| vec![0, 0xff, i as u8]))
+            .collect();
+        df.with_column(Column::new("raw".into(), raw)).unwrap();
         df
     }
 
@@ -797,7 +816,7 @@ mod tests {
                         ["text"],
                         SortMultipleOptions::default().with_nulls_last(true),
                     )
-                    .select([col("x"), col("text"), col("id"), col("at")]),
+                    .select([col("x"), col("tags"), col("text"), col("id"), col("at")]),
             ),
             ("empty", lf.filter(lit(false))),
         ]

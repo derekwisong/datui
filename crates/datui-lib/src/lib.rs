@@ -81,7 +81,7 @@ pub(crate) mod help_strings;
 pub mod home;
 pub mod inspector_modal;
 pub mod intent_modal;
-pub mod jobs;
+mod jobs;
 pub mod local_copy;
 pub mod locality;
 pub mod logging;
@@ -13245,7 +13245,7 @@ impl App {
     }
 
     /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead that nothing
-    /// waits on. See [`InflightCollect::waited_on`].
+    /// waits on: its job holds no keys. See [`InflightCollect`].
     fn spawn_collect(&mut self, status: Option<&str>) -> bool {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;

@@ -2,8 +2,10 @@
 //!
 //! [`Jobs`] starts every general background operation the app runs and keeps one
 //! record for each until its outcome has been handled: which operation it is
-//! ([`Job`]), the [`Ticket`] that names it, whether a bump of the generation would
-//! strand it, and whether its answer is still wanted.
+//! ([`Job`], with whatever the app needs of it), the [`Ticket`] that names it,
+//! whether a bump of the generation would strand it, whether the user waits on it,
+//! and whether its answer is still wanted. The app keeps no marker of its own for a
+//! job: it asks the record.
 //!
 //! - **One outcome.** A worker returns its [`Answer`] or an error; a panic is caught.
 //!   The outcome goes into the record, then [`AppEvent::JobEnded`] says so. A worker
@@ -20,6 +22,11 @@
 //!   [`Jobs::supersede`] cancels others. A superseded job stops holding the
 //!   generation at once; its worker runs on, and its outcome still arrives, stale, so
 //!   whatever it carries is dropped then.
+//! - **Keys.** A job the user waits on holds the keys, with the line the control bar
+//!   says meanwhile, until it ends or is superseded; [`Jobs::quiet`] lets them go and
+//!   [`Jobs::wait_on`] takes them for a job already running. A page asked for while
+//!   the generation is held is owed ([`Jobs::owe`]): it holds the keys, and no
+//!   generation, until the app takes it back to run.
 //! - **Holds.** Work that is not a running job also holds the generation: a
 //!   continuation the event pump has not dispatched, and a download waiting on the
 //!   user ([`Hold`]).

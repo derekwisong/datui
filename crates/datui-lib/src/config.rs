@@ -1553,7 +1553,8 @@ pub struct DisplayConfig {
     pub pages_lookback: usize,
     /// Max rows in scroll buffer (0 = no limit).
     pub max_buffered_rows: usize,
-    /// Max buffer size in MB (0 = no limit).
+    /// Max buffer size in MB (0 = no limit): the rows the table holds between reads,
+    /// not a cap on the process.
     pub max_buffered_mb: usize,
     pub row_numbers: bool,
     pub row_start_index: usize,

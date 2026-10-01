@@ -142,6 +142,25 @@ fn wrap_into(line: &str, width: usize, tone: Tone, out: &mut Vec<(String, Tone)>
     }
 }
 
+/// A sentence of the pane's own, wrapped at spaces; a word wider than the pane
+/// is split.
+fn wrap_words(text: &str, width: usize, tone: Tone, out: &mut Vec<(String, Tone)>) {
+    let mut row = String::new();
+    for word in text.split(' ') {
+        let sep = usize::from(!row.is_empty());
+        if !row.is_empty()
+            && crate::glyphs::cell_width(&row) + sep + crate::glyphs::cell_width(word) > width
+        {
+            wrap_into(&std::mem::take(&mut row), width, tone, out);
+        }
+        if !row.is_empty() {
+            row.push(' ');
+        }
+        row.push_str(word);
+    }
+    wrap_into(&row, width, tone, out);
+}
+
 /// Text as it reads raw: a line per line break, tabs to the next stop of
 /// four, and any other control character or direction control as the control
 /// mark, as in a table cell.
@@ -207,7 +226,7 @@ pub fn body(
     match shown {
         Shown::Unread => {
             facts.push("not read".to_string());
-            wrap_into(
+            wrap_words(
                 "Not read with the table's rows; Enter reads this row's hidden and binary fields",
                 width,
                 Tone::Dim,
@@ -215,8 +234,8 @@ pub fn body(
             );
             more = true;
         }
-        Shown::Reading => wrap_into("Reading...", width, Tone::Dim, &mut lines),
-        Shown::Failed(message) => wrap_into(message, width, Tone::Warn, &mut lines),
+        Shown::Reading => wrap_words("Reading...", width, Tone::Dim, &mut lines),
+        Shown::Failed(message) => wrap_words(message, width, Tone::Warn, &mut lines),
         Shown::Null(kind) => {
             let (glyph, word, why) = match kind {
                 NullKind::Null => (g.null, "null", None),
@@ -236,7 +255,7 @@ pub fn body(
                 Some(why) => format!("{glyph} {word}: {why}"),
                 None => format!("{glyph} {word}"),
             };
-            wrap_into(&text, width, Tone::Dim, &mut lines);
+            wrap_words(&text, width, Tone::Dim, &mut lines);
         }
         Shown::Value(value) => match value {
             AnyValue::String(_)
@@ -440,9 +459,16 @@ pub fn render(
 
     // The focused field's pane, from the cache while nothing it shows changed.
     let focused = modal.focused().cloned();
+    // What Enter does here, for the footer: read, retry a failed read, or show more.
+    let mut enter = None;
     let body = match (&row, &focused) {
         (Some(row), Some(field)) => {
             let value = shown(field, row, modal.read.as_ref(), state);
+            enter = match value {
+                Shown::Unread => Some("Read"),
+                Shown::Failed(_) => Some("Retry"),
+                _ => None,
+            };
             let key = BodyKey {
                 frame: row.frame,
                 row: row.row,
@@ -492,8 +518,8 @@ pub fn render(
             .hint_weighted("Esc", "Clear", 4)
     } else {
         let mut bar = HintBar::from_ctx(ctx);
-        if body.more {
-            bar = bar.hint_weighted("Enter", "More", 3);
+        if let Some(label) = enter.or(body.more.then_some("More")) {
+            bar = bar.hint_weighted("Enter", label, 3);
         }
         bar.hint_weighted("y", "Copy", 3)
             .hint_weighted(g.updown, "Field", 2)
@@ -870,6 +896,14 @@ mod tests {
         let b = body(&f, &Shown::Unread, false, 1, 100, None);
         assert!(b.more, "Enter has something to do");
         assert!(texts(&b)[0].contains("Enter reads"), "{:?}", texts(&b));
+        // The pane's own sentences wrap at spaces, not inside a word.
+        let narrow = body(&f, &Shown::Unread, false, 1, 30, None);
+        let joined = texts(&narrow).join(" ");
+        assert_eq!(
+            joined,
+            "Not read with the table's rows; Enter reads this row's hidden and binary fields"
+        );
+        assert!(texts(&narrow).iter().all(|l| l.chars().count() <= 30));
     }
 
     #[test]

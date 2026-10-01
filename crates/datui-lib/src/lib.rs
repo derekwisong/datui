@@ -28128,7 +28128,22 @@ mod inspector_tests {
             app.inspector_modal.read,
             Some(FieldRead::Failed { .. })
         ));
-        assert!(draw(&mut app).contains("Could not read the field"));
+        let screen = draw(&mut app);
+        assert!(screen.contains("Could not read the field"));
+        assert!(screen.contains("Retry"), "the footer says Enter retries");
+    }
+
+    /// The footer names what Enter does on a field not read yet.
+    #[test]
+    fn enter_reads_an_unread_field_and_the_footer_says_so() {
+        let (mut app, _rx) = app();
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::End);
+        let screen = draw(&mut app);
+        assert!(
+            screen.contains("Read") && !screen.contains("More"),
+            "{screen}"
+        );
     }
 }
 

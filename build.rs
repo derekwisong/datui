@@ -20,11 +20,16 @@ fn roff_text(text: &str) -> String {
 /// as one block of text under a heading no manpage uses.
 fn render_examples(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, ".SH EXAMPLES")?;
-    // A URL hyphenated across a line break no longer pastes.
-    writeln!(w, ".nh")?;
     for example in datui_cli::examples() {
+        // `\%` keeps each word whole: a URL hyphenated across a line break no
+        // longer pastes. The man macros turn hyphenation back on at every `.TP`.
+        let command: Vec<String> = example
+            .command
+            .split(' ')
+            .map(|word| format!("\\%{}", roff_text(word)))
+            .collect();
         writeln!(w, ".TP")?;
-        writeln!(w, "\\fB{}\\fR", roff_text(&example.command))?;
+        writeln!(w, "\\fB{}\\fR", command.join(" "))?;
         writeln!(w, "{}", roff_text(&example.description))?;
     }
     writeln!(w, ".PP")?;
@@ -32,8 +37,7 @@ fn render_examples(w: &mut dyn Write) -> io::Result<()> {
         w,
         "{}",
         roff_text("Documentation: https://derekwisong.github.io/datui/")
-    )?;
-    writeln!(w, ".hy")
+    )
 }
 
 fn main() -> io::Result<()> {

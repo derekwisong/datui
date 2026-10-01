@@ -614,6 +614,9 @@ jobs:
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: features
+          # Five feature sets of Polars test builds would crowd the PR cache out of
+          # the repository's 10 GB budget; keep only the registry.
+          cache-targets: false
 
       # The tests below read fixtures the generator writes, and it needs Polars. Never
       # reached while the checks above failed, so this job had never needed them.

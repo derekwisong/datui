@@ -186,7 +186,14 @@ impl ExpectedForm {
             Some(expected) => {
                 from.set_value(expected.from.as_deref().unwrap_or_default());
                 before.set_value(expected.before.as_deref().unwrap_or_default());
-                if expected.weekdays {
+                // Weekdays stated for days read as every window once the grain is
+                // weeks or months, as Setup and the check read it.
+                let every = match &plan.grain {
+                    crate::data_quality::QualityGrain::TimeWindows { every, .. } => every.as_str(),
+                    _ => "",
+                };
+                if expected.weekdays && crate::data_quality::ExpectedWindows::weekdays_apply(every)
+                {
                     ExpectedCadence::Weekdays
                 } else {
                     ExpectedCadence::Every
@@ -1688,6 +1695,37 @@ impl AnalysisModal {
 #[cfg(test)]
 mod quality_scope_tests {
     use super::*;
+
+    /// Weekdays stated for days, then a coarser grain: the editor offers what the
+    /// grain allows and shows what Setup and the check read, every week.
+    #[test]
+    fn expected_weekdays_read_as_every_window_on_weeks() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let mut plan = DataQualityPlan {
+            grain: QualityGrain::TimeWindows {
+                column: "day".to_string(),
+                every: "1d".to_string(),
+            },
+            expected: Some(crate::data_quality::ExpectedWindows {
+                weekdays: true,
+                ..Default::default()
+            }),
+            ..DataQualityPlan::default()
+        };
+        assert_eq!(
+            ExpectedForm::new(&plan, &theme).cadence,
+            ExpectedCadence::Weekdays
+        );
+        plan.grain = QualityGrain::TimeWindows {
+            column: "day".to_string(),
+            every: "1w".to_string(),
+        };
+        let form = ExpectedForm::new(&plan, &theme);
+        assert_eq!(form.cadence, ExpectedCadence::Every);
+        assert_eq!(form.cadence_label("1w"), "every week");
+        assert!(!form.expected().unwrap().unwrap().weekdays);
+    }
 
     /// Grain choices come from the data: files, partition columns, and a day, week
     /// or month of any date column (hours only where there are times), then chunks.

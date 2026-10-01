@@ -38,7 +38,25 @@ press <kbd>s</kbd>, set **Rows from** to the unfiltered source, and press
 On **Overview**, select a finding and press <kbd>Enter</kbd>: its numbers, the
 evidence and what to check. Press <kbd>Enter</kbd> again to open the matching
 rows; on a sampled run these are the sample's rows, the ones the finding
-counted. <kbd>Esc</kbd> returns.
+counted. <kbd>Esc</kbd> returns to the finding.
+
+| Finding | <kbd>Enter</kbd> on its detail opens |
+|---|---|
+| **Duplicate rows** | Every row that has a copy, copies together, most copied first |
+| **Numbers as text**, **Dates as text** | The values that do not parse, which stop a cast |
+| Several columns, such as **Missing values** | The rows missing in any of them. The detail lists each column's count; the rows with any of them are a range, not a sum |
+| **Numbers**, **Dates** or **Codes as text** that all parse | Nothing: the detail says every value parses |
+
+The rows come from the ones the run kept, so opening them reads nothing. A full
+scan keeps no rows, and an older sample may have been released: then
+<kbd>Enter</kbd> shows what reading the rows would take, and only
+<kbd>Enter</kbd> there reads. <kbd>Esc</kbd> reads nothing.
+
+To see fewer findings, press <kbd>c</kbd> for one column's or <kbd>t</kbd> for
+one type's; <kbd>o</kbd> orders them by rows affected, then by rate. Problems
+stay above notes, the line above the list says what is narrowed, and
+<kbd>Esc</kbd> shows every finding again. None of it reads or measures
+anything.
 
 | Page | Use it for |
 |---|---|

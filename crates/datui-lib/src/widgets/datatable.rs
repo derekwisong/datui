@@ -4118,7 +4118,29 @@ impl DataTableState {
             polars_streaming: self.polars_streaming,
             ..crate::OpenOptions::default()
         };
-        let (lf, schema) = if scope.uses_source() {
+        let (lf, schema) = self.quality_scope_frame(scope)?;
+        let mut view = Self::from_schema_and_lazyframe(
+            schema,
+            lf.filter(predicate),
+            &options,
+            self.partition_columns.clone(),
+        )?;
+        if !scope.uses_source() {
+            view.column_order = self.column_order.clone();
+            view.locked_columns_count = self.locked_columns_count;
+        }
+        view.visible_rows = self.visible_rows;
+        view.remote_source = self.remote_source;
+        Ok(view)
+    }
+
+    /// The rows of a Data Quality scope as a lazy frame, and their schema: the
+    /// source's for a source scope, the view's otherwise. Nothing is read here.
+    pub(crate) fn quality_scope_frame(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> Result<(LazyFrame, Arc<Schema>)> {
+        Ok(if scope.uses_source() {
             let mut lf = self.query_source();
             let source = if matches!(scope, crate::data_quality::QualityScope::SourceFiles(_)) {
                 lf = lf.with_row_index("__datui_quality_row", None);
@@ -4141,20 +4163,7 @@ impl DataTableState {
                 crate::data_quality::apply_quality_scope(self.visible_lf(), scope, None)?,
                 self.schema.clone(),
             )
-        };
-        let mut view = Self::from_schema_and_lazyframe(
-            schema,
-            lf.filter(predicate),
-            &options,
-            self.partition_columns.clone(),
-        )?;
-        if !scope.uses_source() {
-            view.column_order = self.column_order.clone();
-            view.locked_columns_count = self.locked_columns_count;
-        }
-        view.visible_rows = self.visible_rows;
-        view.remote_source = self.remote_source;
-        Ok(view)
+        })
     }
 
     pub fn prepare_async_collect(

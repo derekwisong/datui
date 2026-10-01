@@ -219,7 +219,9 @@ In the Data Quality report:
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends, Intervals |
 | <kbd>1</kbd>–<kbd>5</kbd> | Open Overview (the report), Columns, Segments, Trends, or Intervals directly |
-| <kbd>Enter</kbd> | Open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments, Trends or Intervals page, open the Setup row that fills it |
+| <kbd>Enter</kbd> | Open a finding, show its rows from the rows the run kept (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. Rows the run did not keep show a Read Rows dialog first; <kbd>Enter</kbd> there reads them, <kbd>Esc</kbd> reads nothing. On an empty Segments, Trends or Intervals page, open the Setup row that fills it |
+| <kbd>c</kbd> | On Overview, show only the findings that name one column, chosen from a list |
+| <kbd>t</kbd> | On Overview, show only one type's findings, chosen from a list |
 | <kbd>e</kbd> | Open Setup |
 | <kbd>s</kbd> | Open Setup with the Sample form over it |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
@@ -227,13 +229,13 @@ In the Data Quality report:
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> on a column | Open its detail: its findings, then what was measured; <kbd>Enter</kbd> again returns to the list |
 | <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
-| <kbd>Enter</kbd> on an interval | Open its detail: ends, rows with both, missing and unread ends, negative and zero durations, percentiles, breaches; <kbd>↑</kbd> <kbd>↓</kbd> move between the counts and <kbd>Enter</kbd> shows the rows behind one (the kept sample's, on a sampled run) |
-| <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
+| <kbd>Enter</kbd> on an interval | Open its detail: ends, rows with both, missing and unread ends, negative and zero durations, percentiles, breaches; <kbd>↑</kbd> <kbd>↓</kbd> move between the counts and <kbd>Enter</kbd> shows the rows behind one (the kept rows', or a Read Rows dialog first when the run kept none) |
+| <kbd>o</kbd> | On Overview, order findings ranked, by rows affected or by rate. In Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | In Trends, choose the measure the table draws |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | On a sampled report, run again with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, a column's, a segment's or an interval's detail back to its list, an evidence drill back to the report, then Analysis itself. While a run reads, cancel it |
+| <kbd>Esc</kbd> | Back out one layer: a popup, a column's, a segment's or an interval's detail back to its list, an evidence drill back to the finding or count it came from, a narrowed Overview back to every finding, then Analysis itself. While a run reads, cancel it |
 
 ## Pivot and melt
 

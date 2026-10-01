@@ -3,6 +3,7 @@ use crate::data_quality::{
     QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, TIME_FORMATS,
     TemporalRole, TemporalRoleAssignment, TimeInterpretation, TimeKind,
 };
+use crate::quality_report::{EvidenceRows, Finding, FindingsView, QualityReport};
 use crate::statistics::{AnalysisResults, DistributionType};
 use ratatui::widgets::TableState;
 
@@ -71,6 +72,10 @@ pub enum PlanChoice {
     TextColumn(String),
     /// How a text column is read as time, or `None` to read it as text again.
     Format(String, Option<(TimeKind, &'static str)>),
+    /// Only the findings that name this column, or all of them.
+    FindingColumn(Option<String>),
+    /// Only the findings this check made, or all of them.
+    FindingCheck(Option<&'static str>),
 }
 
 impl PlanChoice {
@@ -88,14 +93,17 @@ impl PlanChoice {
                     .map(|current| (current.kind, current.format.as_str()))
                     == format.map(|(kind, format)| (kind, format))
             }
+            // The findings list is not the plan: its picker selects its own current.
+            Self::FindingColumn(_) | Self::FindingCheck(_) => false,
         }
     }
 }
 
-/// A Setup row's choices, open as a list.
+/// A Setup row's choices, or the findings list's narrowing, open as a list.
 #[derive(Debug, Clone)]
 pub struct PlanPicker {
-    pub row: SetupRow,
+    /// The Setup row the choices set; `None` for the findings list's.
+    pub row: Option<SetupRow>,
     pub title: String,
     pub choices: Vec<PlanChoice>,
     pub state: crate::widgets::ui::PickerState,
@@ -111,6 +119,21 @@ pub struct PlanContext {
     pub time_columns: Vec<(String, bool)>,
     pub files: bool,
     pub text_columns: Vec<(String, Vec<String>)>,
+}
+
+/// Rows a finding names that the run did not keep, waiting for Enter to read them.
+/// Nothing reads until then, and Esc drops it.
+#[derive(Debug, Clone)]
+pub struct EvidenceRead {
+    pub rows: EvidenceRows,
+    /// The table's label once the rows are shown.
+    pub label: String,
+    /// Draw this sample again from its seed, rather than read the scope.
+    pub sample: Option<crate::sampling::Sample>,
+    /// The scope the rows are read from.
+    pub scope: crate::data_quality::QualityScope,
+    /// What the read is, as the dialog says it: label, value.
+    pub summary: Vec<(&'static str, String)>,
 }
 
 /// A latency threshold as Setup offers it.
@@ -311,6 +334,10 @@ pub struct AnalysisModal {
     pub data_quality_column_index: usize,
     /// The interval a detail shows, and the one Intervals selects on the way back.
     pub data_quality_interval_index: usize,
+    /// How Overview narrows and orders its findings; the report is not measured again.
+    pub data_quality_findings: FindingsView,
+    /// A read for a finding's rows, shown with what it reads until Enter or Esc.
+    pub data_quality_evidence_read: Option<EvidenceRead>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -550,7 +577,10 @@ impl AnalysisModal {
             QualityPage::IntervalPairs => self.data_quality_plan.candidate_pairs().len(),
             QualityPage::Intervals => results.temporal.len(),
             QualityPage::IntervalDetail => self.interval_facts().len(),
-            QualityPage::Overview => crate::quality_report::build_report(results).findings.len(),
+            QualityPage::Overview => self
+                .data_quality_findings
+                .shown(&crate::quality_report::build_report(results))
+                .len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
             QualityPage::SegmentDetail => {
@@ -569,12 +599,118 @@ impl AnalysisModal {
     /// no rows and instead lists the checks.
     pub fn quality_selected_is_clean(&self) -> bool {
         self.data_quality_page == QualityPage::Overview
-            && self.data_quality_results.as_ref().is_some_and(|results| {
-                crate::quality_report::build_report(results)
-                    .findings
-                    .get(self.data_quality_table_state.selected().unwrap_or(0))
-                    .is_some_and(|finding| finding.kind.is_none())
+            && self
+                .selected_finding()
+                .is_some_and(|(_, finding)| finding.kind.is_none())
+    }
+
+    /// The report on screen and the finding under the cursor, as Overview lists
+    /// them: narrowed and ordered.
+    pub fn selected_finding(&self) -> Option<(QualityReport, Finding)> {
+        let results = self.data_quality_results.as_ref()?;
+        let report = crate::quality_report::build_report(results);
+        let finding = self
+            .data_quality_findings
+            .selected(&report, self.data_quality_table_state.selected()?)?
+            .clone();
+        Some((report, finding))
+    }
+
+    /// Narrow the findings to a column (`by_column`) or a check, from a list of
+    /// those the report has, the current one selected.
+    pub fn open_findings_picker(&mut self, by_column: bool) {
+        let Some(results) = self.data_quality_results.as_ref() else {
+            return;
+        };
+        let report = crate::quality_report::build_report(results);
+        let view = &self.data_quality_findings;
+        let findings = |count: usize| match count {
+            0 => "none".to_string(),
+            1 => "1 finding".to_string(),
+            count => format!("{} findings", crate::numfmt::group_chrome(count)),
+        };
+        let (title, choices, current) = if by_column {
+            let columns = crate::quality_report::column_choices(&report, results);
+            let width = columns
+                .iter()
+                .map(|(name, _)| crate::glyphs::display_width(name))
+                .max()
+                .unwrap_or(0);
+            let current = view
+                .column
+                .as_ref()
+                .and_then(|column| columns.iter().position(|(name, _)| name == column))
+                .map_or(0, |position| position + 1);
+            let mut choices = vec![("All columns".to_string(), PlanChoice::FindingColumn(None))];
+            choices.extend(columns.into_iter().map(|(name, count)| {
+                let pad = width.saturating_sub(crate::glyphs::display_width(&name));
+                (
+                    format!("{name}{}  {}", " ".repeat(pad), findings(count)),
+                    PlanChoice::FindingColumn(Some(name)),
+                )
+            }));
+            ("Findings by Column", choices, current)
+        } else {
+            let checks = crate::quality_report::check_choices(&report);
+            let width = checks
+                .iter()
+                .map(|(name, _)| crate::glyphs::display_width(name))
+                .max()
+                .unwrap_or(0);
+            let current = view
+                .check
+                .and_then(|check| checks.iter().position(|(name, _)| *name == check))
+                .map_or(0, |position| position + 1);
+            let mut choices = vec![("All types".to_string(), PlanChoice::FindingCheck(None))];
+            choices.extend(checks.into_iter().map(|(name, count)| {
+                let pad = width.saturating_sub(crate::glyphs::display_width(name));
+                (
+                    format!("{name}{}  {}", " ".repeat(pad), findings(count)),
+                    PlanChoice::FindingCheck(Some(name)),
+                )
+            }));
+            ("Findings by Type", choices, current)
+        };
+        let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
+        let mut state = crate::widgets::ui::PickerState::new(labels);
+        state.select_original(current);
+        self.data_quality_picker = Some(PlanPicker {
+            row: None,
+            title: title.to_string(),
+            choices,
+            state,
+        });
+    }
+
+    /// The next order for the findings, keeping the finding under the cursor under it.
+    pub fn cycle_findings_order(&mut self) {
+        let selected = self.selected_finding();
+        self.data_quality_findings.order = self.data_quality_findings.order.next();
+        self.reselect_finding(selected.map(|(_, finding)| finding));
+    }
+
+    /// Show every finding again, in the order chosen.
+    pub fn clear_findings_narrowing(&mut self) {
+        let selected = self.selected_finding();
+        self.data_quality_findings.column = None;
+        self.data_quality_findings.check = None;
+        self.reselect_finding(selected.map(|(_, finding)| finding));
+    }
+
+    /// Put the cursor on `finding` where the list now shows it, or on the first.
+    fn reselect_finding(&mut self, finding: Option<Finding>) {
+        let position = self.data_quality_results.as_ref().and_then(|results| {
+            let report = crate::quality_report::build_report(results);
+            let finding = finding?;
+            let shown = self.data_quality_findings.shown(&report);
+            shown.iter().position(|index| {
+                let listed = &report.findings[*index];
+                listed.title == finding.title && listed.columns == finding.columns
             })
+        });
+        self.data_quality_table_state
+            .select(Some(position.unwrap_or(0)));
+        *self.data_quality_table_state.offset_mut() = 0;
     }
 
     /// Whether `s` opens the Sample form here: on a tool's main view, with nothing
@@ -593,6 +729,7 @@ impl AnalysisModal {
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
+            && self.data_quality_evidence_read.is_none()
             && self.sample_form.is_none()
     }
 
@@ -608,6 +745,7 @@ impl AnalysisModal {
     pub fn set_quality_page(&mut self, page: QualityPage) {
         self.data_quality_page = page;
         self.data_quality_observation_detail = false;
+        self.data_quality_evidence_read = None;
         self.data_quality_table_state.select(Some(0));
     }
 
@@ -722,7 +860,7 @@ impl AnalysisModal {
     /// The rows behind the count under the cursor in an interval's detail, when it
     /// has any and they can be told by their values: a predicate over the rows the
     /// run read, with what to call them.
-    pub fn interval_evidence(&self) -> Option<(polars::prelude::Expr, String)> {
+    pub fn interval_evidence(&self) -> Option<(polars::prelude::Expr, String, usize)> {
         let results = self.data_quality_results.as_ref()?;
         if !matches!(
             results.precision,
@@ -747,6 +885,7 @@ impl AnalysisModal {
                 profile.segment,
                 fact.short()
             ),
+            count,
         ))
     }
 
@@ -944,7 +1083,7 @@ impl AnalysisModal {
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(current);
         self.data_quality_picker = Some(PlanPicker {
-            row,
+            row: Some(row),
             title,
             choices,
             state,
@@ -1029,6 +1168,16 @@ impl AnalysisModal {
             PlanChoice::Clock(clock) => plan.interval_clock = clock,
             PlanChoice::TextColumn(column) => return Some(column),
             PlanChoice::Format(column, format) => set_time_format(plan, &column, format),
+            PlanChoice::FindingColumn(column) => {
+                let selected = self.selected_finding();
+                self.data_quality_findings.column = column;
+                self.reselect_finding(selected.map(|(_, finding)| finding));
+            }
+            PlanChoice::FindingCheck(check) => {
+                let selected = self.selected_finding();
+                self.data_quality_findings.check = check;
+                self.reselect_finding(selected.map(|(_, finding)| finding));
+            }
         }
         None
     }
@@ -1053,7 +1202,7 @@ impl AnalysisModal {
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(next);
         self.data_quality_picker = Some(PlanPicker {
-            row,
+            row: Some(row),
             title: row.label().to_string(),
             choices,
             state,

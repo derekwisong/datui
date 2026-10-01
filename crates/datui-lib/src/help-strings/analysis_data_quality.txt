@@ -82,13 +82,17 @@ Keys on the report:
   PgUp/PgDn:    Page; Home/End jump to either end
   Enter:        Open a finding, then its rows. On an
                 empty page, open the setting it needs
+  c / t:        Overview: only one column's or one
+                type's findings
+  o:            Overview: ranked, by rows, by rate
   s:            Setup, with the Sample form open
   v:            View the sample's rows; Esc returns
   p:            Show the access plan: what a run reads
   r:            On a sample, run again with a new
                 seed
   Tab:          Move between the result and the tools
-  Esc:          Back one level; from a page, close
+  Esc:          Back one level: all findings again,
+                then close
   ? / F1:       Show this help
 
 Coverage, under the verdict:
@@ -102,6 +106,17 @@ Coverage, under the verdict:
   Limits:       Why a check was unavailable, thin
                 segments, footers not all read, and
                 time roles that form no interval
+
+A finding's rows:
+  Enter on a finding shows the rows it counted from
+  the rows the run kept: a sample's, or every row a
+  sample covered. Duplicate rows open copies
+  together; Numbers as text opens the values that do
+  not parse. A full scan keeps no rows, and a sample
+  may be released: then Enter shows what reading
+  them takes, and only Enter there reads. Grouped
+  columns list each column's count; the rows with
+  any of them are a range, not a sum.
 
 While a run reads:
   The progress names the stage, whether it reads the

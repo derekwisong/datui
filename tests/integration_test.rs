@@ -1051,6 +1051,7 @@ fn test_stale_background_events_are_ignored() {
             per_value: None,
             footers_read: None,
             reads: None,
+            examples: vec![],
         },
         kept: None,
         plan: Box::default(),
@@ -1511,10 +1512,12 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.data_quality_observation_detail);
+    // The run's rows are kept: they are cut in memory, off the UI thread.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    drain_events(&mut app, &rx);
     assert!(!app.analysis_modal.active);
     let area = Rect::new(0, 0, 80, 24);
     let mut evidence_buffer = Buffer::empty(area);
@@ -2211,6 +2214,7 @@ fn data_quality_reads_as_a_report() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    drain_events(&mut app, &rx);
     assert!(!app.analysis_modal.active);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
@@ -2376,6 +2380,373 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     )));
     assert!(app.analysis_modal.active, "Esc goes back to the report");
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 5_000);
+}
+
+/// A table with whole rows copied (but for their bytes), text that parses but for a
+/// few values, codes that all parse, and two columns missing at different rates.
+fn open_findings_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    // A thousand distinct rows, then two more copies of the first three hundred.
+    let rows = (0..1_000i64)
+        .chain(0..300)
+        .chain(0..300)
+        .collect::<Vec<_>>();
+    let mut df = df!(
+        "id" => &rows,
+        "code" => rows.iter().map(|row| if row % 50 == 0 { "n/a".to_string() } else { (1_000 + row).to_string() }).collect::<Vec<_>>(),
+        "zip" => rows.iter().map(|row| format!("{:05}", row % 97)).collect::<Vec<_>>(),
+        "a" => rows.iter().map(|row| (row % 9 != 0).then_some(*row as f64)).collect::<Vec<_>>(),
+        "b" => rows.iter().map(|row| (row % 4 != 1).then_some(*row as f64)).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // Bytes that differ on every row, copies too: the checks read binary as one stub,
+    // so they do not tell copies apart, and neither may the rows a finding opens.
+    let blob = (0..rows.len() as u32)
+        .map(|position| position.to_le_bytes().to_vec())
+        .collect::<Vec<_>>();
+    df.with_column(Column::new("blob".into(), blob)).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// Nothing was started: the app is idle and nothing but the run before's lease
+/// coming back is on the channel. The lease is dropped after the run's answer is
+/// sent, so on a loaded machine it can still be on its way.
+#[track_caller]
+fn assert_nothing_started(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
+    assert!(!app.is_busy(), "nothing is running");
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            matches!(event, AppEvent::BackgroundWorkFinished { .. }),
+            "no background work was started"
+        );
+        app.event(&event);
+    }
+}
+
+/// Every character on screen that is not ASCII is a glyph slot, which has an ASCII
+/// twin under `LANG=C`.
+fn assert_glyph_slots(screen: &str) {
+    let g = datui::glyphs::get();
+    let slots = [
+        g.rail,
+        g.rule_h,
+        g.middot,
+        g.ellipsis,
+        g.warning,
+        g.check,
+        g.dash,
+        g.times,
+        g.updown,
+        g.updown_lr,
+        g.null,
+        g.scroll_thumb,
+        g.binary_stub,
+    ]
+    .concat();
+    for c in screen.chars().filter(|c| !c.is_ascii()) {
+        assert!(
+            slots.contains(c) || "╭╮╰╯│─".contains(c),
+            "{c:?} is not a glyph slot:\n{screen}"
+        );
+    }
+}
+
+/// The findings list narrows by column and by type and orders by rows or rate from
+/// the report on screen: nothing is read and nothing is measured again. Duplicate
+/// rows and text that does not parse open exactly the rows the run counted, from
+/// the rows it kept, even once the file is gone; a finding with no rows says why.
+#[test]
+fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
+    use datui::data_quality::{QualityPage, QualityPrecision};
+    use datui::quality_report::FindingOrder;
+
+    let name = "dq_findings_kept.parquet";
+    let (mut app, rx, tx) = open_findings_fixture(name);
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    // A sample smaller than the table, so what opens is the sample's.
+    app.analysis_modal.data_quality_plan.dataset_rows = 800;
+    app.analysis_modal.data_quality_plan.sample_seed = 11;
+    let next = press(&mut app, KeyCode::Enter);
+    let (finished, _) = drain_quality(&mut app, &rx, next);
+    assert_eq!(finished, 1);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    let results = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert_eq!(results.precision, QualityPrecision::Sampled);
+    let report = datui::quality_report::build_report(&results);
+    let render = |app: &mut App, width, height| {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Narrow to a column, then a type; order by rows, then by rate.
+    assert!(press(&mut app, KeyCode::Char('c')).is_none());
+    assert!(app.analysis_modal.data_quality_picker.is_some());
+    type_text(&mut app, "code");
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    let view = app.analysis_modal.data_quality_findings.clone();
+    assert_eq!(view.column.as_deref(), Some("code"));
+    let listed = app.analysis_modal.quality_row_count();
+    assert!(listed >= 1 && listed < report.findings.len());
+    for (width, height) in [(80, 24), (60, 20)] {
+        let screen = render(&mut app, width, height);
+        assert!(
+            screen.contains(&format!("{listed} of ")) && screen.contains("column code"),
+            "the list says it is narrowed at {width}x{height}:\n{screen}"
+        );
+        assert!(screen.contains("Numbers as text"), "{screen}");
+        assert!(!screen.contains("Missing values"), "{screen}");
+        assert_glyph_slots(&screen);
+    }
+    assert!(
+        render(&mut app, 120, 30).contains("All Findings"),
+        "Esc says what it does"
+    );
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.data_quality_findings.narrowed());
+    assert!(
+        app.analysis_modal.active,
+        "Esc showed every finding; it did not leave"
+    );
+    press(&mut app, KeyCode::Char('t'));
+    type_text(&mut app, "missing");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.analysis_modal.data_quality_findings.check,
+        Some("Missing values")
+    );
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(
+        app.analysis_modal.data_quality_findings.order,
+        FindingOrder::Rows
+    );
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(
+        app.analysis_modal.data_quality_findings.order,
+        FindingOrder::Rate
+    );
+    for (width, height) in [(80, 24), (60, 20)] {
+        let screen = render(&mut app, width, height);
+        let middot = datui::glyphs::get().middot;
+        assert!(
+            screen.contains(&format!("Missing values {middot} by rate")),
+            "{screen}"
+        );
+        assert_glyph_slots(&screen);
+    }
+    // The grouped finding: each column's count, and the rows with any of them
+    // bounded, not summed.
+    press(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let screen = render(&mut app, 80, 24);
+    assert!(screen.contains("Null rate in 2 columns"), "{screen}");
+    assert!(screen.contains("Rows with any of them"), "{screen}");
+    assert!(screen.contains("not counted"), "{screen}");
+    assert_glyph_slots(&screen);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(
+        app.analysis_modal.data_quality_findings.order,
+        FindingOrder::Ranked
+    );
+
+    // None of it read or measured anything.
+    assert_nothing_started(&mut app, &rx);
+    let after = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(after.observations.len(), results.observations.len());
+    assert_eq!(
+        datui::quality_report::verdict(&datui::quality_report::build_report(after)),
+        datui::quality_report::verdict(&report)
+    );
+
+    // From here on only the kept rows can answer.
+    std::fs::remove_file(PathBuf::from("tests/sample-data").join(name)).unwrap();
+    let open = |app: &mut App, check: &'static str| {
+        app.analysis_modal.data_quality_findings.check = Some(check);
+        app.analysis_modal.data_quality_table_state.select(Some(0));
+        press(app, KeyCode::Enter);
+        assert!(app.analysis_modal.data_quality_observation_detail);
+    };
+    let identity = results.identity.clone().unwrap();
+    assert!(identity.rows_involved > 0, "the sample holds copies");
+    open(&mut app, "Duplicate rows");
+    let screen = render(&mut app, 80, 24);
+    assert!(screen.contains("Most copied"), "{screen}");
+    assert!(
+        screen.contains(&format!(
+            "{} sampled rows that have a copy",
+            identity.rows_involved
+        )),
+        "{screen}"
+    );
+    assert!(screen.contains("Show Rows"), "{screen}");
+    assert_glyph_slots(&screen);
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().num_rows,
+        identity.rows_involved
+    );
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active);
+    assert!(
+        app.analysis_modal.data_quality_observation_detail,
+        "Esc from the rows is the finding again"
+    );
+    press(&mut app, KeyCode::Esc);
+
+    // The code column's values that do not parse, and nothing else.
+    let (_, finding) = {
+        app.analysis_modal.data_quality_findings.check = Some("Numbers as text");
+        app.analysis_modal.data_quality_findings.column = Some("code".to_string());
+        app.analysis_modal.data_quality_table_state.select(Some(0));
+        app.analysis_modal.selected_finding().unwrap()
+    };
+    let failures = finding.failures(&results).unwrap();
+    assert!(failures > 0);
+    press(&mut app, KeyCode::Enter);
+    let screen = render(&mut app, 80, 24);
+    assert!(screen.contains("do not parse, such as \"n/a\""), "{screen}");
+    assert!(
+        screen.contains(&format!("{failures} sampled rows that do not parse")),
+        "{screen}"
+    );
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows, failures);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+
+    // Codes that all parse: no rows to show, and the finding says why.
+    app.analysis_modal.data_quality_findings.column = Some("zip".to_string());
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    press(&mut app, KeyCode::Enter);
+    let screen = render(&mut app, 80, 24);
+    assert!(screen.contains("every value parses"), "{screen}");
+    assert!(
+        screen.contains("Close") && !screen.contains("Show Rows"),
+        "{screen}"
+    );
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.analysis_modal.data_quality_observation_detail);
+    assert!(app.analysis_modal.active && !app.is_busy());
+}
+
+/// A full scan keeps no rows, so a finding's rows are a read of their own: Enter
+/// shows what it would read, Esc reads nothing, and only Enter on that reads.
+#[test]
+fn full_scan_evidence_is_read_only_on_confirm() {
+    use datui::data_quality::QualityPrecision;
+
+    let (mut app, rx, tx) = open_findings_fixture("dq_findings_full.parquet");
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.analysis_modal.data_quality_confirm_run);
+    let next = press(&mut app, KeyCode::Enter);
+    let (finished, _) = drain_quality(&mut app, &rx, next);
+    assert_eq!(finished, 1);
+    let results = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert_eq!(results.precision, QualityPrecision::Exact);
+    let identity = results.identity.clone().unwrap();
+    assert_eq!(
+        identity.rows_involved, 900,
+        "three copies of three hundred rows"
+    );
+    assert!(
+        identity.examples.is_empty(),
+        "a full scan keeps no examples"
+    );
+
+    app.analysis_modal.data_quality_findings.check = Some("Duplicate rows");
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    press(&mut app, KeyCode::Enter);
+    let render = |app: &mut App, width, height| {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    let screen = render(&mut app, 80, 24);
+    assert!(screen.contains("A full scan keeps no rows"), "{screen}");
+    assert!(screen.contains("Read Rows"), "{screen}");
+
+    // Enter stages the read and shows it; nothing reads yet.
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.analysis_modal.data_quality_evidence_read.is_some());
+    assert_nothing_started(&mut app, &rx);
+    for (width, height) in [(80, 24), (60, 20)] {
+        let screen = render(&mut app, width, height);
+        for label in [
+            "Read Rows",
+            "Why",
+            "Reads",
+            "Shows",
+            "900 rows",
+            "read only",
+        ] {
+            assert!(
+                screen.contains(label),
+                "{label} at {width}x{height}: {screen}"
+            );
+        }
+        assert!(
+            screen.contains("Enter") && screen.contains("Cancel"),
+            "{screen}"
+        );
+        assert_glyph_slots(&screen);
+    }
+    // Esc reads nothing and goes back to the finding.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.data_quality_evidence_read.is_none());
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    assert_nothing_started(&mut app, &rx);
+
+    // Enter, and Enter again: the read, and exactly the rows the check counted.
+    press(&mut app, KeyCode::Enter);
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 900);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active);
 }
 
 /// One sample for every tool: chosen once in Describe, it is the rows Data Quality

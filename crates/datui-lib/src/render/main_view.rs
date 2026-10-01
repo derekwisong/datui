@@ -292,6 +292,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     if modal.data_quality_confirm_run {
         return vec![("Enter", "Run"), ("Esc", "Cancel")];
     }
+    if modal.data_quality_evidence_read.is_some() {
+        return vec![("Enter", "Read"), ("Esc", "Cancel")];
+    }
     if modal.data_quality_observation_detail {
         if modal.quality_selected_is_clean() {
             return vec![(
@@ -307,17 +310,22 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             .chain([("Esc", "Back")])
             .collect();
         }
-        // Enter opens the rows when there are exact rows to open, and otherwise
-        // only closes the popup; the chip says which.
-        let opens = modal.data_quality_results.as_ref().is_some_and(|results| {
-            let report = crate::quality_report::build_report(results);
-            modal
-                .data_quality_table_state
-                .selected()
-                .and_then(|index| report.findings.get(index))
-                .is_some_and(|finding| finding.can_open_rows(results))
+        // Enter shows the rows the run kept, asks to read rows it did not keep, and
+        // otherwise only closes the popup; the chip says which.
+        let rows = modal.selected_finding().and_then(|(_, finding)| {
+            let results = modal.data_quality_results.as_ref()?;
+            let rows = finding.evidence(results).ok()?;
+            Some(
+                !matches!(rows, crate::quality_report::EvidenceRows::Files(_))
+                    && app.quality_rows_kept().is_some(),
+            )
         });
-        let mut keys = vec![("Enter", if opens { "Show Rows" } else { "Close" })];
+        let enter = match rows {
+            Some(true) => "Show Rows",
+            Some(false) => "Read Rows",
+            None => "Close",
+        };
+        let mut keys = vec![("Enter", enter)];
         if modal.data_quality_detail_scroll.max > 0 {
             keys.push((g.updown, "Scroll"));
         }
@@ -381,7 +389,12 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         own.push(("Enter", setup.label()));
     }
     match page {
-        QualityPage::Overview if results.is_some() => own.push(("Enter", "Details")),
+        QualityPage::Overview if results.is_some() => own.extend([
+            ("Enter", "Details"),
+            ("c", "Column"),
+            ("t", "Type"),
+            ("o", modal.data_quality_findings.order.next().chip()),
+        ]),
         QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
         QualityPage::Detail => own.push(("Enter", "Columns")),
         QualityPage::Segments if segmented => own.extend([
@@ -403,12 +416,21 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         }
         // Enter opens the rows behind the count under the cursor, when it has any.
         QualityPage::IntervalDetail if modal.interval_evidence().is_some() => {
-            own.push(("Enter", "Show Rows"));
+            own.push((
+                "Enter",
+                if app.quality_rows_kept().is_some() {
+                    "Show Rows"
+                } else {
+                    "Read Rows"
+                },
+            ));
         }
         _ => {}
     }
     let mut own = own.into_iter();
-    let mut keys = vec![("Esc", "Back")];
+    // A narrowed list is the first thing Esc undoes.
+    let narrowed = page == QualityPage::Overview && modal.data_quality_findings.narrowed();
+    let mut keys = vec![("Esc", if narrowed { "All Findings" } else { "Back" })];
     keys.extend(own.next());
     keys.extend([
         ("e", "Setup"),

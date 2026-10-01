@@ -68,6 +68,29 @@ toolchains or features can cause rebuilds; `cargo clean` is not a routine test
 step. See the [test organization review](test-organization-review.md) for the
 structural changes proposed to reduce linking and harness overhead.
 
+## Heavy runs queue
+
+```text
+Waiting for another heavy test run to finish (/run/user/1000/datui-test-heavy.lock)...
+```
+
+`unit`, `integration`, `preflight`, `features`, `full`, and any command given
+`--release` take one lock, shared by all of the user's checkouts and worktrees
+on the machine, so they run one at a time instead of exhausting memory
+together. A run that has to wait prints the line above once, then starts when
+the other finishes. `check`, `cli` and `--print` do not take it.
+
+| Case | Behavior |
+|---|---|
+| Lock file | `$XDG_RUNTIME_DIR/datui-test-heavy.lock`, or `/tmp/datui-test-heavy-<uid>.lock` without `XDG_RUNTIME_DIR` |
+| Held | Until the command exits, by Ctrl-C or a crash too; never by a daemon it starts, such as sccache's server |
+| `test.sh` inside a heavy run | Runs under the outer run's lock (`DATUI_TEST_LOCK_HELD` is set) |
+| No `flock` (macOS without util-linux) | Runs unlocked and says so |
+
+When several agents or people share a machine, run full suites, workspace
+clippy and release builds through `test.sh` rather than `cargo` directly, so
+they queue.
+
 ## Fixtures
 
 The statistics, distribution-detection and pivot/melt tests read sample files

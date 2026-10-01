@@ -56,6 +56,12 @@ state exactly what ran and what remains for CI. Documentation-only changes
 need documentation checks, not Rust tests. Run fuzz replay for parser/matcher
 changes. Repeat broad checks only after new changes or failures justify it.
 
+Heavy `test.sh` runs (`unit`, `integration`, `preflight`, `features`, `full`,
+anything with `--release`) wait on a machine-wide lock and run one at a time.
+When several agents share a machine, run full suites, workspace clippy and
+release builds through `test.sh` rather than `cargo` directly, so they queue
+instead of exhausting memory together.
+
 Prepare fixtures once; do not clear `target/`, change compiler flags/features,
 or regenerate all fixtures to diagnose an ordinary failure. Live/cloud tests
 are opt-in. Put new integration cases in an existing domain target rather than

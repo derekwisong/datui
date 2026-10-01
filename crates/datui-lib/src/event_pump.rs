@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{App, AppEvent, GenerationLease};
+use crate::jobs::Hold;
+use crate::{App, AppEvent};
 
 /// Keys held while busy. Beyond this the newest is dropped, and the user told: the
 /// oldest may be the `/` that puts the rest into the query bar, and without it the
@@ -68,17 +69,15 @@ pub struct EventPump {
     rx: Receiver<AppEvent>,
     held: VecDeque<KeyEvent>,
     held_for: Screen,
-    /// Continuations a handler returned, each holding a lease on the generation.
+    /// Continuations a handler returned, each holding the generation.
     ///
     /// Ahead of the channel rather than appended to it. A follow-up is the rest of the
     /// event just handled, so it belongs before results that arrived while that handler
-    /// ran — and what sits in the channel right behind it is the finished phase's
-    /// `BackgroundWorkFinished`, which is exactly what made the generation look free in
-    /// the middle of an errand.
+    /// ran.
     ///
-    /// The lease covers the gap the break leaves. A frame is drawn before the
+    /// The hold covers the gap the break leaves. A frame is drawn before the
     /// continuation runs, and a key replayed then must not find the generation free.
-    next_up: VecDeque<(AppEvent, GenerationLease)>,
+    next_up: VecDeque<(AppEvent, Hold)>,
     /// Events that arrived before there was an app to take them — keys typed while
     /// `run` read the settings — handled first, in the order they came.
     backlog: VecDeque<AppEvent>,
@@ -207,7 +206,7 @@ impl EventPump {
 
     /// The next event to handle: a continuation first, then the backlog, then the
     /// channel. `Empty` once a typed key has waited long enough, so it is offered.
-    fn take_next(&mut self) -> Result<(AppEvent, Option<GenerationLease>), TryRecvError> {
+    fn take_next(&mut self) -> Result<(AppEvent, Option<Hold>), TryRecvError> {
         if let Some((event, lease)) = self.next_up.pop_front() {
             return Ok((event, Some(lease)));
         }
@@ -250,7 +249,7 @@ impl EventPump {
 
     fn drain_from(
         &mut self,
-        mut next: Result<(AppEvent, Option<GenerationLease>), TryRecvError>,
+        mut next: Result<(AppEvent, Option<Hold>), TryRecvError>,
     ) -> Result<Drained> {
         let mut updated = false;
         let mut progress_only = true;
@@ -259,10 +258,9 @@ impl EventPump {
                 Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
                 Ok((AppEvent::Crash(msg), _)) => return Ok(Drained::Crash(msg)),
                 // A path named at startup is not there: the session ends as it always
-                // has, with the file named — unless the user has moved on meanwhile.
-                Ok((AppEvent::NamedPathMissing { generation, path }, _))
-                    if generation == self.app.task_generation =>
-                {
+                // has, with the file named. The look's answer says so only while it is
+                // current, so a user who has moved on meanwhile stays.
+                Ok((AppEvent::NamedPathMissing(path), _)) => {
                     return Ok(Drained::NotFound(path));
                 }
                 // Offered once what arrived behind it is handled ([`Self::typed`]).
@@ -277,7 +275,7 @@ impl EventPump {
                     continue;
                 }
                 Ok((AppEvent::Terminal(_), _)) => {}
-                Ok((event, continuation)) => {
+                Ok((event, mut continuation)) => {
                     updated = true;
                     progress_only &= event.is_progress();
                     self.since_key += 1;
@@ -288,10 +286,6 @@ impl EventPump {
                             None
                         }
                     };
-                    // After the handler, never before: whatever phase this event started
-                    // has taken its own lease by now, so the count does not dip to zero
-                    // between the two.
-                    drop(continuation);
                     self.discard_stale();
                     if let Some(follow_up) = follow_up {
                         // A handler that returns a follow-up event is deferring work so
@@ -299,8 +293,19 @@ impl EventPump {
                         // rely on this. Draining the follow-up in the same pass defeats
                         // that: the phase label never renders and the throbber never
                         // moves. Break so a frame is drawn and keys are polled first.
+                        //
+                        // Its hold is taken before this event's is let go, so the
+                        // generation is never free between the two phases.
                         self.queue_continuation(follow_up);
+                        drop(continuation);
                         break;
+                    }
+                    // After the handler, never before: whatever phase this event started
+                    // holds the generation by now. Then what waited on the hold gets its
+                    // turn, as it would after any other event.
+                    if let Some(hold) = continuation.take() {
+                        drop(hold);
+                        self.app.let_waiting_errands_in();
                     }
                 }
                 Err(TryRecvError::Empty) => {
@@ -394,8 +399,8 @@ impl EventPump {
 
     /// Hold a continuation, and the generation, until it is dispatched.
     fn queue_continuation(&mut self, follow_up: AppEvent) {
-        let lease = self.app.lease_the_generation();
-        self.next_up.push_back((follow_up, lease));
+        let hold = self.app.hold_the_generation();
+        self.next_up.push_back((follow_up, hold));
     }
 
     /// Offer one key to the app, the way the channel drain does, then reconcile the
@@ -659,10 +664,10 @@ mod tests {
     /// on a loaded machine is not a result that never comes, and a row count left
     /// running lands in the middle of whatever the test does next.
     ///
-    /// A job's lease is work still to report. It comes back an event behind the answer
-    /// that cleared `busy`, from the worker's thread, so an idle app with a quiet
-    /// channel can still be holding the generation (#490). The download confirmation's
-    /// lease is not waited on: that one waits on the user.
+    /// Anything holding the generation is work still to report: a job lets go in the
+    /// step that handles its answer, so an idle app holding it is a job still running
+    /// quietly, or a continuation. The download confirmation's hold is not waited on:
+    /// that one waits on the user.
     fn settle(pump: &mut EventPump) -> Drained {
         fn owed(app: &App) -> bool {
             crate::tests::work_pending(app)
@@ -766,10 +771,10 @@ mod tests {
     /// A continuation never goes to the back of the channel.
     ///
     /// The gap #221 was left short by is created by exactly one thing: putting a
-    /// handler's follow-up behind whatever arrived while that handler ran — including
-    /// the finished phase's `BackgroundWorkFinished`. `queue_continuation` is the only
-    /// way a follow-up should travel, and `EventPump::send`, for callers pushing an
-    /// event of their own, is the only `tx.send` that belongs in this file.
+    /// handler's follow-up behind whatever arrived while that handler ran.
+    /// `queue_continuation` is the only way a follow-up should travel, holding the
+    /// generation, and `EventPump::send`, for callers pushing an event of their own, is
+    /// the only `tx.send` that belongs in this file.
     #[test]
     fn a_continuation_never_goes_to_the_back_of_the_channel() {
         let source = include_str!("event_pump.rs");
@@ -779,8 +784,8 @@ mod tests {
             source.matches(needle).count(),
             1,
             "the one send left should be `EventPump::send`. A follow-up sent to the \
-             channel lands behind the lease release of the phase that produced it, and \
-             the generation reads free in the middle of an errand — see GenerationLease."
+             channel holds nothing while it waits, and the generation reads free in the \
+             middle of an errand — see `jobs::Hold`."
         );
     }
 
@@ -788,8 +793,8 @@ mod tests {
     ///
     /// This is the gap #221 was left short by. An errand of several phases hands off
     /// through a returned event, and the pump breaks there so a frame can be drawn —
-    /// so for one iteration of the loop the phase that finished has dropped its lease
-    /// and the phase that follows has not taken one. A collect starting in that window
+    /// so for one iteration of the loop the phase that finished has let go of the
+    /// generation and the phase that follows has not taken it. A collect starting in that window
     /// bumps `task_generation` out from under the errand, and `BackgroundSchemaReady`'s
     /// mismatch branch then returns without resetting anything: the dataset never opens,
     /// silently, for the rest of the session.
@@ -824,8 +829,8 @@ mod tests {
             "and the generation is held while it waits"
         );
 
-        // Dispatching it hands the lease to the phase it starts, rather than dropping
-        // one before the other takes it.
+        // Dispatching it hands the generation to the phase it starts, rather than
+        // letting go before the other takes it.
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
         assert!(
             p.app.work_a_bump_would_strand(),
@@ -869,7 +874,7 @@ mod tests {
 
         // An errand waiting for the generation to come free. Without one the tail of
         // `App::handle` has nothing to run, and the key below would prove nothing.
-        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+        p.app.owe_rows_for_tests("Loading buffer...");
 
         // And the user opens something else, which after one drain is mid-handoff.
         p.send(AppEvent::Open(vec![path], OpenOptions::default()))
@@ -886,7 +891,7 @@ mod tests {
             "the owed collect did not go in on the back of a key handled in the window"
         );
         assert!(
-            p.app.collect_owed.is_some(),
+            p.app.rows_owed(),
             "it is still owed, waiting for the open in front of it"
         );
     }
@@ -895,13 +900,14 @@ mod tests {
     ///
     /// The invariant #221 actually wants, asserted at the boundary rather than through a
     /// proxy: every time the pump breaks — which is every time a frame is drawn and a key
-    /// could be handled — an errand still in progress is holding a lease. What used to
+    /// could be handled — an errand still in progress holds the generation. What used to
     /// cover this was a list of three flags in the predicate; what covers it now is the
-    /// continuation lease, and that has to be true at each phase change rather than only
+    /// continuation's hold, and that has to be true at each phase change rather than only
     /// at the first.
     ///
     /// An export hands off once, from drawing its progress to the job, which then
-    /// runs from plan to committed file holding its own lease.
+    /// runs from plan to committed file holding the generation itself, and lets go in
+    /// the step that handles its answer.
     #[test]
     fn an_export_holds_the_generation_at_every_phase_change() {
         let (mut p, dir) = loaded_pump();
@@ -941,14 +947,11 @@ mod tests {
             "the export handed off to its job, and that was checked; saw {breaks}"
         );
         assert!(out.exists(), "and the file was written, which is the point");
-
-        // The last lease can still be on its way when the loop above runs out of work:
-        // `busy` is cleared by the handler that consumed the result, one event ahead of
-        // the release behind it. `settle` waits on the release itself.
-        settle(&mut p);
+        // The answer that cleared `busy` released the generation in the same step: no
+        // release is left to arrive behind it (#490).
         assert!(
             !p.app.work_a_bump_would_strand(),
-            "the generation is free once the export is done"
+            "the generation is free the moment the export is done"
         );
     }
 
@@ -976,8 +979,8 @@ mod tests {
         let (mut p, dir) = loaded_pump();
         let out = dir.path().join("out.csv");
         let mut exports = 0;
-        p.app.worker_dies = Some(Box::new(move |job| {
-            exports += usize::from(*job == crate::Job::Export);
+        p.app.jobs.worker_dies = Some(Box::new(move |job| {
+            exports += usize::from(matches!(job, crate::Job::Export));
             exports == 1
         }));
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
@@ -999,8 +1002,10 @@ mod tests {
         assert!(p.app.status_message.is_none());
         assert!(matches!(p.app.loading_state, LoadingState::Idle));
         assert!(!out.exists());
-        settle(&mut p);
-        assert!(!p.app.work_a_bump_would_strand(), "its lease came back");
+        assert!(
+            !p.app.work_a_bump_would_strand(),
+            "the generation is free as the failure is shown"
+        );
 
         p.terminal_key(plain(KeyCode::Esc)).unwrap();
         assert!(!p.app.error_modal.active);
@@ -1030,7 +1035,8 @@ mod tests {
         settle(&mut p);
         rendered(&mut p.app);
 
-        p.app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::DrillRow);
+        p.app.jobs.worker_dies =
+            crate::tests::worker_dies_once(|job| matches!(job, crate::Job::DrillRow));
         p.terminal_key(plain(KeyCode::Enter)).unwrap();
         settle(&mut p);
         assert_eq!(
@@ -1074,7 +1080,8 @@ mod tests {
         };
 
         p.app.input_mode = InputMode::PivotMelt;
-        p.app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::Pivot);
+        p.app.jobs.worker_dies =
+            crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Pivot));
         p.send(AppEvent::Pivot(spec.clone())).unwrap();
         settle(&mut p);
         assert!(p.app.error_modal.active, "the user is told");
@@ -1103,6 +1110,23 @@ mod tests {
         let (mut p, dir) = loaded_pump();
         let passed = p.app.task_generation();
         let shown = p.app.dataset_generation;
+        let jobs = [
+            crate::Job::Load,
+            crate::Job::OpenNamed,
+            crate::Job::Rows(crate::InflightCollect::for_tests(0, 3)),
+            crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
+            crate::Job::SampleRows,
+            crate::Job::Pivot,
+            crate::Job::DrillRow,
+            crate::Job::InspectRow { frame: 0, row: 0 },
+            crate::Job::Export,
+            crate::Job::Copy,
+            crate::Job::QualityReport,
+        ];
+        let running: Vec<_> = jobs
+            .into_iter()
+            .map(|job| p.app.job_for_tests(job, None))
+            .collect();
         p.send(AppEvent::Open(
             vec![dir.path().join("people.csv")],
             OpenOptions::default(),
@@ -1111,25 +1135,11 @@ mod tests {
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
         assert!(p.app.awaiting_dataset, "the open is under way");
         assert_ne!(p.app.task_generation(), passed);
-        for job in [
-            crate::Job::Load,
-            crate::Job::Rows,
-            crate::Job::Analysis,
-            crate::Job::SampleRows,
-            crate::Job::Pivot,
-            crate::Job::ViewPivot,
-            crate::Job::DrillRow,
-            crate::Job::Export,
-            crate::Job::Copy,
-            crate::Job::QualityReport,
-        ] {
-            p.send(AppEvent::BackgroundFailed {
-                generation: passed,
-                job,
+        for job in running {
+            job.end(crate::Outcome::Failed {
                 message: "from work long gone".to_string(),
                 panicked: true,
-            })
-            .unwrap();
+            });
         }
         settle(&mut p);
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
@@ -1149,8 +1159,8 @@ mod tests {
         let path = dir.path().join("people.csv");
         // The scan is the first load job; the schema read is the second.
         let mut loads = 0;
-        p.app.worker_dies = Some(Box::new(move |job| {
-            loads += usize::from(*job == crate::Job::Load);
+        p.app.jobs.worker_dies = Some(Box::new(move |job| {
+            loads += usize::from(matches!(job, crate::Job::Load));
             loads == 2
         }));
         p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
@@ -1206,7 +1216,7 @@ mod tests {
     fn a_deferred_collect_with_nothing_to_do_takes_the_loading_screen_down() {
         let (mut p, _dir) = loaded_pump();
         // The buffer already holds every row, so the collect will find nothing to do.
-        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+        p.app.owe_rows_for_tests("Loading buffer...");
         p.app.loading_state = crate::LoadingState::Loading {
             file_path: None,
             file_size: 0,
@@ -1218,10 +1228,7 @@ mod tests {
         p.send(AppEvent::Update).unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
 
-        assert!(
-            p.app.collect_owed.is_none(),
-            "the errand is done either way"
-        );
+        assert!(!p.app.rows_owed(), "the errand is done either way");
         assert!(
             matches!(p.app.loading_state, crate::LoadingState::Idle),
             "and the loading screen is down rather than stuck at 70%"
@@ -1424,13 +1431,14 @@ mod tests {
         type_keys(&mut p, "/x");
         assert_eq!(held(&p).len(), 2);
 
-        p.send(AppEvent::BackgroundFailed {
-            generation: p.app.task_generation(),
-            job: crate::Job::Analysis,
+        let analysis = p.app.job_for_tests(
+            crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Computing statistics..."),
+        );
+        analysis.end(crate::Outcome::Failed {
             message: "disk on fire".to_string(),
             panicked: false,
-        })
-        .unwrap();
+        });
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
         assert!(!p.app.is_busy());
         assert!(held(&p).is_empty());
@@ -1913,9 +1921,7 @@ mod tests {
 
         p.app.request_what_the_frame_needs();
         assert!(
-            p.app
-                .collect_inflight
-                .is_some_and(|inflight| !inflight.waited_on),
+            p.app.rows_in_flight().is_some() && !p.app.rows_waited_on(),
             "a load-ahead went out"
         );
         assert!(!p.app.is_busy(), "and nothing waits on it");
@@ -1929,40 +1935,39 @@ mod tests {
         assert!(!p.app.is_busy());
 
         // Asked once for a position: the next frame does not ask again.
-        let generation = p.app.task_generation;
+        let generation = p.app.task_generation();
         p.app.request_what_the_frame_needs();
         p.app.request_what_the_frame_needs();
-        assert!(p.app.task_generation - generation <= 1);
+        assert!(p.app.task_generation() - generation <= 1);
     }
 
-    /// A frame drawn while a job's lease is out does not spend the position. The lease
-    /// comes back an event behind the answer that cleared `busy` (#490), so the frame
-    /// between them finds the app idle and the generation held; the load-ahead it
-    /// turns away goes out once the lease is back.
+    /// A frame drawn while the generation is held with the app idle does not spend the
+    /// position: the load-ahead it turns away goes out once the hold is let go (#490).
+    /// A job no longer holds the generation past its answer, but a download waiting
+    /// on the user still does.
     #[test]
-    fn a_load_ahead_turned_away_by_a_lease_goes_out_once_it_is_back() {
+    fn a_load_ahead_turned_away_by_a_hold_goes_out_once_it_is_let_go() {
         let (mut p, _dir) = numbered_pump(2000);
         page_to_the_edge(&mut p);
         let end = table(&p).buffered_end();
 
-        // A job that has answered and not yet let go.
-        let lease = p.app.lease_for_tests();
-        let generation = p.app.task_generation;
+        // Something idle that holds the generation.
+        let hold = p.app.hold_the_generation();
+        let generation = p.app.task_generation();
         assert!(!p.app.is_busy());
         p.app.request_what_the_frame_needs();
         assert_eq!(
-            p.app.task_generation, generation,
+            p.app.task_generation(),
+            generation,
             "nothing went out past it"
         );
 
-        drop(lease);
+        drop(hold);
         p.drain().unwrap();
         assert!(!p.app.work_a_bump_would_strand());
         p.app.request_what_the_frame_needs();
         assert!(
-            p.app
-                .collect_inflight
-                .is_some_and(|inflight| !inflight.waited_on),
+            p.app.rows_in_flight().is_some() && !p.app.rows_waited_on(),
             "the load-ahead went out once the generation was free"
         );
         settle(&mut p);
@@ -1984,17 +1989,18 @@ mod tests {
         let dataset = state.len_generation();
         let columns = crate::InflightCollect::columns_of(state);
         // Out, and bringing the next few pages: no thread, so it stays out.
-        let generation = p.app.task_generation;
-        p.app.collect_inflight = Some(crate::InflightCollect {
-            began: std::time::Instant::now(),
-            files: None,
-            generation,
-            dataset,
-            columns,
-            start,
-            end: end + 10 * page,
-            waited_on: false,
-        });
+        let generation = p.app.task_generation();
+        let _ahead = p.app.job_for_tests(
+            crate::Job::Rows(crate::InflightCollect {
+                began: std::time::Instant::now(),
+                files: None,
+                dataset,
+                columns,
+                start,
+                end: end + 10 * page,
+            }),
+            None,
+        );
 
         // As `run()` takes them: a key, then whatever it set going.
         for _ in 0..30 {
@@ -2002,13 +2008,12 @@ mod tests {
             p.drain().unwrap();
         }
         assert_eq!(
-            p.app.task_generation, generation,
+            p.app.task_generation(),
+            generation,
             "no second fetch went out"
         );
         assert!(
-            p.app
-                .collect_inflight
-                .is_some_and(|inflight| inflight.waited_on),
+            p.app.rows_waited_on(),
             "the page that left the buffer waits on the load-ahead"
         );
         assert!(p.app.is_busy());
@@ -2038,21 +2043,24 @@ mod tests {
         let (mut p, _dir) = numbered_pump(200);
         let dataset = table(&p).len_generation();
         let columns = crate::InflightCollect::columns_of(table(&p));
-        p.app.busy = true;
-        p.app.status_message = Some(App::LOADING_BUFFER.to_string());
-        p.app.collect_inflight = Some(crate::InflightCollect {
-            began: std::time::Instant::now(),
-            files: None,
-            generation: p.app.task_generation,
-            dataset,
-            columns,
-            start: 0,
-            end: 200,
-            waited_on: true,
-        });
+        let _read = p.app.job_for_tests(
+            crate::Job::Rows(crate::InflightCollect {
+                began: std::time::Instant::now(),
+                files: None,
+                dataset,
+                columns,
+                start: 0,
+                end: 200,
+            }),
+            Some(App::LOADING_BUFFER),
+        );
         assert!(!rendered(&mut p.app).contains("Loading buffer"));
 
-        if let Some(inflight) = p.app.collect_inflight.as_mut() {
+        if let Some(crate::Job::Rows(inflight)) = p
+            .app
+            .jobs
+            .current_mut(|job| matches!(job, crate::Job::Rows(_)))
+        {
             inflight.began -= Duration::from_secs(1);
         }
         assert!(rendered(&mut p.app).contains("Loading buffer"));

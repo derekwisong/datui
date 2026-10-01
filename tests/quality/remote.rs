@@ -11,7 +11,7 @@ use datui::data_quality::{
     QualityComparison, QualityCompute, QualityGrain, QualityStage, TemporalRole,
     TemporalRoleAssignment,
 };
-use datui::{App, AppConfig, AppEvent, OpenOptions};
+use datui::{App, AppConfig, AppEvent, OpenOptions, Progress};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -84,8 +84,11 @@ fn settle(
     loop {
         match next.take() {
             Some(event) => {
-                if let AppEvent::BackgroundQualityPhase { generation, phase } = &event
-                    && *generation == app.task_generation()
+                if let AppEvent::JobProgress {
+                    ticket,
+                    progress: Progress::QualityPhase(phase),
+                } = &event
+                    && app.job_is_current(*ticket)
                     && phase.reads_source
                 {
                     reads.push(phase.stage);
@@ -659,7 +662,6 @@ fn a_cancel_mid_fetch_leaves_no_copy() {
     if app.analysis_modal.data_quality_confirm_run {
         next = press(&mut app, KeyCode::Enter);
     }
-    let generation = app.task_generation();
     loop {
         let event = match next.take() {
             Some(event) => event,
@@ -669,8 +671,8 @@ fn a_cancel_mid_fetch_leaves_no_copy() {
         };
         let fetching = matches!(
             &event,
-            AppEvent::BackgroundQualityPhase { generation: g, phase }
-                if *g == generation && phase.stage == QualityStage::CopyingSource
+            AppEvent::JobProgress { ticket, progress: Progress::QualityPhase(phase) }
+                if app.job_is_current(*ticket) && phase.stage == QualityStage::CopyingSource
         );
         next = app.event(&event);
         if fetching {

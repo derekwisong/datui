@@ -228,15 +228,7 @@ fn pump_until(
         while let Ok(event) = rx.try_recv() {
             match &event {
                 datui::AppEvent::Crash(message) => eprintln!("crash: {message}"),
-                datui::AppEvent::BackgroundFailed { message, .. } => {
-                    eprintln!("background error: {message}")
-                }
-                datui::AppEvent::BackgroundDownloadReady { download, .. } => {
-                    eprintln!("download ready: {:?}", download.path())
-                }
-                datui::AppEvent::BackgroundLazyFrameReady { path, .. } => {
-                    eprintln!("lazyframe ready: {path:?}")
-                }
+                datui::AppEvent::JobEnded(ticket) => eprintln!("job ended: {:?}", ticket.kind()),
                 _ => {}
             }
             // Follow the whole chain, not one link of it. A load is a sequence of
@@ -245,6 +237,9 @@ fn pump_until(
             // outside exactly like a load that failed without saying so.
             if let Some(crash) = drive(app, event) {
                 eprintln!("crash: {crash}");
+            }
+            if let Some(message) = app.error_message() {
+                eprintln!("error: {message}");
             }
         }
         // A frame, then the ask that follows one, because that is the loop this stands

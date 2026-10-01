@@ -81,6 +81,7 @@ pub(crate) mod help_strings;
 pub mod home;
 pub mod inspector_modal;
 pub mod intent_modal;
+mod jobs;
 pub mod local_copy;
 pub mod locality;
 pub mod logging;
@@ -137,6 +138,8 @@ pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterEditStep, FilterStatement};
+use jobs::{Answer, Job, Jobs, Outcome};
+pub use jobs::{JobKind, Progress, Ticket};
 use numfmt::NumberFormatSettings;
 use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
@@ -193,22 +196,23 @@ mod export_format_tests {
         let dataset = state.len_generation();
         let columns = InflightCollect::columns_of(&state);
         app.data_table_state = Some(state);
-        let generation = app.task_generation;
-        app.collect_inflight = Some(InflightCollect {
-            began: std::time::Instant::now(),
-            files: None,
-            generation,
-            dataset,
-            columns,
-            start: 0,
-            end: 50,
-            waited_on: true,
-        });
+        let generation = app.task_generation();
+        let _read = app.job_for_tests(
+            Job::Rows(InflightCollect {
+                began: std::time::Instant::now(),
+                files: None,
+                dataset,
+                columns,
+                start: 0,
+                end: 50,
+            }),
+            Some(App::LOADING_BUFFER),
+        );
 
         // The frame that sized the table asks again: the collect on its way covers
         // the view, so nothing new is planned.
         assert!(app.spawn_async_collect(App::LOADING_BUFFER));
-        assert_eq!(app.task_generation, generation);
+        assert_eq!(app.task_generation(), generation);
 
         // A filter changes the data underneath; those rows no longer answer.
         app.event(&AppEvent::Filter(vec![FilterStatement {
@@ -218,11 +222,11 @@ mod export_format_tests {
             logical_op: LogicalOperator::And,
         }]));
         assert_ne!(
-            app.task_generation, generation,
+            app.task_generation(),
+            generation,
             "a fresh collect was planned"
         );
-        let inflight = app.collect_inflight.expect("the new collect is recorded");
-        assert_eq!(inflight.generation, app.task_generation);
+        let inflight = app.rows_in_flight().expect("the new collect is recorded");
         assert_ne!(inflight.dataset, dataset);
     }
 
@@ -289,7 +293,7 @@ mod export_format_tests {
         let wait = std::time::Duration::from_secs(20);
         let first = rx.recv_timeout(wait).expect("the collect lands");
         assert!(
-            matches!(first, AppEvent::BackgroundCollectReady { .. }),
+            matches!(first, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows),
             "the buffer comes first"
         );
         let second = rx.recv_timeout(wait).expect("the count follows");
@@ -344,7 +348,7 @@ mod export_format_tests {
 
         // No jump to a guess: the count starts, and nothing is busy.
         assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
-        assert!(!app.busy);
+        assert!(!app.is_busy());
         assert_eq!(app.end_after_count, Some(dataset));
         assert_eq!(app.len_count_inflight, Some(dataset));
         assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
@@ -445,7 +449,7 @@ mod export_format_tests {
         assert_eq!(app.counts_spawned.get(), 0);
 
         let ready = recv(&rx);
-        assert!(matches!(ready, AppEvent::BackgroundCollectReady { .. }));
+        assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
         app.event(&ready);
         assert_eq!(
             app.counts_spawned.get(),
@@ -477,7 +481,7 @@ mod export_format_tests {
             let (mut app, rx, dataset) = filtered_local(100_000, keep);
             assert!(app.spawn_async_collect("Filtering..."));
             let ready = recv(&rx);
-            assert!(matches!(ready, AppEvent::BackgroundCollectReady { .. }));
+            assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
             app.event(&ready);
             let state = app.data_table_state.as_ref().unwrap();
             assert_eq!(state.len_generation(), dataset);
@@ -496,7 +500,7 @@ mod export_format_tests {
     fn a_page_that_fills_exactly_is_still_counted() {
         let (mut probe, _rx, _) = filtered_local(100_000, 50_000);
         probe.spawn_async_collect("Filtering...");
-        let inflight = probe.collect_inflight.expect("a page is read");
+        let inflight = probe.rows_in_flight().expect("a page is read");
         let page = inflight.end - inflight.start;
 
         let (mut app, rx, dataset) = filtered_local(100_000, page as i32);
@@ -611,7 +615,7 @@ mod export_format_tests {
         app.spawn_async_collect(App::LOADING_BUFFER);
         assert_eq!(app.count_after_paint, Some(dataset));
         let failed = recv(&rx);
-        assert!(matches!(failed, AppEvent::BackgroundCollectFailed { .. }));
+        assert!(matches!(failed, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
         app.event(&failed);
         assert_eq!(app.count_after_paint, None);
         assert_eq!(app.len_count_inflight, None);
@@ -625,13 +629,13 @@ mod export_format_tests {
     #[test]
     fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
         let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
-        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
+        app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
         app.spawn_async_collect(App::LOADING_BUFFER);
         assert_eq!(app.count_after_paint, Some(dataset));
         let died = recv(&rx);
         assert!(matches!(
             died,
-            AppEvent::BackgroundFailed { job: Job::Rows, .. }
+            AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows
         ));
         app.event(&died);
         assert_eq!(app.count_after_paint, None);
@@ -1490,11 +1494,11 @@ mod quality_sample_tests {
         buffer.content().iter().map(|cell| cell.symbol()).collect()
     }
 
-    /// A Data Quality report on screen and a run under way in `stage`, whose worker
-    /// holds a lease on the generation it began on.
+    /// A Data Quality report on screen and a run under way in `stage`: its job, whose
+    /// test decides how it ends.
     fn quality_run_under_way(
         stage: data_quality::QualityPhase,
-    ) -> (App, mpsc::Receiver<AppEvent>, GenerationLease) {
+    ) -> (App, mpsc::Receiver<AppEvent>, jobs::Started) {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
@@ -1524,10 +1528,20 @@ mod quality_sample_tests {
         progress.reads_source = Some(stage.reads_source);
         progress.interruptible = Some(stage.interruptible);
         modal.computing = Some(progress);
-        app.quality_watch = Some(data_quality::QualityWatch::default());
-        app.busy = true;
-        let worker = app.lease_for_tests();
+        let run = Job::Analysis(crate::jobs::AnalysisRun {
+            watch: Some(data_quality::QualityWatch::default()),
+            runs_out: false,
+        });
+        let worker = app.job_for_tests(run, Some("Profiling data quality..."));
         (app, rx, worker)
+    }
+
+    fn quality_stage(stage: data_quality::QualityStage) -> Progress {
+        Progress::QualityPhase(data_quality::QualityPhase {
+            stage,
+            reads_source: false,
+            interruptible: false,
+        })
     }
 
     /// Esc on a Data Quality run whose read cannot stop at once: the last report is
@@ -1541,7 +1555,7 @@ mod quality_sample_tests {
             reads_source: true,
             interruptible: false,
         });
-        let stopped = app.task_generation;
+        let stopped = worker.ticket();
 
         assert!(app.hard_escape_while_busy(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(key(&mut app, KeyCode::Esc).is_none());
@@ -1563,13 +1577,9 @@ mod quality_sample_tests {
         );
 
         // A stage the stopped worker still sends changes nothing.
-        app.event(&AppEvent::BackgroundQualityPhase {
-            generation: stopped,
-            phase: data_quality::QualityPhase {
-                stage: data_quality::QualityStage::ProfilingColumns,
-                reads_source: false,
-                interruptible: false,
-            },
+        app.event(&AppEvent::JobProgress {
+            ticket: stopped,
+            progress: quality_stage(data_quality::QualityStage::ProfilingColumns),
         });
         assert!(app.analysis_modal.computing.is_none());
 
@@ -1604,14 +1614,13 @@ mod quality_sample_tests {
         ));
 
         // The run in flight hears its own stages, and shows them.
-        let running = app.task_generation;
-        app.event(&AppEvent::BackgroundQualityPhase {
-            generation: running,
-            phase: data_quality::QualityPhase {
-                stage: data_quality::QualityStage::ProfilingColumns,
-                reads_source: false,
-                interruptible: false,
-            },
+        let running = app.job_for_tests(
+            Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Profiling data quality..."),
+        );
+        app.event(&AppEvent::JobProgress {
+            ticket: running.ticket(),
+            progress: quality_stage(data_quality::QualityStage::ProfilingColumns),
         });
         let progress = app.analysis_modal.computing.as_ref().unwrap();
         assert_eq!(progress.phase, "Profiling columns");
@@ -1629,7 +1638,10 @@ mod quality_sample_tests {
             reads_source: true,
             interruptible: true,
         });
-        let watch = app.quality_watch.clone().unwrap();
+        let watch = match app.jobs.current(|job| matches!(job, Job::Analysis(_))) {
+            Some((_, Job::Analysis(run))) => run.watch.clone().unwrap(),
+            _ => panic!("the run is under way"),
+        };
 
         assert!(app.hard_escape_while_busy(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(key(&mut app, KeyCode::Esc).is_none());
@@ -1653,9 +1665,7 @@ mod quality_sample_tests {
         );
 
         // Past its batch and still going: now the screen says so.
-        if let Some((_, since, _)) = app.analysis_cancelled.as_mut() {
-            *since -= CANCEL_GRACE;
-        }
+        app.jobs.backdate_supersessions(CANCEL_GRACE);
         let text = screen(&mut app);
         assert!(
             text.contains("Cancellation requested; run stopping"),
@@ -1682,8 +1692,18 @@ mod quality_sample_tests {
             reads_source: false,
             interruptible: false,
         });
-        let current = app.task_generation;
-        let stale = current.wrapping_sub(1);
+        // Two runs on a generation since left, and the run in flight.
+        drop(worker);
+        let stale = app.job_for_tests(Job::Analysis(crate::jobs::AnalysisRun::default()), None);
+        let failing = app.job_for_tests(Job::Analysis(crate::jobs::AnalysisRun::default()), None);
+        app.jobs.advance();
+        let worker = app.job_for_tests(
+            Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Profiling data quality..."),
+        );
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
         let on_screen = app.analysis_modal.data_quality_results.clone().unwrap();
         let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
         let state = app.data_table_state.as_ref().unwrap();
@@ -1715,26 +1735,23 @@ mod quality_sample_tests {
         };
 
         let (old_plan, old_results, old_rows) = measured(1);
-        app.event(&AppEvent::BackgroundQualityPhase {
-            generation: stale,
-            phase: data_quality::QualityPhase {
-                stage: data_quality::QualityStage::Assembling,
-                reads_source: false,
-                interruptible: false,
-            },
+        app.event(&AppEvent::JobProgress {
+            ticket: stale.ticket(),
+            progress: quality_stage(data_quality::QualityStage::Assembling),
         });
-        app.event(&AppEvent::BackgroundDataQualityReady {
-            generation: stale,
+        let ended = stale.ticket();
+        stale.end(Outcome::answered(Answer::DataQuality {
             results: Box::new(old_results),
             kept: Some(old_rows),
             plan: Box::new(old_plan.clone()),
-        });
-        app.event(&AppEvent::BackgroundFailed {
-            generation: stale,
-            job: Job::Analysis,
+        }));
+        app.event(&AppEvent::JobEnded(ended));
+        let ended = failing.ticket();
+        failing.end(Outcome::Failed {
             message: "the stale run failed".to_string(),
             panicked: false,
         });
+        app.event(&AppEvent::JobEnded(ended));
         assert_eq!(
             format!("{:?}", app.analysis_modal.data_quality_results),
             format!("{:?}", Some(&on_screen)),
@@ -1753,12 +1770,13 @@ mod quality_sample_tests {
         assert!(app.quality_kept_serves(&old_plan), "its rows are kept");
 
         let (new_plan, new_results, new_rows) = measured(2);
-        app.event(&AppEvent::BackgroundDataQualityReady {
-            generation: current,
+        let ended = worker.ticket();
+        worker.end(Outcome::answered(Answer::DataQuality {
             results: Box::new(new_results.clone()),
             kept: Some(new_rows),
             plan: Box::new(new_plan.clone()),
-        });
+        }));
+        app.event(&AppEvent::JobEnded(ended));
         assert_eq!(
             format!("{:?}", app.analysis_modal.data_quality_results),
             format!("{:?}", Some(&new_results))
@@ -1769,10 +1787,10 @@ mod quality_sample_tests {
         );
         assert!(app.analysis_modal.computing.is_none() && !app.is_busy());
         assert!(app.quality_cached(&new_plan));
-        drop(worker);
         while let Ok(event) = rx.try_recv() {
             app.event(&event);
         }
+        assert!(!app.background_work_in_flight());
     }
 
     /// The progress view holds still while a run goes through its stages: a new
@@ -2057,11 +2075,15 @@ mod chart_prepare_tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let path = PathBuf::from("/tmp/x.png");
-        app.chart_export_generation = 7;
-        app.chart_export_inflight = Some(7);
-        app.busy = true;
+        let write = app.job_for_tests(
+            Job::ChartExport {
+                path: path.clone(),
+                format: ChartExportFormat::Png,
+            },
+            Some("Exporting chart..."),
+        );
         app.loading_state = LoadingState::Exporting {
-            file_path: path.clone(),
+            file_path: path,
             current_phase: "Exporting chart".to_string(),
             written: None,
         };
@@ -2072,16 +2094,12 @@ mod chart_prepare_tests {
         assert!(matches!(app.loading_state, LoadingState::Idle));
         assert_eq!(app.task_generation(), task_generation);
 
-        app.event(&AppEvent::BackgroundFailed {
-            generation: app.task_generation(),
-            job: Job::ChartExport {
-                generation: 7,
-                path,
-                format: ChartExportFormat::Png,
-            },
+        let ticket = write.ticket();
+        write.end(Outcome::Failed {
             message: "disk full".to_string(),
             panicked: false,
         });
+        app.event(&AppEvent::JobEnded(ticket));
         assert!(!app.error_modal.active);
         assert!(!app.chart_export_modal.active);
         assert!(!app.is_busy());
@@ -2105,12 +2123,18 @@ mod chart_prepare_tests {
             )
             .expect("a state"),
         );
-        app.busy = true;
+        let export = app.job_for_tests(Job::Export, Some("Exporting..."));
+        let ticket = export.ticket();
         app.loading_state = LoadingState::Exporting {
             file_path: PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting data".to_string(),
             written: None,
         };
+        // An export that has ended.
+        let older = app.job_for_tests(Job::Export, None);
+        let passed = older.ticket();
+        drop(older);
+        assert!(app.jobs.end(passed).is_some());
         let bar = |app: &mut App| {
             let area = Rect::new(0, 0, 100, 24);
             let mut buf = Buffer::empty(area);
@@ -2121,18 +2145,20 @@ mod chart_prepare_tests {
         };
         assert!(bar(&mut app).contains("Collecting data...  out.csv"));
 
-        let writing = |generation, bytes| AppEvent::BackgroundExportWriting {
-            generation,
-            phase: "Writing file",
-            bytes,
+        let writing = |ticket, bytes| AppEvent::JobProgress {
+            ticket,
+            progress: Progress::ExportWriting {
+                phase: "Writing file",
+                bytes,
+            },
         };
-        app.event(&writing(app.task_generation(), 1_572_864));
+        app.event(&writing(ticket, 1_572_864));
         assert!(
             bar(&mut app).contains("Writing file...  out.csv  1.5 MB"),
             "{}",
             bar(&mut app)
         );
-        app.event(&writing(app.task_generation() + 1, 9_999_999));
+        app.event(&writing(passed, 9_999_999));
         assert!(
             bar(&mut app).contains("out.csv  1.5 MB"),
             "{}",
@@ -2140,11 +2166,11 @@ mod chart_prepare_tests {
         );
 
         // A count that lands after the export finished brings no progress back.
-        app.event(&AppEvent::BackgroundExportWritten {
-            generation: app.task_generation(),
-            path: PathBuf::from("/tmp/out.csv"),
-        });
-        app.event(&writing(app.task_generation(), 2_000_000));
+        export.end(Outcome::answered(Answer::Exported(PathBuf::from(
+            "/tmp/out.csv",
+        ))));
+        app.event(&AppEvent::JobEnded(ticket));
+        app.event(&writing(ticket, 2_000_000));
         assert!(matches!(app.loading_state, LoadingState::Idle));
         assert!(!app.is_busy());
         assert!(bar(&mut app).contains("Exported to"), "{}", bar(&mut app));
@@ -3139,7 +3165,8 @@ mod template_rollback_tests {
         loop {
             let event = rx.recv_timeout(std::time::Duration::from_secs(1));
             if let Ok(event) = event {
-                let pivot = matches!(event, AppEvent::ViewPivotReady { .. });
+                let pivot =
+                    matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::ViewPivot);
                 if let Some(next) = app.event(&event) {
                     let _ = tx.send(next);
                 }
@@ -3182,14 +3209,15 @@ mod template_rollback_tests {
     fn a_stale_view_pivot_is_dropped() {
         let (mut app, rx, tx, _dir) = long_csv_app();
         let template = pivot_view(&mut app, "pivot");
+        // A view's pivot on a generation since passed.
+        let passed = app.job_for_tests(Job::ViewPivot(Box::new(template.clone())), None);
+        app.jobs.advance();
         assert!(app.apply_template(&template).is_ok());
-        let current = app.task_generation;
 
         let stale = polars::prelude::df!("id" => [1i64], "zz" => [2i64]).unwrap();
-        app.event(&AppEvent::ViewPivotReady {
-            generation: current.wrapping_sub(1),
-            pivoted: stale,
-        });
+        let ticket = passed.ticket();
+        passed.end(Outcome::answered(Answer::ViewPivoted(stale)));
+        app.event(&AppEvent::JobEnded(ticket));
         assert_eq!(
             columns(&app),
             ["id", "key", "val"],
@@ -3223,7 +3251,8 @@ mod template_rollback_tests {
     fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
         let (mut app, rx, tx, dir) = long_csv_app();
         let template = pivot_view(&mut app, "dies");
-        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::ViewPivot);
+        app.jobs.worker_dies =
+            crate::tests::worker_dies_once(|job| matches!(job, Job::ViewPivot(_)));
         open_with_view(&mut app, &rx, &dir, &template, |_, _| false);
         drop(tx);
         assert!(app.error_modal.active);
@@ -3232,7 +3261,7 @@ mod template_rollback_tests {
             "{}",
             app.error_modal.message
         );
-        assert!(app.view_pivot.is_none());
+        assert!(!app.view_applying());
         assert_eq!(columns(&app), ["id", "key", "val"]);
         let state = app.data_table_state.as_ref().unwrap();
         assert!(state.last_pivot_spec().is_none());
@@ -3249,7 +3278,7 @@ mod template_rollback_tests {
         template.settings.pivot = None;
         template.settings.column_order = vec!["id".to_string(), "val".to_string()];
         let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
-        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
+        app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
         assert!(app.apply_template(&template).is_ok());
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
         assert!(app.error_modal.active);
@@ -3289,7 +3318,7 @@ mod template_rollback_tests {
         tx: &mpsc::Sender<AppEvent>,
     ) {
         assert!(
-            app.worker_dies.is_some(),
+            app.jobs.worker_dies.is_some(),
             "set before the rows are asked for"
         );
         super::chart_prepare_tests::pump(app, rx, tx, |a| !a.is_busy());
@@ -3327,7 +3356,7 @@ mod template_rollback_tests {
         press(&mut app, KeyCode::Char('/'));
         assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
         app.sql_input.set_value("SELECT id FROM df WHERE val > 5");
-        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
+        app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
         press(&mut app, KeyCode::Enter);
         assert!(app.query_running.is_some(), "the query planned");
         pump_with_dying_rows(&mut app, &rx, &tx);
@@ -3350,7 +3379,7 @@ mod template_rollback_tests {
     fn a_query_whose_rows_worker_dies_rolls_back() {
         let (mut app, rx, tx, _dir) = long_csv_app();
         let shown = sorted_and_filtered(&mut app, &rx, &tx);
-        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
+        app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
         app.event(&AppEvent::Search("select id where val > 5".to_string()));
         assert!(app.query_running.is_some(), "the query planned");
         pump_with_dying_rows(&mut app, &rx, &tx);
@@ -4090,8 +4119,9 @@ mod template_rollback_tests {
             steps(&mut template.settings);
             if matches!(fails, Fails::WorkerDies) {
                 // The view's first read, its pivot or its rows, panics.
-                app.worker_dies =
-                    crate::tests::worker_dies_once(|job| matches!(job, Job::ViewPivot | Job::Rows));
+                app.jobs.worker_dies = crate::tests::worker_dies_once(|job| {
+                    matches!(job, Job::ViewPivot(_) | Job::Rows(_))
+                });
             }
             let applied = app.apply_template(&template);
             match fails {
@@ -4113,7 +4143,7 @@ mod template_rollback_tests {
             }
 
             assert!(app.query_running.is_none(), "{step}");
-            assert!(app.view_pivot.is_none(), "{step}");
+            assert!(!app.view_applying(), "{step}");
             assert!(!app.is_busy(), "{step}: nothing is left to read");
             assert!(
                 app.active_template_id.is_none(),
@@ -4551,11 +4581,7 @@ pub mod tests {
     /// which on a loaded machine is not the same thing. Work the app has abandoned is
     /// not waited on; a cancelled analysis can run for minutes.
     pub fn work_pending(app: &crate::App) -> bool {
-        app.is_busy()
-            || app.row_count_pending()
-            || app
-                .collect_inflight
-                .is_some_and(|inflight| inflight.generation == app.task_generation)
+        app.is_busy() || app.row_count_pending() || app.rows_in_flight().is_some()
     }
 
     /// Returns a tokio runtime handle for use in tests.
@@ -4580,7 +4606,9 @@ pub mod tests {
 
     /// For `App::worker_dies`: the first job `dies` picks panics as it starts, and
     /// every job after it runs.
-    pub fn worker_dies_once(dies: fn(&crate::Job) -> bool) -> Option<crate::WorkerDies> {
+    pub(crate) fn worker_dies_once(
+        dies: fn(&crate::Job) -> bool,
+    ) -> Option<crate::jobs::WorkerDies> {
         let mut died = false;
         Some(Box::new(move |job| {
             if died || !dies(job) {
@@ -5251,7 +5279,7 @@ pub mod tests {
         let _ = app.handle(&reported);
 
         assert!(
-            app.collect_inflight.is_some(),
+            app.rows_in_flight().is_some(),
             "the join dropped the buffer, so something has to read it back"
         );
     }
@@ -5650,29 +5678,54 @@ pub mod tests {
 
     /// A look, set up as `ClassifyThenOpen` leaves it.
     #[cfg(test)]
-    fn a_look_is_out(app: &mut crate::App, path: &std::path::Path) -> u64 {
-        app.classify_requests = app.classify_requests.wrapping_add(1);
-        let id = app.classify_requests;
-        app.classify_inflight = Some(crate::ClassifyRequest {
-            id,
+    fn a_look_is_out(
+        app: &mut crate::App,
+        path: &std::path::Path,
+        jump: bool,
+    ) -> crate::jobs::Started {
+        let look = crate::Job::Classify(crate::jobs::Classify {
             path: path.to_path_buf(),
             browsing: app.home.browsing.clone(),
+            jump,
         });
-        app.busy = true;
-        id
+        app.job_for_tests(look, Some(crate::App::LOOKING))
+    }
+
+    /// Whether a look is out and still wanted.
+    #[cfg(test)]
+    fn a_look_waits(app: &crate::App) -> Option<std::path::PathBuf> {
+        match app
+            .jobs
+            .current(|job| matches!(job, crate::Job::Classify(_)))
+        {
+            Some((_, crate::Job::Classify(look))) => Some(look.path.clone()),
+            _ => None,
+        }
+    }
+
+    /// The look answers what its path turned out to be.
+    #[cfg(test)]
+    fn the_look_answers(
+        app: &mut crate::App,
+        look: crate::jobs::Started,
+        found: Option<crate::discover::EntryKind>,
+    ) -> Option<crate::AppEvent> {
+        let ticket = look.ticket();
+        look.end(crate::Outcome::answered(crate::Answer::Kind(found)));
+        app.event(&crate::AppEvent::JobEnded(ticket))
     }
 
     /// An answer nobody is waiting for is dropped — and the busy state it was holding
     /// goes with it, except where something else has taken that over.
     ///
-    /// `spawn_bg` sets `busy` and this answer is the only thing that comes back, so a
-    /// drop that does not clear it holds every key for the rest of the session. The
-    /// exception is the one the other handlers rely on: a bumped `task_generation` means
-    /// an `Open` or a collect set `busy` itself, and clearing it here takes the throbber
+    /// The look holds the keys and this answer is the only thing that comes back, so a
+    /// drop that does not give them back holds every key for the rest of the session.
+    /// The exception is the one the other handlers rely on: an advanced generation means
+    /// an `Open` or a collect took the wait over, and clearing it here takes the throbber
     /// off a load that is still running.
     #[test]
     fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
-        use crate::{App, AppEvent, InputMode};
+        use crate::{App, InputMode};
 
         type MovedOn = fn(&mut App);
         let cases: Vec<(&str, MovedOn, bool)> = vec![
@@ -5689,7 +5742,7 @@ pub mod tests {
             (
                 "an open took the generation",
                 |app: &mut App| {
-                    app.task_generation = app.task_generation.wrapping_add(1);
+                    app.jobs.advance();
                     app.busy = true;
                 },
                 true,
@@ -5701,19 +5754,13 @@ pub mod tests {
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.enter_home();
             let path = std::path::PathBuf::from("/mnt/share/orders");
-            let request = a_look_is_out(&mut app, &path);
-            let generation = app.task_generation;
+            let look = a_look_is_out(&mut app, &path, false);
 
             moved_on(&mut app);
             let moved_to = app.home.browsing.clone();
 
-            let follow = app.event(&AppEvent::BackgroundKindReady {
-                generation,
-                request,
-                path: path.clone(),
-                found: Some(crate::discover::EntryKind::MultiFile),
-                jump: false,
-            });
+            let follow =
+                the_look_answers(&mut app, look, Some(crate::discover::EntryKind::MultiFile));
 
             assert!(follow.is_none(), "nothing was opened when {what}");
             assert_eq!(
@@ -5727,7 +5774,7 @@ pub mod tests {
                  only that one"
             );
             assert!(
-                app.classify_inflight.is_none(),
+                a_look_waits(&app).is_none(),
                 "and the look is no longer outstanding when {what}"
             );
         }
@@ -5747,8 +5794,7 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         let first = std::path::PathBuf::from("/mnt/share/aaa");
-        let stale = a_look_is_out(&mut app, &first);
-        let generation = app.task_generation;
+        let look = a_look_is_out(&mut app, &first, false);
 
         // A second Enter, at a row the user moved to while the first was out.
         let second = std::path::PathBuf::from("/mnt/share/bbb");
@@ -5757,23 +5803,18 @@ pub mod tests {
             jump: false,
         });
         assert_eq!(
-            app.classify_inflight.as_ref().map(|r| r.path.as_path()),
-            Some(second.as_path()),
+            a_look_waits(&app),
+            Some(second.clone()),
             "the newer look is the one being waited on"
         );
 
         // And the older answer arrives.
-        let follow = app.event(&AppEvent::BackgroundKindReady {
-            generation,
-            request: stale,
-            path: first,
-            found: Some(crate::discover::EntryKind::MultiFile),
-            jump: false,
-        });
+        let follow = the_look_answers(&mut app, look, Some(crate::discover::EntryKind::MultiFile));
 
         assert!(follow.is_none(), "the stale answer opened nothing");
-        assert!(
-            app.classify_inflight.is_some(),
+        assert_eq!(
+            a_look_waits(&app),
+            Some(second),
             "and did not cancel the look that replaced it"
         );
         assert!(app.is_busy(), "nor put down its busy state");
@@ -5791,7 +5832,7 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
-        a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"));
+        let _look = a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"), false);
         app.home.status = Some("Looking at orders...".to_string());
 
         app.enter_home();
@@ -5800,7 +5841,7 @@ pub mod tests {
             !app.is_busy(),
             "the keyboard is not waiting on a dead share"
         );
-        assert!(app.classify_inflight.is_none(), "and the look is put down");
+        assert!(a_look_waits(&app).is_none(), "and the look is put down");
         assert_eq!(app.home.status, None, "with its line");
     }
 
@@ -5808,22 +5849,15 @@ pub mod tests {
     /// it, the way a local one never left.
     #[test]
     fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
-        use crate::{App, AppEvent};
+        use crate::App;
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         let path = std::path::PathBuf::from("/mnt/share/nope");
-        let request = a_look_is_out(&mut app, &path);
-        let generation = app.task_generation;
+        let look = a_look_is_out(&mut app, &path, true);
 
-        let follow = app.event(&AppEvent::BackgroundKindReady {
-            generation,
-            request,
-            path: path.clone(),
-            found: None,
-            jump: true,
-        });
+        let follow = the_look_answers(&mut app, look, None);
 
         assert!(follow.is_none());
         assert!(
@@ -6021,7 +6055,7 @@ pub mod tests {
 
         let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         assert!(
-            !app.busy,
+            !app.is_busy(),
             "the jump parked rather than blocking the keyboard"
         );
         let bar = control_bar(&mut app);
@@ -6133,148 +6167,406 @@ pub mod tests {
         );
     }
 
-    /// Every background spawn takes a lease, and gets it back however it ends.
-    ///
-    /// This is the whole of #221's mechanism: the decision "is it safe to bump
-    /// `task_generation`?" is a count, not a list of the kinds of work that might be
-    /// running. A new kind of gated task is covered by going through `spawn_bg`, which
-    /// is how every one of them is spawned.
+    /// The next event on `rx`, waiting for it.
+    fn recv(rx: &std::sync::mpsc::Receiver<crate::AppEvent>) -> crate::AppEvent {
+        rx.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the job reports back")
+    }
+
+    /// Every job holds the generation while it runs, and lets go in the step that
+    /// hands its answer over: not before, so nothing can bump the generation between
+    /// the answer and what it starts, and not after, so a frame drawn once the answer
+    /// is handled finds the generation free (#221, #490).
     #[test]
-    fn a_spawn_takes_a_lease_and_the_event_returns_it() {
-        use crate::{App, AppEvent};
+    fn a_job_holds_the_generation_until_its_answer_is_handled() {
+        use crate::{App, AppEvent, Job, JobKind};
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
 
-        app.spawn_bg(crate::Job::QualityReport, "Working...", |_task_gen, _tx| {
-            Ok(())
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let ticket = app.spawn_job(Job::QualityReport, Some("Working..."), move |_| {
+            wait.recv().ok();
+            Ok(crate::Answer::QualityReportWritten(
+                std::path::PathBuf::from("report.json"),
+            ))
         });
+        assert_eq!(ticket.kind(), JobKind::QualityReport);
         assert!(
             app.work_a_bump_would_strand(),
-            "the spawn leased the generation"
+            "the job holds the generation"
         );
+        assert!(app.is_busy());
 
-        // The worker finishes and its lease is dropped, which sends the event. A job
-        // that succeeded sends no failure ahead of it.
-        let finished = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the lease reports back");
-        assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
-        let _ = app.handle(&finished);
+        go.send(()).unwrap();
+        let ended = recv(&rx);
+        assert!(matches!(ended, AppEvent::JobEnded(t) if t == ticket));
+        assert!(
+            app.work_a_bump_would_strand(),
+            "an answer not yet handled still holds it"
+        );
+        let _ = app.handle(&ended);
         assert!(
             !app.work_a_bump_would_strand(),
-            "and the generation is free again"
+            "and handling it lets go, with nothing left to arrive"
+        );
+        assert!(!app.is_busy());
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "no second event releases anything"
         );
     }
 
-    /// Work a cancel passed holds nothing up. Polars cannot stop the query, so the worker
-    /// runs on with its lease; the bump made its answer stale, and the table must not
-    /// wait on it. A lease on the new generation still counts.
+    /// A job the user waits on holds the keys and its line on the bar; its end gives
+    /// both back in one place, whatever the job, and leaves a line that is not its
+    /// own. An answer that goes on to a continuation keeps the wait up across the gap.
     #[test]
-    fn a_cancelled_lease_does_not_hold_the_generation() {
-        use crate::{App, AppEvent};
+    fn a_job_puts_down_the_keys_and_the_line_it_held() {
+        use crate::{Answer, App, AppEvent, Job, OpenOptions, Outcome};
+        use polars::prelude::IntoLazy;
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let old = app.lease_for_tests();
-        let leased_on = app.task_generation;
-        app.task_generation = app.task_generation.wrapping_add(1);
-        assert!(
-            !app.work_a_bump_would_strand(),
-            "the abandoned worker is not waited on"
+        let end = |app: &mut App, job: crate::jobs::Started, outcome: Outcome| {
+            let ticket = job.ticket();
+            job.end(outcome);
+            app.event(&AppEvent::JobEnded(ticket))
+        };
+        let written = || Answer::QualityReportWritten(std::path::PathBuf::from("r.json"));
+
+        let report = app.job_for_tests(Job::QualityReport, Some("Writing the report..."));
+        assert!(app.is_busy(), "keys wait on it");
+        assert_eq!(app.status_message.as_deref(), Some("Writing the report..."));
+        assert!(end(&mut app, report, Outcome::answered(written())).is_none());
+        assert!(!app.is_busy(), "and come back with its answer");
+        assert_eq!(app.status_message, None, "with its line");
+
+        let report = app.job_for_tests(Job::QualityReport, Some("Writing the report..."));
+        app.status_message = Some(App::COUNTING_FOR_END.to_string());
+        end(
+            &mut app,
+            report,
+            Outcome::Failed {
+                message: "disk full".to_string(),
+                panicked: false,
+            },
+        );
+        assert!(!app.is_busy());
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(App::COUNTING_FOR_END),
+            "a line that is not the job's stays"
         );
 
-        let current = app.lease_for_tests();
-        assert!(app.work_a_bump_would_strand());
-
-        // The abandoned worker finishing does not release the current one.
-        std::mem::forget(old);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
-            generation: leased_on,
-        });
-        assert!(app.work_a_bump_would_strand());
-        std::mem::forget(current);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
-            generation: app.task_generation,
-        });
-        assert!(!app.work_a_bump_would_strand());
+        app.load_active = true;
+        let scan = app.job_for_tests(Job::Load, Some("Scanning input..."));
+        let next = end(
+            &mut app,
+            scan,
+            Outcome::answered(Answer::Scanned {
+                lf: polars::df!("a" => [1i32]).unwrap().lazy(),
+                path: None,
+                options: Box::<OpenOptions>::default(),
+            }),
+        );
+        assert!(matches!(next, Some(AppEvent::DoLoadSchema(..))));
+        assert!(app.is_busy(), "the open's wait goes on into its next phase");
     }
 
-    /// A worker that panics fails its job the way an error would, then returns its
-    /// lease.
-    ///
-    /// The hazard `schema_union::Pass` was built for: a count that never comes back down
-    /// is a permanent "something is waiting", and here that would mean the buffer never
-    /// collects again for the rest of the session. And a panic that only reached the log
-    /// would leave the spinner up with nothing on screen saying why — or, retiring only
-    /// the lease, leave the job's own marker standing: a pivot the form still waits on.
+    /// A job's end leaves the line a job still running shows, even when the two say
+    /// the same: a view's pivot hands "Applying view..." to the read of its rows.
     #[test]
-    fn a_panicking_worker_still_returns_its_lease() {
+    fn a_job_leaves_the_line_another_job_still_shows() {
+        use crate::{Answer, App, AppEvent, Job, Outcome};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let first = app.job_for_tests(Job::QualityReport, Some("Writing the report..."));
+        let second = app.job_for_tests(Job::QualityReport, Some("Writing the report..."));
+        let ticket = first.ticket();
+        first.end(Outcome::answered(Answer::QualityReportWritten(
+            std::path::PathBuf::from("a.json"),
+        )));
+        app.event(&AppEvent::JobEnded(ticket));
+        assert!(app.is_busy(), "the second still holds the keys");
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Writing the report..."),
+            "and its line"
+        );
+        drop(second);
+    }
+
+    /// Going home quiets the read of the first page, and takes its line down with
+    /// the wait: the rows still land, and the bar does not say "Loading buffer..."
+    /// over a table nobody is waiting on.
+    #[test]
+    fn going_home_takes_down_the_line_of_the_rows_it_stops_waiting_on() {
+        use crate::{App, InflightCollect, Job, LoadingState};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.loading_state = LoadingState::Loading {
+            file_path: None,
+            file_size: 0,
+            current_phase: "Loading buffer".to_string(),
+            progress_percent: 70,
+        };
+        let read = app.job_for_tests(
+            Job::Rows(InflightCollect::for_tests(0, 100)),
+            Some(App::LOADING_BUFFER),
+        );
+        assert!(app.is_busy());
+        app.enter_home();
+        assert!(!app.is_busy(), "nobody waits on the rows");
+        assert_eq!(
+            app.status_message, None,
+            "and the bar says nothing about them"
+        );
+        assert!(app.rows_in_flight().is_some(), "though they still land");
+        drop(read);
+    }
+
+    /// A cancelled sample read is a read still going, as a cancelled run is: nothing
+    /// reads beside it until it ends. Work an open replaced is not a cancel, and
+    /// holds nothing up on the next dataset.
+    #[test]
+    fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
         use crate::{App, AppEvent, Job};
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let generation = app.task_generation;
-        app.pivot_generation = Some(generation);
-        app.spawn_bg(Job::Pivot, App::COMPUTING_PIVOT, |_task_gen, _tx| {
-            panic!("worker died")
-        });
-        assert!(app.work_a_bump_would_strand());
-        assert!(app.busy);
-
-        let recv = || {
-            rx.recv_timeout(std::time::Duration::from_secs(10))
-                .expect("the worker reports back even from a panic")
-        };
-        let failed = recv();
+        let sample = app.job_for_tests(Job::SampleRows, Some("Reading the sample..."));
+        app.cancel_analysis();
+        assert!(!app.is_busy());
         assert!(
-            matches!(
-                &failed,
-                AppEvent::BackgroundFailed { generation: g, job: Job::Pivot, message, panicked: true }
-                    if *g == generation && message.contains("worker died")
-            ),
-            "the panic fails the job it stopped, first: {}",
-            describe(&failed)
+            app.cancelled_analysis_running().is_some(),
+            "the cancelled read is still going"
+        );
+        drop(sample);
+        app.event(&recv(&rx));
+        assert!(app.cancelled_analysis_running().is_none(), "until it ends");
+
+        let run = app.job_for_tests(
+            Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Computing statistics..."),
+        );
+        app.jobs.advance();
+        assert!(
+            app.cancelled_analysis_running().is_none(),
+            "replaced, not cancelled"
+        );
+        drop(run);
+        let _ = app.handle(&recv(&rx));
+        assert!(!matches!(rx.try_recv(), Ok(AppEvent::JobEnded(_))));
+    }
+
+    /// A scan from a load the app has moved past is dropped rather than applied: it
+    /// asks for no next phase. What makes leaving a slow load safe: the work keeps
+    /// running (Polars has no cancellation), so the only thing between an abandoned
+    /// load and a clobbered screen is whether its job is current.
+    #[test]
+    fn a_superseded_scan_does_not_continue_the_load() {
+        use crate::{Answer, App, AppEvent, Job, Outcome};
+        use polars::prelude::IntoLazy;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        let scanned = || Answer::Scanned {
+            lf: polars::df!("a" => [1i32]).unwrap().lazy(),
+            path: Some(std::path::PathBuf::from("whatever.parquet")),
+            options: Box::default(),
+        };
+
+        let scan = app.job_for_tests(Job::Load, Some("Scanning input..."));
+        app.jobs.advance();
+        let ticket = scan.ticket();
+        scan.end(Outcome::answered(scanned()));
+        assert!(
+            app.event(&AppEvent::JobEnded(ticket)).is_none(),
+            "a superseded scan must not continue the load pipeline"
+        );
+
+        // The current one does.
+        assert!(matches!(
+            app.answer_for_tests(Job::Load, scanned()),
+            Some(AppEvent::DoLoadSchema(..))
+        ));
+    }
+
+    /// An analysis answer from a run the app has moved past changes nothing on
+    /// screen, whatever the tool: every one of them is judged by its job.
+    #[test]
+    fn stale_analysis_answers_are_ignored() {
+        use crate::data_quality::{DataQualityResults, QualityPrecision};
+        use crate::statistics::AnalysisResults;
+        use crate::{Answer, App, AppEvent, Job, Outcome};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let results = || AnalysisResults {
+            column_statistics: vec![],
+            total_rows: 999_999,
+            sample_size: None,
+            per_value: None,
+            sample_seed: 0,
+            correlation_matrix: None,
+            distribution_analyses: vec![],
+        };
+        let answers = vec![
+            Answer::Described(results()),
+            Answer::Distributions(results()),
+            Answer::Correlations(results()),
+            Answer::DataQuality {
+                results: Box::new(DataQualityResults {
+                    total_rows: Some(999_999),
+                    evaluated_rows: 1,
+                    precision: QualityPrecision::Sampled,
+                    sample_seed: 1,
+                    columns: vec![],
+                    observations: vec![],
+                    segments: vec![],
+                    temporal: vec![],
+                    identity: None,
+                    category_variants: vec![],
+                    shared_nulls: vec![],
+                    source_files: None,
+                    per_value: None,
+                    footers_read: None,
+                    reads: None,
+                    examples: vec![],
+                    unsampled_segments: vec![],
+                    intent: None,
+                    source: None,
+                }),
+                kept: None,
+                plan: Box::default(),
+            },
+        ];
+        app.analysis_modal.active = true;
+        app.analysis_modal.selected_tool = Some(crate::analysis_modal::AnalysisTool::DataQuality);
+        let runs: Vec<_> = answers
+            .iter()
+            .map(|_| {
+                app.job_for_tests(
+                    Job::Analysis(crate::jobs::AnalysisRun::default()),
+                    Some("Computing statistics..."),
+                )
+            })
+            .collect();
+        app.jobs.advance();
+        for (run, answer) in runs.into_iter().zip(answers) {
+            let ticket = run.ticket();
+            run.end(Outcome::answered(answer));
+            app.event(&AppEvent::JobEnded(ticket));
+        }
+        let modal = &app.analysis_modal;
+        assert!(modal.describe_results.is_none());
+        assert!(modal.distribution_results.is_none());
+        assert!(modal.correlation_results.is_none());
+        assert!(modal.data_quality_results.is_none());
+    }
+
+    /// Work a cancel passed holds nothing up. Polars cannot stop the query, so the
+    /// worker runs on; the advance made its answer stale, and the table must not wait
+    /// on it. A job on the new generation still counts, and the old one ending does not
+    /// release it.
+    #[test]
+    fn a_cancelled_job_does_not_hold_the_generation() {
+        use crate::{App, AppEvent, Job};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let old = app.job_for_tests(
+            Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Computing statistics..."),
+        );
+        app.jobs.advance();
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "the abandoned worker is not waited on"
+        );
+        assert!(app.cancelled_work_running(), "though it is still running");
+
+        let current = app.job_for_tests(
+            Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Computing statistics..."),
+        );
+        assert!(app.work_a_bump_would_strand());
+
+        drop(old);
+        let _ = app.handle(&recv(&rx));
+        assert!(
+            app.work_a_bump_would_strand(),
+            "the current job still holds"
+        );
+        assert!(!app.cancelled_work_running());
+        drop(current);
+        let ended = recv(&rx);
+        assert!(matches!(ended, AppEvent::JobEnded(_)));
+        let _ = app.handle(&ended);
+        assert!(!app.work_a_bump_would_strand());
+    }
+
+    /// A worker that panics fails its job the way an error would, in one step: the
+    /// failure is shown, the job's own marker goes, and the generation is free.
+    ///
+    /// The hazard `schema_union::Pass` was built for: a hold that never comes back down
+    /// is a permanent "something is waiting", and here that would mean the buffer never
+    /// collects again for the rest of the session. And a panic that only reached the log
+    /// would leave the spinner up with nothing on screen saying why, or a pivot the form
+    /// still waits on.
+    #[test]
+    fn a_panicking_worker_ends_its_job() {
+        use crate::{App, AppEvent, Job, JobKind};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let generation = app.task_generation();
+        app.input_mode = crate::InputMode::PivotMelt;
+        let ticket = app.spawn_job(
+            Job::Pivot,
+            Some(App::COMPUTING_PIVOT),
+            |_| -> std::result::Result<crate::Answer, String> { panic!("worker died") },
+        );
+        assert!(app.work_a_bump_would_strand());
+        assert!(app.is_busy());
+        assert!(app.pivot_computing(), "the form waits on it");
+
+        let failed = recv(&rx);
+        assert!(
+            matches!(&failed, AppEvent::JobEnded(t) if *t == ticket && t.kind() == JobKind::Pivot),
+            "the panic ends the job it stopped"
         );
         let _ = app.handle(&failed);
-        assert!(!app.busy, "the spinner comes down");
+        assert!(!app.is_busy(), "the spinner comes down");
         assert!(app.status_message.is_none());
         assert!(app.error_modal.active, "and the user is told");
         assert!(
-            app.pivot_generation.is_none(),
-            "the pivot is no longer waited on"
+            app.error_modal.message.contains("worker died"),
+            "{}",
+            app.error_modal.message
         );
-        assert!(
-            app.work_a_bump_would_strand(),
-            "the failure is not the lease: the worker has not let go yet"
-        );
-
-        let finished = recv();
-        assert!(
-            matches!(finished, AppEvent::BackgroundWorkFinished { generation: g } if g == generation)
-        );
-        let _ = app.handle(&finished);
+        assert!(!app.pivot_computing(), "the pivot is no longer waited on");
         assert!(
             !app.work_a_bump_would_strand(),
-            "the generation is free again rather than leased forever"
+            "the generation is free again rather than held forever"
         );
-        assert_eq!(app.task_generation, generation, "and nothing bumped it");
+        assert_eq!(app.task_generation(), generation, "and nothing bumped it");
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(50))
+                .is_err()
+        );
     }
 
     /// Enough of an event to say which it was in a failed assertion.
     fn describe(event: &crate::AppEvent) -> String {
         use crate::AppEvent;
         match event {
-            AppEvent::BackgroundFailed {
-                generation,
-                job,
-                message,
-                panicked,
-            } => format!("BackgroundFailed({generation}, {job:?}, {message:?}, {panicked})"),
-            AppEvent::BackgroundWorkFinished { generation } => {
-                format!("BackgroundWorkFinished({generation})")
-            }
+            AppEvent::JobEnded(ticket) => format!("JobEnded({:?})", ticket.kind()),
             AppEvent::BackgroundLenReady { num_rows, .. } => {
                 format!("BackgroundLenReady({num_rows})")
             }
@@ -6283,160 +6575,155 @@ pub mod tests {
         }
     }
 
-    /// A job that returns an error and one that panics end the same way: one failure
-    /// naming the job, then the lease. Neither reports twice.
+    /// A job that returns an error and one that panics end the same way: one end,
+    /// with the reason shown, and nothing after it.
     #[test]
     fn an_error_and_a_panic_end_a_job_the_same_way() {
         use crate::{App, AppEvent, Job};
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let ending = |app: &mut App| {
-            let mut events = Vec::new();
-            loop {
-                let event = rx
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .expect("the job ends");
-                let finished = matches!(event, AppEvent::BackgroundWorkFinished { .. });
-                let _ = app.handle(&event);
-                events.push(event);
-                if finished {
-                    break;
-                }
-            }
-            // The lease is released last, as the worker's closure is dropped.
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            assert!(rx.try_recv().is_err(), "nothing after the lease");
-            events
-        };
         for (what, dies) in [("returns an error", false), ("panics", true)] {
             app.error_modal.hide();
-            app.spawn_bg(Job::QualityReport, "Writing the report...", move |_, _| {
-                assert!(!dies, "worker died");
-                Err("disk full".to_string())
-            });
-            let events = ending(&mut app);
-            let seen: Vec<_> = events.iter().map(describe).collect();
-            assert_eq!(events.len(), 2, "a job that {what}: {seen:?}");
+            app.spawn_job(
+                Job::QualityReport,
+                Some("Writing the report..."),
+                move |_| {
+                    assert!(!dies, "worker died");
+                    Err::<crate::Answer, _>("disk full".to_string())
+                },
+            );
+            let ended = recv(&rx);
             assert!(
-                matches!(
-                    &events[0],
-                    AppEvent::BackgroundFailed { job: Job::QualityReport, message, .. }
-                        if message.contains(if dies { "worker died" } else { "disk full" })
-                ),
-                "a job that {what}: {seen:?}"
+                matches!(ended, AppEvent::JobEnded(_)),
+                "a job that {what}: {}",
+                describe(&ended)
+            );
+            let _ = app.handle(&ended);
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(50))
+                    .is_err(),
+                "a job that {what} ends once"
             );
             assert!(!app.is_busy(), "a job that {what} is over");
             assert!(app.error_modal.active, "a job that {what} says why");
+            assert!(
+                app.error_modal
+                    .message
+                    .contains(if dies { "worker died" } else { "disk full" }),
+                "a job that {what}: {}",
+                app.error_modal.message
+            );
             assert!(!app.work_a_bump_would_strand());
         }
     }
 
-    /// A failure puts down only what its own job started. One from a job a bump has
-    /// passed, or from another job sharing the generation, leaves the work in flight
-    /// alone: its spinner, its markers, and the screen with no error on it.
+    /// A failure puts down only what its own job started. One from a job that has been
+    /// superseded — by an advance, a newer job of its kind, or the screen it was for
+    /// going away — or from another job sharing the generation, leaves the work in
+    /// flight alone: its spinner, its record, and the screen with no error on it.
     #[test]
     fn a_failure_leaves_other_work_alone() {
         use crate::{
-            AnalysisProgress, App, AppEvent, ChartExportFormat, ClassifyRequest, InflightCollect,
-            Job, LoadingState,
+            AnalysisProgress, App, AppEvent, ChartExportFormat, InflightCollect, Job, LoadingState,
+            Outcome,
         };
         use std::path::PathBuf;
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let fail = |app: &mut App, generation: u64, job: Job| {
-            app.event(&AppEvent::BackgroundFailed {
-                generation,
-                job,
+        let fail = |app: &mut App, job: crate::jobs::Started| {
+            let ticket = job.ticket();
+            job.end(Outcome::Failed {
                 message: "not this one".to_string(),
                 panicked: false,
             });
+            app.event(&AppEvent::JobEnded(ticket));
         };
         let untouched = |app: &App, what: &str| {
             assert!(app.is_busy(), "{what}: still busy");
             assert!(!app.error_modal.active, "{what}: no error shown");
+            assert!(
+                app.jobs
+                    .current(|job| matches!(job, Job::Analysis(_)))
+                    .is_some(),
+                "{what}: the analysis is still waited on"
+            );
         };
+        let analysis = || Job::Analysis(crate::jobs::AnalysisRun::default());
 
-        // An analysis is computing; a load-ahead beside it, on the same generation,
-        // dies. Its own record goes, and nothing else.
-        let current = app.task_generation;
-        app.busy = true;
-        app.analysis_modal.computing = Some(AnalysisProgress::new("Computing statistics"));
-        app.collect_inflight = Some(InflightCollect {
-            began: std::time::Instant::now(),
-            files: None,
-            generation: current,
-            dataset: 0,
-            columns: 0,
-            start: 0,
-            end: 100,
-            waited_on: false,
-        });
-        fail(&mut app, current, Job::Rows);
-        untouched(&app, "a load-ahead");
-        assert!(app.analysis_modal.computing.is_some());
-        assert!(
-            app.collect_inflight.is_none(),
-            "the load-ahead's record goes"
-        );
-
-        // Jobs the analysis's generation does not belong to.
-        let stale = current.wrapping_sub(1);
-        for job in [
-            Job::Analysis,
+        // Jobs on a generation the analysis's has passed.
+        let kinds = [
+            analysis(),
             Job::SampleRows,
             Job::Load,
-            Job::Rows,
+            Job::OpenNamed,
+            Job::Rows(InflightCollect::for_tests(0, 100)),
             Job::Pivot,
-            Job::ViewPivot,
             Job::DrillRow,
+            Job::InspectRow { frame: 0, row: 0 },
             Job::Export,
             Job::Copy,
             Job::QualityReport,
-        ] {
-            fail(&mut app, stale, job.clone());
+        ];
+        let passed: Vec<_> = kinds
+            .iter()
+            .map(|job| app.job_for_tests(job.clone(), Some("Working...")))
+            .collect();
+        app.jobs.advance();
+
+        // An analysis is computing; a load-ahead beside it, on the same generation,
+        // dies. Its own record goes, and nothing else.
+        let running = app.job_for_tests(analysis(), Some("Computing statistics..."));
+        app.analysis_modal.computing = Some(AnalysisProgress::new("Computing statistics"));
+        let ahead = app.job_for_tests(Job::Rows(InflightCollect::for_tests(0, 100)), None);
+        fail(&mut app, ahead);
+        untouched(&app, "a load-ahead");
+        assert!(app.analysis_modal.computing.is_some());
+        assert!(
+            app.rows_in_flight().is_none(),
+            "the load-ahead's record goes"
+        );
+
+        for (job, started) in kinds.iter().zip(passed) {
+            fail(&mut app, started);
             untouched(&app, &format!("{job:?} from a passed generation"));
-            assert!(app.analysis_modal.computing.is_some());
         }
 
-        // A newer look at a path, and the older one's failure.
-        app.classify_inflight = Some(ClassifyRequest {
-            id: 2,
-            path: PathBuf::from("/newer"),
-            browsing: None,
-        });
-        fail(&mut app, current, Job::Classify(1));
+        // An older look at a path, which a newer one superseded.
+        let look = |path: &str| {
+            Job::Classify(crate::jobs::Classify {
+                path: PathBuf::from(path),
+                browsing: None,
+                jump: false,
+            })
+        };
+        let older = app.job_for_tests(look("/older"), None);
+        app.jobs.supersede(|job| matches!(job, Job::Classify(_)));
+        let _newer = app.job_for_tests(look("/newer"), None);
+        fail(&mut app, older);
         untouched(&app, "an older look");
-        assert!(app.classify_inflight.is_some());
 
-        // A newer look at a directory named to open, and the older one's failure.
-        app.looking_at_directory = Some(PathBuf::from("/newer"));
-        fail(
-            &mut app,
-            current,
-            Job::LookAtDirectory(PathBuf::from("/older")),
-        );
+        // The same for a look at a directory named to open.
+        let older = app.job_for_tests(Job::LookAtDirectory(PathBuf::from("/older")), None);
+        app.jobs
+            .supersede(|job| matches!(job, Job::LookAtDirectory(_)));
+        fail(&mut app, older);
         untouched(&app, "an older look at a directory");
-        assert_eq!(
-            app.looking_at_directory.as_deref(),
-            Some(std::path::Path::new("/newer"))
-        );
-        app.looking_at_directory = None;
 
-        // A newer chart export, and the older one's failure.
-        app.chart_export_inflight = Some(8);
-        fail(
-            &mut app,
-            current,
+        // A chart export its dataset's departure superseded.
+        let older = app.job_for_tests(
             Job::ChartExport {
-                generation: 7,
                 path: PathBuf::from("/tmp/old.png"),
                 format: ChartExportFormat::Png,
             },
+            None,
         );
+        app.jobs
+            .supersede(|job| matches!(job, Job::ChartExport { .. }));
+        fail(&mut app, older);
         untouched(&app, "an older chart export");
-        assert_eq!(app.chart_export_inflight, Some(8));
+        assert!(!app.chart_export_modal.active);
 
         // An open is no longer waited on once the user has gone home from it.
         app.awaiting_dataset = false;
@@ -6446,11 +6733,12 @@ pub mod tests {
             current_phase: "Scanning input".to_string(),
             progress_percent: 10,
         };
-        fail(&mut app, current, Job::Load);
+        let open = app.job_for_tests(Job::Load, None);
+        fail(&mut app, open);
         untouched(&app, "an abandoned open");
 
         // And the analysis's own failure ends it.
-        fail(&mut app, current, Job::Analysis);
+        fail(&mut app, running);
         assert!(!app.is_busy());
         assert!(app.analysis_modal.computing.is_none());
         assert!(app.error_modal.active);
@@ -6472,9 +6760,7 @@ pub mod tests {
         let owed = || OwedCount::new(LenCount::for_state(&state), tx.clone());
         let answer = |app: &mut App| {
             app.len_count_inflight = Some(generation);
-            let event = rx
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .expect("the count answers");
+            let event = recv(&rx);
             app.event(&event);
             assert_eq!(
                 app.len_count_inflight, None,
@@ -6508,66 +6794,6 @@ pub mod tests {
             "{}",
             describe(&counted)
         );
-    }
-
-    /// Skipping the lease is a deliberate act rather than an oversight.
-    ///
-    /// Four spawns do. The buffer collect, whose answer is simply asked for again if a
-    /// bump throws it away. The two looks at a path named on the command line —
-    /// whether it is there and a directory, then what the directory holds — whose
-    /// answers are *meant* to be thrown away when the user moves on: leased, the look
-    /// made a seventeen-second wait hold the next dataset's buffer collect behind it,
-    /// after Ctrl+O had been offered as the way out. And the Info panel's file facts,
-    /// whose answer is judged by the dataset, not the generation.
-    ///
-    /// `spawn_bg` leases by construction, so a new kind of gated background work is
-    /// accounted for without anyone remembering to account for it. The two ways around
-    /// it are `spawn_bg_replaceable` and `spawn_bg_inner`, and this counts both, over
-    /// every file in the crate rather than this one — they are private to the crate
-    /// root, which every module below it can reach.
-    ///
-    /// It cannot catch a raw `runtime.spawn_blocking` that captures `task_generation`
-    /// itself. That is a different shape, and the three that exist do not carry a
-    /// generation at all.
-    #[test]
-    fn an_unleased_spawn_is_a_deliberate_act() {
-        // Split so this test's own needles are not among the things it finds.
-        let needles = [
-            (concat!("spawn_bg_", "replaceable("), 4usize),
-            (concat!("spawn_bg_", "inner("), 2usize),
-        ];
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut sources = Vec::new();
-        let mut stack = vec![src];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir)
-                .expect("the crate's own source")
-                .flatten()
-            {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    sources.push(std::fs::read_to_string(&path).expect("a source file"));
-                }
-            }
-        }
-        assert!(sources.len() > 20, "the crate's sources were found");
-
-        for (needle, expected) in needles {
-            let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
-            assert_eq!(
-                found, expected,
-                "`{needle}` appears {found} times, not {expected}. Four spawns skip the \
-                 lease on purpose: the buffer collect, whose answer is asked for again \
-                 if a bump throws it away; the two looks at a path named on the \
-                 command line (is it there, is it a directory; then what the directory \
-                 holds), whose answers are meant to be thrown away; and the Info \
-                 panel's file facts, whose answer is judged by the dataset, not the \
-                 generation. Anything else that skips it can be stranded by a bump, \
-                 silently. See GenerationLease."
-            );
-        }
     }
 
     /// A handler returning a continuation does not let the errands behind it in.
@@ -6608,7 +6834,7 @@ pub mod tests {
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
 
         // A collect owed to the dataset on screen, waiting for the generation to be free.
-        app.collect_owed = Some((app.dataset_generation, "Loading buffer...".to_string()));
+        app.owe_rows_for_tests("Loading buffer...");
         assert!(
             !app.work_a_bump_would_strand(),
             "nothing holds the generation: the errand would go in on the next event"
@@ -6620,7 +6846,7 @@ pub mod tests {
             .expect("the open is not a key");
         assert!(out.is_some(), "the open returned a continuation");
         assert!(
-            app.collect_owed.is_some(),
+            app.rows_owed(),
             "the collect is still owed rather than run: running it here would bump the \
              generation the open has just taken for its scan"
         );
@@ -6635,7 +6861,7 @@ pub mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn a_download_waiting_on_the_user_holds_the_generation() {
-        use crate::{App, AppEvent, OpenOptions, PendingDownload};
+        use crate::{Answer, App, Job, OpenOptions, PendingDownload};
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let (tx, _rx) = std::sync::mpsc::channel();
@@ -6649,10 +6875,7 @@ pub mod tests {
             size: Some(1024),
             options: OpenOptions::default(),
         };
-        let _ = app.handle(&AppEvent::BackgroundRemoteSizeReady {
-            generation: app.task_generation(),
-            pending: Box::new(pending),
-        });
+        let _ = app.answer_for_tests(Job::Load, Answer::RemoteSize(Box::new(pending)));
 
         assert!(app.confirmation_modal.active, "the user is being asked");
         assert!(
@@ -6662,9 +6885,6 @@ pub mod tests {
 
         // Declining puts the errand down, and the generation with it.
         let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
-            generation: app.task_generation(),
-        });
         assert!(
             !app.work_a_bump_would_strand(),
             "nothing waits on it once the download is declined"
@@ -6721,7 +6941,7 @@ pub mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn the_download_confirmation_is_not_busy() {
-        use crate::{App, AppEvent, OpenOptions, PendingDownload};
+        use crate::{App, AppEvent, OpenOptions};
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         use ratatui::widgets::Widget;
@@ -6739,10 +6959,10 @@ pub mod tests {
                 .any(|frame| text.contains(frame))
         };
 
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        // Nothing listens on the discard port: the probe fails fast, and its answer
-        // goes to a channel nobody reads.
+        // Nothing listens on the discard port: the probe fails fast, and answers that
+        // the size is unknown.
         let url = "http://127.0.0.1:9/flights.parquet";
         let mut next = Some(AppEvent::Open(
             vec![std::path::PathBuf::from(url)],
@@ -6757,14 +6977,11 @@ pub mod tests {
         assert!(bar.contains("Checking size"), "the probe is named: {bar}");
         assert!(!bar.contains("Scanning"), "nothing is scanned yet: {bar}");
 
-        let _ = app.handle(&AppEvent::BackgroundRemoteSizeReady {
-            generation: app.task_generation(),
-            pending: Box::new(PendingDownload::Http {
-                url: url.to_string(),
-                size: Some(33 * 1024 * 1024),
-                options: OpenOptions::default(),
-            }),
-        });
+        let answered = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the probe answers");
+        assert!(matches!(answered, AppEvent::JobEnded(_)));
+        let _ = app.handle(&answered);
 
         assert!(
             app.awaiting_download_confirmation(),
@@ -7092,7 +7309,7 @@ pub mod tests {
         assert_eq!(app.end_after_count, Some(waiting));
 
         // Meanwhile the user opens something else, which is waiting on this generation.
-        let lease = app.lease_for_tests();
+        let lease = app.hold_the_generation();
         let opening = app.task_generation();
 
         // And the count lands.
@@ -7111,17 +7328,15 @@ pub mod tests {
             "the open is still waiting on the generation the jump would have bumped"
         );
         assert!(
-            app.collect_owed.is_some(),
+            app.rows_owed(),
             "and the jump's collect is owed rather than dropped"
         );
 
         // The open finishes, and the jump gets its turn.
         drop(lease);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
-            generation: app.task_generation(),
-        });
+        let _ = app.handle(&AppEvent::Update);
         assert!(
-            app.collect_owed.is_none(),
+            !app.rows_owed(),
             "the collect the jump asked for runs once nothing is waiting"
         );
         assert_ne!(
@@ -7191,7 +7406,7 @@ pub mod tests {
             current_phase: "Collecting".to_string(),
             written: None,
         };
-        let _lease = app.lease_for_tests();
+        let _lease = app.hold_the_generation();
         let live = app.dataset_generation;
         App::record_footers(&app.pending_footers_result, live, None);
         let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
@@ -7396,7 +7611,7 @@ pub mod tests {
             current_phase: "Collecting".to_string(),
             written: None,
         };
-        let lease = app.lease_for_tests();
+        let lease = app.hold_the_generation();
         let waiting_on = app.task_generation();
 
         // The pass comes back empty-handed for the dataset on screen.
@@ -7418,9 +7633,7 @@ pub mod tests {
         // The export finishes, and the errand gets its turn on the next event.
         app.loading_state = LoadingState::Idle;
         drop(lease);
-        let _ = app.handle(&AppEvent::BackgroundWorkFinished {
-            generation: app.task_generation(),
-        });
+        let _ = app.handle(&AppEvent::Update);
         let _ = app.handle(&AppEvent::Update);
 
         assert!(
@@ -7446,7 +7659,7 @@ pub mod tests {
     #[test]
     fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         use crate::widgets::datatable::{DataTableState, FootersFound};
-        use crate::{App, AppEvent, GenerationLease, OpenOptions};
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -7482,10 +7695,10 @@ pub mod tests {
         // longer a list of the kinds that happen to exist today. The chart is here
         // beside it because it is the one that a bump would *not* strand: it is
         // prepared against the frame, and the join takes a fresh one of those too.
-        type Start = fn(&mut App) -> Option<GenerationLease>;
+        type Start = fn(&mut App) -> Option<crate::jobs::Hold>;
         let under_way: Vec<(&str, Start)> = vec![
             ("leased background work", |app: &mut App| {
-                Some(app.lease_for_tests())
+                Some(app.hold_the_generation())
             }),
             ("a chart", |app: &mut App| {
                 app.chart_inflight = Some(crate::ChartInflight {
@@ -7500,13 +7713,10 @@ pub mod tests {
                 None
             }),
         ];
-        let put_away = |app: &mut App, lease: Option<GenerationLease>| {
-            // The lease is released by dropping it, which sends the event the count is
-            // decremented by — behind whatever result the work had already sent.
+        let put_away = |app: &mut App, lease: Option<crate::jobs::Hold>| {
+            // The hold is released by dropping it; the event after it lets the errands in.
             drop(lease);
-            let _ = app.handle(&AppEvent::BackgroundWorkFinished {
-                generation: app.task_generation(),
-            });
+            let _ = app.handle(&AppEvent::Update);
             app.chart_inflight = None;
         };
 
@@ -7974,14 +8184,15 @@ pub mod tests {
         app.abandon_load();
         // The re-read runs off this thread and would count too, as soon as it runs. It
         // dies before it reads, so what is counted below is this thread's alone.
-        app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::Rows);
+        app.jobs.worker_dies =
+            crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Rows(_)));
         let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
         // Read again, not asked to be read again. The join drops the buffer, so a
         // request that goes on to be ignored — as a step of the open's chain is, once
         // the load is over — leaves the table with nothing to show at the moment it was
         // to show more.
         assert!(
-            app.collect_inflight.is_some(),
+            app.rows_in_flight().is_some(),
             "the rows on screen were read through the narrow frame and are read again"
         );
         assert_eq!(
@@ -8400,21 +8611,13 @@ pub enum AppEvent {
     /// the app: `run` waits for it before there is one.
     SettingsRead(Box<Result<startup::Settings>>),
     /// The paths named on the command line or by the Python binding: whether each is
-    /// there and whether one is a directory is asked on a worker, a local-looking
-    /// path being no promise of a fast mount. Answered by `NamedPathsResolved`, or by
-    /// `NamedPathMissing`, which ends the session as a missing file always has.
+    /// there and whether one is a directory is asked on a worker
+    /// ([`JobKind::OpenNamed`]), a local-looking path being no promise of a fast
+    /// mount.
     OpenNamed(Vec<PathBuf>, OpenOptions),
-    NamedPathsResolved {
-        generation: u64,
-        paths: Vec<PathBuf>,
-        options: Box<OpenOptions>,
-        /// The one directory named, to be looked at before it is opened.
-        directory: Option<PathBuf>,
-    },
-    NamedPathMissing {
-        generation: u64,
-        path: PathBuf,
-    },
+    /// A path named on the command line is not there: the session ends as a missing
+    /// file always has. The continuation of the look's answer.
+    NamedPathMissing(PathBuf),
     Open(Vec<PathBuf>, OpenOptions),
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
@@ -8542,12 +8745,6 @@ pub enum AppEvent {
         root: PathBuf,
         message: String,
     },
-    /// Background scan finished; the LazyFrame is waiting in `pending_lazyframe_result`.
-    BackgroundLazyFrameReady {
-        generation: u64,
-        path: Option<PathBuf>,
-        options: OpenOptions,
-    },
     /// Update phase to "Caching schema" and emit DoLoadSchemaBlocking so UI can draw before blocking.
     DoLoadSchema(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
     /// Actually run collect_schema() and create state; then emit DoLoadBuffer (phased loading).
@@ -8573,32 +8770,12 @@ pub enum AppEvent {
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
     Pivot(PivotSpec),
-    /// A pivot, read off the UI thread. A failure is [`Job::Pivot`]'s.
-    PivotReady {
-        generation: u64,
-        spec: PivotSpec,
-        pivoted: DataFrame,
-    },
-    /// A view's pivot, read off the UI thread. A failure is [`Job::ViewPivot`]'s.
-    ViewPivotReady {
-        generation: u64,
-        pivoted: DataFrame,
-    },
     Melt(MeltSpec),
     Export(ExportRequest),
     /// Collect and format the whole view off-thread for a table-scope copy.
     CopyTable {
         format: crate::clipboard::CopyFormat,
         header: bool,
-    },
-    /// A table-scope copy, collected and formatted; the write happens on the
-    /// event thread, which owns the clipboard handle. The payload is taken out
-    /// and handed on whole, never copied.
-    BackgroundCopyReady {
-        generation: u64,
-        payload: std::sync::Mutex<Option<crate::clipboard::Payload>>,
-        /// The flash that says what was copied.
-        message: String,
     },
     ChartExport(ChartExportRequest),
     /// Deferred: run the chart export once its phase is drawn.
@@ -8624,41 +8801,6 @@ pub enum AppEvent {
     AnalysisCorrelationCompute,
     /// Run the configured data-quality plan off the UI thread.
     AnalysisDataQualityCompute,
-    /// Background task completed: the shared sample's rows, to show as a table.
-    BackgroundSampleReady {
-        generation: u64,
-        df: polars::prelude::DataFrame,
-        label: String,
-    },
-    /// Background task completed: describe/statistics results.
-    BackgroundDescribeReady {
-        generation: u64,
-        results: crate::statistics::AnalysisResults,
-    },
-    /// Background task completed: distribution analysis results.
-    BackgroundDistributionReady {
-        generation: u64,
-        results: crate::statistics::AnalysisResults,
-    },
-    /// Background task completed: correlation matrix results.
-    BackgroundCorrelationReady {
-        generation: u64,
-        results: crate::statistics::AnalysisResults,
-    },
-    /// Background task completed: data-quality profile.
-    BackgroundDataQualityReady {
-        generation: u64,
-        results: Box<crate::data_quality::DataQualityResults>,
-        /// The rows a sampled run read, for the next run and drill to cut.
-        kept: Option<KeptQualitySample>,
-        /// The plan the run was dispatched with: what the results are labeled with.
-        plan: Box<crate::data_quality::DataQualityPlan>,
-    },
-    /// A Data Quality run entered a stage.
-    BackgroundQualityPhase {
-        generation: u64,
-        phase: crate::data_quality::QualityPhase,
-    },
     /// A Data Quality run that stopped short had already read its sample: kept, so
     /// the read it paid for is not thrown away.
     BackgroundQualitySampleKept {
@@ -8670,20 +8812,6 @@ pub enum AppEvent {
     BackgroundQualityCopyKept {
         dataset_generation: u64,
         copy: Option<Arc<crate::local_copy::LocalCopy>>,
-    },
-    /// Background task completed: buffer data collected.
-    /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
-    BackgroundCollectReady {
-        generation: u64,
-    },
-    /// A buffer collect failed. Shown as an error when something waited
-    /// on it; a load-ahead's failure is left for the page that needs those rows.
-    BackgroundCollectFailed {
-        generation: u64,
-        message: String,
-        /// A value that would not convert, when that is what failed, for the SQL
-        /// prompt to say in its own words.
-        conversion: Option<Box<crate::error_display::ConversionFailure>>,
     },
     /// Background task completed: exact row count for the current LazyFrame. Applied to
     /// `data_table_state` only if `len_generation` still matches (the data is unchanged).
@@ -8710,14 +8838,6 @@ pub enum AppEvent {
     BackgroundFootersJoined {
         generation: u64,
     },
-    /// Background task completed: schema loaded and DataTableState constructed.
-    /// The actual state is stored in App::pending_schema_result (to avoid cloning DataTableState).
-    BackgroundSchemaReady {
-        generation: u64,
-        path: Option<PathBuf>,
-        options: OpenOptions,
-        debug_label: Option<String>,
-    },
     /// Background task completed: chart data for one selection is prepared. The data is
     /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
     /// whether it is still wanted.
@@ -8725,63 +8845,6 @@ pub enum AppEvent {
     /// Write the Data Quality report on screen to a file, in a form. From the
     /// results in memory: nothing is read.
     QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
-    /// Background task completed: the Data Quality report written to disk.
-    BackgroundQualityReportWritten {
-        generation: u64,
-        path: PathBuf,
-    },
-    /// Background task completed: chart written to disk. `generation` is the chart
-    /// export's own, not `task_generation`.
-    BackgroundChartExportWritten {
-        generation: u64,
-        path: PathBuf,
-        format: ChartExportFormat,
-    },
-    /// A running export has written `bytes` of its file.
-    BackgroundExportWriting {
-        generation: u64,
-        phase: &'static str,
-        bytes: u64,
-    },
-    /// Background task completed: file written to disk.
-    BackgroundExportWritten {
-        generation: u64,
-        path: PathBuf,
-    },
-    /// Background task completed: the remote file's size is known, so the download can
-    /// be put to the user. The probe is a network round trip and the HTTP one waits up
-    /// to fifteen seconds, so it cannot be done on the event thread.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    BackgroundRemoteSizeReady {
-        generation: u64,
-        pending: Box<PendingDownload>,
-    },
-    /// Background task completed: remote file downloaded to a temp file. The event
-    /// holds the file, so one dropped unhandled (stale, or never delivered) removes it.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    BackgroundDownloadReady {
-        generation: u64,
-        download: crate::download::TempDownload,
-        options: OpenOptions,
-    },
-    /// A background operation did not finish: its worker returned an error or panicked.
-    /// Sent once, by `App::spawn_bg`, ahead of the lease's `BackgroundWorkFinished`.
-    /// `job` and `generation` together say which operation it was, and only what that
-    /// operation started is put down.
-    BackgroundFailed {
-        generation: u64,
-        job: Job,
-        message: String,
-        /// The worker panicked: `message` is an internal error naming the log, which
-        /// holds the details, rather than a reason the user can act on.
-        panicked: bool,
-    },
-    /// A [`GenerationLease`] was released: the work holding it has finished, however it
-    /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
-    /// work sent first.
-    BackgroundWorkFinished {
-        generation: u64,
-    },
     /// A directory named on the command line: look at it on a worker, then do with it
     /// whatever `Enter` on its row would do.
     ///
@@ -8790,16 +8853,6 @@ pub enum AppEvent {
     /// is drawn before it starts, and the wait has the directory's name on it, a spinner
     /// and a way out.
     LookThenOpenDirectory(PathBuf, OpenOptions),
-    /// What the look found, back from the worker.
-    DirectoryLookedAt {
-        generation: u64,
-        path: PathBuf,
-        kind: discover::EntryKind,
-        /// What a cloud directory's listing found, which picks its reader. `None` for a
-        /// local directory, and for a cloud one whose listing was refused.
-        holds: Option<Box<discover::Holds>>,
-        options: Box<OpenOptions>,
-    },
     /// Look at a path off the interface thread, then do with it whatever it turns out to
     /// need — browse into it, say it is a lake table, or open it.
     ///
@@ -8813,38 +8866,12 @@ pub enum AppEvent {
         /// happens to sit.
         jump: bool,
     },
-    /// The row of a grouped view that Enter drills into, read off the UI thread because
-    /// the buffer did not hold it. A failure is [`Job::DrillRow`]'s.
-    DrillRowRead {
-        generation: u64,
-        group_index: usize,
-        row: DataFrame,
-    },
-    /// The inspector's fields the buffer does not hold, read for row `row` of frame
-    /// `frame`. A failure is [`Job::InspectRow`]'s.
-    InspectorFieldsRead {
-        generation: u64,
-        frame: u64,
-        row: usize,
-        values: DataFrame,
-    },
-    /// What the Info panel's worker read about the open file. A failure is
-    /// [`Job::FileFacts`]'s.
-    FileFactsRead {
-        /// The `dataset_generation` it was read for. A newer dataset makes it stale.
-        dataset: u64,
-        facts: FileFacts,
-    },
-    /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
-    /// there.
-    BackgroundKindReady {
-        generation: u64,
-        /// Which look this answers. A newer one replaces it, and the older answer is then
-        /// not the one the user is waiting for — nor the owner of the busy state.
-        request: u64,
-        path: PathBuf,
-        found: Option<discover::EntryKind>,
-        jump: bool,
+    /// A background job's outcome is in its record: [`jobs::Jobs::end`] takes it.
+    JobEnded(Ticket),
+    /// A report from a background job still running.
+    JobProgress {
+        ticket: Ticket,
+        progress: Progress,
     },
 }
 
@@ -8858,84 +8885,13 @@ impl AppEvent {
                 | AppEvent::HomeClassified { done: false, .. }
                 | AppEvent::HomeSearchBatch { .. }
                 | AppEvent::HomeProbeProgress { .. }
-                | AppEvent::BackgroundQualityPhase { .. }
+                | AppEvent::JobProgress {
+                    progress: Progress::QualityPhase(_),
+                    ..
+                }
         )
     }
 }
-
-/// A look at a path that is out on a worker, and what would make its answer stale.
-///
-/// `browsing` rather than `home_generation`: the question is whether the user is still
-/// where they asked from, and the listing is rebuilt for reasons that are nothing to do
-/// with them — a probe of some other root answering is enough. Gating on that made Enter
-/// on a share row do nothing, at random.
-struct ClassifyRequest {
-    id: u64,
-    path: PathBuf,
-    /// Where the home screen was pointed when the look was asked for.
-    browsing: Option<PathBuf>,
-}
-
-/// A background operation, named where `App::spawn_bg` starts it.
-///
-/// A worker ends one of three ways: it sends its result, it returns an error, or it
-/// panics. The last two reach the app as one [`AppEvent::BackgroundFailed`] carrying
-/// this and the `task_generation` it was spawned on, and `App::background_failed`
-/// puts down only what this operation started. A generation alone could not say that:
-/// work that does not bump it shares it with whatever else is running, and a failure
-/// judged by it alone took down a load-ahead's neighbours, or left the operation's own
-/// markers set (#455).
-///
-/// The fields are what tells this operation from a newer one of the same kind where
-/// the generation cannot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Job {
-    /// A phase of an open before its first rows: the size probe, a download, the scan,
-    /// a decompression, the schema.
-    Load,
-    /// The look at a directory named on the command line, before it is opened.
-    LookAtDirectory(PathBuf),
-    /// A look at a path chosen on the home screen, by request.
-    Classify(u64),
-    /// The table's rows: a page the table waits on, or a load-ahead. Its read failing
-    /// is [`AppEvent::BackgroundCollectFailed`], which carries what would not convert;
-    /// this is for a worker that panicked.
-    Rows,
-    /// An Analysis tool's computation.
-    Analysis,
-    /// The sample, or the rows behind a finding, read to show as a table.
-    SampleRows,
-    /// A pivot from the Pivot & Melt form.
-    Pivot,
-    /// A view's pivot, read before the view's rows.
-    ViewPivot,
-    /// The group row Enter drills into, when the buffer did not hold it.
-    DrillRow,
-    /// The inspector's fields of one row that the buffer does not hold: row `row` of
-    /// frame `frame`.
-    InspectRow { frame: u64, row: usize },
-    /// An export: collecting the rows, then writing them.
-    Export,
-    /// Collecting and formatting the view for a copy.
-    Copy,
-    /// Writing the Data Quality report.
-    QualityReport,
-    /// Reading the open file's size and footer for the Info panel. `dataset` is the
-    /// `dataset_generation` it was read for: the generation does not tell one dataset's
-    /// read from the next.
-    FileFacts { dataset: u64 },
-    /// Writing a chart. `generation` is `chart_export_generation`'s; the path and
-    /// format reopen the form on a failure.
-    ChartExport {
-        generation: u64,
-        path: PathBuf,
-        format: ChartExportFormat,
-    },
-}
-
-/// Picks the spawned jobs that panic before their work starts; see `App::worker_dies`.
-#[cfg(test)]
-type WorkerDies = Box<dyn FnMut(&Job) -> bool + Send>;
 
 /// Picks the home-screen workers that panic before their work starts, by the answer
 /// they would owe; see `App::home_worker_dies`.
@@ -8946,66 +8902,6 @@ type HomeWorkerDies = Box<dyn FnMut(&AppEvent) -> bool + Send>;
 #[cfg(test)]
 type FileFactsReader =
     Arc<dyn Fn(&Path, bool) -> std::result::Result<FileFacts, String> + Send + Sync>;
-
-/// A lease on the current `task_generation`, held by background work whose answer
-/// arrives once.
-///
-/// `task_generation` is the token `BackgroundSchemaReady`, `BackgroundExportWriting`,
-/// `BackgroundExportWritten`, the three analysis results, `BackgroundLazyFrameReady`,
-/// `BackgroundRemoteSizeReady`, `BackgroundDownloadReady` and `BackgroundFailed` are all
-/// gated on. Bumping it while one is in flight throws that answer away when it arrives,
-/// silently, and nothing asks again: an export that never writes its file, an analysis
-/// left on its spinner, a dataset that never opens. So the bump waits for the lease.
-///
-/// Counted rather than enumerated. The predicate this replaced listed the kinds of work
-/// that might be running, and was found short by one entry in three consecutive review
-/// rounds; a lease is taken by [`App::spawn_bg`] itself, so the next kind of background
-/// work is covered without anyone remembering to add it.
-///
-/// Released by `Drop`, which sends an event rather than touching the count directly: the
-/// count lives on `App`, the lease lives on a worker thread, and the event is queued
-/// behind the result that worker just sent — so the handler that consumes the result has
-/// already run by the time the lease is retired. A worker that panics unwinds through
-/// the same `Drop`, so a permanent "something is waiting" cannot be stranded that way.
-/// The other side of that order: for an event, a job that has answered still holds the
-/// generation, with `busy` already down. Released first, the count would dip to zero
-/// between two phases of one errand, which is #221 again. So whatever a held lease
-/// turns away is asked again after the release, as `collect_owed` is, rather than
-/// marked done (#490).
-/// Retiring the lease is not finishing the operation: it says the generation is free,
-/// and nothing about the operation's own state. That is `BackgroundFailed`'s, which a
-/// panic sends first.
-/// This is [`crate::schema_union::Pass`]'s trick, for a count on the other side of a
-/// channel.
-///
-/// One worker, though, not one errand. An errand of several phases hands off through the
-/// event queue and holds no lease for an event at a time, so two other things take one:
-/// [`crate::event_pump::EventPump`] while it holds a continuation it has not dispatched,
-/// and `pending_download` while the confirmation modal waits on the user. Between them
-/// the count covers a whole errand, which is what lets the predicate be only the count —
-/// with one exception. `reread_after_the_footers_joined` sends its jump straight to the
-/// channel, unleased, and that is safe only because both its callers have already checked
-/// that nothing is waiting on the generation. A fourth handoff added that way would not
-/// be.
-///
-/// A worker that never returns at all — a `hard` NFS mount, a wedged object-store read —
-/// never drops its lease; that thread already leaves `busy` set for the session, so the
-/// app is wedged with or without this, but the count does not rescue it.
-struct GenerationLease {
-    events: Sender<AppEvent>,
-    /// The generation it was taken on. Work on an older one was cancelled by the bump
-    /// that passed it, and its answer will be dropped, so it holds nothing up.
-    generation: u64,
-}
-
-impl Drop for GenerationLease {
-    fn drop(&mut self) {
-        // Nobody to tell means the app is gone, and so is the count.
-        let _ = self.events.send(AppEvent::BackgroundWorkFinished {
-            generation: self.generation,
-        });
-    }
-}
 
 /// What [`App::handle`] did with an event: `Ok` carries the follow-up event to send,
 /// if any; `Err` returns a key that arrived while the app was busy. Nothing was done
@@ -9412,13 +9308,6 @@ fn active_query_settings(
     } else {
         (None, None, None)
     }
-}
-
-/// A view waiting on its pivot, read in the background. Nothing on screen has changed
-/// yet: when the pivot is in, the view's steps are planned again around it.
-struct PendingView {
-    generation: u64,
-    template: Template,
 }
 
 /// How far planning a view's steps got.
@@ -9937,27 +9826,26 @@ pub(crate) struct ChartCacheXY {
 /// The first frame after a load sets `visible_rows` and asks for a recollect while the
 /// pre-frame collect is still running; on an object store that restarted the same
 /// row-group download. A collect that already covers the view is left to land instead,
-/// provided nothing has moved underneath it: the frame generation must still be the
-/// one it was spawned under, and so must the data (`len_generation` changes with every
-/// change to `lf`, so a filter applied while it runs plans a fresh collect).
-#[derive(Clone, Copy)]
+/// provided nothing has moved underneath it: its job must still be current, and the
+/// data the one it was spawned for (`len_generation` changes with every change to
+/// `lf`, so a filter applied while it runs plans a fresh collect).
+///
+/// The payload of [`Job::Rows`]. Whether anyone waits on it is the job's keys: a
+/// load-ahead starts with nobody waiting, and a scroll that finds its rows already on
+/// the way waits on it from then.
+#[derive(Debug, Clone, Copy)]
 struct InflightCollect {
     /// When the request went out, and how many of the dataset's files it will read, for
     /// the Last page measurement. `files` is `None` where Polars was handed the whole
     /// scan and reads what it decides to.
     began: std::time::Instant,
     files: Option<usize>,
-    generation: u64,
     dataset: u64,
     /// The columns it reads ([`Self::columns_of`]). A new column order is the same
     /// frame read through another projection, so these rows do not serve it.
     columns: u64,
     start: usize,
     end: usize,
-    /// Whether anything waits on it. A load-ahead starts with nobody waiting: it sets no
-    /// `busy`, says nothing, and its end touches neither. A scroll that finds its rows
-    /// already on the way waits on it from then, and it ends like any collect.
-    waited_on: bool,
 }
 
 impl InflightCollect {
@@ -9969,7 +9857,20 @@ impl InflightCollect {
         hasher.finish()
     }
 
-    fn covers(&self, generation: u64, state: &DataTableState) -> bool {
+    /// A read of rows `start..end` of no data in particular, for tests.
+    #[cfg(test)]
+    fn for_tests(start: usize, end: usize) -> Self {
+        Self {
+            began: std::time::Instant::now(),
+            files: None,
+            dataset: 0,
+            columns: 0,
+            start,
+            end,
+        }
+    }
+
+    fn covers(&self, state: &DataTableState) -> bool {
         // The view ends at the data when there is less than a screen of it.
         let bound = state.num_rows_if_valid().unwrap_or(usize::MAX);
         let view_end = (state.start_row() + state.visible_rows).min(bound);
@@ -9980,8 +9881,7 @@ impl InflightCollect {
             start = start.min(held_start);
             end = end.max(held_end);
         }
-        self.generation == generation
-            && self.dataset == state.len_generation()
+        self.dataset == state.len_generation()
             && self.columns == Self::columns_of(state)
             && start <= state.start_row()
             && view_end <= end
@@ -10188,8 +10088,8 @@ impl Drop for OwedCount {
 /// session: a listing that says "Looking..." over nothing, a search that never ends,
 /// a root never probed again.
 ///
-/// Not `spawn_bg`: these are keyed by place and `home_generation`, take no lease and
-/// set no `busy`. The panic itself is left to the hook, which logs it and has
+/// Not a [`jobs::Jobs`] job: these are keyed by place and `home_generation`, take no
+/// lease and hold no keys. The panic itself is left to the hook, which logs it and has
 /// `flash_background_panic` say so.
 struct OwedAnswer {
     tx: Sender<AppEvent>,
@@ -10333,26 +10233,6 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
-    /// The look a `ClassifyThenOpen` has out, if any. Every key acts on the home screen
-    /// even while `busy` — `hard_escape_while_busy` says so there — so a second Enter is
-    /// reachable, and the newer look replaces the older: its answer is the one the user
-    /// is waiting for. See [`ClassifyRequest`].
-    classify_inflight: Option<ClassifyRequest>,
-    /// Ids for those, so a superseded answer can be told from the one being waited on.
-    classify_requests: u64,
-    /// The directory a `LookThenOpenDirectory` is being looked at, if any.
-    ///
-    /// The look takes seconds on a directory of large Parquet, and Ctrl+O works
-    /// throughout — that is the point of it being off the startup thread — so the user
-    /// can be somewhere else by the time it answers. `abandon_load` puts it down with
-    /// everything else that belonged to the screen being left, and an answer that finds
-    /// nothing outstanding touches nothing. Without it the look landed seventeen seconds
-    /// later and took the user off the home screen they had chosen.
-    ///
-    /// Its own field rather than `task_generation`, which `abandon_load` deliberately
-    /// does not bump: a load abandoned is not a newer load, and bumping it there would
-    /// discard answers that other waiting work still wants.
-    looking_at_directory: Option<PathBuf>,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -10365,8 +10245,9 @@ pub struct App {
     events: Sender<AppEvent>,
     debug: DebugState,
     pub info_modal: InfoModal,
-    /// What the Info panel knows about the open file, and the `dataset_generation` it
-    /// belongs to. Asked for when the panel opens, read on a worker, and kept for the
+    /// What the Info panel's read found about the open file, and the
+    /// `dataset_generation` it belongs to. Asked for when the panel opens, read on a
+    /// worker ([`Job::FileFacts`], whose record says it is reading), and kept for the
     /// dataset however the read ended, so neither drawing nor reopening reads again.
     file_facts: Option<(u64, FileFacts)>,
     // One input per query mode, each with its own history. The history ids
@@ -10426,19 +10307,6 @@ pub struct App {
     /// The table an analysis drill left behind: Data Quality's matching rows or the
     /// sample's, shown in its place until Esc brings it back.
     quality_evidence_return: Option<Box<DataTableState>>,
-    /// The shared sample is being read to show as a table; a cancel leaves the tool
-    /// on screen as it was.
-    reading_sample: bool,
-    /// The generation a pivot from the modal was read under, while it is read.
-    pivot_generation: Option<u64>,
-    /// A view being applied whose pivot is still being read.
-    view_pivot: Option<PendingView>,
-    /// The Data Quality run in flight's line to its worker: Esc stops it through this.
-    quality_watch: Option<data_quality::QualityWatch>,
-    /// An analysis Esc cancelled, whose worker may still be reading: its generation,
-    /// when the cancel came, and whether it came during a read nothing can stop.
-    /// See [`App::cancelled_analysis_running`].
-    analysis_cancelled: Option<(u64, std::time::Instant, bool)>,
     pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
@@ -10459,11 +10327,6 @@ pub struct App {
     /// `busy`: the sidebar stays live while the data is computed, and the newest
     /// selection is prepared once this one lands.
     chart_inflight: Option<ChartInflight>,
-    /// Generation and in-flight marker of the chart export write. Separate from
-    /// `task_generation`, which going home deliberately leaves alone (it also gates
-    /// data exports and analysis); leaving the dataset drops this one instead.
-    chart_export_generation: u64,
-    chart_export_inflight: Option<u64>,
     /// The result of the background chart preparation, like `pending_collect_result`:
     /// the data stays out of the event.
     pending_chart_result: ChartResultSlot,
@@ -10481,13 +10344,13 @@ pub struct App {
     /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation.
     /// Size is from HEAD when available.
     ///
-    /// Carries a [`GenerationLease`], because this is the one errand that waits on
-    /// neither a worker nor a continuation: nothing is running, the open is very much
+    /// Carries a [`jobs::Hold`], because this is the one errand that waits on neither
+    /// a worker nor a continuation: nothing is running, the open is very much
     /// unfinished, and the wait is as long as the user takes. Paired with the download
     /// rather than kept beside it, so the two cannot drift — every path out of the modal
-    /// takes the download, and the lease goes with it.
+    /// takes the download, and the hold goes with it.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    pending_download: Option<(PendingDownload, GenerationLease)>,
+    pending_download: Option<(PendingDownload, jobs::Hold)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
@@ -10505,11 +10368,13 @@ pub struct App {
     // Resolved display-time number formatting. `enabled` is flipped by the F key.
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
-    task_generation: u64,            // Incremented to invalidate stale background results
+    /// Every general background operation, and the generation their answers are judged
+    /// by. See [`jobs`].
+    jobs: Jobs,
     /// True while the load started by the most recent `Open`/`OpenLazyFrame` is still
     /// wanted. Going home clears it, which is what abandons an in-flight load: the
     /// remaining `Do*` chain events and the results that would install a dataset all
-    /// check this and bail. Deliberately separate from `task_generation`, which also
+    /// check this and bail. Deliberately separate from the jobs' generation, which also
     /// gates analysis and export results — going home must not cancel an export.
     load_active: bool,
     /// True from the moment a load starts until it installs its dataset, fails, or is
@@ -10536,9 +10401,6 @@ pub struct App {
     downloaded_from: Option<PathBuf>,
     /// Where the last load-ahead was asked from. See [`App::load_ahead`].
     loaded_ahead_from: Option<(u64, usize, usize, usize)>,
-    /// LazyFrame produced by a background scan, tagged with the generation that
-    /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
-    pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
     // the (potentially minutes-long) count on every scroll while it's still running.
     len_count_inflight: Option<u64>,
@@ -10557,14 +10419,11 @@ pub struct App {
     /// End was pressed on a remote dataset before its rows were counted: go there when
     /// the count for this generation arrives, rather than to a guess.
     end_after_count: Option<u64>,
-    /// The buffer collect in flight, if any. See [`InflightCollect`].
-    collect_inflight: Option<InflightCollect>,
-    pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
-    /// What the pass behind a staged open found, for the frame that applies it. Mirrors
-    /// `pending_schema_result`: large enough to be worth keeping out of the event, and
-    /// discarded if the dataset it belongs to has been replaced.
+    /// What the pass behind a staged open found, for the frame that applies it: large
+    /// enough to be worth keeping out of the event, and discarded if the dataset it
+    /// belongs to has been replaced.
     pending_footers_result: std::sync::Arc<std::sync::Mutex<FootersReported>>,
-    /// Bumped once per dataset put on screen, which `task_generation` is not: a collect
+    /// Bumped once per dataset put on screen, which the jobs' generation is not: a collect
     /// bumps that, and the pass reading the rest of a dataset's footers outlives
     /// several. It is what says whether the columns arriving belong to the dataset the
     /// user is looking at.
@@ -10581,33 +10440,20 @@ pub struct App {
     /// moment the view comes back to the dataset itself.
     footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
     /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
-    /// back because the collect it goes through would bump `task_generation` out from
+    /// back because the collect it goes through would bump the generation out from
     /// under work already running. The pass that failed brings no columns to hold, so
     /// `footers_held` has nothing to say about it, and the dataset still needs the
     /// ordinary count the pass was going to save it — hence an errand of its own, tried
     /// again after every event until the work it would cancel is done.
     reread_owed: Option<u64>,
-    /// Leases outstanding, by the generation each was taken on. Those on the current
-    /// `task_generation` are background work a bump would strand. See
-    /// [`GenerationLease`].
-    leases: HashMap<u64, usize>,
-    /// Which spawned jobs panic before their work starts, for tests of what a dying
-    /// worker leaves behind.
-    #[cfg(test)]
-    worker_dies: Option<WorkerDies>,
-    /// The same, for the home screen's workers.
+    /// Which home screen workers panic before their work starts, for tests of what a
+    /// dying worker leaves behind. The jobs' own is [`Jobs::worker_dies`].
     #[cfg(test)]
     home_worker_dies: Option<HomeWorkerDies>,
     /// Reads the open file's facts in place of [`FileFacts::read`], for tests of a
     /// read that is slow or fails.
     #[cfg(test)]
     file_facts_reader: Option<FileFactsReader>,
-    /// A buffer collect that was asked for while a lease was outstanding, and the
-    /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
-    /// dropped when the dataset it belonged to is replaced.
-    collect_owed: Option<(u64, String)>,
-    pending_collect_result:
-        std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
     /// holds them until this clears.
     busy: bool,
@@ -10856,21 +10702,14 @@ impl App {
             })
             .collect::<Vec<_>>();
         let streaming = self.app_config.performance.polars_streaming;
-        self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the rows that repeat"));
-        self.busy = true;
-        self.spawn_bg(
+        self.spawn_job(
             Job::SampleRows,
-            "Reading the rows that repeat...",
-            move |task_gen, tx| {
+            Some("Reading the rows that repeat..."),
+            move |_| {
                 let df = data_quality::duplicate_rows(lf.select(columns), &keys, streaming)
                     .map_err(|error| format!("{error}"))?;
-                let _ = tx.send(AppEvent::BackgroundSampleReady {
-                    generation: task_gen,
-                    label,
-                    df,
-                });
-                Ok(())
+                Ok(Answer::Sample { df, label })
             },
         );
         None
@@ -10897,7 +10736,7 @@ impl App {
             self.quality_evidence_return = Some(Box::new(original));
             self.quality_evidence_label = Some(label);
             self.analysis_modal.active = false;
-            self.collect_inflight = None;
+            self.forget_the_rows_read();
             self.spawn_async_collect("Loading matching rows...");
         }
         None
@@ -10907,8 +10746,7 @@ impl App {
         let Some(original) = self.quality_evidence_return.take() else {
             return false;
         };
-        self.task_generation = self.task_generation.wrapping_add(1);
-        self.collect_inflight = None;
+        self.jobs.advance();
         self.len_count_inflight = None;
         self.data_table_state = Some(*original);
         self.quality_evidence_label = None;
@@ -11957,16 +11795,21 @@ impl App {
         }
     }
 
-    /// Returns true when the app is busy (background work in progress).
+    /// Whether keys wait: a job the user is waiting on is running or owed, or an
+    /// errand is between its phases.
     pub fn is_busy(&self) -> bool {
-        self.busy
+        self.busy || self.jobs.holds_keys()
     }
 
-    /// Current background-task generation. Bumped each time work is spawned that should
-    /// invalidate prior in-flight tasks. Exposed for tests that need to construct
-    /// synthetic Background* events with a known-stale generation.
+    /// The generation background answers are judged by. Advanced each time work starts
+    /// that replaces what is in flight.
     pub fn task_generation(&self) -> u64 {
-        self.task_generation
+        self.jobs.generation()
+    }
+
+    /// Whether the job `ticket` names is still running and its answer still wanted.
+    pub fn job_is_current(&self, ticket: Ticket) -> bool {
+        self.jobs.is_current(ticket)
     }
 
     /// Keep recents, histories and measurements in `cache` from now on. For a test that
@@ -11986,7 +11829,7 @@ impl App {
     /// back. Exposed for tests that wait for abandoned work to finish rather than
     /// guessing how long it takes.
     pub fn background_work_in_flight(&self) -> bool {
-        self.leases.values().any(|n| *n > 0)
+        self.jobs.in_flight()
     }
 
     /// See the `screen_generation` field.
@@ -12009,24 +11852,33 @@ impl App {
                 .is_some_and(|r| r.sample_size.is_some())
     }
 
-    /// An analysis Esc cancelled whose worker has not exited. While it has not, Data
-    /// Quality does not start another beside it, and says so.
+    /// An analysis cancelled whose worker has not exited, and when it was cancelled.
+    /// While it runs, Data Quality does not start another beside it, and says so.
     pub(crate) fn cancelled_analysis_running(&self) -> Option<std::time::Instant> {
-        let (generation, since, _) = self.analysis_cancelled?;
-        self.leases
-            .get(&generation)
-            .is_some_and(|n| *n > 0)
-            .then_some(since)
+        self.cancelled_analysis().map(|(since, _)| since)
+    }
+
+    /// The newest cancelled analysis or sample read still running, and whether it was
+    /// cancelled during a read nothing can stop.
+    fn cancelled_analysis(&self) -> Option<(std::time::Instant, bool)> {
+        let (since, job) = self.jobs.cancelled_running(Self::reads_for_analysis)?;
+        let runs_out = match job {
+            Job::Analysis(run) => run.runs_out,
+            _ => true,
+        };
+        Some((since, runs_out))
+    }
+
+    /// A read for the Analysis tools: a run, or the sample read to show as a table.
+    fn reads_for_analysis(job: &Job) -> bool {
+        matches!(job, Job::Analysis(_) | Job::SampleRows)
     }
 
     /// A cancelled run still going that the screen should say is: at once when the
     /// cancel came during a read nothing can stop, and otherwise only once it has
     /// outlasted the batch it was to stop after.
     pub(crate) fn cancelled_run_shown(&self) -> Option<crate::widgets::data_quality::Cancelling> {
-        let since = self.cancelled_analysis_running()?;
-        let read_runs_out = self
-            .analysis_cancelled
-            .is_some_and(|(_, _, runs_out)| runs_out);
+        let (since, read_runs_out) = self.cancelled_analysis()?;
         (read_runs_out || since.elapsed() >= CANCEL_GRACE).then_some(
             crate::widgets::data_quality::Cancelling {
                 since,
@@ -12037,9 +11889,7 @@ impl App {
 
     /// Work a cancel passed that is still running: leased on a generation since left.
     fn cancelled_work_running(&self) -> bool {
-        self.leases
-            .iter()
-            .any(|(generation, n)| *generation != self.task_generation && *n > 0)
+        self.jobs.running_behind()
     }
 
     /// Where the value tools (Describe, Distribution, Correlation) read the shared
@@ -12275,87 +12125,74 @@ impl App {
         if kept.is_none() && self.read_waits_for_cancelled() {
             return None;
         }
-        self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new(if evidence.is_some() {
             "Reading the matching sampled rows"
         } else {
             "Reading the sample"
         }));
-        self.busy = true;
-        self.spawn_bg(
-            Job::SampleRows,
-            "Reading the sample...",
-            move |task_gen, tx| {
-                // The columns shown are the table's; a finding is cut from every column
-                // the run read first, so duplicates are judged as the run judged them.
-                let (rows, columns) = match kept {
-                    Some((kept, columns)) => {
-                        (Ok(kept.analysis_rows(kept.df().clone())), Some(columns))
+        self.spawn_job(Job::SampleRows, Some("Reading the sample..."), move |_| {
+            // The columns shown are the table's; a finding is cut from every column
+            // the run read first, so duplicates are judged as the run judged them.
+            let (rows, columns) = match kept {
+                Some((kept, columns)) => (Ok(kept.analysis_rows(kept.df().clone())), Some(columns)),
+                None => (
+                    source
+                        .cut(&sample.scope)
+                        .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
+                    None,
+                ),
+            };
+            let shown = |df: polars::prelude::DataFrame| match &columns {
+                Some(columns) => polars::prelude::IntoLazy::lazy(df)
+                    .select(columns.clone())
+                    .collect()
+                    .map_err(color_eyre::eyre::Report::from),
+                None => Ok(df),
+            };
+            let read = rows.and_then(|rows| {
+                let label = format!(
+                    "Sample {} {}",
+                    crate::glyphs::get().middot,
+                    sample.outcome(
+                        rows.total_rows,
+                        rows.sample_size,
+                        rows.per_value.as_ref().map(|per_value| per_value.kept),
+                    )
+                );
+                match evidence {
+                    Some((quality_report::EvidenceRows::Duplicates, label)) => {
+                        // Every column the run grouped by: the scope's own, not the
+                        // row numbers kept beside them.
+                        let keys = rows
+                            .df
+                            .get_column_names()
+                            .into_iter()
+                            .filter(|name| !name.starts_with("__datui"))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let df = data_quality::duplicate_rows(
+                            polars::prelude::IntoLazy::lazy(rows.df),
+                            &keys,
+                            streaming,
+                        )?;
+                        Ok((shown(df)?, label))
                     }
-                    None => (
-                        source
-                            .cut(&sample.scope)
-                            .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
-                        None,
-                    ),
-                };
-                let shown = |df: polars::prelude::DataFrame| match &columns {
-                    Some(columns) => polars::prelude::IntoLazy::lazy(df)
-                        .select(columns.clone())
-                        .collect()
-                        .map_err(color_eyre::eyre::Report::from),
-                    None => Ok(df),
-                };
-                let read = rows.and_then(|rows| {
-                    let label = format!(
-                        "Sample {} {}",
-                        crate::glyphs::get().middot,
-                        sample.outcome(
-                            rows.total_rows,
-                            rows.sample_size,
-                            rows.per_value.as_ref().map(|per_value| per_value.kept),
-                        )
-                    );
-                    match evidence {
-                        Some((quality_report::EvidenceRows::Duplicates, label)) => {
-                            // Every column the run grouped by: the scope's own, not the
-                            // row numbers kept beside them.
-                            let keys = rows
-                                .df
-                                .get_column_names()
-                                .into_iter()
-                                .filter(|name| !name.starts_with("__datui"))
-                                .cloned()
-                                .collect::<Vec<_>>();
-                            let df = data_quality::duplicate_rows(
-                                polars::prelude::IntoLazy::lazy(rows.df),
-                                &keys,
-                                streaming,
-                            )?;
-                            Ok((shown(df)?, label))
-                        }
-                        Some((quality_report::EvidenceRows::Matching(predicate), label)) => {
-                            let df = polars::prelude::IntoLazy::lazy(rows.df)
-                                .filter(predicate)
-                                .collect()?;
-                            Ok((shown(df)?, label))
-                        }
-                        // Files are read from the scope, never from a sample.
-                        Some((quality_report::EvidenceRows::Files(_), label)) => {
-                            Ok((shown(rows.df)?, label))
-                        }
-                        None => Ok((shown(rows.df)?, label)),
+                    Some((quality_report::EvidenceRows::Matching(predicate), label)) => {
+                        let df = polars::prelude::IntoLazy::lazy(rows.df)
+                            .filter(predicate)
+                            .collect()?;
+                        Ok((shown(df)?, label))
                     }
-                });
-                let (df, label) = read.map_err(|error| format!("{error}"))?;
-                let _ = tx.send(AppEvent::BackgroundSampleReady {
-                    generation: task_gen,
-                    label,
-                    df,
-                });
-                Ok(())
-            },
-        );
+                    // Files are read from the scope, never from a sample.
+                    Some((quality_report::EvidenceRows::Files(_), label)) => {
+                        Ok((shown(rows.df)?, label))
+                    }
+                    None => Ok((shown(rows.df)?, label)),
+                }
+            });
+            let (df, label) = read.map_err(|error| format!("{error}"))?;
+            Ok(Answer::Sample { df, label })
+        });
         None
     }
 
@@ -12377,7 +12214,7 @@ impl App {
             self.quality_evidence_return = Some(Box::new(original));
             self.quality_evidence_label = Some(label);
             self.analysis_modal.active = false;
-            self.collect_inflight = None;
+            self.forget_the_rows_read();
             self.spawn_async_collect("Loading the sample...");
         }
     }
@@ -12637,25 +12474,30 @@ impl App {
     /// view does not sit on a spinner for a run that is not coming; Enter on it runs
     /// it again.
     fn cancel_analysis(&mut self) {
-        // The worker holds a lease on the generation it was spawned on; while it does,
-        // it is still running. Only a Data Quality run has a watch to stop it by, and
-        // only its stages say whether they stop partway.
-        let watch = self.quality_watch.take();
-        let read_runs_out = watch.is_none()
-            || self
-                .analysis_modal
-                .computing
-                .as_ref()
-                .is_some_and(AnalysisProgress::read_runs_out);
-        self.analysis_cancelled = Some((
-            self.task_generation,
-            std::time::Instant::now(),
-            read_runs_out,
-        ));
-        if let Some(watch) = watch {
-            watch.cancel();
+        // The run's record says it is still running until its worker ends, superseded
+        // below. Only a Data Quality run has a watch to stop it by, and only its stages
+        // say whether they stop partway.
+        let reads_out = self
+            .analysis_modal
+            .computing
+            .as_ref()
+            .is_some_and(AnalysisProgress::read_runs_out);
+        let mut read_runs_out = true;
+        if let Some(Job::Analysis(run)) =
+            self.jobs.current_mut(|job| matches!(job, Job::Analysis(_)))
+        {
+            read_runs_out = run.watch.is_none() || reads_out;
+            run.runs_out = read_runs_out;
+            if let Some(watch) = &run.watch {
+                watch.cancel();
+            }
         }
-        self.task_generation = self.task_generation.wrapping_add(1);
+        let reading_sample = self
+            .jobs
+            .current(|job| matches!(job, Job::SampleRows))
+            .is_some();
+        self.jobs.cancel(Self::reads_for_analysis);
+        self.jobs.advance();
         // Keys typed while it ran were typed at the run, which is gone: an impatient
         // second Enter replayed now would start it again behind the Esc.
         self.screen_generation = self.screen_generation.wrapping_add(1);
@@ -12664,7 +12506,7 @@ impl App {
         self.busy = false;
         self.status_message = None;
         // Reading the sample to look at changed nothing on screen; the tool stays.
-        if std::mem::take(&mut self.reading_sample) {
+        if reading_sample {
             self.flash_note("Row view cancelled".to_string());
             return;
         }
@@ -12687,15 +12529,14 @@ impl App {
     /// Whether the Pivot & Melt modal is waiting on a pivot it started.
     pub(crate) fn pivot_computing(&self) -> bool {
         self.input_mode == InputMode::PivotMelt
-            && self.pivot_generation == Some(self.task_generation)
+            && self.jobs.current(|job| matches!(job, Job::Pivot)).is_some()
     }
 
     /// Stop waiting for the pivot in flight. As with an analysis, the worker runs to
     /// the end and the bump drops its answer. The form stays open with its spec.
     fn cancel_pivot(&mut self) {
-        self.task_generation = self.task_generation.wrapping_add(1);
+        self.jobs.advance();
         self.screen_generation = self.screen_generation.wrapping_add(1);
-        self.pivot_generation = None;
         self.busy = false;
         self.status_message = None;
         self.flash_note("Pivot cancelled".to_string());
@@ -12768,8 +12609,8 @@ impl App {
         }
     }
 
-    /// Say that a background thread panicked when nothing else did; work run through
-    /// `spawn_bg` fails with an error modal instead. Returns true when the frame must
+    /// Say that a background thread panicked when nothing else did; a job's panic ends
+    /// the job instead, the way its error would. Returns true when the frame must
     /// redraw.
     pub fn flash_background_panic(&mut self) -> bool {
         if !self.bar_is_free() {
@@ -12787,7 +12628,7 @@ impl App {
     /// Whether a flash would be seen: a busy message outranks it, and a modal would
     /// hide it until it expired.
     fn bar_is_free(&self) -> bool {
-        !self.busy
+        !self.is_busy()
             && self.flash.is_none()
             && !self.error_modal.active
             && !self.confirmation_modal.active
@@ -12975,7 +12816,7 @@ impl App {
 
     /// Whether a spinner is on screen, so the run loop turns it and redraws.
     pub fn something_is_spinning(&self) -> bool {
-        self.busy
+        self.is_busy()
             || (self.row_count_pending() && !self.awaiting_download_confirmation())
             // The clock beside "source read finishing" keeps time until it has.
             || (self.analysis_modal.active && self.cancelled_analysis_running().is_some())
@@ -13074,20 +12915,20 @@ impl App {
     /// the collect bumps `task_generation`, so it waits its turn and is tried again
     /// after every event.
     fn collect_when_the_work_allows(&mut self) {
-        let Some((generation, _)) = self.collect_owed.as_ref() else {
+        let Some(&Job::OwedRows { dataset, .. }) = self.jobs.owed(Self::owed_rows) else {
             return;
         };
-        if *generation != self.dataset_generation {
+        if dataset != self.dataset_generation {
             // The dataset it was owed to is gone, and so is the view it was filling.
-            // Only the errand is put down: `busy` and the status line belong to whatever
-            // replaced the dataset, and are not this errand's to clear.
-            self.collect_owed = None;
+            // Only the errand is put down, and the keys it held with it; the status line
+            // belongs to whatever replaced the dataset.
+            self.jobs.take_owed(Self::owed_rows);
             return;
         }
         if self.work_a_bump_would_strand() {
             return;
         }
-        let Some((_, status)) = self.collect_owed.take() else {
+        let Some(Job::OwedRows { status, .. }) = self.jobs.take_owed(Self::owed_rows) else {
             return;
         };
         if !self.spawn_async_collect(&status) {
@@ -13191,15 +13032,12 @@ impl App {
     /// is bringing the rows asked for, or supersedes it by the generation, as any newer
     /// collect does. Never when a bump would strand other work.
     fn load_ahead(&mut self) {
-        // The lease is asked before the position is marked asked. A job's lease comes
-        // back an event behind its answer, so a frame drawn in between finds the
-        // generation held and the app idle; marked, the position would be spent on that
-        // refusal and never asked again.
-        if self.busy
-            || self.collect_owed.is_some()
-            || self
-                .collect_inflight
-                .is_some_and(|inflight| inflight.generation == self.task_generation)
+        // The generation is asked about before the position is marked asked. Held while
+        // the app is idle (a download waiting on the user), a frame would otherwise
+        // spend the position on that refusal and never ask again (#490).
+        if self.is_busy()
+            || self.jobs.owed(Self::owed_rows).is_some()
+            || self.rows_in_flight().is_some()
             || self.work_a_bump_would_strand()
         {
             return;
@@ -13221,10 +13059,9 @@ impl App {
     /// Whether the bar is still keeping quiet about a fetch for the view.
     fn fetch_too_young_to_mention(&self) -> bool {
         self.status_message.as_deref() == Some(Self::LOADING_BUFFER)
-            && self.collect_inflight.is_some_and(|inflight| {
-                inflight.generation == self.task_generation
-                    && inflight.began.elapsed() < Self::A_FETCH_WORTH_SAYING
-            })
+            && self
+                .rows_in_flight()
+                .is_some_and(|inflight| inflight.began.elapsed() < Self::A_FETCH_WORTH_SAYING)
     }
 
     /// Put the path on the loading screen, so a wait says what it is waiting for.
@@ -13238,7 +13075,7 @@ impl App {
     ///
     /// The re-read goes through the ordinary collect, which bumps `task_generation`, so
     /// everything a bump would strand has to be done first — and that is
-    /// [`GenerationLease`]'s job now, rather than a list of the kinds of work that
+    /// [`Jobs::would_strand`]'s job now, rather than a list of the kinds of work that
     /// might be running.
     ///
     /// One thing more than a bump, though: a join takes a fresh `len_generation` too. A
@@ -13291,7 +13128,7 @@ impl App {
 
     /// Start the pass that reads the rest of a staged open's footers.
     ///
-    /// Not through `spawn_bg`, which marks the app busy: the whole point of opening
+    /// Not a job, which the user would wait on: the whole point of opening
     /// before every footer is read is that the dataset works while they are read. The
     /// generation is the dataset's rather than the task's, because a collect bumps the
     /// task's and this pass outlives several of them.
@@ -13385,7 +13222,7 @@ impl App {
         // A query still running was over the dataset being replaced; its rollback
         // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;
-        self.view_pivot = None;
+        self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -13406,7 +13243,7 @@ impl App {
             let cache = self.cache.clone();
             std::thread::spawn(move || cache.push_recent(&path));
         }
-        self.collect_inflight = None;
+        self.forget_the_rows_read();
         self.file_facts = None;
         // A downloaded file lives as long as the dataset scanning it.
         #[cfg(any(feature = "http", feature = "cloud"))]
@@ -13507,7 +13344,7 @@ impl App {
     }
 
     /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead that nothing
-    /// waits on. See [`InflightCollect::waited_on`].
+    /// waits on: its job holds no keys. See [`InflightCollect`].
     fn spawn_collect(&mut self, status: Option<&str>) -> bool {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
@@ -13548,24 +13385,22 @@ impl App {
 
         // Read before the frame is borrowed: the predicate is over the whole App.
         let a_bump_would_strand = self.work_a_bump_would_strand();
+        let inflight = self.rows_in_flight();
 
         // Plan and spawn the buffer collect. With the count unknown this is a top-of-data
         // window (`slice(0, N)`) that touches only the first file(s) of a partitioned set.
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
-        let covered = self
-            .collect_inflight
-            .is_some_and(|inflight| inflight.covers(self.task_generation, state));
+        let covered = inflight.is_some_and(|inflight| inflight.covers(state));
         // The rows asked for are already on the way in a load-ahead: wait on that one
-        // rather than fetch them twice.
+        // rather than fetch them twice. The keys are its now.
         if covered
             && let Some(status) = status
-            && let Some(inflight) = self.collect_inflight.as_mut()
-            && !inflight.waited_on
+            && !self.jobs.waited_on(Self::reading_rows)
         {
-            inflight.waited_on = true;
-            self.busy = true;
+            self.jobs.wait_on(Self::reading_rows, status);
+            self.busy = false;
             self.status_message = Some(status.to_string());
         }
         let request = (!covered).then(|| state.prepare_async_collect(None));
@@ -13576,18 +13411,17 @@ impl App {
             }
             return covered;
         };
-        // Everything past here bumps `task_generation`, so everything holding a lease on
-        // it has to be done first. The collect the user asked for is queued rather than
+        // Everything past here advances the generation, so everything that holds it has
+        // to be done first. The collect the user asked for is queued rather than
         // refused: the throbber that was already turning goes on turning, and it is
         // tried again after every event until the work in front of it finishes.
         //
         // This is the door #238 was about. `BackgroundLenReady` answers a count by
         // jumping to the end, which reaches here with no key pressed and minutes after
         // the one that was — long enough for a dataset to have been opened meanwhile.
-        // The bump cancelled that open, and `BackgroundSchemaReady`'s mismatch branch
-        // returns without resetting anything, so `awaiting_dataset`, `busy` and
-        // `loading_state` stayed set and the file never opened, silently, for the rest
-        // of the session.
+        // The bump cancelled that open, whose schema answer then returned without
+        // resetting anything, so `awaiting_dataset`, `busy` and `loading_state` stayed
+        // set and the file never opened, silently, for the rest of the session.
         if a_bump_would_strand {
             // The count that was going to ride in this collect is put down rather than
             // run on its own. On an object store it answers itself out of the short read
@@ -13601,65 +13435,61 @@ impl App {
             let Some(status) = status else {
                 return false;
             };
-            self.collect_owed = Some((self.dataset_generation, status.to_string()));
+            // One page is owed at a time, the newest; the user waits on it.
+            self.jobs.take_owed(Self::owed_rows);
+            let owed = Job::OwedRows {
+                dataset: self.dataset_generation,
+                status: status.to_string(),
+            };
+            self.jobs.owe(owed, Some(status));
+            self.busy = false;
+            self.status_message = Some(status.to_string());
             return true;
         }
-        self.task_generation = self.task_generation.wrapping_add(1);
-        self.collect_inflight = Some(InflightCollect {
+        self.jobs.advance();
+        let inflight = InflightCollect {
             began: std::time::Instant::now(),
             files: state.files_a_page_reads(
                 request.buffer_start,
                 request.buffer_end.saturating_sub(request.buffer_start),
             ),
-            generation: self.task_generation,
             dataset: state.len_generation(),
             columns: InflightCollect::columns_of(state),
             start: request.buffer_start,
             end: request.buffer_end,
-            waited_on: status.is_some(),
-        });
-        let collect_slot = self.pending_collect_result.clone();
+        };
         // Owed from here, so a worker that dies before it reaches the count still
         // answers it.
         let count = count.map(|job| OwedCount::new(job, self.events.clone()));
-        self.spawn_bg_replaceable(Job::Rows, status, move |task_gen, tx| {
+        self.spawn_job(Job::Rows(inflight), status, move |_| {
             let plan = request.plan;
-            match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
-                Ok(df) => {
-                    let returned = df.height();
-                    // Stitched and cut here rather than where it lands: a cut may copy
-                    // up to the byte budget, which the UI thread would stall on (#483).
-                    let result = plan.fit(df);
-                    let mut slot = collect_slot.lock().unwrap_or_else(|e| e.into_inner());
-                    // Only write if no newer result is already stored.
-                    let dominated = slot.as_ref().is_some_and(|(g, _)| *g > task_gen);
-                    if !dominated {
-                        *slot = Some((task_gen, result));
-                    }
-                    drop(slot);
-                    let _ = tx.send(AppEvent::BackgroundCollectReady {
-                        generation: task_gen,
-                    });
-                    if let Some(count) = count {
+            // The count is answered once the page has gone out: it may need a pass of
+            // its own, which must not hold the page back.
+            Ok(
+                match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
+                    Ok(df) => {
+                        let returned = df.height();
                         let requested = request.buffer_end - request.buffer_start;
-                        count.answer(|job| {
-                            job.after_collect(request.buffer_start, returned, requested)
-                        });
+                        let start = request.buffer_start;
+                        // Stitched and cut here rather than where it lands: a cut may
+                        // copy up to the byte budget, which the UI thread would stall on
+                        // (#483).
+                        Answer::Rows(plan.fit(df)).then(move || {
+                            if let Some(count) = count {
+                                count.answer(|job| job.after_collect(start, returned, requested));
+                            }
+                        })
                     }
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::BackgroundCollectFailed {
-                        generation: task_gen,
+                    // A pass over a frame that just failed to collect would fail too: the
+                    // count goes unanswered and so reports itself failed, leaving the
+                    // retry to a later interaction (see `len_count_failed`).
+                    Err(e) => Answer::RowsFailed {
                         message: crate::error_display::user_message_from_polars(&e),
                         conversion: crate::error_display::conversion_failure(&e).map(Box::new),
-                    });
-                    // A pass over a frame that just failed to collect would fail too:
-                    // the count goes unanswered and so reports itself failed, leaving
-                    // the retry to a later interaction (see `len_count_failed`).
-                    drop(count);
-                }
-            }
-            Ok(())
+                    }
+                    .then(move || drop(count)),
+                },
+            )
         });
         true
     }
@@ -13679,12 +13509,11 @@ impl App {
     /// nobody's wait, so a count does not queue behind one.
     fn waited_on_rows_pending(&self, generation: u64) -> bool {
         self.awaiting_dataset
-            || self.collect_owed.is_some()
-            || self.collect_inflight.is_some_and(|inflight| {
-                inflight.waited_on
-                    && inflight.dataset == generation
-                    && inflight.generation == self.task_generation
-            })
+            || self.jobs.owed(Self::owed_rows).is_some()
+            || (self.rows_waited_on()
+                && self
+                    .rows_in_flight()
+                    .is_some_and(|inflight| inflight.dataset == generation))
     }
 
     /// Whether a frame painted now would start, or retire, the count waiting on one.
@@ -13742,121 +13571,110 @@ impl App {
         }
     }
 
-    /// Spawn `job` on a worker. Captures the current generation and event sender for the
-    /// closure, sets `busy` and `status_message`. The closure sends its result tagged
-    /// with the generation, so a stale one can be dropped, and returns `Err` with a
-    /// message for the user when it has none: [`App::spawn_bg_inner`] reports that, and
-    /// a panic, as the job's [`AppEvent::BackgroundFailed`].
+    /// Start `job` on a worker. With a `status` the app is busy with it: the control
+    /// bar says so and keys wait. The worker returns its answer, or `Err` with a
+    /// message for the user; that, or a panic, is the job's one outcome, which
+    /// [`AppEvent::JobEnded`] hands to [`App::job_ended`].
     ///
-    /// Does not bump `task_generation`. Callers that need to invalidate prior in-flight
-    /// work should bump it explicitly before calling.
-    fn spawn_bg<F>(&mut self, job: Job, status: &str, work: F)
+    /// Does not advance the generation. A caller replacing work in flight advances it
+    /// first.
+    fn spawn_job<F, R>(&mut self, job: Job, status: Option<&str>, work: F) -> Ticket
     where
-        F: FnOnce(u64, Sender<AppEvent>) -> std::result::Result<(), String> + Send + 'static,
+        F: FnOnce(&jobs::Worker) -> std::result::Result<R, String> + Send + 'static,
+        R: Into<jobs::Answered>,
     {
-        let lease = self.lease_the_generation();
-        self.spawn_bg_inner(job, Some(status), Some(lease), work);
+        let started = self.start_job(job, status);
+        let ticket = started.ticket();
+        started.run(&self.runtime, work);
+        ticket
     }
 
-    /// Spawn background work that holds no [`GenerationLease`]: work whose answer a bump
-    /// cannot strand, and which a lease would only make others wait behind.
-    ///
-    /// The buffer collect: its answer, thrown away by a bump, is simply asked for again,
-    /// and leased, the next collect would queue behind the last one and scrolling would
-    /// go a page per round trip. Supersession is `InflightCollect::covers`'s job instead.
-    /// The look at a directory named on the command line, whose answer is meant to be
-    /// thrown away. And the Info panel's file facts, judged by the dataset rather than
-    /// the generation.
-    ///
-    /// `an_unleased_spawn_is_a_deliberate_act` fails if another caller appears.
-    ///
-    /// With no `status` it sets neither `busy` nor a message: a load-ahead.
-    fn spawn_bg_replaceable<F>(&mut self, job: Job, status: Option<&str>, work: F)
-    where
-        F: FnOnce(u64, Sender<AppEvent>) -> std::result::Result<(), String> + Send + 'static,
-    {
-        self.spawn_bg_inner(job, status, None, work);
-    }
-
-    fn spawn_bg_inner<F>(
-        &mut self,
-        job: Job,
-        status: Option<&str>,
-        lease: Option<GenerationLease>,
-        work: F,
-    ) where
-        F: FnOnce(u64, Sender<AppEvent>) -> std::result::Result<(), String> + Send + 'static,
-    {
-        let task_gen = self.task_generation;
-        let tx = self.events.clone();
+    /// As [`Self::spawn_job`], for a caller that needs the ticket before the work is
+    /// built: it runs the job with [`jobs::Started::run`].
+    fn start_job(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
         if let Some(status) = status {
-            self.busy = true;
+            // The errand that led here, if one did, is this job's now: its record holds
+            // the keys until it ends.
+            self.busy = false;
             self.status_message = Some(status.to_string());
         }
-        #[cfg(test)]
-        let dies = self.worker_dies.as_mut().is_some_and(|dies| dies(&job));
-        self.runtime.spawn_blocking(move || {
-            // Dropped after `work` returns or panics, so behind the failure sent below.
-            let _lease = lease;
-            let sender = tx.clone();
-            // A panic would otherwise leave the spinner up forever with only the log
-            // knowing why; the job it stopped fails the way it fails on an error.
-            let ended = logging::catch_panic(|| {
-                #[cfg(test)]
-                if dies {
-                    panic!("worker died");
-                }
-                work(task_gen, sender)
-            });
-            let (message, panicked) = match ended {
-                Ok(Ok(())) => return,
-                Ok(Err(message)) => (message, false),
-                Err(message) => (message, true),
-            };
-            let _ = tx.send(AppEvent::BackgroundFailed {
-                generation: task_gen,
-                job,
-                message,
-                panicked,
-            });
-        });
+        self.jobs.start(job, status)
     }
 
-    /// A lease held by nothing, for tests that need work in flight without a thread to
-    /// run it on. Exposed for the same reason `task_generation` is.
-    #[cfg(test)]
-    pub(crate) fn lease_for_tests(&mut self) -> GenerationLease {
-        self.lease_the_generation()
+    fn owed_rows(job: &Job) -> bool {
+        matches!(job, Job::OwedRows { .. })
     }
 
-    /// Take a lease on the current `task_generation`. See [`GenerationLease`].
-    fn lease_the_generation(&mut self) -> GenerationLease {
-        *self.leases.entry(self.task_generation).or_default() += 1;
-        GenerationLease {
-            events: self.events.clone(),
-            generation: self.task_generation,
+    fn reading_rows(job: &Job) -> bool {
+        matches!(job, Job::Rows(_))
+    }
+
+    /// The read of the table's rows in flight, if one is and is still wanted: what it
+    /// will fill, and whether anyone waits on it.
+    fn rows_in_flight(&self) -> Option<InflightCollect> {
+        match self.jobs.current(Self::reading_rows) {
+            Some((_, Job::Rows(inflight))) => Some(*inflight),
+            _ => None,
         }
     }
 
-    /// Whether anything is waiting on the current `task_generation`, so that bumping it
-    /// would throw away an answer nothing will ask for again.
+    /// Whether the user waits on the read of the table's rows in flight.
+    fn rows_waited_on(&self) -> bool {
+        self.jobs.waited_on(Self::reading_rows)
+    }
+
+    /// The rows being read, or owed, are not for the table on screen any more: a view
+    /// has been put in its place. Their answer is dropped when it comes.
+    fn forget_the_rows_read(&mut self) {
+        self.jobs
+            .supersede(|job| Self::reading_rows(job) || Self::owed_rows(job));
+    }
+
+    /// Hold the generation: a continuation waiting to run, or an errand waiting on the
+    /// user. See [`jobs::Hold`].
+    pub(crate) fn hold_the_generation(&self) -> jobs::Hold {
+        self.jobs.hold()
+    }
+
+    /// A job in flight with no worker, started as `spawn_job` starts one, for tests
+    /// that decide how it ends.
+    #[cfg(test)]
+    pub(crate) fn job_for_tests(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
+        self.start_job(job, status)
+    }
+
+    /// A page owed to the dataset on screen, as one asked for while the generation was
+    /// held is.
+    #[cfg(test)]
+    pub(crate) fn owe_rows_for_tests(&mut self, status: &str) {
+        let owed = Job::OwedRows {
+            dataset: self.dataset_generation,
+            status: status.to_string(),
+        };
+        self.jobs.owe(owed, Some(status));
+    }
+
+    /// Whether a page is owed.
+    #[cfg(test)]
+    pub(crate) fn rows_owed(&self) -> bool {
+        self.jobs.owed(Self::owed_rows).is_some()
+    }
+
+    /// A current `job` answers `answer` at once, and the app handles it: for tests of
+    /// what an answer does.
+    #[cfg(test)]
+    pub(crate) fn answer_for_tests(&mut self, job: Job, answer: Answer) -> Option<AppEvent> {
+        let started = self.jobs.start(job, None);
+        let ticket = started.ticket();
+        started.end(Outcome::answered(answer));
+        self.job_ended(ticket)
+    }
+
+    /// Whether anything is waiting on the current generation, so that advancing it
+    /// would throw away an answer nothing will ask for again. See
+    /// [`Jobs::would_strand`].
     fn work_a_bump_would_strand(&self) -> bool {
-        // A count, and nothing else. Nothing here names a kind of work, so a new kind is
-        // covered by taking a lease rather than by being remembered here — which is the
-        // whole of #221. Three things hold one:
-        //
-        //  - every background spawn, for as long as its worker runs ([`App::spawn_bg`]);
-        //  - `EventPump`, for as long as a continuation it has not dispatched is
-        //    waiting, which is the gap between two phases of one errand;
-        //  - an errand parked on the user, which is the download confirmation.
-        //
-        // Counted per generation, and only the current one asked about: work leased on an
-        // older one was cancelled by the bump that passed it — an analysis the user
-        // stopped with Esc, whose worker Polars cannot interrupt — and waiting for it
-        // would hold the table up for work nobody wants.
-        self.leases
-            .get(&self.task_generation)
-            .is_some_and(|n| *n > 0)
+        self.jobs.would_strand()
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -14052,6 +13870,7 @@ impl App {
         let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
             cache_dir: std::env::temp_dir().join(APP_NAME),
         });
+        let jobs = Jobs::new(events.clone());
 
         App {
             path: None,
@@ -14067,9 +13886,6 @@ impl App {
             cloud_discovery_started: false,
             home_search_inflight: false,
             home_generation: 0,
-            classify_inflight: None,
-            classify_requests: 0,
-            looking_at_directory: None,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -14120,11 +13936,6 @@ impl App {
             quality_copy_free: std::sync::Mutex::new(None),
             quality_evidence_return: None,
             quality_evidence_label: None,
-            reading_sample: false,
-            pivot_generation: None,
-            view_pivot: None,
-            quality_watch: None,
-            analysis_cancelled: None,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -14134,8 +13945,6 @@ impl App {
             pending_copy: None,
             chart_cache: ChartCache::default(),
             chart_inflight: None,
-            chart_export_generation: 0,
-            chart_export_inflight: None,
             pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
@@ -14169,8 +13978,8 @@ impl App {
                     align_numeric_right: app_config.display.align_numeric_right,
                     ..Default::default()
                 }),
+            jobs,
             runtime,
-            task_generation: 0,
             load_active: false,
             awaiting_dataset: false,
             load_from_home: false,
@@ -14180,29 +13989,21 @@ impl App {
             #[cfg(any(feature = "http", feature = "cloud"))]
             downloaded_from: None,
             loaded_ahead_from: None,
-            pending_lazyframe_result: Arc::new(Mutex::new(None)),
-            pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
             reread_owed: None,
-            leases: HashMap::new(),
-            #[cfg(test)]
-            worker_dies: None,
             #[cfg(test)]
             home_worker_dies: None,
             #[cfg(test)]
             file_facts_reader: None,
-            collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
             count_after_paint: None,
             #[cfg(test)]
             counts_spawned: std::cell::Cell::new(0),
-            collect_inflight: None,
             len_count_failed: None,
             end_after_count: None,
-            pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
             screen_generation: 0,
@@ -14922,21 +14723,22 @@ impl App {
         self.reset_chart_state();
         // A look that is out belongs to the home screen being left, and the thread it is
         // on may never come back — a share that has gone away is the case it exists for.
-        // Its answer will find nothing outstanding and touch nothing; the keyboard does
-        // not wait for it.
-        if self.classify_inflight.take().is_some() {
-            self.busy = false;
+        // Superseded, its answer touches nothing, and the keyboard does not wait for it.
+        if self.jobs.supersede(|job| matches!(job, Job::Classify(_))) {
             self.home.status = None;
         }
         // And the look at a directory named on the command line, for the same reason: it
         // takes seconds, Ctrl+O works throughout, and its answer must not take the user
         // off the screen they went to instead.
-        if self.looking_at_directory.take().is_some() {
-            self.busy = false;
-            if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_DIRECTORY) {
-                self.status_message = None;
-            }
+        if self
+            .jobs
+            .supersede(|job| matches!(job, Job::LookAtDirectory(_)))
+            && self.status_message.as_deref() == Some(Self::LOOKING_AT_A_DIRECTORY)
+        {
+            self.status_message = None;
         }
+        // The load's own phases: their answers are for a screen the user has left.
+        self.jobs.supersede(|job| matches!(job, Job::Load));
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
@@ -14944,18 +14746,30 @@ impl App {
         self.recent_on_install = None;
         self.opening = None;
         // And a collect that was waiting behind this load goes with it. Left standing,
-        // it runs the moment the load's lease comes back — reading the dataset the user
-        // walked away from, at the home screen, with `busy` set and every key held.
-        self.collect_owed = None;
+        // it runs the moment the generation is free — reading the dataset the user
+        // walked away from, at the home screen, with every key held.
+        self.jobs.take_owed(Self::owed_rows);
         #[cfg(any(feature = "http", feature = "cloud"))]
         if self.pending_download.take().is_some() {
             self.confirmation_modal.hide();
         }
-        // Only a load's own busy state is cleared. An export sets `busy` and owns
-        // `loading_state` too, and it keeps running.
+        // Only a load's own wait is put down. An export holds keys and owns
+        // `loading_state` too, and it keeps running. The rows the load's last step is
+        // reading still land; nobody waits on them, and nor does anyone wait on the look
+        // at the named paths, which still opens what it finds.
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
             self.busy = false;
+            let quieted = self
+                .jobs
+                .quiet(|job| matches!(job, Job::Rows(_) | Job::OpenNamed));
+            if self
+                .status_message
+                .as_ref()
+                .is_some_and(|status| quieted.contains(status))
+            {
+                self.status_message = None;
+            }
         }
         // Keys typed at the frozen screen were meant for the load, not for home:
         // replayed there they could open a dataset nobody asked for.
@@ -16487,7 +16301,7 @@ impl App {
                 progress_percent: 0,
             };
         }
-        self.spawn_bg(Job::Load, "Checking size...", move |task_gen, tx| {
+        self.spawn_job(Job::Load, Some("Checking size..."), move |_| {
             let size = match &pending {
                 #[cfg(feature = "http")]
                 PendingDownload::Http { url, .. } => {
@@ -16500,11 +16314,7 @@ impl App {
                     Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
                 }
             };
-            let _ = tx.send(AppEvent::BackgroundRemoteSizeReady {
-                generation: task_gen,
-                pending: Box::new(pending.with_size(size)),
-            });
-            Ok(())
+            Ok(Answer::RemoteSize(Box::new(pending.with_size(size))))
         });
         None
     }
@@ -16554,8 +16364,7 @@ impl App {
     ) -> Option<AppEvent> {
         let cloud = self.app_config.cloud.clone();
         let path_for_event = display_path.or_else(|| paths.first().cloned());
-        let slot = self.pending_lazyframe_result.clone();
-        self.spawn_bg(Job::Load, status, move |task_gen, tx| {
+        self.spawn_job(Job::Load, Some(status), move |_| {
             // What the read passed over rides back with the options it was asked for, so
             // the dataset can say what it left out. Seeded with what the caller already
             // knows and overwritten by what the read finds: a directory on disk is the
@@ -16575,19 +16384,11 @@ impl App {
                         format: report.format.or(options.format),
                         ..options
                     };
-                    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-                    // A newer scan already landed; this result is obsolete.
-                    let dominated = guard.as_ref().is_some_and(|(g, _)| *g > task_gen);
-                    if !dominated {
-                        *guard = Some((task_gen, lf));
-                    }
-                    drop(guard);
-                    let _ = tx.send(AppEvent::BackgroundLazyFrameReady {
-                        generation: task_gen,
+                    Ok(Answer::Scanned {
+                        lf,
                         path: path_for_event,
-                        options,
-                    });
-                    Ok(())
+                        options: Box::new(options),
+                    })
                 }
                 Err(e) => Err(crate::error_display::user_message_from_report(
                     &e,
@@ -18789,12 +18590,13 @@ impl App {
                             return Some(AppEvent::CopyTable { format, header });
                         }
                         #[cfg(any(feature = "http", feature = "cloud"))]
-                        if let Some((pending, lease)) = self.pending_download.take() {
+                        if let Some((pending, hold)) = self.pending_download.take() {
                             // Dropped rather than held: the event returned below is a
-                            // continuation, and the pump leases one of those. Dropping
-                            // first is safe because a release is a queued event rather
-                            // than a decrement — the count cannot dip between the two.
-                            drop(lease);
+                            // continuation, and the pump holds the generation for it as
+                            // soon as this handler returns. Nothing between the two can
+                            // advance it: the errands that wait on the generation do not
+                            // run after a handler that returns a continuation.
+                            drop(hold);
                             self.confirmation_modal.hide();
                             if let LoadingState::Loading {
                                 file_path,
@@ -21761,15 +21563,10 @@ impl App {
                     }
                     Some((group_index, DrillRow::Read(lf))) => {
                         let streaming = state.polars_streaming();
-                        self.spawn_bg(Job::DrillRow, Self::READING_GROUP, move |task_gen, tx| {
+                        self.spawn_job(Job::DrillRow, Some(Self::READING_GROUP), move |_| {
                             let row = crate::statistics::collect_lazy(*lf, streaming)
                                 .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
-                            let _ = tx.send(AppEvent::DrillRowRead {
-                                generation: task_gen,
-                                group_index,
-                                row,
-                            });
-                            Ok(())
+                            Ok(Answer::DrillRow { group_index, row })
                         });
                     }
                 }
@@ -22007,7 +21804,7 @@ impl App {
     /// [`App::event`] is the same call for callers that have nowhere to hold a key.
     pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
         if let AppEvent::Key(key) = event
-            && self.busy
+            && self.is_busy()
             && !self.key_acts_while_busy(key)
         {
             return Err(*key);
@@ -22016,23 +21813,29 @@ impl App {
         // Not while this handler is returning a continuation. A follow-up is the rest of
         // the event just handled — the analysis sets `computing` and returns
         // `AnalysisChunk`, and the phase that chunk will spawn has not spawned — so
-        // nothing holds a lease on the generation yet, and the errands below would bump
-        // it out from under the errand that is halfway through. They run after every
-        // event and are built to wait; one more event is nothing to them.
+        // nothing holds the generation yet, and the errands would advance it out from
+        // under the errand that is halfway through. They run after every event and are
+        // built to wait; one more event is nothing to them.
         if out.is_none() {
-            // Columns a dataset's footers found while the user was inside a query are
-            // held rather than dropped; this is where they get in, on the first event
-            // after the view comes back to the data.
-            if self.join_held_footers() {
-                self.reread_after_the_footers_joined();
-            }
-            // And the same turn for a re-read owed to a dataset whose footers could not
-            // be read: it waits on the same work, and gets in the same way.
-            self.reread_when_the_work_allows();
-            self.collect_when_the_work_allows();
+            self.let_waiting_errands_in();
         }
         self.ensure_chart_data();
         Ok(out)
+    }
+
+    /// The errands that wait for the generation to be free, given their turn: after
+    /// every event, and when a continuation's hold is let go.
+    pub(crate) fn let_waiting_errands_in(&mut self) {
+        // Columns a dataset's footers found while the user was inside a query are held
+        // rather than dropped; this is where they get in, on the first event after the
+        // view comes back to the data.
+        if self.join_held_footers() {
+            self.reread_after_the_footers_joined();
+        }
+        // And the same turn for a re-read owed to a dataset whose footers could not be
+        // read: it waits on the same work, and gets in the same way.
+        self.reread_when_the_work_allows();
+        self.collect_when_the_work_allows();
     }
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
@@ -22083,7 +21886,9 @@ impl App {
             .pending_chart_result
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
-        let writing = self.chart_export_inflight.take().is_some();
+        let writing = self
+            .jobs
+            .supersede(|job| matches!(job, Job::ChartExport { .. }));
         let waiting = self.chart_export_waiting.take().is_some();
         if writing || waiting {
             self.loading_state = LoadingState::Idle;
@@ -22208,7 +22013,7 @@ impl App {
                     self.downloaded_from = None;
                 }
                 self.reset_chart_state();
-                self.task_generation = self.task_generation.wrapping_add(1);
+                self.jobs.advance();
                 // A new counter for a new load, and the old counter cancelled: what
                 // the last dataset was still reading is no longer wanted, and unread,
                 // unpaid-for is better than read and dropped.
@@ -22270,7 +22075,7 @@ impl App {
                 self.opening = None;
                 self.opened = None;
                 self.reset_chart_state();
-                self.task_generation = self.task_generation.wrapping_add(1);
+                self.jobs.advance();
                 // A new counter for a new load, and the old counter cancelled: what
                 // the last dataset was still reading is no longer wanted, and unread,
                 // unpaid-for is better than read and dropped.
@@ -22720,46 +22525,6 @@ impl App {
                 self.home_refresh();
                 None
             }
-            AppEvent::BackgroundLazyFrameReady {
-                generation,
-                path,
-                options,
-            } => {
-                // A scan that a newer open has already superseded is dropped on the
-                // floor: its LazyFrame describes data nobody is looking at any more.
-                // The slot is deliberately left alone here — a newer task may already
-                // have written its result into it, and taking would discard that.
-                if *generation != self.task_generation || !self.load_active {
-                    return None;
-                }
-                let (slot_gen, lf) = self
-                    .pending_lazyframe_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()?;
-                if slot_gen != self.task_generation {
-                    return None;
-                }
-
-                if let LoadingState::Loading {
-                    file_path,
-                    file_size,
-                    ..
-                } = &self.loading_state
-                {
-                    self.loading_state = LoadingState::Loading {
-                        file_path: file_path.clone(),
-                        file_size: *file_size,
-                        current_phase: "Caching schema".to_string(),
-                        progress_percent: 40,
-                    };
-                }
-                Some(AppEvent::DoLoadSchema(
-                    Box::new(lf),
-                    path.clone(),
-                    options.clone(),
-                ))
-            }
             AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
                 if !self.load_active {
                     return None;
@@ -22776,7 +22541,7 @@ impl App {
                 // Stopped as a cloud download is; see `DoDownloadS3ToTemp`.
                 let cancelled = self.footer_progress.cancel_flag();
                 let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
-                self.spawn_bg(Job::Load, "Downloading...", move |task_gen, tx| {
+                self.spawn_job(Job::Load, Some("Downloading..."), move |_| {
                     let ext = source::download_suffix(url.as_str());
                     let download = Self::download_http_to_temp(
                         url.as_str(),
@@ -22785,12 +22550,10 @@ impl App {
                         stop,
                     )
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    let _ = tx.send(AppEvent::BackgroundDownloadReady {
-                        generation: task_gen,
+                    Ok(Answer::Downloaded {
                         download,
-                        options,
-                    });
-                    Ok(())
+                        options: Box::new(options),
+                    })
                 });
                 None
             }
@@ -22814,69 +22577,18 @@ impl App {
                 // next chunk, or while the store is silent, and removes its file.
                 let cancelled = self.footer_progress.cancel_flag();
                 let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
-                self.spawn_bg(Job::Load, status, move |task_gen, tx| {
+                self.spawn_job(Job::Load, Some(status), move |_| {
                     let download =
                         Self::download_cloud_to_temp(&url, &cloud_config, &options, &rt, stop)
                             .map_err(|e| {
                                 crate::error_display::user_message_from_report(&e, None)
                             })?;
-                    let _ = tx.send(AppEvent::BackgroundDownloadReady {
-                        generation: task_gen,
+                    Ok(Answer::Downloaded {
                         download,
-                        options,
-                    });
-                    Ok(())
+                        options: Box::new(options),
+                    })
                 });
                 None
-            }
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            AppEvent::BackgroundRemoteSizeReady {
-                generation,
-                pending,
-            } => {
-                if *generation != self.task_generation || !self.load_active {
-                    return None;
-                }
-                // Nothing runs while the question is up: datui waits on a key, and a
-                // spinner would read as progress. The pending download's lease keeps
-                // the generation held meanwhile.
-                self.busy = false;
-                self.status_message = None;
-                self.confirmation_modal
-                    .show(Self::download_confirmation_message(pending));
-                self.pending_download = Some(((**pending).clone(), self.lease_the_generation()));
-                None
-            }
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            AppEvent::BackgroundDownloadReady {
-                generation,
-                download,
-                options,
-            } => {
-                // A download nobody is going to use goes with the event that carried it.
-                if *generation != self.task_generation || !self.load_active {
-                    return None;
-                }
-                self.download = Some(download.clone());
-                // The URL the load was opened as, which is what opening it again names.
-                if let LoadingState::Loading { file_path, .. } = &self.loading_state {
-                    self.downloaded_from = file_path.clone();
-                }
-                if let LoadingState::Loading {
-                    file_path,
-                    file_size,
-                    ..
-                } = &self.loading_state
-                {
-                    self.loading_state = LoadingState::Loading {
-                        file_path: file_path.clone(),
-                        file_size: *file_size,
-                        current_phase: "Scanning".to_string(),
-                        progress_percent: 30,
-                    };
-                }
-                self.status_message = Some("Scanning...".to_string());
-                Some(AppEvent::DoLoadDownload(download.clone(), options.clone()))
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::DoLoadDownload(download, options) => {
@@ -22962,7 +22674,6 @@ impl App {
                 let lf_owned = (**lf).clone();
                 let path_owned = path.clone();
                 let options_owned = options.clone();
-                let schema_slot = self.pending_schema_result.clone();
                 let cloud = self.app_config.cloud.clone();
                 let runtime = self.runtime.clone();
                 let report = crate::measurements::OpenReport {
@@ -22970,32 +22681,22 @@ impl App {
                     meter: Arc::new(crate::measurements::Meter::default()),
                     remembered: Some(self.cache.clone()),
                 };
-                self.spawn_bg(Job::Load, "Caching schema...", move |task_gen, tx| {
-                    match Self::build_schema_state(
+                self.spawn_job(Job::Load, Some("Caching schema..."), move |_| {
+                    let (state, debug_label) = Self::build_schema_state(
                         lf_owned,
                         path_owned.as_deref(),
                         &options_owned,
                         &cloud,
                         &runtime,
                         &report,
-                    ) {
-                        Ok((state, debug_label)) => {
-                            let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
-                            let dominated = slot.as_ref().is_some_and(|(g, _)| *g > task_gen);
-                            if !dominated {
-                                *slot = Some((task_gen, state));
-                            }
-                            drop(slot);
-                            let _ = tx.send(AppEvent::BackgroundSchemaReady {
-                                generation: task_gen,
-                                path: path_owned,
-                                options: options_owned,
-                                debug_label: Some(debug_label),
-                            });
-                            Ok(())
-                        }
-                        Err(e) => Err(crate::error_display::user_message_from_report(&e, None)),
-                    }
+                    )
+                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    Ok(Answer::SchemaRead {
+                        state: Box::new(state),
+                        path: path_owned,
+                        options: Box::new(options_owned),
+                        debug_label: Some(debug_label),
+                    })
                 });
                 None
             }
@@ -23004,7 +22705,8 @@ impl App {
                     return None;
                 }
                 // No cleanup arm of its own. A collect asked for here is always owed
-                // rather than run — the pump holds a lease for the whole of this handler
+                // rather than run — the pump holds the generation for the whole of this
+                // handler
                 // — so `collect_when_the_work_allows` is what finds out there is nothing
                 // to collect, and it is the one that takes the loading screen down. Two
                 // copies of that cleanup, one of them unreachable and less careful about
@@ -23027,29 +22729,17 @@ impl App {
                     format: options.format.or(Some(FileFormat::Csv)),
                     ..options.clone()
                 };
-                let schema_slot = self.pending_schema_result.clone();
-                self.spawn_bg(Job::Load, "Decompressing...", move |task_gen, tx| {
-                    match Self::decompressed_csv_state(&file, &options_owned) {
-                        Ok(state) => {
-                            let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
-                            let dominated = slot.as_ref().is_some_and(|(g, _)| *g > task_gen);
-                            if !dominated {
-                                *slot = Some((task_gen, state));
-                            }
-                            drop(slot);
-                            let _ = tx.send(AppEvent::BackgroundSchemaReady {
-                                generation: task_gen,
-                                path: Some(path),
-                                options: options_owned,
-                                debug_label: Some("decompressed csv".to_string()),
-                            });
-                            Ok(())
-                        }
-                        Err(e) => Err(crate::error_display::user_message_from_report(
-                            &e,
-                            Some(path.as_path()),
-                        )),
-                    }
+                self.spawn_job(Job::Load, Some("Decompressing..."), move |_| {
+                    let state =
+                        Self::decompressed_csv_state(&file, &options_owned).map_err(|e| {
+                            crate::error_display::user_message_from_report(&e, Some(path.as_path()))
+                        })?;
+                    Ok(Answer::SchemaRead {
+                        state: Box::new(state),
+                        path: Some(path),
+                        options: Box::new(options_owned),
+                        debug_label: Some("decompressed csv".to_string()),
+                    })
                 });
                 None
             }
@@ -23090,10 +22780,10 @@ impl App {
                 if comp.df.is_none() {
                     let sample = self.analysis_modal.sample.clone();
                     let streaming = self.app_config.performance.polars_streaming;
-                    self.spawn_bg(
-                        Job::Analysis,
-                        "Computing statistics...",
-                        move |task_gen, tx| {
+                    self.spawn_job(
+                        Job::Analysis(jobs::AnalysisRun::default()),
+                        Some("Computing statistics..."),
+                        move |_| {
                             let results = source
                                 .cut(&sample.scope)
                                 .and_then(|lf| {
@@ -23105,11 +22795,7 @@ impl App {
                                     )
                                 })
                                 .map_err(|e| format!("{e}"))?;
-                            let _ = tx.send(AppEvent::BackgroundDescribeReady {
-                                generation: task_gen,
-                                results,
-                            });
-                            Ok(())
+                            Ok(Answer::Described(results))
                         },
                     );
                 }
@@ -23120,10 +22806,10 @@ impl App {
                     let (source, known_total) = self.sample_source(state);
                     let sample = self.analysis_modal.sample.clone();
                     let streaming = self.app_config.performance.polars_streaming;
-                    self.spawn_bg(
-                        Job::Analysis,
-                        "Analyzing distributions...",
-                        move |task_gen, tx| {
+                    self.spawn_job(
+                        Job::Analysis(jobs::AnalysisRun::default()),
+                        Some("Analyzing distributions..."),
+                        move |_| {
                             let options = crate::statistics::ComputeOptions {
                                 include_distribution_info: true,
                                 include_distribution_analyses: true,
@@ -23142,11 +22828,7 @@ impl App {
                                     )
                                 })
                                 .map_err(|e| format!("{e}"))?;
-                            let _ = tx.send(AppEvent::BackgroundDistributionReady {
-                                generation: task_gen,
-                                results,
-                            });
-                            Ok(())
+                            Ok(Answer::Distributions(results))
                         },
                     );
                 } else {
@@ -23161,10 +22843,10 @@ impl App {
                     let streaming = state.polars_streaming();
                     let sample = self.analysis_modal.sample.clone();
                     let seed = sample.seed;
-                    self.spawn_bg(
-                        Job::Analysis,
-                        "Computing correlation matrix...",
-                        move |task_gen, tx| {
+                    self.spawn_job(
+                        Job::Analysis(jobs::AnalysisRun::default()),
+                        Some("Computing correlation matrix..."),
+                        move |_| {
                             // Only the numeric columns: nothing else is correlated, and on a
                             // wide table the rest is most of what a full read would hold.
                             let result = source
@@ -23198,11 +22880,7 @@ impl App {
                                     }
                                 });
                             let results = result.map_err(|e| format!("{e}"))?;
-                            let _ = tx.send(AppEvent::BackgroundCorrelationReady {
-                                generation: task_gen,
-                                results,
-                            });
-                            Ok(())
+                            Ok(Answer::Correlations(results))
                         },
                     );
                 } else {
@@ -23271,105 +22949,107 @@ impl App {
                     {
                         source.conflict_scan = state.quality_conflict_scan();
                     }
-                    // Each stage the worker enters comes back tagged with the generation
-                    // it was spawned on, so a cancelled run's stages are dropped.
-                    let generation = self.task_generation;
+                    // Each stage the worker enters comes back as the job's progress, so a
+                    // cancelled run's stages are dropped. The watch is the job's: Esc
+                    // stops the run through its record.
+                    let started = self.start_job(
+                        Job::Analysis(jobs::AnalysisRun::default()),
+                        Some("Profiling data quality..."),
+                    );
+                    let ticket = started.ticket();
                     let phases = self.events.clone();
                     let watch = data_quality::QualityWatch::new(move |phase| {
-                        let _ = phases.send(AppEvent::BackgroundQualityPhase { generation, phase });
+                        let _ = phases.send(AppEvent::JobProgress {
+                            ticket,
+                            progress: Progress::QualityPhase(phase),
+                        });
                     });
                     if let Some(progress) = self.analysis_modal.computing.as_mut() {
                         progress.read = Some(watch.read().clone());
                     }
-                    self.quality_watch = Some(watch.clone());
-                    self.spawn_bg(
-                        Job::Analysis,
-                        "Profiling data quality...",
-                        move |task_gen, tx| {
-                            // A stat of a local file as the run begins, not a read.
-                            match kept_source {
-                                Some(source) => identity = source,
-                                None => identity.stat(),
+                    if let Some(Job::Analysis(run)) = self.jobs.job_mut(ticket) {
+                        run.watch = Some(watch.clone());
+                    }
+                    started.run(&self.runtime, move |worker| {
+                        // A stat of a local file as the run begins, not a read.
+                        match kept_source {
+                            Some(source) => identity = source,
+                            None => identity.stat(),
+                        }
+                        let lf = if source_scope {
+                            data_quality::prepare_source_quality_scan(lf, source.as_ref())
+                                .map_err(|error| format!("{error}"))?
+                        } else {
+                            lf
+                        };
+                        let lf =
+                            data_quality::apply_quality_scope(lf, &plan.scope, source.as_ref())
+                                .map_err(|error| format!("{error}"))?;
+                        // Held to the end of the run: the copy stays on disk while its
+                        // passes read it, released or not.
+                        let fetch = |objects: &[crate::local_copy::RemoteObject], root: &Path| {
+                            #[cfg(feature = "cloud")]
+                            {
+                                Self::fetch_quality_copy(
+                                    objects,
+                                    root,
+                                    &cloud,
+                                    &runtime,
+                                    watch.read(),
+                                )
                             }
-                            let lf = if source_scope {
-                                data_quality::prepare_source_quality_scan(lf, source.as_ref())
-                                    .map_err(|error| format!("{error}"))?
-                            } else {
-                                lf
-                            };
-                            let lf =
-                                data_quality::apply_quality_scope(lf, &plan.scope, source.as_ref())
-                                    .map_err(|error| format!("{error}"))?;
-                            // Held to the end of the run: the copy stays on disk while its
-                            // passes read it, released or not.
-                            let fetch = |objects: &[crate::local_copy::RemoteObject],
-                                         root: &Path| {
-                                #[cfg(feature = "cloud")]
-                                {
-                                    Self::fetch_quality_copy(
-                                        objects,
-                                        root,
-                                        &cloud,
-                                        &runtime,
-                                        watch.read(),
-                                    )
-                                }
-                                #[cfg(not(feature = "cloud"))]
-                                {
-                                    let _ = (objects, root);
-                                    Err(color_eyre::eyre::eyre!("Built without cloud support"))
-                                }
-                            };
-                            let kept_copy = |copy: Option<Arc<crate::local_copy::LocalCopy>>| {
-                                let _ = tx.send(AppEvent::BackgroundQualityCopyKept {
-                                    dataset_generation,
-                                    copy,
-                                });
-                            };
-                            let (lf, held) =
-                                Self::quality_scope_on_copy(lf, copy_job, &watch, fetch, kept_copy)
-                                    .map_err(|error| format!("{error}"))?;
-                            let (results, rows) = crate::data_quality::compute_data_quality_watched(
-                                &lf,
-                                cached_rows,
-                                &plan,
-                                source.as_ref(),
-                                streaming,
-                                kept.as_deref(),
-                                &watch,
-                            );
-                            // Let go before the answer goes out: a `d` handled as soon
-                            // as it lands must find the app's handle the last one.
-                            drop(held);
-                            let kept = rows.map(|rows| KeptQualitySample {
+                            #[cfg(not(feature = "cloud"))]
+                            {
+                                let _ = (objects, root);
+                                Err(color_eyre::eyre::eyre!("Built without cloud support"))
+                            }
+                        };
+                        let kept_copy = |copy: Option<Arc<crate::local_copy::LocalCopy>>| {
+                            worker.send(AppEvent::BackgroundQualityCopyKept {
                                 dataset_generation,
-                                view_generation,
-                                sample: plan.sample(),
-                                rows: std::sync::Arc::new(rows),
-                                source: identity.clone(),
+                                copy,
                             });
-                            match results {
-                                Ok(mut results) => {
-                                    results.source = Some(Box::new(identity));
-                                    let _ = tx.send(AppEvent::BackgroundDataQualityReady {
-                                        generation: task_gen,
-                                        results: Box::new(results),
-                                        kept,
-                                        plan: Box::new(plan),
-                                    });
-                                    Ok(())
-                                }
-                                Err(error) => {
-                                    // Stopped after the sample was read: the read is kept.
-                                    if let Some(kept) = kept {
-                                        let _ =
-                                            tx.send(AppEvent::BackgroundQualitySampleKept { kept });
-                                    }
-                                    Err(format!("{error}"))
-                                }
+                        };
+                        let (lf, held) =
+                            Self::quality_scope_on_copy(lf, copy_job, &watch, fetch, kept_copy)
+                                .map_err(|error| format!("{error}"))?;
+                        let (results, rows) = crate::data_quality::compute_data_quality_watched(
+                            &lf,
+                            cached_rows,
+                            &plan,
+                            source.as_ref(),
+                            streaming,
+                            kept.as_deref(),
+                            &watch,
+                        );
+                        // Let go before the answer goes out: a `d` handled as soon
+                        // as it lands must find the app's handle the last one.
+                        drop(held);
+                        let kept = rows.map(|rows| KeptQualitySample {
+                            dataset_generation,
+                            view_generation,
+                            sample: plan.sample(),
+                            rows: std::sync::Arc::new(rows),
+                            source: identity.clone(),
+                        });
+                        match results {
+                            Ok(mut results) => {
+                                results.source = Some(Box::new(identity));
+                                Ok(Answer::DataQuality {
+                                    results: Box::new(results),
+                                    kept,
+                                    plan: Box::new(plan),
+                                })
                             }
-                        },
-                    );
+                            Err(error) => {
+                                // Stopped after the sample was read: the read is kept.
+                                if let Some(kept) = kept {
+                                    worker.send(AppEvent::BackgroundQualitySampleKept { kept });
+                                }
+                                Err(format!("{error}"))
+                            }
+                        }
+                    });
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
@@ -23486,67 +23166,6 @@ impl App {
                 }
                 None
             }
-            AppEvent::BackgroundCollectReady { generation } => {
-                if *generation == self.task_generation {
-                    // A load-ahead's end is nobody's wait ending: whatever else is busy
-                    // meanwhile keeps its throbber and its message.
-                    let waited_on = self
-                        .collect_inflight
-                        .as_ref()
-                        .is_none_or(|inflight| inflight.waited_on);
-                    // Timed to here rather than to the next paint: this is the moment
-                    // the rows exist to be drawn, and the frame that draws them costs
-                    // the same whatever the page cost to fetch.
-                    if let Some(inflight) = self.collect_inflight.take()
-                        && let Some(state) = self.data_table_state.as_ref()
-                    {
-                        let took = inflight.began.elapsed();
-                        log::debug!(
-                            target: "datui",
-                            "rows {}..{} of {}: read in {took:.1?}",
-                            inflight.start,
-                            inflight.end,
-                            inflight.dataset
-                        );
-                        state.measurements().read_page(took, inflight.files);
-                    }
-                    let taken = self
-                        .pending_collect_result
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take();
-                    if let Some((slot_gen, result)) = taken
-                        && slot_gen == self.task_generation
-                        && let Some(state) = &mut self.data_table_state
-                    {
-                        state.apply_async_collect(result);
-                    }
-                    self.retire_a_count_the_rows_answered();
-                    // The query's first rows are in: it stands.
-                    let ran = self.take_query_run();
-                    if waited_on {
-                        self.loading_state = LoadingState::Idle;
-                        self.status_message = None;
-                        self.busy = false;
-                        if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
-                            && self.query_prompt_mode() == Some(mode)
-                        {
-                            self.leave_query_prompt_after_run();
-                        }
-                    }
-                }
-                // Stale results (generation mismatch) are silently ignored —
-                // busy stays true until the current generation's result arrives.
-                None
-            }
-            AppEvent::BackgroundCollectFailed {
-                generation,
-                message,
-                conversion,
-            } => {
-                self.rows_failed(*generation, message, conversion.as_deref());
-                None
-            }
             AppEvent::BackgroundFootersJoined { .. } => {
                 // Taken whoever the event belongs to, and judged by what is *in* the
                 // slot rather than by the event that woke us. Two passes can be running
@@ -23593,137 +23212,6 @@ impl App {
                 }
                 None
             }
-            AppEvent::BackgroundSchemaReady {
-                generation,
-                path,
-                options,
-                debug_label,
-            } => {
-                // `load_active` also gates the "loading failed silently" reset below:
-                // an abandoned load must not clear busy/loading state that a newer
-                // load, or an export, may already own.
-                if *generation == self.task_generation && self.load_active {
-                    let taken = self
-                        .pending_schema_result
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take();
-                    if let Some((slot_gen, state)) = taken
-                        && slot_gen == self.task_generation
-                    {
-                        if self.apply_schema_ready(
-                            state,
-                            path.clone(),
-                            options,
-                            debug_label.clone(),
-                        ) {
-                            return None;
-                        }
-                        return Some(AppEvent::DoLoadBuffer);
-                    }
-                    // Generation matched but slot was empty or stale — loading failed silently.
-                    self.awaiting_dataset = false;
-                    self.recent_on_install = None;
-                    self.opening = None;
-                    self.loading_state = LoadingState::Idle;
-                    self.status_message = None;
-                    self.busy = false;
-                }
-                // Stale message (generation mismatch) — ignore entirely.
-                None
-            }
-            AppEvent::BackgroundSampleReady {
-                generation,
-                df,
-                label,
-            } => {
-                if *generation == self.task_generation {
-                    self.analysis_modal.computing = None;
-                    self.reading_sample = false;
-                    self.status_message = None;
-                    self.busy = false;
-                    self.show_sample_view(df.clone(), label.clone());
-                }
-                None
-            }
-            AppEvent::BackgroundDescribeReady {
-                generation,
-                results,
-            } => {
-                if *generation == self.task_generation {
-                    self.analysis_modal.describe_results = Some(results.clone());
-                    self.analysis_modal.computing = None;
-                    self.status_message = None;
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::BackgroundDistributionReady {
-                generation,
-                results,
-            } => {
-                if *generation == self.task_generation {
-                    self.analysis_modal.distribution_results = Some(results.clone());
-                    self.analysis_modal.computing = None;
-                    self.status_message = None;
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::BackgroundCorrelationReady {
-                generation,
-                results,
-            } => {
-                if *generation == self.task_generation {
-                    self.analysis_modal.correlation_results = Some(results.clone());
-                    self.analysis_modal.computing = None;
-                    self.status_message = None;
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::BackgroundDataQualityReady {
-                generation,
-                results,
-                kept,
-                plan,
-            } => {
-                // Kept whatever became of the run's results: the rows are the rows the
-                // key names, and a read is not to be thrown away.
-                if let Some(kept) = kept {
-                    self.retain_quality_sample(kept);
-                }
-                if *generation == self.task_generation
-                    && self.analysis_modal.active
-                    && self.analysis_modal.selected_tool
-                        == Some(analysis_modal::AnalysisTool::DataQuality)
-                {
-                    // Labeled with the plan it was dispatched with, whatever has been
-                    // staged since.
-                    let plan = plan.as_ref().clone();
-                    self.cache_quality_result(results, plan.clone());
-                    self.analysis_modal.data_quality_last_plan = Some(plan);
-                    self.analysis_modal.data_quality_results = Some((**results).clone());
-                    self.analysis_modal.data_quality_from_cache = false;
-                    self.analysis_modal
-                        .set_quality_page(crate::data_quality::QualityPage::Overview);
-                    self.analysis_modal.computing = None;
-                    self.quality_watch = None;
-                    self.status_message = None;
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::BackgroundQualityPhase { generation, phase } => {
-                if *generation == self.task_generation
-                    && let Some(progress) = self.analysis_modal.computing.as_mut()
-                {
-                    progress.phase = phase.stage.label().to_string();
-                    progress.reads_source = Some(phase.reads_source);
-                    progress.interruptible = Some(phase.interruptible);
-                }
-                None
-            }
             AppEvent::BackgroundQualitySampleKept { kept } => {
                 self.retain_quality_sample(kept);
                 None
@@ -23735,32 +23223,6 @@ impl App {
                 self.retain_quality_copy(*dataset_generation, copy.clone());
                 None
             }
-            AppEvent::BackgroundExportWriting {
-                generation,
-                phase,
-                bytes,
-            } => {
-                if *generation == self.task_generation
-                    && let LoadingState::Exporting {
-                        current_phase,
-                        written,
-                        ..
-                    } = &mut self.loading_state
-                {
-                    *current_phase = phase.to_string();
-                    *written = Some(*bytes);
-                }
-                None
-            }
-            AppEvent::BackgroundExportWritten { generation, path } => {
-                if *generation == self.task_generation {
-                    self.loading_state = LoadingState::Idle;
-                    self.status_message = None;
-                    self.busy = false;
-                    self.flash_note(format!("Exported to {}", path.display()));
-                }
-                None
-            }
             AppEvent::OpenNamed(paths, options) => {
                 if let Some(event) = Self::route_named_without_looking(paths, options) {
                     return Some(event);
@@ -23768,62 +23230,38 @@ impl App {
                 let (paths, options) = (paths.clone(), options.clone());
                 // Unleased, as the look is: an answer for a screen the user has left
                 // (Ctrl+O) is thrown away by the generation test, not waited for.
-                self.spawn_bg_replaceable(
-                    Job::Load,
-                    Some("Scanning input..."),
-                    move |task_gen, tx| {
-                        if let Some(missing) = Self::missing_named_path(&paths) {
-                            let _ = tx.send(AppEvent::NamedPathMissing {
-                                generation: task_gen,
-                                path: missing,
-                            });
-                            return Ok(());
+                self.spawn_job(Job::OpenNamed, Some("Scanning input..."), move |_| {
+                    if let Some(missing) = Self::missing_named_path(&paths) {
+                        return Ok(Answer::NamedPathMissing(missing));
+                    }
+                    let (paths, options, directory) = match Self::route_named_paths(paths, options)
+                    {
+                        AppEvent::LookThenOpenDirectory(dir, options) => {
+                            (Vec::new(), options, Some(dir))
                         }
-                        let (paths, options, directory) =
-                            match Self::route_named_paths(paths, options) {
-                                AppEvent::LookThenOpenDirectory(dir, options) => {
-                                    (Vec::new(), options, Some(dir))
-                                }
-                                AppEvent::Open(paths, options) => (paths, options, None),
-                                _ => unreachable!("a named path is opened or looked at"),
-                            };
-                        let _ = tx.send(AppEvent::NamedPathsResolved {
-                            generation: task_gen,
-                            paths,
-                            options: Box::new(options),
-                            directory,
-                        });
-                        Ok(())
-                    },
-                );
+                        AppEvent::Open(paths, options) => (paths, options, None),
+                        _ => unreachable!("a named path is opened or looked at"),
+                    };
+                    Ok(Answer::NamedPaths {
+                        paths,
+                        options: Box::new(options),
+                        directory,
+                    })
+                });
                 None
-            }
-            AppEvent::NamedPathsResolved {
-                generation,
-                paths,
-                options,
-                directory,
-            } => {
-                // Something else took the screen while the paths were looked at.
-                if *generation != self.task_generation {
-                    return None;
-                }
-                let options = (**options).clone();
-                Some(match directory {
-                    Some(dir) => AppEvent::LookThenOpenDirectory(dir.clone(), options),
-                    None => AppEvent::Open(paths.clone(), options),
-                })
             }
             AppEvent::LookThenOpenDirectory(dir, options) => {
                 // The name on the wait, so the first frame says which directory is being
-                // looked at rather than sitting blank. `spawn_bg` puts the throbber up
+                // looked at rather than sitting blank. `spawn_job` puts the throbber up
                 // and the keys that survive it — Ctrl+C, Ctrl+O — keep working, which
                 // is the whole of what doing this on the event thread cost.
                 let looking = dir.clone();
                 let options = options.clone();
                 self.set_loading_phase(Self::LOOKING_AT_A_DIRECTORY, 5);
                 self.name_what_is_loading(looking.clone());
-                self.looking_at_directory = Some(looking.clone());
+                // A newer look replaces an older one.
+                self.jobs
+                    .supersede(|job| matches!(job, Job::LookAtDirectory(_)));
                 // The same words the loading screen shows, so the control bar and the
                 // screen above it do not name the wait two different ways.
                 // Unleased. A lease exists to make a bump wait for an answer that
@@ -23831,111 +23269,55 @@ impl App {
                 // thrown away when the user moves on, which is the whole of the guard
                 // below. Leased, it made everything else wait instead: Ctrl+O out of a
                 // seventeen-second look and open a small CSV, and its buffer collect
-                // parks in `collect_owed` until the abandoned look finally returns.
+                // was owed until the abandoned look finally returned.
                 // Advertising Ctrl+O as the way out of the wait and then holding the
                 // next dataset behind it is the wait again, wearing a different hat.
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 let job = Job::LookAtDirectory(looking.clone());
-                self.spawn_bg_replaceable(
-                    job,
-                    Some(Self::LOOKING_AT_A_DIRECTORY),
-                    move |task_gen, tx| {
-                        #[cfg(feature = "cloud")]
-                        if home::is_object_store_url(&looking) {
-                            let url = looking.to_string_lossy().into_owned();
-                            let peeked = wait_on_runtime(&runtime, async move {
-                                crate::cloud_browse::peek_kind(&url, &cloud).await
-                            })
-                            .and_then(Result::ok);
-                            let (kind, holds) = match peeked {
-                                Some((kind, holds)) => (kind, Some(Box::new(holds))),
-                                None => (discover::EntryKind::Unknown, None),
-                            };
-                            let _ = tx.send(AppEvent::DirectoryLookedAt {
-                                generation: task_gen,
-                                path: looking,
-                                kind,
-                                holds,
-                                options: Box::new(options),
-                            });
-                            return Ok(());
-                        }
-                        // A panic here used to unwind through `run()` and report a crash,
-                        // because the look was made on the way to the first frame. On a
-                        // worker it is swallowed with the dropped handle instead, and nothing
-                        // would ever be sent: the spinner would stay up and the directory
-                        // unopened for as long as the user waited. Caught, so the answer is
-                        // "a directory" and the home screen opens on it. Read the way this
-                        // open will read them, so the rule judges the directory the user is
-                        // about to see rather than one nobody will open.
-                        let as_read = Self::read_as(&options);
-                        let looked = logging::catch_panic(|| {
-                            let mut entry = discover::Entry::directory(&looking);
-                            entry.kind = discover::EntryKind::Unknown;
-                            home::look_into_as(&entry, &as_read)
-                        });
-                        let kind = match looked {
-                            Ok(entry) => entry.kind,
-                            Err(_) => discover::EntryKind::Directory,
+                self.spawn_job(job, Some(Self::LOOKING_AT_A_DIRECTORY), move |_| {
+                    #[cfg(feature = "cloud")]
+                    if home::is_object_store_url(&looking) {
+                        let url = looking.to_string_lossy().into_owned();
+                        let peeked = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::peek_kind(&url, &cloud).await
+                        })
+                        .and_then(Result::ok);
+                        let (kind, holds) = match peeked {
+                            Some((kind, holds)) => (kind, Some(Box::new(holds))),
+                            None => (discover::EntryKind::Unknown, None),
                         };
-                        let _ = tx.send(AppEvent::DirectoryLookedAt {
-                            generation: task_gen,
-                            path: looking,
+                        return Ok(Answer::LookedAt {
                             kind,
-                            holds: None,
+                            holds,
                             options: Box::new(options),
                         });
-                        Ok(())
-                    },
-                );
-                None
-            }
-            AppEvent::DirectoryLookedAt {
-                generation,
-                path,
-                kind,
-                holds,
-                options,
-            } => {
-                // The user pressed Ctrl+O and went to the home screen, or opened
-                // something else, while this was reading. Their choice is the one on
-                // screen, and this is the answer to a question nobody is waiting for.
-                //
-                // Both tests: the directory, because a newer look replaces an older one,
-                // and the generation, because other work bumps that when it takes the
-                // screen over.
-                // Not ours: a newer look is out and this is an older answer, so the
-                // tracking belongs to that one and is left alone. Taking it here would
-                // strand the newer answer as unowned, and the app would sit on a
-                // loading screen with nothing left to clear it.
-                if self.looking_at_directory.as_deref() != Some(path.as_path()) {
-                    return None;
-                }
-                // Ours, so it is put down whatever happens next — including the
-                // generation test below. Left set, the next `abandon_load` from
-                // anywhere would find it and clear `busy` for work it does not own.
-                self.looking_at_directory = None;
-                if *generation != self.task_generation {
-                    return None;
-                }
-                let outcome = self.open_the_directory_looked_at(
-                    path.clone(),
-                    *kind,
-                    holds.as_deref(),
-                    (**options).clone(),
-                );
-                // Only when nothing follows. An `Open` keeps the wait up — it sets its
-                // own phase and `busy` — and clearing them here would draw one frame
-                // with the spinner stopped and the keys held during the look replayed
-                // into an app that has no dataset yet, ahead of the load.
-                if outcome.is_none() {
-                    self.busy = false;
-                    if self.status_message.as_deref() == Some(Self::LOOKING_AT_A_DIRECTORY) {
-                        self.status_message = None;
                     }
-                }
-                outcome
+                    // A panic here used to unwind through `run()` and report a crash,
+                    // because the look was made on the way to the first frame. On a
+                    // worker it is swallowed with the dropped handle instead, and nothing
+                    // would ever be sent: the spinner would stay up and the directory
+                    // unopened for as long as the user waited. Caught, so the answer is
+                    // "a directory" and the home screen opens on it. Read the way this
+                    // open will read them, so the rule judges the directory the user is
+                    // about to see rather than one nobody will open.
+                    let as_read = Self::read_as(&options);
+                    let looked = logging::catch_panic(|| {
+                        let mut entry = discover::Entry::directory(&looking);
+                        entry.kind = discover::EntryKind::Unknown;
+                        home::look_into_as(&entry, &as_read)
+                    });
+                    let kind = match looked {
+                        Ok(entry) => entry.kind,
+                        Err(_) => discover::EntryKind::Directory,
+                    };
+                    Ok(Answer::LookedAt {
+                        kind,
+                        holds: None,
+                        options: Box::new(options),
+                    })
+                });
+                None
             }
             AppEvent::ClassifyThenOpen { path, jump } => {
                 // A second Enter replaces the first rather than being refused. Every key
@@ -23944,13 +23326,11 @@ impl App {
                 // refusing meant a look at a share that never answers killed the feature
                 // for the rest of the session, silently.
                 let looking = path.clone();
-                let jump = *jump;
-                self.classify_requests = self.classify_requests.wrapping_add(1);
-                let request = self.classify_requests;
-                self.classify_inflight = Some(ClassifyRequest {
-                    id: request,
+                self.jobs.supersede(|job| matches!(job, Job::Classify(_)));
+                let look = Job::Classify(jobs::Classify {
                     path: looking.clone(),
                     browsing: self.home.browsing.clone(),
+                    jump: *jump,
                 });
                 let name = looking
                     .file_name()
@@ -23958,159 +23338,23 @@ impl App {
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the control bar's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
-                self.spawn_bg(
-                    Job::Classify(request),
-                    Self::LOOKING,
-                    move |task_gen, tx| {
-                        // Every one of these can sit forever on a share that has gone away,
-                        // which is the whole reason they are here and not where keys are read.
-                        let found = if !looking.exists() {
-                            None
-                        } else if looking.is_dir() {
-                            Some(crate::discover::classify_directory(&looking))
-                        } else {
-                            Some(crate::discover::EntryKind::File)
-                        };
-                        let _ = tx.send(AppEvent::BackgroundKindReady {
-                            generation: task_gen,
-                            request,
-                            path: looking,
-                            found,
-                            jump,
-                        });
-                        Ok(())
-                    },
-                );
+                self.spawn_job(look, Some(Self::LOOKING), move |_| {
+                    // Every one of these can sit forever on a share that has gone away,
+                    // which is the whole reason they are here and not where keys are read.
+                    let found = if !looking.exists() {
+                        None
+                    } else if looking.is_dir() {
+                        Some(crate::discover::classify_directory(&looking))
+                    } else {
+                        Some(crate::discover::EntryKind::File)
+                    };
+                    Ok(Answer::Kind(found))
+                });
                 None
             }
-            AppEvent::InspectorFieldsRead {
-                generation,
-                frame,
-                row,
-                values,
-            } => {
-                // A bump means something replaced the view; its owner has the busy state.
-                if *generation != self.task_generation {
-                    return None;
-                }
-                self.busy = false;
-                if self.status_message.as_deref() == Some(Self::READING_FIELDS) {
-                    self.status_message = None;
-                }
-                let asked = self
-                    .inspector_modal
-                    .read
-                    .as_ref()
-                    .is_some_and(|read| read.key() == (*frame, *row));
-                if self.inspector_modal.active && asked {
-                    self.inspector_modal.read = Some(inspector_modal::FieldRead::Read {
-                        frame: *frame,
-                        row: *row,
-                        values: values.clone(),
-                    });
-                }
-                None
-            }
-            AppEvent::DrillRowRead {
-                generation,
-                group_index,
-                row,
-            } => {
-                // A bump means something replaced the view; its owner has the busy state.
-                if *generation != self.task_generation {
-                    return None;
-                }
-                self.busy = false;
-                if self.status_message.as_deref() == Some(Self::READING_GROUP) {
-                    self.status_message = None;
-                }
-                self.drill_into(*group_index, row);
-                None
-            }
-            AppEvent::BackgroundKindReady {
-                generation,
-                request,
-                path,
-                found,
-                jump,
-            } => {
-                // Superseded, or belonging to nothing: a newer look owns the busy state
-                // and the status line, so this one touches neither.
-                if self
-                    .classify_inflight
-                    .as_ref()
-                    .map(|r| (r.id, r.path.as_path()))
-                    != Some((*request, path.as_path()))
-                {
-                    return None;
-                }
-                let asked = self.classify_inflight.take().expect("just matched");
-                if self.status_message.as_deref() == Some(Self::LOOKING) {
-                    self.status_message = None;
-                }
-                self.home.status = None;
-
-                // Something else took the busy state over. A bump comes from an `Open` or
-                // a collect, and both set `busy` themselves — clearing it here would take
-                // the throbber off a load still running and let keys land on a table
-                // being replaced. Their answer, their busy.
-                if *generation != self.task_generation {
-                    return None;
-                }
-                // Otherwise it is this look's, and goes down however the answer lands.
-                self.busy = false;
-
-                // A key pressed on the home screen answers on the home screen. If they
-                // went back to the data, opening now would arrive from nowhere; if the
-                // browse has moved, the answer is about somewhere they navigated away
-                // from, and acting on it would take them back into it.
-                if self.input_mode != InputMode::Home || self.home.browsing != asked.browsing {
-                    return None;
-                }
-
-                let Some(kind) = *found else {
-                    self.home.status = Some(format!("No such path: {}", path.display()));
-                    if *jump {
-                        // A typo typed at `~` is worth another go without retyping it.
-                        self.home.path_input = path.display().to_string();
-                        self.home.path_input_active = true;
-                    }
-                    return None;
-                };
-                self.open_what_it_is(path.clone(), kind, *jump)
-            }
-            AppEvent::BackgroundWorkFinished { generation } => {
-                // Behind the result its work sent, so the handler that consumed that
-                // result has already run. Saturating because a lease released twice
-                // would otherwise wrap into "nothing is ever safe to bump".
-                if let Some(n) = self.leases.get_mut(generation) {
-                    *n = n.saturating_sub(1);
-                    if *n == 0 {
-                        self.leases.remove(generation);
-                    }
-                }
-                // The cancelled analysis's worker has exited: its read is over.
-                if self
-                    .analysis_cancelled
-                    .is_some_and(|(cancelled, _, _)| !self.leases.contains_key(&cancelled))
-                {
-                    self.analysis_cancelled = None;
-                    // Run can run again, so Setup no longer says it waits.
-                    if self.analysis_modal.data_quality_setup_note.as_deref()
-                        == Some(QUALITY_RUN_WAITS)
-                    {
-                        self.analysis_modal.data_quality_setup_note = None;
-                    }
-                }
-                None
-            }
-            AppEvent::BackgroundFailed {
-                generation,
-                job,
-                message,
-                panicked,
-            } => {
-                self.background_failed(*generation, job, message, *panicked);
+            AppEvent::JobEnded(ticket) => self.job_ended(*ticket),
+            AppEvent::JobProgress { ticket, progress } => {
+                self.job_progress(*ticket, progress);
                 None
             }
             AppEvent::Search(query) => {
@@ -24158,92 +23402,17 @@ impl App {
                 }
                 None
             }
-            AppEvent::ViewPivotReady {
-                generation,
-                pivoted,
-            } => {
-                // A bump means the view was cancelled or something replaced it; its
-                // owner has the busy state.
-                if *generation != self.task_generation {
-                    return None;
-                }
-                let pending = self
-                    .view_pivot
-                    .take_if(|pending| pending.generation == *generation)?;
-                let planned = self.data_table_state.as_mut().map(|state| {
-                    // Nothing changed while the pivot was read, so the steps before
-                    // it plan as they did; this time the pivot is in hand.
-                    state
-                        .try_transition(|s| {
-                            Self::replay_view(s, &pending.template.settings, Some(pivoted.clone()))
-                        })
-                        .map(|(_, rollback)| rollback)
-                        .map_err(|e| e.to_string())
-                });
-                match planned {
-                    // The busy state passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&pending.template, rollback),
-                    Some(Err(message)) => self.view_pivot_failed(&message),
-                    None => {
-                        self.busy = false;
-                        self.status_message = None;
-                    }
-                }
-                None
-            }
             AppEvent::Pivot(spec) => {
                 // The modal stays up until the result is in, so a pivot that fails
                 // leaves the spec there to fix.
                 let job = self.data_table_state.as_ref()?.plan_pivot(spec);
                 let spec = spec.clone();
-                self.pivot_generation = Some(self.task_generation);
-                self.spawn_bg(Job::Pivot, Self::COMPUTING_PIVOT, move |task_gen, tx| {
+                self.spawn_job(Job::Pivot, Some(Self::COMPUTING_PIVOT), move |_| {
                     let pivoted = job
                         .run()
                         .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    let _ = tx.send(AppEvent::PivotReady {
-                        generation: task_gen,
-                        spec,
-                        pivoted,
-                    });
-                    Ok(())
+                    Ok(Answer::Pivoted { spec, pivoted })
                 });
-                None
-            }
-            AppEvent::PivotReady {
-                generation,
-                spec,
-                pivoted,
-            } => {
-                // A bump means something replaced the view; its owner has the busy state.
-                if *generation != self.task_generation {
-                    return None;
-                }
-                self.pivot_generation = None;
-                if self.status_message.as_deref() == Some(Self::COMPUTING_PIVOT) {
-                    self.status_message = None;
-                }
-                let installed = self.data_table_state.as_mut().map(|state| {
-                    state
-                        .deferred(|s| s.install_pivot(spec, pivoted.clone()))
-                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))
-                });
-                match installed {
-                    Some(Ok(())) => {
-                        self.pivot_melt_modal.close();
-                        // Only from the modal: a trip home meanwhile stays home.
-                        if self.input_mode == InputMode::PivotMelt {
-                            self.input_mode = InputMode::Normal;
-                        }
-                        // The busy state passes to the collect.
-                        if self.spawn_async_collect(Self::LOADING_BUFFER) {
-                            return None;
-                        }
-                    }
-                    Some(Err(message)) => self.error_modal.show(message),
-                    None => {}
-                }
-                self.busy = false;
                 None
             }
             AppEvent::Melt(spec) => {
@@ -24275,25 +23444,15 @@ impl App {
                 let results = self.analysis_modal.data_quality_results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
                 let (path, format, overwrite) = (path.clone(), *format, *overwrite);
-                self.spawn_bg(
+                self.spawn_job(
                     Job::QualityReport,
-                    "Writing the report...",
-                    move |generation, tx| {
+                    Some("Writing the report..."),
+                    move |_| {
                         crate::quality_export::write(&path, &results, &plan, format, overwrite)
                             .map_err(|error| Self::format_export_error(&error, &path))?;
-                        let _ =
-                            tx.send(AppEvent::BackgroundQualityReportWritten { generation, path });
-                        Ok(())
+                        Ok(Answer::QualityReportWritten(path))
                     },
                 );
-                None
-            }
-            AppEvent::BackgroundQualityReportWritten { generation, path } => {
-                if *generation == self.task_generation {
-                    self.busy = false;
-                    self.status_message = None;
-                    self.flash_note(format!("Report written to {}", path.display()));
-                }
                 None
             }
             AppEvent::ChartExport(request) => {
@@ -24317,19 +23476,6 @@ impl App {
                     return None;
                 }
                 self.start_chart_export(request.clone());
-                None
-            }
-            AppEvent::BackgroundChartExportWritten {
-                generation,
-                path,
-                format,
-            } => {
-                // Gated on the chart export's own marker, which leaving the dataset
-                // clears: a write that finishes after Ctrl-O must not reopen its modal
-                // over the home screen.
-                if self.chart_export_inflight == Some(*generation) {
-                    self.finish_chart_export(path, *format, Ok(()));
-                }
                 None
             }
             AppEvent::BackgroundChartReady => {
@@ -24403,14 +23549,13 @@ impl App {
                 };
                 let writing = Self::export_write_phase(request);
                 let request = request.clone();
-                self.spawn_bg(Job::Export, "Exporting...", move |task_gen, tx| {
-                    let progress = tx.clone();
+                self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
+                    let report = worker.reporter();
                     let written = move |bytes| {
-                        let _ = progress.send(AppEvent::BackgroundExportWriting {
-                            generation: task_gen,
+                        report(Progress::ExportWriting {
                             phase: writing,
                             bytes,
-                        });
+                        })
                     };
                     frame
                         .into_lazy()
@@ -24418,11 +23563,7 @@ impl App {
                         .and_then(|lf| crate::export::run(lf, &request, streaming, written))
                         .map_err(|e| Self::format_export_error(&e, &request.path))?;
                     // Success is reported only once the file is committed.
-                    let _ = tx.send(AppEvent::BackgroundExportWritten {
-                        generation: task_gen,
-                        path: request.path,
-                    });
-                    Ok(())
+                    Ok(Answer::Exported(request.path))
                 });
                 None
             }
@@ -24439,66 +23580,40 @@ impl App {
                     let lf = state.visible_lf();
                     let streaming = state.polars_streaming();
                     let (format, header) = (*format, *header);
-                    self.spawn_bg(
-                        Job::Copy,
-                        "Collecting data for copy...",
-                        move |task_gen, tx| {
-                            // A capped destination's copy is read in batches and given
-                            // up at the cap; any other is collected and built whole.
-                            let (payload, rows) = match accepts.base64_limit {
-                                Some(limit) => {
-                                    crate::clipboard::bounded_table_text(lf, format, header, limit)
-                                        .map(|(text, rows)| {
-                                            (crate::clipboard::Payload::text(text), rows)
-                                        })
-                                }
-                                None => crate::statistics::collect_lazy(lf, streaming)
-                                    .map_err(|e| crate::error_display::user_message_from_polars(&e))
-                                    .and_then(|df| {
-                                        crate::clipboard::tabular_payload(
-                                            &df,
-                                            format,
-                                            header,
-                                            accepts.html,
-                                        )
-                                        .map(|payload| (payload, df.height()))
-                                    }),
-                            }
-                            .map_err(|message| format!("Copy failed: {message}"))?;
-                            let _ = tx.send(AppEvent::BackgroundCopyReady {
-                                generation: task_gen,
-                                payload: std::sync::Mutex::new(Some(payload)),
-                                message: format!(
-                                    "Copied {} rows as {}",
-                                    copy_modal::thousands(rows),
-                                    format.as_str()
-                                ),
-                            });
-                            Ok(())
-                        },
-                    );
+                    self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
+                        // A capped destination's copy is read in batches and given
+                        // up at the cap; any other is collected and built whole.
+                        let (payload, rows) = match accepts.base64_limit {
+                            Some(limit) => crate::clipboard::bounded_table_text(
+                                lf, format, header, limit,
+                            )
+                            .map(|(text, rows)| (crate::clipboard::Payload::text(text), rows)),
+                            None => crate::statistics::collect_lazy(lf, streaming)
+                                .map_err(|e| crate::error_display::user_message_from_polars(&e))
+                                .and_then(|df| {
+                                    crate::clipboard::tabular_payload(
+                                        &df,
+                                        format,
+                                        header,
+                                        accepts.html,
+                                    )
+                                    .map(|payload| (payload, df.height()))
+                                }),
+                        }
+                        .map_err(|message| format!("Copy failed: {message}"))?;
+                        // Handed on whole, never copied.
+                        Ok(Answer::Copied {
+                            payload,
+                            message: format!(
+                                "Copied {} rows as {}",
+                                copy_modal::thousands(rows),
+                                format.as_str()
+                            ),
+                        })
+                    });
                 } else {
                     self.busy = false;
                 }
-                None
-            }
-            AppEvent::BackgroundCopyReady {
-                generation,
-                payload,
-                message,
-            } => {
-                if *generation == self.task_generation {
-                    self.loading_state = LoadingState::Idle;
-                    self.status_message = None;
-                    self.busy = false;
-                    if let Some(payload) = payload.lock().ok().and_then(|mut p| p.take()) {
-                        self.finish_copy(payload, message.clone());
-                    }
-                }
-                None
-            }
-            AppEvent::FileFactsRead { dataset, facts } => {
-                self.file_facts_landed(*dataset, facts.clone());
                 None
             }
             _ => None,
@@ -24805,15 +23920,11 @@ impl App {
         match self.build_chart_export_job(&request.title) {
             Ok(Some(job)) => {
                 self.chart_export_waiting = None;
-                self.chart_export_generation = self.chart_export_generation.wrapping_add(1);
-                let generation = self.chart_export_generation;
-                self.chart_export_inflight = Some(generation);
-                let failing = Job::ChartExport {
-                    generation,
+                let write = Job::ChartExport {
                     path: request.path.clone(),
                     format: request.format,
                 };
-                self.spawn_bg(failing, "Exporting chart...", move |_, tx| {
+                self.spawn_job(write, Some("Exporting chart..."), move |_| {
                     let ChartExportRequest {
                         path,
                         format,
@@ -24824,12 +23935,7 @@ impl App {
                     } = request;
                     job.write(&path, format, (width, height), overwrite)
                         .map_err(|e| Self::format_export_error(&e, &path))?;
-                    let _ = tx.send(AppEvent::BackgroundChartExportWritten {
-                        generation,
-                        path,
-                        format,
-                    });
-                    Ok(())
+                    Ok(Answer::ChartExported)
                 });
             }
             // Still being prepared; `BackgroundChartReady` comes back here.
@@ -24848,7 +23954,6 @@ impl App {
         result: Result<(), String>,
     ) {
         self.chart_export_waiting = None;
-        self.chart_export_inflight = None;
         self.loading_state = LoadingState::Idle;
         self.status_message = None;
         self.busy = false;
@@ -25002,7 +24107,7 @@ impl App {
     /// then the view's first rows — run in the background, and the view is installed
     /// when they are in. One that fails there puts the view before it back (#400).
     fn apply_template(&mut self, template: &Template) -> Result<()> {
-        self.view_pivot = None;
+        self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
@@ -25016,22 +24121,13 @@ impl App {
                 state.roll_back(rollback);
                 // Past any load-ahead for the view on screen, whose rows must not land
                 // in the one that replaces it.
-                if !self.work_a_bump_would_strand() {
-                    self.task_generation = self.task_generation.wrapping_add(1);
-                }
-                self.view_pivot = Some(PendingView {
-                    generation: self.task_generation,
-                    template: template.clone(),
-                });
-                self.spawn_bg(Job::ViewPivot, Self::APPLYING_VIEW, move |task_gen, tx| {
+                self.jobs.try_advance();
+                let view = Job::ViewPivot(Box::new(template.clone()));
+                self.spawn_job(view, Some(Self::APPLYING_VIEW), move |_| {
                     let pivoted = job
                         .run()
                         .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    let _ = tx.send(AppEvent::ViewPivotReady {
-                        generation: task_gen,
-                        pivoted,
-                    });
-                    Ok(())
+                    Ok(Answer::ViewPivoted(pivoted))
                 });
                 Ok(())
             }
@@ -25066,11 +24162,7 @@ impl App {
             len_count_failed: self.len_count_failed,
             rows: None,
         });
-        if self.spawn_async_collect(Self::APPLYING_VIEW) {
-            // A collect queued behind a worker still finishing sets neither itself.
-            self.busy = true;
-            self.status_message = Some(Self::APPLYING_VIEW.to_string());
-        } else {
+        if !self.spawn_async_collect(Self::APPLYING_VIEW) {
             // Nothing to read: the view has no rows. Applied on open, it was the
             // open's last step.
             self.query_running = None;
@@ -25085,13 +24177,13 @@ impl App {
     /// Whether a view is being applied at the table: its pivot or its first rows are
     /// being read.
     pub(crate) fn view_applying(&self) -> bool {
-        if !self.busy || !self.in_normal_table_view() {
+        if !self.is_busy() || !self.in_normal_table_view() {
             return false;
         }
         let pivot = self
-            .view_pivot
-            .as_ref()
-            .is_some_and(|pending| pending.generation == self.task_generation);
+            .jobs
+            .current(|job| matches!(job, Job::ViewPivot(_)))
+            .is_some();
         let rows = self.query_running.as_ref().is_some_and(|run| {
             matches!(run.origin, RunOrigin::View { .. })
                 && self
@@ -25105,107 +24197,523 @@ impl App {
     /// Stop applying a view and keep the one before it. As with a pivot, a worker runs
     /// to the end and the bump drops its answer.
     fn cancel_view(&mut self) {
-        self.task_generation = self.task_generation.wrapping_add(1);
+        self.jobs.advance();
         self.screen_generation = self.screen_generation.wrapping_add(1);
-        self.view_pivot = None;
         if let Some(run) = self.take_query_run() {
             self.roll_back_query_run(run);
         }
-        self.collect_inflight = None;
         // A collect for the view, queued behind a worker, would read it after all.
-        self.collect_owed = None;
+        self.forget_the_rows_read();
         self.read_after_view_rollback();
         self.flash_note("View cancelled".to_string());
     }
 
+    /// A job's outcome is in: take it, and the job's record with it, from [`Jobs`], and
+    /// act on it. The record goes in this step, so the job holds the generation and
+    /// the keys until its answer is handled and not after: whatever the answer starts
+    /// next holds them before anything else can look.
+    ///
+    /// What the job held is put down here, for every job alike: a job the user waited
+    /// on gives the keys back, and its line on the control bar goes with it, unless the
+    /// answer goes on to a continuation, which keeps the wait up across the gap.
+    fn job_ended(&mut self, ticket: Ticket) -> Option<AppEvent> {
+        let jobs::Ended {
+            job,
+            current,
+            keys,
+            outcome,
+            ..
+        } = self.jobs.end(ticket)?;
+        let cancelled_analysis = !current && Self::reads_for_analysis(&job);
+        let waited = keys.is_some();
+        let out = match outcome {
+            Outcome::Answered(answer) => self.answered(job, current, waited, *answer),
+            Outcome::Failed { message, panicked } => {
+                self.background_failed(&job, current, waited, &message, panicked);
+                None
+            }
+        };
+        if let Some(status) = keys {
+            if out.is_some() {
+                self.busy = true;
+            } else {
+                self.busy = false;
+                // Unless a job that is still running says the same: the read of a
+                // view's rows that its pivot's answer started.
+                if self.status_message.as_deref() == Some(status.as_str())
+                    && !self.jobs.shows(&status)
+                {
+                    self.status_message = None;
+                }
+            }
+        }
+        // A cancelled analysis's worker has exited: its read is over, and once no other
+        // is still going, Run can run again and Setup no longer says it waits.
+        if cancelled_analysis
+            && self.cancelled_analysis().is_none()
+            && self.analysis_modal.data_quality_setup_note.as_deref() == Some(QUALITY_RUN_WAITS)
+        {
+            self.analysis_modal.data_quality_setup_note = None;
+        }
+        out
+    }
+
+    /// A report from a job still running, taken while the job is current.
+    fn job_progress(&mut self, ticket: Ticket, progress: &Progress) {
+        if !self.jobs.is_current(ticket) {
+            return;
+        }
+        match progress {
+            Progress::ExportWriting { phase, bytes } => {
+                if let LoadingState::Exporting {
+                    current_phase,
+                    written,
+                    ..
+                } = &mut self.loading_state
+                {
+                    *current_phase = phase.to_string();
+                    *written = Some(*bytes);
+                }
+            }
+            Progress::QualityPhase(phase) => {
+                if let Some(progress) = self.analysis_modal.computing.as_mut() {
+                    progress.phase = phase.stage.label().to_string();
+                    progress.reads_source = Some(phase.reads_source);
+                    progress.interruptible = Some(phase.interruptible);
+                }
+            }
+        }
+    }
+
+    /// `job` answered. `current` says whether its answer is still the one waited for:
+    /// a stale one changes nothing on screen, and whatever it carries is dropped here.
+    /// `waited` says the user was waiting on it.
+    fn answered(
+        &mut self,
+        job: Job,
+        current: bool,
+        waited: bool,
+        answer: Answer,
+    ) -> Option<AppEvent> {
+        match answer {
+            Answer::Scanned { lf, path, options } => {
+                // A scan a newer open superseded, or one for a load given up, describes
+                // data nobody is looking at.
+                if !current || !self.load_active {
+                    return None;
+                }
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Caching schema".to_string(),
+                        progress_percent: 40,
+                    };
+                }
+                Some(AppEvent::DoLoadSchema(Box::new(lf), path, *options))
+            }
+            Answer::SchemaRead {
+                state,
+                path,
+                options,
+                debug_label,
+            } => {
+                // An abandoned load must not install a dataset under the screen the user
+                // went to.
+                if !current || !self.load_active {
+                    return None;
+                }
+                if self.apply_schema_ready(*state, path, &options, debug_label) {
+                    return None;
+                }
+                Some(AppEvent::DoLoadBuffer)
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Answer::RemoteSize(pending) => {
+                if !current || !self.load_active {
+                    return None;
+                }
+                // Nothing runs while the question is up: datui waits on a key, and a
+                // spinner would read as progress. The pending download's hold keeps the
+                // generation meanwhile.
+                self.confirmation_modal
+                    .show(Self::download_confirmation_message(&pending));
+                self.pending_download = Some((*pending, self.hold_the_generation()));
+                None
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Answer::Downloaded { download, options } => {
+                // A download nobody is going to use goes with the answer that carried it.
+                if !current || !self.load_active {
+                    return None;
+                }
+                self.download = Some(download.clone());
+                // The URL the load was opened as, which is what opening it again names.
+                if let LoadingState::Loading { file_path, .. } = &self.loading_state {
+                    self.downloaded_from = file_path.clone();
+                }
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Scanning".to_string(),
+                        progress_percent: 30,
+                    };
+                }
+                self.status_message = Some("Scanning...".to_string());
+                Some(AppEvent::DoLoadDownload(download, *options))
+            }
+            Answer::NamedPaths {
+                paths,
+                options,
+                directory,
+            } => {
+                // Something else took the screen while the paths were looked at.
+                if !current {
+                    return None;
+                }
+                Some(match directory {
+                    Some(dir) => AppEvent::LookThenOpenDirectory(dir, *options),
+                    None => AppEvent::Open(paths, *options),
+                })
+            }
+            Answer::NamedPathMissing(path) => current.then_some(AppEvent::NamedPathMissing(path)),
+            Answer::LookedAt {
+                kind,
+                holds,
+                options,
+            } => {
+                // The user pressed Ctrl+O and went to the home screen, a newer look
+                // replaced this one, or something else took the screen while this was
+                // reading. Their choice is the one on screen, and this is the answer to a
+                // question nobody is waiting for.
+                let Job::LookAtDirectory(path) = job else {
+                    return None;
+                };
+                if !current {
+                    return None;
+                }
+                // An `Open` that follows keeps the wait up: it sets its own phase.
+                self.open_the_directory_looked_at(path, kind, holds.as_deref(), *options)
+            }
+            Answer::Kind(found) => {
+                // Superseded: a newer look, a trip away from home, or something that took
+                // the screen over owns the wait, so this one touches nothing.
+                let Job::Classify(asked) = job else {
+                    return None;
+                };
+                if !current {
+                    return None;
+                }
+                self.home.status = None;
+
+                // A key pressed on the home screen answers on the home screen. If they
+                // went back to the data, opening now would arrive from nowhere; if the
+                // browse has moved, the answer is about somewhere they navigated away
+                // from, and acting on it would take them back into it.
+                if self.input_mode != InputMode::Home || self.home.browsing != asked.browsing {
+                    return None;
+                }
+
+                let path = asked.path;
+                let Some(kind) = found else {
+                    self.home.status = Some(format!("No such path: {}", path.display()));
+                    if asked.jump {
+                        // A typo typed at `~` is worth another go without retyping it.
+                        self.home.path_input = path.display().to_string();
+                        self.home.path_input_active = true;
+                    }
+                    return None;
+                };
+                self.open_what_it_is(path, kind, asked.jump)
+            }
+            Answer::Rows(result) => {
+                // A stale page is dropped; the wait belongs to whatever replaced it.
+                let Job::Rows(inflight) = job else {
+                    return None;
+                };
+                if !current {
+                    return None;
+                }
+                // Timed to here rather than to the next paint: this is the moment the
+                // rows exist to be drawn, and the frame that draws them costs the same
+                // whatever the page cost to fetch.
+                if let Some(state) = self.data_table_state.as_ref() {
+                    let took = inflight.began.elapsed();
+                    log::debug!(
+                        target: "datui",
+                        "rows {}..{} of {}: read in {took:.1?}",
+                        inflight.start,
+                        inflight.end,
+                        inflight.dataset
+                    );
+                    state.measurements().read_page(took, inflight.files);
+                }
+                if let Some(state) = &mut self.data_table_state {
+                    state.apply_async_collect(result);
+                }
+                self.retire_a_count_the_rows_answered();
+                // The query's first rows are in: it stands.
+                let ran = self.take_query_run();
+                // A load-ahead's end is nobody's wait ending: whatever else is under
+                // way meanwhile keeps its spinner and its message.
+                if waited {
+                    self.loading_state = LoadingState::Idle;
+                    if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
+                        && self.query_prompt_mode() == Some(mode)
+                    {
+                        self.leave_query_prompt_after_run();
+                    }
+                }
+                None
+            }
+            Answer::RowsFailed {
+                message,
+                conversion,
+            } => {
+                self.rows_failed(current, waited, &message, conversion.as_deref());
+                None
+            }
+            Answer::Described(results) => {
+                if current {
+                    self.analysis_modal.describe_results = Some(results);
+                    self.analysis_modal.computing = None;
+                }
+                None
+            }
+            Answer::Distributions(results) => {
+                if current {
+                    self.analysis_modal.distribution_results = Some(results);
+                    self.analysis_modal.computing = None;
+                }
+                None
+            }
+            Answer::Correlations(results) => {
+                if current {
+                    self.analysis_modal.correlation_results = Some(results);
+                    self.analysis_modal.computing = None;
+                }
+                None
+            }
+            Answer::DataQuality {
+                results,
+                kept,
+                plan,
+            } => {
+                // Kept whatever became of the run's results: the rows are the rows the
+                // key names, and a read is not to be thrown away.
+                if let Some(kept) = kept {
+                    self.retain_quality_sample(&kept);
+                }
+                if current
+                    && self.analysis_modal.active
+                    && self.analysis_modal.selected_tool
+                        == Some(analysis_modal::AnalysisTool::DataQuality)
+                {
+                    // Labeled with the plan it was dispatched with, whatever has been
+                    // staged since.
+                    self.cache_quality_result(&results, (*plan).clone());
+                    self.analysis_modal.data_quality_last_plan = Some(*plan);
+                    self.analysis_modal.data_quality_results = Some(*results);
+                    self.analysis_modal.data_quality_from_cache = false;
+                    self.analysis_modal
+                        .set_quality_page(crate::data_quality::QualityPage::Overview);
+                    self.analysis_modal.computing = None;
+                }
+                None
+            }
+            Answer::Sample { df, label } => {
+                if current {
+                    self.analysis_modal.computing = None;
+                    self.show_sample_view(df, label);
+                }
+                None
+            }
+            Answer::Pivoted { spec, pivoted } => {
+                // Superseded means something replaced the view, which owns the wait.
+                if !current {
+                    return None;
+                }
+                let installed = self.data_table_state.as_mut().map(|state| {
+                    state
+                        .deferred(|s| s.install_pivot(&spec, pivoted))
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))
+                });
+                match installed {
+                    Some(Ok(())) => {
+                        self.pivot_melt_modal.close();
+                        // Only from the modal: a trip home meanwhile stays home.
+                        if self.input_mode == InputMode::PivotMelt {
+                            self.input_mode = InputMode::Normal;
+                        }
+                        // The wait passes to the read of its rows.
+                        self.spawn_async_collect(Self::LOADING_BUFFER);
+                    }
+                    Some(Err(message)) => self.error_modal.show(message),
+                    None => {}
+                }
+                None
+            }
+            Answer::ViewPivoted(pivoted) => {
+                // Superseded means the view was cancelled or something replaced it, which
+                // owns the wait.
+                let Job::ViewPivot(template) = job else {
+                    return None;
+                };
+                if !current {
+                    return None;
+                }
+                let planned = self.data_table_state.as_mut().map(|state| {
+                    // Nothing changed while the pivot was read, so the steps before
+                    // it plan as they did; this time the pivot is in hand.
+                    state
+                        .try_transition(|s| Self::replay_view(s, &template.settings, Some(pivoted)))
+                        .map(|(_, rollback)| rollback)
+                        .map_err(|e| e.to_string())
+                });
+                match planned {
+                    // The wait passes to the read of its rows.
+                    Some(Ok(rollback)) => self.view_planned(&template, rollback),
+                    Some(Err(message)) => self.view_pivot_failed(&message),
+                    None => {}
+                }
+                None
+            }
+            Answer::DrillRow { group_index, row } => {
+                // Superseded means something replaced the view, which owns the wait.
+                if current {
+                    self.drill_into(group_index, &row);
+                }
+                None
+            }
+            Answer::FieldsRead(values) => {
+                // Superseded means something replaced the view, which owns the wait.
+                let Job::InspectRow { frame, row } = job else {
+                    return None;
+                };
+                if !current {
+                    return None;
+                }
+                let asked = self
+                    .inspector_modal
+                    .read
+                    .as_ref()
+                    .is_some_and(|read| read.key() == (frame, row));
+                if self.inspector_modal.active && asked {
+                    self.inspector_modal.read =
+                        Some(inspector_modal::FieldRead::Read { frame, row, values });
+                }
+                None
+            }
+            Answer::Exported(path) => {
+                if current {
+                    self.loading_state = LoadingState::Idle;
+                    self.flash_note(format!("Exported to {}", path.display()));
+                }
+                None
+            }
+            Answer::Copied { payload, message } => {
+                if current {
+                    self.loading_state = LoadingState::Idle;
+                    self.finish_copy(payload, message);
+                }
+                None
+            }
+            Answer::QualityReportWritten(path) => {
+                if current {
+                    self.flash_note(format!("Report written to {}", path.display()));
+                }
+                None
+            }
+            Answer::ChartExported => {
+                // Leaving the chart's dataset supersedes the write: one that finishes
+                // after Ctrl-O must not reopen its modal over the home screen.
+                if let Job::ChartExport { path, format } = job
+                    && current
+                {
+                    self.finish_chart_export(&path, format, Ok(()));
+                }
+                None
+            }
+            Answer::FileFacts(facts) => {
+                if let Job::FileFacts { dataset } = job {
+                    self.file_facts_landed(dataset, facts);
+                }
+                None
+            }
+            // What a test's answer carries goes with it.
+            #[cfg(test)]
+            Answer::Probe(held) => {
+                drop(held);
+                None
+            }
+        }
+    }
+
     /// Put down what a failed background operation started, and say why.
     ///
-    /// Each arm decides from its own job's markers whether this failure is the current
-    /// one, as that job's result handler would, and clears only what the job set: a
+    /// The keys and the line it held are put down by [`Self::job_ended`]. Each arm
+    /// clears only what the job itself started, and only when the job is current: a
     /// load-ahead that dies leaves the analysis beside it running, and an older look at
     /// a path leaves the newer one waiting. One that is not current is dropped.
-    fn background_failed(&mut self, generation: u64, job: &Job, message: &str, panicked: bool) {
-        let current = generation == self.task_generation;
+    fn background_failed(
+        &mut self,
+        job: &Job,
+        current: bool,
+        waited: bool,
+        message: &str,
+        panicked: bool,
+    ) {
         match job {
-            Job::Load => {
+            Job::Load | Job::OpenNamed => {
                 if current && self.awaiting_dataset {
                     self.load_failed(message);
                 }
             }
-            Job::LookAtDirectory(path) => {
-                // A newer look owns the wait; see `DirectoryLookedAt`.
-                if self.looking_at_directory.as_deref() != Some(path.as_path()) {
-                    return;
-                }
-                self.looking_at_directory = None;
+            Job::LookAtDirectory(_) => {
                 if current {
                     self.load_failed(message);
                 }
             }
-            Job::Classify(request) => {
-                if self.classify_inflight.as_ref().map(|asked| asked.id) != Some(*request) {
-                    return;
-                }
-                self.classify_inflight = None;
-                if self.status_message.as_deref() == Some(Self::LOOKING) {
-                    self.status_message = None;
-                }
-                self.home.status = None;
-                // As with its answer: after a bump the busy state is someone else's.
+            Job::Classify(_) => {
                 if current {
-                    self.busy = false;
+                    self.home.status = None;
                     self.error_modal.show(message.to_string());
                 }
             }
-            Job::Rows => self.rows_failed(generation, message, None),
-            Job::Analysis => {
+            Job::Rows(_) | Job::OwedRows { .. } => self.rows_failed(current, waited, message, None),
+            Job::Analysis(_) | Job::SampleRows => {
                 if current {
                     self.analysis_modal.computing = None;
-                    self.quality_watch = None;
-                    self.status_message = None;
-                    self.busy = false;
                     self.error_modal.show(message.to_string());
                 }
             }
-            Job::SampleRows => {
+            // The form stays up with its spec, to be fixed.
+            Job::Pivot | Job::Copy | Job::QualityReport => {
                 if current {
-                    self.reading_sample = false;
-                    self.analysis_modal.computing = None;
-                    self.status_message = None;
-                    self.busy = false;
                     self.error_modal.show(message.to_string());
                 }
             }
-            Job::Pivot => {
-                // The form stays up with its spec, to be fixed.
+            Job::ViewPivot(_) => {
                 if current {
-                    self.pivot_generation = None;
-                    if self.status_message.as_deref() == Some(Self::COMPUTING_PIVOT) {
-                        self.status_message = None;
-                    }
-                    self.busy = false;
-                    self.error_modal.show(message.to_string());
-                }
-            }
-            Job::ViewPivot => {
-                if current
-                    && self
-                        .view_pivot
-                        .take_if(|pending| pending.generation == generation)
-                        .is_some()
-                {
                     self.view_pivot_failed(message);
                 }
             }
             Job::DrillRow => {
-                // The grouped view stays as it was.
+                // The grouped view stays as it was. A flash has one line, and a panic's
+                // message is an internal error with the log's path under it: the log
+                // has the details.
                 if current {
-                    self.busy = false;
-                    if self.status_message.as_deref() == Some(Self::READING_GROUP) {
-                        self.status_message = None;
-                    }
-                    // A flash has one line, and a panic's message is an internal
-                    // error with the log's path under it: the log has the details.
                     self.flash_note(if panicked {
                         "Could not drill in; see the log".to_string()
                     } else {
@@ -25215,10 +24723,6 @@ impl App {
             }
             Job::InspectRow { frame, row } => {
                 if current {
-                    self.busy = false;
-                    if self.status_message.as_deref() == Some(Self::READING_FIELDS) {
-                        self.status_message = None;
-                    }
                     let asked = self
                         .inspector_modal
                         .read
@@ -25244,28 +24748,15 @@ impl App {
                     if matches!(self.loading_state, LoadingState::Exporting { .. }) {
                         self.loading_state = LoadingState::Idle;
                     }
-                    self.status_message = None;
-                    self.busy = false;
                     self.error_modal.show(message.to_string());
                 }
             }
-            Job::Copy | Job::QualityReport => {
+            Job::ChartExport { path, format } => {
                 if current {
-                    self.status_message = None;
-                    self.busy = false;
-                    self.error_modal.show(message.to_string());
-                }
-            }
-            Job::ChartExport {
-                generation,
-                path,
-                format,
-            } => {
-                if self.chart_export_inflight == Some(*generation) {
                     self.finish_chart_export(path, *format, Err(message.to_string()));
                 }
             }
-            // Judged by the dataset, as its answer is; it set no busy state to clear.
+            // Judged by the dataset, as its answer is.
             Job::FileFacts { dataset } => {
                 // The panel has one line for it, and a panic's message is an internal
                 // error with the log's path under it.
@@ -25292,7 +24783,8 @@ impl App {
             || self
                 .file_facts
                 .as_ref()
-                .is_some_and(|(asked, _)| *asked == dataset)
+                .is_some_and(|(read, _)| *read == dataset)
+            || self.file_facts_reading()
         {
             return;
         }
@@ -25310,7 +24802,6 @@ impl App {
             return;
         };
         let parquet = self.original_file_format == Some(ExportFormat::Parquet);
-        self.file_facts = Some((dataset, FileFacts::Reading));
         #[cfg(test)]
         let read: FileFactsReader = self
             .file_facts_reader
@@ -25318,20 +24809,24 @@ impl App {
             .unwrap_or_else(|| Arc::new(FileFacts::read));
         #[cfg(not(test))]
         let read = FileFacts::read;
-        self.spawn_bg_replaceable(Job::FileFacts { dataset }, None, move |_, tx| {
-            let facts = read(&path, parquet)?;
-            let _ = tx.send(AppEvent::FileFactsRead { dataset, facts });
-            Ok(())
+        self.spawn_job(Job::FileFacts { dataset }, None, move |_| {
+            Ok(Answer::FileFacts(read(&path, parquet)?))
         });
     }
 
-    /// The file facts read for `dataset`, kept if that is still the dataset waiting on
-    /// them. An answer for one replaced since is about a file no longer on screen.
+    /// Whether the open dataset's file facts are being read.
+    pub(crate) fn file_facts_reading(&self) -> bool {
+        let dataset = self.dataset_generation;
+        self.jobs
+            .current(|job| matches!(job, Job::FileFacts { dataset: asked } if *asked == dataset))
+            .is_some()
+    }
+
+    /// The file facts read for `dataset`, kept if that is still the dataset on screen.
+    /// An answer for one replaced since is about a file no longer there.
     fn file_facts_landed(&mut self, dataset: u64, facts: FileFacts) {
-        if let Some((asked, waiting @ FileFacts::Reading)) = self.file_facts.as_mut()
-            && *asked == dataset
-        {
-            *waiting = facts;
+        if dataset == self.dataset_generation {
+            self.file_facts = Some((dataset, facts));
         }
     }
 
@@ -25339,7 +24834,25 @@ impl App {
     /// for a source with no file on this machine. Installing a dataset clears it, so
     /// what is here is the open dataset's.
     pub fn file_facts(&self) -> Option<&FileFacts> {
-        self.file_facts.as_ref().map(|(_, facts)| facts)
+        Self::facts_shown(
+            &self.file_facts,
+            self.dataset_generation,
+            self.file_facts_reading(),
+        )
+    }
+
+    /// [`Self::file_facts`], from the fields it reads, for a caller holding the rest
+    /// of the app.
+    pub(crate) fn facts_shown(
+        read: &Option<(u64, FileFacts)>,
+        dataset: u64,
+        reading: bool,
+    ) -> Option<&FileFacts> {
+        static READING: FileFacts = FileFacts::Reading;
+        match read {
+            Some((read_for, facts)) if *read_for == dataset => Some(facts),
+            _ => reading.then_some(&READING),
+        }
     }
 
     /// An open failed before its first rows. The dataset already up is the current one
@@ -25368,22 +24881,19 @@ impl App {
     /// a load-ahead's failure is left for the page that needs those rows.
     fn rows_failed(
         &mut self,
-        generation: u64,
+        current: bool,
+        waited: bool,
         message: &str,
         conversion: Option<&crate::error_display::ConversionFailure>,
     ) {
-        if generation != self.task_generation {
+        if !current {
             return;
         }
         if let Some(run) = self.take_query_run() {
             self.fail_query_run(run, message, conversion);
             return;
         }
-        let waited_on = self
-            .collect_inflight
-            .take()
-            .is_none_or(|inflight| inflight.waited_on);
-        if !waited_on {
+        if !waited {
             return;
         }
         // A count waiting for this page to paint would read the frame that just
@@ -25403,8 +24913,6 @@ impl App {
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
         }
-        self.status_message = None;
-        self.busy = false;
         self.error_modal.show(message.to_string());
     }
 
@@ -25425,7 +24933,6 @@ impl App {
     ) {
         let rows = run.rows;
         let origin = self.roll_back_query_run(run);
-        self.collect_inflight = None;
         self.loading_state = LoadingState::Idle;
         self.status_message = None;
         self.busy = false;
@@ -25473,12 +24980,9 @@ impl App {
     fn read_after_view_rollback(&mut self) {
         self.busy = false;
         self.status_message = None;
-        if self.spawn_async_collect(Self::LOADING_BUFFER) {
-            // A collect queued behind a worker still finishing sets neither itself.
-            self.busy = true;
-            self.status_message
-                .get_or_insert_with(|| Self::LOADING_BUFFER.to_string());
-        } else if matches!(self.loading_state, LoadingState::Loading { .. }) {
+        if !self.spawn_async_collect(Self::LOADING_BUFFER)
+            && matches!(self.loading_state, LoadingState::Loading { .. })
+        {
             self.loading_state = LoadingState::Idle;
         }
     }
@@ -25958,10 +25462,10 @@ impl App {
         let streaming = state.polars_streaming();
         let (frame, index) = (row.frame, row.row);
         self.inspector_modal.read = Some(inspector_modal::FieldRead::Reading { frame, row: index });
-        self.spawn_bg(
+        self.spawn_job(
             Job::InspectRow { frame, row: index },
-            Self::READING_FIELDS,
-            move |task_gen, tx| {
+            Some(Self::READING_FIELDS),
+            move |_| {
                 let read = crate::statistics::collect_lazy(lf, streaming)
                     .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
                 if read.height() != 1 {
@@ -25979,13 +25483,7 @@ impl App {
                 let values = read
                     .select(wanted.iter().map(String::as_str))
                     .map_err(|e| e.to_string())?;
-                let _ = tx.send(AppEvent::InspectorFieldsRead {
-                    generation: task_gen,
-                    frame,
-                    row: index,
-                    values,
-                });
-                Ok(())
+                Ok(Answer::FieldsRead(values))
             },
         );
     }
@@ -26044,14 +25542,12 @@ impl App {
             }
             return;
         }
-        self.spawn_bg(Job::Copy, "Copying...", move |task_gen, tx| {
+        self.spawn_job(Job::Copy, Some("Copying..."), move |_| {
             let text = crate::exact::copy_text(&column).map_err(|e| format!("Copy failed: {e}"))?;
-            let _ = tx.send(AppEvent::BackgroundCopyReady {
-                generation: task_gen,
-                payload: std::sync::Mutex::new(Some(clipboard::Payload::text(text))),
+            Ok(Answer::Copied {
+                payload: clipboard::Payload::text(text),
                 message,
-            });
-            Ok(())
+            })
         });
     }
 
@@ -26457,7 +25953,7 @@ impl Widget for &mut App {
             LoadingState::Idle => {
                 if self.fetch_too_young_to_mention() {
                     None
-                } else if self.busy {
+                } else if self.is_busy() {
                     self.status_message.clone()
                 } else if let Some((read, total)) = self
                     .footers_this_frame
@@ -26495,7 +25991,7 @@ impl Widget for &mut App {
             }
         };
         let status_msg = status_msg.map(|msg| {
-            if self.input_dropped && self.busy {
+            if self.input_dropped && self.is_busy() {
                 format!("{msg}  input dropped while busy")
             } else {
                 msg
@@ -26585,7 +26081,10 @@ impl Widget for &mut App {
 
         // Chart preparation spins the throbber without setting `busy`, so the chart
         // sidebar keeps taking keys while the data is computed.
-        controls = controls.with_busy(self.busy || self.chart_preparing(), self.throbber_frame);
+        controls = controls.with_busy(
+            self.is_busy() || self.chart_preparing(),
+            self.throbber_frame,
+        );
         // Reflect the row-count's determinacy in the control bar:
         //  - in flight   -> spinner (still being computed)
         //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
@@ -27847,7 +27346,7 @@ mod file_facts_tests {
                 .recv_timeout(std::time::Duration::from_secs(300))
                 .expect("the old read answers");
             let answered =
-                matches!(event, AppEvent::FileFactsRead { dataset, .. } if dataset == old);
+                matches!(event, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::FileFacts);
             app.event(&event);
             if answered {
                 break;
@@ -27858,19 +27357,20 @@ mod file_facts_tests {
         open_resources(&mut app);
         assert!(reading(&app));
         // Late answers for the old dataset, of either kind, leave the new read waiting.
-        app.event(&AppEvent::FileFactsRead {
-            dataset: old,
-            facts: FileFacts::Read {
+        app.answer_for_tests(
+            Job::FileFacts { dataset: old },
+            crate::Answer::FileFacts(FileFacts::Read {
                 size: Some(1),
                 parquet: None,
-            },
-        });
-        app.event(&AppEvent::BackgroundFailed {
-            generation: app.task_generation,
-            job: Job::FileFacts { dataset: old },
+            }),
+        );
+        let late = app.job_for_tests(Job::FileFacts { dataset: old }, None);
+        let ticket = late.ticket();
+        late.end(Outcome::Failed {
             message: "not this one".to_string(),
             panicked: false,
         });
+        app.event(&AppEvent::JobEnded(ticket));
         assert!(reading(&app), "the new dataset is still waiting on its own");
 
         gate.answer.send(read(5)).unwrap();
@@ -27888,7 +27388,7 @@ mod file_facts_tests {
     fn a_read_whose_worker_dies_fails_once() {
         let (mut app, rx, tx) = app();
         let gate = gated(&mut app);
-        app.worker_dies =
+        app.jobs.worker_dies =
             crate::tests::worker_dies_once(|job| matches!(job, Job::FileFacts { .. }));
         install(&mut app, "/nowhere/facts.parquet");
         open_resources(&mut app);
@@ -28142,8 +27642,9 @@ mod inspector_tests {
         assert!(app.is_busy());
         loop {
             match rx.recv_timeout(std::time::Duration::from_secs(120)) {
-                Ok(event @ AppEvent::InspectorFieldsRead { .. })
-                | Ok(event @ AppEvent::BackgroundFailed { .. }) => return event,
+                Ok(event @ AppEvent::JobEnded(ticket)) if ticket.kind() == JobKind::InspectRow => {
+                    return event;
+                }
                 Ok(_) => continue,
                 Err(e) => panic!("no answer from the worker: {e}"),
             }
@@ -28165,13 +27666,13 @@ mod inspector_tests {
         assert_eq!(secret.as_deref(), Some("x"));
     }
 
-    /// A bump means the view was replaced while the read ran: its answer is
-    /// dropped, never shown as the new view's.
+    /// The view was replaced while the read ran: its answer is dropped, never shown
+    /// as the new view's.
     #[test]
     fn a_read_from_a_stale_generation_is_dropped() {
         let (mut app, rx) = app();
         let answer = read_hidden(&mut app, &rx);
-        app.task_generation = app.task_generation.wrapping_add(1);
+        app.jobs.advance();
         app.event(&answer);
         assert!(matches!(
             app.inspector_modal.read,
@@ -28184,7 +27685,8 @@ mod inspector_tests {
     fn a_read_for_another_row_is_let_go() {
         let (mut app, rx) = app();
         let answer = read_hidden(&mut app, &rx);
-        app.busy = false;
+        // Nobody waits on the read any more, so the cursor can move on before it lands.
+        app.jobs.quiet(|job| matches!(job, Job::InspectRow { .. }));
         press(&mut app, KeyCode::Right);
         draw(&mut app);
         assert!(
@@ -28199,7 +27701,7 @@ mod inspector_tests {
     #[test]
     fn a_failed_read_says_so_in_the_pane() {
         let (mut app, rx) = app();
-        app.worker_dies =
+        app.jobs.worker_dies =
             crate::tests::worker_dies_once(|job| matches!(job, Job::InspectRow { .. }));
         let answer = read_hidden(&mut app, &rx);
         app.event(&answer);

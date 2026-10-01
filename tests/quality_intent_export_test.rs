@@ -8,7 +8,7 @@ use datui::analysis_modal::{AnalysisFocus, SetupRow};
 use datui::data_quality::{QualityPage, QualityPrecision};
 use datui::output_file::Overwrite;
 use datui::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
-use datui::{App, AppEvent, OpenOptions};
+use datui::{App, AppEvent, JobKind, OpenOptions};
 use polars::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -52,10 +52,12 @@ fn drain(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>) 
     let mut handle = |app: &mut App, event: AppEvent| {
         let mut next = Some(event);
         while let Some(event) = next {
-            if matches!(event, AppEvent::BackgroundDataQualityReady { .. }) {
+            let run = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Analysis);
+            next = app.event(&event);
+            // A run that failed says so; one that finished does not.
+            if run && app.error_message().is_none() {
                 runs += 1;
             }
-            next = app.event(&event);
         }
     };
     if let Some(event) = first {

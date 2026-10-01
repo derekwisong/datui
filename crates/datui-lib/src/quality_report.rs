@@ -1536,6 +1536,7 @@ mod tests {
                 rows_involved: 0,
                 evaluated_rows: results.evaluated_rows,
                 precision: results.precision,
+                examples: Vec::new(),
             });
             results
         };

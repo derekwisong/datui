@@ -21,6 +21,9 @@ pub const KEY_LIKE_UNIQUENESS: f64 = 0.95;
 /// evidence, not the measurement: the counts above them cover every file.
 const MAX_EVIDENCE_FILES: usize = 20;
 const MAX_CONFLICT_EXAMPLES: usize = 5;
+/// Values kept per finding from the rows a run read, and groups of duplicate rows:
+/// enough to recognize the problem in the detail, which opens the rest.
+pub const MAX_FINDING_EXAMPLES: usize = 3;
 /// Window widths offered for time-window grain, in the order the plan cycles them.
 pub const QUALITY_WINDOW_WIDTHS: [&str; 4] = ["1h", "1d", "1w", "1mo"];
 
@@ -1669,6 +1672,26 @@ pub struct IdentityProfile {
     pub rows_involved: usize,
     pub evaluated_rows: usize,
     pub precision: QualityPrecision,
+    /// The most copied groups, from the rows the run kept. Empty after a full scan,
+    /// which keeps no rows.
+    pub examples: Vec<DuplicateExample>,
+}
+
+/// One group of identical rows: how many there are, and the row, a value a column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateExample {
+    pub copies: usize,
+    /// Rendered for reading: text quoted, a null as `null`.
+    pub values: Vec<String>,
+}
+
+/// A few of the values behind one column's finding, from the rows the run kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindingExamples {
+    pub kind: ObservationKind,
+    pub column: String,
+    /// Distinct values, first seen first, quoted.
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2042,6 +2065,9 @@ pub struct DataQualityResults {
     /// What the run's reads of the source were seen to do. `None` for results no
     /// watched run produced.
     pub reads: Option<ObservedReads>,
+    /// Values behind text findings, from the rows the run kept; empty after a full
+    /// scan.
+    pub examples: Vec<FindingExamples>,
 }
 
 impl DataQualityResults {
@@ -2132,7 +2158,17 @@ impl DataQualityResults {
             per_value: None,
             footers_read: None,
             reads: None,
+            examples: Vec::new(),
         }
+    }
+
+    /// The kept examples of `kind` in `column`.
+    pub fn examples_of(&self, kind: ObservationKind, column: &str) -> &[String] {
+        self.examples
+            .iter()
+            .find(|examples| examples.kind == kind && examples.column == column)
+            .map(|examples| examples.values.as_slice())
+            .unwrap_or_default()
     }
 }
 
@@ -2584,6 +2620,13 @@ fn profile_quality(
         &collected_schema,
     ));
     observations.extend(identity_observations(&identity, &category_variants));
+    // The rows are in memory, so the detail can show a few of the values behind a
+    // finding without reading anything again.
+    let mut identity = identity;
+    if identity.duplicate_groups > 0 {
+        identity.examples = duplicate_examples(&profile_lf, &schema, polars_streaming)?;
+    }
+    let examples = finding_examples(&profile_lf, &columns, &observations, polars_streaming)?;
     // A sampled run does not promise the extra reads, so the counts come without the
     // values behind them.
     if let Some(source) = source {
@@ -2638,6 +2681,7 @@ fn profile_quality(
         per_value,
         footers_read: source.map(|source| source.footers_read),
         reads: Some(watch.observed()),
+        examples,
     };
     Ok(results)
 }
@@ -2889,6 +2933,7 @@ fn compute_full_quality(
         per_value: None,
         footers_read: source.map(|source| source.footers_read),
         reads: Some(watch.observed()),
+        examples: Vec::new(),
     })
 }
 
@@ -3100,7 +3145,154 @@ fn profile_identity_lazy(
         rows_involved: usize_value(&summary, "rows_involved"),
         evaluated_rows: total_rows,
         precision,
+        examples: Vec::new(),
     })
+}
+
+const DUPLICATE_COPIES: &str = "__datui_quality_copies";
+
+/// Groups of rows identical in every one of `keys`, with how many copies each has,
+/// most copies first and then first seen first: the grouping the duplicate check
+/// counts with.
+fn duplicate_groups(lf: LazyFrame, keys: &[PlSmallStr]) -> LazyFrame {
+    lf.group_by_stable(keys.iter().map(|key| col(key.clone())).collect::<Vec<_>>())
+        .agg([len().alias(DUPLICATE_COPIES)])
+        .filter(col(DUPLICATE_COPIES).gt(lit(1u32)))
+        .sort(
+            [DUPLICATE_COPIES],
+            SortMultipleOptions::default()
+                .with_order_descending(true)
+                .with_maintain_order(true),
+        )
+}
+
+/// The rows the duplicate check counted: every row equal to another in every one of
+/// `keys`, copies together, most copies first. One pass, grouping as the check did.
+///
+/// Copies are equal in every key, so each group's key is its rows: it is repeated as
+/// many times as it occurs rather than looked up in a second read.
+pub fn duplicate_rows(
+    lf: LazyFrame,
+    keys: &[PlSmallStr],
+    polars_streaming: bool,
+) -> Result<DataFrame> {
+    let groups =
+        collect_lazy(duplicate_groups(lf, keys), polars_streaming).map_err(Report::from)?;
+    let copies = groups
+        .column(DUPLICATE_COPIES)?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .into_no_null_iter()
+        .collect::<Vec<_>>();
+    let mut take = Vec::with_capacity(copies.iter().sum::<u64>() as usize);
+    for (group, copies) in copies.into_iter().enumerate() {
+        take.extend(std::iter::repeat_n(group as IdxSize, copies as usize));
+    }
+    let rows = groups.drop(DUPLICATE_COPIES)?;
+    Ok(rows.take(&IdxCa::from_vec(PlSmallStr::EMPTY, take))?)
+}
+
+/// The most copied groups of rows kept in memory, rendered for the detail.
+fn duplicate_examples(
+    lf: &LazyFrame,
+    schema: &Schema,
+    polars_streaming: bool,
+) -> Result<Vec<DuplicateExample>> {
+    let keys = schema.iter_names().cloned().collect::<Vec<_>>();
+    let groups = collect_lazy(
+        duplicate_groups(lf.clone(), &keys).limit(MAX_FINDING_EXAMPLES as IdxSize),
+        polars_streaming,
+    )
+    .map_err(Report::from)?;
+    Ok((0..groups.height())
+        .map(|row| DuplicateExample {
+            copies: usize_value_at(&groups, DUPLICATE_COPIES, row),
+            values: keys
+                .iter()
+                .map(|key| {
+                    groups
+                        .column(key)
+                        .and_then(|column| column.get(row))
+                        .map(|value| example_text(&value))
+                        .unwrap_or_else(|_| "null".to_string())
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+/// A value as the detail shows it: text quoted and cut, a null named.
+fn example_text(value: &AnyValue<'_>) -> String {
+    match value {
+        AnyValue::Null => "null".to_string(),
+        AnyValue::String(text) => crate::quality_report::quoted(text, 24),
+        AnyValue::StringOwned(text) => crate::quality_report::quoted(text, 24),
+        other => {
+            let text = other.str_value().to_string();
+            if crate::glyphs::display_width(&text) > 24 {
+                format!(
+                    "{}{}",
+                    crate::glyphs::take_columns(&text, 23),
+                    crate::glyphs::get().ellipsis
+                )
+            } else {
+                text
+            }
+        }
+    }
+}
+
+/// A few distinct values behind each text finding a sample can show: text its
+/// reading does not parse, and text its time format does not read.
+fn finding_examples(
+    lf: &LazyFrame,
+    columns: &[ColumnQualityProfile],
+    observations: &[QualityObservation],
+    polars_streaming: bool,
+) -> Result<Vec<FindingExamples>> {
+    let mut examples = Vec::new();
+    for observation in observations {
+        let profile = columns
+            .iter()
+            .find(|profile| profile.name == observation.column);
+        let failed = match observation.kind {
+            ObservationKind::ParseableText => profile.and_then(unparsed_text),
+            ObservationKind::UnparsedTime => observation
+                .time_format
+                .as_ref()
+                .map(TimeInterpretation::unparsed),
+            _ => None,
+        };
+        let (Some(failed), Some(profile)) = (failed, profile) else {
+            continue;
+        };
+        // The first failures, told apart here: a few hundred bound the work, and a
+        // value repeated that often is the example anyway.
+        let values = text_expr(col(observation.column.as_str()), &profile.dtype)
+            .filter(failed)
+            .head(Some(256))
+            .alias("values");
+        let found =
+            collect_lazy(lf.clone().select([values]), polars_streaming).map_err(Report::from)?;
+        let mut values = Vec::new();
+        for value in (0..found.height()).filter_map(|row| string_value_at(&found, "values", row)) {
+            let value = crate::quality_report::quoted(&value, 24);
+            if !values.contains(&value) {
+                values.push(value);
+            }
+            if values.len() == MAX_FINDING_EXAMPLES {
+                break;
+            }
+        }
+        if !values.is_empty() {
+            examples.push(FindingExamples {
+                kind: observation.kind,
+                column: observation.column.clone(),
+                values,
+            });
+        }
+    }
+    Ok(examples)
 }
 
 fn visible_schema(schema: &Schema, source: Option<&QualitySourceContext>) -> Schema {
@@ -4468,58 +4660,18 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
                     .sum()
                     .alias(format!("{prefix}leading_zero")),
             );
-            exprs.push(
-                text.clone()
-                    .cast(DataType::Float64)
-                    .is_not_null()
-                    .and(text.clone().is_not_null())
-                    .sum()
-                    .alias(format!("{prefix}parse_decimal")),
-            );
-            // Named formats, not inference: "parses as an ISO date" has to mean
-            // the same thing on every column, including one where nothing does.
-            let strptime = |format: &str| StrptimeOptions {
-                format: Some(PlSmallStr::from(format)),
-                strict: false,
-                exact: true,
-                cache: true,
-            };
-            let as_datetime = |format: &str| {
-                text.clone().str().to_datetime(
-                    Some(TimeUnit::Microseconds),
-                    None,
-                    strptime(format),
-                    lit(PlSmallStr::from_static("raise")),
-                )
-            };
-            exprs.push(
-                text.clone()
-                    .str()
-                    .to_date(strptime("%Y-%m-%d"))
-                    .is_not_null()
-                    .and(text.clone().is_not_null())
-                    .sum()
-                    .alias(format!("{prefix}parse_date")),
-            );
-            let datetime_formats = [
-                "%Y-%m-%d %H:%M:%S%.f",
-                "%Y-%m-%dT%H:%M:%S%.f%#z",
-                "%Y-%m-%dT%H:%M:%S%.f",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%dT%H:%M:%S%#z",
-                "%Y-%m-%dT%H:%M:%S",
-            ];
-            let parses_as_datetime = datetime_formats
-                .into_iter()
-                .map(|format| as_datetime(format).is_not_null())
-                .reduce(Expr::or)
-                .expect("at least one datetime format");
-            exprs.push(
-                parses_as_datetime
-                    .and(text.clone().is_not_null())
-                    .sum()
-                    .alias(format!("{prefix}parse_datetime")),
-            );
+            for (reading, name) in [
+                (TextReading::Decimal, "parse_decimal"),
+                (TextReading::Date, "parse_date"),
+                (TextReading::Datetime, "parse_datetime"),
+            ] {
+                exprs.push(
+                    parses_as(text.clone(), reading)
+                        .and(text.clone().is_not_null())
+                        .sum()
+                        .alias(format!("{prefix}{name}")),
+                );
+            }
             exprs.push(
                 text.clone()
                     .str()
@@ -4573,6 +4725,60 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
         }
     }
     exprs
+}
+
+/// Whether text parses as `reading`: the test the profile counts with, so a count
+/// and the rows it opens agree. A whole number is counted among the decimals, and
+/// fails where they fail.
+fn parses_as(text: Expr, reading: TextReading) -> Expr {
+    // Named formats, not inference: "parses as an ISO date" has to mean the same
+    // thing on every column, including one where nothing does.
+    let strptime = |format: &str| StrptimeOptions {
+        format: Some(PlSmallStr::from(format)),
+        strict: false,
+        exact: true,
+        cache: true,
+    };
+    match reading {
+        TextReading::WholeNumber | TextReading::Decimal => {
+            text.cast(DataType::Float64).is_not_null()
+        }
+        TextReading::Date => text.str().to_date(strptime("%Y-%m-%d")).is_not_null(),
+        TextReading::Datetime => [
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M:%S%.f%#z",
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S%#z",
+            "%Y-%m-%dT%H:%M:%S",
+        ]
+        .into_iter()
+        .map(|format| {
+            text.clone()
+                .str()
+                .to_datetime(
+                    Some(TimeUnit::Microseconds),
+                    None,
+                    strptime(format),
+                    lit(PlSmallStr::from_static("raise")),
+                )
+                .is_not_null()
+        })
+        .reduce(Expr::or)
+        .expect("at least one datetime format"),
+    }
+}
+
+/// The rows of a parseable-text column its reading does not parse: non-null text
+/// that stops a cast. `None` when the column has no reading.
+pub fn unparsed_text(profile: &ColumnQualityProfile) -> Option<Expr> {
+    let (_, reading) = text_reading(profile)?;
+    let text = text_expr(col(profile.name.as_str()), &profile.dtype);
+    Some(
+        text.clone()
+            .is_not_null()
+            .and(parses_as(text, reading).not()),
+    )
 }
 
 fn supports_range(dtype: &DataType) -> bool {
@@ -5229,6 +5435,74 @@ mod tests {
             .collect()
             .unwrap();
         assert_eq!(rows.height(), 3);
+    }
+
+    /// Duplicate rows come back exactly as counted, copies together and the most
+    /// copied first; the text a reading does not parse is exactly the text the
+    /// profile left out of its count; and a run over kept rows keeps a few of each.
+    #[test]
+    fn duplicate_and_parse_failure_evidence_match_their_counts() {
+        let lf = df!(
+            "id" => &[1i64, 2, 1, 3, 2, 1, 4],
+            "code" => &["10", "20", "10", "3x", "20", "10", "n/a"],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Sample,
+            dataset_rows: 100,
+            ..DataQualityPlan::default()
+        };
+        let (results, kept) =
+            compute_data_quality_kept(&lf, Some(7), &plan, None, false, None).unwrap();
+        assert!(kept.is_some(), "the rows the run read are kept");
+        let identity = results.identity.as_ref().unwrap();
+        assert_eq!((identity.duplicate_groups, identity.rows_involved), (2, 5));
+        let rows = duplicate_rows(lf.clone(), &["id".into(), "code".into()], false).unwrap();
+        assert_eq!(rows.height(), identity.rows_involved);
+        let ids = rows
+            .column("id")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [1, 1, 1, 2, 2], "copies together, most copied first");
+        let streamed = duplicate_rows(lf.clone(), &["id".into(), "code".into()], true).unwrap();
+        assert!(streamed.equals(&rows), "the streaming engine agrees");
+        assert_eq!(
+            identity.examples,
+            [
+                DuplicateExample {
+                    copies: 3,
+                    values: vec!["1".to_string(), "\"10\"".to_string()],
+                },
+                DuplicateExample {
+                    copies: 2,
+                    values: vec!["2".to_string(), "\"20\"".to_string()],
+                },
+            ]
+        );
+
+        // Five of seven parse: below the share a finding needs, so ask the reading
+        // of a column that clears it.
+        let codes = df!("code" => (0..40).map(|n| n.to_string()).chain(["n/a".to_string()]).collect::<Vec<_>>())
+            .unwrap()
+            .lazy();
+        let (results, _) =
+            compute_data_quality_kept(&codes, Some(41), &plan, None, false, None).unwrap();
+        let profile = &results.columns[0];
+        let (parsed, reading) = text_reading(profile).unwrap();
+        assert_eq!((parsed, reading), (40, TextReading::WholeNumber));
+        let failed = codes
+            .filter(unparsed_text(profile).unwrap())
+            .collect()
+            .unwrap();
+        assert_eq!(failed.height(), profile.non_null_rows() - parsed);
+        assert_eq!(
+            results.examples_of(ObservationKind::ParseableText, "code"),
+            ["\"n/a\""]
+        );
     }
 
     #[test]

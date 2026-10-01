@@ -1051,6 +1051,7 @@ fn test_stale_background_events_are_ignored() {
             per_value: None,
             footers_read: None,
             reads: None,
+            examples: vec![],
         },
         kept: None,
         plan: Box::default(),

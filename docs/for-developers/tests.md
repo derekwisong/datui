@@ -81,6 +81,19 @@ To regenerate by hand:
 
 The fixtures are not regenerated automatically once they exist.
 
+Tests only read `tests/sample-data`. Another test process may have its files
+memory-mapped, and rewriting one kills that process with SIGBUS. A test that
+writes its own data writes it elsewhere:
+
+| Where | Use |
+|---|---|
+| Integration tests | `common::fixture_dir()`: a fresh directory, removed when the process exits |
+| Unit tests | `tempfile::tempdir()` |
+
+`scripts/dev/test.sh` fails a test run that wrote into `tests/sample-data`. The
+generator rewrites the fixtures in place, so do not run it while tests are
+running.
+
 ## Layout
 
 | Path | Tests |

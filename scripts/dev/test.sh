@@ -44,6 +44,27 @@ run() {
     fi
 }
 
+# Tests read tests/sample-data and write their own files elsewhere: another test
+# process may have these memory-mapped, and rewriting one kills it with SIGBUS
+# (#486). Fail a run that wrote there. Skipped when the run generates the fixtures.
+run_tests() {
+    if $print_only || [[ ! -f tests/sample-data/people.parquet ]]; then
+        run "$@"
+        return
+    fi
+    local marker written status=0
+    marker=$(mktemp)
+    "$@" || status=$?
+    written=$(find tests/sample-data -newer "$marker")
+    rm -f "$marker"
+    if [[ -n $written ]]; then
+        printf 'Tests wrote into tests/sample-data (use common::fixture_dir() or a tempdir):\n%s\n' \
+            "$written" >&2
+        (( status != 0 )) || status=1
+    fi
+    return "$status"
+}
+
 command=${1:-}
 if [[ -z $command || $command == --help || $command == -h ]]; then
     usage
@@ -57,7 +78,7 @@ case "$command" in
         run cargo check --locked -p "${1:-datui-lib}"
         ;;
     unit)
-        run cargo test --locked -p datui-lib --lib "$@"
+        run_tests cargo test --locked -p datui-lib --lib "$@"
         ;;
     integration)
         target=${1:-}
@@ -66,10 +87,10 @@ case "$command" in
             exit 2
         fi
         shift
-        run cargo test --locked -p datui --test "$target" "$@"
+        run_tests cargo test --locked -p datui --test "$target" "$@"
         ;;
     cli)
-        run cargo test --locked -p datui-cli --lib "$@"
+        run_tests cargo test --locked -p datui-cli --lib "$@"
         ;;
     preflight)
         if (( $# != 0 )); then usage >&2; exit 2; fi
@@ -79,7 +100,7 @@ case "$command" in
         ;;
     full)
         if (( $# != 0 )); then usage >&2; exit 2; fi
-        run cargo test --workspace --locked --no-fail-fast
+        run_tests cargo test --workspace --locked --no-fail-fast
         ;;
     *)
         usage >&2

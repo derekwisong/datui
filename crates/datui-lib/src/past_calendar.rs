@@ -10,6 +10,10 @@
 //! such a value is null, as Polars' own `dt.year` makes it. Everything here is
 //! elementwise, so a streamed plan stays streamed, and costs a min and a max per
 //! batch when no value is past the calendar.
+//!
+//! A nanosecond datetime is always in the calendar, but date math near the ends
+//! of its range (1677-09-21, 2262-04-11) overflows in Polars: a value it could
+//! move past them is null too ([`ns_within_reach`]).
 
 use crate::exact::{calendar_without_out_of_range, stored_out_of_range};
 use polars::chunked_array::cast::CastOptions;
@@ -105,6 +109,162 @@ pub fn calendar_expr(expr: Expr) -> Expr {
     )
 }
 
+const NS_PER_DAY: i128 = 86_400_000_000_000;
+
+/// How far a date part can move a nanosecond datetime on its way to its result,
+/// and the least count it can take back.
+struct Reach {
+    back: i128,
+    forward: i128,
+    low: i128,
+}
+
+/// How far `function` can move a nanosecond datetime, given its `every` or `by` in
+/// `args`: a month as 31 days. `None` for a part that never overflows, or for an
+/// argument that does not parse, which Polars reports itself.
+///
+/// A calendar step or a zone converts the result back from whole seconds times
+/// 10^9, which overflows in the last fraction of a second before `i64::MIN` too. A
+/// zone moves the local time less than a day either way.
+fn ns_reach(function: &TemporalFunction, zoned: bool, args: &[Column]) -> Option<Reach> {
+    // Each duration's span, whether it goes back, and whether it is in months.
+    let spans = || -> Option<Vec<(i128, bool, bool)>> {
+        // Usually one literal, broadcast to the batch.
+        let arg = args.first()?.unique().ok()?;
+        let text = arg.as_materialized_series().str().ok()?;
+        text.iter()
+            .flatten()
+            .map(|text| {
+                let d = Duration::try_parse(text).ok()?;
+                let span = i128::from(d.months().abs()) * 31 * NS_PER_DAY
+                    + i128::from(d.weeks().abs()) * 7 * NS_PER_DAY
+                    + i128::from(d.days().abs()) * NS_PER_DAY
+                    + i128::from(d.nanoseconds().abs());
+                Some((span, d.negative(), d.months() != 0))
+            })
+            .collect()
+    };
+    let longest = |spans: &[(i128, bool, bool)], back: Option<bool>| {
+        spans
+            .iter()
+            .filter(|(_, negative, _)| back.is_none_or(|back| *negative == back))
+            .map(|(span, _, _)| *span)
+            .max()
+            .unwrap_or(0)
+    };
+    let in_months = |spans: &[(i128, bool, bool)]| spans.iter().any(|(_, _, months)| *months);
+    let (back, forward, calendar) = match function {
+        TemporalFunction::MonthStart => (31 * NS_PER_DAY, 0, true),
+        // Through the start of the next month.
+        TemporalFunction::MonthEnd => (0, 32 * NS_PER_DAY, true),
+        TemporalFunction::Truncate => {
+            let spans = spans()?;
+            (longest(&spans, None), 0, in_months(&spans))
+        }
+        // Through the value plus half of `every`.
+        TemporalFunction::Round => {
+            let spans = spans()?;
+            let every = longest(&spans, None);
+            (every, every, in_months(&spans))
+        }
+        // `offset_by` comes with SQL, which is what makes one.
+        #[cfg(feature = "sql")]
+        TemporalFunction::OffsetBy => {
+            let spans = spans()?;
+            let back = longest(&spans, Some(true));
+            (back, longest(&spans, Some(false)), in_months(&spans))
+        }
+        // Read in the zone's local time, as nanoseconds.
+        TemporalFunction::Date
+        | TemporalFunction::Time
+        | TemporalFunction::OrdinalDay
+        | TemporalFunction::IsoYear
+        | TemporalFunction::IsLeapYear
+        | TemporalFunction::DaysInMonth
+        | TemporalFunction::Datetime
+            if zoned =>
+        {
+            (0, 0, true)
+        }
+        _ => return None,
+    };
+    let zone = if zoned { NS_PER_DAY } else { 0 };
+    Some(Reach {
+        back: back + zone,
+        forward: forward + zone,
+        low: if calendar || zoned {
+            -9_223_372_036_000_000_000
+        } else {
+            i128::from(i64::MIN)
+        },
+    })
+}
+
+/// `cols[0]` with each nanosecond datetime that `function`, given the rest of
+/// `cols`, could move past the ends of the nanosecond range (1677-09-21,
+/// 2262-04-11) as null: Polars overflows on it. Any other type, and every value
+/// when none lies that near the ends, as it is.
+fn ns_within_reach(function: &TemporalFunction, cols: &mut [Column]) -> PolarsResult<Column> {
+    let value = std::mem::take(&mut cols[0]);
+    let DataType::Datetime(TimeUnit::Nanoseconds, zone) = value.dtype() else {
+        return Ok(value);
+    };
+    let Some(reach) = ns_reach(function, zone.is_some(), &cols[1..]) else {
+        return Ok(value);
+    };
+    let fits = |v: i64| {
+        i128::from(v) - reach.back >= reach.low
+            && i128::from(v) + reach.forward <= i128::from(i64::MAX)
+    };
+    let series = value.as_materialized_series();
+    let stored = series.to_physical_repr();
+    let stored = stored.i64()?;
+    // What fits is an interval, so the least and greatest value say it for all.
+    if [stored.min(), stored.max()].into_iter().flatten().all(fits) {
+        return Ok(value);
+    }
+    let kept = stored.apply(|v| v.filter(|v| fits(*v)));
+    Ok(kept
+        .into_series()
+        .cast(value.dtype())?
+        .with_name(series.name().clone())
+        .into_column())
+}
+
+/// `input[0]` of a date part, with each nanosecond datetime it could move past the
+/// ends of the nanosecond range as null ([`ns_within_reach`]). `input[1..]` are the
+/// part's other arguments, read for how far it moves a value.
+fn ns_edge_expr(input: &[Expr], function: TemporalFunction) -> Expr {
+    input[0].clone().map_many(
+        move |cols| ns_within_reach(&function, cols),
+        &input[1..],
+        |_, fields| Ok(fields[0].clone()),
+    )
+}
+
+/// Whether `function` can move a nanosecond datetime past the ends of its range
+/// ([`ns_reach`]).
+fn moves_ns(function: &TemporalFunction) -> bool {
+    #[cfg(feature = "sql")]
+    if matches!(function, TemporalFunction::OffsetBy) {
+        return true;
+    }
+    matches!(
+        function,
+        TemporalFunction::MonthStart
+            | TemporalFunction::MonthEnd
+            | TemporalFunction::Truncate
+            | TemporalFunction::Round
+            | TemporalFunction::Date
+            | TemporalFunction::Time
+            | TemporalFunction::OrdinalDay
+            | TemporalFunction::IsoYear
+            | TemporalFunction::IsLeapYear
+            | TemporalFunction::DaysInMonth
+            | TemporalFunction::Datetime
+    )
+}
+
 /// Whether a date part goes through a calendar date, and so panics on a value
 /// past the calendar. The rest read or relabel the stored number.
 fn reads_calendar(function: &TemporalFunction) -> bool {
@@ -125,13 +285,22 @@ fn reads_calendar(function: &TemporalFunction) -> bool {
 /// stays as Polars built it; without it, each is replaced, and the replacement
 /// casts any other type as Polars would. A date that meets text in a coalesce or
 /// a when/then/otherwise, which Polars casts to text itself, goes through
-/// [`text_expr`] too, but only with `schema`, which says the result is text.
+/// [`text_expr`] too, but only with `schema`, which says the result is text. Date
+/// math that overflows near the ends of the nanosecond range reads from
+/// [`ns_edge_expr`].
 pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
     let may_leave = |e: &Expr| match (e, schema) {
         (Expr::Literal(_), _) => false,
         (e, Some(schema)) => e
             .to_field(schema)
             .map_or(true, |f| can_leave_calendar(f.dtype())),
+        (_, None) => true,
+    };
+    let may_be_ns = |e: &Expr| match (e, schema) {
+        (Expr::Literal(_), _) => false,
+        (e, Some(schema)) => e.to_field(schema).map_or(true, |f| {
+            matches!(f.dtype(), DataType::Datetime(TimeUnit::Nanoseconds, _))
+        }),
         (_, None) => true,
     };
     let as_text = |e: Expr| {
@@ -178,18 +347,26 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
         Expr::Function {
             mut input,
             function: FunctionExpr::TemporalExpr(function),
-        } if input.first().is_some_and(may_leave) => match function {
-            TemporalFunction::ToString(format) => format_expr(input.swap_remove(0), format),
-            function => {
+        } if input
+            .first()
+            .is_some_and(|e| may_leave(e) || (moves_ns(&function) && may_be_ns(e))) =>
+        {
+            if may_leave(&input[0]) {
+                if let TemporalFunction::ToString(format) = function {
+                    return format_expr(input.swap_remove(0), format);
+                }
                 if reads_calendar(&function) {
                     input[0] = calendar_expr(input[0].clone());
                 }
-                Expr::Function {
-                    input,
-                    function: FunctionExpr::TemporalExpr(function),
-                }
             }
-        },
+            if moves_ns(&function) && may_be_ns(&input[0]) {
+                input[0] = ns_edge_expr(&input, function.clone());
+            }
+            Expr::Function {
+                input,
+                function: FunctionExpr::TemporalExpr(function),
+            }
+        }
         // `concat_str` exists only with SQL, which is what makes one.
         #[cfg(feature = "sql")]
         Expr::Function {
@@ -433,11 +610,6 @@ mod tests {
         let past = calendar(true).lazy();
         let schema = past.clone().collect_schema().unwrap();
         for (name, dtype) in schema.iter() {
-            // A zone moves a nanosecond count at 1677 or 2262 out of its range, and
-            // Polars overflows converting back: the result is out of range there.
-            if matches!(dtype, DataType::Datetime(TimeUnit::Nanoseconds, Some(_))) {
-                continue;
-            }
             let c = || col(name.clone());
             let mut parts = vec![
                 c().dt().date(),
@@ -448,16 +620,14 @@ mod tests {
             if !matches!(dtype, DataType::Date) {
                 parts.push(c().dt().time());
             }
-            // Moved past 1677 or 2262, a nanosecond count overflows in Polars too.
-            if can_leave_calendar(dtype) {
-                parts.extend([
-                    c().dt().month_start(),
-                    c().dt().month_end(),
-                    c().dt().truncate(lit("1mo")),
-                    c().dt().round(lit("1mo")),
-                ]);
-            }
-            if matches!(dtype, DataType::Datetime(..)) && can_leave_calendar(dtype) {
+            // A nanosecond count at 1677 or 2262 moved past its range is null too.
+            parts.extend([
+                c().dt().month_start(),
+                c().dt().month_end(),
+                c().dt().truncate(lit("1mo")),
+                c().dt().round(lit("1mo")),
+            ]);
+            if matches!(dtype, DataType::Datetime(..)) {
                 parts.push(c().dt().truncate(lit("1d")));
             }
             for part in parts {
@@ -478,6 +648,96 @@ mod tests {
         }
     }
 
+    /// Date math on a nanosecond datetime near the ends of its range (1677-09-21,
+    /// 2262-04-11), where Polars overflowed (#517), is null when it could move the
+    /// value past them; with a zone, so are the parts read in local time. Every
+    /// other value gives what Polars gives it, on both engines.
+    #[test]
+    fn date_math_near_the_ends_of_the_nanosecond_range_is_null() {
+        const DAY: i64 = 86_400_000_000_000;
+        // In range, then the ends and 20 days before the top end.
+        let stamps = [
+            Some(0),
+            Some(400 * DAY),
+            None,
+            Some(i64::MAX),
+            Some(i64::MIN + 1),
+            Some(i64::MAX - 20 * DAY),
+        ];
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let frame = |rows: &[Option<i64>]| {
+            let at = |name: &str, zone: Option<TimeZone>| {
+                Series::new(name.into(), rows)
+                    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, zone))
+                    .unwrap()
+                    .into_column()
+            };
+            DataFrame::new_infer_height(vec![at("n", None), at("z", paris.clone())])
+                .unwrap()
+                .lazy()
+        };
+        let schema = frame(&stamps).collect_schema().unwrap();
+        let n = || col("n");
+        let z = || col("z");
+        // Which of the last three rows keep a value.
+        let cases = [
+            (n().dt().month_start(), [true, false, true]),
+            (n().dt().month_end(), [false, false, false]),
+            (n().dt().truncate(lit("1d")), [true, false, true]),
+            (n().dt().truncate(lit("1mo")), [true, false, true]),
+            (n().dt().round(lit("1h")), [false, false, true]),
+            #[cfg(feature = "sql")]
+            (n().dt().offset_by(lit("1d")), [false, true, true]),
+            #[cfg(feature = "sql")]
+            (n().dt().offset_by(lit("-1mo")), [true, false, true]),
+            (n().dt().date(), [true, true, true]),
+            (n().dt().ordinal_day(), [true, true, true]),
+            (z().dt().month_start(), [false, false, true]),
+            #[cfg(feature = "sql")]
+            (z().dt().offset_by(lit("1d")), [false, false, true]),
+            (z().dt().date(), [false, false, true]),
+            (z().dt().time(), [false, false, true]),
+            (z().dt().ordinal_day(), [false, false, true]),
+            (z().dt().iso_year(), [false, false, true]),
+            (z().dt().datetime(), [false, false, true]),
+            (z().dt().year(), [true, true, true]),
+        ];
+        for (part, kept) in cases {
+            let guarded = guard_expr(part.clone(), Some(&schema));
+            let polars_alone = |v: Option<i64>| {
+                frame(&[v])
+                    .select([part.clone()])
+                    .collect()
+                    .unwrap()
+                    .columns()[0]
+                    .get(0)
+                    .unwrap()
+                    .into_static()
+            };
+            let expected: Vec<AnyValue> = stamps
+                .iter()
+                .enumerate()
+                .map(|(i, v)| match i.checked_sub(3) {
+                    Some(edge) if !kept[edge] => AnyValue::Null,
+                    _ => polars_alone(*v),
+                })
+                .collect();
+            for streaming in [false, true] {
+                let out = crate::statistics::collect_lazy(
+                    frame(&stamps).select([guarded.clone()]),
+                    streaming,
+                )
+                .unwrap();
+                let out: Vec<AnyValue> = out.columns()[0]
+                    .as_materialized_series()
+                    .iter()
+                    .map(|v| v.into_static())
+                    .collect();
+                assert_eq!(out, expected, "{part:?} streaming: {streaming}");
+            }
+        }
+    }
+
     /// With the schema, only an operation on a date or ms/us datetime changes;
     /// every other plan stays as Polars built it. Without one, each changes.
     #[test]
@@ -493,7 +753,7 @@ mod tests {
             col("i").cast(DataType::String),
             col("s").cast(DataType::String).str().len_chars(),
             col("ns").cast(DataType::String),
-            col("ns").dt().month_start(),
+            col("ns").dt().year(),
             lit(1).cast(DataType::String),
             col("t").dt().timestamp(TimeUnit::Milliseconds),
             col("d").cast(DataType::Int64),
@@ -509,6 +769,7 @@ mod tests {
             col("t").max().cast(DataType::String),
             col("t").dt().to_string("%Y"),
             col("d").dt().month_start(),
+            col("ns").dt().month_start(),
             #[cfg(feature = "sql")]
             concat_str([col("i"), col("t")], "", true),
         ];

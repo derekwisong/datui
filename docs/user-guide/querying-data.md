@@ -157,6 +157,15 @@ A date or datetime past the calendar's range, such as a sentinel of
 | SQL `CAST(... AS VARCHAR)`, `\|\|`, `CONCAT`, `STRFTIME`; `COALESCE`, `CASE` or `UNION` with text | Its stored number |
 | `.date`, `.time`, `.year`, `.month_start` and the other date parts; SQL date functions and `INTERVAL` arithmetic | Null |
 
+A nanosecond datetime only spans 1677-09-21 to 2262-04-11. Near those ends,
+such as pandas' `Timestamp.max`:
+
+| In a query | Near the ends of the nanosecond range |
+|---|---|
+| `.month_start`, `.month_end` | Null within a month of the end it moves toward |
+| SQL `INTERVAL` arithmetic | Null when the interval could carry it past an end |
+| With a time zone: `.date`, `.time`, `.doy` and the rows above | Null within a day of either end |
+
 ## Drill into a GROUP BY
 
 Press <kbd>Enter</kbd> on a row of a `GROUP BY` result to see the rows behind

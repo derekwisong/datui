@@ -720,6 +720,112 @@ mod probe_slot_tests {
     }
 }
 
+/// #455: a home-screen worker that panics still answers, so what marks it in flight
+/// stops waiting and the next request is made.
+#[cfg(test)]
+mod home_worker_panic_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn app() -> (App, mpsc::Receiver<AppEvent>, tempfile::TempDir) {
+        crate::text_input_flows::isolate_cache();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.csv"), "x\n1\n").unwrap();
+        app.home.browsing = Some(dir.path().to_path_buf());
+        (app, rx, dir)
+    }
+
+    /// Kill the first worker that would owe `owed` in its place.
+    fn dies_once(app: &mut App, owed: fn(&AppEvent) -> bool) {
+        let mut died = false;
+        app.home_worker_dies = Some(Box::new(move |instead| {
+            let dies = !died && owed(instead);
+            died |= dies;
+            dies
+        }));
+    }
+
+    /// Handle what the workers send until `done`.
+    fn pump(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never answered"
+            );
+            if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                app.event(&event);
+            }
+        }
+    }
+
+    #[test]
+    fn a_listing_whose_worker_dies_stops_looking_and_the_next_one_lists() {
+        let (mut app, rx, _dir) = app();
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeListingFailed));
+        app.home_refresh();
+        assert!(app.home.listing_in_flight);
+        pump(&mut app, &rx, |a| !a.home.listing_in_flight);
+        assert!(
+            app.home.sections.iter().all(|s| s.rows.is_empty()),
+            "nothing was listed"
+        );
+
+        app.home_refresh();
+        pump(&mut app, &rx, |a| !a.home.listing_in_flight);
+        assert!(
+            app.home.sections.iter().any(|s| !s.rows.is_empty()),
+            "the next listing lands"
+        );
+    }
+
+    #[test]
+    fn a_probe_whose_worker_dies_gives_its_slot_back_and_says_so() {
+        let (mut app, rx, dir) = app();
+        app.home.network_check = |_| true;
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeProbeFailed { .. }));
+        app.spawn_home_probes();
+        let root = dir.path().to_path_buf();
+        assert!(app.home_probes_inflight.contains(&root));
+        pump(&mut app, &rx, |a| a.home_probes_inflight.is_empty());
+        assert_eq!(
+            app.home.probe_errors.get(&root).map(String::as_str),
+            Some("Could not read it; see the log")
+        );
+    }
+
+    #[test]
+    fn a_schema_read_that_dies_is_not_asked_for_again() {
+        let (mut app, rx, dir) = app();
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeSchemaReady { .. }));
+        let entry = discover::Entry::new(dir.path().join("a.csv"), discover::EntryKind::File);
+        assert!(app.home_schema(&entry).is_none());
+        assert!(app.home_schema_pending(&entry.path));
+        pump(&mut app, &rx, |a| !a.home_schema_pending(&entry.path));
+        assert!(app.home_schema(&entry).is_none());
+        assert!(
+            !app.home_schema_pending(&entry.path),
+            "remembered as having none"
+        );
+    }
+
+    #[test]
+    fn a_search_whose_walk_dies_ends() {
+        let (mut app, rx, _dir) = app();
+        app.app_config.data.search.enabled = true;
+        app.home.network_check = |_| false;
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeSearchDone { .. }));
+        app.spawn_home_search();
+        assert!(app.home.search.running);
+        pump(&mut app, &rx, |a| !a.home_search_inflight);
+        assert!(!app.home.search.running);
+        assert!(app.home.search.done);
+        assert_eq!(app.home.search.limited.as_deref(), Some("partial · failed"));
+    }
+}
+
 #[cfg(test)]
 mod classify_batch_tests {
     use super::*;
@@ -7671,6 +7777,9 @@ pub enum AppEvent {
         generation: u64,
         listing: Box<crate::home::Listing>,
     },
+    /// The worker building a home listing panicked, so no listing is coming. The panic
+    /// is flashed like any other raw worker's.
+    HomeListingFailed,
     /// A completed path, worked out off-thread.
     HomePathCompleted {
         generation: u64,
@@ -8123,6 +8232,11 @@ pub enum Job {
 /// Picks the spawned jobs that panic before their work starts; see `App::worker_dies`.
 #[cfg(test)]
 type WorkerDies = Box<dyn FnMut(&Job) -> bool + Send>;
+
+/// Picks the home-screen workers that panic before their work starts, by the answer
+/// they would owe; see `App::home_worker_dies`.
+#[cfg(test)]
+type HomeWorkerDies = Box<dyn FnMut(&AppEvent) -> bool + Send>;
 
 /// A lease on the current `task_generation`, held by background work whose answer
 /// arrives once.
@@ -9321,6 +9435,41 @@ impl Drop for OwedCount {
     }
 }
 
+/// The answer a home-screen worker owes whatever marks it in flight, sent in its place
+/// if the worker panics before sending its own. Unanswered, the marker stands for the
+/// session: a listing that says "Looking..." over nothing, a search that never ends,
+/// a root never probed again.
+///
+/// Not `spawn_bg`: these are keyed by place and `home_generation`, take no lease and
+/// set no `busy`. The panic itself is left to the hook, which logs it and has
+/// `flash_background_panic` say so.
+struct OwedAnswer {
+    tx: Sender<AppEvent>,
+    instead: Option<AppEvent>,
+    #[cfg(test)]
+    dies: bool,
+}
+
+impl OwedAnswer {
+    /// Run the worker, which sends its own answer.
+    fn run(mut self, work: impl FnOnce()) {
+        #[cfg(test)]
+        if self.dies {
+            panic!("worker died");
+        }
+        work();
+        self.instead = None;
+    }
+}
+
+impl Drop for OwedAnswer {
+    fn drop(&mut self) {
+        if let Some(instead) = self.instead.take() {
+            let _ = self.tx.send(instead);
+        }
+    }
+}
+
 /// A Data Quality report, by everything its plan says: the acquisition it measured
 /// and the report's own choices.
 struct QualityCacheEntry {
@@ -9688,6 +9837,9 @@ pub struct App {
     /// worker leaves behind.
     #[cfg(test)]
     worker_dies: Option<WorkerDies>,
+    /// The same, for the home screen's workers.
+    #[cfg(test)]
+    home_worker_dies: Option<HomeWorkerDies>,
     /// A buffer collect that was asked for while a lease was outstanding, and the
     /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
     /// dropped when the dataset it belonged to is replaced.
@@ -13190,6 +13342,8 @@ impl App {
             leases: HashMap::new(),
             #[cfg(test)]
             worker_dies: None,
+            #[cfg(test)]
+            home_worker_dies: None,
             collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
@@ -13233,6 +13387,19 @@ impl App {
         None
     }
 
+    /// What a home-screen worker owes in place of its answer if it panics.
+    fn owed_answer(&mut self, instead: AppEvent) -> OwedAnswer {
+        OwedAnswer {
+            tx: self.events.clone(),
+            #[cfg(test)]
+            dies: self
+                .home_worker_dies
+                .as_mut()
+                .is_some_and(|dies| dies(&instead)),
+            instead: Some(instead),
+        }
+    }
+
     /// Complete the path being typed, on a worker.
     fn request_path_completion(&mut self) {
         let typed = self.home.path_input.clone();
@@ -13266,13 +13433,21 @@ impl App {
 
         let generation = self.home_generation;
         let tx = self.events.clone();
+        // Remembered as having none, so the preview is not asked for again.
+        let owed = self.owed_answer(AppEvent::HomeSchemaReady {
+            generation,
+            path: entry.path.clone(),
+            preview: None,
+        });
         self.runtime.spawn_blocking(move || {
-            let preview = discover::schema_preview(&entry);
-            let _ = tx.send(AppEvent::HomeSchemaReady {
-                generation,
-                path: entry.path,
-                preview,
-            });
+            owed.run(|| {
+                let preview = discover::schema_preview(&entry);
+                let _ = tx.send(AppEvent::HomeSchemaReady {
+                    generation,
+                    path: entry.path,
+                    preview,
+                });
+            })
         });
     }
 
@@ -13303,6 +13478,10 @@ impl App {
             self.home_probes_inflight.push(root.clone());
             let tx = self.events.clone();
             let cache = self.cache.clone();
+            let owed = self.owed_answer(AppEvent::HomeProbeFailed {
+                root: root.clone(),
+                message: "Could not read it; see the log".to_string(),
+            });
             #[cfg(feature = "cloud")]
             let cloud = self.app_config.cloud.clone();
             #[cfg(feature = "cloud")]
@@ -13312,113 +13491,115 @@ impl App {
             // the work that actually loads data — a few dead shares must not eat into
             // the capacity that opening a dataset depends on.
             std::thread::spawn(move || {
-                // A bucket or a prefix inside one. It looks like a network root to
-                // everything above, and it is, but it is read with an object-store
-                // listing rather than `read_dir` — which on a `gs://` path fails, which
-                // is why descending into a bucket used to show nothing at all.
-                //
-                // Deliberately metadata-only. A delimited listing returns names, sizes
-                // and modification times for one level, and nothing here reads an
-                // object's contents: no footers, no schemas, no row counts. Those are
-                // what a local listing fills in for free from bytes already on the
-                // machine, and what would cost a ranged read per row against an object
-                // store somebody pays egress on.
-                #[cfg(feature = "cloud")]
-                if let Some((id, account)) = home::cloud_account(&root) {
-                    let listed = wait_on_runtime(&runtime, async move {
-                        crate::cloud_browse::list_account(&id, &account, &cloud).await
-                    });
-                    match listed {
-                        Some(Ok(rows)) => {
-                            let _ = tx.send(AppEvent::HomeProbeReady {
-                                root,
-                                rows: Some(rows),
-                                cut_short: false,
-                            });
-                        }
-                        Some(Err(message)) => {
-                            log::warn!(
-                                target: "datui::cloud",
-                                "listing {} failed: {message}",
-                                root.display()
-                            );
-                            let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
-                        }
-                        None => {
-                            let _ = tx.send(AppEvent::HomeProbeReady {
-                                root,
-                                rows: None,
-                                cut_short: false,
-                            });
-                        }
-                    }
-                    return;
-                }
-                #[cfg(feature = "cloud")]
-                if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some()
-                    || source::azure_parts(&root.to_string_lossy()).is_some()
-                {
-                    let url = root.to_string_lossy().into_owned();
-                    let listed = wait_on_runtime(&runtime, async move {
-                        crate::cloud_browse::list_objects(&url, &cloud).await
-                    });
-                    // A refused listing says why, rather than reading as a place that
-                    // stopped answering.
-                    match listed {
-                        Some(Err(message)) => {
-                            log::warn!(
-                                target: "datui::cloud",
-                                "listing {} failed: {message}",
-                                root.display()
-                            );
-                            let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
-                        }
-                        other => {
-                            let _ = tx.send(AppEvent::HomeProbeReady {
-                                root,
-                                rows: other.and_then(Result::ok),
-                                cut_short: false,
-                            });
-                        }
-                    }
-                    return;
-                }
-                let mut cut_short = false;
-                let rows = if std::fs::read_dir(&root).is_ok() {
-                    // What has been read shows while the rest is read: a share can take
-                    // seconds over a directory of thousands.
-                    let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
-                        let _ = tx.send(AppEvent::HomeProbeProgress {
-                            root: root.clone(),
-                            rows: so_far.to_vec(),
+                owed.run(|| {
+                    // A bucket or a prefix inside one. It looks like a network root to
+                    // everything above, and it is, but it is read with an object-store
+                    // listing rather than `read_dir` — which on a `gs://` path fails, which
+                    // is why descending into a bucket used to show nothing at all.
+                    //
+                    // Deliberately metadata-only. A delimited listing returns names, sizes
+                    // and modification times for one level, and nothing here reads an
+                    // object's contents: no footers, no schemas, no row counts. Those are
+                    // what a local listing fills in for free from bytes already on the
+                    // machine, and what would cost a ranged read per row against an object
+                    // store somebody pays egress on.
+                    #[cfg(feature = "cloud")]
+                    if let Some((id, account)) = home::cloud_account(&root) {
+                        let listed = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::list_account(&id, &account, &cloud).await
                         });
+                        match listed {
+                            Some(Ok(rows)) => {
+                                let _ = tx.send(AppEvent::HomeProbeReady {
+                                    root,
+                                    rows: Some(rows),
+                                    cut_short: false,
+                                });
+                            }
+                            Some(Err(message)) => {
+                                log::warn!(
+                                    target: "datui::cloud",
+                                    "listing {} failed: {message}",
+                                    root.display()
+                                );
+                                let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
+                            }
+                            None => {
+                                let _ = tx.send(AppEvent::HomeProbeReady {
+                                    root,
+                                    rows: None,
+                                    cut_short: false,
+                                });
+                            }
+                        }
+                        return;
+                    }
+                    #[cfg(feature = "cloud")]
+                    if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some()
+                        || source::azure_parts(&root.to_string_lossy()).is_some()
+                    {
+                        let url = root.to_string_lossy().into_owned();
+                        let listed = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::list_objects(&url, &cloud).await
+                        });
+                        // A refused listing says why, rather than reading as a place that
+                        // stopped answering.
+                        match listed {
+                            Some(Err(message)) => {
+                                log::warn!(
+                                    target: "datui::cloud",
+                                    "listing {} failed: {message}",
+                                    root.display()
+                                );
+                                let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
+                            }
+                            other => {
+                                let _ = tx.send(AppEvent::HomeProbeReady {
+                                    root,
+                                    rows: other.and_then(Result::ok),
+                                    cut_short: false,
+                                });
+                            }
+                        }
+                        return;
+                    }
+                    let mut cut_short = false;
+                    let rows = if std::fs::read_dir(&root).is_ok() {
+                        // What has been read shows while the rest is read: a share can take
+                        // seconds over a directory of thousands.
+                        let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
+                            let _ = tx.send(AppEvent::HomeProbeProgress {
+                                root: root.clone(),
+                                rows: so_far.to_vec(),
+                            });
+                        });
+                        cut_short = scan.truncated;
+                        let mut rows = scan.entries;
+                        // Measuring happens here too: it is the same remote filesystem,
+                        // and this thread is already the one allowed to block on it.
+                        for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
+                            crate::discover::enrich(row);
+                        }
+                        // Remote datasets are measured nowhere else, so this is the only
+                        // chance to remember them. Without it a remote row is blank on
+                        // every run, which is exactly backwards: the hardest things to
+                        // reach are the ones most worth remembering.
+                        let mounts = crate::locality::Mounts::current();
+                        for row in rows.iter_mut() {
+                            row.cost.source = Some(mounts.describe(&row.path).fstype);
+                        }
+                        let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
+                        cache.record_dataset_facts(&facts);
+                        Some(rows)
+                    } else {
+                        None
+                    };
+                    let _ = tx.send(AppEvent::HomeProbeReady {
+                        root,
+                        rows,
+                        cut_short,
                     });
-                    cut_short = scan.truncated;
-                    let mut rows = scan.entries;
-                    // Measuring happens here too: it is the same remote filesystem,
-                    // and this thread is already the one allowed to block on it.
-                    for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
-                        crate::discover::enrich(row);
-                    }
-                    // Remote datasets are measured nowhere else, so this is the only
-                    // chance to remember them. Without it a remote row is blank on
-                    // every run, which is exactly backwards: the hardest things to
-                    // reach are the ones most worth remembering.
-                    let mounts = crate::locality::Mounts::current();
-                    for row in rows.iter_mut() {
-                        row.cost.source = Some(mounts.describe(&row.path).fstype);
-                    }
-                    let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
-                    cache.record_dataset_facts(&facts);
-                    Some(rows)
-                } else {
-                    None
-                };
-                let _ = tx.send(AppEvent::HomeProbeReady {
-                    root,
-                    rows,
-                    cut_short,
-                });
+                })
             });
         }
     }
@@ -13662,33 +13843,42 @@ impl App {
 
         let generation = self.home_generation;
         let tx = self.events.clone();
+        // Ended, with what the batches already found kept.
+        let owed = self.owed_answer(AppEvent::HomeSearchDone {
+            generation,
+            root: root.clone(),
+            scanned: 0,
+            limited: Some("partial · failed".to_string()),
+        });
         // A detached thread for the same reason the probes use one: the walk touches
         // a filesystem, and nothing that touches a filesystem may run where a stall
         // would stop the screen from drawing.
         std::thread::spawn(move || {
-            let walk_root = root.clone();
-            let batch_tx = tx.clone();
-            let batch_gen = generation;
-            let batch_root = root.clone();
-            let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
-                // Sent even when empty: it carries the progress count, and it is the
-                // only place the walk learns that nobody is listening any more.
-                batch_tx
-                    .send(AppEvent::HomeSearchBatch {
-                        generation: batch_gen,
-                        root: batch_root.clone(),
-                        found,
-                        scanned: outcome.scanned,
-                    })
-                    // A closed channel means the app is gone; stop walking.
-                    .is_ok()
-            });
-            let _ = tx.send(AppEvent::HomeSearchDone {
-                generation,
-                root,
-                scanned: outcome.scanned,
-                limited: outcome.note().map(str::to_string),
-            });
+            owed.run(|| {
+                let walk_root = root.clone();
+                let batch_tx = tx.clone();
+                let batch_gen = generation;
+                let batch_root = root.clone();
+                let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
+                    // Sent even when empty: it carries the progress count, and it is the
+                    // only place the walk learns that nobody is listening any more.
+                    batch_tx
+                        .send(AppEvent::HomeSearchBatch {
+                            generation: batch_gen,
+                            root: batch_root.clone(),
+                            found,
+                            scanned: outcome.scanned,
+                        })
+                        // A closed channel means the app is gone; stop walking.
+                        .is_ok()
+                });
+                let _ = tx.send(AppEvent::HomeSearchDone {
+                    generation,
+                    root,
+                    scanned: outcome.scanned,
+                    limited: outcome.note().map(str::to_string),
+                });
+            })
         });
     }
 
@@ -13731,12 +13921,15 @@ impl App {
 
         self.home.listing_in_flight = true;
         let tx = self.events.clone();
+        let owed = self.owed_answer(AppEvent::HomeListingFailed);
         self.runtime.spawn_blocking(move || {
-            let listing = home::build_listing(&request);
-            let _ = tx.send(AppEvent::HomeListingReady {
-                generation,
-                listing: Box::new(listing),
-            });
+            owed.run(|| {
+                let listing = home::build_listing(&request);
+                let _ = tx.send(AppEvent::HomeListingReady {
+                    generation,
+                    listing: Box::new(listing),
+                });
+            })
         });
     }
 
@@ -21348,6 +21541,11 @@ impl App {
                 self.spawn_cloud_discovery();
                 self.request_home_measurements();
                 self.request_home_classifications();
+                None
+            }
+            AppEvent::HomeListingFailed => {
+                // The rows already listed stay. The panic is flashed as a raw worker's.
+                self.home.listing_in_flight = false;
                 None
             }
             AppEvent::HomeMeasured { measured, done } => {

@@ -140,7 +140,9 @@ impl SampleForm {
             file_offset: 0,
         };
         form.set_scope(&sample.scope);
-        form.seed.set_value(sample.seed.to_string());
+        // Most seeds come from the clock, and a seed is a token, not text to
+        // extend: typing one means a new one.
+        form.seed.suggest(sample.seed.to_string());
         form.sync_focus(true);
         form
     }
@@ -732,7 +734,11 @@ mod tests {
             form.move_field(true);
         }
         assert!(form.field.is_text());
-        form.seed.set_value("0");
+        let zero = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('0'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        form.seed.handle_key(&zero, None);
         assert_eq!(form.finish().unwrap().seed, 0);
         form.seed.set_value("seven");
         assert!(form.finish().unwrap_err().contains("whole number"));

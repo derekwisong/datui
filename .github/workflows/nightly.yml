@@ -55,6 +55,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -144,6 +145,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -219,6 +221,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -291,6 +294,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -377,6 +381,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -621,7 +626,9 @@ jobs:
         with:
           python-version: '3.x'
           cache: 'pip'
-          cache-dependency-path: scripts/requirements.txt
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-fixtures.txt
 
       - name: Generate sample data
         run: |

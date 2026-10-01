@@ -79,6 +79,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -362,6 +363,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -440,6 +442,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml

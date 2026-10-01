@@ -21939,8 +21939,11 @@ impl App {
                 }
                 // A count of the view a running query replaced goes back with it.
                 if let Some(run) = self.query_running.as_mut() {
-                    run.rollback
-                        .count_landed(*len_generation, *num_rows, file_row_groups.clone());
+                    run.rollback.count_landed(
+                        *len_generation,
+                        *num_rows,
+                        file_row_groups.as_deref(),
+                    );
                     if run.len_count_inflight == Some(*len_generation) {
                         run.len_count_inflight = None;
                     }

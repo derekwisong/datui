@@ -465,13 +465,13 @@ impl ViewRollback {
         &mut self,
         len_generation: u64,
         rows: usize,
-        file_row_groups: Option<Vec<Vec<usize>>>,
+        file_row_groups: Option<&[Vec<usize>]>,
     ) -> bool {
         let ours = len_generation == self.len_generation;
         if ours {
             self.counted = Some(CountedRows {
                 rows,
-                file_row_groups,
+                file_row_groups: file_row_groups.map(<[_]>::to_vec),
             });
         }
         ours

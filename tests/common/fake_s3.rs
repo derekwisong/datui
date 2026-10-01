@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// What the bucket was asked for, counted as the requests arrive.
@@ -62,16 +62,21 @@ impl Wire {
 type Objects = BTreeMap<String, (Vec<u8>, String)>;
 
 /// A bucket served at `endpoint`: `s3://<bucket>/<key>` with that endpoint reaches it.
+/// Dropped, it stops listening; a connection still open ends with its client.
 pub struct FakeS3 {
     pub endpoint: String,
     pub wire: Arc<Wire>,
+    address: std::net::SocketAddr,
+    stopped: Arc<AtomicBool>,
 }
 
 impl FakeS3 {
     /// Serve `objects` (key to bytes) as `bucket`.
     pub fn serve(bucket: &str, objects: BTreeMap<String, Vec<u8>>) -> FakeS3 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let address = listener.local_addr().expect("address");
+        let endpoint = format!("http://{address}");
+        let stopped = Arc::new(AtomicBool::new(false));
         let wire = Arc::new(Wire::default());
         let objects: Objects = objects
             .into_iter()
@@ -82,15 +87,24 @@ impl FakeS3 {
             .collect();
         let objects = Arc::new(RwLock::new(objects));
         let served = (wire.clone(), objects, bucket.to_string());
+        let stop = stopped.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
                 let Ok(stream) = stream else { continue };
                 let (wire, objects, bucket) =
                     (served.0.clone(), served.1.clone(), served.2.clone());
                 std::thread::spawn(move || answer(stream, &bucket, &objects, &wire));
             }
         });
-        FakeS3 { endpoint, wire }
+        FakeS3 {
+            endpoint,
+            wire,
+            address,
+            stopped,
+        }
     }
 
     /// The configuration that points datui at this bucket.
@@ -102,6 +116,14 @@ impl FakeS3 {
             s3_region: Some("us-east-1".to_string()),
             ..Default::default()
         }
+    }
+}
+
+impl Drop for FakeS3 {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        // Wakes the accept loop, which sees the flag and returns.
+        let _ = TcpStream::connect(self.address);
     }
 }
 

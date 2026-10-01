@@ -73,7 +73,10 @@ def penguins_species(c: Path) -> list[str]:
     )
     want = [("Gentoo", 5076.01626, 124), ("Chinstrap", 3733.088235, 68), ("Adelie", 3700.662252, 152)]
     got = [(r[0], r[1], r[2]) for r in df.iter_rows()]
-    return [] if all(g[0] == w[0] and close(g[1], w[1], 5) and g[2] == w[2] for g, w in zip(got, want)) else [str(got)]
+    ok = len(got) == len(want) and all(
+        g[0] == w[0] and close(g[1], w[1], 5) and g[2] == w[2] for g, w in zip(got, want)
+    )
+    return [] if ok else [str(got)]
 
 
 def penguins_counts(c: Path) -> list[str]:

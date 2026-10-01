@@ -8814,13 +8814,15 @@ pub(crate) fn partition_dtype(
 }
 
 /// Everything a checkpoint promises to put back, as a test can compare it: the rows
-/// each frame of the pipeline reads (collected here, on the test's thread), the schema,
+/// each frame of the pipeline reads, the unsorted one analyses read among them
+/// (collected here, on the test's thread), the schema,
 /// the query, filters, sort and layout, the reshape, the drill, what the notes say, the
 /// selection, and the count and buffer the view holds.
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub(crate) struct ViewSnapshot {
     rows: std::result::Result<DataFrame, String>,
+    analysis_rows: std::result::Result<DataFrame, String>,
     base_rows: std::result::Result<DataFrame, String>,
     reshaped_rows: Option<std::result::Result<DataFrame, String>>,
     schema: Arc<Schema>,
@@ -8854,6 +8856,7 @@ impl DataTableState {
         let rows = |lf: &LazyFrame| lf.clone().collect().map_err(|e| e.to_string());
         ViewSnapshot {
             rows: rows(&self.lf),
+            analysis_rows: rows(&self.analysis_lf()),
             base_rows: rows(&self.base_lf),
             reshaped_rows: self.reshaped_lf.as_ref().map(rows),
             schema: self.schema.clone(),

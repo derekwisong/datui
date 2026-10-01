@@ -24766,11 +24766,17 @@ impl App {
         {
             return;
         }
-        let Some(path) = self
-            .path
-            .clone()
-            .filter(|path| !source::is_remote_url(path))
-        else {
+        // One file on this machine, or nothing: a glob is no file to stat, and several
+        // files are not the first one's size.
+        let several = self
+            .opened
+            .as_ref()
+            .is_some_and(|(paths, _)| paths.len() > 1);
+        let Some(path) = self.path.clone().filter(|path| {
+            !several
+                && !source::is_remote_url(path)
+                && !source::is_prefix_or_glob(&path.to_string_lossy())
+        }) else {
             return;
         };
         let parquet = self.original_file_format == Some(ExportFormat::Parquet);
@@ -27101,6 +27107,30 @@ mod file_facts_tests {
         open_resources(&mut app);
         assert!(matches!(app.file_facts(), Some(FileFacts::Failed(_))));
         assert_eq!(gate.calls.load(Ordering::SeqCst), 0, "no second read");
+    }
+
+    /// A glob, or several files, is no one file to stat: the panel shows no size and
+    /// starts no read, rather than a failure or the first file's size.
+    #[test]
+    fn a_glob_or_several_files_read_nothing() {
+        let (mut app, _rx, _tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "/nowhere/*.parquet");
+        open_resources(&mut app);
+        assert!(app.file_facts().is_none());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+        app.opening = Some(vec![
+            PathBuf::from("/nowhere/a.parquet"),
+            PathBuf::from("/nowhere/b.parquet"),
+        ]);
+        install(&mut app, "/nowhere/a.parquet");
+        open_resources(&mut app);
+        assert!(app.file_facts().is_none());
+        let text = screen(&mut app);
+        let line = file_size_line(&text);
+        assert!(line.contains(crate::glyphs::get().dash), "{line}");
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
     }
 
     /// Installing a hive dataset takes what the open's worker found and looks at

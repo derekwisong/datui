@@ -14,8 +14,8 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 
 The file size and Parquet metadata are read in the background the first time
 the panel opens for a dataset. Until they arrive the size reads `reading...`;
-a file that cannot be read shows why in its place. Remote sources and
-directories have no file size.
+a file that cannot be read shows why in its place. Remote sources,
+directories, globs and datasets of several files have no file size.
 
 ## Keys
 

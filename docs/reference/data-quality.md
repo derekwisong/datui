@@ -66,7 +66,7 @@ parses) says so, and <kbd>Enter</kbd> closes it.
 | Coverage line | Says |
 |---|---|
 | Checks | The ten checks, and Column intent when any is declared, by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, no rows in the scope, or a sample where the answer needs every row). A scope with no rows calls no column clean: its verdict is `No rows to check` |
-| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, `none: the scope has no rows`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read |
+| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, `none: the scope has no rows`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read; and `passes read a local copy, fetched once (16.5 MiB)` or `… fetched earlier` when a full scan read one |
 | Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); segments the scope has rows in and the sample drew none of (`3 segments with rows, none sampled`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval`; `key repeats among 10,000 sampled rows only` for a declared key on a sample; `intent on code: not in scope` |
 
 The coverage comes from what the run measured; showing it reads nothing.
@@ -124,6 +124,7 @@ runs kept. After a run, <kbd>e</kbd> opens it again.
 | <kbd>Space</kbd> | Open the row: the Sample form, the Time roles, Intervals, Column intent or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup and returns there |
 | <kbd>p</kbd> | Show the access plan |
+| <kbd>d</kbd> | Release the rows runs kept and a full scan's local copy, named on the Read rule |
 | <kbd>Enter</kbd> | Run, from any row |
 | <kbd>Esc</kbd> | Discard every staged change, the sample's included, and go back to the report, or to the tool list before the first |
 
@@ -163,7 +164,12 @@ The Read section says what Run will do, before it does it:
 | Segment totals summed from the hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
 | Plus one count of the grain's column | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
 | Too many segments … to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
-| Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
+| Every eligible row, in up to N passes over the scope | A full scan of a local source: one collect per check, and one more to count an unknown scope |
+| One fetch of N objects (size) into a local copy, then up to N passes over it | A full scan of a remote dataset that can be copied: see [Local copy of a remote source](#local-copy-of-a-remote-source) |
+| The copy stays for later full scans until d releases it | Said with the fetch |
+| Copied before; released, so fetched again | The copy was released by <kbd>d</kbd>: Run fetches it again |
+| Every eligible row, in up to N passes over the local copy: no source read | A full scan of a dataset whose copy a run fetched this session |
+| Every eligible row, in up to N passes over the source | A full scan of a remote dataset with no copy, with the reason on the next line: too large to keep a local copy (size over the limit), more than the free disk, free disk unknown, the scope reads part of the source, object sizes unknown when it opened, or local copies off |
 | Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
 | Column intent: checked on the rows read, no extra read | Intent declared on a sampled run: measured on the sample's rows in memory |
@@ -178,9 +184,11 @@ a ceiling (`up to`); the run reports the exact eligible count. The scope is
 applied before sampling, so sampling never reaches beyond its bounds.
 <kbd>p</kbd> shows the access plan: source, scope, grain, sample, rows
 evaluated, value reads, requests, source files, the extra reads a type conflict
-costs, writes (none), the passes, what column intent costs, and the estimate
-basis. Remote bytes and
-requests are unknown until measured, and say so.
+costs, remote writes (none), local writes (a full scan's local copy, when it
+makes one), the passes, what column intent costs, and the estimate basis.
+Remote bytes and requests are unknown until measured, and say so; a full scan
+that fetches a local copy states both: the listed object sizes, one request per
+object.
 
 The Time roles row opens an explicit mapping table; every role starts
 unassigned. Under it, each date, time and text column is listed with its type,
@@ -263,6 +271,7 @@ There is no percentage: a run has no total to measure against.
 | Random or Equal per value sample | Stops at its next batch, or between seeded runs |
 | Full scan's passes (profiles, duplicates, spellings, segments, intervals, shared nulls) and a segment count | Stop at the next batch on the streaming engine (`[performance] polars_streaming`, on by default); with it off, each runs to its end |
 | Values a type conflict hides | Stop between files |
+| A full scan's fetch of its local copy | Stops at its next chunk; the partial copy is removed |
 | First rows sample; a full scan's row count when the total is not known | Runs to its end |
 
 A run that stops at its next batch flashes `Run cancelled`. For a read that
@@ -402,7 +411,7 @@ to Every row) asks first: the **Full Scan** dialog, <kbd>Enter</kbd> to run,
 | Row chunks | Use the selected scope's physical order; sampled rows keep their original chunk labels |
 | Time windows | By hour, day, week or month of a date or time column, starting on the calendar boundary for their width (weeks start on Monday) and named by where they start (`2024-01-31`, `week of 2024-01-29`, `2024-01`); a zoned column is cut and named in UTC; a window is cut at the same place whether sampled or scanned |
 | File mapping | Available on source scopes and on views that preserve source-row provenance; otherwise Segments says it is unavailable |
-| Remote sources | Read-only; the access plan always reports zero remote writes |
+| Remote sources | Read-only; the access plan always reports zero remote writes. A full scan may copy the objects locally first: see [Local copy of a remote source](#local-copy-of-a-remote-source) |
 
 ### What is reused
 
@@ -420,6 +429,7 @@ else in Setup belongs to the report.
 | Another partition, a finer window, or a window on newly read text | One count of the grain's column, kept with the rows |
 | Scope, method, size or seed | A new sample, unless the rows for that sample are still held |
 | Nothing changed, or a report in the session cache | Nothing |
+| Any edit to a full scan of a remote dataset whose local copy is kept | Nothing from the source: the passes read the copy |
 
 Windows are cut on the stored clock with no time zone (UTC for a zoned
 column), where every hour lies in one day and every day in one week and one
@@ -437,6 +447,39 @@ The Read rule in Setup says what is kept, as `100,000 rows kept · 12.4 MiB`
 releases every kept row at once: the report on screen and the session's reports
 stay, and the next run that would have reused the rows reads its sample again,
 which Read says before Run. Opening the dataset again releases them too.
+
+### Local copy of a remote source
+
+A full scan reads its scope once per check, and over S3, GCS or Azure each
+pass requests the objects again. When it can, a full scan of a remote dataset fetches each object once into the
+cache directory and makes every pass over that copy:
+
+| Condition | Why |
+|---|---|
+| The scope is the whole source, or a view with no filter, query, search, reshape or drill that shows every column | A narrower scope's passes may read less than the whole objects |
+| No binary column | Binary columns are never read, and a copy would fetch them |
+| Every object's size is known from the listing or the footer read that opened it | The budget is checked before Run, with no request |
+| The total fits `[performance] quality_local_copy_mb` (2048 MiB by default; 0 never copies) and the free disk in the cache directory | The copy never takes more than either |
+
+Otherwise the scan reads the source in its passes, as before, and Read says
+why. A file over HTTP is already downloaded when it opens, and a local file is
+read where it is.
+
+| | |
+|---|---|
+| Requests | One GET per object, streamed to disk; no list or head |
+| Disk | The objects' listed sizes, under `quality-copies` in the cache directory |
+| Kept | For later full scans of the dataset: any edit, a new role or grain included, reads the copy and nothing from the source |
+| Released | By <kbd>d</kbd> in Setup (the Read rule names it, as `local copy · 16.5 MiB`), by opening the dataset again or another one, and when datui exits. A run still reading the copy keeps it until the run ends |
+| Cancel or failure | The fetch stops at its next chunk, and the objects copied so far are removed |
+| Left behind | A copy whose datui did not exit cleanly is removed by the next copy any datui makes |
+| An object changed since it opened | A size that differs from the listing fails the run: open the dataset again |
+| Still read from the source | The values a type conflict hides, read per file as before |
+
+The copy is a session snapshot, like kept rows: an object rewritten in the
+bucket is not noticed until the dataset is opened again. The report's coverage
+says `passes read a local copy, fetched once (16.5 MiB)` or
+`… fetched earlier`, and the JSON export records it under `run.reads.local_copy`.
 
 ## Column intent
 
@@ -506,7 +549,7 @@ changed in meaning is a new version.
 | `exported_at` | When the file was written, RFC 3339 in UTC; not when the data was read |
 | `source` | `location` (the URL as opened, or the local path made absolute), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run that read the rows began (a report remade from rows a run kept keeps that run's), and `view`: the query, SQL, search, filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
 | `setup` | `scope`, `values` (`sample`, `full` or `metadata`), `sample` (`method`, `rows`, `seed`), `grain`, `comparison`, `baseline_segment`, `time_formats` (`column`, `kind`, `format`), `time_roles` (`role`, `column`), `intervals`, `window_by`, `latency_threshold_seconds`, `intent` (`key`, and per column `column`, `required`, `allowed`, `min`, `max`, `read_as`), and `expected` (`weekdays`, `from`, `before`, as typed), `null` when no windows are stated |
-| `run` | `precision` (`exact`, `sampled` or `metadata`), `total_rows`, `evaluated_rows`, `per_value`, `source_files`, `footers_read`, and `reads` (`source_reads`, `counted`, `rows_traversed`) when the run's reads were watched |
+| `run` | `precision` (`exact`, `sampled` or `metadata`), `total_rows`, `evaluated_rows`, `per_value`, `source_files`, `footers_read`, and `reads` (`source_reads`, `counted`, `rows_traversed`, and `local_copy` (`bytes`, `objects`, `fetched_by_this_run`) when a full scan's passes read one) when the run's reads were watched |
 | `verdict` | The headline, as on screen |
 | `coverage` | `exact`, `sampled`, `metadata`, `skipped`, `unavailable` (`reason`, `checks`), `rows`, `limits` |
 | `checks` | Per check: `name`, `looks_for`, `applies_to`, `outcome` (`passed`, `found`, `skipped`, `unavailable`), `detail`, `basis` |

@@ -252,13 +252,24 @@ new sample.
 The **Read** rule names the rows runs have kept for reuse, such as
 `100,000 rows kept · 12.4 MiB`; <kbd>d</kbd> releases them, and the next run
 that would have used them reads its sample again.
+
+A full scan of a remote dataset (S3, GCS, Azure) reads its scope once per check.
+When the whole dataset fits `quality_local_copy_mb` (2 GiB by default) and the
+free disk, Read says `One fetch of 8 objects (16.5 MiB) into a local copy, then
+up to 7 passes over it`: each object is fetched once into the cache directory,
+and every pass, and every later full scan of the dataset, reads the copy. The
+Read rule then adds `local copy · 16.5 MiB`, and <kbd>d</kbd> releases it with
+the rows. Otherwise Read says the passes go to the source, and why, such as
+`Too large to keep a local copy`. See
+[Local copy of a remote source](../reference/data-quality.md#local-copy-of-a-remote-source).
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
 they were.
 
 While a run reads, the progress names its stage, whether that stage reads the
 source, and the rows seen where the read can count them. <kbd>Esc</kbd>
-cancels: a sampling pass, or a full scan's passes, stop at the next batch. A
+cancels: a sampling pass, or a full scan's passes, stop at the next batch, and
+a local copy being fetched stops at its next chunk and is removed. A
 read that cannot stop is shown as finishing, in the header and in Setup, until
 it ends; until then Run waits, nothing else reads beside it, and the last
 report stays.

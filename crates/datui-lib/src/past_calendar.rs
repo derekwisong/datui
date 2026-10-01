@@ -155,8 +155,8 @@ fn ns_reach(function: &TemporalFunction, zoned: bool, args: &[Column]) -> Option
     let in_months = |spans: &[(i128, bool, bool)]| spans.iter().any(|(_, _, months)| *months);
     let (back, forward, calendar) = match function {
         TemporalFunction::MonthStart => (31 * NS_PER_DAY, 0, true),
-        // Through the start of the next month.
-        TemporalFunction::MonthEnd => (0, 32 * NS_PER_DAY, true),
+        // Through the start of its month, then of the next.
+        TemporalFunction::MonthEnd => (31 * NS_PER_DAY, 32 * NS_PER_DAY, true),
         TemporalFunction::Truncate => {
             let spans = spans()?;
             (longest(&spans, None), 0, in_months(&spans))
@@ -655,7 +655,8 @@ mod tests {
     #[test]
     fn date_math_near_the_ends_of_the_nanosecond_range_is_null() {
         const DAY: i64 = 86_400_000_000_000;
-        // In range, then the ends and 20 days before the top end.
+        // In range, then the ends, 20 days before the top end and a day after the
+        // bottom one.
         let stamps = [
             Some(0),
             Some(400 * DAY),
@@ -663,6 +664,7 @@ mod tests {
             Some(i64::MAX),
             Some(i64::MIN + 1),
             Some(i64::MAX - 20 * DAY),
+            Some(i64::MIN + DAY),
         ];
         let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
         let frame = |rows: &[Option<i64>]| {
@@ -679,28 +681,30 @@ mod tests {
         let schema = frame(&stamps).collect_schema().unwrap();
         let n = || col("n");
         let z = || col("z");
-        // Which of the last three rows keep a value.
+        // Which of the last four rows keep a value.
         let cases = [
-            (n().dt().month_start(), [true, false, true]),
-            (n().dt().month_end(), [false, false, false]),
-            (n().dt().truncate(lit("1d")), [true, false, true]),
-            (n().dt().truncate(lit("1mo")), [true, false, true]),
-            (n().dt().round(lit("1h")), [false, false, true]),
+            (n().dt().month_start(), [true, false, true, false]),
+            // Through its own month's start, before the bottom end.
+            (n().dt().month_end(), [false, false, false, false]),
+            (n().dt().truncate(lit("1d")), [true, false, true, true]),
+            (n().dt().truncate(lit("1mo")), [true, false, true, false]),
+            (n().dt().round(lit("1h")), [false, false, true, true]),
             #[cfg(feature = "sql")]
-            (n().dt().offset_by(lit("1d")), [false, true, true]),
+            (n().dt().offset_by(lit("1d")), [false, true, true, true]),
             #[cfg(feature = "sql")]
-            (n().dt().offset_by(lit("-1mo")), [true, false, true]),
-            (n().dt().date(), [true, true, true]),
-            (n().dt().ordinal_day(), [true, true, true]),
-            (z().dt().month_start(), [false, false, true]),
+            (n().dt().offset_by(lit("-1mo")), [true, false, true, false]),
+            (n().dt().date(), [true, true, true, true]),
+            (n().dt().ordinal_day(), [true, true, true, true]),
+            (z().dt().month_start(), [false, false, true, false]),
+            (z().dt().month_end(), [false, false, false, false]),
             #[cfg(feature = "sql")]
-            (z().dt().offset_by(lit("1d")), [false, false, true]),
-            (z().dt().date(), [false, false, true]),
-            (z().dt().time(), [false, false, true]),
-            (z().dt().ordinal_day(), [false, false, true]),
-            (z().dt().iso_year(), [false, false, true]),
-            (z().dt().datetime(), [false, false, true]),
-            (z().dt().year(), [true, true, true]),
+            (z().dt().offset_by(lit("1d")), [false, false, true, false]),
+            (z().dt().date(), [false, false, true, false]),
+            (z().dt().time(), [false, false, true, false]),
+            (z().dt().ordinal_day(), [false, false, true, false]),
+            (z().dt().iso_year(), [false, false, true, false]),
+            (z().dt().datetime(), [false, false, true, false]),
+            (z().dt().year(), [true, true, true, true]),
         ];
         for (part, kept) in cases {
             let guarded = guard_expr(part.clone(), Some(&schema));

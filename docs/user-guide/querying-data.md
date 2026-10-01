@@ -162,7 +162,8 @@ such as pandas' `Timestamp.max`:
 
 | In a query | Near the ends of the nanosecond range |
 |---|---|
-| `.month_start`, `.month_end` | Null within a month of the end it moves toward |
+| `.month_start` | Null within a month of 1677-09-21 |
+| `.month_end` | Null within a month of either end |
 | SQL `INTERVAL` arithmetic | Null when the interval could carry it past an end |
 | With a time zone: `.date`, `.time`, `.doy` and the rows above | Null within a day of either end |
 

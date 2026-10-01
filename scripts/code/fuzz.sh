@@ -37,6 +37,16 @@ export RUSTC_BOOTSTRAP=1
 # polars and arrow that these targets feed. The Nightly workflow does exactly that.
 SANITIZER="${DATUI_FUZZ_SANITIZER:-none}"
 
+# ASan keeps the call stack of every allocation, 30 frames by default, in a depot it
+# never frees. The parsers recurse, so the fuzzer keeps reaching allocations from stacks
+# it has not seen, and the depot grows for the whole run: parse_query went past the 4 GB
+# RSS limit with 28 MB of live heap (nightly, 2026-09-28). Eight frames still name the
+# allocation site. Four minutes from that night's corpus ended at 1,030 MB RSS with the
+# default and 557 MB with eight. A value already set comes later, so it wins.
+if [ "$SANITIZER" = address ]; then
+    export ASAN_OPTIONS="malloc_context_size=8${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
+fi
+
 cd "$(dirname "$0")/../.."
 
 TARGETS=(parse_query sql_group_plan number_format fuzzy_match glob_match config_parse)

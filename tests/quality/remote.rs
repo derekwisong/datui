@@ -742,6 +742,49 @@ fn an_object_rewritten_since_open_fails_the_fetch() {
     assert_eq!(app.quality_copy_bytes(), 0);
 }
 
+/// The objects of `remote_events` under hive directories, `day=1/` and so on: the
+/// scan reads `day` from the path.
+fn hive_events() -> BTreeMap<String, Vec<u8>> {
+    remote_events()
+        .into_iter()
+        .enumerate()
+        .map(|(day, (key, bytes))| {
+            let name = key.trim_start_matches("events/");
+            (format!("events/day={}/{name}", day + 1), bytes)
+        })
+        .collect()
+}
+
+/// A hive dataset's copy keeps its `key=value` directories, so the passes over it
+/// read the partition column and measure what the bucket does.
+#[test]
+fn a_hive_dataset_is_copied_with_its_partitions() {
+    let s3 = FakeS3::serve("lake", hive_events());
+    let cache = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .is_some_and(|state| state.schema.contains("day")),
+        "the partition column"
+    );
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full_scan);
+    assert_eq!(reads, [QualityStage::CopyingSource], "the copy stands in");
+    assert_eq!(wire.gets, FILES as u64);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert!(results.reads.unwrap().copy.is_some());
+    assert!(results.columns.iter().any(|column| column.name == "day"));
+
+    let source = FakeS3::serve("lake", hive_events());
+    let (mut direct, direct_rx) = open_remote_with(&source, copies_off(), None);
+    edit_and_run(&mut direct, &direct_rx, &source, full_scan);
+    assert_eq!(
+        measured(&direct),
+        measured(&app),
+        "the copy reads as the source"
+    );
+}
+
 /// One object opened from a bucket is copied too, its size from the footer read
 /// that opened it: one GET for the copy, then every pass reads it.
 #[test]

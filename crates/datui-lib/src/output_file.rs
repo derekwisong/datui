@@ -333,6 +333,23 @@ mod tests {
         assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
     }
 
+    /// A writer that panics part way, as a worker thread can, unwinds through
+    /// the drop: the old file stays and the temporary file goes.
+    #[test]
+    fn a_panic_while_writing_keeps_the_old_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        fs::write(&path, b"old").unwrap();
+        let result = std::panic::catch_unwind(|| {
+            let mut out = OutputFile::create(&path, Overwrite::Replace).unwrap();
+            out.file().write_all(b"new and partial").unwrap();
+            panic!("the writer failed");
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
+    }
+
     #[test]
     fn an_approved_replacement_lands() {
         let dir = tempfile::tempdir().unwrap();

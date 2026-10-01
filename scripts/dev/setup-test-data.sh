@@ -7,7 +7,8 @@
 # tests fail with a bare "Sample data generation failed" and no clue what to do.
 #
 # This mirrors what CI does, so a green local run means the same thing as a green CI
-# run. Safe to re-run: the venv is reused and only missing fixtures are regenerated.
+# run. Re-running reuses the venv and rewrites every fixture in place; do not run it
+# while tests are running.
 #
 #   ./scripts/dev/setup-test-data.sh          # set up and generate
 #   ./scripts/dev/setup-test-data.sh --force  # regenerate fixtures from scratch

@@ -256,7 +256,7 @@ fn the_views_surface_saves_applies_and_deletes() {
         "editing from another table keeps the view's stored schema"
     );
 
-    // Leave no view behind: the suggested path pattern matches every fixture.
+    // Leave no view behind.
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
     assert!(app.template_modal.rows.is_empty());

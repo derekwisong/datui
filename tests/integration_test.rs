@@ -119,6 +119,7 @@ fn test_drain_events_waits_for_owed_result() {
             generation,
             job: datui::Job::Load,
             message: "test worker failed".into(),
+            panicked: false,
         })
         .unwrap();
     });
@@ -9524,6 +9525,7 @@ fn test_error_modal_over_home_is_dismissable() {
         generation: app.task_generation(),
         job: datui::Job::Load,
         message: "could not read the file".to_string(),
+        panicked: false,
     });
 
     let out = app.event(&AppEvent::Key(KeyEvent::new(

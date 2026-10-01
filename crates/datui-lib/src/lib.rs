@@ -1252,6 +1252,7 @@ mod quality_sample_tests {
             generation: stale,
             job: Job::Analysis,
             message: "the stale run failed".to_string(),
+            panicked: false,
         });
         assert_eq!(
             format!("{:?}", app.analysis_modal.data_quality_results),
@@ -1598,6 +1599,7 @@ mod chart_prepare_tests {
                 format: ChartExportFormat::Png,
             },
             message: "disk full".to_string(),
+            panicked: false,
         });
         assert!(!app.error_modal.active);
         assert!(!app.chart_export_modal.active);
@@ -5594,7 +5596,7 @@ pub mod tests {
         assert!(
             matches!(
                 &failed,
-                AppEvent::BackgroundFailed { generation: g, job: Job::Pivot, message }
+                AppEvent::BackgroundFailed { generation: g, job: Job::Pivot, message, panicked: true }
                     if *g == generation && message.contains("worker died")
             ),
             "the panic fails the job it stopped, first: {}",
@@ -5633,7 +5635,8 @@ pub mod tests {
                 generation,
                 job,
                 message,
-            } => format!("BackgroundFailed({generation}, {job:?}, {message:?})"),
+                panicked,
+            } => format!("BackgroundFailed({generation}, {job:?}, {message:?}, {panicked})"),
             AppEvent::BackgroundWorkFinished { generation } => {
                 format!("BackgroundWorkFinished({generation})")
             }
@@ -5712,6 +5715,7 @@ pub mod tests {
                 generation,
                 job,
                 message: "not this one".to_string(),
+                panicked: false,
             });
         };
         let untouched = |app: &App, what: &str| {
@@ -7992,6 +7996,9 @@ pub enum AppEvent {
         generation: u64,
         job: Job,
         message: String,
+        /// The worker panicked: `message` is an internal error naming the log, which
+        /// holds the details, rather than a reason the user can act on.
+        panicked: bool,
     },
     /// A [`GenerationLease`] was released: the work holding it has finished, however it
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
@@ -12801,15 +12808,18 @@ impl App {
                     panic!("worker died");
                 }
                 work(task_gen, sender)
-            })
-            .and_then(|ended| ended);
-            if let Err(message) = ended {
-                let _ = tx.send(AppEvent::BackgroundFailed {
-                    generation: task_gen,
-                    job,
-                    message,
-                });
-            }
+            });
+            let (message, panicked) = match ended {
+                Ok(Ok(())) => return,
+                Ok(Err(message)) => (message, false),
+                Err(message) => (message, true),
+            };
+            let _ = tx.send(AppEvent::BackgroundFailed {
+                generation: task_gen,
+                job,
+                message,
+                panicked,
+            });
         });
     }
 
@@ -22885,8 +22895,9 @@ impl App {
                 generation,
                 job,
                 message,
+                panicked,
             } => {
-                self.background_failed(*generation, job, message);
+                self.background_failed(*generation, job, message, *panicked);
                 None
             }
             AppEvent::Search(query) => {
@@ -23898,7 +23909,7 @@ impl App {
     /// one, as that job's result handler would, and clears only what the job set: a
     /// load-ahead that dies leaves the analysis beside it running, and an older look at
     /// a path leaves the newer one waiting. One that is not current is dropped.
-    fn background_failed(&mut self, generation: u64, job: &Job, message: &str) {
+    fn background_failed(&mut self, generation: u64, job: &Job, message: &str, panicked: bool) {
         let current = generation == self.task_generation;
         match job {
             Job::Load => {
@@ -23978,7 +23989,13 @@ impl App {
                     if self.status_message.as_deref() == Some(Self::READING_GROUP) {
                         self.status_message = None;
                     }
-                    self.flash_note(format!("Could not drill in: {message}"));
+                    // A flash has one line, and a panic's message is an internal
+                    // error with the log's path under it: the log has the details.
+                    self.flash_note(if panicked {
+                        "Could not drill in; see the log".to_string()
+                    } else {
+                        format!("Could not drill in: {message}")
+                    });
                 }
             }
             Job::Export => {

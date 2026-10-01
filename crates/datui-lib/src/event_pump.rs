@@ -740,6 +740,46 @@ mod tests {
         assert!(matches!(p.app.loading_state, LoadingState::Idle));
     }
 
+    /// #455: a drill whose row read dies says so in one line, pointing at the log
+    /// rather than spilling the internal error into the flash, and the next Enter
+    /// drills.
+    #[test]
+    fn a_drill_whose_read_dies_flashes_one_line_and_the_next_one_drills() {
+        let (mut p, _dir) = loaded_pump();
+        p.send(AppEvent::Search("select n: count age by name".to_string()))
+            .unwrap();
+        settle(&mut p);
+        // With the key hidden the buffer cannot say which group a row is, so Enter
+        // reads it on a worker.
+        p.app
+            .data_table_state
+            .as_mut()
+            .unwrap()
+            .set_column_order(vec!["n".to_string()]);
+        settle(&mut p);
+        rendered(&mut p.app);
+
+        p.app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::DrillRow);
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        settle(&mut p);
+        assert_eq!(
+            p.app.flash_message(),
+            Some("Could not drill in; see the log")
+        );
+        assert!(!p.app.is_busy());
+        assert!(p.app.status_message.is_none());
+        assert!(!p.app.error_modal.active);
+        assert!(!p.app.data_table_state.as_ref().unwrap().is_drilled_down());
+
+        rendered(&mut p.app);
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        settle(&mut p);
+        assert!(
+            p.app.data_table_state.as_ref().unwrap().is_drilled_down(),
+            "the next one drills"
+        );
+    }
+
     /// #455: a pivot whose worker dies says so and leaves nothing waiting on it — the
     /// form is not stuck computing — and the next pivot is installed.
     #[test]
@@ -816,6 +856,7 @@ mod tests {
                 generation: passed,
                 job,
                 message: "from work long gone".to_string(),
+                panicked: true,
             })
             .unwrap();
         }
@@ -1116,6 +1157,7 @@ mod tests {
             generation: p.app.task_generation(),
             job: crate::Job::Analysis,
             message: "disk on fire".to_string(),
+            panicked: false,
         })
         .unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));

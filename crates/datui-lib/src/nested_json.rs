@@ -335,8 +335,9 @@ mod tests {
             )
         );
 
-        let copy = crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Tsv, true)
-            .unwrap();
+        let copy =
+            crate::clipboard::tabular_payload(&df, crate::clipboard::CopyFormat::Tsv, true, true)
+                .unwrap();
         let row: Vec<&str> = copy.text.lines().nth(1).unwrap().split('\t').collect();
         assert_eq!(
             row,

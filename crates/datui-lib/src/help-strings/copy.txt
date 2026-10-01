@@ -32,8 +32,8 @@ Formats:
   CSV:       Comma-separated
   Markdown:  A pipe table, aligned, numeric columns right-aligned
 
-  A TSV or CSV copy also carries an HTML table flavor, so pasting into a
-  spreadsheet or an email keeps the columns. Values are raw, like an
+  A TSV or CSV copy to the native clipboard also carries an HTML table
+  flavor, so pasting into a spreadsheet or an email keeps the columns. Values are raw, like an
   export: display formatting is not applied and a null is an empty field.
   List and struct cells are JSON in every format, as in a CSV export.
   A binary column is base64 in a Table copy; Cell, Row and View copies
@@ -44,4 +44,6 @@ Clipboard:
   server, "osc52" prints an escape sequence the terminal applies (works
   over SSH; tmux needs set-clipboard on), "auto" (default) uses native
   where it works and osc52 elsewhere. A native copy belongs to datui, so
-  quitting can drop it unless a clipboard manager holds copies.
+  quitting can drop it unless a clipboard manager holds copies. An osc52
+  copy over [clipboard] osc52_limit_kb is refused, a Table copy as soon as
+  the rows read pass it.

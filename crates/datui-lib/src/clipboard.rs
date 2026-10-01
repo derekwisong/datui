@@ -13,7 +13,9 @@
 //! ([`crate::sanitize`]), and an escape drawn as cell text is an escape
 //! stripped. Terminals cap how much OSC 52 they accept, so the payload is
 //! capped here first, with the limit in the config where a generous terminal's
-//! user can raise it.
+//! user can raise it. The cap is known before a copy is built: a table copy to
+//! the terminal is read in batches and stops at the first byte over it, and no
+//! HTML flavor is built for a destination that cannot offer one.
 //!
 //! **auto** is native where it initializes and osc52 everywhere else, decided
 //! once per run at the first copy.
@@ -59,9 +61,25 @@ impl Payload {
 /// Somewhere a payload can go. A trait so the integration tests can hand the
 /// app a destination that only records what it was given.
 pub trait Destination {
-    fn write(&mut self, payload: &Payload) -> Result<(), String>;
+    /// Takes the payload: a destination that keeps it owns it, without a copy.
+    fn write(&mut self, payload: Payload) -> Result<(), String>;
     /// One word for the flash and for errors: "clipboard" or "terminal".
     fn describe(&self) -> &'static str;
+    fn accepts(&self) -> Accepts {
+        Accepts {
+            html: true,
+            base64_limit: None,
+        }
+    }
+}
+
+/// What a destination takes, known before a copy is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Accepts {
+    /// Offers an HTML flavor beside the text.
+    pub html: bool,
+    /// The longest copy it takes, in bytes of base64; none for no cap.
+    pub base64_limit: Option<usize>,
 }
 
 /// arboard, kept alive for the life of the app: on Wayland and X11 the copy
@@ -80,12 +98,10 @@ impl Native {
 }
 
 impl Destination for Native {
-    fn write(&mut self, payload: &Payload) -> Result<(), String> {
-        let result = match &payload.html {
-            Some(html) => self
-                .clipboard
-                .set_html(html.clone(), Some(payload.text.clone())),
-            None => self.clipboard.set_text(payload.text.clone()),
+    fn write(&mut self, payload: Payload) -> Result<(), String> {
+        let result = match payload.html {
+            Some(html) => self.clipboard.set_html(html, Some(payload.text)),
+            None => self.clipboard.set_text(payload.text),
         };
         result.map_err(|e| format!("copy failed: {e}"))
     }
@@ -102,8 +118,10 @@ pub struct Osc52 {
 }
 
 impl Destination for Osc52 {
-    fn write(&mut self, payload: &Payload) -> Result<(), String> {
+    fn write(&mut self, payload: Payload) -> Result<(), String> {
         let sequence = osc52_sequence(&payload.text, self.limit)?;
+        // Encoded, the text is not needed while the sequence is written.
+        drop(payload);
         let mut out = std::io::stdout();
         out.write_all(sequence.as_bytes())
             .and_then(|()| out.flush())
@@ -113,23 +131,49 @@ impl Destination for Osc52 {
     fn describe(&self) -> &'static str {
         "terminal"
     }
+
+    fn accepts(&self) -> Accepts {
+        Accepts {
+            html: false,
+            base64_limit: Some(self.limit),
+        }
+    }
+}
+
+/// The length of `bytes` bytes in padded base64.
+pub fn base64_len(bytes: usize) -> usize {
+    bytes.div_ceil(3).saturating_mul(4)
 }
 
 /// The escape sequence that asks the terminal to set the system clipboard,
 /// or why it was not built. Split from [`Osc52::write`] so a test can read
-/// the bytes without owning stdout.
+/// the bytes without owning stdout. The size is checked before anything is
+/// encoded.
 pub fn osc52_sequence(text: &str, limit: usize) -> Result<String, String> {
     use base64::Engine as _;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    if encoded.len() > limit {
-        return Err(format!(
-            "the copy is {} of base64 and the terminal path is capped at {} \
-             (raise [clipboard] osc52_limit_kb, or export to a file)",
-            format_kb(encoded.len()),
-            format_kb(limit),
-        ));
+    let encoded = base64_len(text.len());
+    if encoded > limit {
+        return Err(over_osc52_limit(Some(encoded), limit));
     }
-    Ok(format!("\x1b]52;c;{encoded}\x07"))
+    let mut sequence = String::with_capacity(encoded + 8);
+    sequence.push_str("\x1b]52;c;");
+    base64::engine::general_purpose::STANDARD.encode_string(text.as_bytes(), &mut sequence);
+    sequence.push('\x07');
+    Ok(sequence)
+}
+
+/// Why a copy does not go through the terminal. `encoded` is its size in base64,
+/// or none when it stopped being built at the cap.
+fn over_osc52_limit(encoded: Option<usize>, limit: usize) -> String {
+    let size = match encoded {
+        Some(bytes) => format_kb(bytes),
+        None => format!("over {}", format_kb(limit)),
+    };
+    format!(
+        "the copy is {size} of base64 and the terminal path is capped at {} \
+         (raise [clipboard] osc52_limit_kb, or export to a file)",
+        format_kb(limit),
+    )
 }
 
 fn format_kb(bytes: usize) -> String {
@@ -202,87 +246,133 @@ pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, 
 /// columns declare right alignment, pipes are escaped, and embedded newlines
 /// flatten to spaces — a Markdown cell has no way to hold one.
 pub fn markdown(df: &DataFrame) -> Result<String, String> {
-    let column_names = df.get_column_names_owned();
-    let escape = |s: &str| s.replace('|', "\\|").replace(['\n', '\r'], " ");
-    let mut names: Vec<String> = Vec::with_capacity(column_names.len());
-    let mut cells: Vec<Vec<String>> = Vec::with_capacity(column_names.len());
-    let mut numeric: Vec<bool> = Vec::with_capacity(column_names.len());
-    for name in &column_names {
-        let column = df.column(name).map_err(|e| e.to_string())?;
-        names.push(escape(name));
-        numeric.push(column.dtype().is_primitive_numeric());
-        let series = column.as_materialized_series();
-        let mut body = Vec::with_capacity(df.height());
-        for i in 0..df.height() {
-            let value = series.get(i).map_err(|e| e.to_string())?;
-            body.push(match value {
-                AnyValue::Null => String::new(),
-                v => escape(&v.str_value()),
-            });
-        }
-        cells.push(body);
-    }
-    let widths: Vec<usize> = names
-        .iter()
-        .zip(&cells)
-        .map(|(name, body)| {
-            body.iter()
-                .map(|c| c.chars().count())
-                .max()
-                .unwrap_or(0)
-                .max(name.chars().count())
-                .max(3)
-        })
-        .collect();
-    // A numeric column is padded to the right, so the raw text reads the way
-    // the `---:` delimiter tells a renderer to draw it; the two agree.
-    let pad = |s: &str, w: usize, right: bool| {
-        let fill = " ".repeat(w - s.chars().count());
-        if right {
-            format!("{fill}{s}")
-        } else {
-            format!("{s}{fill}")
-        }
-    };
-    let mut lines = Vec::with_capacity(df.height() + 2);
-    lines.push(format!(
-        "| {} |",
-        names
+    let mut layout = MarkdownLayout::new(df);
+    layout.measure(df)?;
+    let mut out = String::with_capacity(layout.len(df.height()));
+    layout.write(df, &mut out)?;
+    Ok(out)
+}
+
+/// A Markdown table's columns: their names, alignment and widths. Widths are
+/// measured over every row before a row is written, a cell at a time, so no
+/// cell's text is held beyond its own.
+struct MarkdownLayout {
+    names: Vec<String>,
+    numeric: Vec<bool>,
+    widths: Vec<usize>,
+}
+
+impl MarkdownLayout {
+    fn new(df: &DataFrame) -> Self {
+        let names: Vec<String> = df
+            .get_column_names()
             .iter()
-            .zip(&widths)
-            .zip(&numeric)
-            .map(|((n, &w), &num)| pad(n, w, num))
-            .collect::<Vec<_>>()
-            .join(" | ")
-    ));
-    lines.push(format!(
-        "|{}|",
-        widths
+            .map(|name| markdown_escape(name))
+            .collect();
+        let widths = names.iter().map(|n| n.chars().count().max(3)).collect();
+        let numeric = df
+            .columns()
             .iter()
-            .zip(&numeric)
-            .map(|(&w, &num)| {
-                if num {
-                    format!(" {}: ", "-".repeat(w.saturating_sub(1)))
-                } else {
-                    format!(" {} ", "-".repeat(w))
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    ));
-    for row in 0..df.height() {
-        lines.push(format!(
-            "| {} |",
-            cells
-                .iter()
-                .zip(&widths)
-                .zip(&numeric)
-                .map(|((body, &w), &num)| pad(&body[row], w, num))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        ));
+            .map(|c| c.dtype().is_primitive_numeric())
+            .collect();
+        Self {
+            names,
+            numeric,
+            widths,
+        }
     }
-    Ok(lines.join("\n"))
+
+    /// Widen the columns to fit the rows of `df`.
+    fn measure(&mut self, df: &DataFrame) -> Result<(), String> {
+        for (column, width) in df.columns().iter().zip(&mut self.widths) {
+            let series = column.as_materialized_series();
+            for row in 0..df.height() {
+                *width = (*width).max(markdown_cell(series, row)?.chars().count());
+            }
+        }
+        Ok(())
+    }
+
+    /// The table's length over `rows` rows at the widths measured so far, in
+    /// characters: no more than its bytes, and only ever growing as rows widen
+    /// the columns.
+    fn len(&self, rows: usize) -> usize {
+        let line = self.widths.iter().sum::<usize>() + 3 * self.widths.len() + 1;
+        (rows + 2) * line + rows + 1
+    }
+
+    fn write_line<'a>(&self, out: &mut String, cells: impl Iterator<Item = &'a str>) {
+        out.push_str("| ");
+        for (i, ((cell, &width), &right)) in cells.zip(&self.widths).zip(&self.numeric).enumerate()
+        {
+            if i > 0 {
+                out.push_str(" | ");
+            }
+            // A numeric column is padded to the right, so the raw text reads the
+            // way the `---:` delimiter tells a renderer to draw it; the two agree.
+            let fill = width - cell.chars().count();
+            if right {
+                out.extend(std::iter::repeat_n(' ', fill));
+                out.push_str(cell);
+            } else {
+                out.push_str(cell);
+                out.extend(std::iter::repeat_n(' ', fill));
+            }
+        }
+        out.push_str(" |");
+    }
+
+    /// Append the header, the delimiter row and the rows of `df`.
+    fn write(&self, df: &DataFrame, out: &mut String) -> Result<(), String> {
+        self.write_line(out, self.names.iter().map(String::as_str));
+        out.push_str("\n|");
+        for (i, (&width, &right)) in self.widths.iter().zip(&self.numeric).enumerate() {
+            if i > 0 {
+                out.push('|');
+            }
+            out.push(' ');
+            if right {
+                out.extend(std::iter::repeat_n('-', width.saturating_sub(1)));
+                out.push(':');
+            } else {
+                out.extend(std::iter::repeat_n('-', width));
+            }
+            out.push(' ');
+        }
+        out.push('|');
+        self.write_rows(df, out)
+    }
+
+    /// Append the rows of `df`, each on a line of its own.
+    fn write_rows(&self, df: &DataFrame, out: &mut String) -> Result<(), String> {
+        let series: Vec<&Series> = df
+            .columns()
+            .iter()
+            .map(Column::as_materialized_series)
+            .collect();
+        let mut cells = Vec::with_capacity(series.len());
+        for row in 0..df.height() {
+            cells.clear();
+            for s in &series {
+                cells.push(markdown_cell(s, row)?);
+            }
+            out.push('\n');
+            self.write_line(out, cells.iter().map(String::as_str));
+        }
+        Ok(())
+    }
+}
+
+fn markdown_escape(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+/// One Markdown cell: the value escaped, a null empty.
+fn markdown_cell(series: &Series, row: usize) -> Result<String, String> {
+    Ok(match series.get(row).map_err(|e| e.to_string())? {
+        AnyValue::Null => String::new(),
+        v => markdown_escape(&v.str_value()),
+    })
 }
 
 /// A DataFrame as an HTML table, the rich flavor beside a TSV or CSV copy.
@@ -325,13 +415,15 @@ pub fn html_table(df: &DataFrame, header: bool) -> Result<String, String> {
 }
 
 /// The payload for a tabular copy: the chosen format as text, with the HTML
-/// flavor beside a TSV or CSV copy. A Markdown copy is the Markdown itself —
-/// pasting rich HTML where Markdown was asked for would defeat the choice.
-/// List and struct cells are JSON in every format, as in a CSV export.
+/// flavor beside a TSV or CSV copy when `html` asks for it (the destination can
+/// offer it). A Markdown copy is the Markdown itself — pasting rich HTML where
+/// Markdown was asked for would defeat the choice. List and struct cells are
+/// JSON in every format, as in a CSV export.
 pub fn tabular_payload(
     df: &DataFrame,
     format: CopyFormat,
     header: bool,
+    html: bool,
 ) -> Result<Payload, String> {
     let df = &crate::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
     let text = match format {
@@ -340,15 +432,249 @@ pub fn tabular_payload(
         CopyFormat::Markdown => markdown(df)?,
     };
     let html = match format {
-        CopyFormat::Tsv | CopyFormat::Csv => Some(html_table(df, header)?),
-        CopyFormat::Markdown => None,
+        CopyFormat::Tsv | CopyFormat::Csv if html => Some(html_table(df, header)?),
+        _ => None,
     };
     Ok(Payload { text, html })
+}
+
+/// Rows a table copy to a capped destination is read in: what runs past the cap
+/// is at most this many rows.
+const BOUNDED_BATCH_ROWS: usize = 1024;
+
+/// The text of a table copy and its row count, read from `lf` a batch at a time
+/// and given up at the first batch that takes it past `limit` bytes of base64:
+/// a copy the terminal will not take is never read or written whole. Text only;
+/// a capped destination offers no HTML flavor.
+///
+/// What the query does upstream of its last rows (a sort, a join) still takes
+/// its own memory; a Markdown copy keeps its rows until the widths are known,
+/// which the cap bounds as it does the text.
+pub fn bounded_table_text(
+    lf: LazyFrame,
+    format: CopyFormat,
+    header: bool,
+    limit: usize,
+) -> Result<(String, usize), String> {
+    use std::sync::{Arc, Mutex};
+    let schema = lf.clone().collect_schema().map_err(|e| e.to_string())?;
+    let state = Arc::new(Mutex::new(BoundedText::new(format, header, limit)));
+    let sink_state = Arc::clone(&state);
+    let sink = lf
+        .sink_batches(
+            PlanCallback::new(move |batch: DataFrame| {
+                let mut text = sink_state
+                    .lock()
+                    .map_err(|_| PolarsError::ComputeError("copy lock failed".into()))?;
+                // True stops the read: the copy is over the cap, or failed.
+                Ok(text.take(batch))
+            }),
+            true,
+            std::num::NonZeroUsize::new(BOUNDED_BATCH_ROWS),
+        )
+        .map_err(|e| e.to_string())?;
+    crate::statistics::collect_lazy(sink, true).map_err(|e| e.to_string())?;
+    let mut text = std::mem::replace(
+        &mut *state.lock().map_err(|_| "copy lock failed".to_string())?,
+        BoundedText::new(format, header, limit),
+    );
+    if !text.started {
+        // No batch came: the header alone, from the schema.
+        text.take(DataFrame::empty_with_schema(&schema));
+    }
+    text.finish()
+}
+
+/// A table copy's text as its batches come in, against the cap.
+struct BoundedText {
+    format: CopyFormat,
+    header: bool,
+    limit: usize,
+    started: bool,
+    text: String,
+    rows: usize,
+    /// A Markdown copy's columns and the rows to write once they are measured.
+    markdown: Option<(MarkdownLayout, Vec<DataFrame>)>,
+    over: bool,
+    error: Option<String>,
+}
+
+impl BoundedText {
+    fn new(format: CopyFormat, header: bool, limit: usize) -> Self {
+        Self {
+            format,
+            header,
+            limit,
+            started: false,
+            text: String::new(),
+            rows: 0,
+            markdown: None,
+            over: false,
+            error: None,
+        }
+    }
+
+    /// Add a batch; true once the copy cannot go on.
+    fn take(&mut self, batch: DataFrame) -> bool {
+        if self.over || self.error.is_some() {
+            return true;
+        }
+        if let Err(e) = self.try_take(batch) {
+            self.error = Some(e);
+        }
+        self.over || self.error.is_some()
+    }
+
+    fn try_take(&mut self, batch: DataFrame) -> Result<(), String> {
+        let first = !self.started;
+        self.started = true;
+        self.rows += batch.height();
+        let batch = crate::nested_json::frame_as_json(&batch).map_err(|e| e.to_string())?;
+        let separator = match self.format {
+            CopyFormat::Tsv => b'\t',
+            CopyFormat::Csv => b',',
+            CopyFormat::Markdown => {
+                let (layout, rows) = self
+                    .markdown
+                    .get_or_insert_with(|| (MarkdownLayout::new(&batch), Vec::new()));
+                layout.measure(&batch)?;
+                // The widths so far are a floor on the final ones.
+                self.over = base64_len(layout.len(self.rows)) > self.limit;
+                rows.push(batch);
+                return Ok(());
+            }
+        };
+        let mut out = Vec::new();
+        let mut batch = batch;
+        CsvWriter::new(&mut out)
+            .with_separator(separator)
+            .include_header(first && self.header)
+            .finish(&mut batch)
+            .map_err(|e| e.to_string())?;
+        self.text
+            .push_str(&String::from_utf8(out).map_err(|e| e.to_string())?);
+        // The last record's newline is trimmed at the end.
+        self.over = base64_len(self.text.len().saturating_sub(1)) > self.limit;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(String, usize), String> {
+        if let Some(e) = self.error {
+            return Err(e);
+        }
+        if self.over {
+            return Err(over_osc52_limit(None, self.limit));
+        }
+        if let Some((layout, frames)) = self.markdown.take() {
+            self.text.reserve(layout.len(self.rows));
+            let mut frames = frames.iter();
+            if let Some(first) = frames.next() {
+                layout.write(first, &mut self.text)?;
+            }
+            for frame in frames {
+                layout.write_rows(frame, &mut self.text)?;
+            }
+        }
+        while self.text.ends_with('\n') || self.text.ends_with('\r') {
+            self.text.pop();
+        }
+        let encoded = base64_len(self.text.len());
+        if encoded > self.limit {
+            return Err(over_osc52_limit(Some(encoded), self.limit));
+        }
+        Ok((self.text, self.rows))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Markdown writer as it was, holding every cell: what the bounded one
+    /// must write, byte for byte.
+    fn markdown_reference(df: &DataFrame) -> Result<String, String> {
+        let column_names = df.get_column_names_owned();
+        let escape = |s: &str| s.replace('|', "\\|").replace(['\n', '\r'], " ");
+        let mut names: Vec<String> = Vec::with_capacity(column_names.len());
+        let mut cells: Vec<Vec<String>> = Vec::with_capacity(column_names.len());
+        let mut numeric: Vec<bool> = Vec::with_capacity(column_names.len());
+        for name in &column_names {
+            let column = df.column(name).map_err(|e| e.to_string())?;
+            names.push(escape(name));
+            numeric.push(column.dtype().is_primitive_numeric());
+            let series = column.as_materialized_series();
+            let mut body = Vec::with_capacity(df.height());
+            for i in 0..df.height() {
+                let value = series.get(i).map_err(|e| e.to_string())?;
+                body.push(match value {
+                    AnyValue::Null => String::new(),
+                    v => escape(&v.str_value()),
+                });
+            }
+            cells.push(body);
+        }
+        let widths: Vec<usize> = names
+            .iter()
+            .zip(&cells)
+            .map(|(name, body)| {
+                body.iter()
+                    .map(|c| c.chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .max(name.chars().count())
+                    .max(3)
+            })
+            .collect();
+        // A numeric column is padded to the right, so the raw text reads the way
+        // the `---:` delimiter tells a renderer to draw it; the two agree.
+        let pad = |s: &str, w: usize, right: bool| {
+            let fill = " ".repeat(w - s.chars().count());
+            if right {
+                format!("{fill}{s}")
+            } else {
+                format!("{s}{fill}")
+            }
+        };
+        let mut lines = Vec::with_capacity(df.height() + 2);
+        lines.push(format!(
+            "| {} |",
+            names
+                .iter()
+                .zip(&widths)
+                .zip(&numeric)
+                .map(|((n, &w), &num)| pad(n, w, num))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+        lines.push(format!(
+            "|{}|",
+            widths
+                .iter()
+                .zip(&numeric)
+                .map(|(&w, &num)| {
+                    if num {
+                        format!(" {}: ", "-".repeat(w.saturating_sub(1)))
+                    } else {
+                        format!(" {} ", "-".repeat(w))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("|")
+        ));
+        for row in 0..df.height() {
+            lines.push(format!(
+                "| {} |",
+                cells
+                    .iter()
+                    .zip(&widths)
+                    .zip(&numeric)
+                    .map(|((body, &w), &num)| pad(&body[row], w, num))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        }
+        Ok(lines.join("\n"))
+    }
 
     fn tricky() -> DataFrame {
         df!(
@@ -398,12 +724,146 @@ mod tests {
 
     #[test]
     fn html_flavor_escapes_and_rides_beside_tsv_only() {
-        let payload = tabular_payload(&tricky(), CopyFormat::Tsv, true).unwrap();
+        let payload = tabular_payload(&tricky(), CopyFormat::Tsv, true, true).unwrap();
         let html = payload.html.expect("tsv carries the html flavor");
         assert!(html.starts_with("<table><thead>"));
         assert!(html.contains("<td>\"quoted\"</td>"));
-        let md = tabular_payload(&tricky(), CopyFormat::Markdown, true).unwrap();
+        let md = tabular_payload(&tricky(), CopyFormat::Markdown, true, true).unwrap();
         assert!(md.html.is_none(), "markdown is its own rich flavor");
+        let text_only = tabular_payload(&tricky(), CopyFormat::Csv, true, false).unwrap();
+        assert!(text_only.html.is_none(), "not built where it cannot go");
+        assert_eq!(text_only.text, delimited(&tricky(), b',', true).unwrap());
+    }
+
+    /// Every kind of cell a copy meets: quoting, nulls, wide characters, numbers
+    /// either side of zero, and a list written as JSON.
+    fn varied() -> DataFrame {
+        let mut df = df!(
+            "name" => ["plain", "tab\there", "pipe|and\nnewline", "\"quoted\"", "été", "日本語"],
+            "n" => [Some(1i64), Some(-22), None, Some(4), Some(1_000_000), Some(0)],
+            "x" => [Some(0.5f64), None, Some(-1.25), Some(3.0), Some(1e-9), Some(2.5)],
+        )
+        .unwrap();
+        let tags: ListChunked = (0..6)
+            .map(|i| (i % 2 == 0).then(|| Series::new("".into(), [format!("t{i}"), "a,b".into()])))
+            .collect();
+        df.with_column(tags.with_name("tags".into()).into_column())
+            .unwrap();
+        df
+    }
+
+    #[test]
+    fn markdown_writes_what_it_wrote_holding_every_cell() {
+        let empty = varied().head(Some(0));
+        for df in [tricky(), varied(), empty] {
+            let df = crate::nested_json::frame_as_json(&df).unwrap();
+            let text = markdown(&df).unwrap();
+            assert_eq!(text, markdown_reference(&df).unwrap());
+            let layout = {
+                let mut layout = MarkdownLayout::new(&df);
+                layout.measure(&df).unwrap();
+                layout
+            };
+            assert_eq!(layout.len(df.height()), text.chars().count());
+        }
+    }
+
+    #[test]
+    fn base64_is_sized_before_it_is_encoded() {
+        use base64::Engine as _;
+        for (bytes, encoded) in [
+            (0, 0),
+            (1, 4),
+            (2, 4),
+            (3, 4),
+            (4, 8),
+            (5, 8),
+            (6, 8),
+            (7, 12),
+        ] {
+            assert_eq!(base64_len(bytes), encoded, "{bytes}");
+            let text = "a".repeat(bytes);
+            let real = base64::engine::general_purpose::STANDARD
+                .encode(&text)
+                .len();
+            assert_eq!(real, encoded);
+        }
+        // UTF-8 is sized by its bytes: "é" is two.
+        assert!(osc52_sequence("ééé", 8).is_ok());
+        assert!(osc52_sequence("éééé", 8).is_err());
+        // Exactly at the cap goes; a byte more does not.
+        assert_eq!(
+            osc52_sequence("abcdef", 8).unwrap(),
+            "\x1b]52;c;YWJjZGVm\x07"
+        );
+        let err = osc52_sequence("abcdefg", 8).unwrap_err();
+        assert!(err.starts_with("the copy is 1 KB of base64"), "{err}");
+    }
+
+    #[test]
+    fn a_bounded_table_copy_writes_what_a_whole_one_would() {
+        for format in CopyFormat::ALL {
+            for header in [true, false] {
+                for df in [tricky(), varied(), varied().head(Some(0))] {
+                    let whole = tabular_payload(&df, format, header, false).unwrap().text;
+                    let (text, rows) =
+                        bounded_table_text(df.clone().lazy(), format, header, 1 << 20).unwrap();
+                    assert_eq!(text, whole, "{format:?} header {header}");
+                    assert_eq!(rows, df.height());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_bounded_table_copy_stops_at_the_first_batch_over_the_cap() {
+        // 100,000 rows of 16 bytes: 1.6 MB of TSV, against a 64 KB cap.
+        let limit = 64 * 1024;
+        let rows = 100_000;
+        let df = df!("id" => (0..rows as i64).map(|i| i + 1_000_000_000).collect::<Vec<_>>(),
+                     "k" => (0..rows as i64).map(|i| i % 10 + 10).collect::<Vec<_>>())
+        .unwrap();
+        for format in CopyFormat::ALL {
+            let mut text = BoundedText::new(format, true, limit);
+            let mut taken = 0;
+            for offset in (0..rows).step_by(BOUNDED_BATCH_ROWS) {
+                taken += 1;
+                if text.take(df.slice(offset as i64, BOUNDED_BATCH_ROWS)) {
+                    break;
+                }
+            }
+            // About 48 KB of text fits: the stop comes within a batch of it.
+            let fits = limit / 4 * 3 / 16;
+            assert!(
+                taken * BOUNDED_BATCH_ROWS <= fits + 2 * BOUNDED_BATCH_ROWS,
+                "{format:?}: {taken} batches"
+            );
+            assert!(text.text.len() <= limit / 4 * 3 + BOUNDED_BATCH_ROWS * 32);
+            let err = text.finish().unwrap_err();
+            assert!(err.starts_with("the copy is over 64 KB of base64"), "{err}");
+
+            let err = bounded_table_text(df.clone().lazy(), format, true, limit).unwrap_err();
+            assert!(err.contains("osc52_limit_kb"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_capped_destination_takes_text_only() {
+        let osc = destination(BackendChoice::Osc52, 4096).unwrap();
+        assert_eq!(
+            osc.accepts(),
+            Accepts {
+                html: false,
+                base64_limit: Some(4096)
+            }
+        );
+        // Auto is whichever came up: the terminal path where there is no display.
+        let auto = destination(BackendChoice::Auto, 4096).unwrap();
+        assert_eq!(auto.accepts().html, auto.describe() == "clipboard");
+        assert_eq!(
+            auto.accepts().base64_limit.is_some(),
+            auto.describe() == "terminal"
+        );
     }
 
     #[test]

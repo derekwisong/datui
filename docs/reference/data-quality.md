@@ -62,8 +62,8 @@ runs kept. After a run, <kbd>e</kbd> opens it again.
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values or Latency in place; on another row, <kbd>→</kbd> opens it |
-| <kbd>Space</kbd> | Open the row: the Sample form, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
+| <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values, Latency over or Window by in place; on another row, <kbd>→</kbd> opens it |
+| <kbd>Space</kbd> | Open the row: the Sample form, the Time roles or Intervals editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup and returns there |
 | <kbd>p</kbd> | Show the access plan |
 | <kbd>Enter</kbd> | Run, from any row |
@@ -81,10 +81,12 @@ were. While a cancelled run is still stopping, Run waits and Setup says why.
 | Sample | The shared sample: scope, method, rows and seed |
 | Text as time | Text columns read as a date or datetime through a chosen format, for this study only |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
+| Intervals | Which starts and ends are measured, from every pair the assigned roles make; offered once two roles are assigned |
 | Grain | Whole dataset; by file, when the dataset has several; by each partition column; by hour, day, week or month of any date or time column, or text read as time (hours only where there are times); or in chunks of 100,000 or 1,000,000 rows |
 | Compare | None, the segment before (partitions and files in the order their names count), or a baseline segment |
 | Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
-| Latency over | None, 1 hour, 1 day or 1 week; offered once two roles make an interval |
+| Latency over | None, 1 hour, 1 day or 1 week; offered once there is an interval. A breach is `duration > threshold`, strictly |
+| Window by | With a time-window grain and an interval: the grain's column, each interval's start, or each interval's end, which puts a delay across midnight on the day it ended |
 
 The Read section says what Run will do, before it does it:
 
@@ -101,6 +103,7 @@ The Read section says what Run will do, before it does it:
 | Plus one count of the grain's column | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
 | Too many segments … to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
 | Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
+| Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
 
 Before a run, source-scoped setups report unknown row counts and read sizes,
@@ -118,16 +121,27 @@ or the format a text column is read with, and a few of its values from the rows
 on screen; the column the focused role holds is marked. Datui recognizes
 physical date and datetime types but never guesses a column's meaning from its
 name. With a source scope, the list includes source columns hidden by the
-current view. Intervals are measured for these pairs: event to published,
-received or processed; period end to published; published to received; and
-received to processed. Setup lists the pairs the roles make, or says that they
-make none.
+current view.
+
+The Intervals row opens the list of every start and end the assigned roles
+make, <kbd>Space</kbd> to measure one or not. Until one is chosen, the
+suggested pairs are measured: event to published, received or processed;
+period end to published; published to received; received to processed; and
+valid from to valid to. Setup names any assigned role that is in no interval.
+
+| | |
+|---|---|
+| Valid from to valid to | A validity period: a missing end is **open**, and an end before its start **ends first**. Overlaps and gaps between periods need an entity key and consecutive rows, which a sample does not hold, so they are not counted |
+| Window by | Only with a time-window grain. By their start or end, intervals are grouped once per column they start or end on; on a full scan each grouping is a pass, and Read says how many before Run |
+| Time zones | A datetime with a zone, or text read with an offset, is its instant in UTC. A date or datetime with no zone is read as if it were UTC, and Setup says so when it meets a zoned one. Windows start on UTC boundaries |
 
 ### Text as time
 
 <kbd>Space</kbd> on Text as time lists the scope's text columns with a value
 from the rows on screen. Choosing one lists the formats: `%Y-%m-%d %H:%M:%S`,
-`%Y-%m-%dT%H:%M:%S`, with fractional seconds, `%Y-%m-%d %H:%M`,
+`%Y-%m-%dT%H:%M:%S`, with fractional seconds, with an offset
+(`%Y-%m-%dT%H:%M:%S%.f%#z` and `%Y-%m-%d %H:%M:%S%.f%#z`, which read `Z`,
+`+05:00`, `-0500` and `+05`), `%Y-%m-%d %H:%M`,
 `%m/%d/%Y %H:%M:%S`, `%m/%d/%Y %I:%M:%S %p`, `%d/%m/%Y %H:%M:%S`,
 `%d.%m.%Y %H:%M:%S`, and the dates `%Y-%m-%d`, `%Y%m%d`, `%m/%d/%Y`,
 `%d/%m/%Y`, `%d.%m.%Y`. Each says how many of the values on screen it reads,
@@ -137,7 +151,7 @@ away, and a time-window grain on the column with it.
 | | |
 |---|---|
 | Applies to | Grain and time roles. Every other check, and the column's own findings, see the stored text |
-| Time zone | None: values are read as local times, with no offset |
+| Time zone | With an offset format, each value is its instant in UTC; without one, a time with no zone, read as UTC beside a zoned one |
 | Values it does not read | Counted per column as **Unparsed times**, a problem, apart from missing values; in intervals, as unparsed starts and ends; in a time-window grain, with the rows that have no time |
 | Not applied to | The sample's time range and an equal-per-value sample, which read date and time columns as stored |
 
@@ -149,12 +163,12 @@ page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> | Previous or next page: Overview, Columns, Segments, Trends |
-| <kbd>Enter</kbd> | Open a finding, or show its rows; on an empty Segments or Trends page, open the Setup row that fills it |
+| <kbd>←</kbd> <kbd>→</kbd> | Previous or next page: Overview, Columns, Segments, Trends, Intervals |
+| <kbd>Enter</kbd> | Open a finding, or show its rows; open an interval's detail, or the rows behind the count under the cursor; on an empty Segments, Trends or Intervals page, open the Setup row that fills it |
 | <kbd>e</kbd> | Open Setup |
 | <kbd>s</kbd> | Open Setup with the shared [Sample](../user-guide/analysis-features.md#sampling) form over it |
 | <kbd>p</kbd> | Show the detailed access plan |
-| <kbd>1</kbd>–<kbd>4</kbd> | Overview, Columns, Segments, Trends, directly |
+| <kbd>1</kbd>–<kbd>5</kbd> | Overview, Columns, Segments, Trends, Intervals, directly |
 | <kbd>o</kbd> | On Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | Cycle the measure Trends draws: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
@@ -226,11 +240,34 @@ sampled, or metadata-only.
   needs (`each bar 35 days`), so a thin day's sample never makes a bar alone.
   Columns whose measure moves most come first, and columns that draw the same
   line, such as columns missing together, share one. <kbd>m</kbd> changes the
-  measure. Below, the time between dates for assigned role pairs: missing
-  endpoints, negative durations, p50/p90/p95/p99, and maximum duration. Each
-  part says what it needs when it has nothing, and <kbd>Enter</kbd> opens it in
-  Setup: Time roles when the data has date columns or text read as time, Grain
-  otherwise.
+  measure. Without a grain that orders segments the page says so, and
+  <kbd>Enter</kbd> opens Grain in Setup.
+- **Intervals** — one row per interval and segment: the interval, its segment
+  where the width allows, p50, and the share over the threshold (or negative,
+  with no threshold) of the rows with both ends; wider, the rows with both ends,
+  each end's missing count and p95. <kbd>Enter</kbd> opens the detail, from the
+  measurements the report holds:
+
+  | Row | Counts |
+  |---|---|
+  | Start, End | The role and its column, and whether it is text read as time |
+  | Segment | The segment and the grain that cut it, by the window clock |
+  | Rows | Rows in the segment |
+  | Both ends | Rows with both ends present and read: the denominator below |
+  | Missing start, Missing end | Null in the source, of the segment's rows |
+  | Unparsed start, Unparsed end | Text the format did not read, of the segment's rows; only for text read as time |
+  | Negative, Zero | End before start, and end at start, of the rows with both ends |
+  | p50, p90, p95, p99, Maximum | Durations, in whole seconds |
+  | Threshold, Over | `duration > threshold`, strictly, of the rows with both ends |
+
+  <kbd>↑</kbd> <kbd>↓</kbd> move between the counts, and <kbd>Enter</kbd>
+  shows the rows behind the one under the cursor: on a sampled run the
+  sample's, cut from the rows the run kept while they are held (drawn again
+  from the seed otherwise), and on an exact one the table's. A row chunk or a
+  file is not a value to filter on, so its rows do not open, and the detail
+  says so. <kbd>Esc</kbd> returns to the list. With nothing to show, the page
+  says why; when roles or a pair are missing, <kbd>Enter</kbd> opens Time
+  roles or Intervals in Setup.
 
 <a id="sampling-and-budgets"></a>
 
@@ -296,7 +333,8 @@ disk is not noticed until it is opened again.
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
 | Largest change | Against the compared segment: a row count that halved or doubled, else the biggest percentage-point move in any column's null, empty, blank or NaN rate, named when it reaches 1 pp and, on a sample, when a two-proportion z-test puts it at 4 or more standard errors; on an exact profile with no such move, the first column whose minimum or maximum moved |
-| Lifecycle latency | End role timestamp − start role timestamp per row; missing endpoints are counted separately, text the format does not read is counted apart from missing, and negative values are retained |
+| Lifecycle latency | End role timestamp − start role timestamp per row, on rows with both ends present and read; each end's missing count is of all rows (a row can miss both, so both ends is counted, not derived), text the format does not read is counted apart from missing, and negative values are retained |
+| Negative / zero / breach | Durations below zero, of exactly zero, and above the threshold (`duration > threshold`, strictly) ÷ rows with both ends; compared on the exact difference, so half a second early is negative |
 | Unparsed times | Non-null text values the chosen format does not read ÷ non-null values of the column; counted in the pass that profiles the columns |
 
 Lifecycle percentiles use the evaluated duration values in sorted order. Date

@@ -431,24 +431,37 @@ pub enum QualityPage {
     Detail,
     /// One segment's columns beside the segment it is compared with.
     SegmentDetail,
+    /// Each interval in each segment: the time between two roles.
+    Intervals,
+    /// One interval in one segment, every count it took and out of what.
+    IntervalDetail,
     TimeRoles,
+    /// Which starts and ends the intervals are, chosen from the assigned roles.
+    IntervalPairs,
 }
 
 impl QualityPage {
     /// The report's tabs, in the order ←→ walk them. A column's detail sits under
-    /// Columns and a segment's under Segments.
-    pub const TABS: [Self; 4] = [Self::Overview, Self::Columns, Self::Segments, Self::Trends];
+    /// Columns, a segment's under Segments and an interval's under Intervals.
+    pub const TABS: [Self; 5] = [
+        Self::Overview,
+        Self::Columns,
+        Self::Segments,
+        Self::Trends,
+        Self::Intervals,
+    ];
 
     pub fn tab(self) -> Self {
         match self {
             Self::Detail => Self::Columns,
             Self::SegmentDetail => Self::Segments,
-            Self::TimeRoles => Self::Setup,
+            Self::IntervalDetail => Self::Intervals,
+            Self::TimeRoles | Self::IntervalPairs => Self::Setup,
             page => page,
         }
     }
 
-    /// Setup and its time roles editor, which stage a run rather than show one.
+    /// Setup and its editors, which stage a run rather than show one.
     pub fn is_setup(self) -> bool {
         self.tab() == Self::Setup
     }
@@ -459,6 +472,7 @@ impl QualityPage {
             Self::Columns => "Columns",
             Self::Segments => "Segments",
             Self::Trends => "Trends",
+            Self::Intervals => "Intervals",
             _ => "Setup",
         }
     }
@@ -469,6 +483,7 @@ impl QualityPage {
 pub enum QualitySetup {
     Grain,
     TimeRoles,
+    Intervals,
 }
 
 impl QualitySetup {
@@ -476,6 +491,7 @@ impl QualitySetup {
         match self {
             Self::Grain => "Set Grain",
             Self::TimeRoles => "Time Roles",
+            Self::Intervals => "Intervals",
         }
     }
 }
@@ -596,7 +612,7 @@ pub fn trend_rows(
 }
 
 /// The plan setting a result page needs before it has anything to show, if any.
-/// Time roles come first on Trends, and only when there are dates to assign.
+/// Intervals need time roles, and ask only when there are dates to assign.
 pub fn page_setup(
     page: QualityPage,
     plan: &DataQualityPlan,
@@ -606,10 +622,19 @@ pub fn page_setup(
     let results = results?;
     match page {
         QualityPage::Segments if plan.grain == QualityGrain::Dataset => Some(QualitySetup::Grain),
-        QualityPage::Trends if results.temporal.is_empty() && has_time_columns => {
-            Some(QualitySetup::TimeRoles)
-        }
         QualityPage::Trends if !shows_trend(plan, results) => Some(QualitySetup::Grain),
+        // Roles that make no interval want a pair chosen; otherwise, roles. Pairs
+        // that measured nothing (metadata only, text with no format) are not
+        // fixed by either, and the page says what is.
+        QualityPage::Intervals if results.temporal.is_empty() && has_time_columns => {
+            if plan.candidate_pairs().is_empty() {
+                Some(QualitySetup::TimeRoles)
+            } else if plan.interval_pairs().is_empty() {
+                Some(QualitySetup::Intervals)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -744,16 +769,47 @@ pub struct TemporalRoleAssignment {
     pub timezone: Option<String>,
 }
 
-/// The intervals a run measures, start role to end role. Two assigned roles that
-/// are not one of these pairs measure nothing, and Setup says so before a run.
-pub const INTERVAL_PAIRS: [(TemporalRole, TemporalRole); 6] = [
+/// The intervals a run measures when none are chosen, start role to end role: the
+/// pairs whose order the roles themselves state. Any other start and end is a
+/// choice under Intervals in Setup; a role in no interval measures nothing, and
+/// Setup says so before a run.
+pub const INTERVAL_PAIRS: [(TemporalRole, TemporalRole); 7] = [
     (TemporalRole::Event, TemporalRole::Published),
     (TemporalRole::Event, TemporalRole::Received),
     (TemporalRole::PeriodEnd, TemporalRole::Published),
     (TemporalRole::Published, TemporalRole::Received),
     (TemporalRole::Received, TemporalRole::Processed),
     (TemporalRole::Event, TemporalRole::Processed),
+    (TemporalRole::ValidFrom, TemporalRole::ValidTo),
 ];
+
+/// `event to received`.
+pub fn interval_label((start, end): (TemporalRole, TemporalRole)) -> String {
+    format!("{} to {}", start.label(), end.label())
+}
+
+/// Which time puts an interval in a window, when the grain is time windows: the
+/// grain's own column, or the interval's start or end. By the end, an interval is
+/// counted on the day it finished rather than the day it began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum IntervalClock {
+    #[default]
+    Grain,
+    Start,
+    End,
+}
+
+impl IntervalClock {
+    pub const ALL: [Self; 3] = [Self::Grain, Self::Start, Self::End];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grain => "the grain's column",
+            Self::Start => "each interval's start",
+            Self::End => "each interval's end",
+        }
+    }
+}
 
 /// Whether text read as time is a date or a date with a time of day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -774,11 +830,15 @@ impl TimeKind {
 /// The formats Setup offers for reading text as time, the unambiguous ones first.
 /// Named formats rather than inference: a run reads every row the same way, and a
 /// value the format does not read is counted, not guessed at.
-pub const TIME_FORMATS: [(TimeKind, &str); 14] = [
+pub const TIME_FORMATS: [(TimeKind, &str); 16] = [
     (TimeKind::Datetime, "%Y-%m-%d %H:%M:%S"),
     (TimeKind::Datetime, "%Y-%m-%dT%H:%M:%S"),
     (TimeKind::Datetime, "%Y-%m-%d %H:%M:%S%.f"),
     (TimeKind::Datetime, "%Y-%m-%dT%H:%M:%S%.f"),
+    // ISO 8601 with an offset: `%#z` takes `Z`, `+05:00`, `-0500` and `+05`, and
+    // the values are read as instants in UTC.
+    (TimeKind::Datetime, "%Y-%m-%dT%H:%M:%S%.f%#z"),
+    (TimeKind::Datetime, "%Y-%m-%d %H:%M:%S%.f%#z"),
     (TimeKind::Datetime, "%Y-%m-%d %H:%M"),
     (TimeKind::Date, "%Y-%m-%d"),
     (TimeKind::Date, "%Y%m%d"),
@@ -799,12 +859,18 @@ pub const TIME_FORMATS: [(TimeKind, &str); 14] = [
 pub struct TimeInterpretation {
     pub column: String,
     pub kind: TimeKind,
-    /// A strftime format, as Polars' `str.to_datetime` takes it. No offset: the
-    /// values are read as local times with no time zone.
+    /// A strftime format, as Polars' `str.to_datetime` takes it. With an offset
+    /// (`%z`), the values are instants in UTC; without one, times with no zone.
     pub format: String,
 }
 
 impl TimeInterpretation {
+    /// Whether the format reads an offset, so its values are instants in UTC
+    /// rather than times with no zone.
+    pub fn zoned(&self) -> bool {
+        self.format.contains('z')
+    }
+
     /// `datetime %Y-%m-%d %H:%M:%S`.
     pub fn label(&self) -> String {
         format!("{} {}", self.kind.label(), self.format)
@@ -843,6 +909,10 @@ impl TimeInterpretation {
     pub fn reads(&self, value: &str) -> bool {
         match self.kind {
             TimeKind::Date => chrono::NaiveDate::parse_from_str(value, &self.format).is_ok(),
+            // An offset format needs the offset: without one there is no instant.
+            TimeKind::Datetime if self.zoned() => {
+                chrono::DateTime::parse_from_str(value, &self.format).is_ok()
+            }
             TimeKind::Datetime => {
                 chrono::NaiveDateTime::parse_from_str(value, &self.format).is_ok()
             }
@@ -1047,6 +1117,11 @@ pub struct DataQualityPlan {
     pub comparison: QualityComparison,
     pub baseline_segment: Option<String>,
     pub temporal_roles: Vec<TemporalRoleAssignment>,
+    /// The intervals chosen under Intervals, start role to end role. `None` until
+    /// one is chosen: the suggested pairs the assigned roles make.
+    pub intervals: Option<Vec<(TemporalRole, TemporalRole)>>,
+    /// Which time puts an interval in a time window.
+    pub interval_clock: IntervalClock,
     pub latency_threshold_seconds: Option<i64>,
     /// Text columns read as time for this study, by grain and roles only.
     pub time_formats: Vec<TimeInterpretation>,
@@ -1064,6 +1139,8 @@ impl Default for DataQualityPlan {
             comparison: QualityComparison::None,
             baseline_segment: None,
             temporal_roles: Vec::new(),
+            intervals: None,
+            interval_clock: IntervalClock::Grain,
             latency_threshold_seconds: None,
             time_formats: Vec::new(),
         }
@@ -1158,15 +1235,102 @@ impl DataQualityPlan {
             .map(|assignment| assignment.column.as_str())
     }
 
-    /// The intervals this plan's roles measure: each supported pair whose two roles
-    /// are assigned.
+    /// The intervals this plan measures: the chosen ones, or until one is chosen the
+    /// suggested pairs; either way only those whose two roles are assigned.
     pub fn interval_pairs(&self) -> Vec<(TemporalRole, TemporalRole)> {
-        INTERVAL_PAIRS
+        let assigned = |(start, end): &(TemporalRole, TemporalRole)| {
+            self.role_column(*start).is_some() && self.role_column(*end).is_some()
+        };
+        match &self.intervals {
+            None => INTERVAL_PAIRS.into_iter().filter(assigned).collect(),
+            Some(chosen) => chosen.iter().copied().filter(assigned).collect(),
+        }
+    }
+
+    /// Every start and end the assigned roles can make, the suggested pairs first,
+    /// then the rest in role order: what Intervals in Setup lists.
+    pub fn candidate_pairs(&self) -> Vec<(TemporalRole, TemporalRole)> {
+        let roles = TemporalRole::ALL
             .into_iter()
-            .filter(|(start, end)| {
-                self.role_column(*start).is_some() && self.role_column(*end).is_some()
+            .filter(|role| self.role_column(*role).is_some())
+            .collect::<Vec<_>>();
+        let mut pairs = INTERVAL_PAIRS
+            .into_iter()
+            .filter(|(start, end)| roles.contains(start) && roles.contains(end))
+            .collect::<Vec<_>>();
+        for start in &roles {
+            for end in &roles {
+                if start != end && !pairs.contains(&(*start, *end)) {
+                    pairs.push((*start, *end));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Measure `pair`, or stop measuring it. The first choice makes the list
+    /// explicit, starting from what was measured.
+    pub fn toggle_interval(&mut self, pair: (TemporalRole, TemporalRole)) {
+        let mut chosen = self.interval_pairs();
+        match chosen.iter().position(|chosen| *chosen == pair) {
+            Some(index) => {
+                chosen.remove(index);
+            }
+            None => chosen.push(pair),
+        }
+        self.intervals = Some(chosen);
+    }
+
+    /// Assigned roles that no measured interval uses: they measure nothing.
+    pub fn unpaired_roles(&self) -> Vec<TemporalRole> {
+        let pairs = self.interval_pairs();
+        TemporalRole::ALL
+            .into_iter()
+            .filter(|role| {
+                self.role_column(*role).is_some()
+                    && !pairs
+                        .iter()
+                        .any(|(start, end)| start == role || end == role)
             })
             .collect()
+    }
+
+    /// Whether the clock choice means anything: intervals cut into time windows.
+    pub fn windows_intervals(&self) -> bool {
+        matches!(self.grain, QualityGrain::TimeWindows { .. }) && !self.interval_pairs().is_empty()
+    }
+
+    /// The grain an interval from `start` to `end` is cut by: the plan's, except
+    /// that time windows go by the interval's own start or end when the clock says.
+    pub fn interval_grain(&self, start: &str, end: &str) -> QualityGrain {
+        match (&self.grain, self.interval_clock) {
+            (QualityGrain::TimeWindows { every, .. }, IntervalClock::Start) => {
+                QualityGrain::TimeWindows {
+                    column: start.to_string(),
+                    every: every.clone(),
+                }
+            }
+            (QualityGrain::TimeWindows { every, .. }, IntervalClock::End) => {
+                QualityGrain::TimeWindows {
+                    column: end.to_string(),
+                    every: every.clone(),
+                }
+            }
+            (grain, _) => grain.clone(),
+        }
+    }
+
+    /// Whether `column` holds instants (a zoned type, or text read with an
+    /// offset) rather than times with no zone; `None` when it is not read as time.
+    pub fn zoned(&self, column: &str, schema: &Schema) -> Option<bool> {
+        if let Some(format) = self.time_format(column) {
+            return Some(format.zoned());
+        }
+        match schema.get(column)? {
+            DataType::Datetime(_, zone) => Some(zone.is_some()),
+            DataType::Date => Some(false),
+            _ => None,
+        }
     }
 
     pub fn set_row_chunks(&mut self) {
@@ -1629,21 +1793,215 @@ pub struct TemporalLatencyProfile {
     pub end_role: TemporalRole,
     pub start_column: String,
     pub end_column: String,
+    /// Rows in the segment.
     pub evaluated_rows: usize,
+    /// Rows with both endpoints present and read: the rows a duration is taken on,
+    /// and what negative, zero and threshold counts are out of. Not the rows less
+    /// the missing ones, since a row can miss both.
+    pub paired_rows: usize,
     pub missing_start: usize,
     pub missing_end: usize,
     /// Text the start column's format did not read; not counted as missing.
     pub unparsed_start: usize,
     pub unparsed_end: usize,
+    /// Durations below zero: the end before the start.
     pub negative_count: usize,
+    /// Durations of exactly zero: the end at the start.
+    pub zero_count: usize,
     pub p50_seconds: Option<i64>,
     pub p90_seconds: Option<i64>,
     pub p95_seconds: Option<i64>,
     pub p99_seconds: Option<i64>,
     pub max_seconds: Option<i64>,
+    /// The threshold the breaches were counted against: `duration > threshold`,
+    /// strictly, so a duration of exactly the threshold is not a breach.
+    pub threshold_seconds: Option<i64>,
     pub above_threshold_count: Option<usize>,
 }
 
+impl TemporalLatencyProfile {
+    pub fn pair(&self) -> (TemporalRole, TemporalRole) {
+        (self.start_role, self.end_role)
+    }
+
+    /// `event to received`.
+    pub fn label(&self) -> String {
+        interval_label(self.pair())
+    }
+
+    /// A validity period, valid from to valid to: an end before the start is a
+    /// period that is not valid, and no end is a period still open.
+    pub fn is_validity(&self) -> bool {
+        self.pair() == (TemporalRole::ValidFrom, TemporalRole::ValidTo)
+    }
+
+    /// How many rows `fact` counts, and out of how many. `None` for a fact this
+    /// interval does not measure: unparsed text with no format, a threshold not set.
+    pub fn count(&self, fact: IntervalFact, plan: &DataQualityPlan) -> Option<(usize, usize)> {
+        let rows = self.evaluated_rows;
+        let paired = self.paired_rows;
+        match fact {
+            IntervalFact::MissingStart => Some((self.missing_start, rows)),
+            IntervalFact::MissingEnd => Some((self.missing_end, rows)),
+            IntervalFact::UnparsedStart => plan
+                .time_format(&self.start_column)
+                .map(|_| (self.unparsed_start, rows)),
+            IntervalFact::UnparsedEnd => plan
+                .time_format(&self.end_column)
+                .map(|_| (self.unparsed_end, rows)),
+            IntervalFact::Negative => Some((self.negative_count, paired)),
+            IntervalFact::Zero => Some((self.zero_count, paired)),
+            IntervalFact::OverThreshold => self.above_threshold_count.map(|count| (count, paired)),
+        }
+    }
+
+    /// Whether this interval's segment is a value its rows can be found by, rather
+    /// than a stretch of rows or a file.
+    pub fn segment_opens(&self, plan: &DataQualityPlan) -> bool {
+        let grain = plan.interval_grain(&self.start_column, &self.end_column);
+        segment_predicate(plan, &grain, &self.segment).is_some()
+    }
+
+    /// The rows behind `fact` in this interval's segment, as a predicate over the
+    /// scope `plan` measured: `None` when a segment cannot be told by its values
+    /// (row chunks, files) or the fact is not measured.
+    pub fn evidence_predicate(&self, fact: IntervalFact, plan: &DataQualityPlan) -> Option<Expr> {
+        self.count(fact, plan)?;
+        let micros = || interval_micros(plan, &self.start_column, &self.end_column);
+        let rows = match fact {
+            IntervalFact::MissingStart => col(self.start_column.as_str()).is_null(),
+            IntervalFact::MissingEnd => col(self.end_column.as_str()).is_null(),
+            IntervalFact::UnparsedStart => plan.time_format(&self.start_column)?.unparsed(),
+            IntervalFact::UnparsedEnd => plan.time_format(&self.end_column)?.unparsed(),
+            IntervalFact::Negative => micros().lt(lit(0i64)),
+            IntervalFact::Zero => micros().eq(lit(0i64)),
+            IntervalFact::OverThreshold => {
+                micros().gt(lit(self.threshold_seconds?.saturating_mul(1_000_000)))
+            }
+        };
+        let grain = plan.interval_grain(&self.start_column, &self.end_column);
+        Some(match segment_predicate(plan, &grain, &self.segment)? {
+            Some(segment) => segment.and(rows),
+            None => rows,
+        })
+    }
+}
+
+/// What an interval's detail counts, each with the rows behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntervalFact {
+    MissingStart,
+    MissingEnd,
+    UnparsedStart,
+    UnparsedEnd,
+    Negative,
+    Zero,
+    OverThreshold,
+}
+
+impl IntervalFact {
+    pub const ALL: [Self; 7] = [
+        Self::MissingStart,
+        Self::MissingEnd,
+        Self::UnparsedStart,
+        Self::UnparsedEnd,
+        Self::Negative,
+        Self::Zero,
+        Self::OverThreshold,
+    ];
+
+    /// The fact as its row in the detail names it. A validity period's missing end
+    /// is an open period, and its negative duration one that ends before it starts.
+    pub fn label(self, profile: &TemporalLatencyProfile) -> String {
+        let validity = profile.is_validity();
+        match self {
+            Self::MissingStart => "Missing start".to_string(),
+            Self::MissingEnd if validity => "Open, no end".to_string(),
+            Self::MissingEnd => "Missing end".to_string(),
+            Self::UnparsedStart => "Unparsed start".to_string(),
+            Self::UnparsedEnd => "Unparsed end".to_string(),
+            Self::Negative if validity => "Ends first".to_string(),
+            Self::Negative => "Negative".to_string(),
+            Self::Zero => "Zero".to_string(),
+            Self::OverThreshold => format!(
+                "Over {}",
+                crate::analysis_modal::threshold_label(profile.threshold_seconds)
+            ),
+        }
+    }
+
+    /// Short words for a list of rows: a view's label.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::MissingStart => "missing start",
+            Self::MissingEnd => "missing end",
+            Self::UnparsedStart => "unparsed start",
+            Self::UnparsedEnd => "unparsed end",
+            Self::Negative => "negative",
+            Self::Zero => "zero",
+            Self::OverThreshold => "over threshold",
+        }
+    }
+}
+
+/// The rows of the segment labeled `label` under `grain`, as a predicate: `Some(None)`
+/// for the whole scope, `None` where a segment is a stretch of rows or a file and not
+/// a value to filter on. Read back from the label, which names a partition's value
+/// as its segment was keyed and a window's start exactly.
+/// Each value of `column` as a segment label writes it, null where it is null. A
+/// cast to text writes a float or a datetime differently than the label does, and
+/// then the rows a label names would not be found.
+fn label_text(column: &str) -> Expr {
+    col(column).map(
+        |values| {
+            let text = (0..values.len())
+                .map(|row| {
+                    let value = values.get(row)?;
+                    Ok((!value.is_null()).then(|| value.str_value().into_owned()))
+                })
+                .collect::<PolarsResult<StringChunked>>()?;
+            Ok(text.with_name(values.name().clone()).into_column())
+        },
+        |_, field| Ok(Field::new(field.name().clone(), DataType::String)),
+    )
+}
+
+fn segment_predicate(
+    plan: &DataQualityPlan,
+    grain: &QualityGrain,
+    label: &str,
+) -> Option<Option<Expr>> {
+    match grain {
+        QualityGrain::Dataset => Some(None),
+        QualityGrain::Partition(column) => {
+            let value = label.strip_prefix(&format!("{column}="))?;
+            Some(Some(if value == "∅" {
+                col(column.as_str()).is_null()
+            } else {
+                label_text(column).eq(lit(value.to_string()))
+            }))
+        }
+        QualityGrain::TimeWindows { column, every } => {
+            let value = plan.time_value(column);
+            if label == time_window_label(column, every, None) {
+                return Some(Some(value.is_null()));
+            }
+            let date = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok();
+            let start = match every.as_str() {
+                "1h" => chrono::NaiveDateTime::parse_from_str(label, "%Y-%m-%d %H:%M").ok()?,
+                "1d" => date(label)?.and_hms_opt(0, 0, 0)?,
+                "1w" => date(label.strip_prefix("week of ")?)?.and_hms_opt(0, 0, 0)?,
+                "1mo" => date(&format!("{label}-01"))?.and_hms_opt(0, 0, 0)?,
+                _ => return None,
+            };
+            Some(Some(
+                time_window_start(value, every).eq(lit(start.and_utc().timestamp_micros())
+                    .cast(DataType::Datetime(TimeUnit::Microseconds, None))),
+            ))
+        }
+        QualityGrain::RowChunks(_) | QualityGrain::File => None,
+    }
+}
 /// Columns that are null the same number of times, and how many rows are null in all
 /// of them at once. When the two counts agree, the columns go missing together: one
 /// fact about some rows, not one per column.
@@ -3567,13 +3925,20 @@ struct TimedColumn {
     unparsed: Option<String>,
 }
 
+/// One interval a run measures: its roles, the columns they sit on, and the grain
+/// its rows are cut by.
+struct ResolvedInterval {
+    start_role: TemporalRole,
+    end_role: TemporalRole,
+    start: String,
+    end: String,
+    grain: QualityGrain,
+}
+
 /// The measured intervals whose two roles sit on columns the run can read as time.
 /// A role on text with no format measures nothing: its interval is left out rather
 /// than read as all missing.
-fn resolved_intervals(
-    plan: &DataQualityPlan,
-    schema: &Schema,
-) -> Vec<(TemporalRole, TemporalRole, String, String)> {
+fn resolved_intervals(plan: &DataQualityPlan, schema: &Schema) -> Vec<ResolvedInterval> {
     let usable = |role| {
         plan.role_column(role)
             .filter(|column| plan.reads_as_time(column, schema))
@@ -3581,8 +3946,54 @@ fn resolved_intervals(
     };
     plan.interval_pairs()
         .into_iter()
-        .filter_map(|(start, end)| Some((start, end, usable(start)?, usable(end)?)))
+        .filter_map(|(start_role, end_role)| {
+            let (start, end) = (usable(start_role)?, usable(end_role)?);
+            let grain = plan.interval_grain(&start, &end);
+            Some(ResolvedInterval {
+                start_role,
+                end_role,
+                start,
+                end,
+                grain,
+            })
+        })
         .collect()
+}
+
+/// The distinct grains `intervals` are cut by, in the order they first appear: one
+/// grouping each, however many intervals share it.
+fn interval_grains(intervals: &[ResolvedInterval]) -> Vec<QualityGrain> {
+    let mut grains = Vec::new();
+    for interval in intervals {
+        if !grains.contains(&interval.grain) {
+            grains.push(interval.grain.clone());
+        }
+    }
+    grains
+}
+
+/// How many groupings a run's intervals take: one per distinct grain. A full run
+/// reads the scope once for each.
+pub fn interval_passes(plan: &DataQualityPlan, schema: &Schema) -> usize {
+    interval_grains(&resolved_intervals(plan, schema)).len()
+}
+
+/// End minus start per row, as a duration: null where either is missing or unread.
+/// Dates are midnight; a zoned time is its instant in UTC, and a time with no zone
+/// is read as if it were UTC.
+fn interval_duration(plan: &DataQualityPlan, start: &str, end: &str) -> Expr {
+    let as_time = |column: &str| {
+        plan.time_value(column)
+            .cast(DataType::Datetime(TimeUnit::Microseconds, None))
+    };
+    as_time(end) - as_time(start)
+}
+
+/// [`interval_duration`] in microseconds, the unit its counts are taken in.
+fn interval_micros(plan: &DataQualityPlan, start: &str, end: &str) -> Expr {
+    interval_duration(plan, start, end)
+        .dt()
+        .total_microseconds(false)
 }
 
 fn profile_temporal(
@@ -3625,9 +4036,7 @@ fn profile_temporal(
     };
     let intervals = resolved
         .iter()
-        .map(|(start_role, end_role, start, end)| {
-            (*start_role, *end_role, timed(start), timed(end))
-        })
+        .map(|interval| (interval, timed(&interval.start), timed(&interval.end)))
         .collect::<Vec<_>>();
     let df = if parsed.is_empty() {
         df.clone()
@@ -3642,16 +4051,31 @@ fn profile_temporal(
             )
             .collect()?
     };
-    let groups = segment_rows(&df, plan, sample_positions)?;
+    // Each grain's segments are cut once, whichever intervals share it.
+    let mut cut: Vec<(QualityGrain, Vec<(String, DataFrame)>)> = Vec::new();
+    for grain in interval_grains(&resolved) {
+        let grain_plan = DataQualityPlan {
+            grain: grain.clone(),
+            ..plan.clone()
+        };
+        let segments = segment_rows(&df, &grain_plan, sample_positions)?
+            .into_iter()
+            .map(|group| Ok((group.label, take_rows(&df, &group.indices)?)))
+            .collect::<Result<Vec<_>>>()?;
+        cut.push((grain, segments));
+    }
+    // One interval's segments together, in their order, then the next interval's.
     let mut profiles = Vec::new();
-    for group in groups {
-        let segment = take_rows(&df, &group.indices)?;
-        for (start_role, end_role, start, end) in &intervals {
+    for (interval, start, end) in &intervals {
+        let Some((_, segments)) = cut.iter().find(|(grain, _)| *grain == interval.grain) else {
+            continue;
+        };
+        for (label, segment) in segments {
             profiles.push(latency_profile(
-                &segment,
-                &group.label,
-                (*start_role, start),
-                (*end_role, end),
+                segment,
+                label,
+                (interval.start_role, start),
+                (interval.end_role, end),
                 plan.latency_threshold_seconds,
             )?);
         }
@@ -3666,8 +4090,8 @@ fn profile_temporal_lazy(
     polars_streaming: bool,
 ) -> Result<Vec<TemporalLatencyProfile>> {
     let schema = lf.clone().collect_schema()?;
-    let pairs = resolved_intervals(plan, &schema);
-    if pairs.is_empty() {
+    let resolved = resolved_intervals(plan, &schema);
+    if resolved.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -3676,128 +4100,158 @@ fn profile_temporal_lazy(
             .map(|format| format.unparsed().sum())
             .unwrap_or_else(|| lit(0u32))
     };
-    let mut expressions = vec![len().alias("__quality_temporal_rows")];
-    for (index, (_, _, start_column, end_column)) in pairs.iter().enumerate() {
-        let prefix = format!("latency::{index}::");
-        let start = plan.time_value(start_column);
-        let end = plan.time_value(end_column);
-        let duration = (end
-            .clone()
-            .cast(DataType::Datetime(TimeUnit::Microseconds, None))
-            - start
-                .clone()
-                .cast(DataType::Datetime(TimeUnit::Microseconds, None)))
-        .dt()
-        .total_seconds(false);
-        expressions.extend([
-            // Missing is the stored value; text the format did not read is counted
-            // on its own.
-            col(start_column.as_str())
-                .is_null()
-                .sum()
-                .alias(format!("{prefix}missing_start")),
-            col(end_column.as_str())
-                .is_null()
-                .sum()
-                .alias(format!("{prefix}missing_end")),
-            unparsed(start_column).alias(format!("{prefix}unparsed_start")),
-            unparsed(end_column).alias(format!("{prefix}unparsed_end")),
-            duration
-                .clone()
-                .lt(lit(0i64))
-                .sum()
-                .alias(format!("{prefix}negative")),
-            duration
-                .clone()
-                .quantile(lit(0.50), QuantileMethod::Nearest)
-                .alias(format!("{prefix}p50")),
-            duration
-                .clone()
-                .quantile(lit(0.90), QuantileMethod::Nearest)
-                .alias(format!("{prefix}p90")),
-            duration
-                .clone()
-                .quantile(lit(0.95), QuantileMethod::Nearest)
-                .alias(format!("{prefix}p95")),
-            duration
-                .clone()
-                .quantile(lit(0.99), QuantileMethod::Nearest)
-                .alias(format!("{prefix}p99")),
-            duration.clone().max().alias(format!("{prefix}max")),
-        ]);
-        if let Some(threshold) = plan.latency_threshold_seconds {
-            expressions.push(
-                duration
-                    .gt(lit(threshold))
-                    .sum()
-                    .alias(format!("{prefix}above")),
-            );
-        }
-    }
-
-    let ungrouped = matches!(plan.grain, QualityGrain::Dataset)
-        || matches!(plan.grain, QualityGrain::File) && source.is_none();
-    let aggregate = if ungrouped {
-        collect_lazy(lf.clone().select(expressions), polars_streaming).map_err(Report::from)?
-    } else {
-        let (grouped_lf, group) = grouped_frame(lf, plan, source)?;
-        collect_lazy(
-            grouped_lf
-                .group_by([group.alias("__quality_segment")])
-                .agg(expressions),
-            polars_streaming,
-        )
-        .map_err(Report::from)?
-    };
-
-    let mut profiles = Vec::new();
-    for row in 0..aggregate.height() {
-        let segment = if ungrouped {
-            if matches!(plan.grain, QualityGrain::File) {
-                "file mapping unavailable for this view".to_string()
-            } else {
-                "current view".to_string()
-            }
-        } else {
-            let raw = string_value_at(&aggregate, "__quality_segment", row);
-            segment_label(&plan.grain, raw.as_deref())
-        };
-        let evaluated_rows = usize_value_at(&aggregate, "__quality_temporal_rows", row);
-        for (index, (start_role, end_role, start_column, end_column)) in pairs.iter().enumerate() {
+    let mut profiles = (0..resolved.len()).map(|_| Vec::new()).collect::<Vec<_>>();
+    // One collect per grain the intervals are cut by: usually one, and one more for
+    // each clock that differs.
+    for grain in interval_grains(&resolved) {
+        let mut expressions = vec![len().alias("__quality_temporal_rows")];
+        let members = resolved
+            .iter()
+            .enumerate()
+            .filter(|(_, interval)| interval.grain == grain)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        for index in &members {
+            let interval = &resolved[*index];
             let prefix = format!("latency::{index}::");
-            profiles.push(TemporalLatencyProfile {
-                segment: segment.clone(),
-                start_role: *start_role,
-                end_role: *end_role,
-                start_column: start_column.clone(),
-                end_column: end_column.clone(),
-                evaluated_rows,
-                missing_start: usize_value_at(&aggregate, &format!("{prefix}missing_start"), row),
-                missing_end: usize_value_at(&aggregate, &format!("{prefix}missing_end"), row),
-                unparsed_start: usize_value_at(&aggregate, &format!("{prefix}unparsed_start"), row),
-                unparsed_end: usize_value_at(&aggregate, &format!("{prefix}unparsed_end"), row),
-                negative_count: usize_value_at(&aggregate, &format!("{prefix}negative"), row),
-                p50_seconds: optional_i64_at(&aggregate, &format!("{prefix}p50"), row),
-                p90_seconds: optional_i64_at(&aggregate, &format!("{prefix}p90"), row),
-                p95_seconds: optional_i64_at(&aggregate, &format!("{prefix}p95"), row),
-                p99_seconds: optional_i64_at(&aggregate, &format!("{prefix}p99"), row),
-                max_seconds: optional_i64_at(&aggregate, &format!("{prefix}max"), row),
-                above_threshold_count: plan
-                    .latency_threshold_seconds
-                    .map(|_| usize_value_at(&aggregate, &format!("{prefix}above"), row)),
-            });
+            let micros = interval_micros(plan, &interval.start, &interval.end);
+            // Seconds as the sampled path takes them: whole seconds, toward zero.
+            let seconds = interval_duration(plan, &interval.start, &interval.end)
+                .dt()
+                .total_seconds(false);
+            expressions.extend([
+                // Missing is the stored value; text the format did not read is
+                // counted on its own.
+                col(interval.start.as_str())
+                    .is_null()
+                    .sum()
+                    .alias(format!("{prefix}missing_start")),
+                col(interval.end.as_str())
+                    .is_null()
+                    .sum()
+                    .alias(format!("{prefix}missing_end")),
+                unparsed(&interval.start).alias(format!("{prefix}unparsed_start")),
+                unparsed(&interval.end).alias(format!("{prefix}unparsed_end")),
+                micros
+                    .clone()
+                    .is_not_null()
+                    .sum()
+                    .alias(format!("{prefix}paired")),
+                micros
+                    .clone()
+                    .lt(lit(0i64))
+                    .sum()
+                    .alias(format!("{prefix}negative")),
+                micros
+                    .clone()
+                    .eq(lit(0i64))
+                    .sum()
+                    .alias(format!("{prefix}zero")),
+                seconds
+                    .clone()
+                    .quantile(lit(0.50), QuantileMethod::Nearest)
+                    .alias(format!("{prefix}p50")),
+                seconds
+                    .clone()
+                    .quantile(lit(0.90), QuantileMethod::Nearest)
+                    .alias(format!("{prefix}p90")),
+                seconds
+                    .clone()
+                    .quantile(lit(0.95), QuantileMethod::Nearest)
+                    .alias(format!("{prefix}p95")),
+                seconds
+                    .clone()
+                    .quantile(lit(0.99), QuantileMethod::Nearest)
+                    .alias(format!("{prefix}p99")),
+                seconds.max().alias(format!("{prefix}max")),
+            ]);
+            if let Some(threshold) = plan.latency_threshold_seconds {
+                expressions.push(
+                    micros
+                        .gt(lit(threshold.saturating_mul(1_000_000)))
+                        .sum()
+                        .alias(format!("{prefix}above")),
+                );
+            }
+        }
+
+        let grain_plan = DataQualityPlan {
+            grain: grain.clone(),
+            ..plan.clone()
+        };
+        let ungrouped = matches!(grain, QualityGrain::Dataset)
+            || matches!(grain, QualityGrain::File) && source.is_none();
+        let aggregate = if ungrouped {
+            collect_lazy(lf.clone().select(expressions), polars_streaming).map_err(Report::from)?
+        } else {
+            let (grouped_lf, group) = grouped_frame(lf, &grain_plan, source)?;
+            collect_lazy(
+                grouped_lf
+                    .group_by([group.alias("__quality_segment")])
+                    .agg(expressions),
+                polars_streaming,
+            )
+            .map_err(Report::from)?
+        };
+
+        for row in 0..aggregate.height() {
+            let segment = if ungrouped {
+                if matches!(grain, QualityGrain::File) {
+                    "file mapping unavailable for this view".to_string()
+                } else {
+                    "current view".to_string()
+                }
+            } else {
+                let raw = string_value_at(&aggregate, "__quality_segment", row);
+                segment_label(&grain, raw.as_deref())
+            };
+            let evaluated_rows = usize_value_at(&aggregate, "__quality_temporal_rows", row);
+            for index in &members {
+                let interval = &resolved[*index];
+                let prefix = format!("latency::{index}::");
+                let count =
+                    |name: &str| usize_value_at(&aggregate, &format!("{prefix}{name}"), row);
+                let seconds =
+                    |name: &str| optional_i64_at(&aggregate, &format!("{prefix}{name}"), row);
+                profiles[*index].push(TemporalLatencyProfile {
+                    segment: segment.clone(),
+                    start_role: interval.start_role,
+                    end_role: interval.end_role,
+                    start_column: interval.start.clone(),
+                    end_column: interval.end.clone(),
+                    evaluated_rows,
+                    paired_rows: count("paired"),
+                    missing_start: count("missing_start"),
+                    missing_end: count("missing_end"),
+                    unparsed_start: count("unparsed_start"),
+                    unparsed_end: count("unparsed_end"),
+                    negative_count: count("negative"),
+                    zero_count: count("zero"),
+                    p50_seconds: seconds("p50"),
+                    p90_seconds: seconds("p90"),
+                    p95_seconds: seconds("p95"),
+                    p99_seconds: seconds("p99"),
+                    max_seconds: seconds("max"),
+                    threshold_seconds: plan.latency_threshold_seconds,
+                    above_threshold_count: plan.latency_threshold_seconds.map(|_| count("above")),
+                });
+            }
         }
     }
-    profiles.sort_by(|left, right| left.segment.cmp(&right.segment));
-    // The zero padding exists so a lexicographic sort orders chunks numerically, and
-    // comes off once it has. Segments does the same thing in the same place; leaving
-    // it on here had Trends and Segments name one chunk two different ways.
-    if matches!(plan.grain, QualityGrain::RowChunks(_)) {
-        for profile in &mut profiles {
-            profile.segment = pretty_chunk_label(&profile.segment);
+    let mut ordered = Vec::new();
+    for (interval, mut segments) in resolved.iter().zip(profiles) {
+        segments.sort_by(|left, right| left.segment.cmp(&right.segment));
+        // The zero padding exists so a lexicographic sort orders chunks numerically,
+        // and comes off once it has. Segments does the same thing in the same place;
+        // leaving it on here had Trends and Segments name one chunk two ways.
+        if matches!(interval.grain, QualityGrain::RowChunks(_)) {
+            for profile in &mut segments {
+                profile.segment = pretty_chunk_label(&profile.segment);
+            }
         }
+        ordered.extend(segments);
     }
-    Ok(profiles)
+    Ok(ordered)
 }
 
 fn latency_profile(
@@ -3827,7 +4281,7 @@ fn latency_profile(
     let mut missing_end = 0;
     let mut unparsed_start = 0;
     let mut unparsed_end = 0;
-    let mut seconds = Vec::new();
+    let mut micros = Vec::new();
     for row in 0..df.height() {
         let start_at = value_epoch_micros(starts.get(row)?);
         let end_at = value_epoch_micros(ends.get(row)?);
@@ -3846,9 +4300,21 @@ fn latency_profile(
             }
         }
         if let (Some(start_at), Some(end_at)) = (start_at, end_at) {
-            seconds.push((end_at - start_at) / 1_000_000);
+            micros.push(end_at - start_at);
         }
     }
+    // Counted on the exact difference, so half a second early is early; the
+    // percentiles are whole seconds.
+    let negative_count = micros.iter().filter(|value| **value < 0).count();
+    let zero_count = micros.iter().filter(|value| **value == 0).count();
+    let above_threshold_count = threshold_seconds.map(|threshold| {
+        let threshold = threshold.saturating_mul(1_000_000);
+        micros.iter().filter(|value| **value > threshold).count()
+    });
+    let mut seconds = micros
+        .iter()
+        .map(|value| value / 1_000_000)
+        .collect::<Vec<_>>();
     seconds.sort_unstable();
     let percentile = |percent: usize| {
         if seconds.is_empty() {
@@ -3865,18 +4331,20 @@ fn latency_profile(
         start_column: start.name.clone(),
         end_column: end.name.clone(),
         evaluated_rows: df.height(),
+        paired_rows: micros.len(),
         missing_start,
         missing_end,
         unparsed_start,
         unparsed_end,
-        negative_count: seconds.iter().filter(|value| **value < 0).count(),
+        negative_count,
+        zero_count,
         p50_seconds: percentile(50),
         p90_seconds: percentile(90),
         p95_seconds: percentile(95),
         p99_seconds: percentile(99),
         max_seconds: seconds.last().copied(),
-        above_threshold_count: threshold_seconds
-            .map(|threshold| seconds.iter().filter(|value| **value > threshold).count()),
+        threshold_seconds,
+        above_threshold_count,
     })
 }
 
@@ -5685,14 +6153,32 @@ mod tests {
             Some(QualitySetup::Grain)
         );
         assert_eq!(
-            setup(QualityPage::Trends, &plan, true),
+            setup(QualityPage::Intervals, &plan, true),
             Some(QualitySetup::TimeRoles)
         );
+        assert_eq!(setup(QualityPage::Intervals, &plan, false), None);
         assert_eq!(
-            setup(QualityPage::Trends, &plan, false),
+            setup(QualityPage::Trends, &plan, true),
             Some(QualitySetup::Grain)
         );
         assert_eq!(setup(QualityPage::Overview, &plan, true), None);
+        // Two roles that make no interval want a pair chosen, not more roles.
+        let mut paired = plan.clone();
+        paired.temporal_roles = [TemporalRole::Created, TemporalRole::Processed]
+            .map(|role| TemporalRoleAssignment {
+                role,
+                column: "at".to_string(),
+                timezone: None,
+            })
+            .to_vec();
+        assert_eq!(
+            setup(QualityPage::Intervals, &paired, true),
+            Some(QualitySetup::Intervals)
+        );
+        // A chosen pair that measured nothing, as on metadata only, is not fixed by
+        // choosing pairs again: the page says what is, and Enter opens nothing.
+        paired.toggle_interval((TemporalRole::Created, TemporalRole::Processed));
+        assert_eq!(setup(QualityPage::Intervals, &paired, true), None);
         assert_eq!(
             page_setup(QualityPage::Segments, &plan, None, true),
             None,
@@ -6615,6 +7101,9 @@ mod tests {
             "2024-01-31T08:15:00",
             "2024-01-31 08:15:00.250",
             "2024-01-31T08:15:00.5",
+            "2024-01-31T08:15:00Z",
+            "2024-01-31T08:15:00.250+05:00",
+            "2024-01-31 08:15:00-0500",
             "2024-01-31 08:15",
             "2024-01-31",
             "20240131",
@@ -7293,5 +7782,471 @@ mod tests {
             &QualityWatch::default(),
         );
         assert_eq!(results.unwrap().reads, Some(ObservedReads::default()));
+    }
+}
+
+/// Intervals between time roles: what they count, and out of what.
+#[cfg(test)]
+mod temporal_tests {
+    use super::*;
+
+    const HOUR: i64 = 3_600_000_000;
+
+    fn datetimes(name: &str, values: &[Option<i64>]) -> Column {
+        Series::new(name.into(), values)
+            .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+            .unwrap()
+            .into()
+    }
+
+    fn roles(pairs: &[(TemporalRole, &str)]) -> Vec<TemporalRoleAssignment> {
+        pairs
+            .iter()
+            .map(|(role, column)| TemporalRoleAssignment {
+                role: *role,
+                column: column.to_string(),
+                timezone: None,
+            })
+            .collect()
+    }
+
+    /// Both ways a run measures: the sample's rows in memory, and a full scan.
+    fn both_ways(
+        frame: &LazyFrame,
+        rows: usize,
+        plan: &DataQualityPlan,
+    ) -> [DataQualityResults; 2] {
+        [QualityCompute::Sample, QualityCompute::Full].map(|compute| {
+            let plan = DataQualityPlan {
+                compute,
+                ..plan.clone()
+            };
+            compute_data_quality(frame, Some(rows), &plan, None, false).unwrap()
+        })
+    }
+
+    /// Eight rows: an hour exactly, an hour and a second, two hours, a missing
+    /// start, a missing end, both missing, half a second early, and no time at all.
+    fn delays() -> LazyFrame {
+        let start = [
+            Some(0),
+            Some(0),
+            Some(0),
+            None,
+            Some(0),
+            None,
+            Some(500_000),
+            Some(0),
+        ];
+        let end = [
+            Some(HOUR),
+            Some(HOUR + 1_000_000),
+            Some(2 * HOUR),
+            Some(HOUR),
+            None,
+            None,
+            Some(0),
+            Some(0),
+        ];
+        DataFrame::new(8, vec![datetimes("sent", &start), datetimes("seen", &end)])
+            .unwrap()
+            .lazy()
+    }
+
+    /// A breach is `duration > threshold`, counted out of the rows with both ends:
+    /// an hour exactly is not over an hour, and the rows less each end's missing
+    /// count would be the wrong denominator, since one row misses both.
+    #[test]
+    fn breaches_are_out_of_rows_with_both_ends() {
+        let plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::Event, "sent"),
+                (TemporalRole::Received, "seen"),
+            ]),
+            latency_threshold_seconds: Some(3_600),
+            ..DataQualityPlan::default()
+        };
+        for results in both_ways(&delays(), 8, &plan) {
+            let [latency] = results.temporal.as_slice() else {
+                panic!("one interval: {:?}", results.temporal);
+            };
+            assert_eq!(latency.evaluated_rows, 8);
+            assert_eq!((latency.missing_start, latency.missing_end), (2, 2));
+            assert_eq!(latency.paired_rows, 5);
+            assert_ne!(
+                latency.evaluated_rows - latency.missing_start - latency.missing_end,
+                latency.paired_rows
+            );
+            assert_eq!(latency.threshold_seconds, Some(3_600));
+            assert_eq!(latency.above_threshold_count, Some(2));
+            // Half a second early is early, though it is zero whole seconds.
+            assert_eq!(latency.negative_count, 1);
+            assert_eq!(latency.zero_count, 1);
+            assert_eq!(latency.max_seconds, Some(7_200));
+            assert_eq!(
+                latency.count(IntervalFact::OverThreshold, &plan),
+                Some((2, 5))
+            );
+            assert_eq!(latency.count(IntervalFact::MissingEnd, &plan), Some((2, 8)));
+            assert_eq!(latency.count(IntervalFact::UnparsedStart, &plan), None);
+        }
+    }
+
+    /// Any start and end can be chosen, not only the pairs the roles suggest; the
+    /// first choice makes the list explicit, and a role in no interval is named.
+    #[test]
+    fn a_chosen_pair_is_measured_and_an_unpaired_role_is_named() {
+        let mut plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::Created, "sent"),
+                (TemporalRole::Processed, "seen"),
+            ]),
+            ..DataQualityPlan::default()
+        };
+        assert!(plan.interval_pairs().is_empty(), "no suggested pair");
+        assert_eq!(
+            plan.unpaired_roles(),
+            vec![TemporalRole::Created, TemporalRole::Processed]
+        );
+        assert_eq!(
+            plan.candidate_pairs(),
+            vec![
+                (TemporalRole::Created, TemporalRole::Processed),
+                (TemporalRole::Processed, TemporalRole::Created),
+            ]
+        );
+        plan.toggle_interval((TemporalRole::Created, TemporalRole::Processed));
+        assert_eq!(
+            plan.interval_pairs(),
+            vec![(TemporalRole::Created, TemporalRole::Processed)]
+        );
+        assert!(plan.unpaired_roles().is_empty());
+        for results in both_ways(&delays(), 8, &plan) {
+            let [latency] = results.temporal.as_slice() else {
+                panic!("one interval: {:?}", results.temporal);
+            };
+            assert_eq!(latency.label(), "created to processed");
+            assert_eq!(latency.paired_rows, 5);
+        }
+
+        // A suggested pair taken away stays away.
+        let mut plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::Event, "sent"),
+                (TemporalRole::Received, "seen"),
+            ]),
+            ..DataQualityPlan::default()
+        };
+        plan.toggle_interval((TemporalRole::Event, TemporalRole::Received));
+        assert_eq!(plan.intervals, Some(Vec::new()));
+        assert!(plan.interval_pairs().is_empty());
+        let results = compute_data_quality(&delays(), Some(8), &plan, None, false).unwrap();
+        assert!(results.temporal.is_empty());
+    }
+
+    /// Valid from and valid to make an interval without choosing it, and read as a
+    /// validity period: no end is open, an end first is not valid.
+    #[test]
+    fn a_validity_period_counts_open_and_backwards_periods() {
+        let days = |name: &str, values: &[Option<i32>]| -> Column {
+            Series::new(name.into(), values)
+                .cast(&DataType::Date)
+                .unwrap()
+                .into()
+        };
+        let frame = DataFrame::new(
+            4,
+            vec![
+                days(
+                    "from",
+                    &[Some(19_000), Some(19_000), Some(19_010), Some(19_020)],
+                ),
+                days("to", &[Some(19_005), None, Some(19_009), Some(19_020)]),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::ValidFrom, "from"),
+                (TemporalRole::ValidTo, "to"),
+            ]),
+            ..DataQualityPlan::default()
+        };
+        for results in both_ways(&frame, 4, &plan) {
+            let [period] = results.temporal.as_slice() else {
+                panic!("one interval: {:?}", results.temporal);
+            };
+            assert!(period.is_validity());
+            assert_eq!(period.paired_rows, 3);
+            assert_eq!(period.missing_end, 1);
+            assert_eq!(period.negative_count, 1);
+            assert_eq!(period.zero_count, 1);
+            assert_eq!(IntervalFact::MissingEnd.label(period), "Open, no end");
+            assert_eq!(IntervalFact::Negative.label(period), "Ends first");
+        }
+    }
+
+    /// Text with an offset is an instant: `10:00+05:00` is 05:00 UTC, an hour
+    /// before a time with no zone that reads 06:00, which is taken as UTC.
+    #[test]
+    fn zoned_text_compares_with_naive_time_as_utc() {
+        let frame = DataFrame::new(
+            2,
+            vec![
+                Column::new(
+                    "stamped".into(),
+                    ["2024-01-01T10:00:00+05:00", "2024-01-01T06:00:00Z"],
+                ),
+                datetimes(
+                    "logged",
+                    &[
+                        Some(1_704_088_800_000_000), // 2024-01-01 06:00:00
+                        Some(1_704_088_800_000_000),
+                    ],
+                ),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        let offset = TimeInterpretation {
+            column: "stamped".to_string(),
+            kind: TimeKind::Datetime,
+            format: "%Y-%m-%dT%H:%M:%S%.f%#z".to_string(),
+        };
+        assert!(offset.zoned());
+        assert!(offset.reads("2024-01-01T10:00:00+05:00"));
+        assert!(offset.reads("2024-01-01T06:00:00Z"));
+        assert!(
+            !offset.reads("2024-01-01T06:00:00"),
+            "no offset, no instant"
+        );
+        let plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::Event, "stamped"),
+                (TemporalRole::Received, "logged"),
+            ]),
+            time_formats: vec![offset],
+            ..DataQualityPlan::default()
+        };
+        let schema = frame.clone().collect_schema().unwrap();
+        assert_eq!(plan.zoned("stamped", &schema), Some(true));
+        assert_eq!(plan.zoned("logged", &schema), Some(false));
+        for results in both_ways(&frame, 2, &plan) {
+            let [latency] = results.temporal.as_slice() else {
+                panic!("one interval: {:?}", results.temporal);
+            };
+            assert_eq!(latency.paired_rows, 2);
+            assert_eq!(latency.max_seconds, Some(3_600));
+            assert_eq!((latency.zero_count, latency.negative_count), (1, 0));
+        }
+    }
+
+    /// With time windows, an interval goes in the window of the grain's column, or
+    /// of its own start or end: a delay across midnight lands on the day it ended.
+    #[test]
+    fn the_window_clock_puts_an_interval_on_its_start_or_end() {
+        let late = 1_704_150_000_000_000; // 2024-01-01 23:00:00
+        let frame = DataFrame::new(
+            1,
+            vec![
+                datetimes("sent", &[Some(late)]),
+                datetimes("seen", &[Some(late + 2 * HOUR)]),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        let mut plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::Event, "sent"),
+                (TemporalRole::Received, "seen"),
+            ]),
+            grain: QualityGrain::TimeWindows {
+                column: "sent".to_string(),
+                every: "1d".to_string(),
+            },
+            ..DataQualityPlan::default()
+        };
+        assert!(plan.windows_intervals());
+        let schema = frame.clone().collect_schema().unwrap();
+        for (clock, day) in [
+            (IntervalClock::Grain, "2024-01-01"),
+            (IntervalClock::Start, "2024-01-01"),
+            (IntervalClock::End, "2024-01-02"),
+        ] {
+            plan.interval_clock = clock;
+            assert_eq!(interval_passes(&plan, &schema), 1);
+            for results in both_ways(&frame, 1, &plan) {
+                let segments = results
+                    .temporal
+                    .iter()
+                    .map(|latency| latency.segment.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(segments, vec![day], "{clock:?}");
+            }
+        }
+        // By their ends, intervals ending in different columns are cut twice; by
+        // the grain, once however many there are.
+        plan.temporal_roles
+            .extend(roles(&[(TemporalRole::Processed, "seen2")]));
+        let frame = frame.with_column(col("seen").alias("seen2"));
+        let schema = frame.clone().collect_schema().unwrap();
+        assert_eq!(plan.interval_pairs().len(), 3);
+        assert_eq!(interval_passes(&plan, &schema), 2);
+        plan.interval_clock = IntervalClock::Grain;
+        assert_eq!(interval_passes(&plan, &schema), 1);
+    }
+
+    /// The rows a detail opens for a fact are the rows it counted, in the segment
+    /// it counted them in.
+    #[test]
+    fn a_facts_rows_are_the_rows_it_counted() {
+        let frame = delays().with_column(
+            when(col("sent").is_null())
+                .then(lit("2024-01-02"))
+                .otherwise(lit("2024-01-01"))
+                .str()
+                .to_date(StrptimeOptions::default())
+                .alias("day"),
+        );
+        for grain in [
+            QualityGrain::Dataset,
+            QualityGrain::Partition("day".to_string()),
+            QualityGrain::TimeWindows {
+                column: "day".to_string(),
+                every: "1d".to_string(),
+            },
+        ] {
+            let plan = DataQualityPlan {
+                temporal_roles: roles(&[
+                    (TemporalRole::Event, "sent"),
+                    (TemporalRole::Received, "seen"),
+                ]),
+                latency_threshold_seconds: Some(3_600),
+                grain: grain.clone(),
+                ..DataQualityPlan::default()
+            };
+            for results in both_ways(&frame, 8, &plan) {
+                assert!(!results.temporal.is_empty());
+                for latency in &results.temporal {
+                    for fact in IntervalFact::ALL {
+                        let Some((count, _)) = latency.count(fact, &plan) else {
+                            assert!(latency.evidence_predicate(fact, &plan).is_none());
+                            continue;
+                        };
+                        let predicate = latency
+                            .evidence_predicate(fact, &plan)
+                            .unwrap_or_else(|| panic!("{grain:?} {fact:?} opens nothing"));
+                        let rows = frame.clone().filter(predicate).collect().unwrap().height();
+                        assert_eq!(rows, count, "{grain:?} {} {fact:?}", latency.segment);
+                    }
+                }
+            }
+        }
+        // A row chunk is a stretch of rows, not a value to filter on.
+        let plan = DataQualityPlan {
+            temporal_roles: roles(&[
+                (TemporalRole::Event, "sent"),
+                (TemporalRole::Received, "seen"),
+            ]),
+            grain: QualityGrain::RowChunks(4),
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(8), &plan, None, false).unwrap();
+        assert!(results.temporal.iter().all(|latency| {
+            latency
+                .evidence_predicate(IntervalFact::Negative, &plan)
+                .is_none()
+        }));
+    }
+
+    /// A segment's label finds its rows whatever the partition holds: text with
+    /// `=` and spaces, integers, booleans, floats and datetimes (the last two write
+    /// differently cast to text), and a zoned column's windows at every width,
+    /// across New York's spring-forward day.
+    #[test]
+    fn a_facts_rows_are_found_by_any_segment_label() {
+        let spring = 1_710_054_000_000_000i64; // 2024-03-10 07:00 UTC
+        let zoned: Column = Series::new(
+            "zoned".into(),
+            [0, 3, 20, -1, -10, 40, 0, 960]
+                .map(|hours| (hours >= 0 || hours == -10).then_some(spring + hours * HOUR)),
+        )
+        .cast(&DataType::Datetime(
+            TimeUnit::Nanoseconds,
+            TimeZone::opt_try_new(Some("America/New_York")).unwrap(),
+        ))
+        .unwrap()
+        .into();
+        let mut frame = delays().collect().unwrap();
+        for column in [
+            Column::new(
+                "key=part".into(),
+                [
+                    Some("a=b"),
+                    Some(" x "),
+                    Some(""),
+                    None,
+                    Some("é"),
+                    Some("a=b"),
+                    Some("1.0"),
+                    Some(" x "),
+                ],
+            ),
+            Column::new("int".into(), [1i64, 2, 3, 1, 2, 3, 1, 2]),
+            Column::new(
+                "float".into(),
+                [0.1f64, 1e20, 2.5, 0.1, 1e20, 2.5, 0.1, 3.0],
+            ),
+            Column::new(
+                "bool".into(),
+                [true, false, true, false, true, false, true, false],
+            ),
+            datetimes("stamp", &[0, HOUR, 0, HOUR, 0, HOUR, 1, 0].map(Some)),
+            zoned,
+        ] {
+            frame.with_column(column).unwrap();
+        }
+        let frame = frame.lazy();
+        let grains = ["key=part", "int", "float", "bool", "stamp"]
+            .map(|column| QualityGrain::Partition(column.to_string()))
+            .into_iter()
+            .chain(
+                QUALITY_WINDOW_WIDTHS.map(|every| QualityGrain::TimeWindows {
+                    column: "zoned".to_string(),
+                    every: every.to_string(),
+                }),
+            );
+        for grain in grains {
+            for clock in IntervalClock::ALL {
+                let plan = DataQualityPlan {
+                    temporal_roles: roles(&[
+                        (TemporalRole::Event, "sent"),
+                        (TemporalRole::Received, "seen"),
+                    ]),
+                    latency_threshold_seconds: Some(3_600),
+                    grain: grain.clone(),
+                    interval_clock: clock,
+                    ..DataQualityPlan::default()
+                };
+                for results in both_ways(&frame, 8, &plan) {
+                    for latency in &results.temporal {
+                        for fact in IntervalFact::ALL {
+                            let Some((count, _)) = latency.count(fact, &plan) else {
+                                continue;
+                            };
+                            let predicate = latency.evidence_predicate(fact, &plan).unwrap();
+                            let rows = frame.clone().filter(predicate).collect().unwrap();
+                            assert_eq!(
+                                rows.height(),
+                                count,
+                                "{grain:?} {clock:?} {} {fact:?}",
+                                latency.segment
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

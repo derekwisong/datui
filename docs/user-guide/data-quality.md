@@ -10,8 +10,8 @@ Setup reads the data; <kbd>Enter</kbd> does, once.
 | Section | What you set |
 |---|---|
 | **Rows & sample** | The [sample](analysis-features.md#sampling) every analysis tool reads: which rows, how they are picked, how many, the seed |
-| **Columns** | Text read as time, and time roles |
-| **Study** | Grain, comparison, values or file metadata only, latency threshold |
+| **Columns** | Text read as time, time roles, and the intervals between them |
+| **Study** | Grain, comparison, values or file metadata only, latency threshold, and the window an interval goes in |
 | **Read** | What Run will read: a sampling pass, a count, rows a run already read, or no read at all |
 
 <kbd>s</kbd> opens the Sample form over Setup; its <kbd>Enter</kbd> applies the
@@ -45,7 +45,8 @@ counted. <kbd>Esc</kbd> returns.
 | **Overview** | Problems, notes and clean columns, most important first |
 | **Columns** | Each column's findings, nulls, distinct values, parse rates and ranges |
 | **Segments** | Compare files, partitions, days or row chunks |
-| **Trends** | Each column across the whole range, and the time between dates |
+| **Trends** | Each column across the whole range |
+| **Intervals** | The time between two dates in each segment, and every count behind it |
 
 <kbd>←</kbd> <kbd>→</kbd> move between the pages.
 
@@ -69,9 +70,29 @@ measure. A sample thin per segment, such as 100,000 rows over years of days,
 names only large changes on Segments; Trends shows the smaller ones. To judge
 single days, sample **Equal per value** of the date, or read every row.
 
-For the time between dates, assign **Time roles** in Setup: datui does not
-infer a column's meaning from its name. Setup lists the intervals the roles
-measure, and says so when two roles make none.
+## Measure the time between dates
+
+1. In Setup, move to **Time roles** and press <kbd>Space</kbd>. Give each role
+   its column: datui does not infer a column's meaning from its name.
+2. **Intervals** lists the pairs measured, such as `event to received`. Press
+   <kbd>Space</kbd> on it to choose any start and end. Setup names a role that
+   is in no interval.
+3. Optionally set **Latency over** to count breaches, and with a daily grain,
+   **Window by** to put each delay on the day it started or ended.
+4. Press <kbd>Enter</kbd> to run, then <kbd>5</kbd> for **Intervals**.
+
+| Count | Out of |
+|---|---|
+| Both ends | The segment's rows |
+| Missing start, Missing end, Unparsed start, Unparsed end | The segment's rows |
+| Negative, Zero, Over the threshold | Rows with both ends |
+
+A breach is `duration > threshold`: exactly an hour is not over an hour.
+<kbd>Enter</kbd> on an interval opens its detail at any terminal size;
+<kbd>Enter</kbd> on a count there shows its rows; on a sample, they are cut
+from the rows the run kept rather than read from the file again. Valid from
+to valid to reads as a validity period: no end is **open**, and an end before
+its start **ends first**.
 
 ## Times stored as text
 
@@ -85,6 +106,9 @@ time only when you say how:
    **Time role**.
 
 The format applies to this study only: every other check still sees the text.
+A format with an offset, such as `2024-01-31T08:15:00Z` or `+05:00`, reads
+each value as an instant in UTC; a time with no zone beside it is read as UTC,
+and Setup says so.
 Values the format does not read are reported as **Unparsed times**, not as
 missing values, and <kbd>Enter</kbd> on the finding opens their rows. A role or
 grain on text with no format is named in Setup before you run.

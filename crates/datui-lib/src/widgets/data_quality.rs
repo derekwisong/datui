@@ -1,9 +1,10 @@
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, SetupRow};
 use crate::config::Theme;
 use crate::data_quality::{
-    ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison,
-    QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityPrecision, QualityScope,
-    SegmentCount, TemporalRole, window_cadence,
+    ColumnQualityProfile, DataQualityPlan, DataQualityResults, IntervalClock, IntervalFact,
+    ObservationKind, QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage,
+    QualityPrecision, QualityScope, SegmentCount, TemporalLatencyProfile, TemporalRole,
+    interval_label, window_cadence,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -83,6 +84,8 @@ pub struct DataQualityWidgetConfig<'a> {
     pub metric: QualityMetric,
     pub column_index: usize,
     pub segment_index: usize,
+    /// The interval a detail shows.
+    pub interval_index: usize,
     pub segments_by_change: bool,
     pub page: QualityPage,
     pub setup: SetupView<'a>,
@@ -154,6 +157,7 @@ pub fn render(
     match config.page {
         QualityPage::Setup => render_setup(&config, body, buf),
         QualityPage::TimeRoles => render_time_roles(&config, table_state, body, buf),
+        QualityPage::IntervalPairs => render_interval_pairs(&config, table_state, body, buf),
         QualityPage::Overview => render_overview(&config, table_state, body, buf),
         QualityPage::Columns => render_columns(&config, table_state, body, buf),
         QualityPage::Segments => render_segments(&config, table_state, body, buf),
@@ -161,6 +165,8 @@ pub fn render(
             render_segment_detail(&config, table_state, config.segment_index, body, buf)
         }
         QualityPage::Trends => render_trends(&config, table_state, body, buf),
+        QualityPage::Intervals => render_intervals(&config, table_state, body, buf),
+        QualityPage::IntervalDetail => render_interval_detail(&config, table_state, body, buf),
         QualityPage::Detail => render_detail(&config, table_state, body, buf),
     }
 
@@ -313,6 +319,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     ));
     lines.push(SetupLine::Row(SetupRow::TextAsTime));
     lines.push(SetupLine::Row(SetupRow::TimeRoles));
+    lines.push(SetupLine::Row(SetupRow::Intervals));
     for (note, warn) in column_notes(plan, schema) {
         for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, warn));
@@ -324,6 +331,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
         SetupRow::Compare,
         SetupRow::Values,
         SetupRow::Latency,
+        SetupRow::WindowBy,
     ] {
         lines.push(SetupLine::Row(row));
     }
@@ -465,6 +473,18 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
                 .join(", "),
             false,
         ),
+        SetupRow::Intervals if plan.candidate_pairs().is_empty() => {
+            ("needs two time roles".to_string(), true)
+        }
+        SetupRow::Intervals if plan.interval_pairs().is_empty() => ("none".to_string(), true),
+        SetupRow::Intervals => (
+            plan.interval_pairs()
+                .into_iter()
+                .map(interval_label)
+                .collect::<Vec<_>>()
+                .join(", "),
+            false,
+        ),
         SetupRow::Grain => (plan.grain.label(), false),
         SetupRow::Compare => (
             match (plan.comparison, plan.baseline_segment.as_deref()) {
@@ -484,6 +504,16 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
             crate::analysis_modal::threshold_label(plan.latency_threshold_seconds).to_string(),
             plan.latency_threshold_seconds.is_none(),
         ),
+        SetupRow::WindowBy => match (&plan.grain, plan.interval_clock) {
+            (QualityGrain::TimeWindows { .. }, _) if plan.interval_pairs().is_empty() => {
+                ("needs an interval".to_string(), true)
+            }
+            (QualityGrain::TimeWindows { column, .. }, IntervalClock::Grain) => {
+                (format!("the grain's column, {column}"), false)
+            }
+            (QualityGrain::TimeWindows { .. }, clock) => (clock.label().to_string(), false),
+            _ => ("needs a time-window grain".to_string(), true),
+        },
     }
 }
 
@@ -521,32 +551,45 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
             true,
         ));
     }
-    let pairs = plan.interval_pairs();
-    if !pairs.is_empty() {
+    // A role that is in no interval measures nothing; say which, and where to fix it.
+    let unpaired = plan.unpaired_roles();
+    if plan.temporal_roles.len() == 1 {
         notes.push((
-            format!(
-                "Intervals: {}",
-                pairs
-                    .iter()
-                    .map(|(start, end)| format!("{} to {}", start.label(), end.label()))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            false,
+            "One role makes no interval: assign another under Time roles".to_string(),
+            true,
         ));
-    } else if !plan.temporal_roles.is_empty() {
+    } else if !unpaired.is_empty() {
         notes.push((
             format!(
-                "No interval from {}. Measured: event to published, received or \
-                 processed; period end to published; published to received; received \
-                 to processed",
-                plan.temporal_roles
+                "In no interval: {}. Choose a start and end under Intervals",
+                unpaired
                     .iter()
-                    .map(|role| role.role.label())
+                    .map(|role| role.label())
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
             true,
+        ));
+    }
+    // An interval from a time with no zone to an instant reads the first as UTC.
+    let mut naive = Vec::new();
+    for (start, end) in plan.interval_pairs() {
+        let (Some(start), Some(end)) = (plan.role_column(start), plan.role_column(end)) else {
+            continue;
+        };
+        for (column, other) in [(start, end), (end, start)] {
+            if plan.zoned(column, schema) == Some(false)
+                && plan.zoned(other, schema) == Some(true)
+                && !naive.contains(&column)
+            {
+                naive.push(column);
+            }
+        }
+    }
+    if !naive.is_empty() {
+        notes.push((
+            format!("No time zone, read as UTC: {}", naive.join(", ")),
+            false,
         ));
     }
     notes
@@ -573,10 +616,21 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             lines.push("File metadata only: no values read".to_string());
             return lines;
         }
-        QualityCompute::Full => lines.push(format!(
-            "Every eligible row, in up to {} passes over the scope: one per check",
-            full_passes(config)
-        )),
+        QualityCompute::Full => {
+            lines.push(format!(
+                "Every eligible row, in up to {} passes over the scope: one per check",
+                full_passes(config)
+            ));
+            // Each column an interval is windowed by is a grouping of its own.
+            let clocks =
+                crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+            if clocks > 1 {
+                lines.push(format!(
+                    "Window by {}: {clocks} of those passes for intervals, one per column",
+                    plan.interval_clock.label()
+                ));
+            }
+        }
         QualityCompute::Sample if view.reuses_sample => {
             lines.push("Uses the rows a run already read: no source read".to_string());
         }
@@ -679,9 +733,7 @@ fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
     if !matches!(plan.grain, QualityGrain::Dataset) {
         passes += 1;
     }
-    if !plan.interval_pairs().is_empty() {
-        passes += 1;
-    }
+    passes += crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
     if planned_scope_rows(state, plan).is_none() {
         passes += 1;
     }
@@ -1198,6 +1250,13 @@ fn check_lines(
 
 /// `text` cut to `width` display columns, with the ellipsis glyph when anything was
 /// cut, so a truncated count never reads as a smaller one.
+/// A segment's label as the terminal draws it: the `∅` naming rows with no value
+/// is the null glyph, which `LANG=C` swaps for its ASCII twin. The label itself
+/// stays as it is, since evidence finds a segment's rows by it.
+fn segment_text(label: &str) -> String {
+    label.replace('∅', glyphs::get().null)
+}
+
 fn fit(text: &str, width: usize) -> String {
     if glyphs::display_width(text) <= width {
         return text.to_string();
@@ -1718,7 +1777,7 @@ fn render_segments(
     let label_width = results
         .segments
         .iter()
-        .map(|segment| glyphs::display_width(&segment.label))
+        .map(|segment| glyphs::display_width(&segment_text(&segment.label)))
         .max()
         .unwrap_or(0)
         .clamp(7, 40) as u16
@@ -1738,7 +1797,7 @@ fn render_segments(
         .map(|&index| &results.segments[index])
         .map(|segment| {
             let mut cells = vec![
-                Cell::from(segment.label.clone()),
+                Cell::from(segment_text(&segment.label)),
                 Cell::from(rows_label(segment)),
                 Cell::from(format!("{:.1}%", segment.null_rate * 100.0)),
             ];
@@ -1805,8 +1864,12 @@ fn render_segment_detail(
         .split(area);
     let other = segment.compared_with.as_deref();
     let title = match other {
-        Some(other) => format!("{} vs {other}", segment.label),
-        None => segment.label.clone(),
+        Some(other) => format!(
+            "{} vs {}",
+            segment_text(&segment.label),
+            segment_text(other)
+        ),
+        None => segment_text(&segment.label),
     };
     Paragraph::new(rule_line(
         &title,
@@ -1858,11 +1921,13 @@ fn render_segment_detail(
     let mut headers = vec!["Column".to_string(), "Measure".to_string()];
     let mut widths = vec![Constraint::Length(name_width), Constraint::Length(10)];
     if let Some(other) = other {
-        headers.push(other.to_string());
-        widths.push(Constraint::Length(value_width(other)));
+        headers.push(segment_text(other));
+        widths.push(Constraint::Length(value_width(&segment_text(other))));
     }
-    headers.push(segment.label.clone());
-    widths.push(Constraint::Length(value_width(&segment.label)));
+    headers.push(segment_text(&segment.label));
+    widths.push(Constraint::Length(value_width(&segment_text(
+        &segment.label,
+    ))));
     if other.is_some() {
         headers.push("Change".to_string());
         widths.push(Constraint::Fill(1));
@@ -1885,163 +1950,493 @@ fn render_trends(
         render_run_prompt(area, config.theme, buf);
         return;
     };
-    let show_trend = crate::data_quality::shows_trend(config.plan, results);
-    // The rule, a blank, and the note saying what fills it, wrapped.
-    let latency_height = if results.temporal.is_empty() {
-        5
-    } else {
-        (results.temporal.len() as u16 + 4).min(12)
-    };
-    let parts = Layout::default()
+    let [area] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Fill(1), Constraint::Length(latency_height)])
+        .constraints([Constraint::Fill(1)])
         .margin(1)
-        .split(area);
-    let text = Style::default().fg(config.theme.get("text_primary"));
-    if show_trend {
-        render_trend_table(config, results, table_state, parts[0], buf);
-    } else {
-        let [title, body] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Fill(1)])
-            .areas(parts[0]);
-        Paragraph::new(rule_line(
-            "Across segments",
-            None,
-            title.width,
-            config.theme,
-        ))
-        .render(title, buf);
-        Paragraph::new(
-            "Set Grain in Setup (e) to a partition column, to days, weeks or months of a \
-             date, or to chunks of rows, to follow each column from one to the next.",
-        )
-        .wrap(Wrap { trim: true })
-        .style(text)
-        .render(body, buf);
+        .areas(area);
+    if crate::data_quality::shows_trend(config.plan, results) {
+        render_trend_table(config, results, table_state, area, buf);
+        return;
     }
-    let sections = Layout::default()
+    let [title, body] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(0),
-            Constraint::Length(0),
-            Constraint::Length(2),
-            Constraint::Fill(1),
-        ])
-        .split(parts[1]);
-    let intervals =
-        (!results.temporal.is_empty()).then(|| numfmt::group_chrome(results.temporal.len()));
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .areas(area);
     Paragraph::new(rule_line(
-        "Time between dates",
-        intervals.as_deref(),
-        sections[2].width,
+        "Across segments",
+        None,
+        title.width,
         config.theme,
     ))
-    .render(sections[2], buf);
-    if results.temporal.is_empty() {
+    .render(title, buf);
+    Paragraph::new(
+        "Set Grain in Setup (e) to a partition column, to days, weeks or months of a \
+         date, or to chunks of rows, to follow each column from one to the next.",
+    )
+    .wrap(Wrap { trim: true })
+    .style(Style::default().fg(config.theme.get("text_primary")))
+    .render(body, buf);
+}
+
+/// `count` of `of`, with its rate when there is one: `2 of 5 (40.0%)`.
+fn share(count: usize, of: usize) -> String {
+    if of == 0 || count == 0 {
+        format!(
+            "{} of {}",
+            numfmt::group_chrome(count),
+            numfmt::group_chrome(of)
+        )
+    } else {
+        format!(
+            "{} of {} ({})",
+            numfmt::group_chrome(count),
+            numfmt::group_chrome(of),
+            rate_label(count as f64 / of as f64)
+        )
+    }
+}
+
+/// The rate of `count` in `of`, or a dash with nothing to take it over.
+fn share_rate(count: usize, of: usize) -> String {
+    // A dash as `duration_label` has it, beside which it sits.
+    if of == 0 {
+        "-".to_string()
+    } else {
+        rate_label(count as f64 / of as f64)
+    }
+}
+
+/// Each interval in each segment, one row each: which, where, and the counts a
+/// glance needs. Enter opens every count it took, so nothing is lost to a narrow
+/// terminal.
+fn render_intervals(
+    config: &DataQualityWidgetConfig<'_>,
+    table_state: &mut TableState,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let Some(results) = config.results else {
+        render_run_prompt(area, config.theme, buf);
+        return;
+    };
+    let theme = config.theme;
+    let plan = config.plan;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let [title, note, body] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .margin(1)
+        .areas(area);
+    let profiles = &results.temporal;
+    let chip = (!profiles.is_empty()).then(|| numfmt::group_chrome(profiles.len()));
+    Paragraph::new(rule_line(
+        "Time between dates",
+        chip.as_deref(),
+        title.width,
+        theme,
+    ))
+    .render(title, buf);
+    if profiles.is_empty() {
+        let schema = config.state.quality_schema(&plan.scope);
         let message = if config.setup.time_candidates.is_empty() {
-            "No date, time or text columns, so no delays to measure."
+            "No date, time or text columns, so no time between dates to measure."
+        } else if plan.compute == QualityCompute::Metadata && !plan.interval_pairs().is_empty() {
+            "File metadata only reads no values, so no time between dates. Set Values \
+             to Read in Setup (e)."
+        } else if plan.interval_pairs().iter().any(|(start, end)| {
+            [start, end].into_iter().any(|role| {
+                plan.role_column(*role)
+                    .is_some_and(|column| !plan.reads_as_time(column, schema))
+            })
+        }) {
+            "An interval's column is text with no format. Choose one under Text as \
+             time in Setup (e)."
+        } else if !plan.interval_pairs().is_empty() {
+            "No rows to measure the time between dates on."
+        } else if !plan.candidate_pairs().is_empty() {
+            "The time roles make no interval. Choose a start and an end under \
+             Intervals in Setup (e)."
         } else {
-            "Assign Time roles in Setup (e), such as when a row happened and when it was \
-             received, to measure the delay between them. Text is read as time through \
-             a format chosen under Text as time."
+            "Assign Time roles in Setup (e), such as when a row happened and when it \
+             was received, to measure the time between them. Text is read as time \
+             through a format chosen under Text as time."
         };
         Paragraph::new(message)
             .wrap(Wrap { trim: true })
-            .style(text)
-            .render(sections[3], buf);
+            .style(Style::default().fg(theme.get("text_primary")))
+            .render(
+                Rect {
+                    height: body.height + 1,
+                    ..note
+                },
+                buf,
+            );
         return;
     }
-    let layout = if sections[3].width >= 152 {
-        2
-    } else if sections[3].width >= 72 {
-        1
+    // What the last column counts, and out of what, said once above it.
+    let threshold = plan.latency_threshold_seconds;
+    let over = match threshold {
+        Some(_) => format!(
+            "Over: duration > {}, of rows with both ends",
+            crate::analysis_modal::threshold_label(threshold)
+        ),
+        None => "Negative: end before start, of rows with both ends".to_string(),
+    };
+    Paragraph::new(Line::styled(fit(&over, note.width as usize), dimmed)).render(note, buf);
+
+    let segmented = profiles
+        .iter()
+        .any(|profile| profile.segment != profiles[0].segment);
+    let segment_width = profiles
+        .iter()
+        .map(|profile| glyphs::display_width(&segment_text(&profile.segment)))
+        .max()
+        .unwrap_or(0)
+        .clamp(8, 22) as u16;
+    let last = |profile: &TemporalLatencyProfile, counted: bool| {
+        let count = match profile.above_threshold_count {
+            Some(count) if threshold.is_some() => count,
+            _ => profile.negative_count,
+        };
+        let rate = share_rate(count, profile.paired_rows);
+        if counted && profile.paired_rows > 0 {
+            format!("{} ({rate})", numfmt::group_chrome(count))
+        } else {
+            rate
+        }
+    };
+    let last_header = if threshold.is_some() {
+        "Over"
+    } else {
+        "Negative"
+    };
+    let wide = body.width >= 92;
+    let medium = !wide && body.width >= 44;
+    let mut headers = vec!["Interval"];
+    let mut fixed = vec![];
+    if segmented && (wide || medium) {
+        headers.push("Segment");
+        fixed.push(segment_width);
+    }
+    if wide {
+        headers.extend(["Both ends", "Missing s/e", "p50", "p95"]);
+        fixed.extend([9, 12, 7, 7]);
+    } else {
+        headers.push("p50");
+        fixed.push(7);
+    }
+    headers.push(last_header);
+    fixed.push(if wide { 15 } else { 9 });
+    // What the interval's name has left: a long one ends in an ellipsis rather
+    // than losing its last letters unmarked, and the detail says it in full.
+    let interval_width = (body.width as usize).saturating_sub(
+        glyphs::display_width(glyphs::get().selector)
+            + fixed.iter().map(|width| *width as usize + 1).sum::<usize>(),
+    );
+    let rows = profiles.iter().map(|profile| {
+        let mut cells = vec![fit(&profile.label(), interval_width)];
+        if segmented && (wide || medium) {
+            cells.push(fit(&segment_text(&profile.segment), segment_width as usize));
+        }
+        if wide {
+            cells.extend([
+                numfmt::group_chrome(profile.paired_rows),
+                format!(
+                    "{} / {}",
+                    numfmt::group_chrome(profile.missing_start),
+                    numfmt::group_chrome(profile.missing_end)
+                ),
+                duration_label(profile.p50_seconds),
+                duration_label(profile.p95_seconds),
+            ]);
+        } else {
+            cells.push(duration_label(profile.p50_seconds));
+        }
+        cells.push(last(profile, wide));
+        Row::new(cells)
+    });
+    let widths = std::iter::once(Constraint::Fill(1))
+        .chain(fixed.into_iter().map(Constraint::Length))
+        .collect::<Vec<_>>();
+    normalize_selection(table_state, profiles.len());
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers).style(dimmed))
+        .row_highlight_style(theme.highlight_style())
+        .highlight_symbol(glyphs::get().selector);
+    StatefulWidget::render(table, body, buf, table_state);
+}
+
+/// One interval in one segment: its endpoints and every count it took, each out
+/// of what it is out of. Missing ends, text a format did not read, and negative
+/// durations are separate rows, never folded together. The counts with rows
+/// behind them take the cursor; Enter opens those rows. From the measurements the
+/// report holds: nothing here reads.
+fn render_interval_detail(
+    config: &DataQualityWidgetConfig<'_>,
+    table_state: &mut TableState,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let Some(results) = config.results else {
+        render_run_prompt(area, config.theme, buf);
+        return;
+    };
+    let Some(profile) = results.temporal.get(config.interval_index) else {
+        return;
+    };
+    let theme = config.theme;
+    let plan = config.plan;
+    let [title, body] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .margin(1)
+        .areas(area);
+    Paragraph::new(rule_line(
+        &profile.label(),
+        Some(&segment_text(&profile.segment)),
+        title.width,
+        theme,
+    ))
+    .render(title, buf);
+
+    let endpoint = |role: TemporalRole, column: &str| match plan.time_format(column) {
+        Some(format) if format.zoned() => format!("{}: {column}, text with offset", role.label()),
+        Some(format) => format!(
+            "{}: {column}, text as {}",
+            role.label(),
+            format.kind.label()
+        ),
+        None => format!("{}: {column}", role.label()),
+    };
+    let grain = plan.interval_grain(&profile.start_column, &profile.end_column);
+    let facts = IntervalFact::ALL
+        .into_iter()
+        .filter_map(|fact| profile.count(fact, plan).map(|count| (fact, count)))
+        .collect::<Vec<_>>();
+    let selected = facts
+        .get(
+            table_state
+                .selected()
+                .unwrap_or(0)
+                .min(facts.len().saturating_sub(1)),
+        )
+        .map(|(fact, _)| *fact);
+    let plain = |label: &str, value: String| {
+        (
+            FieldRow {
+                mark: None,
+                label: label.to_string(),
+                value,
+            },
+            None,
+        )
+    };
+    let fact_row = |fact: IntervalFact| {
+        let (count, of) = profile.count(fact, plan)?;
+        let value = match fact {
+            IntervalFact::Negative | IntervalFact::Zero | IntervalFact::OverThreshold => {
+                format!("{} with both ends", share(count, of))
+            }
+            _ => share(count, of),
+        };
+        let mark = (selected == Some(fact))
+            .then(|| Span::styled(glyphs::get().rail, Style::default().fg(theme.get("accent"))));
+        Some((
+            FieldRow {
+                mark,
+                label: fact.label(profile),
+                value,
+            },
+            Some(fact),
+        ))
+    };
+    let mut rows = vec![
+        plain("Start", endpoint(profile.start_role, &profile.start_column)),
+        plain("End", endpoint(profile.end_role, &profile.end_column)),
+    ];
+    if grain != QualityGrain::Dataset {
+        rows.push(plain(
+            "Segment",
+            format!("{}, {}", segment_text(&profile.segment), grain.label()),
+        ));
+    }
+    rows.push(plain("Rows", numfmt::group_chrome(profile.evaluated_rows)));
+    rows.push(plain(
+        "Both ends",
+        share(profile.paired_rows, profile.evaluated_rows),
+    ));
+    rows.extend(
+        [
+            IntervalFact::MissingStart,
+            IntervalFact::MissingEnd,
+            IntervalFact::UnparsedStart,
+            IntervalFact::UnparsedEnd,
+            IntervalFact::Negative,
+            IntervalFact::Zero,
+        ]
+        .into_iter()
+        .filter_map(fact_row),
+    );
+    let pair = |left: Option<i64>, right: Option<i64>| {
+        format!("{}, {}", duration_label(left), duration_label(right))
+    };
+    rows.push(plain(
+        "p50, p90",
+        pair(profile.p50_seconds, profile.p90_seconds),
+    ));
+    rows.push(plain(
+        "p95, p99",
+        pair(profile.p95_seconds, profile.p99_seconds),
+    ));
+    rows.push(plain("Maximum", duration_label(profile.max_seconds)));
+    rows.push(plain(
+        "Threshold",
+        match profile.threshold_seconds {
+            Some(_) => format!(
+                "duration > {}, strictly",
+                crate::analysis_modal::threshold_label(profile.threshold_seconds)
+            ),
+            None => "none: set Latency over in Setup".to_string(),
+        },
+    ));
+    rows.extend(fact_row(IntervalFact::OverThreshold));
+
+    let label_width = rows
+        .iter()
+        .map(|(row, _)| glyphs::display_width(&row.label))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let width = (body.width as usize).min(DETAIL_MEASURE);
+    // Each row's lines, and where the selected count's start, so a short terminal
+    // scrolls to keep it in view.
+    let mut lines = Vec::new();
+    let mut focus = 0;
+    // Enter opens nothing in a row chunk or a file, so say why under the segment
+    // rather than leave it to be found out.
+    let closed = (!profile.segment_opens(plan)).then(|| {
+        let what = match grain {
+            QualityGrain::File => "a file",
+            _ => "a row chunk",
+        };
+        Line::styled(
+            fit(
+                &format!("  Rows do not open: {what} is not a value to filter on"),
+                width,
+            ),
+            Style::default().fg(theme.get("dimmed")),
+        )
+    });
+    for (row, fact) in &rows {
+        if fact.is_some() && *fact == selected {
+            focus = lines.len();
+        }
+        let mut row_lines = field_lines(std::slice::from_ref(row), label_width, width, true);
+        if fact.is_some() && *fact == selected {
+            for line in &mut row_lines {
+                if let Some(label) = line.spans.get_mut(2) {
+                    label.style = Style::default().fg(theme.get("accent"));
+                }
+            }
+        }
+        lines.extend(row_lines);
+        if row.label == "Segment" {
+            lines.extend(closed.clone());
+        }
+    }
+    let height = body.height as usize;
+    let offset = if lines.len() > height {
+        // Room for the count of what is below, and for the focused row; never
+        // past the last line, which would leave the bottom blank.
+        (focus + 2)
+            .saturating_sub(height.saturating_sub(1))
+            .min(lines.len() - height)
     } else {
         0
     };
-    let rows = results.temporal.iter().map(|profile| {
-        let interval = format!(
-            "{} -> {}",
-            profile.start_role.label(),
-            profile.end_role.label()
+    render_counted(lines.split_off(offset), body, theme, buf);
+}
+
+/// Which starts and ends are measured, chosen from every pair the assigned roles
+/// make, the suggested ones first. Space turns the pair under the cursor on or off.
+fn render_interval_pairs(
+    config: &DataQualityWidgetConfig<'_>,
+    table_state: &mut TableState,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let theme = config.theme;
+    let plan = config.plan;
+    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let [title, body] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .margin(1)
+        .areas(area);
+    let candidates = plan.candidate_pairs();
+    let chosen = plan.interval_pairs();
+    Paragraph::new(rule_line(
+        "Intervals",
+        Some(&format!(
+            "{} of {}",
+            numfmt::group_chrome(chosen.len()),
+            numfmt::group_chrome(candidates.len())
+        )),
+        title.width,
+        theme,
+    ))
+    .render(title, buf);
+    if candidates.is_empty() {
+        Paragraph::new(Span::styled(
+            "Assign two time roles first: an interval runs from one to the other",
+            dimmed,
+        ))
+        .wrap(Wrap { trim: true })
+        .render(body, buf);
+        return;
+    }
+    let g = glyphs::get();
+    let label_width = candidates
+        .iter()
+        .map(|pair| glyphs::display_width(&interval_label(*pair)))
+        .max()
+        .unwrap_or(0) as u16
+        + 2;
+    // The selector, the box, the label and the gaps between them come first.
+    let columns_width = (body.width as usize)
+        .saturating_sub(glyphs::display_width(g.selector) + 1 + label_width as usize + 2);
+    let rows = candidates.iter().map(|pair| {
+        let on = chosen.contains(pair);
+        let columns = format!(
+            "{} to {}",
+            plan.role_column(pair.0).unwrap_or_default(),
+            plan.role_column(pair.1).unwrap_or_default()
         );
-        Row::new(match layout {
-            2 => vec![
-                profile.segment.clone(),
-                interval,
-                numfmt::group_chrome(profile.evaluated_rows),
-                format!("{} / {}", profile.missing_start, profile.missing_end),
-                numfmt::group_chrome(profile.negative_count),
-                duration_label(profile.p50_seconds),
-                duration_label(profile.p90_seconds),
-                duration_label(profile.p95_seconds),
-                duration_label(profile.p99_seconds),
-                duration_label(profile.max_seconds),
-            ],
-            1 => vec![
-                profile.segment.clone(),
-                interval,
-                numfmt::group_chrome(profile.negative_count),
-                duration_label(profile.p50_seconds),
-                duration_label(profile.p95_seconds),
-            ],
-            _ => vec![
-                interval,
-                duration_label(profile.p50_seconds),
-                numfmt::group_chrome(profile.negative_count),
-            ],
-        })
+        Row::new(vec![
+            Cell::from(if on { g.checkbox_on } else { g.checkbox_off }),
+            Cell::from(interval_label(*pair)),
+            Cell::from(Span::styled(fit(&columns, columns_width), dimmed)),
+        ])
     });
-    let (headers, widths) = match layout {
-        2 => (
-            vec![
-                "Segment",
-                "Interval",
-                "Evaluated",
-                "Missing s/e",
-                "Negative",
-                "p50",
-                "p90",
-                "p95",
-                "p99",
-                "Max",
-            ],
-            vec![
-                Constraint::Length(20),
-                Constraint::Length(28),
-                Constraint::Length(12),
-                Constraint::Length(13),
-                Constraint::Length(10),
-                Constraint::Length(11),
-                Constraint::Length(11),
-                Constraint::Length(11),
-                Constraint::Length(11),
-                Constraint::Fill(1),
-            ],
-        ),
-        1 => (
-            vec!["Segment", "Interval", "Negative", "p50", "p95"],
-            vec![
-                Constraint::Length(22),
-                Constraint::Fill(1),
-                Constraint::Length(9),
-                Constraint::Length(9),
-                Constraint::Length(9),
-            ],
-        ),
-        _ => (
-            vec!["Interval", "p50", "Negative"],
-            vec![
-                Constraint::Fill(1),
-                Constraint::Length(9),
-                Constraint::Length(9),
-            ],
-        ),
-    };
-    // The trend table above owns the cursor; this one is read, not walked.
-    let table = Table::new(rows, widths)
-        .header(Row::new(headers).style(Style::default().fg(config.theme.get("dimmed"))));
-    Widget::render(table, sections[3], buf);
+    table_state.select(Some(
+        config.plan_field.min(candidates.len().saturating_sub(1)),
+    ));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(glyphs::display_width(g.checkbox_on).max(1) as u16),
+            Constraint::Length(label_width),
+            Constraint::Fill(1),
+        ],
+    )
+    .row_highlight_style(theme.highlight_style())
+    .highlight_symbol(g.selector);
+    StatefulWidget::render(table, body, buf, table_state);
 }
 
 /// Each column's measure across the segments as a line of bars, the rows each
@@ -2108,7 +2503,9 @@ fn render_trend_table(
     ))
     .render(title, buf);
     let mut facts = vec![format!(
-        "{first} to {last}, {} {unit}",
+        "{} to {}, {} {unit}",
+        segment_text(first),
+        segment_text(last),
         numfmt::group_chrome(results.segments.len())
     )];
     if per_bar > 1 {
@@ -2906,6 +3303,7 @@ mod tests {
                 metric: QualityMetric::NullRate,
                 column_index: 0,
                 segment_index: 0,
+                interval_index: 0,
                 segments_by_change: false,
                 page,
                 setup: SetupView::default(),
@@ -3267,5 +3665,437 @@ mod tests {
             rows.join("\n")
         );
         assert!(!rows.join("\n").contains("source read finishing"));
+    }
+}
+
+/// Intervals on screen: the report's list and one interval's detail, and what
+/// Setup says about roles and zones before a run.
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+    use crate::data_quality::{TemporalRoleAssignment, TimeInterpretation, TimeKind};
+    use polars::prelude::*;
+
+    const HOUR: i64 = 3_600_000_000;
+
+    /// Two days of sends and receipts, with a receipt missing, one early and one
+    /// over an hour; and validity periods, one open and one that ends first.
+    fn frame() -> LazyFrame {
+        let day = 1_704_067_200_000_000i64; // 2024-01-01
+        let sent = (0..8)
+            .map(|row| Some(day + (row / 4) * 24 * HOUR + row * HOUR))
+            .collect::<Vec<_>>();
+        let seen = sent
+            .iter()
+            .enumerate()
+            .map(|(row, at)| match row {
+                1 => None,
+                2 => at.map(|at| at - 60_000_000),
+                5 => at.map(|at| at + 2 * HOUR),
+                _ => at.map(|at| at + 600_000_000),
+            })
+            .collect::<Vec<_>>();
+        let datetimes = |name: &str, values: Vec<Option<i64>>| -> Column {
+            Series::new(name.into(), values)
+                .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+                .unwrap()
+                .into()
+        };
+        let days = |name: &str, values: [Option<i32>; 8]| -> Column {
+            Series::new(name.into(), values)
+                .cast(&DataType::Date)
+                .unwrap()
+                .into()
+        };
+        DataFrame::new(
+            8,
+            vec![
+                datetimes("sent", sent),
+                datetimes("seen", seen),
+                Column::new("stamp".into(), vec!["2024-01-01T00:10:00Z"; 8]),
+                days("from", [Some(19_723); 8]),
+                days(
+                    "to",
+                    [
+                        Some(19_730),
+                        None,
+                        Some(19_720),
+                        Some(19_730),
+                        Some(19_730),
+                        Some(19_730),
+                        Some(19_730),
+                        Some(19_723),
+                    ],
+                ),
+            ],
+        )
+        .unwrap()
+        .lazy()
+    }
+
+    fn role(role: TemporalRole, column: &str) -> TemporalRoleAssignment {
+        TemporalRoleAssignment {
+            role,
+            column: column.to_string(),
+            timezone: None,
+        }
+    }
+
+    struct Screen {
+        state: DataTableState,
+        plan: DataQualityPlan,
+        /// What Setup offers roles: the frame's date and time columns, and text.
+        candidates: Vec<String>,
+        results: DataQualityResults,
+        theme: Theme,
+        ctx: RenderContext,
+    }
+
+    impl Screen {
+        fn new(plan: DataQualityPlan) -> Self {
+            let lf = frame();
+            let schema = Arc::new((*lf.clone().collect_schema().unwrap()).clone());
+            let state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                lf.clone(),
+                &crate::OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            let results =
+                crate::data_quality::compute_data_quality(&lf, Some(8), &plan, None, false)
+                    .unwrap();
+            Self {
+                state,
+                plan,
+                candidates: ["sent", "seen", "from", "to", "stamp"]
+                    .map(String::from)
+                    .to_vec(),
+                results,
+                theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
+                ctx: RenderContext::for_test(),
+            }
+        }
+
+        fn studied() -> Self {
+            Self::new(DataQualityPlan {
+                compute: QualityCompute::Full,
+                temporal_roles: vec![
+                    role(TemporalRole::Event, "sent"),
+                    role(TemporalRole::Received, "seen"),
+                    role(TemporalRole::ValidFrom, "from"),
+                    role(TemporalRole::ValidTo, "to"),
+                ],
+                latency_threshold_seconds: Some(3_600),
+                grain: QualityGrain::TimeWindows {
+                    column: "sent".to_string(),
+                    every: "1d".to_string(),
+                },
+                ..DataQualityPlan::default()
+            })
+        }
+
+        fn draw(
+            &self,
+            page: QualityPage,
+            interval: usize,
+            selected: usize,
+            size: (u16, u16),
+        ) -> String {
+            let config = DataQualityWidgetConfig {
+                checks_expanded: false,
+                state: &self.state,
+                plan: &self.plan,
+                measured: &self.plan,
+                results: Some(&self.results),
+                from_cache: false,
+                metric: QualityMetric::NullRate,
+                column_index: 0,
+                segment_index: 0,
+                interval_index: interval,
+                segments_by_change: false,
+                page,
+                setup: SetupView {
+                    time_candidates: &self.candidates,
+                    ..SetupView::default()
+                },
+                plan_field: selected,
+                show_access: false,
+                observation_detail: false,
+                confirm_run: false,
+                focus: AnalysisFocus::Main,
+                theme: &self.theme,
+                ctx: &self.ctx,
+            };
+            let (width, height) = size;
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            let mut table = TableState::default();
+            table.select(Some(selected));
+            let mut sidebar = TableState::default();
+            render(
+                config,
+                &mut table,
+                &mut sidebar,
+                &mut DetailScroll::default(),
+                area,
+                &mut buf,
+            );
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+
+    /// Every character outside ASCII is a glyph slot, which `LANG=C` swaps for its
+    /// ASCII twin.
+    fn assert_glyph_slots(text: &str) {
+        let g = glyphs::get();
+        let slots = [
+            g.rail,
+            g.rule_h,
+            g.rule_h_focused,
+            g.middot,
+            g.ellipsis,
+            g.selector,
+            g.checkbox_on,
+            g.checkbox_off,
+        ]
+        .concat();
+        for c in text.chars().filter(|c| !c.is_ascii()) {
+            assert!(
+                slots.contains(c) || "╭╮╰╯│─".contains(c),
+                "{c:?} is not a glyph slot:\n{text}"
+            );
+        }
+    }
+
+    /// The list says what its last column counts and out of what; each row names
+    /// its interval and segment where there is room, and the selected row has the
+    /// selector at every size.
+    #[test]
+    fn the_interval_list_fits_80x24_and_60x20() {
+        let screen = Screen::studied();
+        let intervals = &screen.results.temporal;
+        assert_eq!(intervals.len(), 4, "two intervals over two days");
+        for size in [(120, 32), (80, 24), (60, 20)] {
+            for (selected, interval) in intervals.iter().enumerate() {
+                let text = screen.draw(QualityPage::Intervals, 0, selected, size);
+                assert!(text.contains("Time between dates"), "{text}");
+                assert!(
+                    text.contains("Over: duration > 1 hour, of rows with both ends"),
+                    "{size:?}: {text}"
+                );
+                let row = text
+                    .lines()
+                    .find(|line| line.contains(glyphs::get().selector))
+                    .unwrap_or_else(|| panic!("a selected row at {size:?}:\n{text}"));
+                // In full, or cut with an ellipsis where the width runs out.
+                let label = interval.label();
+                assert!(
+                    row.contains(&label)
+                        || row.contains(&label[..12]) && row.contains(glyphs::get().ellipsis),
+                    "{size:?}: {row}"
+                );
+                if size.0 >= 80 {
+                    assert!(row.contains(&interval.segment), "{row}");
+                }
+                assert_glyph_slots(&text);
+            }
+        }
+        // Wide enough, the list adds the denominator and each end's missing count.
+        let wide = screen.draw(QualityPage::Intervals, 0, 0, (160, 32));
+        assert!(
+            wide.contains("Both ends") && wide.contains("Missing s/e"),
+            "{wide}"
+        );
+    }
+
+    /// An interval's detail at 80x24 holds every count at once; at 60x20 it scrolls
+    /// to the count under the cursor. Missing ends, unread text and negative
+    /// durations are rows of their own, and each count says what it is out of.
+    #[test]
+    fn an_interval_detail_keeps_every_count_at_80x24_and_60x20() {
+        let screen = Screen::studied();
+        let first = &screen.results.temporal[0];
+        assert_eq!(first.label(), "event to received");
+        assert_eq!(
+            (first.evaluated_rows, first.paired_rows, first.missing_end),
+            (4, 3, 1)
+        );
+        let labels = [
+            "Start",
+            "End",
+            "Segment",
+            "Rows",
+            "Both ends",
+            "Missing start",
+            "Missing end",
+            "Negative",
+            "Zero",
+            "p50, p90",
+            "p95, p99",
+            "Maximum",
+            "Threshold",
+            "Over 1 hour",
+        ];
+        let text = screen.draw(QualityPage::IntervalDetail, 0, 0, (80, 24));
+        for label in labels {
+            assert!(text.contains(label), "{label}:\n{text}");
+        }
+        assert!(
+            text.contains("3 of 4 (75.0%)"),
+            "both ends out of rows:\n{text}"
+        );
+        assert!(
+            text.contains("1 of 3 (33.3%) with both ends"),
+            "negative out of both ends:\n{text}"
+        );
+        assert!(text.contains("duration > 1 hour, strictly"), "{text}");
+        assert!(!text.contains("more"), "nothing cut at 80x24:\n{text}");
+        let facts = IntervalFact::ALL
+            .into_iter()
+            .filter(|fact| first.count(*fact, &screen.plan).is_some())
+            .collect::<Vec<_>>();
+        // 60x17 is what a 60x20 terminal leaves the page under its bars.
+        for size in [(80, 24), (60, 20), (60, 17)] {
+            for (selected, fact) in facts.iter().enumerate() {
+                let text = screen.draw(QualityPage::IntervalDetail, 0, selected, size);
+                let rail = format!("{} {}", glyphs::get().rail, fact.label(first));
+                assert!(
+                    text.contains(&rail),
+                    "{fact:?} under the cursor at {size:?}:\n{text}"
+                );
+                assert_glyph_slots(&text);
+                // Scrolled, the page ends on its last line or the count of what
+                // is below, never on blank lines.
+                if !text.contains("Start") {
+                    let lines = text.lines().collect::<Vec<_>>();
+                    let last = lines.iter().rposition(|line| !line.trim().is_empty());
+                    assert_eq!(last, Some(lines.len() - 2), "{fact:?}:\n{text}");
+                }
+            }
+        }
+    }
+
+    /// Where Enter cannot help, the page says why: a report of file metadata reads
+    /// no times, and a row chunk's rows are not a value a count can open.
+    #[test]
+    fn intervals_say_why_nothing_opens() {
+        let roles = vec![
+            role(TemporalRole::Event, "sent"),
+            role(TemporalRole::Received, "seen"),
+        ];
+        let screen = Screen::new(DataQualityPlan {
+            compute: QualityCompute::Metadata,
+            temporal_roles: roles.clone(),
+            ..DataQualityPlan::default()
+        });
+        assert!(screen.results.temporal.is_empty());
+        let text = screen.draw(QualityPage::Intervals, 0, 0, (80, 24));
+        assert!(
+            text.contains("File metadata only reads no values"),
+            "{text}"
+        );
+
+        let screen = Screen::new(DataQualityPlan {
+            compute: QualityCompute::Full,
+            temporal_roles: roles,
+            grain: QualityGrain::RowChunks(4),
+            ..DataQualityPlan::default()
+        });
+        for size in [(80, 24), (60, 20)] {
+            let text = screen.draw(QualityPage::IntervalDetail, 0, 0, size);
+            assert!(text.contains("Rows do not open: a row chunk"), "{text}");
+        }
+    }
+
+    /// Windowing intervals by their ends groups once per end column, and on a full
+    /// scan Setup says how many of its passes that is before Run.
+    #[test]
+    fn setup_counts_the_passes_a_window_clock_takes() {
+        let mut plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            temporal_roles: vec![
+                role(TemporalRole::Event, "sent"),
+                role(TemporalRole::Received, "seen"),
+                role(TemporalRole::Processed, "to"),
+            ],
+            grain: QualityGrain::TimeWindows {
+                column: "sent".to_string(),
+                every: "1d".to_string(),
+            },
+            interval_clock: IntervalClock::End,
+            ..DataQualityPlan::default()
+        };
+        let text = Screen::new(plan.clone()).draw(QualityPage::Setup, 0, 0, (120, 40));
+        assert!(
+            text.contains("Window by each interval's end: 2 of those passes for intervals"),
+            "{text}"
+        );
+        plan.interval_clock = IntervalClock::Grain;
+        let text = Screen::new(plan).draw(QualityPage::Setup, 0, 0, (120, 40));
+        assert!(!text.contains("of those passes for intervals"), "{text}");
+    }
+
+    /// Valid from to valid to is a validity period: no end is open, an end before
+    /// the start ends first.
+    #[test]
+    fn a_validity_period_reads_as_one() {
+        let screen = Screen::studied();
+        let index = screen
+            .results
+            .temporal
+            .iter()
+            .position(|interval| interval.is_validity())
+            .unwrap();
+        let text = screen.draw(QualityPage::IntervalDetail, index, 0, (80, 24));
+        assert!(text.contains("Open, no end"), "{text}");
+        assert!(text.contains("Ends first"), "{text}");
+        assert!(!text.contains("Negative"), "{text}");
+    }
+
+    /// Before a run, Setup names roles no interval uses and says how a time with
+    /// no zone meets one with an offset; the pairs editor lists every start and end.
+    #[test]
+    fn setup_names_unpaired_roles_and_how_zones_compare() {
+        let screen = Screen::new(DataQualityPlan {
+            temporal_roles: vec![
+                role(TemporalRole::Event, "sent"),
+                role(TemporalRole::Received, "stamp"),
+                role(TemporalRole::Created, "from"),
+            ],
+            time_formats: vec![TimeInterpretation {
+                column: "stamp".to_string(),
+                kind: TimeKind::Datetime,
+                format: "%Y-%m-%dT%H:%M:%S%.f%#z".to_string(),
+            }],
+            ..DataQualityPlan::default()
+        });
+        let text = screen.draw(QualityPage::Setup, 0, 0, (120, 32));
+        assert!(
+            text.contains("In no interval: created. Choose a start and end under Intervals"),
+            "{text}"
+        );
+        assert!(text.contains("No time zone, read as UTC: sent"), "{text}");
+        assert!(text.contains("event to received"), "{text}");
+
+        let text = screen.draw(QualityPage::IntervalPairs, 0, 0, (80, 24));
+        assert!(text.contains("Intervals  1 of 6"), "{text}");
+        let g = glyphs::get();
+        assert!(
+            text.contains(&format!("{} event to received", g.checkbox_on)),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{} created to event", g.checkbox_off)),
+            "{text}"
+        );
+        assert_glyph_slots(&text);
     }
 }

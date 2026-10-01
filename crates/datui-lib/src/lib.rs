@@ -8630,7 +8630,34 @@ impl App {
             finding.title,
             quality_report::columns_label(&finding.columns, 40)
         );
-        if finding.opens_sample(results) {
+        let sampled = finding.opens_sample(results);
+        self.show_quality_rows(predicate, label, sampled, by_files)
+    }
+
+    /// The rows an interval's count under the cursor counted: from the sample the
+    /// run read, cut in memory when it is still kept, or from the scope on an exact
+    /// run. Nothing opens for a count of none.
+    fn open_interval_evidence(&mut self) -> Option<AppEvent> {
+        let (predicate, label) = self.analysis_modal.interval_evidence()?;
+        let sampled = self
+            .analysis_modal
+            .data_quality_results
+            .as_ref()
+            .is_some_and(|results| results.precision == data_quality::QualityPrecision::Sampled);
+        self.show_quality_rows(predicate, label, sampled, None)
+    }
+
+    /// Open rows a Data Quality result counted, labeled: the sample's when the result
+    /// is a sample's, and otherwise the scope's (or `files`, when the rows are the
+    /// ones those files hold).
+    fn show_quality_rows(
+        &mut self,
+        predicate: polars::prelude::Expr,
+        label: String,
+        sampled: bool,
+        files: Option<data_quality::QualityScope>,
+    ) -> Option<AppEvent> {
+        if sampled {
             let sample = self
                 .analysis_modal
                 .data_quality_last_plan
@@ -8640,7 +8667,7 @@ impl App {
             return self.read_sample_rows(sample, Some((predicate, format!("{label} / sampled"))));
         }
         let state = self.data_table_state.as_ref()?;
-        let scope = by_files.as_ref().unwrap_or_else(|| {
+        let scope = files.as_ref().unwrap_or_else(|| {
             self.analysis_modal
                 .data_quality_last_plan
                 .as_ref()
@@ -8780,6 +8807,21 @@ impl App {
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal
                         .set_quality_page(data_quality::QualityPage::TimeRoles);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            SetupRow::Intervals => {
+                // Two assigned roles make the first pair to choose.
+                if !self
+                    .analysis_modal
+                    .data_quality_plan
+                    .candidate_pairs()
+                    .is_empty()
+                {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::IntervalPairs);
                     self.analysis_modal.data_quality_plan_field = 0;
                 }
             }
@@ -9531,7 +9573,7 @@ impl App {
         modal.data_quality_picker = None;
         if modal.data_quality_results.is_some() {
             let back = match modal.data_quality_setup_return {
-                QualityPage::Setup | QualityPage::TimeRoles => QualityPage::Overview,
+                page if page.is_setup() => QualityPage::Overview,
                 page => page,
             };
             modal.set_quality_page(back);
@@ -9595,7 +9637,7 @@ impl App {
             && modal.data_quality_last_plan.as_ref() == Some(&modal.data_quality_plan)
         {
             let back = match modal.data_quality_setup_return {
-                QualityPage::Setup | QualityPage::TimeRoles => QualityPage::Overview,
+                page if page.is_setup() => QualityPage::Overview,
                 page => page,
             };
             modal.set_quality_page(back);
@@ -16979,6 +17021,54 @@ impl App {
                     }
                     return None;
                 }
+                // The pairs editor owns the keys: which pair, and whether it is measured.
+                if self.analysis_modal.data_quality_page == QualityPage::IntervalPairs
+                    && event.code != KeyCode::Char('?')
+                {
+                    let pairs = self.analysis_modal.data_quality_plan.candidate_pairs();
+                    let field = self
+                        .analysis_modal
+                        .data_quality_plan_field
+                        .min(pairs.len().saturating_sub(1));
+                    match event.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            if event.code == KeyCode::Esc
+                                && let Some(plan) =
+                                    self.analysis_modal.data_quality_plan_before_edit.take()
+                            {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.analysis_modal.data_quality_setup_note = None;
+                            self.analysis_modal.set_quality_page(QualityPage::Setup);
+                            self.analysis_modal.data_quality_plan_field =
+                                analysis_modal::SetupRow::Intervals.index();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 1).min(pairs.len().saturating_sub(1));
+                        }
+                        KeyCode::Home => self.analysis_modal.data_quality_plan_field = 0,
+                        KeyCode::End => {
+                            self.analysis_modal.data_quality_plan_field =
+                                pairs.len().saturating_sub(1);
+                        }
+                        KeyCode::Char(' ')
+                        | KeyCode::Left
+                        | KeyCode::Char('h')
+                        | KeyCode::Right
+                        | KeyCode::Char('l') => {
+                            if let Some(pair) = pairs.get(field) {
+                                self.analysis_modal.data_quality_plan.toggle_interval(*pair);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return None;
+                }
                 // Setup is edited where it stands: ↑↓ or Tab the row, ←→ a short
                 // list's choice, Space the row's editor, Enter runs from any row, and
                 // Esc discards every staged edit.
@@ -17027,7 +17117,8 @@ impl App {
                                 SetupRow::Grain
                                 | SetupRow::Compare
                                 | SetupRow::Values
-                                | SetupRow::Latency => {
+                                | SetupRow::Latency
+                                | SetupRow::WindowBy => {
                                     let context = self.quality_plan_context();
                                     self.analysis_modal.data_quality_setup_note = None;
                                     self.analysis_modal
@@ -17093,6 +17184,12 @@ impl App {
                         return None;
                     }
                     KeyCode::Esc
+                        if self.analysis_modal.data_quality_page == QualityPage::IntervalDetail =>
+                    {
+                        self.analysis_modal.close_interval_detail();
+                        return None;
+                    }
+                    KeyCode::Esc
                         if self.analysis_modal.data_quality_page == QualityPage::Detail =>
                     {
                         self.analysis_modal
@@ -17111,7 +17208,7 @@ impl App {
                     }
                     // The report's tabs; Setup is left with Enter or Esc, so a draft is
                     // never left staged behind a report page.
-                    KeyCode::Char(digit @ '1'..='4')
+                    KeyCode::Char(digit @ '1'..='5')
                         if !self.analysis_modal.data_quality_page.is_setup() =>
                     {
                         let tab = digit as usize - '1' as usize;
@@ -17195,6 +17292,9 @@ impl App {
                                 data_quality::QualitySetup::TimeRoles => {
                                     analysis_modal::SetupRow::TimeRoles
                                 }
+                                data_quality::QualitySetup::Intervals => {
+                                    analysis_modal::SetupRow::Intervals
+                                }
                             }
                             .index();
                             return self.open_setup_row();
@@ -17222,6 +17322,12 @@ impl App {
                             == QualityPage::SegmentDetail
                         {
                             self.analysis_modal.close_segment_detail();
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Intervals {
+                            self.analysis_modal.open_interval_detail();
+                        } else if self.analysis_modal.data_quality_page
+                            == QualityPage::IntervalDetail
+                        {
+                            return self.open_interval_evidence();
                         }
                         return None;
                     }

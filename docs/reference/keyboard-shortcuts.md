@@ -204,21 +204,22 @@ In Data Quality Setup:
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values or Latency in place; on another row, <kbd>→</kbd> opens it |
-| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
+| <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values, Latency over or Window by in place; on another row, <kbd>→</kbd> opens it |
+| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles or Intervals editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> | Run, from any row: the one key in Setup that reads. A full scan asks first; while a cancelled read finishes, Run waits and Setup says why |
 | <kbd>Esc</kbd> | Discard every staged change and go back to the report, or to the tool list before the first run |
 | In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date, time or text column there is nothing to assign, and the row says so |
+| In the Intervals editor | <kbd>↑</kbd> <kbd>↓</kbd> pick a start and end, <kbd>Space</kbd> (or <kbd>←</kbd> <kbd>→</kbd>) measure it or not, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. Needs two assigned roles |
 
 In the Data Quality report:
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends |
-| <kbd>1</kbd>–<kbd>4</kbd> | Open Overview (the report), Columns, Segments, or Trends directly |
-| <kbd>Enter</kbd> | Open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments or Trends page, open the Setup row that fills it |
+| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) | Previous or next page: Overview, Columns, Segments, Trends, Intervals |
+| <kbd>1</kbd>–<kbd>5</kbd> | Open Overview (the report), Columns, Segments, Trends, or Intervals directly |
+| <kbd>Enter</kbd> | Open a finding, show its rows (the sample's, on a sampled run), show all checks on the clean entry, or close an open popup. On an empty Segments, Trends or Intervals page, open the Setup row that fills it |
 | <kbd>e</kbd> | Open Setup |
 | <kbd>s</kbd> | Open Setup with the Sample form over it |
 | <kbd>v</kbd> | Show the sample's rows, the ones Data Quality reads, in the table viewer |
@@ -226,12 +227,13 @@ In the Data Quality report:
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> on a column | Open its detail: its findings, then what was measured; <kbd>Enter</kbd> again returns to the list |
 | <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
+| <kbd>Enter</kbd> on an interval | Open its detail: ends, rows with both, missing and unread ends, negative and zero durations, percentiles, breaches; <kbd>↑</kbd> <kbd>↓</kbd> move between the counts and <kbd>Enter</kbd> shows the rows behind one (the kept sample's, on a sampled run) |
 | <kbd>o</kbd> | In Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | In Trends, choose the measure the table draws |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | On a sampled report, run again with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, a column's or a segment's detail back to its list, an evidence drill back to the report, then Analysis itself. While a run reads, cancel it |
+| <kbd>Esc</kbd> | Back out one layer: a popup, a column's, a segment's or an interval's detail back to its list, an evidence drill back to the report, then Analysis itself. While a run reads, cancel it |
 
 ## Pivot and melt
 

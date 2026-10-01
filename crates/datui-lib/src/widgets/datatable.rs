@@ -614,11 +614,7 @@ impl FillPlan {
             keep_start = total - max_rows;
         }
         let kept = max_rows.min(total - keep_start);
-        let df = match seam.filter(|&seam| keep_start < seam && seam < keep_start + kept) {
-            Some(seam) => trim_across(df, keep_start, kept, seam),
-            None => trim_rows(df, keep_start, kept),
-        };
-        (df, start + keep_start)
+        (trim_rows(df, keep_start, kept, seam), start + keep_start)
     }
 }
 
@@ -868,31 +864,18 @@ fn estimate_bytes_per_row(
 }
 
 /// The rows `[offset, offset + len)` of `df`, copied when a slice of them would keep
-/// much more allocated than they are.
+/// much more allocated than they are. A `seam` inside them, where a stitch joined two
+/// fills, stays a chunk boundary (see [`compact_rows`]).
 ///
 /// A slice keeps every chunk it touches. A fill read in many chunks (a Parquet or CSV
 /// scan) lets the rest go with a slice alone; one read in a single chunk, a stitched
 /// union or a string column sharing its parent's data would keep the whole fill. A
 /// chunk that is itself a slice of more is not seen through.
-fn trim_rows(df: DataFrame, offset: usize, len: usize) -> DataFrame {
+fn trim_rows(df: DataFrame, offset: usize, len: usize, seam: Option<usize>) -> DataFrame {
     if backing_rows(&df, offset, len) > len + len / 4 {
-        compact_rows(&df, offset, len)
+        compact_rows(df, offset, len, seam)
     } else {
         df.slice(offset as i64, len)
-    }
-}
-
-/// As [`trim_rows`], for rows of a stitch that cross its `seam`: when they are copied,
-/// the rows either side of it are copied apart, so the seam stays a chunk boundary and
-/// a later cut down to one side (`holds_buffer`) is a slice that lets the other go.
-fn trim_across(df: DataFrame, offset: usize, len: usize, seam: usize) -> DataFrame {
-    if backing_rows(&df, offset, len) <= len + len / 4 {
-        return df.slice(offset as i64, len);
-    }
-    let mut kept = compact_rows(&df, offset, seam - offset);
-    match kept.vstack_mut(&compact_rows(&df, seam, offset + len - seam)) {
-        Ok(_) => kept,
-        Err(_) => compact_rows(&df, offset, len),
     }
 }
 
@@ -919,35 +902,56 @@ fn backing_rows(df: &DataFrame, offset: usize, len: usize) -> usize {
         .unwrap_or(len)
 }
 
-/// The rows `[offset, offset + len)` of `df` in storage of their own, one chunk a column.
+/// The rows `[offset, offset + len)` of `df` in storage of their own: one chunk a
+/// column, or two when `seam` falls inside them, so a later cut down to one side of a
+/// stitch (`holds_buffer`) is a slice that lets the other side go.
 ///
 /// A slice keeps the whole of its parent allocated, and neither `rechunk` (a lone chunk
 /// is left as it is) nor `take` (a string column keeps its parent's data buffers) is
 /// sure to let go of it. Polars' builders with `ShareStrategy::Never` copy every
 /// physical type, nested children and string bytes included. A constant column stays
 /// one value: built out, it would be a copy of the value per row.
-fn compact_rows(df: &DataFrame, offset: usize, len: usize) -> DataFrame {
+///
+/// Each column of `df` is let go of once it is copied, so the copy costs about one
+/// column's kept rows over `df` rather than all of them. On the collect worker the
+/// rows on screen are still held meanwhile (#483).
+fn compact_rows(df: DataFrame, offset: usize, len: usize, seam: Option<usize>) -> DataFrame {
     use polars::series::builder::SeriesBuilder;
     use polars_arrow::array::builder::ShareStrategy;
     #[cfg(test)]
     tests::COMPACTIONS.with(|count| count.set(count.get() + 1));
     let len = len.min(df.height().saturating_sub(offset));
+    let pieces = match seam.filter(|&seam| offset < seam && seam < offset + len) {
+        Some(seam) => vec![(offset, seam - offset), (seam, offset + len - seam)],
+        None => vec![(offset, len)],
+    };
+    let copy = |series: &Series, (offset, len): (usize, usize)| {
+        let mut builder = SeriesBuilder::new(series.dtype().clone());
+        builder.reserve(len);
+        builder.subslice_extend(series, offset, len, ShareStrategy::Never);
+        builder.freeze(series.name().clone())
+    };
     let columns = df
-        .columns()
-        .iter()
+        .into_columns()
+        .into_iter()
         .map(|column| match column {
             Column::Scalar(constant) => {
-                Column::new_scalar(column.name().clone(), constant.scalar().clone(), len)
+                Column::new_scalar(constant.name().clone(), constant.scalar().clone(), len)
             }
             Column::Series(series) => {
-                let mut builder = SeriesBuilder::new(series.dtype().clone());
-                builder.reserve(len);
-                builder.subslice_extend(series, offset, len, ShareStrategy::Never);
-                builder.freeze(series.name().clone()).into_column()
+                let mut kept = copy(&series, pieces[0]);
+                for &piece in &pieces[1..] {
+                    if kept.append_owned(copy(&series, piece)).is_err() {
+                        kept = copy(&series, (offset, len));
+                        break;
+                    }
+                }
+                kept.into_column()
             }
         })
         .collect();
-    DataFrame::new(len, columns).unwrap_or_else(|_| df.slice(offset as i64, len))
+    // Cannot fail: the names are one frame's and every column was built to `len` rows.
+    DataFrame::new(len, columns).unwrap_or_else(|_| DataFrame::empty_with_height(len))
 }
 
 /// Shrink `[buffer_start, buffer_end)` to at most `max_len` rows, kept around the view
@@ -5017,7 +5021,7 @@ impl DataTableState {
             self.buffered_df = self
                 .buffered_df
                 .take()
-                .map(|b| trim_rows(b, offset, end - start));
+                .map(|b| trim_rows(b, offset, end - start, None));
             self.buffered_start_row = start;
             self.buffered_end_row = end;
         }
@@ -12249,7 +12253,7 @@ mod tests {
             "a lone chunk rechunked is still the slice"
         );
 
-        let kept = compact_rows(&source, 1_000, 1_000);
+        let kept = compact_rows(source.clone(), 1_000, 1_000, None);
         assert!(!shares_storage(&kept, &source));
         assert!(kept.equals_missing(&slice));
         assert_eq!(kept.schema(), source.schema());
@@ -12262,21 +12266,33 @@ mod tests {
                 .unwrap();
         }
         let chunk = |i: usize| chunked.slice(i as i64 * 1_000, 1_000);
-        let sliced = trim_rows(chunked.clone(), 1_000, 2_000);
+        let sliced = trim_rows(chunked.clone(), 1_000, 2_000, None);
         assert!(shares_storage(&sliced, &chunk(1)) && shares_storage(&sliced, &chunk(2)));
         assert!(!shares_storage(&sliced, &chunk(0)) && !shares_storage(&sliced, &chunk(3)));
-        let copied = trim_rows(chunked.clone(), 1_500, 1_000);
+        let copied = trim_rows(chunked.clone(), 1_500, 1_000, None);
         assert!((0..4).all(|i| !shares_storage(&copied, &chunk(i))));
         assert!(copied.equals_missing(&chunked.slice(1_500, 1_000)));
 
-        // Two chunks: rows from one of them, and rows across both.
+        // Two chunks: rows from one of them, and rows across both. Across a seam, the
+        // rows either side of it are copied apart.
         let mut stitched = mixed_frame(0, 3_000);
         stitched.vstack_mut(&mixed_frame(3_000, 6_000)).unwrap();
         for (offset, len) in [(3_500, 1_000), (2_500, 1_000), (0, 6_000)] {
-            let kept = compact_rows(&stitched, offset, len);
-            assert!(!shares_storage(&kept, &stitched), "{offset}+{len}");
-            assert!(kept.equals_missing(&stitched.slice(offset as i64, len)));
-            assert_eq!(kept.first_col_n_chunks(), 1);
+            for seam in [None, Some(3_000)] {
+                let kept = compact_rows(stitched.clone(), offset, len, seam);
+                assert!(!shares_storage(&kept, &stitched), "{offset}+{len}");
+                assert!(kept.equals_missing(&stitched.slice(offset as i64, len)));
+                assert_eq!(kept.schema(), stitched.schema());
+                let across = seam.is_some() && offset < 3_000 && 3_000 < offset + len;
+                let chunks = if across { 2 } else { 1 };
+                assert!(
+                    kept.columns()
+                        .iter()
+                        .filter_map(Column::as_series)
+                        .all(|s| s.n_chunks() == chunks),
+                    "{offset}+{len} {seam:?}"
+                );
+            }
         }
 
         // A constant column is cut to length, not written out a row at a time.
@@ -12290,7 +12306,7 @@ mod tests {
             with_constant.column("constant").unwrap(),
             Column::Scalar(_)
         ));
-        let kept = compact_rows(&with_constant, 500, 1_000);
+        let kept = compact_rows(with_constant.clone(), 500, 1_000, None);
         let Column::Scalar(cut) = kept.column("constant").unwrap() else {
             panic!("the constant column was built out");
         };

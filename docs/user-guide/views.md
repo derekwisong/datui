@@ -13,8 +13,9 @@ Central Park's daily highs, in NOAA's public weather data, for 2024 and then
    weather (GHCN-D)**, <kbd>→</kbd> on `by_year` and on `YEAR=2024`, then
    <kbd>Enter</kbd> on `ELEMENT=TMAX`. Typing narrows each list.
 2. Run the [station query](remote-data.md#examples-on-public-data): 366 rows.
-3. Press <kbd>v</kbd>, then <kbd>s</kbd>. Name it `Central Park highs` and
-   press <kbd>Enter</kbd> to save.
+3. Press <kbd>v</kbd>, then <kbd>s</kbd>. The name starts as the directory's,
+   `ELEMENT=TMAX`: press <kbd>Ctrl</kbd>+<kbd>U</kbd> to clear it, type
+   `Central Park highs` and press <kbd>Enter</kbd> to save.
 4. Open `YEAR=2023/ELEMENT=TMAX/` the same way. Press <kbd>v</kbd>: the view is
    listed with Match `same columns`. Press <kbd>Enter</kbd>.
 

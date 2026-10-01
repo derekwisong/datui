@@ -45,8 +45,9 @@ ORDER BY hour
 ```
 
 Statements are split over lines here to read; type them on one line, or press
-<kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line. 19 rows, one per scheduled hour. The mean delay climbs from 0.5 minutes at
-5:00 to 26.1 at 21:00. In q-style the same query is one line:
+<kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line. 19 rows, one per scheduled
+hour. The mean delay climbs from 0.5 minutes at 5:00 to 26.1 at 21:00. In
+q-style the same query is one line:
 
 ```text
 select mean_delay: avg dep_delay, flights: count dep_delay by hour where origin = "JFK"

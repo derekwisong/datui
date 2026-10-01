@@ -2170,13 +2170,18 @@ fn render_trends(
         config.theme,
     ))
     .render(title, buf);
-    Paragraph::new(
+    let mut text = vec![Line::raw(
         "Set Grain in Setup (e) to a partition column, to days, weeks or months of a \
          date, or to chunks of rows, to follow each column from one to the next.",
-    )
-    .wrap(Wrap { trim: true })
-    .style(Style::default().fg(config.theme.get("text_primary")))
-    .render(body, buf);
+    )];
+    // One window found is no trend, but the windows expected around it still are.
+    if let Some(gaps) = crate::quality_trends::expected_gaps(config.plan, results) {
+        text.extend([Line::raw(""), Line::raw(gaps_summary(config.plan, &gaps))]);
+    }
+    Paragraph::new(text)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(config.theme.get("text_primary")))
+        .render(body, buf);
 }
 
 /// `count` of `of`, with its rate when there is one: `2 of 5 (40.0%)`.
@@ -5519,5 +5524,37 @@ mod trend_tests {
         assert!(second.contains("Previous bar"), "{second}");
         assert!(second.contains("+0.0 points: not judged"), "{second}");
         assert!(second.contains("none: a distinct share"), "{second}");
+    }
+
+    /// One day found is no trend, but the week expected around it still has its
+    /// gaps: Trends sums them up beside the way to a grain.
+    #[test]
+    fn one_window_found_still_sums_up_the_expected_ones() {
+        let mut screen = Screen::sampled();
+        screen.plan = DataQualityPlan {
+            compute: crate::data_quality::QualityCompute::Full,
+            expected: Some(ExpectedWindows {
+                weekdays: false,
+                from: Some("2024-01-01".to_string()),
+                before: Some("2024-01-08".to_string()),
+            }),
+            ..screen.plan.clone()
+        };
+        let one_day = frame().filter(
+            col("day")
+                .cast(DataType::Int32)
+                .eq(polars::prelude::lit(19_724)),
+        );
+        screen.results = compute_data_quality(&one_day, None, &screen.plan, None, false).unwrap();
+        assert!(!crate::data_quality::shows_trend(
+            &screen.plan,
+            &screen.results
+        ));
+        let text = screen.draw(QualityPage::Trends, 0, 0, (80, 24));
+        assert!(text.contains("Set Grain"), "{text}");
+        assert!(
+            text.contains("Expected every day, 7 days: 6 empty"),
+            "{text}"
+        );
     }
 }

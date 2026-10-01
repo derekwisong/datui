@@ -431,6 +431,8 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             own.extend(trend_keys(modal));
         }
         QualityPage::Gaps => own.push(("Enter", "Trends")),
+        // No trend to draw, but expected windows to list.
+        QualityPage::Trends => own.extend(trend_keys(modal)),
         QualityPage::Intervals if results.is_some_and(|results| !results.temporal.is_empty()) => {
             own.push(("Enter", "Details"));
         }

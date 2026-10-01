@@ -517,6 +517,105 @@ pub struct CollectRequest {
     /// Whether `num_rows` is the true total. False for a first buffer rendered before
     /// the background `len()` count has resolved; in that case `num_rows` is provisional.
     pub count_known: bool,
+    /// How the worker fits the rows it reads to the buffer: [`FillPlan::fit`].
+    pub plan: FillPlan,
+}
+
+/// What the worker that reads a fill needs to make it the buffer: the rows on hand it
+/// runs on from or up to, the view, and the caps, as they were when it was planned.
+///
+/// A trim copies the rows it keeps when a slice would keep the fill allocated behind
+/// them (see [`trim_rows`]): up to the byte budget, too long for the UI thread (#483).
+/// The worker does it, and `apply_async_collect` installs what it hands back as it is.
+pub struct FillPlan {
+    buffer_start: usize,
+    buffer_end: usize,
+    num_rows: usize,
+    count_known: bool,
+    /// The rows on hand and their first row, when the fill is planned to be stitched
+    /// on to them. Shared, not copied.
+    held: Option<(DataFrame, usize)>,
+    view_start: usize,
+    view_len: usize,
+    max_rows: usize,
+    max_mb: usize,
+}
+
+impl FillPlan {
+    /// Make the buffer of `df`, the rows read for the planned range: stitched on to
+    /// the rows on hand when it runs on from them or up to them, then cut to the caps
+    /// around the view.
+    pub fn fit(mut self, df: DataFrame) -> CollectResult {
+        let returned = df.height();
+        let bytes_per_row = (returned > 0).then(|| (df.estimated_size() / returned).max(1));
+        // A shape mismatch (the columns changed underneath) keeps the fetched rows alone.
+        let (df, start, seam) = match self.held.take() {
+            Some((mut held, held_start)) if held_start + held.height() == self.buffer_start => {
+                let seam = held.height();
+                match held.vstack_mut(&df) {
+                    Ok(_) => (held, held_start, Some(seam)),
+                    Err(_) => (df, self.buffer_start, None),
+                }
+            }
+            Some((held, held_start))
+                if returned > 0 && self.buffer_start + returned == held_start =>
+            {
+                match df.vstack(&held) {
+                    Ok(joined) => (joined, self.buffer_start, Some(returned)),
+                    Err(_) => (df, self.buffer_start, None),
+                }
+            }
+            _ => (df, self.buffer_start, None),
+        };
+        let (df, start) = self.cut_to_caps(df, start, seam);
+        CollectResult {
+            df,
+            start,
+            returned,
+            bytes_per_row,
+            buffer_start: self.buffer_start,
+            buffer_end: self.buffer_end,
+            num_rows: self.num_rows,
+            count_known: self.count_known,
+        }
+    }
+
+    /// Cut `df`, spanning `[start, start + df.height())`, to the row cap and the byte
+    /// budget. The rows kept are centered on the view rather than taken from the head:
+    /// a jump near the end of the dataset would otherwise drop exactly the rows the
+    /// view needs. Returns the rows kept and their first row.
+    ///
+    /// The budget bounds the rows held between collects, not the collect itself: the
+    /// fill, the operators upstream of it and an eager source frame all take memory of
+    /// their own.
+    fn cut_to_caps(&self, df: DataFrame, start: usize, seam: Option<usize>) -> (DataFrame, usize) {
+        let total = df.height();
+        if total == 0 {
+            return (df, start);
+        }
+        // The row cap as well: a row group stitched on to the rows on hand can run over it.
+        let mut max_rows = total;
+        if self.max_rows > 0 {
+            max_rows = max_rows.min(self.max_rows);
+        }
+        if self.max_mb > 0 {
+            let bytes_per_row = (df.estimated_size() / total).max(1);
+            max_rows = max_rows.min(self.max_mb * 1024 * 1024 / bytes_per_row);
+        }
+        let max_rows = max_rows.max(1);
+        if max_rows >= total {
+            return (df, start);
+        }
+        let view_off = self.view_start.saturating_sub(start).min(total);
+        let view_len = self.view_len.max(1).min(total);
+        let view_center = view_off + view_len / 2;
+        let mut keep_start = view_center.saturating_sub(max_rows / 2);
+        if keep_start + max_rows > total {
+            keep_start = total - max_rows;
+        }
+        let kept = max_rows.min(total - keep_start);
+        (trim_rows(df, keep_start, kept, seam), start + keep_start)
+    }
 }
 
 /// Builds a scan of some of a dataset's files, as the full scan reads them, with the
@@ -648,14 +747,23 @@ impl ExportFrame {
     }
 }
 
-/// Result of a background buffer load. Consumed by `apply_async_collect()`.
+/// Result of a background buffer load, made by [`FillPlan::fit`] on the worker and
+/// installed as it is by `apply_async_collect()`.
 pub struct CollectResult {
-    pub df: DataFrame,
-    pub buffer_start: usize,
-    pub buffer_end: usize,
-    pub num_rows: usize,
+    /// The buffer: the rows read, stitched and cut to the caps.
+    df: DataFrame,
+    /// The first row of `df`.
+    start: usize,
+    /// Rows the read returned, before the stitch and the cut.
+    returned: usize,
+    /// Bytes per row of the rows read, to plan the next fill by.
+    bytes_per_row: Option<usize>,
+    /// The range the read was planned for.
+    buffer_start: usize,
+    buffer_end: usize,
+    num_rows: usize,
     /// See `CollectRequest::count_known`.
-    pub count_known: bool,
+    count_known: bool,
 }
 
 /// Rows the display buffer may hold when `display.max_buffered_rows` is not set. Also
@@ -756,15 +864,16 @@ fn estimate_bytes_per_row(
 }
 
 /// The rows `[offset, offset + len)` of `df`, copied when a slice of them would keep
-/// much more allocated than they are.
+/// much more allocated than they are. A `seam` inside them, where a stitch joined two
+/// fills, stays a chunk boundary (see [`compact_rows`]).
 ///
 /// A slice keeps every chunk it touches. A fill read in many chunks (a Parquet or CSV
 /// scan) lets the rest go with a slice alone; one read in a single chunk, a stitched
 /// union or a string column sharing its parent's data would keep the whole fill. A
 /// chunk that is itself a slice of more is not seen through.
-fn trim_rows(df: DataFrame, offset: usize, len: usize) -> DataFrame {
+fn trim_rows(df: DataFrame, offset: usize, len: usize, seam: Option<usize>) -> DataFrame {
     if backing_rows(&df, offset, len) > len + len / 4 {
-        compact_rows(&df, offset, len)
+        compact_rows(df, offset, len, seam)
     } else {
         df.slice(offset as i64, len)
     }
@@ -793,33 +902,56 @@ fn backing_rows(df: &DataFrame, offset: usize, len: usize) -> usize {
         .unwrap_or(len)
 }
 
-/// The rows `[offset, offset + len)` of `df` in storage of their own, one chunk a column.
+/// The rows `[offset, offset + len)` of `df` in storage of their own: one chunk a
+/// column, or two when `seam` falls inside them, so a later cut down to one side of a
+/// stitch (`holds_buffer`) is a slice that lets the other side go.
 ///
 /// A slice keeps the whole of its parent allocated, and neither `rechunk` (a lone chunk
 /// is left as it is) nor `take` (a string column keeps its parent's data buffers) is
 /// sure to let go of it. Polars' builders with `ShareStrategy::Never` copy every
 /// physical type, nested children and string bytes included. A constant column stays
 /// one value: built out, it would be a copy of the value per row.
-fn compact_rows(df: &DataFrame, offset: usize, len: usize) -> DataFrame {
+///
+/// Each column of `df` is let go of once it is copied, so the copy costs about one
+/// column's kept rows over `df` rather than all of them. On the collect worker the
+/// rows on screen are still held meanwhile (#483).
+fn compact_rows(df: DataFrame, offset: usize, len: usize, seam: Option<usize>) -> DataFrame {
     use polars::series::builder::SeriesBuilder;
     use polars_arrow::array::builder::ShareStrategy;
+    #[cfg(test)]
+    tests::COMPACTIONS.with(|count| count.set(count.get() + 1));
     let len = len.min(df.height().saturating_sub(offset));
+    let pieces = match seam.filter(|&seam| offset < seam && seam < offset + len) {
+        Some(seam) => vec![(offset, seam - offset), (seam, offset + len - seam)],
+        None => vec![(offset, len)],
+    };
+    let copy = |series: &Series, (offset, len): (usize, usize)| {
+        let mut builder = SeriesBuilder::new(series.dtype().clone());
+        builder.reserve(len);
+        builder.subslice_extend(series, offset, len, ShareStrategy::Never);
+        builder.freeze(series.name().clone())
+    };
     let columns = df
-        .columns()
-        .iter()
+        .into_columns()
+        .into_iter()
         .map(|column| match column {
             Column::Scalar(constant) => {
-                Column::new_scalar(column.name().clone(), constant.scalar().clone(), len)
+                Column::new_scalar(constant.name().clone(), constant.scalar().clone(), len)
             }
             Column::Series(series) => {
-                let mut builder = SeriesBuilder::new(series.dtype().clone());
-                builder.reserve(len);
-                builder.subslice_extend(series, offset, len, ShareStrategy::Never);
-                builder.freeze(series.name().clone()).into_column()
+                let mut kept = copy(&series, pieces[0]);
+                for &piece in &pieces[1..] {
+                    if kept.append_owned(copy(&series, piece)).is_err() {
+                        kept = copy(&series, (offset, len));
+                        break;
+                    }
+                }
+                kept.into_column()
             }
         })
         .collect();
-    DataFrame::new(len, columns).unwrap_or_else(|_| df.slice(offset as i64, len))
+    // Cannot fail: the names are one frame's and every column was built to `len` rows.
+    DataFrame::new(len, columns).unwrap_or_else(|_| DataFrame::empty_with_height(len))
 }
 
 /// Shrink `[buffer_start, buffer_end)` to at most `max_len` rows, kept around the view
@@ -4539,112 +4671,127 @@ impl DataTableState {
             }
         };
 
+        // When the count isn't known yet, `num_rows` is provisional (the planned end of
+        // this buffer). `apply_async_collect` keeps `num_rows_valid` false so the
+        // background `len()` corrects it, unless the short read reveals the true end.
+        let num_rows = if count_known {
+            self.num_rows
+        } else {
+            new_buffer_end
+        };
         Some(CollectRequest {
             lf,
             polars_streaming: self.polars_streaming,
             buffer_start: new_buffer_start,
             buffer_end: new_buffer_end,
-            // When the count isn't known yet, `num_rows` is provisional (the planned end of
-            // this buffer). `apply_async_collect` keeps `num_rows_valid` false so the
-            // background `len()` corrects it, unless the short read reveals the true end.
-            num_rows: if count_known {
-                self.num_rows
-            } else {
-                new_buffer_end
-            },
+            num_rows,
             count_known,
+            plan: self.fill_plan(new_buffer_start, new_buffer_end, num_rows, count_known),
         })
     }
 
-    /// Apply the result of a background buffer load.
-    pub fn apply_async_collect(&mut self, result: CollectResult) {
-        let full_df = result.df;
-        let returned_rows = full_df.height();
-        let requested_rows = result.buffer_end.saturating_sub(result.buffer_start);
+    /// How a fill of `[buffer_start, buffer_end)` is to be made the buffer, from what
+    /// is held and shown now. See [`FillPlan`].
+    fn fill_plan(
+        &self,
+        buffer_start: usize,
+        buffer_end: usize,
+        num_rows: usize,
+        count_known: bool,
+    ) -> FillPlan {
+        let held = self
+            .abuts_buffer(buffer_start, buffer_end.saturating_sub(buffer_start))
+            .then(|| self.buffered_df.clone())
+            .flatten()
+            .map(|df| (df, self.buffered_start_row));
+        FillPlan {
+            buffer_start,
+            buffer_end,
+            num_rows,
+            count_known,
+            held,
+            view_start: self.start_row,
+            view_len: self.visible_rows,
+            max_rows: self.max_buffered_rows,
+            max_mb: self.max_buffered_mb,
+        }
+    }
 
-        if result.count_known {
-            self.num_rows = result.num_rows;
+    /// Apply the result of a background buffer load. The worker has already stitched
+    /// and cut it ([`FillPlan::fit`]): installing it copies nothing.
+    pub fn apply_async_collect(&mut self, result: CollectResult) {
+        let CollectResult {
+            df,
+            start,
+            returned: returned_rows,
+            bytes_per_row,
+            buffer_start,
+            buffer_end,
+            num_rows,
+            count_known,
+        } = result;
+        let requested_rows = buffer_end.saturating_sub(buffer_start);
+
+        if count_known {
+            self.num_rows = num_rows;
             self.num_rows_valid = true;
-        } else if returned_rows < requested_rows && (result.buffer_start == 0 || returned_rows > 0)
-        {
+        } else if returned_rows < requested_rows && (buffer_start == 0 || returned_rows > 0) {
             // Short read: the slice ran off the end, so we now know the exact total
             // without waiting for the background len() count. A slice deep in the
             // frame that found nothing may lie past the data entirely; only the count
             // can say where it ends.
-            self.num_rows = result.buffer_start + returned_rows;
+            self.num_rows = buffer_start + returned_rows;
             self.num_rows_valid = true;
         } else if !self.num_rows_valid {
             // Full buffer with the count still unresolved: render with a provisional
             // total (at least this buffer's end) and leave num_rows_valid false so the
             // in-flight background len() corrects it via count_landed().
-            self.num_rows = self.num_rows.max(result.buffer_end);
+            self.num_rows = self.num_rows.max(buffer_end);
         }
         // else: the background len() already resolved the exact count between this
         // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
         self.remember_pristine_count();
 
-        self.observe_bytes_per_row(&full_df);
-        // A fill planned to be stitched on to rows since replaced (a synchronous
-        // collect re-planned while it was out) neither abuts what is held nor holds the
-        // view's first row: installing it would draw rows under the wrong numbers. Keep
-        // what is held and plan again. A fill that holds the first row but not the whole
-        // view (the terminal grew while it was out) is kept, and the rest fetched; a
-        // downloaded row group is too costly to throw away for a resize.
+        if bytes_per_row.is_some() {
+            self.observed_bytes_per_row = bytes_per_row;
+        }
+        // A fill that does not hold the view's first row was planned for rows since
+        // replaced (a synchronous collect re-planned while it was out, or the view
+        // jumped past what the cut kept): installing it would draw rows under the wrong
+        // numbers. Keep what is held and plan again. A fill that holds the first row
+        // but not the whole view (the terminal grew while it was out) is kept, and the
+        // rest fetched; a downloaded row group is too costly to throw away for a resize.
+        // A read that came back short ends the data, so a view past it is shown by the
+        // rows kept up to that end, and only by them: a cut may have dropped the end.
+        let end = start + df.height();
         let view_end = self.start_row + self.visible_rows.max(1);
-        let shows_view = result.buffer_start <= self.start_row
-            && (self.start_row < result.buffer_start + returned_rows
-                || returned_rows < requested_rows);
-        let stitched = self.abuts_buffer(result.buffer_start, returned_rows);
-        if !shows_view && !stitched {
+        let reaches_end = end >= buffer_start + returned_rows;
+        let shows_view = start <= self.start_row
+            && (self.start_row < end || (returned_rows < requested_rows && reaches_end));
+        if !shows_view {
             self.needs_recollect = true;
             return;
         }
-        let (full_df, buffer_start) = self.stitch_buffer(full_df, result.buffer_start);
         self.release_display_buffer();
-        let (full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, buffer_start);
-
-        self.buffered_start_row = eff_start;
-        self.buffered_end_row = eff_end;
-        self.buffered_df = Some(full_df);
+        self.buffered_start_row = start;
+        self.buffered_end_row = end;
+        self.buffered_df = Some(df);
         // Slice the buffered DataFrame into display DataFrames (locked + scroll columns).
         self.slice_buffer_into_display();
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));
         }
-        if view_end > eff_end && eff_end < self.num_rows {
+        if view_end > end && end < self.num_rows {
             self.needs_recollect = true;
         }
     }
 
     /// True when `rows` rows fetched from `start` run on from the rows on hand or up to
-    /// them, so `stitch_buffer` will join them.
+    /// them, so a fill of them is planned to be stitched on (see [`FillPlan`]).
     fn abuts_buffer(&self, start: usize, rows: usize) -> bool {
         self.stitches_buffer()
             && (start == self.buffered_end_row || start + rows == self.buffered_start_row)
-    }
-
-    /// Join a fetched row group `df`, starting at `buffer_start`, on to the rows on hand
-    /// when it runs on from them or up to them: the fill `fit_window` planned for a view
-    /// straddling two groups. Returns the buffer to keep and its first row. A shape
-    /// mismatch (the columns changed underneath) keeps the fetched rows alone.
-    fn stitch_buffer(&mut self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize) {
-        if !self.abuts_buffer(buffer_start, df.height()) {
-            return (df, buffer_start);
-        }
-        let Some(mut held) = self.buffered_df.take() else {
-            return (df, buffer_start);
-        };
-        if buffer_start == self.buffered_end_row {
-            if held.vstack_mut(&df).is_ok() {
-                return (held, self.buffered_start_row);
-            }
-        } else {
-            if let Ok(joined) = df.vstack(&held) {
-                return (joined, buffer_start);
-            }
-        }
-        (df, buffer_start)
     }
 
     /// Invalidate num_rows cache when lf is mutated. Takes a fresh `len_generation` so any
@@ -4843,7 +4990,7 @@ impl DataTableState {
     }
 
     /// True when a fill that runs on from the rows on hand, or up to them, will be
-    /// stitched on to them rather than replace them. See `stitch_buffer`.
+    /// stitched on to them rather than replace them. See [`FillPlan`].
     pub(crate) fn stitches_buffer(&self) -> bool {
         self.remote_window() && self.buffer_on_hand()
     }
@@ -4877,7 +5024,7 @@ impl DataTableState {
             self.buffered_df = self
                 .buffered_df
                 .take()
-                .map(|b| trim_rows(b, offset, end - start));
+                .map(|b| trim_rows(b, offset, end - start, None));
             self.buffered_start_row = start;
             self.buffered_end_row = end;
         }
@@ -5736,13 +5883,6 @@ impl DataTableState {
         (max_bytes / self.bytes_per_row()).max(self.visible_rows.max(1))
     }
 
-    /// Take the bytes per row of a collected buffer as the measure for the next plan.
-    fn observe_bytes_per_row(&mut self, df: &DataFrame) {
-        if df.height() > 0 {
-            self.observed_bytes_per_row = Some((df.estimated_size() / df.height()).max(1));
-        }
-    }
-
     /// True while the buffer is planned as a remote window: a scan of an object store
     /// that nothing has been applied to. A query, filter, sort or reshape reads the
     /// object through a predicate, and `slice(0, N)` then stops at the first N matches,
@@ -5865,52 +6005,6 @@ impl DataTableState {
         }
     }
 
-    /// Trim a freshly collected buffer `df` (spanning `[buffer_start, buffer_start + df.height())`)
-    /// down to the `max_buffered_mb` byte budget. Crucially, the kept window is centered on the
-    /// current view rather than always taken from the buffer's head — otherwise a jump near the
-    /// END of the dataset drops exactly the rows the view needs, leaving the table blank.
-    /// Returns the (possibly trimmed) df and its new `[start, end)` row range.
-    ///
-    /// A trim lets go of the rows it drops (see [`trim_rows`]), copying the rows kept when
-    /// a slice would keep the fill allocated behind them. The copy is at most the budget,
-    /// and an untrimmed fill is kept as collected. The budget bounds the rows held between
-    /// collects, not the collect itself: the fill, the operators upstream of it and an
-    /// eager source frame all take memory of their own.
-    fn clamp_buffer_bytes(&self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize, usize) {
-        let total = df.height();
-        let full_end = buffer_start + total;
-        if total == 0 {
-            return (df, buffer_start, full_end);
-        }
-        // The row cap as well: a row group stitched on to the rows on hand can run over it.
-        let mut max_rows = total;
-        if self.max_buffered_rows > 0 {
-            max_rows = max_rows.min(self.max_buffered_rows);
-        }
-        if self.max_buffered_mb > 0 {
-            let bytes_per_row = (df.estimated_size() / total).max(1);
-            max_rows = max_rows.min(self.max_buffered_mb * 1024 * 1024 / bytes_per_row);
-        }
-        let max_rows = max_rows.max(1);
-        if max_rows >= total {
-            return (df, buffer_start, full_end);
-        }
-        // Keep `max_rows` rows centered on the view so the visible window survives the trim.
-        let view_off = self.start_row.saturating_sub(buffer_start).min(total);
-        let view_len = self.visible_rows.max(1).min(total);
-        let view_center = view_off + view_len / 2;
-        let mut keep_start = view_center.saturating_sub(max_rows / 2);
-        if keep_start + max_rows > total {
-            keep_start = total - max_rows;
-        }
-        let kept = max_rows.min(total - keep_start);
-        (
-            trim_rows(df, keep_start, kept),
-            buffer_start + keep_start,
-            buffer_start + keep_start + kept,
-        )
-    }
-
     fn load_buffer(&mut self, buffer_start: usize, buffer_end: usize) {
         let buffer_size = buffer_end.saturating_sub(buffer_start);
         if buffer_size == 0 {
@@ -5933,12 +6027,17 @@ impl DataTableState {
             }
         };
 
-        // Trim to the byte budget while keeping the view in range (see clamp_buffer_bytes).
-        self.observe_bytes_per_row(&full_df);
-        let (full_df, buffer_start) = self.stitch_buffer(full_df, buffer_start);
+        // Stitched and cut as a background fill is, here on the spot, with the old
+        // rows let go first: the plan has taken any it stitches on to.
+        let plan = self.fill_plan(buffer_start, buffer_end, self.num_rows, self.num_rows_valid);
         self.release_display_buffer();
-        let (full_df, effective_buffer_start, effective_buffer_end) =
-            self.clamp_buffer_bytes(full_df, buffer_start);
+        let fitted = plan.fit(full_df);
+        if fitted.bytes_per_row.is_some() {
+            self.observed_bytes_per_row = fitted.bytes_per_row;
+        }
+        let full_df = fitted.df;
+        let effective_buffer_start = fitted.start;
+        let effective_buffer_end = fitted.start + full_df.height();
 
         if self.locked_columns_count > 0 {
             let locked_names: Vec<&str> = self
@@ -6009,9 +6108,9 @@ impl DataTableState {
         self.buffered_df = Some(full_df);
     }
 
-    /// Let go of the buffer being replaced and the display frames cut from it, so a
-    /// trim of the new fill is not copied while the old rows are still held. A stitch
-    /// has already taken the rows it keeps.
+    /// Let go of the buffer being replaced and the display frames cut from it. A
+    /// synchronous load does so before its cut, so the cut's copy is not made while
+    /// the old rows are still held; a stitch has already taken the rows it keeps.
     fn release_display_buffer(&mut self) {
         self.buffered_df = None;
         self.locked_df = None;
@@ -9389,6 +9488,38 @@ mod checkpoint_tests {
 mod tests {
     use super::*;
 
+    thread_local! {
+        /// Calls of `compact_rows` on this thread: a test's own thread is the UI thread.
+        pub(super) static COMPACTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn compactions() -> usize {
+        COMPACTIONS.with(std::cell::Cell::get)
+    }
+
+    /// Rows a worker read for `[buffer_start, buffer_end)`, before they are fit.
+    struct Fill {
+        df: DataFrame,
+        buffer_start: usize,
+        buffer_end: usize,
+        num_rows: usize,
+        count_known: bool,
+    }
+
+    impl DataTableState {
+        /// Hand `fill` over as the collect worker does: fit as planned from what is
+        /// held and shown now, then installed.
+        fn land(&mut self, fill: Fill) {
+            let plan = self.fill_plan(
+                fill.buffer_start,
+                fill.buffer_end,
+                fill.num_rows,
+                fill.count_known,
+            );
+            self.apply_async_collect(plan.fit(fill.df));
+        }
+    }
+
     fn names(df: &DataFrame) -> Vec<String> {
         df.get_column_names()
             .iter()
@@ -11929,7 +12060,9 @@ mod tests {
         let big: Vec<String> = (0..100).map(|_| "z".repeat(20_000)).collect();
         let df = df!("a" => big).unwrap();
 
-        let (sliced, eff_start, eff_end) = state.clamp_buffer_bytes(df, buffer_start);
+        let fitted = state.fill_plan(buffer_start, 1000, 1000, true).fit(df);
+        let (sliced, eff_start) = (fitted.df, fitted.start);
+        let eff_end = eff_start + sliced.height();
         assert!(
             sliced.height() < 100,
             "expected a trim below the byte budget"
@@ -12123,7 +12256,7 @@ mod tests {
             "a lone chunk rechunked is still the slice"
         );
 
-        let kept = compact_rows(&source, 1_000, 1_000);
+        let kept = compact_rows(source.clone(), 1_000, 1_000, None);
         assert!(!shares_storage(&kept, &source));
         assert!(kept.equals_missing(&slice));
         assert_eq!(kept.schema(), source.schema());
@@ -12136,21 +12269,33 @@ mod tests {
                 .unwrap();
         }
         let chunk = |i: usize| chunked.slice(i as i64 * 1_000, 1_000);
-        let sliced = trim_rows(chunked.clone(), 1_000, 2_000);
+        let sliced = trim_rows(chunked.clone(), 1_000, 2_000, None);
         assert!(shares_storage(&sliced, &chunk(1)) && shares_storage(&sliced, &chunk(2)));
         assert!(!shares_storage(&sliced, &chunk(0)) && !shares_storage(&sliced, &chunk(3)));
-        let copied = trim_rows(chunked.clone(), 1_500, 1_000);
+        let copied = trim_rows(chunked.clone(), 1_500, 1_000, None);
         assert!((0..4).all(|i| !shares_storage(&copied, &chunk(i))));
         assert!(copied.equals_missing(&chunked.slice(1_500, 1_000)));
 
-        // Two chunks: rows from one of them, and rows across both.
+        // Two chunks: rows from one of them, and rows across both. Across a seam, the
+        // rows either side of it are copied apart.
         let mut stitched = mixed_frame(0, 3_000);
         stitched.vstack_mut(&mixed_frame(3_000, 6_000)).unwrap();
         for (offset, len) in [(3_500, 1_000), (2_500, 1_000), (0, 6_000)] {
-            let kept = compact_rows(&stitched, offset, len);
-            assert!(!shares_storage(&kept, &stitched), "{offset}+{len}");
-            assert!(kept.equals_missing(&stitched.slice(offset as i64, len)));
-            assert_eq!(kept.first_col_n_chunks(), 1);
+            for seam in [None, Some(3_000)] {
+                let kept = compact_rows(stitched.clone(), offset, len, seam);
+                assert!(!shares_storage(&kept, &stitched), "{offset}+{len}");
+                assert!(kept.equals_missing(&stitched.slice(offset as i64, len)));
+                assert_eq!(kept.schema(), stitched.schema());
+                let across = seam.is_some() && offset < 3_000 && 3_000 < offset + len;
+                let chunks = if across { 2 } else { 1 };
+                assert!(
+                    kept.columns()
+                        .iter()
+                        .filter_map(Column::as_series)
+                        .all(|s| s.n_chunks() == chunks),
+                    "{offset}+{len} {seam:?}"
+                );
+            }
         }
 
         // A constant column is cut to length, not written out a row at a time.
@@ -12164,7 +12309,7 @@ mod tests {
             with_constant.column("constant").unwrap(),
             Column::Scalar(_)
         ));
-        let kept = compact_rows(&with_constant, 500, 1_000);
+        let kept = compact_rows(with_constant.clone(), 500, 1_000, None);
         let Column::Scalar(cut) = kept.column("constant").unwrap() else {
             panic!("the constant column was built out");
         };
@@ -12216,13 +12361,19 @@ mod tests {
         state.num_rows = N;
         state.num_rows_valid = true;
         state.start_row = 7_500;
-        state.apply_async_collect(CollectResult {
-            df: source.clone(),
-            buffer_start: 0,
-            buffer_end: N,
-            num_rows: N,
-            count_known: true,
-        });
+        // The worker makes the copy; the UI thread installs it as it is.
+        let plan = state.fill_plan(0, N, N, true);
+        let fill = source.clone();
+        let result = std::thread::spawn(move || {
+            let result = plan.fit(fill);
+            assert_eq!(compactions(), 1, "the worker copies the rows it keeps");
+            result
+        })
+        .join()
+        .unwrap();
+        let before = compactions();
+        state.apply_async_collect(result);
+        assert_eq!(compactions(), before, "the install copies nothing");
         assert!(state.buffered_end() - state.buffered_start() <= budget_rows);
         assert_view_rows(&state, &source);
 
@@ -12240,11 +12391,41 @@ mod tests {
     }
 
     #[test]
+    fn a_fill_cut_around_a_view_since_left_is_not_installed() {
+        // The worker cuts around the view the fill was planned for. A view that jumped
+        // past the rows kept, while it was out, keeps what is held and asks again. So
+        // does a read that came back short, whose end the cut dropped.
+        const N: usize = 10_000;
+        let source = mixed_frame(0, N);
+        for short in [false, true] {
+            let mut state = trimming_state(source.clone().lazy());
+            state.num_rows = N;
+            state.num_rows_valid = !short;
+            state.start_row = 300;
+            let asked = if short { N + 5_000 } else { N };
+            let result = state.fill_plan(0, asked, asked, !short).fit(source.clone());
+            assert!(
+                result.start + result.df.height() < 9_000,
+                "the fill was cut"
+            );
+            state.start_row = 9_000;
+            state.needs_recollect = false;
+            state.apply_async_collect(result);
+            assert!(
+                state.buffered_df.is_none(),
+                "nothing drawn under wrong numbers (short {short})"
+            );
+            assert!(state.needs_recollect);
+            assert_eq!((state.num_rows, state.num_rows_valid), (N, true));
+        }
+    }
+
+    #[test]
     fn an_untrimmed_fill_is_kept_as_collected() {
         // Ordinary paging copies nothing: the buffer is the fill itself.
         let source = mixed_frame(0, 200);
         let mut state = trimming_state(source.clone().lazy());
-        state.apply_async_collect(CollectResult {
+        state.land(Fill {
             df: source.clone(),
             buffer_start: 0,
             buffer_end: 200,
@@ -12258,12 +12439,13 @@ mod tests {
     #[test]
     fn a_stitched_trim_lets_go_of_both_groups() {
         // Forward and back across a row group boundary: the union is trimmed to the
-        // cap, and neither fetched group is held behind the kept rows. Leaving the
-        // stitched rows cuts the buffer down to one group, again in storage of its own.
+        // cap, and neither fetched group is held behind the kept rows. The copy is the
+        // worker's; installing it copies nothing. Leaving the stitched rows cuts the
+        // buffer down to one group and lets the other go, again without a copy.
         const G: usize = 1_000_000;
         const CAP: usize = DEFAULT_MAX_BUFFERED_ROWS;
         let rows = |start: usize, end: usize| {
-            CollectResult {
+            Fill {
             df: df!(
                 "id" => (start as i64..end as i64).collect::<Vec<i64>>(),
                 "name" => (start..end).map(|i| format!("{i:>8}-{}", "y".repeat(24))).collect::<Vec<_>>(),
@@ -12305,7 +12487,7 @@ mod tests {
             let request = state.prepare_async_collect(None).expect("one group");
             let first = rows(request.buffer_start, request.buffer_end);
             let first_df = first.df.clone();
-            state.apply_async_collect(first);
+            state.land(first);
 
             assert!(state.scroll_to(view));
             let request = state.prepare_async_collect(None).expect("the other group");
@@ -12316,21 +12498,37 @@ mod tests {
             );
             let second = rows(request.buffer_start, request.buffer_end);
             let second_df = second.df.clone();
-            state.apply_async_collect(second);
+            // Fit on a worker, as the app does, against the rows held when planned.
+            let plan = request.plan;
+            let result = std::thread::spawn(move || {
+                let result = plan.fit(second.df);
+                assert!(compactions() > 0, "the worker copies the rows it keeps");
+                result
+            })
+            .join()
+            .unwrap();
+            let before = compactions();
+            state.apply_async_collect(result);
+            assert_eq!(compactions(), before, "the install copies nothing");
             check(&state, &[&first_df, &second_df]);
 
             // A window inside one group: the rows of the other are let go.
             let stitched = state.buffered_df.clone().unwrap();
             let (start, end) = (state.buffered_start(), state.buffered_end());
-            let (start, end) = if forward { (G, end) } else { (start, G) };
+            let (start, end, other) = if forward {
+                (G, end, stitched.slice(0, G - start))
+            } else {
+                (start, G, stitched.slice((G - start) as i64, end - G))
+            };
             assert!(state.scroll_to(if forward { G } else { G - 40 }));
             assert!(state.holds_buffer(start, end));
+            assert_eq!(compactions(), before, "the cut falls on the seam: a slice");
             state.slice_buffer_into_display();
             assert_eq!((state.buffered_start(), state.buffered_end()), (start, end));
             let held = state.buffered_df.as_ref().unwrap();
             assert_eq!(held.height(), end - start);
-            assert!(!shares_storage(held, &stitched));
-            assert!(!shares_storage(state.df.as_ref().unwrap(), &stitched));
+            assert!(!shares_storage(held, &other));
+            assert!(!shares_storage(state.df.as_ref().unwrap(), &other));
             let ids = held.column("id").unwrap().i64().unwrap();
             assert_eq!(ids.get(0), Some(state.buffered_start() as i64));
         }
@@ -12998,7 +13196,7 @@ mod tests {
         state.num_rows = 1_000_000;
         state.num_rows_valid = true;
         state.visible_rows = 40;
-        let window = |start: usize| CollectResult {
+        let window = |start: usize| Fill {
             df: df!("a" => (0..10_000).collect::<Vec<i32>>()).unwrap(),
             buffer_start: start,
             buffer_end: start + 10_000,
@@ -13008,7 +13206,7 @@ mod tests {
 
         let request = state.prepare_async_collect(None).expect("first fill");
         assert_eq!((request.buffer_start, request.buffer_end), (0, 10_000));
-        state.apply_async_collect(window(0));
+        state.land(window(0));
         for _ in 0..20 {
             assert!(!state.page_down(), "a page inside the window needs no fill");
         }
@@ -13021,7 +13219,7 @@ mod tests {
             (request.buffer_start, request.buffer_end),
             (990_000, 1_000_000)
         );
-        state.apply_async_collect(window(990_000));
+        state.land(window(990_000));
 
         assert!(state.scroll_to_start(), "Home after End must fill again");
         let request = state
@@ -13079,7 +13277,7 @@ mod tests {
         state.set_row_groups(&[G; 10]);
         assert_eq!(state.num_rows, 10 * G);
         state.visible_rows = 40;
-        let rows = |start: usize, end: usize| CollectResult {
+        let rows = |start: usize, end: usize| Fill {
             df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
             buffer_start: start,
             buffer_end: end,
@@ -13089,7 +13287,7 @@ mod tests {
 
         let request = state.prepare_async_collect(None).expect("first fill");
         assert_eq!((request.buffer_start, request.buffer_end), (0, CAP));
-        state.apply_async_collect(rows(0, CAP));
+        state.land(rows(0, CAP));
         for _ in 0..20 {
             assert!(!state.page_down(), "a page inside the window needs no fill");
         }
@@ -13100,13 +13298,13 @@ mod tests {
             .prepare_async_collect(None)
             .expect("the end of group 0");
         assert_eq!((request.buffer_start, request.buffer_end), (G - CAP, G));
-        state.apply_async_collect(rows(G - CAP, G));
+        state.land(rows(G - CAP, G));
 
         // A view straddling the boundary fetches rows of group 1 alone.
         assert!(state.scroll_to(G - 20));
         let request = state.prepare_async_collect(None).expect("into group 1");
         assert_eq!((request.buffer_start, request.buffer_end), (G, G + CAP / 2));
-        state.apply_async_collect(rows(G, G + CAP / 2));
+        state.land(rows(G, G + CAP / 2));
         let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
         assert!(
             held_start <= G - 20 && G + 20 <= held_end,
@@ -13129,7 +13327,7 @@ mod tests {
             (request.buffer_start, request.buffer_end),
             (10 * G - CAP, 10 * G)
         );
-        state.apply_async_collect(rows(10 * G - CAP, 10 * G));
+        state.land(rows(10 * G - CAP, 10 * G));
         assert!(state.scroll_to_start());
         let request = state.prepare_async_collect(None).expect("the first window");
         assert_eq!((request.buffer_start, request.buffer_end), (0, CAP));
@@ -13145,7 +13343,7 @@ mod tests {
         state.set_remote_source();
         state.set_row_groups(&[G; 25]);
         state.visible_rows = 40;
-        let rows = |start: usize, end: usize| CollectResult {
+        let rows = |start: usize, end: usize| Fill {
             df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
             buffer_start: start,
             buffer_end: end,
@@ -13155,12 +13353,12 @@ mod tests {
 
         let request = state.prepare_async_collect(None).expect("first fill");
         assert_eq!((request.buffer_start, request.buffer_end), (0, 2 * G));
-        state.apply_async_collect(rows(0, 2 * G));
+        state.land(rows(0, 2 * G));
 
         assert!(state.scroll_to(2 * G - 20));
         let request = state.prepare_async_collect(None).expect("the next group");
         assert_eq!((request.buffer_start, request.buffer_end), (2 * G, 3 * G));
-        state.apply_async_collect(rows(2 * G, 3 * G));
+        state.land(rows(2 * G, 3 * G));
         let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
         assert!(held_start <= 2 * G - 20 && 2 * G + 20 <= held_end);
         assert!(held_end - held_start <= DEFAULT_MAX_BUFFERED_ROWS);
@@ -13225,7 +13423,7 @@ mod tests {
         state.visible_rows = 40;
         let guessed = state.byte_cap_rows();
         assert_eq!(guessed, 1024 * 1024 / STRING_BYTES_GUESS);
-        state.apply_async_collect(CollectResult {
+        state.land(Fill {
             df: df!("a" => &big).unwrap(),
             buffer_start: 0,
             buffer_end: 100,
@@ -13315,7 +13513,7 @@ mod tests {
         state.needs_recollect = false;
         state.num_rows_valid = false;
         state.start_row = 9_990;
-        state.apply_async_collect(CollectResult {
+        state.land(Fill {
             df: df!("a" => Vec::<i32>::new()).unwrap(),
             buffer_start: 9_990,
             buffer_end: 10_060,
@@ -13338,7 +13536,7 @@ mod tests {
         state.set_remote_source();
         state.set_row_groups(&[G; 10]);
         state.visible_rows = 40;
-        let rows = |start: usize, end: usize| CollectResult {
+        let rows = |start: usize, end: usize| Fill {
             df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
             buffer_start: start,
             buffer_end: end,
@@ -13349,17 +13547,19 @@ mod tests {
         let request = state
             .prepare_async_collect(None)
             .expect("the end of group 0");
-        state.apply_async_collect(rows(request.buffer_start, request.buffer_end));
+        state.land(rows(request.buffer_start, request.buffer_end));
         assert!(state.scroll_to(G - 20));
         let stitch = state.prepare_async_collect(None).expect("into group 1");
         assert_eq!(stitch.buffer_start, G);
 
         // Meanwhile a synchronous collect moved the view and replaced the buffer.
         assert!(state.scroll_to(500_000));
-        state.apply_async_collect(rows(450_000, 550_000));
+        state.land(rows(450_000, 550_000));
         state.needs_recollect = false;
 
-        state.apply_async_collect(rows(stitch.buffer_start, stitch.buffer_end));
+        // Fit as the worker did, against the rows on hand when it was planned.
+        let fill = rows(stitch.buffer_start, stitch.buffer_end);
+        state.apply_async_collect(stitch.plan.fit(fill.df));
         assert_eq!(
             (state.buffered_start(), state.buffered_end()),
             (450_000, 550_000),
@@ -13387,7 +13587,7 @@ mod tests {
 
         state.visible_rows = 120; // resized while the fetch was out
         state.needs_recollect = false;
-        state.apply_async_collect(CollectResult {
+        state.land(Fill {
             df: df!("a" => (request.buffer_start as i32..request.buffer_end as i32)
                 .collect::<Vec<i32>>())
             .unwrap(),
@@ -13421,7 +13621,7 @@ mod tests {
             (G..2 * G).contains(&cap),
             "cap {cap} between one and two groups"
         );
-        let rows = |start: usize, end: usize| CollectResult {
+        let rows = |start: usize, end: usize| Fill {
             df: df!("a" => (start..end).map(|i| "x".repeat(8 + i % 3)).collect::<Vec<_>>())
                 .unwrap(),
             buffer_start: start,
@@ -13432,7 +13632,7 @@ mod tests {
 
         let request = state.prepare_async_collect(None).expect("first fill");
         assert_eq!((request.buffer_start, request.buffer_end), (0, G));
-        state.apply_async_collect(rows(0, G));
+        state.land(rows(0, G));
 
         assert!(state.scroll_to(G - 20));
         let request = state.prepare_async_collect(None).expect("into group 1");
@@ -13450,7 +13650,7 @@ mod tests {
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.visible_rows = 10;
         state.defer_collect = true;
-        state.apply_async_collect(CollectResult {
+        state.land(Fill {
             df: df!("a" => &big, "b" => (0..100i32).collect::<Vec<i32>>()).unwrap(),
             buffer_start: 0,
             buffer_end: 100,

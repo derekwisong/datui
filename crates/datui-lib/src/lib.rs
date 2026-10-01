@@ -13545,23 +13545,18 @@ impl App {
         // answers it.
         let count = count.map(|job| OwedCount::new(job, self.events.clone()));
         self.spawn_bg_replaceable(Job::Rows, status, move |task_gen, tx| {
+            let plan = request.plan;
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                 Ok(df) => {
                     let returned = df.height();
+                    // Stitched and cut here rather than where it lands: a cut may copy
+                    // up to the byte budget, which the UI thread would stall on (#483).
+                    let result = plan.fit(df);
                     let mut slot = collect_slot.lock().unwrap_or_else(|e| e.into_inner());
                     // Only write if no newer result is already stored.
                     let dominated = slot.as_ref().is_some_and(|(g, _)| *g > task_gen);
                     if !dominated {
-                        *slot = Some((
-                            task_gen,
-                            crate::widgets::datatable::CollectResult {
-                                df,
-                                buffer_start: request.buffer_start,
-                                buffer_end: request.buffer_end,
-                                num_rows: request.num_rows,
-                                count_known: request.count_known,
-                            },
-                        ));
+                        *slot = Some((task_gen, result));
                     }
                     drop(slot);
                     let _ = tx.send(AppEvent::BackgroundCollectReady {

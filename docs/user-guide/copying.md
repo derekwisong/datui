@@ -6,9 +6,39 @@ copy is <kbd>y</kbd> <kbd>Enter</kbd>.
 
 ## Copy a table into a note
 
-1. Apply the query or filters you want to copy.
-2. Press <kbd>y</kbd>, select **Table** scope and **Markdown** format.
-3. Press <kbd>Enter</kbd>, then paste into your note.
+On **Food nutrition (fast food)**, summarize each chain:
+
+```sql
+SELECT restaurant, ROUND(AVG(calories), 0) AS avg_calories,
+       ROUND(AVG(protein), 1) AS avg_protein, COUNT(*) AS items
+FROM df
+GROUP BY restaurant
+ORDER BY avg_calories DESC
+```
+
+1. Press <kbd>y</kbd>. On **Scope**, press <kbd>Space</kbd>, type `Table` and
+   press <kbd>Enter</kbd>.
+2. <kbd>Tab</kbd> to **Format**, <kbd>Space</kbd>, type `Markdown`,
+   <kbd>Enter</kbd>.
+3. Press <kbd>Enter</kbd> to copy. The status line says `Copied 8 rows as Markdown`.
+
+Paste into a note:
+
+```text
+| restaurant  | avg_calories | avg_protein | items |
+| ----------- | -----------: | ----------: | ----: |
+| Mcdonalds   |        640.0 |        40.3 |    57 |
+| Sonic       |        632.0 |        29.2 |    53 |
+| Burger King |        609.0 |        30.0 |    70 |
+| Arbys       |        533.0 |        29.3 |    55 |
+| Dairy Queen |        520.0 |        24.8 |    42 |
+| Subway      |        503.0 |        30.3 |    96 |
+| Taco Bell   |        444.0 |        17.4 |   115 |
+| Chick Fil-A |        384.0 |        31.7 |    27 |
+```
+
+Values are copied raw, so round them in the query. The data spells McDonald's
+`Mcdonalds`.
 
 For a spreadsheet, choose **TSV** instead. **Table** includes all matching
 rows; **View** includes only the rows on screen.

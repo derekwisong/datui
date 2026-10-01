@@ -57,6 +57,8 @@ first as a unit.
 
 - `a + b * c` → `a + (b * c)`
 - `a * b + c` → `a * (b + c)`, not `(a * b) + c`
+- `(a + b) * 2 > 100` → `(a + b) * (2 > 100)`; write the comparison first,
+  `100 < (a + b) * 2`
 
 Put the operation you want done first on the right, or use `()` to override
 grouping:

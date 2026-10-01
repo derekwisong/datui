@@ -14,9 +14,10 @@ later.
 import polars as pl
 import datui
 
-lf = pl.scan_parquet("events.parquet").filter(pl.col("region") == "EU")
-datui.view(lf)          # a LazyFrame: the plan is passed, not the data
-datui.view(lf.collect())  # a DataFrame works too
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+penguins = pl.scan_csv(url)
+datui.view(penguins)            # a LazyFrame: the plan is passed, not the data
+datui.view(penguins.collect())  # a DataFrame works too
 ```
 
 <kbd>q</kbd> closes datui and returns to Python. A LazyFrame stays lazy, so
@@ -29,8 +30,9 @@ aggregation and other operations may still scan the full input.
 the command line:
 
 ```python
+datui.view("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/")
+datui.view(url)                 # asks before it downloads, as on the command line
 datui.view("data.csv", delimiter=";", has_header=False)
-datui.view("s3://bucket/events/", hive=True)
 datui.view(["jan.parquet", "feb.parquet"])
 ```
 
@@ -42,10 +44,15 @@ Python option list. For a frame, only display options apply.
 ## Return the current view
 
 ```python
-result = datui.view(lf, capture=True)
+result = datui.view(penguins, capture=True)
 if result is not None:
-    result.collect()  # or keep transforming, or sink_parquet(...)
+    print(result.collect())  # or keep transforming, or sink_parquet(...)
 ```
+
+Run the species summary from the
+[quick start](../getting-started/quick-start.md#2-group-by-species) and press
+<kbd>q</kbd>: `result` collects to the three rows, Gentoo 5076.01626 and 124
+penguins first. Collecting reads the CSV from the web again.
 
 `capture=True` returns the final table's logical view on a normal quit: the
 applied query, filters, sort, drill-down, reshape and column order, over all

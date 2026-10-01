@@ -51,3 +51,16 @@ Usage: datui [OPTIONS] [PATH]...
 | `--s3-secret-access-key <SECRET>` | S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY) |
 | `--s3-region <REGION>` | S3 region (overrides config and AWS_REGION). Example: us-east-1 |
 | `--cloud-discover <WHICH>` | Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Entries in [[cloud.connections]] always appear |
+
+## Examples
+
+| Command | Does |
+|---------|------|
+| `datui` | Open the home screen. Public datasets lists the built-in catalog |
+| `datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv` | Palmer penguins from the web; datui asks before it downloads |
+| `datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/` | NOAA daily highs for 2024, one table from public S3 |
+| `datui abfss://release@overturemapswestus2.dfs.core.windows.net/` | Browse Overture Maps releases in public Azure storage |
+| `datui jan.csv feb.csv mar.csv` | Files of the same shape, as one table |
+| `datui --hive "/data/events/**/*.parquet"` | A glob, read as one partitioned table |
+| `datui --format csv --no-header raw.txt` | Headerless text, whatever the extension |
+| `datui --generate-config` | Write ~/.config/datui/config.toml |

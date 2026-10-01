@@ -4,14 +4,27 @@ Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
 **Columns** and **Filters**; <kbd>←</kbd> <kbd>→</kbd> switch them, and
 <kbd>Tab</kbd> moves between the tab bar and the body.
 
-## Filter rows and sort a column
+## Filter, sort and hide columns
 
-With the [quick-start penguin data](../getting-started/quick-start.md):
+Open **Food nutrition (fast food)** from **Public datasets**: 515 menu items
+from eight chains, nutrients per item. Find the chicken dishes with at least
+40 g of protein, heaviest first:
 
-1. Press <kbd>s</kbd> and select **Filters**.
-2. Add a filter: `body_mass_g`, `>`, `5000`. Press <kbd>Enter</kbd> to save the row, then <kbd>a</kbd> to apply.
-3. Open <kbd>s</kbd> again. On **Columns**, select `body_mass_g` and press <kbd>Space</kbd> twice for descending order.
-4. Press <kbd>Enter</kbd> to apply. The 61 matching penguins appear heaviest first.
+1. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for **Search**. Type
+   `chicken` and press <kbd>Enter</kbd>: 178 of 515.
+2. Press <kbd>s</kbd>, <kbd>→</kbd> for **Filters**, <kbd>Tab</kbd> into the
+   list and <kbd>Enter</kbd> on `add filter…`. Type `protein` and press
+   <kbd>Enter</kbd>, `>=` and <kbd>Enter</kbd>, `40` and <kbd>Enter</kbd>.
+3. Press <kbd>Shift</kbd>+<kbd>Tab</kbd>, <kbd>←</kbd> for **Columns** and
+   <kbd>Tab</kbd> into the find field. Type `calories`, press <kbd>↓</kbd> to
+   reach the row, then <kbd>Space</kbd> twice for descending.
+4. Press <kbd>Shift</kbd>+<kbd>Tab</kbd> back to the find field and
+   <kbd>Ctrl</kbd>+<kbd>U</kbd> to clear it. Type `vit`, then <kbd>↓</kbd>
+   <kbd>v</kbd> <kbd>↓</kbd> <kbd>v</kbd> to hide `vit_a` and `vit_c`.
+5. Press <kbd>Enter</kbd> to apply.
+
+The table shows 30 of 515, led by McDonald's 20 piece Buttermilk Crispy
+Chicken Tenders at 2,430 calories. The `calories` header carries `▼`.
 
 ## Apply or cancel changes
 
@@ -24,7 +37,7 @@ With the [quick-start penguin data](../getting-started/quick-start.md):
 
 Sidebar filters and sort apply to the current query or reshape result. Running
 a new query clears them, so apply the query first and the sidebar settings
-afterward. The bottom bar shows matching and total row counts, such as `417 of 1,000`.
+afterward. The bottom bar shows matching and total row counts, such as `30 of 515`.
 Large totals are abbreviated; **Info** shows the exact total.
 Canceling the sidebar discards whatever was staged; reopening it shows what
 is actually applied.
@@ -49,8 +62,8 @@ list, then:
 | <kbd>L</kbd> | Freeze this column and every column above it on the left |
 | <kbd>v</kbd> | Hide or show this column (it keeps its place in the list, dimmed) |
 
-Every column carries its own direction, so `salary` can run descending while
-`start_date` runs ascending. Nulls go last in either direction.
+Every column carries its own direction, so `calories` can run descending while
+`restaurant` runs ascending. Nulls go last in either direction.
 
 Back in the main view, <kbd>r</kbd> reverses every direction at once and
 <kbd>R</kbd> resets everything: query, filters, sort, column order and hidden
@@ -89,6 +102,6 @@ and are saved in [views](views.md).
 
 ## From the query prompt
 
-For anything more involved, the `where` clause of a
-[query](querying-data.md#filtering-rows) takes expressions, `OR` groups,
-null tests and date arithmetic.
+For anything more involved, a SQL `WHERE` or the `where` clause of a
+[q-style query](../reference/query-syntax.md#where-clause--and-) takes
+expressions, `OR` groups, null tests and date arithmetic.

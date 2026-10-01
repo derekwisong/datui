@@ -20,18 +20,30 @@ in Setup. After a run, <kbd>e</kbd> opens Setup again.
 
 ## Check missing values
 
-Open the [quick-start penguin data](../getting-started/quick-start.md#1-open-the-data)
-with `--null-value NA`, then:
+Open **Food nutrition (fast food)** from **Public datasets**, then:
 
 1. Press <kbd>a</kbd>, choose **Data Quality** and press <kbd>Enter</kbd>.
-2. Press <kbd>Enter</kbd> in Setup. The table is smaller than the sample size,
-   so every row is read.
-3. Open **Columns** with <kbd>2</kbd> and inspect `body_mass_g`.
+2. Press <kbd>Enter</kbd> in Setup. The table's 515 rows are fewer than the
+   sample size, so every row is read.
 
-The source has 344 rows and two null body-mass values: a null rate of
-`2 / 344`, about **0.58%**. A filter changes the rows checked; to ignore it,
-press <kbd>s</kbd>, set **Rows from** to the unfiltered source, and press
-<kbd>Enter</kbd> twice: once to apply the sample, once to run.
+| Finding | Columns | Reads |
+|---|---|---|
+| ▲ Mixed spellings | `item` | 2 values spelled more than one way: `4 Piece Chicken Nuggets` and `4 piece Chicken Nuggets`, and the same for 6 |
+| Missing values | `vit_a`, `fiber`, `protein` | 0.19% to 41.6% |
+| Missing together | `vit_c`, `calcium` | 210 rows (40.8%) |
+| Nearly unique | `item` | 10 repeated (98.1% unique) |
+| Single value | `salad` | always "Other" |
+
+Press <kbd>2</kbd> for **Columns**: each column's missing count and findings.
+A filter changes the rows checked; to ignore it, press <kbd>s</kbd>, set
+**Rows from** to the unfiltered source, and press <kbd>Enter</kbd> twice: once
+to apply the sample, once to run.
+
+On a large file the run reads a sample. On **NYC yellow taxis (January 2025)**
+with **Random seed** `1`, the header reads
+`Data Quality · sample of 100,000 of 3,475,226 rows`, and the one note is
+`passenger_count`, `RatecodeID` and three more columns missing together in
+16,000 rows (16.0%) of the sample.
 
 ## Inspect a finding
 

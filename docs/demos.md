@@ -9,7 +9,7 @@ and the publisher-hosted datasets in datui's public cloud catalog.
 | Watch | Guide |
 |---|---|
 | [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud browser](user-guide/cloud-browser.md) |
-| [Querying](#querying) | [Queries, SQL and fuzzy search](user-guide/querying-data.md) |
+| [Querying](#querying) | [Queries, SQL and search](user-guide/querying-data.md) |
 | [Sorting](#sorting) · [Filtering](#filtering) | [Table controls](user-guide/filtering-sorting.md) |
 | [Pivot](#pivot) · [Melt](#melt) | [Reshaping](user-guide/reshaping.md) |
 | [Export](#export) | [Export a file](user-guide/exporting-data.md) |

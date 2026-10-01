@@ -5,9 +5,21 @@ filters, sort, column layout, frozen columns and reshape settings.
 
 ## Save and reuse a query
 
-1. Run a query, such as the species summary in the [quick start](../getting-started/quick-start.md#2-group-by-species).
-2. Press <kbd>v</kbd>, then <kbd>s</kbd>. Enter a name and press <kbd>Enter</kbd> to save.
-3. Open another file with the same columns, press <kbd>v</kbd>, select the view and press <kbd>Enter</kbd>.
+Central Park's daily highs, in NOAA's public weather data, for 2024 and then
+2023:
+
+1. Open `s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/`, as the
+   `datui` argument or from the home screen: <kbd>Enter</kbd> on **NOAA daily
+   weather (GHCN-D)**, <kbd>→</kbd> on `by_year` and on `YEAR=2024`, then
+   <kbd>Enter</kbd> on `ELEMENT=TMAX`. Typing narrows each list.
+2. Run the [station query](remote-data.md#examples-on-public-data): 366 rows.
+3. Press <kbd>v</kbd>, then <kbd>s</kbd>. The name starts as the directory's,
+   `ELEMENT=TMAX`: press <kbd>Ctrl</kbd>+<kbd>U</kbd> to clear it, type
+   `Central Park highs` and press <kbd>Enter</kbd> to save.
+4. Open `YEAR=2023/ELEMENT=TMAX/` the same way. Press <kbd>v</kbd>: the view is
+   listed with Match `same columns`. Press <kbd>Enter</kbd>.
+
+The view runs the query on 2023: 365 rows, 2023-01-01 to 2023-12-31.
 
 A view stores transformations, not a copy of the data. The next file produces
 its own results. Saving is unavailable until the current table has a change
@@ -21,7 +33,11 @@ to store. In the description field, <kbd>Enter</kbd> inserts a newline;
 | <kbd>v</kbd> | Open the views list |
 | <kbd>V</kbd> | Apply the best-matching view without opening the list; when none matches, the list opens instead |
 
-Or from the command line: `datui --template quarterly data.csv`.
+Or from the command line:
+
+```bash
+datui --template "Central Park highs" s3://noaa-ghcn-pds/parquet/by_year/YEAR=2022/ELEMENT=TMAX/
+```
 
 A view's pivot and first rows are read in the background, with a spinner in
 the bottom bar. <kbd>Esc</kbd> stops it and keeps the table as it was. A view

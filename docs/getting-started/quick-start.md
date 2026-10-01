@@ -1,20 +1,27 @@
 # Quick start
 
-Open a small public dataset, compare three penguin species, and save the result.
-[Install datui](installation.md) first.
+Open public penguin measurements from the built-in catalog, compare three
+species, chart them, and copy the result. [Install datui](installation.md) first.
 
 ## 1. Open the data
 
-Download the [Palmer Penguins CSV][penguins] (344 rows, CC0), then open it:
-
 ```bash
-curl -fL -o penguins.csv https://raw.githubusercontent.com/allisonhorst/palmerpenguins/main/inst/extdata/penguins.csv
-datui --null-value NA penguins.csv
+datui
 ```
 
-On Windows, use `curl.exe` for the download. You can also download the file in
-your browser and run the second command. `--null-value NA` reads the source's
-missing-value marker as null, shown as `∅`.
+Type `penguins` to narrow the home screen, select **Palmer penguins** under
+**Public datasets**, and press <kbd>Enter</kbd>. datui shows the file's size and
+asks before it downloads; press <kbd>Enter</kbd> for **Yes**.
+
+The table has 344 penguins. Empty fields in the file are null, shown as `∅`;
+`rownames` is the row number the host, Rdatasets, adds. The data is CC0, from
+Palmer Station LTER; credit Horst, Hill and Gorman (2020).
+
+To skip the home screen, give the URL:
+
+```bash
+datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
+```
 
 | Key | Action |
 |---|---|
@@ -23,74 +30,81 @@ missing-value marker as null, shown as `∅`.
 | <kbd>i</kbd> | Inspect columns and file details |
 | <kbd>?</kbd> | Show help for this screen |
 | <kbd>Esc</kbd> | Close a panel or go back |
+| <kbd>q</kbd> | Back to the home screen; quits when the table was opened from the shell |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
 ## 2. Group by species
 
-Which species has the highest average body mass? Press <kbd>/</kbd>; the
-prompt opens on **SQL**. Type this, then press <kbd>Enter</kbd>:
+Which species is heaviest? Press <kbd>/</kbd>; the prompt opens on **SQL**.
+Type this, then press <kbd>Enter</kbd>:
 
 ```sql
-SELECT species, AVG(body_mass_g) AS mean_mass_g
+SELECT species, AVG(body_mass_g) AS mean_mass_g, COUNT(*) AS penguins
 FROM df
 GROUP BY species
 ORDER BY mean_mass_g DESC
 ```
 
-You get three rows, one per species, highest first. `AVG` ignores null values;
-Gentoo has the highest mean, about 5,076 g.
+Type it on one line, or press <kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line.
 
-Know q? Press <kbd>Ctrl</kbd>+<kbd>T</kbd> twice for **q-style**, a subset of
-q that evaluates right to left:
+| species | mean_mass_g | penguins |
+|---|---:|---:|
+| Gentoo | 5076.01626 | 124 |
+| Chinstrap | 3733.088235 | 68 |
+| Adelie | 3700.662252 | 152 |
+
+`AVG` skips the two penguins with no mass; `COUNT(*)` counts every row. The
+table is named `df`. Press <kbd>Enter</kbd> on Gentoo to see its 124 penguins,
+and <kbd>Esc</kbd> to come back.
+
+The same summary is one line in **q-style**, a subset of q that evaluates right
+to left. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> twice:
 
 ```text
 select mean_mass_g: avg body_mass_g by species
 ```
 
-Then press <kbd>s</kbd> to open **Sort & Filter**, select `mean_mass_g` on
-**Columns**, and press <kbd>Space</kbd> twice for descending order, then
-<kbd>Enter</kbd> to apply.
+A new query starts a fresh view, clearing sidebar filters and sort. See
+[querying](../user-guide/querying-data.md) for search and more SQL.
 
-The loaded table is named `df`. A new query starts a fresh view, clearing
-sidebar filters and sort. See [querying](../user-guide/querying-data.md) for
-search, expressions and grouped drill-down.
+## 3. Chart the measurements
 
-## 3. Plot individual measurements
-
-Press <kbd>R</kbd> to reset to the original rows, then <kbd>c</kbd> for charts.
-On the **XY** tab, use <kbd>Tab</kbd> to move between settings:
+Press <kbd>R</kbd> to return to the original rows, then <kbd>c</kbd> for charts.
+On the **XY** tab, <kbd>Tab</kbd> moves between settings:
 
 | Setting | Choose |
 |---|---|
-| Plot style | Scatter |
-| X | `flipper_length_mm` |
-| Y | `body_mass_g` |
+| Style | Scatter (<kbd>→</kbd>) |
+| X axis | `flipper_length_mm` |
+| Y series | `body_mass_g` |
 
-Use <kbd>Space</kbd> on a column setting to open its picker. Type part of the
-name, then select it; on Y, <kbd>Space</kbd> toggles the series and
-<kbd>Enter</kbd> closes the picker. All 342 complete measurement pairs fit
-within the default 10,000-row chart limit.
+<kbd>Space</kbd> on a column setting opens its picker. Type part of the name;
+on **Y series**, <kbd>Space</kbd> toggles a series and <kbd>Enter</kbd> closes
+the picker. The two penguins with no measurements are left out.
 
-Press <kbd>e</kbd> in the chart to save a PNG or EPS. Press <kbd>Esc</kbd>
-to return to the table. [More chart options](../user-guide/charting.md).
+Now press <kbd>6</kbd> for **Bar**, choose `species` for **Category** and
+**Count** for **Value**: Adelie 152, Gentoo 124, Chinstrap 68.
+
+Press <kbd>e</kbd> in the chart to save a PNG or EPS. Press <kbd>Esc</kbd> to
+return to the table. [More chart options](../user-guide/charting.md).
 
 ## 4. Copy or export
 
-Run the three-row summary again, then choose an output:
+Run the species summary again, then choose an output:
 
 | Do this | How |
 |---|---|
-| Copy the summary into a note | <kbd>y</kbd> → Table → Markdown → <kbd>Enter</kbd> |
-| Save a data file | <kbd>e</kbd> → type `penguin-summary.csv` in Path → <kbd>Enter</kbd> |
+| Copy the summary into a note | <kbd>y</kbd> → Scope **Table** → Format **Markdown** → <kbd>Enter</kbd> |
+| Save a data file | <kbd>e</kbd> → type `penguin-summary.csv` in **Path** → <kbd>Enter</kbd> |
 | Reuse the query on another file | <kbd>v</kbd> → <kbd>s</kbd> to save a view |
 
 Export and copy use the current rows and columns. They do not overwrite the
-input file unless you explicitly export to that path and confirm.
+input file unless you export to that path and confirm.
 
 ## Use your own data
 
 ```bash
-datui flights.parquet
+datui sales.parquet
 datui ./exports/
 datui s3://bucket/events/
 datui                        # browse from the home screen
@@ -99,5 +113,3 @@ datui                        # browse from the home screen
 Next: [file formats](../user-guide/loading-data.md),
 [cloud access](../user-guide/remote-data.md), or
 [all keyboard shortcuts](../reference/keyboard-shortcuts.md).
-
-[penguins]: https://allisonhorst.github.io/palmerpenguins/

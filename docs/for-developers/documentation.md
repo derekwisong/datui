@@ -77,6 +77,9 @@ python3 -m unittest discover -s scripts/docs -p 'test_*.py'
 ./scripts/docs/check_doc_links.sh book/preview
 ```
 
+The numbers quoted from the public datasets have their own check; see
+[Check the examples](examples.md).
+
 The link check needs [lychee](https://github.com/lycheeverse/lychee):
 `cargo install lychee`. It checks local targets and fragments by default;
 `--online` adds external URLs. `--build` builds the current checkout into

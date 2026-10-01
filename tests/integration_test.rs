@@ -2411,6 +2411,21 @@ fn open_findings_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Se
     (app, rx, tx)
 }
 
+/// Nothing was started: the app is idle and nothing but the run before's lease
+/// coming back is on the channel. The lease is dropped after the run's answer is
+/// sent, so on a loaded machine it can still be on its way.
+#[track_caller]
+fn assert_nothing_started(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
+    assert!(!app.is_busy(), "nothing is running");
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            matches!(event, AppEvent::BackgroundWorkFinished { .. }),
+            "no background work was started"
+        );
+        app.event(&event);
+    }
+}
+
 /// Every character on screen that is not ASCII is a glyph slot, which has an ASCII
 /// twin under `LANG=C`.
 fn assert_glyph_slots(screen: &str) {
@@ -2549,8 +2564,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
 
     // None of it read or measured anything.
-    assert!(!app.is_busy());
-    assert!(rx.try_recv().is_err(), "no background work was started");
+    assert_nothing_started(&mut app, &rx);
     let after = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(after.observations.len(), results.observations.len());
     assert_eq!(
@@ -2686,7 +2700,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     // Enter stages the read and shows it; nothing reads yet.
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.analysis_modal.data_quality_evidence_read.is_some());
-    assert!(!app.is_busy() && rx.try_recv().is_err());
+    assert_nothing_started(&mut app, &rx);
     for (width, height) in [(80, 24), (60, 20)] {
         let screen = render(&mut app, width, height);
         for label in [
@@ -2712,7 +2726,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     press(&mut app, KeyCode::Esc);
     assert!(app.analysis_modal.data_quality_evidence_read.is_none());
     assert!(app.analysis_modal.data_quality_observation_detail);
-    assert!(!app.is_busy() && rx.try_recv().is_err());
+    assert_nothing_started(&mut app, &rx);
 
     // Enter, and Enter again: the read, and exactly the rows the check counted.
     press(&mut app, KeyCode::Enter);

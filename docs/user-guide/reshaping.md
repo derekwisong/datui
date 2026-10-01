@@ -69,9 +69,10 @@ and set:
 | Variable name | `name` |
 | Value name | `n` |
 
-Apply with <kbd>Enter</kbd>. The result has 414 rows with columns `year`,
-`name` and `n`: the 376 counts, plus a null for each of the 38 years Jennifer
-has none.
+The name fields start as `variable` and `value`; <kbd>Ctrl</kbd>+<kbd>U</kbd>
+clears one before you type. Apply with <kbd>Enter</kbd>. The result has 414
+rows with columns `year`, `name` and `n`: the 376 counts, plus a null for each
+of the 38 years Jennifer has none.
 
 Other strategies select columns by regex (**By pattern**), data type
 (**By type**) or an **Explicit list**. The form shows how many columns match

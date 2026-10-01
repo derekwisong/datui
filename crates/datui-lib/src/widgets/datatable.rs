@@ -872,6 +872,96 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
         .with_maintain_order(true)
 }
 
+/// `plan` with every sort keeping tied rows in the order they come, as
+/// [`sort_options`] does, and the groupings, distincts, unions and joins under a sort
+/// giving them in one order. Polars SQL sorts unstably and offers no option, and a
+/// grouping or a join returns its rows in any order; each page is its own
+/// sort-then-slice, so with ties pages would repeat some rows and skip others.
+/// Only the parts of the plan holding such a node are rewritten.
+#[cfg(feature = "sql")]
+fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
+    use polars::lazy::dsl::DslPlan;
+    let unordered = |node: &DslPlan| match node {
+        DslPlan::Sort { sort_options, .. } => !sort_options.maintain_order,
+        DslPlan::GroupBy { maintain_order, .. } => under_sort && !maintain_order,
+        DslPlan::Distinct { options, .. } => under_sort && !options.maintain_order,
+        DslPlan::Union { args, .. } => under_sort && !args.maintain_order,
+        DslPlan::Join { options, .. } => {
+            under_sort && options.args.maintain_order == MaintainOrderJoin::None
+        }
+        _ => false,
+    };
+    if !plan.into_iter().any(unordered) {
+        return;
+    }
+    let mut below = under_sort;
+    match plan {
+        DslPlan::Sort { sort_options, .. } => {
+            sort_options.maintain_order = true;
+            below = true;
+        }
+        DslPlan::GroupBy { maintain_order, .. } if under_sort => *maintain_order = true,
+        DslPlan::Distinct { options, .. } if under_sort => options.maintain_order = true,
+        DslPlan::Union { args, .. } if under_sort => args.maintain_order = true,
+        DslPlan::Join { options, .. } if under_sort => {
+            Arc::make_mut(options).args.maintain_order = MaintainOrderJoin::LeftRight;
+        }
+        _ => {}
+    }
+    let into = |input: &mut Arc<DslPlan>| stable_order(Arc::make_mut(input), below);
+    let each = |inputs: &mut [DslPlan]| {
+        for input in inputs {
+            stable_order(input, below);
+        }
+    };
+    match plan {
+        // A plan asked for its schema is wrapped as IR, which would run as converted:
+        // rewrite the plan it came from, and leave the IR behind.
+        DslPlan::IR { dsl, .. } => {
+            let mut inner = Arc::unwrap_or_clone(dsl.clone());
+            stable_order(&mut inner, below);
+            *plan = inner;
+        }
+        DslPlan::Sort { input, .. }
+        | DslPlan::Select { input, .. }
+        | DslPlan::GroupBy { input, .. }
+        | DslPlan::Filter { input, .. }
+        | DslPlan::Distinct { input, .. }
+        | DslPlan::Slice { input, .. }
+        | DslPlan::HStack { input, .. }
+        | DslPlan::MatchToSchema { input, .. }
+        | DslPlan::MapFunction { input, .. }
+        | DslPlan::Sink { input, .. }
+        | DslPlan::Cache { input, .. }
+        | DslPlan::Pivot { input, .. } => into(input),
+        DslPlan::Union { inputs, .. }
+        | DslPlan::HConcat { inputs, .. }
+        | DslPlan::SinkMultiple { inputs } => each(inputs),
+        DslPlan::PipeWithSchema { input, .. } => {
+            let mut inputs = input.to_vec();
+            each(&mut inputs);
+            *input = inputs.into();
+        }
+        DslPlan::Join {
+            input_left,
+            input_right,
+            ..
+        } => {
+            into(input_left);
+            into(input_right);
+        }
+        DslPlan::Gather { input, idxs, .. } => {
+            into(input);
+            into(idxs);
+        }
+        DslPlan::ExtContext { input, contexts } => {
+            into(input);
+            each(contexts);
+        }
+        _ => {}
+    }
+}
+
 /// A string's in-memory width when nothing says otherwise: the view plus a short value.
 const STRING_BYTES_GUESS: usize = 40;
 
@@ -7969,6 +8059,7 @@ impl DataTableState {
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
+                    stable_order(&mut result_lf.logical_plan, false);
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -11267,6 +11358,57 @@ mod tests {
         assert!(top.slice(100, 100).equals(&below));
         let one = sorted.slice(5, 1).collect().unwrap();
         assert!(top.slice(5, 1).equals(&one));
+    }
+
+    /// A SQL ORDER BY keeps tied rows in order, as the sidebar's sort does: the page
+    /// read at the top (a top-k to Polars) and the next page agree on the rows they
+    /// share, through a LIMIT and a subquery, and over a grouping, a join, a union or
+    /// a DISTINCT, whose rows would otherwise come in any order (#495).
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_order_by_with_ties_reads_the_same_rows_page_by_page() {
+        let df = df!(
+            "k" => (0..5000i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "v" => (0..5000i64).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for sql in [
+            "SELECT * FROM df ORDER BY k",
+            "SELECT v, k FROM df ORDER BY k DESC",
+            "SELECT * FROM df ORDER BY k LIMIT 4000",
+            "SELECT * FROM (SELECT * FROM df ORDER BY k) WHERE v >= 0",
+            "SELECT v % 1000 AS g, COUNT(*) AS n, MIN(v) AS v FROM df GROUP BY g ORDER BY n",
+            "SELECT a.k, a.v FROM df a JOIN df b ON a.v = b.v ORDER BY a.k",
+            "SELECT a.k, a.v FROM df a LEFT JOIN df b ON a.v = b.v + 1 ORDER BY a.k",
+            "SELECT k, v FROM df UNION SELECT k, v FROM df ORDER BY k",
+            "SELECT DISTINCT v % 1000 AS g, v % 1000 AS v FROM df ORDER BY g % 3",
+        ] {
+            let mut state =
+                DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+            state.sql_query(sql.to_string());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            let unstable = (&state.lf.logical_plan).into_iter().any(|node| {
+                matches!(
+                    node,
+                    polars::lazy::dsl::DslPlan::Sort { sort_options, .. }
+                        if !sort_options.maintain_order
+                )
+            });
+            assert!(!unstable, "{sql}");
+            let top = state.lf.clone().slice(0, 200).collect().unwrap();
+            let next = state.lf.clone().slice(100, 200).collect().unwrap();
+            assert!(top.slice(100, 100).equals(&next.slice(0, 100)), "{sql}");
+            let one = state.lf.clone().slice(1500, 1).collect().unwrap();
+            let around = state.lf.clone().slice(1400, 200).collect().unwrap();
+            assert!(around.slice(100, 1).equals(&one), "{sql}");
+            // Ties keep the order they were read in.
+            let v = top.column("v").unwrap().i64().unwrap();
+            assert!(
+                v.into_no_null_iter().is_sorted(),
+                "{sql}: {:?}",
+                v.head(Some(10))
+            );
+        }
     }
 
     #[test]

@@ -613,6 +613,28 @@ mod export_format_tests {
         assert_eq!(app.counts_spawned.get(), 0);
     }
 
+    /// A page whose worker dies takes the count waiting on it down too, as a page that
+    /// fails to read does.
+    #[test]
+    fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
+        app.spawn_async_collect(App::LOADING_BUFFER);
+        assert_eq!(app.count_after_paint, Some(dataset));
+        let died = recv(&rx);
+        assert!(matches!(
+            died,
+            AppEvent::BackgroundFailed { job: Job::Rows, .. }
+        ));
+        app.event(&died);
+        assert_eq!(app.count_after_paint, None);
+        assert_eq!(app.len_count_inflight, None);
+        assert_eq!(app.len_count_failed, Some(dataset));
+        assert!(!app.count_waits_for_a_frame());
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 0);
+    }
+
     /// A count waiting on a paint for a frame the view has left is never started:
     /// the frame that replaced it gets the one count.
     #[test]

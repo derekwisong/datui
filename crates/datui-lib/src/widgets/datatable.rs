@@ -2203,9 +2203,9 @@ impl DataTableState {
         (files, read, footers, skipped)
     }
 
-    /// One local Parquet file's columns, row count and row-group sizes, from its
-    /// footer. The metadata is already read for the row count; the sizes come off the
-    /// same object.
+    /// One local Parquet file's columns, row count, row-group sizes and column sizes,
+    /// from its footer. The metadata is already read for the row count; the sizes come
+    /// off the same object.
     fn footer_of(path: &Path) -> Option<FileSchema> {
         let file = File::open(path).ok()?;
         // Asked of the open handle, so it is the file the footer was read from and not
@@ -2214,8 +2214,10 @@ impl DataTableState {
         let mut reader = ParquetReader::new(file);
         let arrow_schema = reader.schema().ok()?;
         let metadata = reader.get_metadata().ok()?;
+        let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
         Some(FileSchema {
-            schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
+            column_bytes: crate::schema_union::parquet_column_bytes(&schema, metadata),
+            schema: Arc::new(schema),
             rows: metadata.num_rows,
             file_bytes,
             row_group_bytes: metadata
@@ -6437,10 +6439,40 @@ impl DataTableState {
         Some(self.start_row + self.table_state.selected()? + self.row_start_index)
     }
 
-    /// Rows times estimated row width: what collecting the whole view would
-    /// hold in memory, for the copy guard. None until the count has run.
-    pub fn estimated_total_bytes(&self) -> Option<usize> {
-        Some(self.num_rows_if_valid()? * self.bytes_per_row())
+    /// Rows times estimated row width, for the copy guard: what collecting the whole
+    /// view would hold, with binary at the base64 size a copy writes. None until the
+    /// count has run, and while a binary column's width is unknown: the buffer holds a
+    /// stub for it, so only a footer says how wide it is.
+    pub fn estimated_copy_bytes(&self) -> Option<usize> {
+        let rows = self.num_rows_if_valid()?;
+        if rows == 0 {
+            return Some(0);
+        }
+        let base64 = |bytes: usize| bytes.div_ceil(3) * 4;
+        let footer_width = |name: &str| {
+            self.column_widths
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, w)| *w)
+        };
+        let mut row = self.bytes_per_row();
+        for name in &self.column_order {
+            match self.schema.get(name.as_str()) {
+                Some(DataType::Binary) => row += base64(footer_width(name)?),
+                // Buffered whole, so the buffer measured it with the row; base64 adds
+                // a third on top.
+                Some(dtype) if crate::nested_json::has_binary(dtype) => {
+                    let buffered = self.buffered_df.as_ref().and_then(|df| {
+                        let column = df.column(name).ok()?;
+                        (df.height() > 0)
+                            .then(|| column.as_materialized_series().estimated_size() / df.height())
+                    });
+                    row += buffered.or_else(|| footer_width(name)).unwrap_or(0) / 3;
+                }
+                _ => {}
+            }
+        }
+        Some(rows.saturating_mul(row))
     }
 
     /// The drift group of each row from the top of the view down, for a frame
@@ -8656,6 +8688,7 @@ mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8721,6 +8754,7 @@ mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8781,6 +8815,7 @@ mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8856,6 +8891,7 @@ mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -8926,6 +8962,7 @@ mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             FootersFound {
                 dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
@@ -9099,6 +9136,7 @@ mod tests {
             rows,
             file_bytes: 0,
             row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
         })
     }
 

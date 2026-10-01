@@ -3478,6 +3478,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -3695,6 +3696,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -3784,6 +3786,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -3991,6 +3994,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -4149,6 +4153,7 @@ pub mod tests {
                 rows: 100,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5332,7 +5337,7 @@ pub mod tests {
 
         let state = app.data_table_state.as_mut().unwrap();
         state.invalidate_num_rows();
-        assert!(state.estimated_total_bytes().is_none());
+        assert!(state.estimated_copy_bytes().is_none());
 
         app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
         let _ = app.perform_copy();
@@ -5341,6 +5346,112 @@ pub mod tests {
             "an unknown size asks; it never collects unprompted"
         );
         assert!(app.pending_copy.is_some());
+    }
+
+    /// A Table copy writes binary as base64, so the guard counts it at that size
+    /// from the footer's width: large blobs ask first, small ones copy, and blobs no
+    /// footer measured ask, since the buffer only ever holds a stub for them (#429).
+    #[test]
+    fn a_table_copy_counts_binary_at_its_base64_size() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let copy = |footer_width: Option<usize>| {
+            let rows = || {
+                df!("id" => &[1i64, 2, 3], "blob" => &[b"a".as_slice(), b"b", b"c"])
+                    .unwrap()
+                    .lazy()
+            };
+            let mut lf = rows();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                rows(),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.load_active = true;
+            app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+            let state = app.data_table_state.as_mut().unwrap();
+            state.set_num_rows(3);
+            if let Some(width) = footer_width {
+                state.set_column_widths(vec![("blob".to_string(), width)]);
+            }
+            app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+            let next = app.perform_copy();
+            (app, next)
+        };
+
+        // Three rows of 3 MiB are 12 MiB of base64, past the 10 MiB that asks; the
+        // bytes alone, or the stub the buffer holds, would not be.
+        let (app, next) = copy(Some(3 * 1024 * 1024));
+        assert!(app.confirmation_modal.active, "large blobs ask first");
+        assert!(app.pending_copy.is_some() && next.is_none());
+
+        let (app, next) = copy(Some(100));
+        assert!(!app.confirmation_modal.active, "small blobs copy");
+        assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+
+        let (app, next) = copy(None);
+        assert!(app.confirmation_modal.active, "unmeasured blobs ask");
+        assert!(app.pending_copy.is_some() && next.is_none());
+    }
+
+    /// A local directory's footers, read to open it, give its binary columns their
+    /// width as a cloud object's do, so a Table copy is sized rather than asked about.
+    #[test]
+    fn a_local_directorys_footers_size_its_binary_columns() {
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+
+        let copy = |blob: usize| {
+            let dir = tempfile::tempdir().unwrap();
+            // Two files, three rows, every blob distinct.
+            for (file, rows) in [(0u8, 2u8), (1, 1)] {
+                let blobs: Vec<Vec<u8>> = (0..rows).map(|i| vec![file * 10 + i; blob]).collect();
+                let mut df = df!(
+                    "id" => (0..rows as i64).collect::<Vec<_>>(),
+                    "blob" => blobs.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                )
+                .unwrap();
+                let f = std::fs::File::create(dir.path().join(format!("{file}.parquet"))).unwrap();
+                ParquetWriter::new(f).finish(&mut df).unwrap();
+            }
+            let options = OpenOptions {
+                hive: true,
+                ..OpenOptions::default()
+            };
+            let state = App::schema_state_from_local_hive(
+                Some(dir.path()),
+                &options,
+                &Default::default(),
+                &Default::default(),
+            )
+            .expect("the local footer route");
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.load_active = true;
+            app.apply_schema_ready(state, None, &options, None);
+            app.data_table_state.as_mut().unwrap().set_num_rows(3);
+            app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+            let next = app.perform_copy();
+            (app, next)
+        };
+
+        // Three rows of 3 MiB are 12 MiB of base64, past the 10 MiB that asks.
+        let (app, next) = copy(3 * 1024 * 1024);
+        assert!(next.is_none());
+        let message = &app.confirmation_modal.message;
+        assert!(message.starts_with("This copies about 12"), "{message}");
+
+        let (app, next) = copy(100);
+        assert!(!app.confirmation_modal.active, "small blobs copy");
+        assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
     }
 
     /// A confirmation takes every key until it is answered, so the bar names its keys
@@ -5622,6 +5733,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5705,6 +5817,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5792,6 +5905,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5908,6 +6022,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -5986,6 +6101,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -6056,6 +6172,7 @@ pub mod tests {
                 rows: 1,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::widgets::datatable::FootersFound {
                 dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
@@ -6128,6 +6245,7 @@ pub mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -6225,6 +6343,7 @@ pub mod tests {
                 rows: 2,
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
+                column_bytes: Vec::new(),
             };
             crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
         };
@@ -13643,6 +13762,9 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
+        // The footers just read say how wide each column is, as the cloud object's do:
+        // a binary column's width is known nowhere else.
+        state.set_column_widths(crate::schema_union::column_bytes_per_row(&footers));
         state.set_dataset_schema(
             dataset
                 .with_partition_layouts(&p.to_string_lossy(), &paths)
@@ -21957,7 +22079,8 @@ impl App {
         enum Planned {
             Copy(clipboard::Payload, String),
             Collect,
-            /// None: the size is not known yet (the row count is still coming).
+            /// None: the size is not known (the row count is still coming, or a
+            /// binary column's width is known to no footer).
             Confirm(Option<usize>),
         }
         let format = self.copy_modal.format;
@@ -22002,7 +22125,7 @@ impl App {
                     }),
                     None => Err("Nothing to copy: no rows are on screen".to_string()),
                 },
-                CopyScope::Table => match state.estimated_total_bytes() {
+                CopyScope::Table => match state.estimated_copy_bytes() {
                     Some(bytes) if bytes > Self::COPY_REFUSE_BYTES => Err(format!(
                         "The table is about {} — too much to hold on a clipboard. \
                          Export it to a file instead (e).",
@@ -22012,8 +22135,9 @@ impl App {
                         Ok(Planned::Confirm(Some(bytes)))
                     }
                     Some(_) => Ok(Planned::Collect),
-                    // The row count has not landed yet, so the size is anyone's
-                    // guess: ask before collecting an unknown amount.
+                    // The row count has not landed yet, or a binary column's width
+                    // is unknown, so the size is anyone's guess: ask before
+                    // collecting an unknown amount.
                     None => Ok(Planned::Confirm(None)),
                 },
             },
@@ -22028,13 +22152,20 @@ impl App {
             Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
             Ok(Planned::Confirm(bytes)) => {
                 self.pending_copy = Some((format, header));
+                let counting = self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.num_rows_if_valid().is_none());
                 self.confirmation_modal.show(match bytes {
                     Some(bytes) => format!(
                         "This copies about {} to the clipboard.\n\nCopy the whole table?",
                         Self::format_bytes(bytes as u64)
                     ),
-                    None => "The table's size is not known yet — the row count is \
-                             still being read.\n\nCopy the whole table anyway?"
+                    None if counting => "The table's size is not known yet — the row count \
+                                         is still being read.\n\nCopy the whole table anyway?"
+                        .to_string(),
+                    None => "The size of the table's binary columns is not known.\n\n\
+                             Copy the whole table anyway?"
                         .to_string(),
                 });
                 None

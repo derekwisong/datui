@@ -164,6 +164,54 @@ pub struct FileSchema {
     /// costs the whole of it. How big they are is therefore what a remote dataset
     /// costs to scroll, and it is in the footer datui already reads.
     pub row_group_bytes: Vec<usize>,
+    /// Uncompressed bytes of each column, from [`parquet_column_bytes`]. Empty when
+    /// the footer did not carry them this far.
+    pub column_bytes: Vec<(String, usize)>,
+}
+
+/// Uncompressed bytes of each column in a Parquet footer, summed over the row groups
+/// and a nested column's leaves. What a binary or string column holds is known only
+/// from here short of reading it.
+pub fn parquet_column_bytes(
+    schema: &Schema,
+    metadata: &polars_parquet::parquet::metadata::FileMetadata,
+) -> Vec<(String, usize)> {
+    schema
+        .iter_names()
+        .map(|name| {
+            let bytes: i64 = metadata
+                .row_groups
+                .iter()
+                .flat_map(|rg| rg.columns_under_root_iter(name).into_iter().flatten())
+                .map(|chunk| chunk.uncompressed_size())
+                .sum();
+            (name.to_string(), bytes.max(0) as usize)
+        })
+        .collect()
+}
+
+/// Uncompressed bytes per row of each column over the footers read. A file without a
+/// column counts its rows at nothing, since they read as null there.
+pub fn column_bytes_per_row(footers: &[Option<FileSchema>]) -> Vec<(String, usize)> {
+    let rows: usize = footers.iter().flatten().map(|f| f.rows).sum();
+    if rows == 0 {
+        return Vec::new();
+    }
+    let mut totals: Vec<(String, usize)> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for (name, bytes) in footers.iter().flatten().flat_map(|f| &f.column_bytes) {
+        match at.get(name) {
+            Some(&i) => totals[i].1 += bytes,
+            None => {
+                at.insert(name.clone(), totals.len());
+                totals.push((name.clone(), *bytes));
+            }
+        }
+    }
+    totals
+        .into_iter()
+        .map(|(name, bytes)| (name, bytes / rows))
+        .collect()
 }
 
 /// Where a dataset's schema came from. Shown in the Info panel's Schema tab, so a
@@ -1973,7 +2021,29 @@ mod tests {
             rows,
             file_bytes: 0,
             row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
         })
+    }
+
+    /// Widths are averaged over every row read: a file without a column counts its
+    /// rows at nothing, and an unreadable one is left out.
+    #[test]
+    fn column_widths_average_over_the_rows_read() {
+        let with = |rows, bytes: &[(&str, usize)]| {
+            let mut footer = file(&[], rows)?;
+            footer.column_bytes = bytes.iter().map(|(n, b)| (n.to_string(), *b)).collect();
+            Some(footer)
+        };
+        let footers = [
+            with(3, &[("blob", 3_000), ("id", 24)]),
+            None,
+            with(1, &[("id", 8)]),
+        ];
+        assert_eq!(
+            column_bytes_per_row(&footers),
+            [("blob".to_string(), 750), ("id".to_string(), 8)]
+        );
+        assert!(column_bytes_per_row(&[with(0, &[("id", 0)])]).is_empty());
     }
 
     /// Column sets for a directory, one slice per file.
@@ -2675,6 +2745,7 @@ mod tests {
                         rows: 1,
                         file_bytes: 0,
                         row_group_bytes: sizes.to_vec(),
+                        column_bytes: Vec::new(),
                     })
                 })
                 .collect();
@@ -2806,6 +2877,7 @@ mod tests {
                         rows: 1,
                         file_bytes: *bytes,
                         row_group_bytes: Vec::new(),
+                        column_bytes: Vec::new(),
                     })
                 })
                 .collect();
@@ -2869,12 +2941,14 @@ mod tests {
                     rows: 1,
                     file_bytes: 40 * KIB,
                     row_group_bytes: Vec::new(),
+                    column_bytes: Vec::new(),
                 }),
                 Some(FileSchema {
                     schema: Arc::new(Schema::with_capacity(0)),
                     rows: 1,
                     file_bytes: 40 * KIB,
                     row_group_bytes: Vec::new(),
+                    column_bytes: Vec::new(),
                 }),
             ],
             SchemaOrigin::FooterSample {
@@ -2965,6 +3039,7 @@ mod tests {
                     rows: 1,
                     file_bytes: 1,
                     row_group_bytes: Vec::new(),
+                    column_bytes: Vec::new(),
                 });
                 paths.len()
             ];
@@ -3073,6 +3148,7 @@ mod tests {
                     rows: 1,
                     file_bytes: 1,
                     row_group_bytes: Vec::new(),
+                    column_bytes: Vec::new(),
                 });
                 paths.len()
             ];
@@ -3244,6 +3320,7 @@ mod tests {
                     rows: 1,
                     file_bytes: 0,
                     row_group_bytes: Vec::new(),
+                    column_bytes: Vec::new(),
                 })
             })
             .collect();
@@ -3268,6 +3345,7 @@ mod tests {
             rows: 1,
             file_bytes: 0,
             row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
         });
         let dataset = union_sampled(files, &read, &with_conflict);
         let drift = ScanDrift::new(&paths, &dataset, &rows).unwrap();

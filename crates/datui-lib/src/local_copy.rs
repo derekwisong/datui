@@ -23,8 +23,8 @@ pub const COPIES_DIR: &str = "quality-copies";
 /// Held, locked, by the session that owns a copy; [`sweep`] leaves a locked copy alone.
 const HELD: &str = ".held";
 
-/// A copy whose lock file is missing is left this long before a sweep removes it: the
-/// window between creating its directory and taking its lock.
+/// A sweep leaves a copy younger than this alone, locked or not: until its lock is
+/// taken, a live session's copy looks like a dead one's.
 const UNHELD_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One remote object a copy fetches, as the open found it.
@@ -41,8 +41,10 @@ pub struct RemoteObject {
 /// reading it.
 #[derive(Debug)]
 pub struct LocalCopy {
-    dir: tempfile::TempDir,
+    // Closed before the directory goes: Windows will not remove a directory holding
+    // an open file.
     _held: std::fs::File,
+    dir: tempfile::TempDir,
     paths: HashMap<String, PathBuf>,
     bytes: u64,
 }
@@ -88,8 +90,8 @@ impl LocalCopy {
             .map_err(unwritable)?;
         let held = hold(dir.path())?;
         let mut copy = LocalCopy {
-            dir,
             _held: held,
+            dir,
             paths: HashMap::with_capacity(objects.len()),
             bytes: 0,
         };
@@ -166,7 +168,7 @@ fn hold(dir: &Path) -> Result<std::fs::File> {
 
 /// Remove copies under `root` no session holds: left by a datui that did not exit
 /// cleanly, or quit while a run read one. A copy another running datui holds is
-/// locked and stays.
+/// locked and stays, and so does one too new to judge.
 pub fn sweep(root: &Path) {
     use fs2::FileExt;
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -182,20 +184,21 @@ pub fn sweep(root: &Path) {
         if !ours {
             continue;
         }
+        let old = |meta: std::io::Result<std::fs::Metadata>| {
+            meta.and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age > UNHELD_GRACE)
+        };
         let orphaned = match std::fs::File::open(path.join(HELD)) {
             Ok(file) => {
                 let free = file.try_lock_exclusive().is_ok();
                 if free {
                     let _ = fs2::FileExt::unlock(&file);
                 }
-                free
+                free && old(file.metadata())
             }
-            Err(_) => entry
-                .metadata()
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|modified| modified.elapsed().ok())
-                .is_some_and(|age| age > UNHELD_GRACE),
+            Err(_) => old(entry.metadata()),
         };
         if orphaned {
             let _ = std::fs::remove_dir_all(&path);
@@ -218,24 +221,24 @@ fn relative_path(url: &str) -> PathBuf {
         .filter(|part| !part.is_empty())
         .map(|part| match part {
             "." | ".." => "_".to_string(),
-            part => safe_component(part),
+            part => safe_component(part, cfg!(windows)),
         })
         .collect()
 }
 
-#[cfg(windows)]
-fn safe_component(part: &str) -> String {
+/// `part` as one file name. Windows refuses some characters in one: they are
+/// percent-encoded, which Polars decodes in a hive value, so the partition reads as
+/// the source's.
+fn safe_component(part: &str, windows: bool) -> String {
+    if !windows {
+        return part.to_string();
+    }
     part.chars()
         .map(|c| match c {
-            '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*' => '_',
-            c => c,
+            '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*' => format!("%{:02X}", c as u32),
+            c => c.to_string(),
         })
         .collect()
-}
-
-#[cfg(not(windows))]
-fn safe_component(part: &str) -> String {
-    part.to_string()
 }
 
 fn is_remote(path: &str) -> bool {
@@ -515,13 +518,22 @@ mod tests {
         };
         let held = fetch();
         let dir = held.dir().to_path_buf();
-        // A copy left by a session that died: its lock is released with the process.
-        let orphan = root.path().join("copy-orphan");
-        std::fs::create_dir_all(orphan.join("lake")).unwrap();
-        std::fs::write(orphan.join(HELD), b"").unwrap();
+        // Copies left by sessions that died: their locks went with the processes. One
+        // is as new as a live session's copy before it takes its lock.
+        let orphan = |name: &str, age: u64| {
+            let dir = root.path().join(name);
+            std::fs::create_dir_all(dir.join("lake")).unwrap();
+            let lock = std::fs::File::create(dir.join(HELD)).unwrap();
+            let then = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            lock.set_modified(then).unwrap();
+            dir
+        };
+        let old = orphan("copy-old", 2 * UNHELD_GRACE.as_secs());
+        let new = orphan("copy-new", 0);
         sweep(root.path());
         assert!(dir.exists(), "a held copy stays");
-        assert!(!orphan.exists(), "an orphan goes");
+        assert!(!old.exists(), "an orphan goes");
+        assert!(new.exists(), "one too new to judge stays");
         drop(held);
         assert!(!dir.exists(), "dropped, the copy is removed");
     }
@@ -563,6 +575,9 @@ mod tests {
             relative_path("s3:///../../etc/passwd"),
             PathBuf::from("_/_/etc/passwd")
         );
+        assert_eq!(safe_component("at=12:00", false), "at=12:00");
+        assert_eq!(safe_component("at=12:00", true), "at=12%3A00");
+        assert_eq!(safe_component(r"a\b", true), "a%5Cb");
     }
 
     #[test]

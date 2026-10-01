@@ -312,7 +312,8 @@ pub struct DataTableState {
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
-    decompress_temp_file: Option<NamedTempFile>,
+    /// Shared with any view that scans it, and removed with the last.
+    decompress_temp_file: Option<Arc<NamedTempFile>>,
     /// The downloaded remote file this dataset was opened from, held while it is scanned.
     #[cfg(any(feature = "http", feature = "cloud"))]
     download: Option<crate::download::TempDownload>,
@@ -3523,7 +3524,7 @@ impl DataTableState {
                 state.replace_original_lf(&lf)?;
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
-                state.decompress_temp_file = Some(temp);
+                state.decompress_temp_file = Some(Arc::new(temp));
                 Ok(state)
             }
         } else {
@@ -4366,6 +4367,7 @@ impl DataTableState {
         view.visible_rows = self.visible_rows;
         view.remote_source = self.remote_source;
         // It scans the same file, and a view captured from it must be refused too.
+        view.decompress_temp_file = self.decompress_temp_file.clone();
         #[cfg(any(feature = "http", feature = "cloud"))]
         {
             view.download = self.download.clone();
@@ -5199,9 +5201,10 @@ impl DataTableState {
         Self::without_drift(self.lf.clone())
     }
 
-    /// Whether the frame scans a temporary file this state owns (a decompressed
+    /// Whether the frame scans a temporary file this state holds (a decompressed
     /// archive). A view captured at exit must not reference it: the file is removed
-    /// when the state drops, and the plan would scan a path that no longer exists.
+    /// when the last state holding it drops, and the plan would scan a path that no
+    /// longer exists.
     pub fn scans_a_temp_file(&self) -> bool {
         self.decompress_temp_file.is_some()
     }
@@ -9549,6 +9552,43 @@ mod tests {
             .quality_evidence_view(&crate::data_quality::QualityScope::WholeSource, lit(true))
             .unwrap();
         assert!(view.scans_a_download());
+        drop(state);
+        assert!(path.exists(), "the view still scans it");
+        assert_eq!(collect_lazy(view.lf.clone(), false).unwrap().height(), 2);
+        drop(view);
+        assert!(!path.exists());
+    }
+
+    /// The same for a compressed CSV: the evidence rows scan the decompressed copy,
+    /// so they hold it, and it goes with the last state that scans it.
+    #[test]
+    fn evidence_rows_hold_the_decompressed_file_they_scan() {
+        let source = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let gz = source.path().join("rows.csv.gz");
+        let mut encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
+        std::io::Write::write_all(&mut encoder, b"id\n1\n2\n").unwrap();
+        encoder.finish().unwrap();
+        let options = crate::OpenOptions {
+            temp_dir: Some(scratch.path().to_path_buf()),
+            ..Default::default()
+        };
+        let state = DataTableState::from_csv(&gz, &options).unwrap();
+        let path = state
+            .decompress_temp_file
+            .as_ref()
+            .expect("decompressed to a temp file")
+            .path()
+            .to_path_buf();
+        assert!(path.starts_with(scratch.path()));
+
+        let view = state
+            .quality_evidence_view(&crate::data_quality::QualityScope::WholeSource, lit(true))
+            .unwrap();
+        assert!(view.scans_a_temp_file());
         drop(state);
         assert!(path.exists(), "the view still scans it");
         assert_eq!(collect_lazy(view.lf.clone(), false).unwrap().height(), 2);

@@ -86,7 +86,6 @@ values. Locale-based formatting requires the `"system"` preset.
 ```toml
 [performance]
 analysis_sample_rows = 100000    # The analysis sample's starting size; 0 starts at every row
-event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
 quality_local_copy_mb = 2048     # Most a Data Quality full scan copies from a remote source; 0 never copies
 ```
 

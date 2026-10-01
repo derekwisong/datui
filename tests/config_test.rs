@@ -41,7 +41,6 @@ fn test_default_config() {
 
     // Check performance defaults
     assert_eq!(config.performance.analysis_sample_rows, 100_000);
-    assert_eq!(config.performance.event_poll_interval_ms, 25);
 
     // Check theme defaults
     assert_eq!(config.theme.colors.keybind_hints, "#7dcfff");
@@ -244,19 +243,21 @@ fn test_chart_config_default_and_validation() {
     assert!(unlimited.validate().is_ok());
 }
 
+/// The run loop no longer polls, so `event_poll_interval_ms` is gone; a config written
+/// for an earlier release that still sets it loads, and the setting means nothing.
 #[test]
-fn test_validate_config_zero_event_poll_interval() {
-    let mut config = AppConfig::default();
-    config.performance.event_poll_interval_ms = 0;
+fn test_retired_event_poll_interval_still_loads() {
+    let old =
+        "version = \"0.2\"\n[performance]\nanalysis_sample_rows = 7\nevent_poll_interval_ms = 0\n";
+    let config = layered(&["[performance]\nevent_poll_interval_ms = 50\n", old]);
+    assert_eq!(config.performance.analysis_sample_rows, 7);
+    assert!(config.validate().is_ok());
 
-    let result = config.validate();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("event_poll_interval_ms must be greater than 0")
-    );
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, old).unwrap();
+    let loaded = AppConfig::load_from_file(&path).expect("an old config file loads");
+    assert_eq!(loaded.performance.analysis_sample_rows, 7);
 }
 
 #[test]
@@ -281,7 +282,6 @@ row_start_index = 0
 
 [performance]
 analysis_sample_rows = 50000
-event_poll_interval_ms = 50
 
 [theme.colors]
 keybind_hints = "blue"
@@ -473,7 +473,7 @@ number_format = "thousands"
 
 [performance]
 polars_streaming = false
-event_poll_interval_ms = 50
+quality_local_copy_mb = 512
 
 [query]
 default_mode = "search"
@@ -507,7 +507,7 @@ cross_filesystems = true
         NumberFormatConfig::Preset("thousands".to_string())
     );
     assert!(!kept.performance.polars_streaming);
-    assert_eq!(kept.performance.event_poll_interval_ms, 50);
+    assert_eq!(kept.performance.quality_local_copy_mb, 512);
     assert_eq!(kept.query.default_mode, QueryMode::Search);
     assert!(!kept.query.enable_history);
     assert!(kept.templates.auto_apply);
@@ -532,7 +532,7 @@ number_format = "none"
 
 [performance]
 polars_streaming = true
-event_poll_interval_ms = 25
+quality_local_copy_mb = 2048
 
 [query]
 default_mode = "sql"
@@ -568,7 +568,10 @@ cross_filesystems = false
         "TOML cannot unset a key, so an import's optional value stays"
     );
     assert!(restored.performance.polars_streaming);
-    assert_eq!(restored.performance.event_poll_interval_ms, 25);
+    assert_eq!(
+        restored.performance.quality_local_copy_mb,
+        defaults.performance.quality_local_copy_mb
+    );
     assert_eq!(restored.query.default_mode, QueryMode::Sql);
     assert!(restored.query.enable_history);
     assert!(!restored.templates.auto_apply);

@@ -113,6 +113,7 @@ mod sql_assist;
 pub mod sql_group;
 pub mod statistics;
 pub mod template;
+pub mod terminal_input;
 pub mod widgets;
 
 pub use cache::CacheManager;
@@ -8177,6 +8178,13 @@ impl From<&cli::Args> for OpenOptions {
 
 pub enum AppEvent {
     Key(KeyEvent),
+    /// Read from the terminal by [`terminal_input::TerminalInput`]: a key press or a
+    /// resize. [`event_pump::EventPump`] takes it off the channel and decides what a
+    /// key does while the app is busy; the app itself only ever sees `Key`/`Resize`.
+    Terminal(crossterm::event::Event),
+    /// Something polled rather than sent changed (a background panic, a Polars
+    /// warning): the loop should look. Handled as nothing.
+    Wake,
     Open(Vec<PathBuf>, OpenOptions),
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
@@ -8595,6 +8603,21 @@ pub enum AppEvent {
         found: Option<discover::EntryKind>,
         jump: bool,
     },
+}
+
+impl AppEvent {
+    /// A report from work still going, sent many times while it runs: the run loop may
+    /// fold several into one frame. Anything else is drawn as soon as it is handled.
+    pub fn is_progress(&self) -> bool {
+        matches!(
+            self,
+            AppEvent::HomeMeasured { done: false, .. }
+                | AppEvent::HomeClassified { done: false, .. }
+                | AppEvent::HomeSearchBatch { .. }
+                | AppEvent::HomeProbeProgress { .. }
+                | AppEvent::BackgroundQualityPhase { .. }
+        )
+    }
 }
 
 /// A look at a path that is out on a worker, and what would make its answer stale.
@@ -12456,6 +12479,12 @@ impl App {
         self.error_modal
             .active
             .then_some(self.error_modal.message.as_str())
+    }
+
+    /// When the screen next changes on its own, with no event to say so: the flash
+    /// expiring. The run loop sleeps until then at most.
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.flash.as_ref().map(|f| f.expires)
     }
 
     /// Drop an expired flash. Returns true when the frame must redraw.
@@ -26035,35 +26064,23 @@ where
     rx.recv().ok()
 }
 
-/// How the event loop ended, for `run_impl` to turn into its return value once the
-/// terminal is restored.
-enum RunEnd {
-    Quit,
-    Crash(String),
-}
-
-/// Folds one channel drain into the loop: records whether the app changed, or says
-/// how the loop should end.
-fn finish_drain(drained: event_pump::Drained, updated: &mut bool) -> Option<RunEnd> {
-    match drained {
-        event_pump::Drained::Continue { updated: changed } => {
-            *updated |= changed;
-            None
-        }
-        event_pump::Drained::Exit => Some(RunEnd::Quit),
-        event_pump::Drained::Crash(msg) => Some(RunEnd::Crash(msg)),
-    }
-}
-
 /// Restore the terminal, then turn how the loop ended into what `run_impl` returns.
-/// The capture is taken after the screen is handed back, so a refused capture still
-/// leaves the terminal usable.
-fn conclude(end: RunEnd, app: &App, capture: bool) -> Result<Option<LazyFrame>> {
-    restore_terminal();
+/// The reader stops first, so nothing typed after the screen is handed back is read
+/// here. The capture is taken after the screen is handed back, so a refused capture
+/// still leaves the terminal usable.
+fn conclude(
+    end: event_pump::Ended,
+    app: &App,
+    capture: bool,
+    reader: &mut terminal_input::TerminalInput,
+    screen: &mut TakenTerminal,
+) -> Result<Option<LazyFrame>> {
+    reader.stop();
+    screen.restore();
     match end {
-        RunEnd::Quit if capture => app.capture_view(),
-        RunEnd::Quit => Ok(None),
-        RunEnd::Crash(msg) => Err(color_eyre::eyre::eyre!(msg)),
+        event_pump::Ended::Quit if capture => app.capture_view(),
+        event_pump::Ended::Quit => Ok(None),
+        event_pump::Ended::Crash(msg) => Err(color_eyre::eyre::eyre!(msg)),
     }
 }
 
@@ -26225,26 +26242,20 @@ fn run_impl(
             e
         )
     })?;
+    // Handed back on every way out of this function, after the reader below has let go.
+    let mut screen = TakenTerminal { restored: false };
     // Anything written to stderr from here on would be drawn over the screen; it goes
     // to the log until this drops, on every way out of this function.
-    let _session = logging::TuiSession::begin(restore_terminal);
-    // Without the kitty keyboard protocol, Ctrl+Enter is byte-identical to Enter and
-    // the Ctrl never reaches the app. Disambiguation alone fixes that — plain Enter,
-    // Tab and Backspace keep their legacy encodings — and the terminal keeps a
-    // separate flag stack for the alternate screen, so leaving it on exit or panic
-    // restores the shell's keyboard either way.
-    if matches!(
-        crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    ) {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::PushKeyboardEnhancementFlags(
-                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            )
-        );
-    }
+    let session = logging::TuiSession::begin(restore_terminal);
+    push_keyboard_flags();
     let (tx, rx) = mpsc::channel::<AppEvent>();
+    {
+        let tx = tx.clone();
+        session.wake_with(move || {
+            let _ = tx.send(AppEvent::Wake);
+        });
+    }
+    let mut reader = terminal_input::TerminalInput::start(tx.clone())?;
     let mut app = App::new_with_config(tx.clone(), rt_handle, theme, config.clone());
     app.startup_template = opts.template.clone();
     if opts.debug {
@@ -26290,73 +26301,56 @@ fn run_impl(
     }
     app.busy = !starting_at_home;
     let mut pump = EventPump::new(app, tx, rx);
-    terminal.draw(|frame| frame.render_widget(&mut pump.app, frame.area()))?;
-    let _ = std::io::stdout().flush();
+    let end = pump.run(|app| {
+        terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
+        let _ = std::io::stdout().flush();
+        Ok(())
+    })?;
+    conclude(end, &pump.app, capture, &mut reader, &mut screen)
+}
 
-    // Main event loop: replay one held key, poll for input, drain the channel, redraw.
-    loop {
-        let mut updated = pump.replay_one()?;
-        // A replayed key may have queued a follow-up (a Search, an Export); handle it
-        // before the terminal is read so a key typed now cannot overtake it.
-        if let Some(end) = finish_drain(pump.drain()?, &mut updated) {
-            return conclude(end, &pump.app, capture);
+/// Ask the terminal to tell Ctrl+Enter from Enter.
+///
+/// Without the kitty keyboard protocol the two are byte-identical. Disambiguation
+/// alone fixes that — plain Enter, Tab and Backspace keep their legacy encodings — and
+/// the terminal keeps a separate flag stack for the alternate screen, so leaving it on
+/// exit or panic restores the shell's keyboard either way.
+///
+/// Pushed without asking first. Asking means waiting for an answer, and a terminal
+/// that never answers held the first frame for Crossterm's two-second timeout; nor can
+/// the answer be read off to one side, because Crossterm's one parser consumes it. A
+/// terminal without the protocol ignores the push, as it ignores the pop that every
+/// exit has always sent: both are private-marker CSI sequences, which terminals that
+/// do not know them discard. Keys then arrive in the legacy encoding, which Crossterm
+/// reads either way.
+fn push_keyboard_flags() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
+}
+
+/// The terminal while the TUI owns it. Dropped without [`conclude`] — an error
+/// returned with `?` — it hands the screen back; a panic is the session's to handle,
+/// and restoring twice would pop the shell's keyboard flags.
+struct TakenTerminal {
+    restored: bool,
+}
+
+impl TakenTerminal {
+    fn restore(&mut self) {
+        if !std::mem::replace(&mut self.restored, true) {
+            restore_terminal();
         }
-        let app = &pump.app;
+    }
+}
 
-        // Poll with a shorter timeout when busy so the throbber animates (~30fps).
-        // 33ms is plenty for a spinner and halves redraw load vs. 60fps. Held keys
-        // waiting on an idle app replay one per iteration, so then there is no wait.
-        let spinning = app.something_is_spinning();
-        let poll_ms = if pump.replaying() {
-            0
-        } else if spinning {
-            33
-        } else {
-            config.performance.event_poll_interval_ms
-        };
-
-        if crossterm::event::poll(std::time::Duration::from_millis(poll_ms))? {
-            match crossterm::event::read()? {
-                crossterm::event::Event::Key(key) if key.is_press() => {
-                    updated |= pump.terminal_key(key)?;
-                }
-                crossterm::event::Event::Resize(cols, rows) => {
-                    pump.send(AppEvent::Resize(cols, rows))?;
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(end) = finish_drain(pump.drain()?, &mut updated) {
-            return conclude(end, &pump.app, capture);
-        }
-        let app = &mut pump.app;
-
-        // Animate throbber when busy or while the background row count is still resolving
-        // (that count doesn't set `busy` but drives the row-count spinner).
-        if spinning {
-            app.throbber_frame = app.throbber_frame.wrapping_add(1);
-            updated = true;
-        }
-
-        // A completion flash times out on its own; the idle poll interval is the
-        // clock, so no extra wake-up machinery is needed.
-        updated |= app.tick_flash();
-        updated |= app.flash_background_panic();
-        updated |= app.flash_polars_warning();
-
-        app.request_what_the_frame_needs();
-
-        if updated {
-            terminal.draw(|frame| frame.render_widget(&mut *app, frame.area()))?;
-            app.frame_painted();
-            // After render, check if visible_rows changed and trigger async buffer re-collect.
-            if let Some(state) = &mut app.data_table_state
-                && state.needs_recollect
-            {
-                state.needs_recollect = false;
-                app.spawn_async_collect(App::LOADING_BUFFER);
-            }
+impl Drop for TakenTerminal {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.restore();
         }
     }
 }

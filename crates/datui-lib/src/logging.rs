@@ -386,9 +386,21 @@ fn polars_warning(message: &str, kind: polars_error::PolarsWarning) {
         }
         if matches!(kind, W::UserWarning | W::CategoricalRemappingWarning) {
             polars.unshown.push_back(text.clone());
+            tell_the_loop();
         }
     }
     log::warn!(target: "polars", "{kind:?}: {text}");
+}
+
+/// What wakes the run loop when there is news it has to come and look for: a warning
+/// queued for the control bar, a background panic nothing reported. The loop only
+/// wakes for events and deadlines, so without this either would wait for a key.
+static NEWS: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+fn tell_the_loop() {
+    if let Some(wake) = NEWS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        wake();
+    }
 }
 
 /// The next Polars user warning not yet shown, for the control bar.
@@ -481,10 +493,17 @@ impl TuiSession {
         install_panic_hook();
         Self { restore_terminal }
     }
+
+    /// Call `wake` whenever a background panic or a Polars warning is waiting for
+    /// [`take_unreported_panic`] or [`next_polars_warning`], for the session's length.
+    pub fn wake_with(&self, wake: impl Fn() + Send + Sync + 'static) {
+        *NEWS.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(wake));
+    }
 }
 
 impl Drop for TuiSession {
     fn drop(&mut self) {
+        NEWS.lock().unwrap_or_else(|e| e.into_inner()).take();
         // Already inactive when the hook saw this thread panic: it restored stderr, and
         // the hooks below it the terminal. Restoring again would pop the shell's
         // keyboard flags rather than ours.
@@ -531,6 +550,7 @@ fn install_panic_hook() {
             *BACKGROUND_PANIC.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
             if !REPORTS_ITS_PANICS.with(Cell::get) {
                 UNREPORTED_PANICS.fetch_add(1, Ordering::SeqCst);
+                tell_the_loop();
             }
             return;
         }

@@ -58,6 +58,7 @@
 - [Run tests](for-developers/tests.md)
 - [Reduce test iteration time](for-developers/test-organization-review.md)
 - [Build documentation](for-developers/documentation.md)
+- [Check the examples](for-developers/examples.md)
 - [Record demos](for-developers/demos.md)
 - [Add configuration options](for-developers/adding-configuration-options.md)
 - [Build Python bindings](for-developers/python-bindings.md)

@@ -9952,6 +9952,7 @@ mod tests {
                 }
                 _ => match rx.try_recv() {
                     Ok(ev) => next = Some(ev),
+                    Err(_) if app.count_waits_for_a_frame() => next = Some(AppEvent::FramePainted),
                     Err(_) if !crate::tests::work_pending(app) => break,
                     Err(_) => {
                         assert!(

@@ -409,6 +409,8 @@ mod tests {
                 "the loop did not settle"
             );
             let replayed = pump.replay_one().unwrap();
+            // As `run()` paints after every update.
+            pump.app.frame_painted();
             let drained = if crate::tests::work_pending(&pump.app) && !replayed {
                 pump.wait_and_drain(Duration::from_millis(50))
             } else {

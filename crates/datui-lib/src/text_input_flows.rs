@@ -94,11 +94,15 @@ struct Harness {
 
 impl Harness {
     fn with_data() -> Self {
+        Self::with_csv("name,age\nada,36\ngrace,45\nalan,41")
+    }
+
+    fn with_csv(contents: &str) -> Self {
         isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         let mut file = std::fs::File::create(&path).expect("create csv");
-        writeln!(file, "name,age\nada,36\ngrace,45\nalan,41").expect("write csv");
+        writeln!(file, "{contents}").expect("write csv");
         drop(file);
 
         let (tx, rx): (Sender<AppEvent>, Receiver<AppEvent>) = mpsc::channel();
@@ -144,6 +148,11 @@ impl Harness {
             }
             if let Ok(event) = self.rx.try_recv() {
                 next = Some(event);
+                continue;
+            }
+            // The run loop paints after every update, and a count waiting on that starts.
+            if self.app.count_waits_for_a_frame() {
+                next = Some(AppEvent::FramePainted);
                 continue;
             }
             if crate::tests::work_pending(&self.app) {
@@ -613,22 +622,28 @@ fn esc_closes_the_query_prompt_from_every_mode() {
     }
 }
 
+fn query_screen(app: &mut App) -> String {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    buf.content().iter().map(|c| c.symbol()).collect()
+}
+
 /// Reopened on a search that ran, the prompt says how many rows matched, and
 /// drops the count once the words are edited.
 #[test]
 fn a_search_that_ran_says_how_many_rows_matched() {
-    let screen = |app: &mut App| -> String {
-        let area = Rect::new(0, 0, 100, 20);
-        let mut buf = Buffer::empty(area);
-        app.render(area, &mut buf);
-        buf.content().iter().map(|c| c.symbol()).collect()
-    };
-    let mut h = Harness::with_data();
+    let screen = query_screen;
+    let mut csv = String::from("name,age");
+    for i in 0..5_000 {
+        csv.push_str(&format!("\nalan{i},{i}"));
+    }
+    let mut h = Harness::with_csv(&csv);
     h.app.app_config.query.default_mode = crate::QueryMode::Search;
     h.press(KeyCode::Char('/'));
     h.type_str("al");
-    // The rows on screen and their count held back: it can land before the rows or
-    // after them, so only holding it makes the prompt below open while it is out.
+    // The rows on screen with their count still out: more rows match than the first
+    // page holds, and the count waits for that page to be painted.
     let count = h.run_holding(
         AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         |event| matches!(event, AppEvent::BackgroundLenReady { .. }),
@@ -651,10 +666,30 @@ fn a_search_that_ran_says_how_many_rows_matched() {
     }
     h.run_until(None, |_| false);
     let drawn = screen(&mut h.app);
-    assert!(drawn.contains(" 1 match "), "{drawn}");
+    assert!(drawn.contains(" 5,000 matches "), "{drawn}");
     assert!(drawn.contains("Every word's letters in order, in any text column"));
 
     h.press(KeyCode::End);
     h.type_str("x");
-    assert!(!screen(&mut h.app).contains(" 1 match "));
+    assert!(!screen(&mut h.app).contains(" 5,000 matches "));
+}
+
+/// A search whose matches fit on the first page knows how many there are from that
+/// page: no count is taken, and the prompt says so as soon as it reopens.
+#[test]
+fn a_search_that_fits_on_a_page_is_counted_by_its_rows() {
+    let mut h = Harness::with_data();
+    h.app.app_config.query.default_mode = crate::QueryMode::Search;
+    h.press(KeyCode::Char('/'));
+    h.type_str("al");
+    let counts = h.run_holding(
+        AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        |event| matches!(event, AppEvent::BackgroundLenReady { .. }),
+    );
+    assert!(counts.is_empty(), "no count was taken");
+    assert!(!h.app.row_count_pending());
+    assert!(!h.app.count_waits_for_a_frame());
+    h.press(KeyCode::Char('/'));
+    let drawn = query_screen(&mut h.app);
+    assert!(drawn.contains(" 1 match "), "{drawn}");
 }

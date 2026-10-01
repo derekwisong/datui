@@ -9,6 +9,9 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+#[cfg(feature = "cloud")]
+#[path = "cloud/download.rs"]
+mod cloud_download;
 mod common;
 #[cfg(feature = "cloud")]
 #[path = "common/fake_s3.rs"]

@@ -313,6 +313,9 @@ pub struct DataTableState {
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
     decompress_temp_file: Option<NamedTempFile>,
+    /// The downloaded remote file this dataset was opened from, held while it is scanned.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    download: Option<crate::download::TempDownload>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
@@ -896,6 +899,8 @@ impl DataTableState {
             reshape_source: None,
             partition_columns: None,
             decompress_temp_file: None,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            download: None,
             polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -1018,6 +1023,8 @@ impl DataTableState {
             reshape_source: None,
             partition_columns,
             decompress_temp_file: None,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            download: None,
             polars_streaming: options.polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -5059,6 +5066,19 @@ impl DataTableState {
     /// when the state drops, and the plan would scan a path that no longer exists.
     pub fn scans_a_temp_file(&self) -> bool {
         self.decompress_temp_file.is_some()
+    }
+
+    /// Hold `download` for as long as this state lives: its frame scans that file.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub fn hold_download(&mut self, download: Option<crate::download::TempDownload>) {
+        self.download = download;
+    }
+
+    /// Whether the frame scans a downloaded remote file, removed when datui lets go of
+    /// it; see [`Self::scans_a_temp_file`].
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub fn scans_a_download(&self) -> bool {
+        self.download.is_some()
     }
 
     /// `lf` without the hidden drift column. A non-strict drop, so it is a no-op on a

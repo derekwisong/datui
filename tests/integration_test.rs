@@ -73,7 +73,7 @@ fn pump_until(
 
 /// As `pump_open_until_loaded`, but hands back the message a failed open ended with.
 ///
-/// A load that fails reports it as `BackgroundError` — the reading happens off the
+/// A load that fails reports it as `BackgroundFailed` — the reading happens off the
 /// event thread — and only the paths that never get that far crash outright.
 fn pump_open_until_error(
     app: &mut App,
@@ -85,7 +85,7 @@ fn pump_open_until_error(
     loop {
         match next.take() {
             Some(AppEvent::Crash(message)) => return Some(message),
-            Some(AppEvent::BackgroundError { message, .. }) => return Some(message),
+            Some(AppEvent::BackgroundFailed { message, .. }) => return Some(message),
             Some(ev) => next = app.event(&ev),
             None => next = Some(next_event(app, rx)?),
         }
@@ -115,9 +115,11 @@ fn test_drain_events_waits_for_owed_result() {
     let generation = app.task_generation();
     let worker = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        tx.send(AppEvent::BackgroundError {
+        tx.send(AppEvent::BackgroundFailed {
             generation,
+            job: datui::Job::Load,
             message: "test worker failed".into(),
+            panicked: false,
         })
         .unwrap();
     });
@@ -729,7 +731,7 @@ fn test_open_s3_url_returns_crash_or_loads() {
     );
 
     match await_scan_outcome(&rx) {
-        AppEvent::BackgroundError { message, .. } => {
+        AppEvent::BackgroundFailed { message, .. } => {
             // "Could not read from S3" without credentials; with them, the store's own
             // error naming the s3:// URL.
             assert!(
@@ -839,7 +841,7 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
     );
 
     match await_scan_outcome(&rx) {
-        AppEvent::BackgroundError { message, .. } => {
+        AppEvent::BackgroundFailed { message, .. } => {
             assert!(
                 message.contains("GCS")
                     || message.contains("gs://")
@@ -9517,9 +9519,13 @@ fn test_error_modal_over_home_is_dismissable() {
     app.enter_home();
     assert_eq!(app.input_mode, InputMode::Home);
 
-    app.event(&AppEvent::BackgroundError {
+    // A load chosen here fails.
+    app.set_loading_phase("Scanning input", 10);
+    app.event(&AppEvent::BackgroundFailed {
         generation: app.task_generation(),
+        job: datui::Job::Load,
         message: "could not read the file".to_string(),
+        panicked: false,
     });
 
     let out = app.event(&AppEvent::Key(KeyEvent::new(

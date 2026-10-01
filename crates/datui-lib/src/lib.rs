@@ -720,6 +720,112 @@ mod probe_slot_tests {
     }
 }
 
+/// #455: a home-screen worker that panics still answers, so what marks it in flight
+/// stops waiting and the next request is made.
+#[cfg(test)]
+mod home_worker_panic_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn app() -> (App, mpsc::Receiver<AppEvent>, tempfile::TempDir) {
+        crate::text_input_flows::isolate_cache();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.csv"), "x\n1\n").unwrap();
+        app.home.browsing = Some(dir.path().to_path_buf());
+        (app, rx, dir)
+    }
+
+    /// Kill the first worker that would owe `owed` in its place.
+    fn dies_once(app: &mut App, owed: fn(&AppEvent) -> bool) {
+        let mut died = false;
+        app.home_worker_dies = Some(Box::new(move |instead| {
+            let dies = !died && owed(instead);
+            died |= dies;
+            dies
+        }));
+    }
+
+    /// Handle what the workers send until `done`.
+    fn pump(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never answered"
+            );
+            if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                app.event(&event);
+            }
+        }
+    }
+
+    #[test]
+    fn a_listing_whose_worker_dies_stops_looking_and_the_next_one_lists() {
+        let (mut app, rx, _dir) = app();
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeListingFailed));
+        app.home_refresh();
+        assert!(app.home.listing_in_flight);
+        pump(&mut app, &rx, |a| !a.home.listing_in_flight);
+        assert!(
+            app.home.sections.iter().all(|s| s.rows.is_empty()),
+            "nothing was listed"
+        );
+
+        app.home_refresh();
+        pump(&mut app, &rx, |a| !a.home.listing_in_flight);
+        assert!(
+            app.home.sections.iter().any(|s| !s.rows.is_empty()),
+            "the next listing lands"
+        );
+    }
+
+    #[test]
+    fn a_probe_whose_worker_dies_gives_its_slot_back_and_says_so() {
+        let (mut app, rx, dir) = app();
+        app.home.network_check = |_| true;
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeProbeFailed { .. }));
+        app.spawn_home_probes();
+        let root = dir.path().to_path_buf();
+        assert!(app.home_probes_inflight.contains(&root));
+        pump(&mut app, &rx, |a| a.home_probes_inflight.is_empty());
+        assert_eq!(
+            app.home.probe_errors.get(&root).map(String::as_str),
+            Some("Could not read it; see the log")
+        );
+    }
+
+    #[test]
+    fn a_schema_read_that_dies_is_not_asked_for_again() {
+        let (mut app, rx, dir) = app();
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeSchemaReady { .. }));
+        let entry = discover::Entry::new(dir.path().join("a.csv"), discover::EntryKind::File);
+        assert!(app.home_schema(&entry).is_none());
+        assert!(app.home_schema_pending(&entry.path));
+        pump(&mut app, &rx, |a| !a.home_schema_pending(&entry.path));
+        assert!(app.home_schema(&entry).is_none());
+        assert!(
+            !app.home_schema_pending(&entry.path),
+            "remembered as having none"
+        );
+    }
+
+    #[test]
+    fn a_search_whose_walk_dies_ends() {
+        let (mut app, rx, _dir) = app();
+        app.app_config.data.search.enabled = true;
+        app.home.network_check = |_| false;
+        dies_once(&mut app, |e| matches!(e, AppEvent::HomeSearchDone { .. }));
+        app.spawn_home_search();
+        assert!(app.home.search.running);
+        pump(&mut app, &rx, |a| !a.home_search_inflight);
+        assert!(!app.home.search.running);
+        assert!(app.home.search.done);
+        assert_eq!(app.home.search.limited.as_deref(), Some("partial · failed"));
+    }
+}
+
 #[cfg(test)]
 mod classify_batch_tests {
     use super::*;
@@ -1248,9 +1354,11 @@ mod quality_sample_tests {
             kept: Some(old_rows),
             plan: Box::new(old_plan.clone()),
         });
-        app.event(&AppEvent::BackgroundError {
+        app.event(&AppEvent::BackgroundFailed {
             generation: stale,
+            job: Job::Analysis,
             message: "the stale run failed".to_string(),
+            panicked: false,
         });
         assert_eq!(
             format!("{:?}", app.analysis_modal.data_quality_results),
@@ -1589,11 +1697,15 @@ mod chart_prepare_tests {
         assert!(matches!(app.loading_state, LoadingState::Idle));
         assert_eq!(app.task_generation(), task_generation);
 
-        app.event(&AppEvent::BackgroundChartExportWritten {
-            generation: 7,
-            path,
-            format: ChartExportFormat::Png,
-            result: Err("disk full".to_string()),
+        app.event(&AppEvent::BackgroundFailed {
+            generation: app.task_generation(),
+            job: Job::ChartExport {
+                generation: 7,
+                path,
+                format: ChartExportFormat::Png,
+            },
+            message: "disk full".to_string(),
+            panicked: false,
         });
         assert!(!app.error_modal.active);
         assert!(!app.chart_export_modal.active);
@@ -2549,7 +2661,7 @@ mod template_rollback_tests {
         let stale = polars::prelude::df!("id" => [1i64], "zz" => [2i64]).unwrap();
         app.event(&AppEvent::ViewPivotReady {
             generation: current.wrapping_sub(1),
-            pivoted: Ok(stale),
+            pivoted: stale,
         });
         assert_eq!(
             columns(&app),
@@ -2584,19 +2696,16 @@ mod template_rollback_tests {
     fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
         let (mut app, rx, tx, dir) = long_csv_app();
         let template = pivot_view(&mut app, "dies");
-        open_with_view(&mut app, &rx, &dir, &template, |app, event| {
-            let AppEvent::ViewPivotReady { generation, .. } = event else {
-                return false;
-            };
-            // What `spawn_bg` sends in its place when the worker panics.
-            let _ = app.event(&AppEvent::BackgroundError {
-                generation: *generation,
-                message: "worker died".to_string(),
-            });
-            true
-        });
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::ViewPivot);
+        open_with_view(&mut app, &rx, &dir, &template, |_, _| false);
         drop(tx);
         assert!(app.error_modal.active);
+        assert!(
+            app.error_modal.message.contains("worker died"),
+            "{}",
+            app.error_modal.message
+        );
+        assert!(app.view_pivot.is_none());
         assert_eq!(columns(&app), ["id", "key", "val"]);
         let state = app.data_table_state.as_ref().unwrap();
         assert!(state.last_pivot_spec().is_none());
@@ -2613,25 +2722,9 @@ mod template_rollback_tests {
         template.settings.pivot = None;
         template.settings.column_order = vec!["id".to_string(), "val".to_string()];
         let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
         assert!(app.apply_template(&template).is_ok());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while app.is_busy() {
-            assert!(std::time::Instant::now() < deadline, "the rows never came");
-            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
-                continue;
-            };
-            // What `spawn_bg` sends in its place when the worker panics.
-            let event = match event {
-                AppEvent::BackgroundCollectReady { generation } => AppEvent::BackgroundError {
-                    generation,
-                    message: "worker died".to_string(),
-                },
-                event => event,
-            };
-            if let Some(next) = app.event(&event) {
-                let _ = tx.send(next);
-            }
-        }
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
         assert!(app.error_modal.active);
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.get_column_order(), ["id", "key", "val"]);
@@ -2661,31 +2754,18 @@ mod template_rollback_tests {
         state.display_df().cloned()
     }
 
-    /// Handle events until the app is idle, as if the worker reading the first rows
-    /// panicked.
+    /// Handle events until the app is idle. The worker reading the first rows, which
+    /// `worker_dies` was set to kill, panics.
     fn pump_with_dying_rows(
         app: &mut App,
         rx: &mpsc::Receiver<AppEvent>,
         tx: &mpsc::Sender<AppEvent>,
     ) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while app.is_busy() {
-            assert!(std::time::Instant::now() < deadline, "the rows never came");
-            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
-                continue;
-            };
-            // What `spawn_bg` sends in its place when the worker panics.
-            let event = match event {
-                AppEvent::BackgroundCollectReady { generation } => AppEvent::BackgroundError {
-                    generation,
-                    message: "worker died".to_string(),
-                },
-                event => event,
-            };
-            if let Some(next) = app.event(&event) {
-                let _ = tx.send(next);
-            }
-        }
+        assert!(
+            app.worker_dies.is_some(),
+            "set before the rows are asked for"
+        );
+        super::chart_prepare_tests::pump(app, rx, tx, |a| !a.is_busy());
     }
 
     /// The view before the query is back: its rows, count, sort and filter.
@@ -2720,13 +2800,19 @@ mod template_rollback_tests {
         press(&mut app, KeyCode::Char('/'));
         assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
         app.sql_input.set_value("SELECT id FROM df WHERE val > 5");
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
         press(&mut app, KeyCode::Enter);
         assert!(app.query_running.is_some(), "the query planned");
         pump_with_dying_rows(&mut app, &rx, &tx);
 
         assert_rolled_back(&app, shown.as_ref());
         assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
-        assert_eq!(app.query_prompt_error().as_deref(), Some("worker died"));
+        assert!(
+            app.query_prompt_error()
+                .is_some_and(|error| error.contains("worker died")),
+            "{:?}",
+            app.query_prompt_error()
+        );
         assert!(!app.error_modal.active, "no modal over the prompt");
         assert!(matches!(app.loading_state, LoadingState::Idle));
     }
@@ -2737,13 +2823,18 @@ mod template_rollback_tests {
     fn a_query_whose_rows_worker_dies_rolls_back() {
         let (mut app, rx, tx, _dir) = long_csv_app();
         let shown = sorted_and_filtered(&mut app, &rx, &tx);
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
         app.event(&AppEvent::Search("select id where val > 5".to_string()));
         assert!(app.query_running.is_some(), "the query planned");
         pump_with_dying_rows(&mut app, &rx, &tx);
 
         assert_rolled_back(&app, shown.as_ref());
         assert!(app.error_modal.active);
-        assert_eq!(app.error_modal.message, "worker died");
+        assert!(
+            app.error_modal.message.contains("worker died"),
+            "{}",
+            app.error_modal.message
+        );
     }
 
     /// Rolling a failed template back restores the frame, and the frame's rows still
@@ -3339,33 +3430,6 @@ mod template_rollback_tests {
         template
     }
 
-    /// Handle events until the app is idle, as if every worker reading for the view —
-    /// its pivot or its first rows — panicked.
-    fn pump_with_dying_workers(
-        app: &mut App,
-        rx: &mpsc::Receiver<AppEvent>,
-        tx: &mpsc::Sender<AppEvent>,
-    ) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while app.is_busy() {
-            assert!(std::time::Instant::now() < deadline, "the view never ended");
-            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
-                continue;
-            };
-            let event = match event {
-                AppEvent::BackgroundCollectReady { generation }
-                | AppEvent::ViewPivotReady { generation, .. } => AppEvent::BackgroundError {
-                    generation,
-                    message: "worker died".to_string(),
-                },
-                event => event,
-            };
-            if let Some(next) = app.event(&event) {
-                let _ = tx.send(next);
-            }
-        }
-    }
-
     /// #458: a view that fails after any one of its steps — while it is planned, once
     /// its pivot is read, or when its rows are — puts back all of the view it was
     /// applied over: the rows each stage of the pipeline reads, the schema, query,
@@ -3497,6 +3561,11 @@ mod template_rollback_tests {
 
             let mut template = blank_view(&mut app, step);
             steps(&mut template.settings);
+            if matches!(fails, Fails::WorkerDies) {
+                // The view's first read, its pivot or its rows, panics.
+                app.worker_dies =
+                    crate::tests::worker_dies_once(|job| matches!(job, Job::ViewPivot | Job::Rows));
+            }
             let applied = app.apply_template(&template);
             match fails {
                 Fails::Planning => assert!(applied.is_err(), "{step}: fails as it plans"),
@@ -3507,8 +3576,12 @@ mod template_rollback_tests {
                 }
                 Fails::WorkerDies => {
                     assert!(applied.is_ok(), "{step}: plans: {applied:?}");
-                    pump_with_dying_workers(&mut app, &rx, &tx);
-                    assert!(app.error_modal.active, "{step}: the failure is said");
+                    crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+                    assert!(
+                        app.error_modal.message.contains("worker died"),
+                        "{step}: the failure is said: {}",
+                        app.error_modal.message
+                    );
                 }
             }
 
@@ -3976,6 +4049,19 @@ pub mod tests {
         })
         .handle()
         .clone()
+    }
+
+    /// For `App::worker_dies`: the first job `dies` picks panics as it starts, and
+    /// every job after it runs.
+    pub fn worker_dies_once(dies: fn(&crate::Job) -> bool) -> Option<crate::WorkerDies> {
+        let mut died = false;
+        Some(Box::new(move |job| {
+            if died || !dies(job) {
+                return false;
+            }
+            died = true;
+            true
+        }))
     }
 
     /// The footer read, the size probe and a download go through the store Polars
@@ -5532,13 +5618,16 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
 
-        app.spawn_bg("Working...", |_task_gen, _tx| {});
+        app.spawn_bg(crate::Job::QualityReport, "Working...", |_task_gen, _tx| {
+            Ok(())
+        });
         assert!(
             app.work_a_bump_would_strand(),
             "the spawn leased the generation"
         );
 
-        // The worker finishes and its lease is dropped, which sends the event.
+        // The worker finishes and its lease is dropped, which sends the event. A job
+        // that succeeded sends no failure ahead of it.
         let finished = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the lease reports back");
@@ -5583,19 +5672,25 @@ pub mod tests {
         assert!(!app.work_a_bump_would_strand());
     }
 
-    /// A worker that panics fails like any other task, then returns its lease.
+    /// A worker that panics fails its job the way an error would, then returns its
+    /// lease.
     ///
     /// The hazard `schema_union::Pass` was built for: a count that never comes back down
     /// is a permanent "something is waiting", and here that would mean the buffer never
     /// collects again for the rest of the session. And a panic that only reached the log
-    /// would leave the spinner up with nothing on screen saying why.
+    /// would leave the spinner up with nothing on screen saying why — or, retiring only
+    /// the lease, leave the job's own marker standing: a pivot the form still waits on.
     #[test]
     fn a_panicking_worker_still_returns_its_lease() {
-        use crate::{App, AppEvent};
+        use crate::{App, AppEvent, Job};
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.spawn_bg("Working...", |_task_gen, _tx| panic!("worker died"));
+        let generation = app.task_generation;
+        app.pivot_generation = Some(generation);
+        app.spawn_bg(Job::Pivot, App::COMPUTING_PIVOT, |_task_gen, _tx| {
+            panic!("worker died")
+        });
         assert!(app.work_a_bump_would_strand());
         assert!(app.busy);
 
@@ -5605,19 +5700,284 @@ pub mod tests {
         };
         let failed = recv();
         assert!(
-            matches!(&failed, AppEvent::BackgroundError { message, .. } if message.contains("worker died")),
-            "the panic fails the task first"
+            matches!(
+                &failed,
+                AppEvent::BackgroundFailed { generation: g, job: Job::Pivot, message, panicked: true }
+                    if *g == generation && message.contains("worker died")
+            ),
+            "the panic fails the job it stopped, first: {}",
+            describe(&failed)
         );
         let _ = app.handle(&failed);
         assert!(!app.busy, "the spinner comes down");
+        assert!(app.status_message.is_none());
         assert!(app.error_modal.active, "and the user is told");
+        assert!(
+            app.pivot_generation.is_none(),
+            "the pivot is no longer waited on"
+        );
+        assert!(
+            app.work_a_bump_would_strand(),
+            "the failure is not the lease: the worker has not let go yet"
+        );
 
         let finished = recv();
-        assert!(matches!(finished, AppEvent::BackgroundWorkFinished { .. }));
+        assert!(
+            matches!(finished, AppEvent::BackgroundWorkFinished { generation: g } if g == generation)
+        );
         let _ = app.handle(&finished);
         assert!(
             !app.work_a_bump_would_strand(),
             "the generation is free again rather than leased forever"
+        );
+        assert_eq!(app.task_generation, generation, "and nothing bumped it");
+    }
+
+    /// Enough of an event to say which it was in a failed assertion.
+    fn describe(event: &crate::AppEvent) -> String {
+        use crate::AppEvent;
+        match event {
+            AppEvent::BackgroundFailed {
+                generation,
+                job,
+                message,
+                panicked,
+            } => format!("BackgroundFailed({generation}, {job:?}, {message:?}, {panicked})"),
+            AppEvent::BackgroundWorkFinished { generation } => {
+                format!("BackgroundWorkFinished({generation})")
+            }
+            AppEvent::BackgroundLenReady { num_rows, .. } => {
+                format!("BackgroundLenReady({num_rows})")
+            }
+            AppEvent::BackgroundLenFailed { .. } => "BackgroundLenFailed".to_string(),
+            _ => "another event".to_string(),
+        }
+    }
+
+    /// A job that returns an error and one that panics end the same way: one failure
+    /// naming the job, then the lease. Neither reports twice.
+    #[test]
+    fn an_error_and_a_panic_end_a_job_the_same_way() {
+        use crate::{App, AppEvent, Job};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let ending = |app: &mut App| {
+            let mut events = Vec::new();
+            loop {
+                let event = rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("the job ends");
+                let finished = matches!(event, AppEvent::BackgroundWorkFinished { .. });
+                let _ = app.handle(&event);
+                events.push(event);
+                if finished {
+                    break;
+                }
+            }
+            // The lease is released last, as the worker's closure is dropped.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(rx.try_recv().is_err(), "nothing after the lease");
+            events
+        };
+        for (what, dies) in [("returns an error", false), ("panics", true)] {
+            app.error_modal.hide();
+            app.spawn_bg(Job::QualityReport, "Writing the report...", move |_, _| {
+                assert!(!dies, "worker died");
+                Err("disk full".to_string())
+            });
+            let events = ending(&mut app);
+            let seen: Vec<_> = events.iter().map(describe).collect();
+            assert_eq!(events.len(), 2, "a job that {what}: {seen:?}");
+            assert!(
+                matches!(
+                    &events[0],
+                    AppEvent::BackgroundFailed { job: Job::QualityReport, message, .. }
+                        if message.contains(if dies { "worker died" } else { "disk full" })
+                ),
+                "a job that {what}: {seen:?}"
+            );
+            assert!(!app.is_busy(), "a job that {what} is over");
+            assert!(app.error_modal.active, "a job that {what} says why");
+            assert!(!app.work_a_bump_would_strand());
+        }
+    }
+
+    /// A failure puts down only what its own job started. One from a job a bump has
+    /// passed, or from another job sharing the generation, leaves the work in flight
+    /// alone: its spinner, its markers, and the screen with no error on it.
+    #[test]
+    fn a_failure_leaves_other_work_alone() {
+        use crate::{
+            AnalysisProgress, App, AppEvent, ChartExportFormat, ClassifyRequest, InflightCollect,
+            Job, LoadingState,
+        };
+        use std::path::PathBuf;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let fail = |app: &mut App, generation: u64, job: Job| {
+            app.event(&AppEvent::BackgroundFailed {
+                generation,
+                job,
+                message: "not this one".to_string(),
+                panicked: false,
+            });
+        };
+        let untouched = |app: &App, what: &str| {
+            assert!(app.is_busy(), "{what}: still busy");
+            assert!(!app.error_modal.active, "{what}: no error shown");
+        };
+
+        // An analysis is computing; a load-ahead beside it, on the same generation,
+        // dies. Its own record goes, and nothing else.
+        let current = app.task_generation;
+        app.busy = true;
+        app.analysis_modal.computing = Some(AnalysisProgress::new("Computing statistics"));
+        app.collect_inflight = Some(InflightCollect {
+            began: std::time::Instant::now(),
+            files: None,
+            generation: current,
+            dataset: 0,
+            columns: 0,
+            start: 0,
+            end: 100,
+            waited_on: false,
+        });
+        fail(&mut app, current, Job::Rows);
+        untouched(&app, "a load-ahead");
+        assert!(app.analysis_modal.computing.is_some());
+        assert!(
+            app.collect_inflight.is_none(),
+            "the load-ahead's record goes"
+        );
+
+        // Jobs the analysis's generation does not belong to.
+        let stale = current.wrapping_sub(1);
+        for job in [
+            Job::Analysis,
+            Job::SampleRows,
+            Job::Load,
+            Job::Rows,
+            Job::Pivot,
+            Job::ViewPivot,
+            Job::DrillRow,
+            Job::Export,
+            Job::Copy,
+            Job::QualityReport,
+        ] {
+            fail(&mut app, stale, job.clone());
+            untouched(&app, &format!("{job:?} from a passed generation"));
+            assert!(app.analysis_modal.computing.is_some());
+        }
+
+        // A newer look at a path, and the older one's failure.
+        app.classify_inflight = Some(ClassifyRequest {
+            id: 2,
+            path: PathBuf::from("/newer"),
+            browsing: None,
+        });
+        fail(&mut app, current, Job::Classify(1));
+        untouched(&app, "an older look");
+        assert!(app.classify_inflight.is_some());
+
+        // A newer look at a directory named to open, and the older one's failure.
+        app.looking_at_directory = Some(PathBuf::from("/newer"));
+        fail(
+            &mut app,
+            current,
+            Job::LookAtDirectory(PathBuf::from("/older")),
+        );
+        untouched(&app, "an older look at a directory");
+        assert_eq!(
+            app.looking_at_directory.as_deref(),
+            Some(std::path::Path::new("/newer"))
+        );
+        app.looking_at_directory = None;
+
+        // A newer chart export, and the older one's failure.
+        app.chart_export_inflight = Some(8);
+        fail(
+            &mut app,
+            current,
+            Job::ChartExport {
+                generation: 7,
+                path: PathBuf::from("/tmp/old.png"),
+                format: ChartExportFormat::Png,
+            },
+        );
+        untouched(&app, "an older chart export");
+        assert_eq!(app.chart_export_inflight, Some(8));
+
+        // An open is no longer waited on once the user has gone home from it.
+        app.awaiting_dataset = false;
+        app.loading_state = LoadingState::Loading {
+            file_path: None,
+            file_size: 0,
+            current_phase: "Scanning input".to_string(),
+            progress_percent: 10,
+        };
+        fail(&mut app, current, Job::Load);
+        untouched(&app, "an abandoned open");
+
+        // And the analysis's own failure ends it.
+        fail(&mut app, current, Job::Analysis);
+        assert!(!app.is_busy());
+        assert!(app.analysis_modal.computing.is_none());
+        assert!(app.error_modal.active);
+    }
+
+    /// A count that was started answers whatever its worker does: a count that panics,
+    /// or a collect it rides in that dies before reaching it, reports it failed rather
+    /// than leaving the row count spinning for the session.
+    #[test]
+    fn a_count_answers_however_its_worker_ends() {
+        use crate::{App, AppEvent, DataTableState, LenCount, OpenOptions, OwedCount};
+        use polars::prelude::IntoLazy;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        let lf = polars::df!("a" => [1i32, 2, 3]).unwrap().lazy();
+        let state = DataTableState::from_lazyframe(lf, &OpenOptions::default()).unwrap();
+        let generation = state.len_generation();
+        let owed = || OwedCount::new(LenCount::for_state(&state), tx.clone());
+        let answer = |app: &mut App| {
+            app.len_count_inflight = Some(generation);
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the count answers");
+            app.event(&event);
+            assert_eq!(
+                app.len_count_inflight, None,
+                "the count is no longer waited on"
+            );
+            assert!(rx.try_recv().is_err(), "once");
+            event
+        };
+
+        owed().answer(|_| panic!("count died"));
+        let failed = answer(&mut app);
+        assert!(
+            matches!(failed, AppEvent::BackgroundLenFailed { .. }),
+            "{}",
+            describe(&failed)
+        );
+
+        // The worker carrying it died first.
+        drop(owed());
+        let failed = answer(&mut app);
+        assert!(
+            matches!(failed, AppEvent::BackgroundLenFailed { .. }),
+            "{}",
+            describe(&failed)
+        );
+
+        owed().answer(LenCount::run);
+        let counted = answer(&mut app);
+        assert!(
+            matches!(counted, AppEvent::BackgroundLenReady { num_rows: 3, .. }),
+            "{}",
+            describe(&counted)
         );
     }
 
@@ -7431,6 +7791,9 @@ pub enum AppEvent {
         generation: u64,
         listing: Box<crate::home::Listing>,
     },
+    /// The worker building a home listing panicked, so no listing is coming. The panic
+    /// is flashed like any other raw worker's.
+    HomeListingFailed,
     /// A completed path, worked out off-thread.
     HomePathCompleted {
         generation: u64,
@@ -7562,16 +7925,16 @@ pub enum AppEvent {
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
     Pivot(PivotSpec),
-    /// A pivot, read off the UI thread. The error is a message for the user.
+    /// A pivot, read off the UI thread. A failure is [`Job::Pivot`]'s.
     PivotReady {
         generation: u64,
         spec: PivotSpec,
-        pivoted: std::result::Result<DataFrame, String>,
+        pivoted: DataFrame,
     },
-    /// A view's pivot, read off the UI thread. The error is a message for the user.
+    /// A view's pivot, read off the UI thread. A failure is [`Job::ViewPivot`]'s.
     ViewPivotReady {
         generation: u64,
-        pivoted: std::result::Result<DataFrame, String>,
+        pivoted: DataFrame,
     },
     Melt(MeltSpec),
     Export(ExportRequest),
@@ -7664,7 +8027,7 @@ pub enum AppEvent {
     BackgroundCollectReady {
         generation: u64,
     },
-    /// A buffer collect failed. Reported as a `BackgroundError` when something waited
+    /// A buffer collect failed. Shown as an error when something waited
     /// on it; a load-ahead's failure is left for the page that needs those rows.
     BackgroundCollectFailed {
         generation: u64,
@@ -7714,14 +8077,13 @@ pub enum AppEvent {
     BackgroundQualityReportWritten {
         generation: u64,
         path: PathBuf,
-        result: Result<(), String>,
     },
-    /// Background task completed: chart written to disk.
+    /// Background task completed: chart written to disk. `generation` is the chart
+    /// export's own, not `task_generation`.
     BackgroundChartExportWritten {
         generation: u64,
         path: PathBuf,
         format: ChartExportFormat,
-        result: Result<(), String>,
     },
     /// Background task completed: export data collected.
     BackgroundExportCollected {
@@ -7733,7 +8095,6 @@ pub enum AppEvent {
     BackgroundExportWritten {
         generation: u64,
         path: PathBuf,
-        result: Result<(), String>,
     },
     /// Background task completed: the remote file's size is known, so the download can
     /// be put to the user. The probe is a network round trip and the HTTP one waits up
@@ -7750,10 +8111,17 @@ pub enum AppEvent {
         temp_path: PathBuf,
         options: OpenOptions,
     },
-    /// Background task failed.
-    BackgroundError {
+    /// A background operation did not finish: its worker returned an error or panicked.
+    /// Sent once, by `App::spawn_bg`, ahead of the lease's `BackgroundWorkFinished`.
+    /// `job` and `generation` together say which operation it was, and only what that
+    /// operation started is put down.
+    BackgroundFailed {
         generation: u64,
+        job: Job,
         message: String,
+        /// The worker panicked: `message` is an internal error naming the log, which
+        /// holds the details, rather than a reason the user can act on.
+        panicked: bool,
     },
     /// A [`GenerationLease`] was released: the work holding it has finished, however it
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
@@ -7793,11 +8161,11 @@ pub enum AppEvent {
         jump: bool,
     },
     /// The row of a grouped view that Enter drills into, read off the UI thread because
-    /// the buffer did not hold it. The error is a message for the user.
+    /// the buffer did not hold it. A failure is [`Job::DrillRow`]'s.
     DrillRowRead {
         generation: u64,
         group_index: usize,
-        row: std::result::Result<DataFrame, String>,
+        row: DataFrame,
     },
     /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
     /// there.
@@ -7825,12 +8193,71 @@ struct ClassifyRequest {
     browsing: Option<PathBuf>,
 }
 
+/// A background operation, named where `App::spawn_bg` starts it.
+///
+/// A worker ends one of three ways: it sends its result, it returns an error, or it
+/// panics. The last two reach the app as one [`AppEvent::BackgroundFailed`] carrying
+/// this and the `task_generation` it was spawned on, and `App::background_failed`
+/// puts down only what this operation started. A generation alone could not say that:
+/// work that does not bump it shares it with whatever else is running, and a failure
+/// judged by it alone took down a load-ahead's neighbours, or left the operation's own
+/// markers set (#455).
+///
+/// The fields are what tells this operation from a newer one of the same kind where
+/// the generation cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Job {
+    /// A phase of an open before its first rows: the size probe, a download, the scan,
+    /// a decompression, the schema.
+    Load,
+    /// The look at a directory named on the command line, before it is opened.
+    LookAtDirectory(PathBuf),
+    /// A look at a path chosen on the home screen, by request.
+    Classify(u64),
+    /// The table's rows: a page the table waits on, or a load-ahead. Its read failing
+    /// is [`AppEvent::BackgroundCollectFailed`], which carries what would not convert;
+    /// this is for a worker that panicked.
+    Rows,
+    /// An Analysis tool's computation.
+    Analysis,
+    /// The sample, or the rows behind a finding, read to show as a table.
+    SampleRows,
+    /// A pivot from the Pivot & Melt form.
+    Pivot,
+    /// A view's pivot, read before the view's rows.
+    ViewPivot,
+    /// The group row Enter drills into, when the buffer did not hold it.
+    DrillRow,
+    /// An export: collecting the rows, then writing them.
+    Export,
+    /// Collecting and formatting the view for a copy.
+    Copy,
+    /// Writing the Data Quality report.
+    QualityReport,
+    /// Writing a chart. `generation` is `chart_export_generation`'s; the path and
+    /// format reopen the form on a failure.
+    ChartExport {
+        generation: u64,
+        path: PathBuf,
+        format: ChartExportFormat,
+    },
+}
+
+/// Picks the spawned jobs that panic before their work starts; see `App::worker_dies`.
+#[cfg(test)]
+type WorkerDies = Box<dyn FnMut(&Job) -> bool + Send>;
+
+/// Picks the home-screen workers that panic before their work starts, by the answer
+/// they would owe; see `App::home_worker_dies`.
+#[cfg(test)]
+type HomeWorkerDies = Box<dyn FnMut(&AppEvent) -> bool + Send>;
+
 /// A lease on the current `task_generation`, held by background work whose answer
 /// arrives once.
 ///
 /// `task_generation` is the token `BackgroundSchemaReady`, `BackgroundExportCollected`,
 /// `BackgroundExportWritten`, the three analysis results, `BackgroundLazyFrameReady`,
-/// `BackgroundRemoteSizeReady`, `BackgroundDownloadReady` and `BackgroundError` are all
+/// `BackgroundRemoteSizeReady`, `BackgroundDownloadReady` and `BackgroundFailed` are all
 /// gated on. Bumping it while one is in flight throws that answer away when it arrives,
 /// silently, and nothing asks again: an export that never writes its file, an analysis
 /// left on its spinner, a dataset that never opens. So the bump waits for the lease.
@@ -7845,6 +8272,9 @@ struct ClassifyRequest {
 /// behind the result that worker just sent — so the handler that consumes the result has
 /// already run by the time the lease is retired. A worker that panics unwinds through
 /// the same `Drop`, so a permanent "something is waiting" cannot be stranded that way.
+/// Retiring the lease is not finishing the operation: it says the generation is free,
+/// and nothing about the operation's own state. That is `BackgroundFailed`'s, which a
+/// panic sends first.
 /// This is [`crate::schema_union::Pass`]'s trick, for a count on the other side of a
 /// channel.
 ///
@@ -8986,6 +9416,74 @@ impl LenCount {
     }
 }
 
+/// A count that has been started, and so owes `len_count_inflight` an answer.
+///
+/// Answered however its worker ends. A count that panics, or a collect it rides in that
+/// fails or panics before reaching it, reports itself failed: unanswered, the marker
+/// would stand for the session, with a spinner where the row count goes and `End`
+/// waiting on nothing.
+struct OwedCount {
+    job: Option<LenCount>,
+    tx: Sender<AppEvent>,
+}
+
+impl OwedCount {
+    fn new(job: LenCount, tx: Sender<AppEvent>) -> Self {
+        Self { job: Some(job), tx }
+    }
+
+    /// Count with `count` and report it, a panic as a failure.
+    fn answer(mut self, count: impl FnOnce(&LenCount) -> Result<Counted, ()>) {
+        if let Some(job) = self.job.take() {
+            let counted = logging::catch_panic(|| count(&job)).unwrap_or(Err(()));
+            job.send(counted, &self.tx);
+        }
+    }
+}
+
+impl Drop for OwedCount {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.send(Err(()), &self.tx);
+        }
+    }
+}
+
+/// The answer a home-screen worker owes whatever marks it in flight, sent in its place
+/// if the worker panics before sending its own. Unanswered, the marker stands for the
+/// session: a listing that says "Looking..." over nothing, a search that never ends,
+/// a root never probed again.
+///
+/// Not `spawn_bg`: these are keyed by place and `home_generation`, take no lease and
+/// set no `busy`. The panic itself is left to the hook, which logs it and has
+/// `flash_background_panic` say so.
+struct OwedAnswer {
+    tx: Sender<AppEvent>,
+    instead: Option<AppEvent>,
+    #[cfg(test)]
+    dies: bool,
+}
+
+impl OwedAnswer {
+    /// Run the worker, which sends its own answer.
+    fn run(mut self, work: impl FnOnce()) {
+        #[cfg(test)]
+        if self.dies {
+            panic!("worker died");
+        }
+        work();
+        self.instead = None;
+    }
+}
+
+impl Drop for OwedAnswer {
+    fn drop(&mut self) {
+        if let Some(instead) = self.instead.take() {
+            let _ = self.tx.send(instead);
+        }
+    }
+}
+
 /// A Data Quality report, by everything its plan says: the acquisition it measured
 /// and the report's own choices.
 struct QualityCacheEntry {
@@ -9349,6 +9847,13 @@ pub struct App {
     /// `task_generation` are background work a bump would strand. See
     /// [`GenerationLease`].
     leases: HashMap<u64, usize>,
+    /// Which spawned jobs panic before their work starts, for tests of what a dying
+    /// worker leaves behind.
+    #[cfg(test)]
+    worker_dies: Option<WorkerDies>,
+    /// The same, for the home screen's workers.
+    #[cfg(test)]
+    home_worker_dies: Option<HomeWorkerDies>,
     /// A buffer collect that was asked for while a lease was outstanding, and the
     /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
     /// dropped when the dataset it belonged to is replaced.
@@ -9607,21 +10112,20 @@ impl App {
         self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the rows that repeat"));
         self.busy = true;
-        self.spawn_bg("Reading the rows that repeat...", move |task_gen, tx| {
-            let _ = tx.send(
-                match data_quality::duplicate_rows(lf.select(columns), &keys, streaming) {
-                    Ok(df) => AppEvent::BackgroundSampleReady {
-                        generation: task_gen,
-                        label,
-                        df,
-                    },
-                    Err(error) => AppEvent::BackgroundError {
-                        generation: task_gen,
-                        message: format!("{error}"),
-                    },
-                },
-            );
-        });
+        self.spawn_bg(
+            Job::SampleRows,
+            "Reading the rows that repeat...",
+            move |task_gen, tx| {
+                let df = data_quality::duplicate_rows(lf.select(columns), &keys, streaming)
+                    .map_err(|error| format!("{error}"))?;
+                let _ = tx.send(AppEvent::BackgroundSampleReady {
+                    generation: task_gen,
+                    label,
+                    df,
+                });
+                Ok(())
+            },
+        );
         None
     }
 
@@ -11041,78 +11545,80 @@ impl App {
             "Reading the sample"
         }));
         self.busy = true;
-        self.spawn_bg("Reading the sample...", move |task_gen, tx| {
-            // The columns shown are the table's; a finding is cut from every column
-            // the run read first, so duplicates are judged as the run judged them.
-            let (rows, columns) = match kept {
-                Some((kept, columns)) => (Ok(kept.analysis_rows(kept.df().clone())), Some(columns)),
-                None => (
-                    source
-                        .cut(&sample.scope)
-                        .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
-                    None,
-                ),
-            };
-            let shown = |df: polars::prelude::DataFrame| match &columns {
-                Some(columns) => polars::prelude::IntoLazy::lazy(df)
-                    .select(columns.clone())
-                    .collect()
-                    .map_err(color_eyre::eyre::Report::from),
-                None => Ok(df),
-            };
-            let read = rows.and_then(|rows| {
-                let label = format!(
-                    "Sample {} {}",
-                    crate::glyphs::get().middot,
-                    sample.outcome(
-                        rows.total_rows,
-                        rows.sample_size,
-                        rows.per_value.as_ref().map(|per_value| per_value.kept),
-                    )
-                );
-                match evidence {
-                    Some((quality_report::EvidenceRows::Duplicates, label)) => {
-                        // Every column the run grouped by: the scope's own, not the
-                        // row numbers kept beside them.
-                        let keys = rows
-                            .df
-                            .get_column_names()
-                            .into_iter()
-                            .filter(|name| !name.starts_with("__datui"))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let df = data_quality::duplicate_rows(
-                            polars::prelude::IntoLazy::lazy(rows.df),
-                            &keys,
-                            streaming,
-                        )?;
-                        Ok((shown(df)?, label))
+        self.spawn_bg(
+            Job::SampleRows,
+            "Reading the sample...",
+            move |task_gen, tx| {
+                // The columns shown are the table's; a finding is cut from every column
+                // the run read first, so duplicates are judged as the run judged them.
+                let (rows, columns) = match kept {
+                    Some((kept, columns)) => {
+                        (Ok(kept.analysis_rows(kept.df().clone())), Some(columns))
                     }
-                    Some((quality_report::EvidenceRows::Matching(predicate), label)) => {
-                        let df = polars::prelude::IntoLazy::lazy(rows.df)
-                            .filter(predicate)
-                            .collect()?;
-                        Ok((shown(df)?, label))
+                    None => (
+                        source
+                            .cut(&sample.scope)
+                            .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
+                        None,
+                    ),
+                };
+                let shown = |df: polars::prelude::DataFrame| match &columns {
+                    Some(columns) => polars::prelude::IntoLazy::lazy(df)
+                        .select(columns.clone())
+                        .collect()
+                        .map_err(color_eyre::eyre::Report::from),
+                    None => Ok(df),
+                };
+                let read = rows.and_then(|rows| {
+                    let label = format!(
+                        "Sample {} {}",
+                        crate::glyphs::get().middot,
+                        sample.outcome(
+                            rows.total_rows,
+                            rows.sample_size,
+                            rows.per_value.as_ref().map(|per_value| per_value.kept),
+                        )
+                    );
+                    match evidence {
+                        Some((quality_report::EvidenceRows::Duplicates, label)) => {
+                            // Every column the run grouped by: the scope's own, not the
+                            // row numbers kept beside them.
+                            let keys = rows
+                                .df
+                                .get_column_names()
+                                .into_iter()
+                                .filter(|name| !name.starts_with("__datui"))
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let df = data_quality::duplicate_rows(
+                                polars::prelude::IntoLazy::lazy(rows.df),
+                                &keys,
+                                streaming,
+                            )?;
+                            Ok((shown(df)?, label))
+                        }
+                        Some((quality_report::EvidenceRows::Matching(predicate), label)) => {
+                            let df = polars::prelude::IntoLazy::lazy(rows.df)
+                                .filter(predicate)
+                                .collect()?;
+                            Ok((shown(df)?, label))
+                        }
+                        // Files are read from the scope, never from a sample.
+                        Some((quality_report::EvidenceRows::Files(_), label)) => {
+                            Ok((shown(rows.df)?, label))
+                        }
+                        None => Ok((shown(rows.df)?, label)),
                     }
-                    // Files are read from the scope, never from a sample.
-                    Some((quality_report::EvidenceRows::Files(_), label)) => {
-                        Ok((shown(rows.df)?, label))
-                    }
-                    None => Ok((shown(rows.df)?, label)),
-                }
-            });
-            let _ = tx.send(match read {
-                Ok((df, label)) => AppEvent::BackgroundSampleReady {
+                });
+                let (df, label) = read.map_err(|error| format!("{error}"))?;
+                let _ = tx.send(AppEvent::BackgroundSampleReady {
                     generation: task_gen,
                     label,
                     df,
-                },
-                Err(error) => AppEvent::BackgroundError {
-                    generation: task_gen,
-                    message: format!("{error}"),
-                },
-            });
-        });
+                });
+                Ok(())
+            },
+        );
         None
     }
 
@@ -12051,8 +12557,8 @@ impl App {
             // Reported either way. A pass that could not read them has to say so, or
             // the dataset waits for it for the rest of the session — and a waiting
             // dataset is one that will not count itself, because the count was what
-            // the pass was bringing back.
-            let found = join(&progress);
+            // the pass was bringing back. A pass that panicked could not read them.
+            let found = logging::catch_panic(|| join(&progress)).unwrap_or(None);
             if !Self::record_footers(&slot, generation, found) {
                 return;
             }
@@ -12275,9 +12781,9 @@ impl App {
         }
         // A footer count runs now too, remote or not: it reads no data.
         if let Some(job) = count.take_if(|job| !state.is_remote_source() || job.reads_footers()) {
-            let tx = self.events.clone();
+            let count = OwedCount::new(job, self.events.clone());
             self.runtime
-                .spawn_blocking(move || job.send(job.run(), &tx));
+                .spawn_blocking(move || count.answer(LenCount::run));
         }
 
         // Read before the frame is borrowed: the predicate is over the whole App.
@@ -12306,9 +12812,9 @@ impl App {
         let Some(Some(request)) = request else {
             // Nothing to ride in: the view is covered, or the buffer on hand serves it.
             if let Some(job) = count {
-                let tx = self.events.clone();
+                let count = OwedCount::new(job, self.events.clone());
                 self.runtime
-                    .spawn_blocking(move || job.send(job.run(), &tx));
+                    .spawn_blocking(move || count.answer(LenCount::run));
             }
             return covered;
         };
@@ -12355,7 +12861,10 @@ impl App {
             waited_on: status.is_some(),
         });
         let collect_slot = self.pending_collect_result.clone();
-        self.spawn_bg_replaceable(status, move |task_gen, tx| {
+        // Owed from here, so a worker that dies before it reaches the count still
+        // answers it.
+        let count = count.map(|job| OwedCount::new(job, self.events.clone()));
+        self.spawn_bg_replaceable(Job::Rows, status, move |task_gen, tx| {
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                 Ok(df) => {
                     let returned = df.height();
@@ -12378,10 +12887,11 @@ impl App {
                     let _ = tx.send(AppEvent::BackgroundCollectReady {
                         generation: task_gen,
                     });
-                    if let Some(job) = count {
+                    if let Some(count) = count {
                         let requested = request.buffer_end - request.buffer_start;
-                        let counted = job.after_collect(request.buffer_start, returned, requested);
-                        job.send(counted, &tx);
+                        count.answer(|job| {
+                            job.after_collect(request.buffer_start, returned, requested)
+                        });
                     }
                 }
                 Err(e) => {
@@ -12391,30 +12901,30 @@ impl App {
                         conversion: crate::error_display::conversion_failure(&e).map(Box::new),
                     });
                     // A pass over a frame that just failed to collect would fail too:
-                    // report the count as failed and leave the retry to a later
-                    // interaction (see `len_count_failed`).
-                    if let Some(job) = count {
-                        job.send(Err(()), &tx);
-                    }
+                    // the count goes unanswered and so reports itself failed, leaving
+                    // the retry to a later interaction (see `len_count_failed`).
+                    drop(count);
                 }
             }
+            Ok(())
         });
         true
     }
 
-    /// Spawn a background task. Captures the current generation and event sender
-    /// for the closure, sets `busy` and `status_message`. The closure is responsible
-    /// for sending a follow-up event (typically `Background*Ready` or `BackgroundError`)
-    /// using the captured generation so stale results can be filtered out.
+    /// Spawn `job` on a worker. Captures the current generation and event sender for the
+    /// closure, sets `busy` and `status_message`. The closure sends its result tagged
+    /// with the generation, so a stale one can be dropped, and returns `Err` with a
+    /// message for the user when it has none: [`App::spawn_bg_inner`] reports that, and
+    /// a panic, as the job's [`AppEvent::BackgroundFailed`].
     ///
     /// Does not bump `task_generation`. Callers that need to invalidate prior in-flight
     /// work should bump it explicitly before calling.
-    fn spawn_bg<F>(&mut self, status: &str, work: F)
+    fn spawn_bg<F>(&mut self, job: Job, status: &str, work: F)
     where
-        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+        F: FnOnce(u64, Sender<AppEvent>) -> std::result::Result<(), String> + Send + 'static,
     {
         let lease = self.lease_the_generation();
-        self.spawn_bg_inner(Some(status), Some(lease), work);
+        self.spawn_bg_inner(job, Some(status), Some(lease), work);
     }
 
     /// Spawn background work whose answer, thrown away by a bump, is simply asked for
@@ -12424,20 +12934,25 @@ impl App {
     /// leased, the next collect would queue behind the last one and scrolling would go
     /// a page per round trip. Supersession is `InflightCollect::covers`'s job instead.
     ///
-    /// This is the one exemption, and `the_collect_is_the_only_unleased_spawn` fails if
+    /// This is the one exemption, and `an_unleased_spawn_is_a_deliberate_act` fails if
     /// a second one appears.
     ///
     /// With no `status` it sets neither `busy` nor a message: a load-ahead.
-    fn spawn_bg_replaceable<F>(&mut self, status: Option<&str>, work: F)
+    fn spawn_bg_replaceable<F>(&mut self, job: Job, status: Option<&str>, work: F)
     where
-        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+        F: FnOnce(u64, Sender<AppEvent>) -> std::result::Result<(), String> + Send + 'static,
     {
-        self.spawn_bg_inner(status, None, work);
+        self.spawn_bg_inner(job, status, None, work);
     }
 
-    fn spawn_bg_inner<F>(&mut self, status: Option<&str>, lease: Option<GenerationLease>, work: F)
-    where
-        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+    fn spawn_bg_inner<F>(
+        &mut self,
+        job: Job,
+        status: Option<&str>,
+        lease: Option<GenerationLease>,
+        work: F,
+    ) where
+        F: FnOnce(u64, Sender<AppEvent>) -> std::result::Result<(), String> + Send + 'static,
     {
         let task_gen = self.task_generation;
         let tx = self.events.clone();
@@ -12445,18 +12960,32 @@ impl App {
             self.busy = true;
             self.status_message = Some(status.to_string());
         }
+        #[cfg(test)]
+        let dies = self.worker_dies.as_mut().is_some_and(|dies| dies(&job));
         self.runtime.spawn_blocking(move || {
-            // Dropped after `work` returns or panics, so behind the error sent below.
+            // Dropped after `work` returns or panics, so behind the failure sent below.
             let _lease = lease;
             let sender = tx.clone();
             // A panic would otherwise leave the spinner up forever with only the log
-            // knowing why; the task it stopped fails the way any other failure does.
-            if let Err(message) = logging::catch_panic(|| work(task_gen, sender)) {
-                let _ = tx.send(AppEvent::BackgroundError {
-                    generation: task_gen,
-                    message,
-                });
-            }
+            // knowing why; the job it stopped fails the way it fails on an error.
+            let ended = logging::catch_panic(|| {
+                #[cfg(test)]
+                if dies {
+                    panic!("worker died");
+                }
+                work(task_gen, sender)
+            });
+            let (message, panicked) = match ended {
+                Ok(Ok(())) => return,
+                Ok(Err(message)) => (message, false),
+                Err(message) => (message, true),
+            };
+            let _ = tx.send(AppEvent::BackgroundFailed {
+                generation: task_gen,
+                job,
+                message,
+                panicked,
+            });
         });
     }
 
@@ -12538,11 +13067,10 @@ impl App {
             self.end_after_count = Some(generation);
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             if self.len_count_inflight != Some(generation) {
-                let job = LenCount::for_state(state);
+                let count = OwedCount::new(LenCount::for_state(state), self.events.clone());
                 self.len_count_inflight = Some(generation);
-                let tx = self.events.clone();
                 self.runtime
-                    .spawn_blocking(move || job.send(job.run(), &tx));
+                    .spawn_blocking(move || count.answer(LenCount::run));
             }
             return None;
         }
@@ -12826,6 +13354,10 @@ impl App {
             footers_held: None,
             reread_owed: None,
             leases: HashMap::new(),
+            #[cfg(test)]
+            worker_dies: None,
+            #[cfg(test)]
+            home_worker_dies: None,
             collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
@@ -12869,6 +13401,19 @@ impl App {
         None
     }
 
+    /// What a home-screen worker owes in place of its answer if it panics.
+    fn owed_answer(&mut self, instead: AppEvent) -> OwedAnswer {
+        OwedAnswer {
+            tx: self.events.clone(),
+            #[cfg(test)]
+            dies: self
+                .home_worker_dies
+                .as_mut()
+                .is_some_and(|dies| dies(&instead)),
+            instead: Some(instead),
+        }
+    }
+
     /// Complete the path being typed, on a worker.
     fn request_path_completion(&mut self) {
         let typed = self.home.path_input.clone();
@@ -12902,13 +13447,21 @@ impl App {
 
         let generation = self.home_generation;
         let tx = self.events.clone();
+        // Remembered as having none, so the preview is not asked for again.
+        let owed = self.owed_answer(AppEvent::HomeSchemaReady {
+            generation,
+            path: entry.path.clone(),
+            preview: None,
+        });
         self.runtime.spawn_blocking(move || {
-            let preview = discover::schema_preview(&entry);
-            let _ = tx.send(AppEvent::HomeSchemaReady {
-                generation,
-                path: entry.path,
-                preview,
-            });
+            owed.run(|| {
+                let preview = discover::schema_preview(&entry);
+                let _ = tx.send(AppEvent::HomeSchemaReady {
+                    generation,
+                    path: entry.path,
+                    preview,
+                });
+            })
         });
     }
 
@@ -12939,6 +13492,10 @@ impl App {
             self.home_probes_inflight.push(root.clone());
             let tx = self.events.clone();
             let cache = self.cache.clone();
+            let owed = self.owed_answer(AppEvent::HomeProbeFailed {
+                root: root.clone(),
+                message: "Could not read it; see the log".to_string(),
+            });
             #[cfg(feature = "cloud")]
             let cloud = self.app_config.cloud.clone();
             #[cfg(feature = "cloud")]
@@ -12948,113 +13505,115 @@ impl App {
             // the work that actually loads data — a few dead shares must not eat into
             // the capacity that opening a dataset depends on.
             std::thread::spawn(move || {
-                // A bucket or a prefix inside one. It looks like a network root to
-                // everything above, and it is, but it is read with an object-store
-                // listing rather than `read_dir` — which on a `gs://` path fails, which
-                // is why descending into a bucket used to show nothing at all.
-                //
-                // Deliberately metadata-only. A delimited listing returns names, sizes
-                // and modification times for one level, and nothing here reads an
-                // object's contents: no footers, no schemas, no row counts. Those are
-                // what a local listing fills in for free from bytes already on the
-                // machine, and what would cost a ranged read per row against an object
-                // store somebody pays egress on.
-                #[cfg(feature = "cloud")]
-                if let Some((id, account)) = home::cloud_account(&root) {
-                    let listed = wait_on_runtime(&runtime, async move {
-                        crate::cloud_browse::list_account(&id, &account, &cloud).await
-                    });
-                    match listed {
-                        Some(Ok(rows)) => {
-                            let _ = tx.send(AppEvent::HomeProbeReady {
-                                root,
-                                rows: Some(rows),
-                                cut_short: false,
-                            });
-                        }
-                        Some(Err(message)) => {
-                            log::warn!(
-                                target: "datui::cloud",
-                                "listing {} failed: {message}",
-                                root.display()
-                            );
-                            let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
-                        }
-                        None => {
-                            let _ = tx.send(AppEvent::HomeProbeReady {
-                                root,
-                                rows: None,
-                                cut_short: false,
-                            });
-                        }
-                    }
-                    return;
-                }
-                #[cfg(feature = "cloud")]
-                if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some()
-                    || source::azure_parts(&root.to_string_lossy()).is_some()
-                {
-                    let url = root.to_string_lossy().into_owned();
-                    let listed = wait_on_runtime(&runtime, async move {
-                        crate::cloud_browse::list_objects(&url, &cloud).await
-                    });
-                    // A refused listing says why, rather than reading as a place that
-                    // stopped answering.
-                    match listed {
-                        Some(Err(message)) => {
-                            log::warn!(
-                                target: "datui::cloud",
-                                "listing {} failed: {message}",
-                                root.display()
-                            );
-                            let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
-                        }
-                        other => {
-                            let _ = tx.send(AppEvent::HomeProbeReady {
-                                root,
-                                rows: other.and_then(Result::ok),
-                                cut_short: false,
-                            });
-                        }
-                    }
-                    return;
-                }
-                let mut cut_short = false;
-                let rows = if std::fs::read_dir(&root).is_ok() {
-                    // What has been read shows while the rest is read: a share can take
-                    // seconds over a directory of thousands.
-                    let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
-                        let _ = tx.send(AppEvent::HomeProbeProgress {
-                            root: root.clone(),
-                            rows: so_far.to_vec(),
+                owed.run(|| {
+                    // A bucket or a prefix inside one. It looks like a network root to
+                    // everything above, and it is, but it is read with an object-store
+                    // listing rather than `read_dir` — which on a `gs://` path fails, which
+                    // is why descending into a bucket used to show nothing at all.
+                    //
+                    // Deliberately metadata-only. A delimited listing returns names, sizes
+                    // and modification times for one level, and nothing here reads an
+                    // object's contents: no footers, no schemas, no row counts. Those are
+                    // what a local listing fills in for free from bytes already on the
+                    // machine, and what would cost a ranged read per row against an object
+                    // store somebody pays egress on.
+                    #[cfg(feature = "cloud")]
+                    if let Some((id, account)) = home::cloud_account(&root) {
+                        let listed = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::list_account(&id, &account, &cloud).await
                         });
+                        match listed {
+                            Some(Ok(rows)) => {
+                                let _ = tx.send(AppEvent::HomeProbeReady {
+                                    root,
+                                    rows: Some(rows),
+                                    cut_short: false,
+                                });
+                            }
+                            Some(Err(message)) => {
+                                log::warn!(
+                                    target: "datui::cloud",
+                                    "listing {} failed: {message}",
+                                    root.display()
+                                );
+                                let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
+                            }
+                            None => {
+                                let _ = tx.send(AppEvent::HomeProbeReady {
+                                    root,
+                                    rows: None,
+                                    cut_short: false,
+                                });
+                            }
+                        }
+                        return;
+                    }
+                    #[cfg(feature = "cloud")]
+                    if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some()
+                        || source::azure_parts(&root.to_string_lossy()).is_some()
+                    {
+                        let url = root.to_string_lossy().into_owned();
+                        let listed = wait_on_runtime(&runtime, async move {
+                            crate::cloud_browse::list_objects(&url, &cloud).await
+                        });
+                        // A refused listing says why, rather than reading as a place that
+                        // stopped answering.
+                        match listed {
+                            Some(Err(message)) => {
+                                log::warn!(
+                                    target: "datui::cloud",
+                                    "listing {} failed: {message}",
+                                    root.display()
+                                );
+                                let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
+                            }
+                            other => {
+                                let _ = tx.send(AppEvent::HomeProbeReady {
+                                    root,
+                                    rows: other.and_then(Result::ok),
+                                    cut_short: false,
+                                });
+                            }
+                        }
+                        return;
+                    }
+                    let mut cut_short = false;
+                    let rows = if std::fs::read_dir(&root).is_ok() {
+                        // What has been read shows while the rest is read: a share can take
+                        // seconds over a directory of thousands.
+                        let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
+                            let _ = tx.send(AppEvent::HomeProbeProgress {
+                                root: root.clone(),
+                                rows: so_far.to_vec(),
+                            });
+                        });
+                        cut_short = scan.truncated;
+                        let mut rows = scan.entries;
+                        // Measuring happens here too: it is the same remote filesystem,
+                        // and this thread is already the one allowed to block on it.
+                        for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
+                            crate::discover::enrich(row);
+                        }
+                        // Remote datasets are measured nowhere else, so this is the only
+                        // chance to remember them. Without it a remote row is blank on
+                        // every run, which is exactly backwards: the hardest things to
+                        // reach are the ones most worth remembering.
+                        let mounts = crate::locality::Mounts::current();
+                        for row in rows.iter_mut() {
+                            row.cost.source = Some(mounts.describe(&row.path).fstype);
+                        }
+                        let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
+                        cache.record_dataset_facts(&facts);
+                        Some(rows)
+                    } else {
+                        None
+                    };
+                    let _ = tx.send(AppEvent::HomeProbeReady {
+                        root,
+                        rows,
+                        cut_short,
                     });
-                    cut_short = scan.truncated;
-                    let mut rows = scan.entries;
-                    // Measuring happens here too: it is the same remote filesystem,
-                    // and this thread is already the one allowed to block on it.
-                    for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
-                        crate::discover::enrich(row);
-                    }
-                    // Remote datasets are measured nowhere else, so this is the only
-                    // chance to remember them. Without it a remote row is blank on
-                    // every run, which is exactly backwards: the hardest things to
-                    // reach are the ones most worth remembering.
-                    let mounts = crate::locality::Mounts::current();
-                    for row in rows.iter_mut() {
-                        row.cost.source = Some(mounts.describe(&row.path).fstype);
-                    }
-                    let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
-                    cache.record_dataset_facts(&facts);
-                    Some(rows)
-                } else {
-                    None
-                };
-                let _ = tx.send(AppEvent::HomeProbeReady {
-                    root,
-                    rows,
-                    cut_short,
-                });
+                })
             });
         }
     }
@@ -13298,33 +13857,42 @@ impl App {
 
         let generation = self.home_generation;
         let tx = self.events.clone();
+        // Ended, with what the batches already found kept.
+        let owed = self.owed_answer(AppEvent::HomeSearchDone {
+            generation,
+            root: root.clone(),
+            scanned: 0,
+            limited: Some("partial · failed".to_string()),
+        });
         // A detached thread for the same reason the probes use one: the walk touches
         // a filesystem, and nothing that touches a filesystem may run where a stall
         // would stop the screen from drawing.
         std::thread::spawn(move || {
-            let walk_root = root.clone();
-            let batch_tx = tx.clone();
-            let batch_gen = generation;
-            let batch_root = root.clone();
-            let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
-                // Sent even when empty: it carries the progress count, and it is the
-                // only place the walk learns that nobody is listening any more.
-                batch_tx
-                    .send(AppEvent::HomeSearchBatch {
-                        generation: batch_gen,
-                        root: batch_root.clone(),
-                        found,
-                        scanned: outcome.scanned,
-                    })
-                    // A closed channel means the app is gone; stop walking.
-                    .is_ok()
-            });
-            let _ = tx.send(AppEvent::HomeSearchDone {
-                generation,
-                root,
-                scanned: outcome.scanned,
-                limited: outcome.note().map(str::to_string),
-            });
+            owed.run(|| {
+                let walk_root = root.clone();
+                let batch_tx = tx.clone();
+                let batch_gen = generation;
+                let batch_root = root.clone();
+                let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
+                    // Sent even when empty: it carries the progress count, and it is the
+                    // only place the walk learns that nobody is listening any more.
+                    batch_tx
+                        .send(AppEvent::HomeSearchBatch {
+                            generation: batch_gen,
+                            root: batch_root.clone(),
+                            found,
+                            scanned: outcome.scanned,
+                        })
+                        // A closed channel means the app is gone; stop walking.
+                        .is_ok()
+                });
+                let _ = tx.send(AppEvent::HomeSearchDone {
+                    generation,
+                    root,
+                    scanned: outcome.scanned,
+                    limited: outcome.note().map(str::to_string),
+                });
+            })
         });
     }
 
@@ -13367,12 +13935,15 @@ impl App {
 
         self.home.listing_in_flight = true;
         let tx = self.events.clone();
+        let owed = self.owed_answer(AppEvent::HomeListingFailed);
         self.runtime.spawn_blocking(move || {
-            let listing = home::build_listing(&request);
-            let _ = tx.send(AppEvent::HomeListingReady {
-                generation,
-                listing: Box::new(listing),
-            });
+            owed.run(|| {
+                let listing = home::build_listing(&request);
+                let _ = tx.send(AppEvent::HomeListingReady {
+                    generation,
+                    listing: Box::new(listing),
+                });
+            })
         });
     }
 
@@ -15036,7 +15607,7 @@ impl App {
                 progress_percent: 0,
             };
         }
-        self.spawn_bg("Checking size...", move |task_gen, tx| {
+        self.spawn_bg(Job::Load, "Checking size...", move |task_gen, tx| {
             let size = match &pending {
                 #[cfg(feature = "http")]
                 PendingDownload::Http { url, .. } => {
@@ -15053,6 +15624,7 @@ impl App {
                 generation: task_gen,
                 pending: Box::new(pending.with_size(size)),
             });
+            Ok(())
         });
         None
     }
@@ -15103,7 +15675,7 @@ impl App {
         let cloud = self.app_config.cloud.clone();
         let path_for_event = display_path.or_else(|| paths.first().cloned());
         let slot = self.pending_lazyframe_result.clone();
-        self.spawn_bg(status, move |task_gen, tx| {
+        self.spawn_bg(Job::Load, status, move |task_gen, tx| {
             // What the read passed over rides back with the options it was asked for, so
             // the dataset can say what it left out. Seeded with what the caller already
             // knows and overwritten by what the read finds: a directory on disk is the
@@ -15135,16 +15707,12 @@ impl App {
                         path: path_for_event,
                         options,
                     });
+                    Ok(())
                 }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::BackgroundError {
-                        generation: task_gen,
-                        message: crate::error_display::user_message_from_report(
-                            &e,
-                            paths.first().map(|p| p.as_path()),
-                        ),
-                    });
-                }
+                Err(e) => Err(crate::error_display::user_message_from_report(
+                    &e,
+                    paths.first().map(|p| p.as_path()),
+                )),
             }
         });
         None
@@ -20274,14 +20842,15 @@ impl App {
                     }
                     Some((group_index, DrillRow::Read(lf))) => {
                         let streaming = state.polars_streaming();
-                        self.spawn_bg(Self::READING_GROUP, move |task_gen, tx| {
+                        self.spawn_bg(Job::DrillRow, Self::READING_GROUP, move |task_gen, tx| {
                             let row = crate::statistics::collect_lazy(*lf, streaming)
-                                .map_err(|e| crate::error_display::user_message_from_polars(&e));
+                                .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
                             let _ = tx.send(AppEvent::DrillRowRead {
                                 generation: task_gen,
                                 group_index,
                                 row,
                             });
+                            Ok(())
                         });
                     }
                 }
@@ -20988,6 +21557,11 @@ impl App {
                 self.request_home_classifications();
                 None
             }
+            AppEvent::HomeListingFailed => {
+                // The rows already listed stay. The panic is flashed as a raw worker's.
+                self.home.listing_in_flight = false;
+                None
+            }
             AppEvent::HomeMeasured { measured, done } => {
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
@@ -21273,27 +21847,20 @@ impl App {
                 }
                 let url = url.clone();
                 let options = options.clone();
-                self.spawn_bg("Downloading...", move |task_gen, tx| {
+                self.spawn_bg(Job::Load, "Downloading...", move |task_gen, tx| {
                     let ext = source::download_suffix(url.as_str());
-                    match Self::download_http_to_temp(
+                    let temp_path = Self::download_http_to_temp(
                         url.as_str(),
                         options.temp_dir.as_deref(),
                         ext.as_deref(),
-                    ) {
-                        Ok(temp_path) => {
-                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
-                                generation: task_gen,
-                                temp_path,
-                                options,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: task_gen,
-                                message: crate::error_display::user_message_from_report(&e, None),
-                            });
-                        }
-                    }
+                    )
+                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                        generation: task_gen,
+                        temp_path,
+                        options,
+                    });
+                    Ok(())
                 });
                 None
             }
@@ -21312,29 +21879,18 @@ impl App {
                     source::InputSource::Azure(_) => "Downloading from Azure...",
                     _ => "Downloading from S3...",
                 };
-                self.spawn_bg(
-                    status,
-                    move |task_gen, tx| match Self::download_cloud_to_temp(
-                        &url,
-                        &cloud_config,
-                        &options,
-                        &rt,
-                    ) {
-                        Ok(temp_path) => {
-                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
-                                generation: task_gen,
-                                temp_path,
-                                options,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: task_gen,
-                                message: crate::error_display::user_message_from_report(&e, None),
-                            });
-                        }
-                    },
-                );
+                self.spawn_bg(Job::Load, status, move |task_gen, tx| {
+                    let temp_path =
+                        Self::download_cloud_to_temp(&url, &cloud_config, &options, &rt).map_err(
+                            |e| crate::error_display::user_message_from_report(&e, None),
+                        )?;
+                    let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                        generation: task_gen,
+                        temp_path,
+                        options,
+                    });
+                    Ok(())
+                });
                 None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -21486,7 +22042,7 @@ impl App {
                     meter: Arc::new(crate::measurements::Meter::default()),
                     remembered: Some(self.cache.clone()),
                 };
-                self.spawn_bg("Caching schema...", move |task_gen, tx| {
+                self.spawn_bg(Job::Load, "Caching schema...", move |task_gen, tx| {
                     match Self::build_schema_state(
                         lf_owned,
                         path_owned.as_deref(),
@@ -21508,13 +22064,9 @@ impl App {
                                 options: options_owned,
                                 debug_label: Some(debug_label),
                             });
+                            Ok(())
                         }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: task_gen,
-                                message: crate::error_display::user_message_from_report(&e, None),
-                            });
-                        }
+                        Err(e) => Err(crate::error_display::user_message_from_report(&e, None)),
                     }
                 });
                 None
@@ -21548,7 +22100,7 @@ impl App {
                     ..options.clone()
                 };
                 let schema_slot = self.pending_schema_result.clone();
-                self.spawn_bg("Decompressing...", move |task_gen, tx| {
+                self.spawn_bg(Job::Load, "Decompressing...", move |task_gen, tx| {
                     match Self::decompressed_csv_state(&file, &options_owned) {
                         Ok(state) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -21563,16 +22115,12 @@ impl App {
                                 options: options_owned,
                                 debug_label: Some("decompressed csv".to_string()),
                             });
+                            Ok(())
                         }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: task_gen,
-                                message: crate::error_display::user_message_from_report(
-                                    &e,
-                                    Some(path.as_path()),
-                                ),
-                            });
-                        }
+                        Err(e) => Err(crate::error_display::user_message_from_report(
+                            &e,
+                            Some(path.as_path()),
+                        )),
                     }
                 });
                 None
@@ -21614,29 +22162,28 @@ impl App {
                 if comp.df.is_none() {
                     let sample = self.analysis_modal.sample.clone();
                     let streaming = self.app_config.performance.polars_streaming;
-                    self.spawn_bg("Computing statistics...", move |task_gen, tx| match source
-                        .cut(&sample.scope)
-                        .and_then(|lf| {
-                            crate::statistics::compute_describe_from_lazy(
-                                &lf,
-                                known_total,
-                                &sample,
-                                streaming,
-                            )
-                        }) {
-                        Ok(results) => {
+                    self.spawn_bg(
+                        Job::Analysis,
+                        "Computing statistics...",
+                        move |task_gen, tx| {
+                            let results = source
+                                .cut(&sample.scope)
+                                .and_then(|lf| {
+                                    crate::statistics::compute_describe_from_lazy(
+                                        &lf,
+                                        known_total,
+                                        &sample,
+                                        streaming,
+                                    )
+                                })
+                                .map_err(|e| format!("{e}"))?;
                             let _ = tx.send(AppEvent::BackgroundDescribeReady {
                                 generation: task_gen,
                                 results,
                             });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: task_gen,
-                                message: format!("{e}"),
-                            });
-                        }
-                    });
+                            Ok(())
+                        },
+                    );
                 }
                 None
             }
@@ -21645,36 +22192,35 @@ impl App {
                     let (source, known_total) = self.sample_source(state);
                     let sample = self.analysis_modal.sample.clone();
                     let streaming = self.app_config.performance.polars_streaming;
-                    self.spawn_bg("Analyzing distributions...", move |task_gen, tx| {
-                        let options = crate::statistics::ComputeOptions {
-                            include_distribution_info: true,
-                            include_distribution_analyses: true,
-                            include_correlation_matrix: false,
-                            include_skewness_kurtosis_outliers: true,
-                            polars_streaming: streaming,
-                        };
-                        match source.cut(&sample.scope).and_then(|lf| {
-                            crate::statistics::compute_statistics_for_sample(
-                                &lf,
-                                &sample,
-                                known_total,
-                                options,
-                            )
-                        }) {
-                            Ok(results) => {
-                                let _ = tx.send(AppEvent::BackgroundDistributionReady {
-                                    generation: task_gen,
-                                    results,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!("{e}"),
-                                });
-                            }
-                        }
-                    });
+                    self.spawn_bg(
+                        Job::Analysis,
+                        "Analyzing distributions...",
+                        move |task_gen, tx| {
+                            let options = crate::statistics::ComputeOptions {
+                                include_distribution_info: true,
+                                include_distribution_analyses: true,
+                                include_correlation_matrix: false,
+                                include_skewness_kurtosis_outliers: true,
+                                polars_streaming: streaming,
+                            };
+                            let results = source
+                                .cut(&sample.scope)
+                                .and_then(|lf| {
+                                    crate::statistics::compute_statistics_for_sample(
+                                        &lf,
+                                        &sample,
+                                        known_total,
+                                        options,
+                                    )
+                                })
+                                .map_err(|e| format!("{e}"))?;
+                            let _ = tx.send(AppEvent::BackgroundDistributionReady {
+                                generation: task_gen,
+                                results,
+                            });
+                            Ok(())
+                        },
+                    );
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
@@ -21687,53 +22233,50 @@ impl App {
                     let streaming = state.polars_streaming();
                     let sample = self.analysis_modal.sample.clone();
                     let seed = sample.seed;
-                    self.spawn_bg("Computing correlation matrix...", move |task_gen, tx| {
-                        // Only the numeric columns: nothing else is correlated, and on a
-                        // wide table the rest is most of what a full read would hold.
-                        let result = source
-                            .cut(&sample.scope)
-                            .and_then(|lf| {
-                                let schema = lf.clone().collect_schema()?;
-                                let numeric: Vec<polars::prelude::Expr> = schema
-                                    .iter()
-                                    .filter(|(_, dtype)| dtype.is_numeric())
-                                    .map(|(name, _)| col(name.clone()))
-                                    .collect();
-                                crate::sampling::read(
-                                    &lf.select(numeric),
-                                    &sample,
-                                    known_total,
-                                    streaming,
-                                )
-                            })
-                            .map(|rows| {
-                                let matrix =
-                                    crate::statistics::compute_correlation_matrix(&rows.df).ok();
-                                crate::statistics::AnalysisResults {
-                                    column_statistics: vec![],
-                                    total_rows: rows.total_rows,
-                                    sample_size: rows.sample_size,
-                                    per_value: rows.per_value.map(|per_value| per_value.kept),
-                                    sample_seed: seed,
-                                    correlation_matrix: matrix,
-                                    distribution_analyses: vec![],
-                                }
+                    self.spawn_bg(
+                        Job::Analysis,
+                        "Computing correlation matrix...",
+                        move |task_gen, tx| {
+                            // Only the numeric columns: nothing else is correlated, and on a
+                            // wide table the rest is most of what a full read would hold.
+                            let result = source
+                                .cut(&sample.scope)
+                                .and_then(|lf| {
+                                    let schema = lf.clone().collect_schema()?;
+                                    let numeric: Vec<polars::prelude::Expr> = schema
+                                        .iter()
+                                        .filter(|(_, dtype)| dtype.is_numeric())
+                                        .map(|(name, _)| col(name.clone()))
+                                        .collect();
+                                    crate::sampling::read(
+                                        &lf.select(numeric),
+                                        &sample,
+                                        known_total,
+                                        streaming,
+                                    )
+                                })
+                                .map(|rows| {
+                                    let matrix =
+                                        crate::statistics::compute_correlation_matrix(&rows.df)
+                                            .ok();
+                                    crate::statistics::AnalysisResults {
+                                        column_statistics: vec![],
+                                        total_rows: rows.total_rows,
+                                        sample_size: rows.sample_size,
+                                        per_value: rows.per_value.map(|per_value| per_value.kept),
+                                        sample_seed: seed,
+                                        correlation_matrix: matrix,
+                                        distribution_analyses: vec![],
+                                    }
+                                });
+                            let results = result.map_err(|e| format!("{e}"))?;
+                            let _ = tx.send(AppEvent::BackgroundCorrelationReady {
+                                generation: task_gen,
+                                results,
                             });
-                        match result {
-                            Ok(results) => {
-                                let _ = tx.send(AppEvent::BackgroundCorrelationReady {
-                                    generation: task_gen,
-                                    results,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!("{e}"),
-                                });
-                            }
-                        }
-                    });
+                            Ok(())
+                        },
+                    );
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
@@ -21811,115 +22354,91 @@ impl App {
                         progress.read = Some(watch.read().clone());
                     }
                     self.quality_watch = Some(watch.clone());
-                    self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
-                        // A stat of a local file as the run begins, not a read.
-                        match kept_source {
-                            Some(source) => identity = source,
-                            None => identity.stat(),
-                        }
-                        let lf = if source_scope {
-                            match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
-                                Ok(lf) => lf,
-                                Err(error) => {
-                                    let _ = tx.send(AppEvent::BackgroundError {
-                                        generation: task_gen,
-                                        message: format!("{error}"),
-                                    });
-                                    return;
+                    self.spawn_bg(
+                        Job::Analysis,
+                        "Profiling data quality...",
+                        move |task_gen, tx| {
+                            // A stat of a local file as the run begins, not a read.
+                            match kept_source {
+                                Some(source) => identity = source,
+                                None => identity.stat(),
+                            }
+                            let lf = if source_scope {
+                                data_quality::prepare_source_quality_scan(lf, source.as_ref())
+                                    .map_err(|error| format!("{error}"))?
+                            } else {
+                                lf
+                            };
+                            let lf =
+                                data_quality::apply_quality_scope(lf, &plan.scope, source.as_ref())
+                                    .map_err(|error| format!("{error}"))?;
+                            // Held to the end of the run: the copy stays on disk while its
+                            // passes read it, released or not.
+                            let fetch = |objects: &[crate::local_copy::RemoteObject],
+                                         root: &Path| {
+                                #[cfg(feature = "cloud")]
+                                {
+                                    Self::fetch_quality_copy(
+                                        objects,
+                                        root,
+                                        &cloud,
+                                        &runtime,
+                                        watch.read(),
+                                    )
                                 }
-                            }
-                        } else {
-                            lf
-                        };
-                        let lf = match data_quality::apply_quality_scope(
-                            lf,
-                            &plan.scope,
-                            source.as_ref(),
-                        ) {
-                            Ok(lf) => lf,
-                            Err(error) => {
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!("{error}"),
+                                #[cfg(not(feature = "cloud"))]
+                                {
+                                    let _ = (objects, root);
+                                    Err(color_eyre::eyre::eyre!("Built without cloud support"))
+                                }
+                            };
+                            let kept_copy = |copy: Option<Arc<crate::local_copy::LocalCopy>>| {
+                                let _ = tx.send(AppEvent::BackgroundQualityCopyKept {
+                                    dataset_generation,
+                                    copy,
                                 });
-                                return;
-                            }
-                        };
-                        // Held to the end of the run: the copy stays on disk while its
-                        // passes read it, released or not.
-                        let fetch = |objects: &[crate::local_copy::RemoteObject], root: &Path| {
-                            #[cfg(feature = "cloud")]
-                            {
-                                Self::fetch_quality_copy(
-                                    objects,
-                                    root,
-                                    &cloud,
-                                    &runtime,
-                                    watch.read(),
-                                )
-                            }
-                            #[cfg(not(feature = "cloud"))]
-                            {
-                                let _ = (objects, root);
-                                Err(color_eyre::eyre::eyre!("Built without cloud support"))
-                            }
-                        };
-                        let kept_copy = |copy: Option<Arc<crate::local_copy::LocalCopy>>| {
-                            let _ = tx.send(AppEvent::BackgroundQualityCopyKept {
+                            };
+                            let (lf, _held) =
+                                Self::quality_scope_on_copy(lf, copy_job, &watch, fetch, kept_copy)
+                                    .map_err(|error| format!("{error}"))?;
+                            let (results, rows) = crate::data_quality::compute_data_quality_watched(
+                                &lf,
+                                cached_rows,
+                                &plan,
+                                source.as_ref(),
+                                streaming,
+                                kept.as_deref(),
+                                &watch,
+                            );
+                            let kept = rows.map(|rows| KeptQualitySample {
                                 dataset_generation,
-                                copy,
+                                view_generation,
+                                sample: plan.sample(),
+                                rows: std::sync::Arc::new(rows),
+                                source: identity.clone(),
                             });
-                        };
-                        let (lf, _held) = match Self::quality_scope_on_copy(
-                            lf, copy_job, &watch, fetch, kept_copy,
-                        ) {
-                            Ok(read) => read,
-                            Err(error) => {
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!("{error}"),
-                                });
-                                return;
-                            }
-                        };
-                        let (results, rows) = crate::data_quality::compute_data_quality_watched(
-                            &lf,
-                            cached_rows,
-                            &plan,
-                            source.as_ref(),
-                            streaming,
-                            kept.as_deref(),
-                            &watch,
-                        );
-                        let kept = rows.map(|rows| KeptQualitySample {
-                            dataset_generation,
-                            view_generation,
-                            sample: plan.sample(),
-                            rows: std::sync::Arc::new(rows),
-                            source: identity.clone(),
-                        });
-                        match results {
-                            Ok(mut results) => {
-                                results.source = Some(Box::new(identity));
-                                let _ = tx.send(AppEvent::BackgroundDataQualityReady {
-                                    generation: task_gen,
-                                    results: Box::new(results),
-                                    kept,
-                                    plan: Box::new(plan),
-                                });
-                            }
-                            Err(error) => {
-                                // Stopped after the sample was read: the read is kept.
-                                if let Some(kept) = kept {
-                                    let _ = tx.send(AppEvent::BackgroundQualitySampleKept { kept });
+                            match results {
+                                Ok(mut results) => {
+                                    results.source = Some(Box::new(identity));
+                                    let _ = tx.send(AppEvent::BackgroundDataQualityReady {
+                                        generation: task_gen,
+                                        results: Box::new(results),
+                                        kept,
+                                        plan: Box::new(plan),
+                                    });
+                                    Ok(())
                                 }
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!("{error}"),
-                                });
+                                Err(error) => {
+                                    // Stopped after the sample was read: the read is kept.
+                                    if let Some(kept) = kept {
+                                        let _ =
+                                            tx.send(AppEvent::BackgroundQualitySampleKept { kept });
+                                    }
+                                    Err(format!("{error}"))
+                                }
                             }
-                        }
-                    });
+                        },
+                    );
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
@@ -22083,26 +22602,7 @@ impl App {
                 message,
                 conversion,
             } => {
-                if *generation != self.task_generation {
-                    return None;
-                }
-                // A query that failed on its first rows is not applied: the table,
-                // its schema and its row count go back to what they were (#400).
-                if let Some(run) = self.take_query_run() {
-                    self.fail_query_run(run, message, conversion.as_deref());
-                    return None;
-                }
-                let waited_on = self
-                    .collect_inflight
-                    .as_ref()
-                    .is_none_or(|inflight| inflight.waited_on);
-                if waited_on {
-                    return Some(AppEvent::BackgroundError {
-                        generation: *generation,
-                        message: message.clone(),
-                    });
-                }
-                self.collect_inflight = None;
+                self.rows_failed(*generation, message, conversion.as_deref());
                 None
             }
             AppEvent::BackgroundFootersJoined { .. } => {
@@ -22332,23 +22832,12 @@ impl App {
                 // Stale export collect — ignore.
                 None
             }
-            AppEvent::BackgroundExportWritten {
-                generation,
-                path,
-                result,
-            } => {
+            AppEvent::BackgroundExportWritten { generation, path } => {
                 if *generation == self.task_generation {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
-                    match result {
-                        Ok(()) => {
-                            self.flash_note(format!("Exported to {}", path.display()));
-                        }
-                        Err(e) => {
-                            self.error_modal.show(e.clone());
-                        }
-                    }
+                    self.flash_note(format!("Exported to {}", path.display()));
                 }
                 None
             }
@@ -22374,7 +22863,9 @@ impl App {
                 // next dataset behind it is the wait again, wearing a different hat.
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
+                let job = Job::LookAtDirectory(looking.clone());
                 self.spawn_bg_replaceable(
+                    job,
                     Some(Self::LOOKING_AT_A_DIRECTORY),
                     move |task_gen, tx| {
                         #[cfg(feature = "cloud")]
@@ -22395,7 +22886,7 @@ impl App {
                                 holds,
                                 options: Box::new(options),
                             });
-                            return;
+                            return Ok(());
                         }
                         // A panic here used to unwind through `run()` and report a crash,
                         // because the look was made on the way to the first frame. On a
@@ -22422,6 +22913,7 @@ impl App {
                             holds: None,
                             options: Box::new(options),
                         });
+                        Ok(())
                     },
                 );
                 None
@@ -22493,24 +22985,29 @@ impl App {
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the control bar's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
-                self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
-                    // Every one of these can sit forever on a share that has gone away,
-                    // which is the whole reason they are here and not where keys are read.
-                    let found = if !looking.exists() {
-                        None
-                    } else if looking.is_dir() {
-                        Some(crate::discover::classify_directory(&looking))
-                    } else {
-                        Some(crate::discover::EntryKind::File)
-                    };
-                    let _ = tx.send(AppEvent::BackgroundKindReady {
-                        generation: task_gen,
-                        request,
-                        path: looking,
-                        found,
-                        jump,
-                    });
-                });
+                self.spawn_bg(
+                    Job::Classify(request),
+                    Self::LOOKING,
+                    move |task_gen, tx| {
+                        // Every one of these can sit forever on a share that has gone away,
+                        // which is the whole reason they are here and not where keys are read.
+                        let found = if !looking.exists() {
+                            None
+                        } else if looking.is_dir() {
+                            Some(crate::discover::classify_directory(&looking))
+                        } else {
+                            Some(crate::discover::EntryKind::File)
+                        };
+                        let _ = tx.send(AppEvent::BackgroundKindReady {
+                            generation: task_gen,
+                            request,
+                            path: looking,
+                            found,
+                            jump,
+                        });
+                        Ok(())
+                    },
+                );
                 None
             }
             AppEvent::DrillRowRead {
@@ -22526,10 +23023,7 @@ impl App {
                 if self.status_message.as_deref() == Some(Self::READING_GROUP) {
                     self.status_message = None;
                 }
-                match row {
-                    Ok(row) => self.drill_into(*group_index, row),
-                    Err(message) => self.flash_note(format!("Could not drill in: {message}")),
-                }
+                self.drill_into(*group_index, row);
                 None
             }
             AppEvent::BackgroundKindReady {
@@ -22609,59 +23103,13 @@ impl App {
                 }
                 None
             }
-            AppEvent::BackgroundError {
+            AppEvent::BackgroundFailed {
                 generation,
+                job,
                 message,
+                panicked,
             } => {
-                if *generation == self.task_generation {
-                    // A view whose pivot or first rows died with the worker is not
-                    // applied: the view before it comes back, as when either fails.
-                    let pivot = self
-                        .view_pivot
-                        .take_if(|pending| pending.generation == *generation)
-                        .is_some();
-                    // A query whose first rows died with the worker fails as when
-                    // they cannot be read (#432).
-                    let query = self
-                        .query_running
-                        .as_ref()
-                        .is_some_and(|run| matches!(run.origin, RunOrigin::Query(_)));
-                    if query && let Some(run) = self.take_query_run() {
-                        self.fail_query_run(run, message, None);
-                        return None;
-                    }
-                    let rows = self
-                        .query_running
-                        .as_ref()
-                        .is_some_and(|run| matches!(run.origin, RunOrigin::View { .. }));
-                    if rows && let Some(run) = self.take_query_run() {
-                        self.roll_back_query_run(run);
-                    }
-                    self.collect_inflight = None;
-                    self.analysis_modal.computing = None;
-                    // A load chosen at home fails at home, with the reason beside the
-                    // prompt once the modal is gone. Otherwise the previous dataset is
-                    // the current one again, and it is what the error modal sits over.
-                    let back_home = self.awaiting_dataset && self.load_from_home;
-                    self.load_from_home = false;
-                    self.recent_on_install = None;
-                    self.opening = None;
-                    self.awaiting_dataset = false;
-                    self.loading_state = LoadingState::Idle;
-                    self.status_message = None;
-                    self.busy = false;
-                    // Kept so the home screen can say why, if that is where dismissing
-                    // the error lands the user.
-                    self.last_load_error = Some(message.clone());
-                    if back_home {
-                        self.enter_home();
-                        self.home.status = self.last_load_error.clone();
-                    }
-                    self.error_modal.show(message.clone());
-                    if pivot || rows {
-                        self.read_after_view_rollback();
-                    }
-                }
+                self.background_failed(*generation, job, message, *panicked);
                 None
             }
             AppEvent::Search(query) => {
@@ -22721,31 +23169,20 @@ impl App {
                 let pending = self
                     .view_pivot
                     .take_if(|pending| pending.generation == *generation)?;
-                let planned = match pivoted {
-                    Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
-                        // Nothing changed while the pivot was read, so the steps before
-                        // it plan as they did; this time the pivot is in hand.
-                        state
-                            .try_transition(|s| {
-                                Self::replay_view(
-                                    s,
-                                    &pending.template.settings,
-                                    Some(pivoted.clone()),
-                                )
-                            })
-                            .map(|(_, rollback)| rollback)
-                            .map_err(|e| e.to_string())
-                    }),
-                    Err(message) => Some(Err(message.clone())),
-                };
+                let planned = self.data_table_state.as_mut().map(|state| {
+                    // Nothing changed while the pivot was read, so the steps before
+                    // it plan as they did; this time the pivot is in hand.
+                    state
+                        .try_transition(|s| {
+                            Self::replay_view(s, &pending.template.settings, Some(pivoted.clone()))
+                        })
+                        .map(|(_, rollback)| rollback)
+                        .map_err(|e| e.to_string())
+                });
                 match planned {
                     // The busy state passes to the read of its rows.
                     Some(Ok(rollback)) => self.view_planned(&pending.template, rollback),
-                    Some(Err(message)) => {
-                        self.error_modal
-                            .show(format!("Error applying view: {message}"));
-                        self.read_after_view_rollback();
-                    }
+                    Some(Err(message)) => self.view_pivot_failed(&message),
                     None => {
                         self.busy = false;
                         self.status_message = None;
@@ -22759,15 +23196,16 @@ impl App {
                 let job = self.data_table_state.as_ref()?.plan_pivot(spec);
                 let spec = spec.clone();
                 self.pivot_generation = Some(self.task_generation);
-                self.spawn_bg(Self::COMPUTING_PIVOT, move |task_gen, tx| {
+                self.spawn_bg(Job::Pivot, Self::COMPUTING_PIVOT, move |task_gen, tx| {
                     let pivoted = job
                         .run()
-                        .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
                     let _ = tx.send(AppEvent::PivotReady {
                         generation: task_gen,
                         spec,
                         pivoted,
                     });
+                    Ok(())
                 });
                 None
             }
@@ -22784,14 +23222,11 @@ impl App {
                 if self.status_message.as_deref() == Some(Self::COMPUTING_PIVOT) {
                     self.status_message = None;
                 }
-                let installed = match pivoted {
-                    Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
-                        state
-                            .deferred(|s| s.install_pivot(spec, pivoted.clone()))
-                            .map_err(|e| crate::error_display::user_message_from_report(&e, None))
-                    }),
-                    Err(message) => Some(Err(message.clone())),
-                };
+                let installed = self.data_table_state.as_mut().map(|state| {
+                    state
+                        .deferred(|s| s.install_pivot(spec, pivoted.clone()))
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))
+                });
                 match installed {
                     Some(Ok(())) => {
                         self.pivot_melt_modal.close();
@@ -22839,30 +23274,24 @@ impl App {
                 let results = self.analysis_modal.data_quality_results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
                 let (path, format, overwrite) = (path.clone(), *format, *overwrite);
-                self.spawn_bg("Writing the report...", move |generation, tx| {
-                    let result =
+                self.spawn_bg(
+                    Job::QualityReport,
+                    "Writing the report...",
+                    move |generation, tx| {
                         crate::quality_export::write(&path, &results, &plan, format, overwrite)
-                            .map_err(|error| Self::format_export_error(&error, &path));
-                    let _ = tx.send(AppEvent::BackgroundQualityReportWritten {
-                        generation,
-                        path,
-                        result,
-                    });
-                });
+                            .map_err(|error| Self::format_export_error(&error, &path))?;
+                        let _ =
+                            tx.send(AppEvent::BackgroundQualityReportWritten { generation, path });
+                        Ok(())
+                    },
+                );
                 None
             }
-            AppEvent::BackgroundQualityReportWritten {
-                generation,
-                path,
-                result,
-            } => {
+            AppEvent::BackgroundQualityReportWritten { generation, path } => {
                 if *generation == self.task_generation {
                     self.busy = false;
                     self.status_message = None;
-                    match result {
-                        Ok(()) => self.flash_note(format!("Report written to {}", path.display())),
-                        Err(error) => self.error_modal.show(error.clone()),
-                    }
+                    self.flash_note(format!("Report written to {}", path.display()));
                 }
                 None
             }
@@ -22893,13 +23322,12 @@ impl App {
                 generation,
                 path,
                 format,
-                result,
             } => {
                 // Gated on the chart export's own marker, which leaving the dataset
                 // clears: a write that finishes after Ctrl-O must not reopen its modal
                 // over the home screen.
                 if self.chart_export_inflight == Some(*generation) {
-                    self.finish_chart_export(path, *format, result.clone());
+                    self.finish_chart_export(path, *format, Ok(()));
                 }
                 None
             }
@@ -22980,27 +23408,28 @@ impl App {
                     };
                     let streaming = state.polars_streaming();
                     let request = request.clone();
-                    self.spawn_bg("Collecting data for export...", move |task_gen, tx| {
-                        let lf = request.format.prepare(lf);
-                        match lf.and_then(|lf| crate::statistics::collect_lazy(lf, streaming)) {
-                            Ok(df) => {
-                                let _ = tx.send(AppEvent::BackgroundExportCollected {
-                                    generation: task_gen,
-                                    df,
-                                    request,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::BackgroundError {
-                                    generation: task_gen,
-                                    message: format!(
+                    self.spawn_bg(
+                        Job::Export,
+                        "Collecting data for export...",
+                        move |task_gen, tx| {
+                            let df = request
+                                .format
+                                .prepare(lf)
+                                .and_then(|lf| crate::statistics::collect_lazy(lf, streaming))
+                                .map_err(|e| {
+                                    format!(
                                         "Export failed: {}",
                                         crate::error_display::user_message_from_polars(&e)
-                                    ),
-                                });
-                            }
-                        }
-                    });
+                                    )
+                                })?;
+                            let _ = tx.send(AppEvent::BackgroundExportCollected {
+                                generation: task_gen,
+                                df,
+                                request,
+                            });
+                            Ok(())
+                        },
+                    );
                 } else {
                     self.busy = false;
                 }
@@ -23010,15 +23439,15 @@ impl App {
                 match self.export_df.take() {
                     Some(mut df) => {
                         let request = request.clone();
-                        self.spawn_bg("Writing file...", move |task_gen, tx| {
+                        self.spawn_bg(Job::Export, "Writing file...", move |task_gen, tx| {
                             // Success is reported only once the file is committed.
-                            let result = crate::export::write(&mut df, &request);
+                            crate::export::write(&mut df, &request)
+                                .map_err(|e| Self::format_export_error(&e, &request.path))?;
                             let _ = tx.send(AppEvent::BackgroundExportWritten {
                                 generation: task_gen,
-                                result: result
-                                    .map_err(|e| Self::format_export_error(&e, &request.path)),
                                 path: request.path,
                             });
+                            Ok(())
                         });
                     }
                     _ => {
@@ -23033,26 +23462,26 @@ impl App {
                     let lf = state.visible_lf();
                     let streaming = state.polars_streaming();
                     let (format, header) = (*format, *header);
-                    self.spawn_bg("Collecting data for copy...", move |task_gen, tx| {
-                        let ready = crate::statistics::collect_lazy(lf, streaming)
-                            .map_err(|e| crate::error_display::user_message_from_polars(&e))
-                            .and_then(|df| {
-                                crate::clipboard::tabular_payload(&df, format, header)
-                                    .map(|payload| (payload, df.height()))
-                            });
-                        let _ = tx.send(match ready {
-                            Ok((payload, rows)) => AppEvent::BackgroundCopyReady {
+                    self.spawn_bg(
+                        Job::Copy,
+                        "Collecting data for copy...",
+                        move |task_gen, tx| {
+                            let (payload, rows) = crate::statistics::collect_lazy(lf, streaming)
+                                .map_err(|e| crate::error_display::user_message_from_polars(&e))
+                                .and_then(|df| {
+                                    crate::clipboard::tabular_payload(&df, format, header)
+                                        .map(|payload| (payload, df.height()))
+                                })
+                                .map_err(|message| format!("Copy failed: {message}"))?;
+                            let _ = tx.send(AppEvent::BackgroundCopyReady {
                                 generation: task_gen,
                                 payload,
                                 rows,
                                 format,
-                            },
-                            Err(message) => AppEvent::BackgroundError {
-                                generation: task_gen,
-                                message: format!("Copy failed: {message}"),
-                            },
-                        });
-                    });
+                            });
+                            Ok(())
+                        },
+                    );
                 } else {
                     self.busy = false;
                 }
@@ -23394,7 +23823,12 @@ impl App {
                 self.chart_export_generation = self.chart_export_generation.wrapping_add(1);
                 let generation = self.chart_export_generation;
                 self.chart_export_inflight = Some(generation);
-                self.spawn_bg("Exporting chart...", move |_, tx| {
+                let failing = Job::ChartExport {
+                    generation,
+                    path: request.path.clone(),
+                    format: request.format,
+                };
+                self.spawn_bg(failing, "Exporting chart...", move |_, tx| {
                     let ChartExportRequest {
                         path,
                         format,
@@ -23403,15 +23837,14 @@ impl App {
                         overwrite,
                         ..
                     } = request;
-                    let result = job
-                        .write(&path, format, (width, height), overwrite)
-                        .map_err(|e| Self::format_export_error(&e, &path));
+                    job.write(&path, format, (width, height), overwrite)
+                        .map_err(|e| Self::format_export_error(&e, &path))?;
                     let _ = tx.send(AppEvent::BackgroundChartExportWritten {
                         generation,
                         path,
                         format,
-                        result,
                     });
+                    Ok(())
                 });
             }
             // Still being prepared; `BackgroundChartReady` comes back here.
@@ -23588,14 +24021,15 @@ impl App {
                     generation: self.task_generation,
                     template: template.clone(),
                 });
-                self.spawn_bg(Self::APPLYING_VIEW, move |task_gen, tx| {
+                self.spawn_bg(Job::ViewPivot, Self::APPLYING_VIEW, move |task_gen, tx| {
                     let pivoted = job
                         .run()
-                        .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
                     let _ = tx.send(AppEvent::ViewPivotReady {
                         generation: task_gen,
                         pivoted,
                     });
+                    Ok(())
                 });
                 Ok(())
             }
@@ -23679,6 +24113,191 @@ impl App {
         self.collect_owed = None;
         self.read_after_view_rollback();
         self.flash_note("View cancelled".to_string());
+    }
+
+    /// Put down what a failed background operation started, and say why.
+    ///
+    /// Each arm decides from its own job's markers whether this failure is the current
+    /// one, as that job's result handler would, and clears only what the job set: a
+    /// load-ahead that dies leaves the analysis beside it running, and an older look at
+    /// a path leaves the newer one waiting. One that is not current is dropped.
+    fn background_failed(&mut self, generation: u64, job: &Job, message: &str, panicked: bool) {
+        let current = generation == self.task_generation;
+        match job {
+            Job::Load => {
+                if current && self.awaiting_dataset {
+                    self.load_failed(message);
+                }
+            }
+            Job::LookAtDirectory(path) => {
+                // A newer look owns the wait; see `DirectoryLookedAt`.
+                if self.looking_at_directory.as_deref() != Some(path.as_path()) {
+                    return;
+                }
+                self.looking_at_directory = None;
+                if current {
+                    self.load_failed(message);
+                }
+            }
+            Job::Classify(request) => {
+                if self.classify_inflight.as_ref().map(|asked| asked.id) != Some(*request) {
+                    return;
+                }
+                self.classify_inflight = None;
+                if self.status_message.as_deref() == Some(Self::LOOKING) {
+                    self.status_message = None;
+                }
+                self.home.status = None;
+                // As with its answer: after a bump the busy state is someone else's.
+                if current {
+                    self.busy = false;
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::Rows => self.rows_failed(generation, message, None),
+            Job::Analysis => {
+                if current {
+                    self.analysis_modal.computing = None;
+                    self.quality_watch = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::SampleRows => {
+                if current {
+                    self.reading_sample = false;
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::Pivot => {
+                // The form stays up with its spec, to be fixed.
+                if current {
+                    self.pivot_generation = None;
+                    if self.status_message.as_deref() == Some(Self::COMPUTING_PIVOT) {
+                        self.status_message = None;
+                    }
+                    self.busy = false;
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::ViewPivot => {
+                if current
+                    && self
+                        .view_pivot
+                        .take_if(|pending| pending.generation == generation)
+                        .is_some()
+                {
+                    self.view_pivot_failed(message);
+                }
+            }
+            Job::DrillRow => {
+                // The grouped view stays as it was.
+                if current {
+                    self.busy = false;
+                    if self.status_message.as_deref() == Some(Self::READING_GROUP) {
+                        self.status_message = None;
+                    }
+                    // A flash has one line, and a panic's message is an internal
+                    // error with the log's path under it: the log has the details.
+                    self.flash_note(if panicked {
+                        "Could not drill in; see the log".to_string()
+                    } else {
+                        format!("Could not drill in: {message}")
+                    });
+                }
+            }
+            Job::Export => {
+                if current {
+                    // Rows collected for a write that will not happen.
+                    self.export_df = None;
+                    if matches!(self.loading_state, LoadingState::Exporting { .. }) {
+                        self.loading_state = LoadingState::Idle;
+                    }
+                    self.status_message = None;
+                    self.busy = false;
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::Copy | Job::QualityReport => {
+                if current {
+                    self.status_message = None;
+                    self.busy = false;
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::ChartExport {
+                generation,
+                path,
+                format,
+            } => {
+                if self.chart_export_inflight == Some(*generation) {
+                    self.finish_chart_export(path, *format, Err(message.to_string()));
+                }
+            }
+        }
+    }
+
+    /// An open failed before its first rows. The dataset already up is the current one
+    /// again, or the home screen is, when that is where the open was chosen.
+    fn load_failed(&mut self, message: &str) {
+        let back_home = self.awaiting_dataset && self.load_from_home;
+        self.load_from_home = false;
+        self.recent_on_install = None;
+        self.opening = None;
+        self.awaiting_dataset = false;
+        self.loading_state = LoadingState::Idle;
+        self.status_message = None;
+        self.busy = false;
+        // Kept so the home screen can say why, if that is where dismissing the error
+        // lands the user.
+        self.last_load_error = Some(message.to_string());
+        if back_home {
+            self.enter_home();
+            self.home.status = self.last_load_error.clone();
+        }
+        self.error_modal.show(message.to_string());
+    }
+
+    /// The table's rows could not be read. A query or view waiting on them is not
+    /// applied (#400, #432); a page the table waited on ends the wait with the reason;
+    /// a load-ahead's failure is left for the page that needs those rows.
+    fn rows_failed(
+        &mut self,
+        generation: u64,
+        message: &str,
+        conversion: Option<&crate::error_display::ConversionFailure>,
+    ) {
+        if generation != self.task_generation {
+            return;
+        }
+        if let Some(run) = self.take_query_run() {
+            self.fail_query_run(run, message, conversion);
+            return;
+        }
+        let waited_on = self
+            .collect_inflight
+            .take()
+            .is_none_or(|inflight| inflight.waited_on);
+        if !waited_on {
+            return;
+        }
+        if matches!(self.loading_state, LoadingState::Loading { .. }) {
+            self.loading_state = LoadingState::Idle;
+        }
+        self.status_message = None;
+        self.busy = false;
+        self.error_modal.show(message.to_string());
+    }
+
+    /// A view's pivot could not be read or planned: the view before it stays.
+    fn view_pivot_failed(&mut self, message: &str) {
+        self.error_modal
+            .show(format!("Error applying view: {message}"));
+        self.read_after_view_rollback();
     }
 
     /// A query or view whose first rows could not be read is not applied: put back

@@ -682,7 +682,7 @@ fn test_a_stale_pivot_result_is_dropped() {
     app.event(&AppEvent::PivotReady {
         generation: app.task_generation().wrapping_sub(1),
         spec,
-        pivoted: Ok(pivoted),
+        pivoted,
     });
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());

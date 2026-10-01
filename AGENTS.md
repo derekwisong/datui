@@ -104,7 +104,12 @@ checkpoint `roll_back` restores if its rows fail.
 **One event loop, background work by generation.** `run()` reads terminal
 events, sends `AppEvent`s over an mpsc channel, and `App::event` handles them.
 Anything that touches data runs off the UI thread through `spawn_bg`, tagged
-with `task_generation`; a result whose generation is stale is dropped. Async
+with `task_generation`; a result whose generation is stale is dropped. Each
+spawn names its `Job`. A worker sends its result and returns `Ok`, or returns
+`Err` with the message for the user; `spawn_bg` reports that, or a panic, as
+one `BackgroundFailed`, and `background_failed` clears only what that job
+set. Home-screen workers, keyed by place rather than generation, run inside an
+`OwedAnswer` that sends their in-flight marker an answer if they panic. Async
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
 collect inside a render function.
 

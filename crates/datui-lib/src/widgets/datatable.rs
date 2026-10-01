@@ -9806,7 +9806,7 @@ mod tests {
 
     /// CSV with 100 int-like rows then "N/A" then more ints. With infer_schema_length=100, Polars
     /// infers Int from the first 100 rows; the parse error surfaces from the async collect as a
-    /// BackgroundError event, which the app shows in the error modal rather than crashing.
+    /// collect failure, which the app shows in the error modal rather than crashing.
     #[test]
     fn test_infer_schema_length_csv_short_inference_shows_error_modal() {
         use std::sync::mpsc;

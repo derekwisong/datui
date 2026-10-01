@@ -2799,7 +2799,8 @@ impl HomeState {
         }
         self.search.running = false;
         self.search.done = true;
-        self.search.scanned = scanned;
+        // Never fewer than the batches reported: a walk that died says nothing of its own.
+        self.search.scanned = self.search.scanned.max(scanned);
         self.search.limited = limited;
         self.sync_search_section();
     }

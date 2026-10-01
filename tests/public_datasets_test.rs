@@ -20,7 +20,7 @@ fn key(code: KeyCode) -> AppEvent {
 fn drive(app: &mut App, event: AppEvent) {
     let mut next = Some(event);
     while let Some(event) = next {
-        if let AppEvent::Crash(message) | AppEvent::BackgroundError { message, .. } = &event {
+        if let AppEvent::Crash(message) | AppEvent::BackgroundFailed { message, .. } = &event {
             panic!("{message}");
         }
         next = app.event(&event);

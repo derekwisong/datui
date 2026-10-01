@@ -1,0 +1,42 @@
+Every field of the table's current row, and the focused field's whole value.
+
+  ↑ / ↓ (j/k):      Move between fields
+  Home / End:       First and last field
+  ← / → (h/l):      Previous and next row; the table's cursor moves with it
+  PgUp / PgDn:      Scroll a long value
+  Enter:            Show more of a long value, or read a field the table's
+                    rows do not hold (hidden and binary columns)
+  y:                Copy the focused field's exact value
+  e:                Show text escaped (\n, \t, \\, quotes) or as itself
+  /:                Find a field by name: type to narrow, Enter or ↓ keeps
+                    the list narrowed, Esc clears it
+  ? / F1:           Show this help (in the find line ? types; use F1)
+  Esc / Space:      Close; Esc clears a find first
+
+The value:
+  The pane shows what is stored, not the table's preview: a float is the
+  decimal that reads back to it exactly, a datetime keeps every digit of its
+  unit and its zone's offset. When the table rounds or groups a number, the
+  line under it says what the table shows.
+  Text shows its length, its lines, and spaces at either end. A null shows
+  as ∅ null, never as an empty string; ∅ (null), · (absent) and ≠
+  (conflicting) mean what they mean in the table.
+  Lists and structs show one item per line, with text quoted. Binary shows
+  as a hex dump, or escaped as b"...".
+  A long value shows its first 16 KB of text (4 KB of bytes); Enter shows
+  as much again each time.
+
+Copy:
+  y copies the whole value, whatever the pane shows: exact numbers, lists
+  and structs as JSON, binary as base64, a null as empty. It uses the same
+  clipboard as the copy dialog (y at the table).
+
+Fields not in the table's rows:
+  Columns hidden in Sort & Filter, and binary columns, are not read with the
+  table's rows. They show as not read until Enter reads them, for this row
+  only. The read checks it found the same row; with a sort that leaves ties,
+  a second read may order them differently, and the pane says so.
+
+In the table, a line break shows as ¶, a tab as » and another control
+character as ¤ ($, > and ? in ASCII terminals). The inspector shows them
+as they are.

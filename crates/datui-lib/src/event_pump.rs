@@ -722,6 +722,40 @@ mod tests {
         (pump, dir)
     }
 
+    /// Keys typed at the inspector while it reads a row's hidden fields wait,
+    /// Esc among them, and replay in order once the read lands.
+    #[test]
+    fn keys_typed_while_the_inspector_reads_wait_their_turn() {
+        let (mut p, _dir) = loaded_pump();
+        let state = p.app.data_table_state.as_mut().unwrap();
+        state.set_column_order(vec!["name".to_string()]);
+        rendered(&mut p.app);
+        p.terminal_key(plain(KeyCode::Char(' '))).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::Inspect);
+        p.terminal_key(plain(KeyCode::End)).unwrap();
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(
+            p.app.is_busy(),
+            "the hidden field is read in the background"
+        );
+        p.terminal_key(plain(KeyCode::Char('k'))).unwrap();
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('k'), KeyCode::Esc]);
+        assert_eq!(p.app.input_mode, InputMode::Inspect, "nothing acted yet");
+        settle(&mut p);
+        assert!(held(&p).is_empty());
+        assert_eq!(
+            p.app.input_mode,
+            InputMode::Normal,
+            "Esc closed it, in turn"
+        );
+        assert_eq!(
+            p.app.inspector_modal.focused().map(|f| f.name.as_str()),
+            Some("name"),
+            "k moved first"
+        );
+    }
+
     fn rendered(app: &mut App) -> String {
         let area = Rect::new(0, 0, 100, 20);
         let mut buf = Buffer::empty(area);

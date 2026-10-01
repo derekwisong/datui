@@ -10,6 +10,7 @@ pub mod datatable;
 pub mod debug;
 pub mod export;
 pub mod info;
+pub mod inspector;
 pub mod pivot_melt;
 pub mod quality_export;
 pub mod quality_intent;

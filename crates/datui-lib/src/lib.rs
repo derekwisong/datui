@@ -79,6 +79,7 @@ pub mod gcloud;
 pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
+pub mod inspector_modal;
 pub mod intent_modal;
 pub mod local_copy;
 pub mod locality;
@@ -8544,8 +8545,8 @@ pub enum AppEvent {
     BackgroundCopyReady {
         generation: u64,
         payload: std::sync::Mutex<Option<crate::clipboard::Payload>>,
-        rows: usize,
-        format: crate::clipboard::CopyFormat,
+        /// The flash that says what was copied.
+        message: String,
     },
     ChartExport(ChartExportRequest),
     /// Deferred: run the chart export once its phase is drawn.
@@ -8767,6 +8768,14 @@ pub enum AppEvent {
         group_index: usize,
         row: DataFrame,
     },
+    /// The inspector's fields the buffer does not hold, read for row `row` of frame
+    /// `frame`. A failure is [`Job::InspectRow`]'s.
+    InspectorFieldsRead {
+        generation: u64,
+        frame: u64,
+        row: usize,
+        values: DataFrame,
+    },
     /// What the Info panel's worker read about the open file. A failure is
     /// [`Job::FileFacts`]'s.
     FileFactsRead {
@@ -8850,6 +8859,9 @@ pub enum Job {
     ViewPivot,
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
+    /// The inspector's fields of one row that the buffer does not hold: row `row` of
+    /// frame `frame`.
+    InspectRow { frame: u64, row: usize },
     /// An export: collecting the rows, then writing them.
     Export,
     /// Collecting and formatting the view for a copy.
@@ -9070,6 +9082,8 @@ pub enum InputMode {
     Export,
     /// The copy dialog over the table.
     Copy,
+    /// The row inspector over the table.
+    Inspect,
     Info,
     Chart,
 }
@@ -10378,6 +10392,7 @@ pub struct App {
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
+    pub inspector_modal: inspector_modal::InspectorModal,
     /// Where copies go. Built at the first copy and kept for the run: on
     /// Wayland and X11 the clipboard offer dies with the process that owns it,
     /// so this handle must live as long as the copy should.
@@ -12813,6 +12828,8 @@ impl App {
             ),
             // The Picker narrows by typing, so it types.
             InputMode::Copy => self.copy_modal.picker.is_some(),
+            // The find line types.
+            InputMode::Inspect => self.inspector_modal.finding,
             InputMode::SortFilter => {
                 self.sort_filter_modal.focus == SortFilterFocus::Body
                     && match self.sort_filter_modal.active_tab {
@@ -13099,6 +13116,13 @@ impl App {
 
     /// The wait while a grouped row the buffer does not hold is read to drill into.
     const READING_GROUP: &'static str = "Reading the group...";
+
+    /// The wait while the inspector reads a row's hidden and binary fields.
+    const READING_FIELDS: &'static str = "Reading fields...";
+
+    /// Above this a field is copied off the UI thread: a long list's JSON can take
+    /// a moment to write.
+    const FIELD_COPY_INLINE_BYTES: usize = 1024 * 1024;
 
     /// The wait while a pivot reads the view.
     const COMPUTING_PIVOT: &'static str = "Computing pivot...";
@@ -14053,6 +14077,7 @@ impl App {
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
+            inspector_modal: inspector_modal::InspectorModal::new(),
             clipboard: None,
             pending_copy: None,
             chart_cache: ChartCache::default(),
@@ -14885,6 +14910,7 @@ impl App {
         // mode, so left open here it would come back as a zombie over the next
         // dataset opened.
         self.template_modal.close();
+        self.inspector_modal.close();
         self.abandon_load();
         self.home.status = None;
         self.home.folds_owed = true;
@@ -19429,6 +19455,10 @@ impl App {
             return None;
         }
 
+        if self.input_mode == InputMode::Inspect {
+            return self.inspector_key(event);
+        }
+
         if self.input_mode == InputMode::Copy {
             let picker_open = self.copy_modal.picker.is_some();
             if event.code == KeyCode::Char('?') && !picker_open {
@@ -21885,6 +21915,12 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char(' ') if event.is_press() => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_inspector();
+                }
+                None
+            }
             KeyCode::Char('y') => {
                 if self.input_mode == InputMode::Normal
                     && let Some(state) = self.data_table_state.as_ref()
@@ -23887,6 +23923,34 @@ impl App {
                 );
                 None
             }
+            AppEvent::InspectorFieldsRead {
+                generation,
+                frame,
+                row,
+                values,
+            } => {
+                // A bump means something replaced the view; its owner has the busy state.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                self.busy = false;
+                if self.status_message.as_deref() == Some(Self::READING_FIELDS) {
+                    self.status_message = None;
+                }
+                let asked = self
+                    .inspector_modal
+                    .read
+                    .as_ref()
+                    .is_some_and(|read| read.key() == (*frame, *row));
+                if self.inspector_modal.active && asked {
+                    self.inspector_modal.read = Some(inspector_modal::FieldRead::Read {
+                        frame: *frame,
+                        row: *row,
+                        values: values.clone(),
+                    });
+                }
+                None
+            }
             AppEvent::DrillRowRead {
                 generation,
                 group_index,
@@ -24344,8 +24408,11 @@ impl App {
                             let _ = tx.send(AppEvent::BackgroundCopyReady {
                                 generation: task_gen,
                                 payload: std::sync::Mutex::new(Some(payload)),
-                                rows,
-                                format,
+                                message: format!(
+                                    "Copied {} rows as {}",
+                                    copy_modal::thousands(rows),
+                                    format.as_str()
+                                ),
                             });
                             Ok(())
                         },
@@ -24358,20 +24425,14 @@ impl App {
             AppEvent::BackgroundCopyReady {
                 generation,
                 payload,
-                rows,
-                format,
+                message,
             } => {
                 if *generation == self.task_generation {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
-                    let message = format!(
-                        "Copied {} rows as {}",
-                        copy_modal::thousands(*rows),
-                        format.as_str()
-                    );
                     if let Some(payload) = payload.lock().ok().and_then(|mut p| p.take()) {
-                        self.finish_copy(payload, message);
+                        self.finish_copy(payload, message.clone());
                     }
                 }
                 None
@@ -25092,6 +25153,32 @@ impl App {
                     });
                 }
             }
+            Job::InspectRow { frame, row } => {
+                if current {
+                    self.busy = false;
+                    if self.status_message.as_deref() == Some(Self::READING_FIELDS) {
+                        self.status_message = None;
+                    }
+                    let asked = self
+                        .inspector_modal
+                        .read
+                        .as_ref()
+                        .is_some_and(|read| read.key() == (*frame, *row));
+                    if asked {
+                        // The pane has room for the reason; a panic's is the log's.
+                        let message = if panicked {
+                            "Could not read the field; see the log".to_string()
+                        } else {
+                            format!("Could not read the field: {message}")
+                        };
+                        self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
+                            frame: *frame,
+                            row: *row,
+                            message,
+                        });
+                    }
+                }
+            }
             Job::Export => {
                 if current {
                     if matches!(self.loading_state, LoadingState::Exporting { .. }) {
@@ -25651,6 +25738,243 @@ impl App {
             .expect("destination just built"))
     }
 
+    /// Space at the table: the inspector over the selected row.
+    fn open_inspector(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        if state.inspect_row().is_none() {
+            self.flash_note("No row to inspect".to_string());
+            return;
+        }
+        self.inspector_modal.open(state.inspect_fields());
+        self.input_mode = InputMode::Inspect;
+    }
+
+    fn close_inspector(&mut self) {
+        self.inspector_modal.close();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Move the table's cursor `delta` rows, reading the next page in the
+    /// background when the buffer does not hold the row: the table's own ↑↓.
+    fn step_row(&mut self, delta: i64) -> Option<AppEvent> {
+        let state = self.data_table_state.as_mut()?;
+        if state.scroll_would_trigger_collect(delta) {
+            self.busy = true;
+            return Some(if delta > 0 {
+                AppEvent::DoScrollNext
+            } else {
+                AppEvent::DoScrollPrev
+            });
+        }
+        if delta > 0 {
+            state.select_next();
+        } else {
+            state.select_previous();
+        }
+        None
+    }
+
+    /// The inspector's keys. Moving between rows moves the table's cursor, so the
+    /// table is where the inspector left it on close.
+    fn inspector_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        if !event.is_press() {
+            return None;
+        }
+        let modal = &mut self.inspector_modal;
+        if modal.finding {
+            match event.code {
+                KeyCode::Esc => modal.clear_find(),
+                KeyCode::Enter | KeyCode::Tab | KeyCode::Down => modal.finding = false,
+                KeyCode::Up => {
+                    modal.finding = false;
+                    modal.prev_field();
+                }
+                KeyCode::Backspace => modal.find_backspace(),
+                KeyCode::Char(c) => modal.find_key(c, event.modifiers),
+                _ => {}
+            }
+            return None;
+        }
+        if event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
+        match event.code {
+            KeyCode::Esc if !modal.picker.filter.is_empty() => modal.clear_find(),
+            KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
+            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
+            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
+            KeyCode::Home => modal.first_field(),
+            KeyCode::End => modal.last_field(),
+            KeyCode::PageDown => modal.scroll_by(modal.page.saturating_sub(1).max(1) as isize),
+            KeyCode::PageUp => modal.scroll_by(-(modal.page.saturating_sub(1).max(1) as isize)),
+            KeyCode::Char('/') => modal.finding = true,
+            KeyCode::Char('e') => modal.toggle_escaped(),
+            KeyCode::Right | KeyCode::Char('l') => return self.step_row(1),
+            KeyCode::Left | KeyCode::Char('h') => return self.step_row(-1),
+            KeyCode::Char('y') => self.copy_inspected_field(),
+            KeyCode::Enter => self.inspector_enter(),
+            _ => {}
+        }
+        None
+    }
+
+    /// Enter in the inspector: read the row's fields the buffer does not hold,
+    /// or show more of a long value.
+    fn inspector_enter(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some(row) = state.inspect_row() else {
+            return;
+        };
+        let Some(field) = self.inspector_modal.focused().cloned() else {
+            return;
+        };
+        let shown = crate::widgets::inspector::shown(
+            &field,
+            &row,
+            self.inspector_modal.read.as_ref(),
+            state,
+        );
+        use crate::widgets::inspector::Shown;
+        match shown {
+            // A failed read is asked again: the pane said why, and Enter is the retry.
+            Shown::Unread | Shown::Failed(_) => self.read_inspected_fields(&row),
+            // Only while the pane, as last drawn for this field, has more to show.
+            Shown::Value(_)
+                if self
+                    .inspector_modal
+                    .body
+                    .as_ref()
+                    .is_some_and(|(key, body)| {
+                        body.more
+                            && (key.frame, key.row) == (row.frame, row.row)
+                            && key.field == field.name
+                    }) =>
+            {
+                self.inspector_modal.more()
+            }
+            _ => {}
+        }
+    }
+
+    /// Read, off this thread, the fields of `row` the buffer does not hold — the
+    /// hidden columns and the binary ones — with the shown columns beside them, so a
+    /// sort that orders ties differently on a second read cannot pass another row's
+    /// fields off as this one's.
+    fn read_inspected_fields(&mut self, row: &crate::widgets::datatable::InspectRow) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let fields = state.inspect_fields();
+        let wanted: Vec<String> = fields
+            .iter()
+            .filter(|f| !f.buffered())
+            .map(|f| f.name.clone())
+            .collect();
+        let check: Vec<String> = fields
+            .iter()
+            .filter(|f| f.buffered())
+            .map(|f| f.name.clone())
+            .collect();
+        let columns: Vec<String> = wanted.iter().chain(check.iter()).cloned().collect();
+        let lf = match state.inspect_read_lf(row.row, &columns) {
+            Ok(lf) => lf,
+            Err(e) => {
+                self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
+                    frame: row.frame,
+                    row: row.row,
+                    message: crate::error_display::user_message_from_polars(&e),
+                });
+                return;
+            }
+        };
+        let expected = row.values.select(check.iter().map(String::as_str)).ok();
+        let streaming = state.polars_streaming();
+        let (frame, index) = (row.frame, row.row);
+        self.inspector_modal.read = Some(inspector_modal::FieldRead::Reading { frame, row: index });
+        self.spawn_bg(
+            Job::InspectRow { frame, row: index },
+            Self::READING_FIELDS,
+            move |task_gen, tx| {
+                let read = crate::statistics::collect_lazy(lf, streaming)
+                    .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                if read.height() != 1 {
+                    return Err("the row is no longer in the view".to_string());
+                }
+                let same = expected.is_some_and(|expected| {
+                    read.select(check.iter().map(String::as_str))
+                        .is_ok_and(|again| again.equals_missing(&expected))
+                });
+                if !same {
+                    return Err("the view's order of equal rows changed on reading again; \
+                         sort by a column that tells the rows apart"
+                        .to_string());
+                }
+                let values = read
+                    .select(wanted.iter().map(String::as_str))
+                    .map_err(|e| e.to_string())?;
+                let _ = tx.send(AppEvent::InspectorFieldsRead {
+                    generation: task_gen,
+                    frame,
+                    row: index,
+                    values,
+                });
+                Ok(())
+            },
+        );
+    }
+
+    /// `y` in the inspector: the focused field's whole value, exact, through the
+    /// same clipboard path as the copy dialog. A large one is written off this
+    /// thread.
+    fn copy_inspected_field(&mut self) {
+        use copy_modal::thousands;
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let (Some(row), Some(field)) = (state.inspect_row(), self.inspector_modal.focused()) else {
+            return;
+        };
+        let column = if field.buffered() {
+            row.values.column(&field.name).ok().cloned()
+        } else {
+            self.inspector_modal
+                .read_values(row.frame, row.row)
+                .and_then(|values| values.column(&field.name).ok().cloned())
+        };
+        let Some(column) = column else {
+            self.flash_note(format!("{} is not read yet; Enter reads it", field.name));
+            return;
+        };
+        let message = format!(
+            "Copied {} of row {}",
+            field.name,
+            thousands(row.display_row)
+        );
+        if column.as_materialized_series().estimated_size() <= Self::FIELD_COPY_INLINE_BYTES {
+            match crate::exact::copy_text(&column) {
+                Ok(text) => self.finish_copy(clipboard::Payload::text(text), message),
+                Err(e) => self.error_modal.show(format!("Copy failed: {e}")),
+            }
+            return;
+        }
+        self.spawn_bg(Job::Copy, "Copying...", move |task_gen, tx| {
+            let text = crate::exact::copy_text(&column).map_err(|e| format!("Copy failed: {e}"))?;
+            let _ = tx.send(AppEvent::BackgroundCopyReady {
+                generation: task_gen,
+                payload: std::sync::Mutex::new(Some(clipboard::Payload::text(text))),
+                message,
+            });
+            Ok(())
+        });
+    }
+
     /// Replace the clipboard destination, so tests can watch what a copy sends
     /// without a display server or a terminal in the loop.
     pub fn set_clipboard_destination(&mut self, destination: Box<dyn clipboard::Destination>) {
@@ -25925,6 +26249,7 @@ impl App {
             InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
             InputMode::Export => ("Export Help", help_strings::export()),
             InputMode::Copy => ("Copy Help", help_strings::copy()),
+            InputMode::Inspect => ("Inspector Help", help_strings::inspector()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
             InputMode::Home => ("Home Help", help_strings::home()),
@@ -27690,5 +28015,201 @@ mod startup_reads_tests {
             format!("{:?}", app.home.sections).contains("recently.csv"),
             "the recent read late is listed"
         );
+    }
+}
+
+/// The row inspector's reads of the fields the buffer does not hold.
+#[cfg(test)]
+mod inspector_tests {
+    use super::*;
+    use crate::inspector_modal::FieldRead;
+    use polars::prelude::{IntoLazy, df};
+
+    /// A three-row table with `secret` hidden, drawn once so its rows are on hand.
+    fn app() -> (App, std::sync::mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = df!("a" => [1i64, 2, 3], "secret" => ["x", "y", "z"]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(vec!["a".to_string()]);
+        app.data_table_state = Some(state);
+        draw(&mut app);
+        (app, rx)
+    }
+
+    fn draw(app: &mut App) -> String {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    /// Enter on the hidden field: the answer the worker sends, still unhandled.
+    fn read_hidden(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> AppEvent {
+        press(app, KeyCode::Char(' '));
+        assert_eq!(app.input_mode, InputMode::Inspect);
+        press(app, KeyCode::End);
+        assert!(app.inspector_modal.focused().unwrap().hidden);
+        press(app, KeyCode::Enter);
+        assert!(matches!(
+            app.inspector_modal.read,
+            Some(FieldRead::Reading { row: 0, .. })
+        ));
+        assert!(app.is_busy());
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+                Ok(event @ AppEvent::InspectorFieldsRead { .. })
+                | Ok(event @ AppEvent::BackgroundFailed { .. }) => return event,
+                Ok(_) => continue,
+                Err(e) => panic!("no answer from the worker: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_lands_for_the_row_it_was_asked_for() {
+        let (mut app, rx) = app();
+        let answer = read_hidden(&mut app, &rx);
+        app.event(&answer);
+        assert!(!app.is_busy());
+        let frame = app.data_table_state.as_ref().unwrap().len_generation();
+        let secret = app
+            .inspector_modal
+            .read_values(frame, 0)
+            .and_then(|v| v.column("secret").ok()?.get(0).ok())
+            .map(|v| v.str_value().into_owned());
+        assert_eq!(secret.as_deref(), Some("x"));
+    }
+
+    /// A bump means the view was replaced while the read ran: its answer is
+    /// dropped, never shown as the new view's.
+    #[test]
+    fn a_read_from_a_stale_generation_is_dropped() {
+        let (mut app, rx) = app();
+        let answer = read_hidden(&mut app, &rx);
+        app.task_generation = app.task_generation.wrapping_add(1);
+        app.event(&answer);
+        assert!(matches!(
+            app.inspector_modal.read,
+            Some(FieldRead::Reading { .. })
+        ));
+    }
+
+    /// The cursor moved on: an answer for another row is not this row's.
+    #[test]
+    fn a_read_for_another_row_is_let_go() {
+        let (mut app, rx) = app();
+        let answer = read_hidden(&mut app, &rx);
+        app.busy = false;
+        press(&mut app, KeyCode::Right);
+        draw(&mut app);
+        assert!(
+            app.inspector_modal.read.is_none(),
+            "the new row has read nothing"
+        );
+        app.event(&answer);
+        assert!(app.inspector_modal.read.is_none());
+    }
+
+    /// A worker that dies says so in the pane, not as a spinner forever.
+    #[test]
+    fn a_failed_read_says_so_in_the_pane() {
+        let (mut app, rx) = app();
+        app.worker_dies =
+            crate::tests::worker_dies_once(|job| matches!(job, Job::InspectRow { .. }));
+        let answer = read_hidden(&mut app, &rx);
+        app.event(&answer);
+        assert!(!app.is_busy());
+        assert!(matches!(
+            app.inspector_modal.read,
+            Some(FieldRead::Failed { .. })
+        ));
+        assert!(draw(&mut app).contains("Could not read the field"));
+    }
+}
+
+/// The inspector's layout at the sizes the canon names.
+#[cfg(test)]
+mod inspector_layout_tests {
+    use super::*;
+    use polars::prelude::IntoLazy;
+
+    fn rows_at(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    /// Twelve short fields and a long URL, the inspector open on the URL of row 2.
+    fn inspecting(width: u16, height: u16) -> Vec<String> {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let mut columns: Vec<polars::prelude::Column> = (0..12)
+            .map(|i| polars::prelude::Column::new(format!("column_{i}").into(), ["v1", "v2"]))
+            .collect();
+        let url = format!("https://example.com/{}", "long-segment/".repeat(15));
+        columns.push(polars::prelude::Column::new(
+            "note".into(),
+            ["x".to_string(), url],
+        ));
+        let df = polars::prelude::DataFrame::new(2, columns).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        // Read the rows here, as the app's first collect would.
+        state.set_column_order(state.headers());
+        app.data_table_state = Some(state);
+        rows_at(&mut app, width, height);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::End);
+        rows_at(&mut app, width, height)
+    }
+
+    #[test]
+    fn one_frame_a_titled_list_the_value_and_the_way_out() {
+        let g = crate::glyphs::get();
+        for (width, height) in [(80, 24), (60, 20), (120, 30)] {
+            let rows = inspecting(width, height);
+            let text = rows.join("\n");
+            assert!(rows[0].contains("Row 2"), "{width}x{height}:\n{text}");
+            assert!(rows[1].contains("Fields"), "{width}x{height}:\n{text}");
+            // One frame: no corner inside it.
+            for row in &rows[1..rows.len() - 2] {
+                let inside: String = row.chars().skip(1).take(row.chars().count() - 2).collect();
+                assert!(
+                    !inside.contains(g.border.top_left) && !inside.contains(g.border.bottom_left),
+                    "{width}x{height}: a border inside the surface:\n{text}"
+                );
+            }
+            // The focused field's rule, and its whole value wrapped under it.
+            assert!(text.contains("note  str"), "{width}x{height}:\n{text}");
+            assert!(
+                text.contains("https://example.com/long-segment/"),
+                "{width}x{height}:\n{text}"
+            );
+            let tail = rows
+                .iter()
+                .filter(|r| r.contains("long-segment") || r.contains("segment/"))
+                .count();
+            assert!(tail >= 3, "wrapped over lines: {width}x{height}:\n{text}");
+            // The way out stays, on the footer.
+            let footer = &rows[rows.len() - 3];
+            assert!(
+                footer.contains("Esc") && footer.contains("Close"),
+                "{width}x{height}:\n{text}"
+            );
+            // The list scrolls to the focused field and the rule counts them all.
+            assert!(rows[1].contains(" 13 "), "{width}x{height}:\n{text}");
+        }
     }
 }

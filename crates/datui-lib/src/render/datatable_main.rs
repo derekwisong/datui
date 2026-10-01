@@ -211,6 +211,15 @@ pub fn render(
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
     }
 
+    if app.inspector_modal.active
+        && app.input_mode == crate::InputMode::Inspect
+        && let Some(state) = app.data_table_state.as_ref()
+    {
+        // A takeover: the row's fields want the width a long value reads at, and
+        // the table under it holds the cursor the inspector moves.
+        crate::widgets::inspector::render(main_area, buf, &mut app.inspector_modal, state, ctx);
+    }
+
     if app.copy_modal.active {
         // A commitment like export: compact and centered. The dialog holds
         // its rows, the spec and the footer; an open Picker earns the room

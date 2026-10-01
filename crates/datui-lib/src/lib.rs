@@ -2031,7 +2031,7 @@ mod chart_prepare_tests {
         app.loading_state = LoadingState::Exporting {
             file_path: path.clone(),
             current_phase: "Exporting chart".to_string(),
-            progress_percent: 0,
+            written: None,
         };
         let task_generation = app.task_generation();
 
@@ -2053,6 +2053,59 @@ mod chart_prepare_tests {
         assert!(!app.error_modal.active);
         assert!(!app.chart_export_modal.active);
         assert!(!app.is_busy());
+    }
+
+    /// A running export's bar names the phase and the file, then the bytes written
+    /// last, where their changing width moves nothing; a stale count is ignored.
+    #[test]
+    fn an_export_counts_the_bytes_it_has_written() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = polars::df!("id" => [1i64, 2]).unwrap();
+        app.data_table_state = Some(
+            DataTableState::new(
+                polars::prelude::IntoLazy::lazy(df),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .expect("a state"),
+        );
+        app.busy = true;
+        app.loading_state = LoadingState::Exporting {
+            file_path: PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting data".to_string(),
+            written: None,
+        };
+        let bar = |app: &mut App| {
+            let area = Rect::new(0, 0, 100, 24);
+            let mut buf = Buffer::empty(area);
+            (&mut *app).render(area, &mut buf);
+            (0..area.width)
+                .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(bar(&mut app).contains("Collecting data...  out.csv"));
+
+        let writing = |generation, bytes| AppEvent::BackgroundExportWriting {
+            generation,
+            phase: "Writing file",
+            bytes,
+        };
+        app.event(&writing(app.task_generation(), 1_572_864));
+        assert!(
+            bar(&mut app).contains("Writing file...  out.csv  1.5 MB"),
+            "{}",
+            bar(&mut app)
+        );
+        app.event(&writing(app.task_generation() + 1, 9_999_999));
+        assert!(
+            bar(&mut app).contains("out.csv  1.5 MB"),
+            "{}",
+            bar(&mut app)
+        );
     }
 
     /// A selection that cannot be charted is remembered as failed rather than retried
@@ -6919,7 +6972,7 @@ pub mod tests {
         app.loading_state = LoadingState::Exporting {
             file_path: std::path::PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting".to_string(),
-            progress_percent: 0,
+            written: None,
         };
         let _lease = app.lease_for_tests();
         let live = app.dataset_generation;
@@ -7124,7 +7177,7 @@ pub mod tests {
         app.loading_state = LoadingState::Exporting {
             file_path: std::path::PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting".to_string(),
-            progress_percent: 0,
+            written: None,
         };
         let lease = app.lease_for_tests();
         let waiting_on = app.task_generation();
@@ -8256,12 +8309,9 @@ pub enum AppEvent {
         path: PathBuf,
         options: OpenOptions,
     },
-    /// Run the export once the UI has drawn its progress.
+    /// Run the export, from plan to committed file, once the UI has drawn its
+    /// progress.
     DoExport(ExportRequest),
-    /// Collect the view off-thread; `BackgroundExportCollected` then writes it.
-    DoExportCollect(ExportRequest),
-    /// Write the collected frame and commit it over the destination.
-    DoExportWrite(ExportRequest),
     Exit,
     Crash(String),
     Search(String),
@@ -8434,11 +8484,11 @@ pub enum AppEvent {
         path: PathBuf,
         format: ChartExportFormat,
     },
-    /// Background task completed: export data collected.
-    BackgroundExportCollected {
+    /// A running export has written `bytes` of its file.
+    BackgroundExportWriting {
         generation: u64,
-        df: DataFrame,
-        request: ExportRequest,
+        phase: &'static str,
+        bytes: u64,
     },
     /// Background task completed: file written to disk.
     BackgroundExportWritten {
@@ -8621,7 +8671,7 @@ type FileFactsReader =
 /// A lease on the current `task_generation`, held by background work whose answer
 /// arrives once.
 ///
-/// `task_generation` is the token `BackgroundSchemaReady`, `BackgroundExportCollected`,
+/// `task_generation` is the token `BackgroundSchemaReady`, `BackgroundExportWriting`,
 /// `BackgroundExportWritten`, the three analysis results, `BackgroundLazyFrameReady`,
 /// `BackgroundRemoteSizeReady`, `BackgroundDownloadReady` and `BackgroundFailed` are all
 /// gated on. Bumping it while one is in flight throws that answer away when it arrives,
@@ -9026,8 +9076,9 @@ pub enum LoadingState {
     },
     Exporting {
         file_path: PathBuf,
-        current_phase: String, // e.g., "Collecting data", "Writing file", "Compressing"
-        progress_percent: u16, // 0-100
+        current_phase: String, // e.g., "Collecting data", "Writing file"
+        /// Bytes written so far, once writing has started.
+        written: Option<u64>,
     },
 }
 
@@ -10134,8 +10185,6 @@ pub struct App {
     pub confirmation_modal: ConfirmationModal,
     /// An export waiting on the overwrite confirmation.
     pending_export: Option<ExportRequest>,
-    /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
-    export_df: Option<DataFrame>,
     pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
@@ -13052,7 +13101,6 @@ impl App {
         }
         self.collect_inflight = None;
         self.file_facts = None;
-        self.export_df = None;
         // A downloaded file lives as long as the dataset scanning it.
         #[cfg(any(feature = "http", feature = "cloud"))]
         let state = {
@@ -13795,7 +13843,6 @@ impl App {
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
-            export_df: None,
             pending_chart_export: None,
             pending_quality_export: None,
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -23309,43 +23356,21 @@ impl App {
                 self.retain_quality_copy(*dataset_generation, copy.clone());
                 None
             }
-            AppEvent::BackgroundExportCollected {
+            AppEvent::BackgroundExportWriting {
                 generation,
-                df,
-                request,
+                phase,
+                bytes,
             } => {
-                if *generation == self.task_generation {
-                    // The frame was collected with the scan's row index still on it
-                    // when the export asked to name each row's file; swap it for the
-                    // names. Where that cannot be done the export goes ahead without
-                    // the column — but the index still has to come off, or datui's own
-                    // bookkeeping lands in the user's file.
-                    let df = match self
-                        .data_table_state
-                        .as_ref()
-                        .filter(|state| {
-                            request.options.source_file && state.can_name_source_files()
-                        })
-                        .map(|state| state.name_source_files(df.clone()))
-                    {
-                        Some(Ok(named)) => named,
-                        _ => DataTableState::drop_row_index(df.clone()),
-                    };
-                    self.export_df = Some(df);
-                    let phase = if request.options.compression(request.format).is_some() {
-                        "Writing and compressing file"
-                    } else {
-                        "Writing file"
-                    };
-                    self.loading_state = LoadingState::Exporting {
-                        file_path: request.path.clone(),
-                        current_phase: phase.to_string(),
-                        progress_percent: 50,
-                    };
-                    self.status_message = Some(format!("{}...", phase));
-                    return Some(AppEvent::DoExportWrite(request.clone()));
+                if *generation == self.task_generation
+                    && let LoadingState::Exporting {
+                        current_phase,
+                        written,
+                        ..
+                    } = &mut self.loading_state
+                {
+                    *current_phase = phase.to_string();
+                    *written = Some(*bytes);
                 }
-                // Stale export collect — ignore.
                 None
             }
             AppEvent::BackgroundExportWritten { generation, path } => {
@@ -23816,7 +23841,7 @@ impl App {
                 self.loading_state = LoadingState::Exporting {
                     file_path: request.path.clone(),
                     current_phase: "Exporting chart".to_string(),
-                    progress_percent: 0,
+                    written: None,
                 };
                 Some(AppEvent::DoChartExport(request.clone()))
             }
@@ -23884,93 +23909,61 @@ impl App {
                 None
             }
             AppEvent::Export(request) => {
-                if let Some(_state) = &self.data_table_state {
+                if self.data_table_state.is_some() {
                     self.busy = true;
-                    // Show progress immediately
                     self.loading_state = LoadingState::Exporting {
                         file_path: request.path.clone(),
                         current_phase: "Preparing export".to_string(),
-                        progress_percent: 0,
+                        written: None,
                     };
-                    // Return DoExport to allow UI to render progress before blocking
+                    // Drawn before the export starts.
                     Some(AppEvent::DoExport(request.clone()))
                 } else {
                     None
                 }
             }
             AppEvent::DoExport(request) => {
-                if let Some(_state) = &self.data_table_state {
-                    // Phase 1: show "Collecting data" so UI can redraw before blocking collect
-                    self.loading_state = LoadingState::Exporting {
-                        file_path: request.path.clone(),
-                        current_phase: "Collecting data".to_string(),
-                        progress_percent: 10,
-                    };
-                    Some(AppEvent::DoExportCollect(request.clone()))
-                } else {
+                let Some(state) = &self.data_table_state else {
+                    self.loading_state = LoadingState::Idle;
                     self.busy = false;
-                    None
-                }
-            }
-            AppEvent::DoExportCollect(request) => {
-                if let Some(state) = &self.data_table_state {
-                    // Naming each row's file needs the scan's row index, which
-                    // `visible_lf` drops; the index is replaced by the name below.
-                    let name_files = request.options.source_file && state.can_name_source_files();
-                    let lf = if name_files {
-                        state.lf_clone()
-                    } else {
-                        state.visible_lf()
-                    };
-                    let streaming = state.polars_streaming();
-                    let request = request.clone();
-                    self.spawn_bg(
-                        Job::Export,
-                        "Collecting data for export...",
-                        move |task_gen, tx| {
-                            let df = request
-                                .format
-                                .prepare(lf)
-                                .and_then(|lf| crate::statistics::collect_lazy(lf, streaming))
-                                .map_err(|e| {
-                                    format!(
-                                        "Export failed: {}",
-                                        crate::error_display::user_message_from_polars(&e)
-                                    )
-                                })?;
-                            let _ = tx.send(AppEvent::BackgroundExportCollected {
-                                generation: task_gen,
-                                df,
-                                request,
-                            });
-                            Ok(())
-                        },
-                    );
-                } else {
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::DoExportWrite(request) => {
-                match self.export_df.take() {
-                    Some(mut df) => {
-                        let request = request.clone();
-                        self.spawn_bg(Job::Export, "Writing file...", move |task_gen, tx| {
-                            // Success is reported only once the file is committed.
-                            crate::export::write(&mut df, &request)
-                                .map_err(|e| Self::format_export_error(&e, &request.path))?;
-                            let _ = tx.send(AppEvent::BackgroundExportWritten {
-                                generation: task_gen,
-                                path: request.path,
-                            });
-                            Ok(())
+                    return None;
+                };
+                let frame = state.export_frame(request.options.source_file);
+                let streaming = state.polars_streaming();
+                // One job from plan to commit: it holds the generation throughout,
+                // and the rows it collects, if it collects, die with it.
+                let phase = match request.route(streaming) {
+                    crate::export::Route::Streamed => Self::export_write_phase(request),
+                    crate::export::Route::Collected => "Collecting data",
+                };
+                self.loading_state = LoadingState::Exporting {
+                    file_path: request.path.clone(),
+                    current_phase: phase.to_string(),
+                    written: None,
+                };
+                let writing = Self::export_write_phase(request);
+                let request = request.clone();
+                self.spawn_bg(Job::Export, "Exporting...", move |task_gen, tx| {
+                    let progress = tx.clone();
+                    let written = move |bytes| {
+                        let _ = progress.send(AppEvent::BackgroundExportWriting {
+                            generation: task_gen,
+                            phase: writing,
+                            bytes,
                         });
-                    }
-                    _ => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                    }
-                }
+                    };
+                    frame
+                        .into_lazy()
+                        .map_err(color_eyre::eyre::Report::from)
+                        .and_then(|lf| crate::export::run(lf, &request, streaming, written))
+                        .map_err(|e| Self::format_export_error(&e, &request.path))?;
+                    // Success is reported only once the file is committed.
+                    let _ = tx.send(AppEvent::BackgroundExportWritten {
+                        generation: task_gen,
+                        path: request.path,
+                    });
+                    Ok(())
+                });
                 None
             }
             AppEvent::CopyTable { format, header } => {
@@ -24723,8 +24716,6 @@ impl App {
             }
             Job::Export => {
                 if current {
-                    // Rows collected for a write that will not happen.
-                    self.export_df = None;
                     if matches!(self.loading_state, LoadingState::Exporting { .. }) {
                         self.loading_state = LoadingState::Idle;
                     }
@@ -25081,6 +25072,15 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// What the status line says while an export writes its file.
+    fn export_write_phase(request: &ExportRequest) -> &'static str {
+        if request.options.compression(request.format).is_some() {
+            "Writing and compressing file"
+        } else {
+            "Writing file"
+        }
     }
 
     /// What the error modal says when writing an export, report or chart fails.
@@ -25629,18 +25629,20 @@ impl Widget for &mut App {
             }
             LoadingState::Exporting {
                 current_phase,
-                progress_percent,
+                written,
                 file_path,
             } => {
                 let filename = file_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-                if *progress_percent > 0 {
-                    Some(format!(
-                        "{}... ({}%)  {}",
-                        current_phase, progress_percent, filename
-                    ))
-                } else {
-                    Some(format!("{}...  {}", current_phase, filename))
-                }
+                // The count last, so its changing width moves nothing.
+                Some(match written {
+                    Some(bytes) => format!(
+                        "{}...  {}  {}",
+                        current_phase,
+                        filename,
+                        crate::discover::format_size(*bytes)
+                    ),
+                    None => format!("{}...  {}", current_phase, filename),
+                })
             }
             LoadingState::Idle => {
                 if self.fetch_too_young_to_mention() {

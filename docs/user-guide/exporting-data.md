@@ -142,6 +142,19 @@ filesystems with no atomic no-replace rename and no hard links, such as FAT and
 some network mounts, a file created at the path in the instant before the move
 can still be replaced. Chart and Data Quality report exports work the same way.
 
+## Large exports
+
+| Export | Written |
+|---|---|
+| CSV without compression, Parquet | Streamed: in batches as the view's rows are read, never the whole view in memory at once |
+| Compressed CSV, JSON, NDJSON, Arrow IPC, Avro | The whole view is read into memory, then written |
+
+Streaming needs `polars_streaming` on in `[performance]`, the default; with it
+off, every export reads the whole view first. Streaming bounds what the export
+holds, not what the view needs: a sort, a `by` or `GROUP BY` query, or a join
+still reads its input before writing its first row. The status line counts the
+bytes written so far.
+
 ## Source file
 
 For a dataset with missing columns or conflicting types, **Source file** adds

@@ -4826,6 +4826,7 @@ pub mod tests {
             .map(|c| KeyCode::Char(c as char))
             .collect();
         candidates.extend((1..=12).map(KeyCode::F));
+        candidates.extend("[]{}".chars().map(KeyCode::Char));
         candidates.extend([
             KeyCode::Left,
             KeyCode::Right,
@@ -4886,6 +4887,14 @@ pub mod tests {
             if let Some(next) = app.key(&key) {
                 let _ = app.handle(&next);
             }
+            // A page waiting on the widths lands at the next draw, which must read
+            // nothing either.
+            let area = ratatui::layout::Rect::new(0, 0, 12, 12);
+            ratatui::widgets::Widget::render(
+                &mut app,
+                area,
+                &mut ratatui::buffer::Buffer::empty(area),
+            );
 
             assert_eq!(
                 app.data_table_state
@@ -4896,7 +4905,7 @@ pub mod tests {
             );
         }
         assert!(
-            admitted >= 6,
+            admitted >= 10,
             "the classifier should admit the view keys; it admitted {admitted}"
         );
     }
@@ -9032,6 +9041,8 @@ pub enum InputMode {
     Copy,
     /// The row inspector over the table.
     Inspect,
+    /// The column picker over the table: type a column's name to go to it.
+    GoToColumn,
     Info,
     Chart,
 }
@@ -10313,6 +10324,8 @@ pub struct App {
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
     pub inspector_modal: inspector_modal::InspectorModal,
+    /// The shown columns, narrowed by what is typed, while `g` is choosing one.
+    pub go_to_column: crate::widgets::ui::PickerState,
     /// Where copies go. Built at the first copy and kept for the run: on
     /// Wayland and X11 the clipboard offer dies with the process that owns it,
     /// so this handle must live as long as the copy should.
@@ -12667,6 +12680,31 @@ impl App {
             || self.input_mode == InputMode::Home
     }
 
+    /// The table's sideways paging keys: `[` `]` (or Shift+←→) a page of columns,
+    /// `{` `}` the first and last. `Some(None)` is the first column, which needs no
+    /// plan. Never with Ctrl or Alt: Ctrl+[ is Esc on a terminal.
+    fn column_page_key(
+        key: &KeyEvent,
+    ) -> Option<Option<crate::widgets::column_paging::ColumnMove>> {
+        use crate::widgets::column_paging::ColumnMove;
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('[') => Some(Some(ColumnMove::PageLeft)),
+            KeyCode::Char(']') => Some(Some(ColumnMove::PageRight)),
+            KeyCode::Left if shift => Some(Some(ColumnMove::PageLeft)),
+            KeyCode::Right if shift => Some(Some(ColumnMove::PageRight)),
+            KeyCode::Char('{') => Some(None),
+            KeyCode::Char('}') => Some(Some(ColumnMove::Last)),
+            _ => None,
+        }
+    }
+
     /// Whether a key may act while the app is busy. `App::handle` gates on this; the main
     /// loop applies the extra "nothing queued" condition for the second group.
     ///
@@ -12694,6 +12732,10 @@ impl App {
                     | KeyCode::Right
                     | KeyCode::Char('h')
                     | KeyCode::Char('l')
+                    | KeyCode::Char('[')
+                    | KeyCode::Char(']')
+                    | KeyCode::Char('{')
+                    | KeyCode::Char('}')
                     | KeyCode::F(1)
                     | KeyCode::Char('?')
             )
@@ -12723,6 +12765,8 @@ impl App {
             InputMode::Copy => self.copy_modal.picker.is_some(),
             // The find line types.
             InputMode::Inspect => self.inspector_modal.finding,
+            // The Picker narrows by typing, so it types.
+            InputMode::GoToColumn => true,
             InputMode::SortFilter => {
                 self.sort_filter_modal.focus == SortFilterFocus::Body
                     && match self.sort_filter_modal.active_tab {
@@ -13941,6 +13985,7 @@ impl App {
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
+            go_to_column: crate::widgets::ui::PickerState::default(),
             clipboard: None,
             pending_copy: None,
             chart_cache: ChartCache::default(),
@@ -18727,6 +18772,18 @@ impl App {
             || self.template_modal.active
             || self.analysis_modal.active);
         if in_main_table {
+            if let Some(mv) = Self::column_page_key(event)
+                && let Some(state) = self.data_table_state.as_mut()
+            {
+                match mv {
+                    None => state.scroll_to_first_column(),
+                    Some(mv) => state.scroll_columns(mv),
+                }
+                if self.debug.enabled {
+                    self.debug.last_action = format!("scroll_columns({mv:?})");
+                }
+                return None;
+            }
             let did_scroll = match event.code {
                 KeyCode::Right | KeyCode::Char('l') => {
                     if let Some(ref mut state) = self.data_table_state {
@@ -19319,6 +19376,11 @@ impl App {
 
         if self.input_mode == InputMode::Inspect {
             return self.inspector_key(event);
+        }
+
+        if self.input_mode == InputMode::GoToColumn {
+            self.go_to_column_key(event);
+            return None;
         }
 
         if self.input_mode == InputMode::Copy {
@@ -21775,6 +21837,12 @@ impl App {
             KeyCode::Char(' ') if event.is_press() => {
                 if self.input_mode == InputMode::Normal {
                     self.open_inspector();
+                }
+                None
+            }
+            KeyCode::Char('g') if event.is_press() => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_go_to_column();
                 }
                 None
             }
@@ -25315,6 +25383,47 @@ impl App {
         self.input_mode = InputMode::Inspect;
     }
 
+    /// `g` at the table: pick a shown column by name and bring it on screen. Starts
+    /// on the first column the scroll shows, so ↑↓ move from where the view is.
+    fn open_go_to_column(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let names = state.get_column_order().to_vec();
+        if names.is_empty() {
+            return;
+        }
+        let at = (state.frozen_shown() + state.termcol_index).min(names.len() - 1);
+        self.go_to_column = crate::widgets::ui::PickerState::new(names);
+        self.go_to_column.select_original(at);
+        self.input_mode = InputMode::GoToColumn;
+    }
+
+    /// The column picker owns the keys: type to narrow, ↑↓ move, Enter goes, Esc
+    /// closes without moving.
+    fn go_to_column_key(&mut self, event: &KeyEvent) {
+        match event.code {
+            KeyCode::Esc => self.input_mode = InputMode::Normal,
+            KeyCode::Enter => {
+                let Some(index) = self.go_to_column.selected_original() else {
+                    // Nothing matches; the picker says so and stays.
+                    return;
+                };
+                if let Some(state) = self.data_table_state.as_mut()
+                    && let Some(name) = state.get_column_order().get(index).cloned()
+                {
+                    state.reveal_column(&name);
+                }
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Up => self.go_to_column.move_up(),
+            KeyCode::Down => self.go_to_column.move_down(),
+            KeyCode::Backspace => self.go_to_column.backspace(),
+            KeyCode::Char(c) => self.go_to_column.filter_key(c, event.modifiers),
+            _ => {}
+        }
+    }
+
     fn close_inspector(&mut self) {
         self.inspector_modal.close();
         self.input_mode = InputMode::Normal;
@@ -25826,6 +25935,7 @@ impl App {
             InputMode::Export => ("Export Help", help_strings::export()),
             InputMode::Copy => ("Copy Help", help_strings::copy()),
             InputMode::Inspect => ("Inspector Help", help_strings::inspector()),
+            InputMode::GoToColumn => ("Go to Column", help_strings::go_to_column()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
             InputMode::Home => ("Home Help", help_strings::home()),
@@ -26035,6 +26145,15 @@ impl Widget for &mut App {
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);
             }
+        }
+
+        // Which columns are on screen, beside the rows, while the table is wider.
+        if main_view_content == MainViewContent::Datatable {
+            controls = controls.with_columns(
+                self.data_table_state
+                    .as_ref()
+                    .and_then(|s| s.columns_on_screen()),
+            );
         }
 
         // The trailing figure belongs to whatever view is showing. On the home screen

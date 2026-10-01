@@ -18834,3 +18834,347 @@ fn out_of_range_dates_copy_and_export_as_their_stored_number() {
         "{csv}"
     );
 }
+
+/// A table `n` columns wide and 40 rows long, in a rotation of kinds so widths
+/// differ: an integer `id_NNN`, a float `price_NNN`, text `label_NNN` (one long
+/// value on row 7) and a short text `code_NNN`. Opened, then drawn at `size`.
+fn open_wide_table(
+    name: &str,
+    n: usize,
+    size: (u16, u16),
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let rows = 40usize;
+    let columns: Vec<Column> = (0..n)
+        .map(|i| -> Column {
+            match i % 4 {
+                0 => Series::new(
+                    format!("id_{i:03}").into(),
+                    (0..rows as i64)
+                        .map(|r| r * 1000 + i as i64)
+                        .collect::<Vec<_>>(),
+                )
+                .into(),
+                1 => Series::new(
+                    format!("price_{i:03}").into(),
+                    (0..rows).map(|r| r as f64 * 1.25).collect::<Vec<_>>(),
+                )
+                .into(),
+                2 => Series::new(
+                    format!("label_{i:03}").into(),
+                    (0..rows)
+                        .map(|r| {
+                            if r == 7 {
+                                "a much longer label than the rest".to_string()
+                            } else {
+                                format!("item {r}")
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .into(),
+                _ => Series::new(
+                    format!("code_{i:03}").into(),
+                    (0..rows).map(|r| format!("c{r}")).collect::<Vec<_>>(),
+                )
+                .into(),
+            }
+        })
+        .collect();
+    let mut df = DataFrame::new_infer_height(columns).unwrap();
+    let path = common::fixture_dir().join(name);
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_sized(&mut app, size);
+    (app, rx, tx)
+}
+
+/// Draw the app at `size`, as the run loop does after every key, and return the
+/// screen one line per row.
+fn draw_sized(app: &mut App, (width, height): (u16, u16)) -> String {
+    app.event(&AppEvent::Resize(width, height));
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Press a key, then draw, as the run loop does.
+fn press_and_draw(app: &mut App, code: KeyCode, size: (u16, u16)) -> String {
+    press_key(app, code, KeyModifiers::NONE);
+    draw_sized(app, size)
+}
+
+fn type_and_draw(app: &mut App, text: &str, size: (u16, u16)) -> String {
+    for c in text.chars() {
+        press_key(app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    draw_sized(app, size)
+}
+
+fn columns_shown(app: &App) -> Option<datui::widgets::column_paging::OnScreen> {
+    app.data_table_state.as_ref().unwrap().columns_on_screen()
+}
+
+/// The header row: the line that names the columns.
+fn header_line(screen: &str) -> &str {
+    screen.lines().next().unwrap_or("")
+}
+
+/// Wide-table navigation across 300 columns (#462): `]` pages right through every
+/// column with no gap and always moves; `[` pages back the same way; `}` fills the
+/// last page and `{` returns; the bar names the range; `g` finds a column by name.
+#[test]
+fn wide_table_pages_across_300_columns() {
+    let size = (80, 24);
+    let (mut app, _rx, _tx) = open_wide_table("wide_nav_300.parquet", 300, size);
+    let first = columns_shown(&app).expect("300 columns do not fit");
+    assert_eq!(first.first, 1);
+    assert_eq!(first.total, 300);
+    let screen = draw_sized(&mut app, size);
+    let bar = screen.lines().last().unwrap();
+    assert!(
+        bar.contains(&format!("cols 1-{}/300", first.last)),
+        "the bar names the range: {bar}"
+    );
+
+    // Right to the end, a page at a time: each page starts no later than the column
+    // after the last one shown, so nothing is skipped, and always moves.
+    let mut pages = vec![first];
+    loop {
+        press_and_draw(&mut app, KeyCode::Char(']'), size);
+        let now = columns_shown(&app).unwrap();
+        let before = *pages.last().unwrap();
+        if now == before {
+            break;
+        }
+        assert!(now.first > before.first, "{before:?} -> {now:?}");
+        assert!(now.first <= before.last + 1, "a gap: {before:?} -> {now:?}");
+        assert!(now.last - now.first >= 2, "an 80-wide page shows several");
+        pages.push(now);
+    }
+    let last = *pages.last().unwrap();
+    assert_eq!(last.last, 300, "paging ends on the last column");
+    assert!(pages.len() > 20, "{} pages", pages.len());
+    let screen = draw_sized(&mut app, size);
+    assert!(header_line(&screen).contains("code_299"), "{screen}");
+
+    // And back, with no gap either.
+    loop {
+        press_and_draw(&mut app, KeyCode::Char('['), size);
+        let now = columns_shown(&app).unwrap();
+        let before = pages.pop().unwrap_or(now);
+        if now.first == 1 {
+            break;
+        }
+        assert!(now.first < before.first, "{before:?} -> {now:?}");
+        assert!(now.last + 1 >= before.first, "a gap: {now:?} -> {before:?}");
+        pages.push(now);
+    }
+
+    press_and_draw(&mut app, KeyCode::Char('}'), size);
+    assert_eq!(columns_shown(&app), Some(last), "}} lands on the last page");
+    press_and_draw(&mut app, KeyCode::Char('{'), size);
+    assert_eq!(columns_shown(&app).unwrap().first, 1);
+
+    // Shift+arrows page too; the plain arrows still move one column.
+    press_key(&mut app, KeyCode::Right, KeyModifiers::SHIFT);
+    draw_sized(&mut app, size);
+    let paged = columns_shown(&app).unwrap();
+    assert!(paged.first > 2, "{paged:?}");
+    press_and_draw(&mut app, KeyCode::Char('l'), size);
+    assert_eq!(columns_shown(&app).unwrap().first, paged.first + 1);
+    press_and_draw(&mut app, KeyCode::Left, size);
+    assert_eq!(columns_shown(&app).unwrap().first, paged.first);
+    press_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+    draw_sized(&mut app, size);
+    assert_eq!(columns_shown(&app).unwrap().first, 1);
+
+    // g: a picker of the shown columns; typing narrows, Enter goes.
+    let screen = press_and_draw(&mut app, KeyCode::Char('g'), size);
+    assert_eq!(app.input_mode, InputMode::GoToColumn);
+    assert!(screen.contains("Go to Column"), "{screen}");
+    let screen = type_and_draw(&mut app, "label_150", size);
+    assert!(screen.contains("label_150"), "{screen}");
+    let screen = press_and_draw(&mut app, KeyCode::Enter, size);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(columns_shown(&app).unwrap().first, 151);
+    assert!(header_line(&screen).contains("label_150"), "{screen}");
+    // A column already whole on screen does not move the view.
+    press_and_draw(&mut app, KeyCode::Char('g'), size);
+    type_and_draw(&mut app, "id_152", size);
+    press_and_draw(&mut app, KeyCode::Enter, size);
+    assert_eq!(columns_shown(&app).unwrap().first, 151);
+    // A name nothing matches keeps the picker open; Esc leaves the view as it was.
+    press_and_draw(&mut app, KeyCode::Char('g'), size);
+    type_and_draw(&mut app, "zzz", size);
+    let screen = press_and_draw(&mut app, KeyCode::Enter, size);
+    assert_eq!(app.input_mode, InputMode::GoToColumn);
+    assert!(screen.contains("No column matches"), "{screen}");
+    press_and_draw(&mut app, KeyCode::Esc, size);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(columns_shown(&app).unwrap().first, 151);
+    // The last column lands on a full last page rather than alone.
+    press_and_draw(&mut app, KeyCode::Char('g'), size);
+    type_and_draw(&mut app, "code_299", size);
+    press_and_draw(&mut app, KeyCode::Enter, size);
+    assert_eq!(columns_shown(&app), Some(last));
+}
+
+/// Paging keeps frozen columns on screen, counts them first, and pages only the
+/// columns that scroll; hidden columns are not counted and reordered ones page in
+/// their new order.
+#[test]
+fn wide_table_pages_beside_frozen_and_hidden_columns() {
+    let size = (80, 24);
+    let (mut app, rx, tx) = open_wide_table("wide_nav_frozen.parquet", 120, size);
+    let mut order = app.data_table_state.as_ref().unwrap().headers();
+    // Hide two, move the last column to the front, then freeze two.
+    order.retain(|c| c != "price_005" && c != "label_006");
+    let moved = order.pop().unwrap();
+    order.insert(0, moved.clone());
+    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 2), &rx, &tx);
+    let screen = draw_sized(&mut app, size);
+    assert!(
+        header_line(&screen).starts_with(&format!(" {moved}")),
+        "{screen}"
+    );
+    let start = columns_shown(&app).unwrap();
+    assert_eq!(start.first, 3, "two frozen lead the count");
+    assert_eq!(start.total, 118, "hidden columns are not counted");
+
+    let screen = press_and_draw(&mut app, KeyCode::Char(']'), size);
+    let page = columns_shown(&app).unwrap();
+    assert!(page.first > start.first);
+    assert!(page.first <= start.last + 1);
+    assert!(
+        header_line(&screen).contains(&moved) && header_line(&screen).contains("id_000"),
+        "the frozen columns stay: {screen}"
+    );
+    let screen = press_and_draw(&mut app, KeyCode::Char('}'), size);
+    let last = columns_shown(&app).unwrap();
+    assert_eq!(last.last, 118);
+    assert!(header_line(&screen).contains("label_118"), "{screen}");
+    assert!(header_line(&screen).contains(&moved), "{screen}");
+    press_and_draw(&mut app, KeyCode::Char('{'), size);
+    assert_eq!(columns_shown(&app), Some(start));
+
+    // The picker lists the shown columns in order, never a hidden one.
+    press_and_draw(&mut app, KeyCode::Char('g'), size);
+    assert_eq!(app.go_to_column.items(), order.as_slice());
+    // A frozen column is on screen already: choosing it moves nothing.
+    type_and_draw(&mut app, "id_000", size);
+    press_and_draw(&mut app, KeyCode::Enter, size);
+    assert_eq!(columns_shown(&app), Some(start));
+
+    // Every column frozen: nothing scrolls, and the keys do nothing.
+    run_and_settle(
+        &mut app,
+        AppEvent::ColumnOrder(order[..3].to_vec(), 3),
+        &rx,
+        &tx,
+    );
+    draw_sized(&mut app, size);
+    for key in ['[', ']', '{', '}'] {
+        press_and_draw(&mut app, KeyCode::Char(key), size);
+        assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
+        assert_eq!(columns_shown(&app), None, "everything is on screen");
+    }
+}
+
+/// A narrow terminal: a column wider than the window still pages one column at a
+/// time, both ways, and a resize keeps the first column where the scroll left it.
+#[test]
+fn wide_table_pages_in_a_narrow_window() {
+    use datui::widgets::column_widths::WidthChoice;
+    let small = (60, 20);
+    let (mut app, _rx, _tx) = open_wide_table("wide_nav_narrow.parquet", 12, small);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .set_width_choices([("label_002".to_string(), WidthChoice::Manual(100))]);
+    draw_sized(&mut app, small);
+    let start = columns_shown(&app).unwrap();
+    assert_eq!(start.first, 1);
+    assert_eq!(
+        start.last, 3,
+        "the wide column is drawn cut, last: {start:?}"
+    );
+
+    press_and_draw(&mut app, KeyCode::Char(']'), small);
+    let wide = columns_shown(&app).unwrap();
+    assert_eq!((wide.first, wide.last), (3, 3), "the wide column alone");
+    press_and_draw(&mut app, KeyCode::Char(']'), small);
+    assert_eq!(columns_shown(&app).unwrap().first, 4, "and past it");
+    press_and_draw(&mut app, KeyCode::Char('['), small);
+    assert_eq!(columns_shown(&app).unwrap().first, 3);
+    press_and_draw(&mut app, KeyCode::Char('['), small);
+    assert_eq!(columns_shown(&app).unwrap().first, 1);
+
+    // A resize keeps the first column; the last page is planned in the new room.
+    press_and_draw(&mut app, KeyCode::Char('}'), small);
+    let narrow_last = columns_shown(&app).unwrap();
+    assert_eq!(narrow_last.last, 12);
+    let wide_size = (120, 30);
+    draw_sized(&mut app, wide_size);
+    assert_eq!(
+        columns_shown(&app).map(|o| o.first),
+        Some(narrow_last.first)
+    );
+    press_and_draw(&mut app, KeyCode::Char('}'), wide_size);
+    let wide_last = columns_shown(&app).unwrap();
+    assert!(wide_last.first < narrow_last.first, "{wide_last:?}");
+    assert_eq!(wide_last.last, 12);
+    // The bar has the room for the long form there.
+    let screen = draw_sized(&mut app, wide_size);
+    let expected = format!("cols {}-12 of 12", wide_last.first);
+    assert!(
+        screen.lines().last().unwrap().contains(&expected),
+        "{screen}"
+    );
+}
+
+/// A query that leaves fewer columns, then one, then none shown: nothing to page,
+/// no range, and the scroll does not outlive the columns it was over.
+#[test]
+fn wide_table_paging_after_a_query_with_one_and_no_columns() {
+    let size = (80, 24);
+    let (mut app, rx, tx) = open_wide_table("wide_nav_query.parquet", 40, size);
+    press_and_draw(&mut app, KeyCode::Char('}'), size);
+    assert_eq!(columns_shown(&app).unwrap().last, 40);
+    app.event(&AppEvent::Search("select id_000, price_001".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_sized(&mut app, size);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.headers(), ["id_000", "price_001"]);
+    assert_eq!(state.termcol_index, 0, "the new schema starts at the left");
+    assert_eq!(columns_shown(&app), None);
+
+    app.event(&AppEvent::Search("select id_000".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    for key in ['[', ']', '{', '}', 'l', 'h'] {
+        let screen = press_and_draw(&mut app, KeyCode::Char(key), size);
+        assert!(header_line(&screen).contains("id_000"), "{key}: {screen}");
+        assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
+    }
+
+    // No column shown at all: the keys do nothing, and the picker has nothing to offer.
+    run_and_settle(&mut app, AppEvent::ColumnOrder(Vec::new(), 0), &rx, &tx);
+    for key in ['[', ']', '{', '}', 'g'] {
+        press_and_draw(&mut app, KeyCode::Char(key), size);
+        assert_eq!(app.input_mode, InputMode::Normal, "{key}");
+        assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
+        assert_eq!(columns_shown(&app), None);
+    }
+}

@@ -1,0 +1,14 @@
+Go to a column by name.
+
+  (type):           Narrow the list to the names that contain it
+  ↑ / ↓:            Move
+  Enter:            Go. A column already whole on screen stays where it
+                    is; another becomes the first after the frozen ones,
+                    or lands on the last page when it is there
+  Backspace:        Delete a character (Ctrl+W a word, Ctrl+U all)
+  Esc:              Close without moving
+  F1:               Show this help
+
+The list holds the columns the table shows, in its order. Hidden columns
+are not in it: show them in Sort & Filter (s), v on the Columns tab. A
+frozen column is on screen already; choosing it moves nothing.

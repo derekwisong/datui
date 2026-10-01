@@ -1,5 +1,8 @@
 Navigation:
   Arrows, h/j/k/l:  Scroll table
+  [ / ]:            A page of columns left or right (Shift+←/→ too)
+  { / }:            First column, last page of columns
+  g:                Go to a column by name
   PgUp/PgDn:        Scroll pages (Ctrl+F down, Ctrl+B up)
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
@@ -52,13 +55,19 @@ Exit:
   Q:                Quit
 
 While busy:
-  At the plain table, q, Q, column scroll (←/→, h/l), ? and F1 act at once;
-  Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once. Other keys are
-  queued and replayed in order once the work is done — except a bare Enter
-  or Esc, which is dropped. At most 32 keys are held, and held keys die
-  with the screen they were typed at. At the loading screen nothing is
+  At the plain table, q, Q, column scroll (←/→, h/l, [ ], { }), ? and F1
+  act at once; Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once.
+  Other keys are queued and replayed in order once the work is done —
+  except a bare Enter or Esc, which is dropped. At most 32 keys are held,
+  and held keys die with the screen they were typed at. At the loading screen nothing is
   held: the allowed keys act, the rest are dropped. While a view is being
   applied, Esc stops it and keeps the table as it was.
+
+Wide tables:
+  ] starts the next page at the first column not shown whole, so a column
+  cut at the edge is read whole there; the last page is always full. While
+  columns are off screen the bar names those on it: cols 41-47 of 300,
+  counting the columns shown, frozen first and hidden ones not at all.
 
 Wide columns:
   A column keeps the width it was first drawn at, so paging and scrolling

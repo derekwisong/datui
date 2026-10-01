@@ -35,7 +35,7 @@ pub const MAX_WIDTH: u16 = 240;
 /// Cells one narrower or wider press moves a width.
 pub const WIDTH_STEP: u16 = 4;
 /// Where narrower or wider starts on a column that has not been drawn yet.
-const UNSEEN_WIDTH: u16 = 12;
+pub const UNSEEN_WIDTH: u16 = 12;
 
 impl WidthChoice {
     /// One step narrower, from the width set by hand or else from the width drawn.

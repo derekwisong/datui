@@ -27,6 +27,11 @@ impl PickerState {
         }
     }
 
+    /// Every item, whatever the filter admits.
+    pub fn items(&self) -> &[String] {
+        &self.items
+    }
+
     /// The items the filter admits, with their original indices.
     pub fn filtered(&self) -> Vec<(usize, &str)> {
         let needle = self.filter.to_lowercase();

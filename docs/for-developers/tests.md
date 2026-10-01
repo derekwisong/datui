@@ -85,7 +85,9 @@ The fixtures are not regenerated automatically once they exist.
 
 | Path | Tests |
 |---|---|
-| `tests/integration_test.rs` | Load, query, display, end to end |
+| `tests/integration_test.rs` | Load, query, display, end to end; `remote_quality::` (in `tests/quality/remote.rs`) counts Data Quality's requests at an in-process S3 bucket (`tests/common/fake_s3.rs`) |
+| `tests/quality_spill_test.rs` | What a full Data Quality scan leaves on disk. Its own process: it sets Polars' spill directory before Polars reads it |
+| `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
 | `tests/statistics_test.rs`, `tests/distribution_detection_test.rs` | Analysis |
 | `tests/pivot_melt_backend_test.rs` | Reshaping |
 | `tests/template_test.rs` | Templates and their scoring |

@@ -4,19 +4,14 @@
 //! and counts every request and byte, so these tests say what each run costs the
 //! source rather than what datui believes it read. Nothing leaves the loopback.
 
-#![cfg(feature = "cloud")]
-
-mod common;
-#[path = "common/fake_s3.rs"]
-mod fake_s3;
-
+use crate::common::next_event;
+use crate::fake_s3::{FakeS3, WireCount};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::data_quality::{
     QualityComparison, QualityCompute, QualityGrain, QualityStage, TemporalRole,
     TemporalRoleAssignment,
 };
 use datui::{App, AppConfig, AppEvent, OpenOptions};
-use fake_s3::{FakeS3, WireCount};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -77,31 +72,6 @@ fn remote_events() -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
-
-/// The next event: one already sent, or one background work still owes.
-fn next_event(app: &App, rx: &mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        if let Ok(event) = rx.try_recv() {
-            return Some(event);
-        }
-        if !work_pending(app) {
-            return None;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "background work never reported back"
-        );
-        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            return Some(event);
-        }
-    }
-}
-
 /// Handle `first` and every event it leads to, until nothing more is owed. The
 /// stages of the run in flight that read the source, in order.
 fn settle(
@@ -149,7 +119,7 @@ fn open_remote(s3: &FakeS3) -> (App, mpsc::Receiver<AppEvent>) {
     };
     let theme = datui::Theme::from_config(&config.theme).unwrap();
     let (tx, rx) = mpsc::channel();
-    let mut app = App::new_with_config(tx, common::test_runtime(), theme, config);
+    let mut app = App::new_with_config(tx, crate::common::test_runtime(), theme, config);
     settle(
         &mut app,
         &rx,

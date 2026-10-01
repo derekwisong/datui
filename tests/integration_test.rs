@@ -10,6 +10,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 mod common;
+#[cfg(feature = "cloud")]
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
+#[cfg(feature = "cloud")]
+#[path = "quality/remote.rs"]
+mod remote_quality;
 
 use common::{drain_events, next_event, pump_open_until_loaded, work_pending};
 

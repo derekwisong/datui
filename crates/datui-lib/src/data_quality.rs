@@ -2191,6 +2191,18 @@ impl DataQualityResults {
                 std::mem::size_of::<QualityObservation>()
                     + observation.fact.len()
                     + observation.column.len()
+                    + observation.normalized_category.as_ref().map_or(0, String::len)
+                    // A footer finding names every file it applies to.
+                    + observation
+                        .files
+                        .iter()
+                        .map(|file| {
+                            std::mem::size_of::<QualityFileEvidence>()
+                                + file.name.len()
+                                + file.stored_type.as_ref().map_or(0, String::len)
+                                + file.examples.iter().map(String::len).sum::<usize>()
+                        })
+                        .sum::<usize>()
             })
             .sum::<usize>();
         let unsampled = self
@@ -2246,6 +2258,27 @@ impl DataQualityResults {
             .iter()
             .map(|shared| std::mem::size_of::<SharedNulls>() + texts(&shared.columns))
             .sum::<usize>();
+        // Declared intent keeps whole values: the extremes and the commonest misfits.
+        let intent = self.intent.as_ref().map_or(0, |intent| {
+            let counted = |values: &[(String, usize)]| {
+                values
+                    .iter()
+                    .map(|(value, _)| std::mem::size_of::<(String, usize)>() + value.len())
+                    .sum::<usize>()
+            };
+            std::mem::size_of::<crate::quality_intent::IntentResults>()
+                + intent
+                    .columns
+                    .iter()
+                    .map(|check| {
+                        std::mem::size_of::<crate::quality_intent::ColumnCheck>()
+                            + check.lowest.as_ref().map_or(0, String::len)
+                            + check.highest.as_ref().map_or(0, String::len)
+                            + counted(&check.outside_examples)
+                            + counted(&check.unparsed_examples)
+                    })
+                    .sum::<usize>()
+        });
         std::mem::size_of::<Self>()
             + self.columns.iter().map(profile).sum::<usize>()
             + segments
@@ -2255,6 +2288,7 @@ impl DataQualityResults {
             + spellings
             + examples
             + shared
+            + intent
     }
 
     pub fn compare_segments(&mut self, plan: &DataQualityPlan) {
@@ -8362,6 +8396,14 @@ mod tests {
                 })
                 .sum::<usize>();
             assert!(spellings > 100 * 3 * 2_000, "{spellings}");
+            // Each group's finding names its spelling again.
+            let spellings = spellings
+                + results
+                    .observations
+                    .iter()
+                    .filter_map(|observation| observation.normalized_category.as_ref())
+                    .map(String::len)
+                    .sum::<usize>();
             assert!(
                 results.estimated_bytes() >= spellings,
                 "{compute:?}: {} bytes budgeted for {spellings} of text",

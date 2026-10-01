@@ -18354,6 +18354,15 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
     // Another row has read nothing.
     press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
     assert!(draw_inspector(&mut app).contains("not read"));
+
+    // The read checks the row it found by the fields the table shows; a NaN
+    // among them is still the same row.
+    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 3"), "{screen}");
+    assert!(screen.contains("00000000  62"), "{screen}");
 }
 
 /// The inspector shows the row the table shows, after a sort, and lists a

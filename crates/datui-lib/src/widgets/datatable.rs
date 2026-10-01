@@ -6319,7 +6319,7 @@ impl DataTableState {
                             let values: Vec<String> = list_series
                                 .iter()
                                 .take(10)
-                                .map(|v| v.str_value().to_string())
+                                .map(|v| crate::exact::str_value(&v).to_string())
                                 .collect();
                             if list_series.len() > 10 {
                                 format!("[{}...] ({} items)", values.join(", "), list_series.len())
@@ -7049,7 +7049,11 @@ impl DataTableState {
             let text = match value {
                 AnyValue::Null => continue,
                 AnyValue::String(text) => text.to_string(),
-                value => value.to_string(),
+                // Drawn on the UI thread: Polars' display panics on a date past
+                // the calendar.
+                value => {
+                    crate::exact::past_calendar_text(&value).unwrap_or_else(|| value.to_string())
+                }
             };
             if !values.contains(&text) {
                 values.push(text);
@@ -7445,7 +7449,7 @@ impl DataTableState {
         let mut key_values = Vec::new();
         for col_name in &key_columns {
             let key = row.column(col_name)?;
-            key_values.push(key.get(0)?.str_value().to_string());
+            key_values.push(crate::exact::str_value(&key.get(0)?).to_string());
             // Repeated in its own type, so a date stays a date and a null key null.
             columns.push(key.new_from_index(0, row_count));
         }
@@ -7474,7 +7478,7 @@ impl DataTableState {
             let column = row.column(name)?;
             let value = column.get(0)?.into_static();
             key_columns.push(name.to_string());
-            key_values.push(value.str_value().to_string());
+            key_values.push(crate::exact::str_value(&value).to_string());
             // The key as the query computed it, against the value it produced; the alias
             // only named the result's column.
             let key = expr.clone().meta().undo_aliases();

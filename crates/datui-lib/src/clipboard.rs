@@ -226,7 +226,7 @@ impl CopyFormat {
 /// a null is an empty field, never the UI's `∅`.
 pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, String> {
     let mut out = Vec::new();
-    let mut df = df.clone();
+    let mut df = crate::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
     CsvWriter::new(&mut out)
         .with_separator(separator)
         .include_header(header)
@@ -427,7 +427,7 @@ pub fn tabular_payload(
     header: bool,
     html: bool,
 ) -> Result<Payload, String> {
-    let df = &crate::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
+    let df = &crate::nested_json::frame_as_cells(df).map_err(|e| e.to_string())?;
     let text = match format {
         CopyFormat::Tsv => delimited(df, b'\t', header)?,
         CopyFormat::Csv => delimited(df, b',', header)?,
@@ -534,7 +534,7 @@ impl BoundedText {
         let first = !self.started;
         self.started = true;
         self.rows += batch.height();
-        let batch = crate::nested_json::frame_as_json(&batch).map_err(|e| e.to_string())?;
+        let batch = crate::nested_json::frame_as_cells(&batch).map_err(|e| e.to_string())?;
         let separator = match self.format {
             CopyFormat::Tsv => b'\t',
             CopyFormat::Csv => b',',
@@ -550,7 +550,7 @@ impl BoundedText {
             }
         };
         let mut out = Vec::new();
-        let mut batch = batch;
+        let mut batch = crate::nested_json::frame_as_json(&batch).map_err(|e| e.to_string())?;
         CsvWriter::new(&mut out)
             .with_separator(separator)
             .include_header(first && self.header)
@@ -877,6 +877,55 @@ mod tests {
                         assert_eq!(cells.join(","), row(i, ","), "row {i}");
                     }
                 }
+            }
+        }
+    }
+
+    /// Dates and datetimes copy as they always did: TSV and CSV as the CSV writer
+    /// writes them, Markdown and the HTML flavor as exact text. One past the
+    /// calendar, on which the writer panics, is its stored number in each.
+    #[test]
+    fn dates_copy_as_each_format_wrote_them() {
+        use crate::nested_json::tests::calendar;
+        let df = calendar(false);
+        for format in CopyFormat::ALL {
+            let payload = tabular_payload(&df, format, true, true).unwrap();
+            let (bounded, _) =
+                bounded_table_text(df.clone().lazy(), format, true, 1 << 20).unwrap();
+            assert_eq!(bounded, payload.text, "{format:?}");
+            let separator = match format {
+                CopyFormat::Tsv => b'\t',
+                CopyFormat::Csv => b',',
+                CopyFormat::Markdown => {
+                    assert_eq!(payload.text, markdown_reference(&df).unwrap());
+                    continue;
+                }
+            };
+            let mut written = Vec::new();
+            CsvWriter::new(&mut written)
+                .with_separator(separator)
+                .finish(&mut df.clone())
+                .unwrap();
+            let written = String::from_utf8(written).unwrap();
+            assert_eq!(payload.text, written.trim_end_matches('\n'), "{format:?}");
+            assert_eq!(payload.html, Some(html_table(&df, true).unwrap()));
+        }
+        assert!(
+            markdown_reference(&df)
+                .unwrap()
+                .contains("| 1970-01-01 01:00:00.000000 +01:00 |")
+        );
+
+        let past = calendar(true);
+        let stored = "-9223372036854775807 us since 1970-01-01 UTC";
+        for format in CopyFormat::ALL {
+            let payload = tabular_payload(&past, format, true, true).unwrap();
+            let (bounded, _) =
+                bounded_table_text(past.clone().lazy(), format, true, 1 << 20).unwrap();
+            assert_eq!(bounded, payload.text, "{format:?}");
+            assert!(payload.text.contains(stored), "{format:?}");
+            if let Some(html) = payload.html {
+                assert!(html.contains(&format!("<td>{stored}</td>")), "{html}");
             }
         }
     }

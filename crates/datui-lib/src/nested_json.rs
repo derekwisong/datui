@@ -10,6 +10,12 @@
 //! is written as standard base64 text wherever it sits: a CSV, JSON or NDJSON
 //! export and a copy all spell the same bytes the same way.
 //!
+//! Polars' writers also panic on a date or datetime past the calendar's range
+//! (a sentinel like `i64::MIN + 1` microseconds), so dates and millisecond and
+//! microsecond datetimes are given to them as the text they would write, and
+//! such a value as its stored number, as the table shows it. A nanosecond
+//! count is always a date and goes to the writers as it is.
+//!
 //! A duration has no CSV form either, and is written as the JSON writer spells
 //! it: ISO 8601 in seconds (`PT3723.004S`, `-PT1.5S`, `P0D`). That is exact to
 //! the nanosecond in every unit, and reads the same alone in a CSV cell or a
@@ -40,39 +46,61 @@ pub fn has_binary(dtype: &DataType) -> bool {
     }
 }
 
-/// `dtype` with every binary leaf as a string, the type [`binary_as_base64`] returns.
-fn base64_dtype(dtype: &DataType) -> DataType {
+/// A date or datetime the writers can panic on. Every nanosecond count is a
+/// date (1677 to 2262), so those go to the writers as they are, at no cost.
+fn is_calendar(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Date | DataType::Datetime(TimeUnit::Milliseconds | TimeUnit::Microseconds, _)
+    )
+}
+
+/// Whether `dtype` is binary or [`is_calendar`], or has one inside: what the
+/// JSON writer is given as text.
+fn has_json_text(dtype: &DataType) -> bool {
     match dtype {
-        DataType::List(inner) => DataType::List(Box::new(base64_dtype(inner))),
-        DataType::Array(inner, width) => DataType::Array(Box::new(base64_dtype(inner)), *width),
+        DataType::List(inner) | DataType::Array(inner, _) => has_json_text(inner),
+        DataType::Struct(fields) => fields.iter().any(|f| has_json_text(f.dtype())),
+        dtype => is_binary(dtype) || is_calendar(dtype),
+    }
+}
+
+/// `dtype` with every binary, date and datetime leaf as a string, the type
+/// [`leaves_as_json_text`] returns.
+fn json_text_dtype(dtype: &DataType) -> DataType {
+    match dtype {
+        DataType::List(inner) => DataType::List(Box::new(json_text_dtype(inner))),
+        DataType::Array(inner, width) => DataType::Array(Box::new(json_text_dtype(inner)), *width),
         DataType::Struct(fields) => DataType::Struct(
             fields
                 .iter()
-                .map(|f| Field::new(f.name().clone(), base64_dtype(f.dtype())))
+                .map(|f| Field::new(f.name().clone(), json_text_dtype(f.dtype())))
                 .collect(),
         ),
-        dtype if is_binary(dtype) => DataType::String,
+        dtype if is_binary(dtype) || is_calendar(dtype) => DataType::String,
         dtype => dtype.clone(),
     }
 }
 
-/// `series` with every binary value, at any depth, as its base64 text. Lists,
+/// `series` with every binary value, at any depth, as its base64 text, and every
+/// date and datetime as the JSON writer's text ([`calendar_as_text`]). Lists,
 /// arrays and structs keep their shape and their nulls.
-pub fn binary_as_base64(series: &Series) -> PolarsResult<Series> {
+pub fn leaves_as_json_text(series: &Series) -> PolarsResult<Series> {
     Ok(match series.dtype() {
-        dtype if !has_binary(dtype) => series.clone(),
+        dtype if !has_json_text(dtype) => series.clone(),
         DataType::List(_) => series
             .list()?
-            .apply_to_inner(&|inner| binary_as_base64(&inner))?
+            .apply_to_inner(&|inner| leaves_as_json_text(&inner))?
             .into_series(),
         DataType::Array(..) => series
             .array()?
-            .apply_to_inner(&|inner| binary_as_base64(&inner))?
+            .apply_to_inner(&|inner| leaves_as_json_text(&inner))?
             .into_series(),
         DataType::Struct(_) => series
             .struct_()?
-            .try_apply_fields(binary_as_base64)?
+            .try_apply_fields(leaves_as_json_text)?
             .into_series(),
+        dtype if is_calendar(dtype) => calendar_as_text(series, Writer::Json)?,
         _ => {
             let engine = base64::engine::general_purpose::STANDARD;
             let bytes = series.cast(&DataType::Binary)?;
@@ -87,20 +115,21 @@ pub fn binary_as_base64(series: &Series) -> PolarsResult<Series> {
     })
 }
 
-/// `lf` with every column that has binary in it written as base64 text, in
-/// place and under its own name. Planned, not run.
-pub fn lazy_binary_as_base64(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
+/// `lf` with every column that has binary, a date or a datetime in it as text
+/// ([`leaves_as_json_text`]), in place and under its own name: what a JSON export
+/// writes. Planned, not run.
+pub fn lazy_for_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let schema = lf.collect_schema()?;
     let exprs: Vec<Expr> = schema
         .iter()
-        .filter(|(_, dtype)| has_binary(dtype))
+        .filter(|(_, dtype)| has_json_text(dtype))
         .map(|(name, _)| {
             col(name.clone()).map(
-                |c| binary_as_base64(c.as_materialized_series()).map(Column::from),
+                |c| leaves_as_json_text(c.as_materialized_series()).map(Column::from),
                 |_, field| {
                     Ok(Field::new(
                         field.name().clone(),
-                        base64_dtype(field.dtype()),
+                        json_text_dtype(field.dtype()),
                     ))
                 },
             )
@@ -161,26 +190,83 @@ pub fn duration_as_iso(series: &Series) -> PolarsResult<Series> {
 }
 
 /// Whether a column needs to become text before a CSV writer takes it: it is
-/// nested, binary or a duration.
+/// nested, binary, a duration, or a date or datetime in ms or us, which the
+/// writer can panic on.
 pub fn needs_text(dtype: &DataType) -> bool {
-    is_nested(dtype) || is_binary(dtype) || matches!(dtype, DataType::Duration(_))
+    is_nested(dtype)
+        || is_binary(dtype)
+        || is_calendar(dtype)
+        || matches!(dtype, DataType::Duration(_))
 }
 
 /// One column that [`needs_text`] as the String column a CSV cell or a copy
-/// holds: JSON, base64 or ISO 8601 by its type.
+/// holds: JSON, base64, ISO 8601 or the CSV writer's own text, by its type.
 fn column_as_text(column: &Column) -> PolarsResult<Column> {
     match column.dtype() {
         DataType::Duration(_) => duration_as_iso(column.as_materialized_series()).map(Column::from),
+        dtype if is_calendar(dtype) => {
+            calendar_as_text(column.as_materialized_series(), Writer::Csv).map(Column::from)
+        }
         dtype if is_binary(dtype) => {
-            binary_as_base64(column.as_materialized_series()).map(Column::from)
+            leaves_as_json_text(column.as_materialized_series()).map(Column::from)
         }
         _ => column_as_json(column),
     }
 }
 
+/// The writer whose text for a date or datetime [`calendar_as_text`] writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writer {
+    Csv,
+    Json,
+}
+
+/// A date or datetime column as the text `writer` writes for it, with its nulls;
+/// a value past the calendar's range, on which the writers panic, as its stored
+/// number ([`crate::exact::out_of_range`]), as the table shows it.
+pub fn calendar_as_text(series: &Series, writer: Writer) -> PolarsResult<Series> {
+    // The writers' own defaults: the CSV writer's formats, and the JSON
+    // writer's chrono display (`to_rfc3339` with a zone).
+    let format = match (series.dtype(), writer) {
+        (DataType::Date, _) => "%Y-%m-%d",
+        (DataType::Datetime(unit, zone), Writer::Csv) => match (unit, zone.is_some()) {
+            (TimeUnit::Milliseconds, false) => "%FT%H:%M:%S.%3f",
+            (TimeUnit::Milliseconds, true) => "%FT%H:%M:%S.%3f%z",
+            (TimeUnit::Microseconds, false) => "%FT%H:%M:%S.%6f",
+            (TimeUnit::Microseconds, true) => "%FT%H:%M:%S.%6f%z",
+            (TimeUnit::Nanoseconds, false) => "%FT%H:%M:%S.%9f",
+            (TimeUnit::Nanoseconds, true) => "%FT%H:%M:%S.%9f%z",
+        },
+        (DataType::Datetime(_, None), Writer::Json) => "%Y-%m-%d %H:%M:%S%.f",
+        (DataType::Datetime(_, Some(_)), Writer::Json) => "%Y-%m-%dT%H:%M:%S%.f%:z",
+        (dtype, _) => polars_bail!(InvalidOperation: "expected a date or datetime, got {dtype}"),
+    };
+    let dtype = series.dtype();
+    let text = |s: &Series| match s.dtype() {
+        DataType::Date => s.date()?.to_string(format),
+        _ => s.datetime()?.to_string(format),
+    };
+    let text = match crate::exact::calendar_without_out_of_range(series)? {
+        // The rest formatted as usual, these written in after.
+        Some(shown) => {
+            let stored = series.to_physical_repr().cast(&DataType::Int64)?;
+            text(&shown)?
+                .iter()
+                .zip(stored.i64()?.iter())
+                .map(|(text, v)| match text {
+                    Some(text) => Some(text.to_string()),
+                    None => v.and_then(|v| crate::exact::stored_out_of_range(dtype, v)),
+                })
+                .collect::<StringChunked>()
+        }
+        None => text(series)?,
+    };
+    Ok(text.with_name(series.name().clone()).into_series())
+}
+
 /// One nested column as a String column of JSON, null where the value is null.
 pub fn column_as_json(column: &Column) -> PolarsResult<Column> {
-    let series = binary_as_base64(column.as_materialized_series())?;
+    let series = leaves_as_json_text(column.as_materialized_series())?;
     let chunks = (0..series.n_chunks()).map(|i| {
         let array = series.to_arrow(i, CompatLevel::newest());
         // The writer spells a missing value `null`; the cell stays empty
@@ -213,11 +299,23 @@ pub fn lazy_as_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     })
 }
 
-/// [`lazy_as_json`] for frames already in memory: a copy's rows.
+/// [`lazy_as_json`] for frames already in memory: a copy's rows, as the CSV
+/// writer takes them.
 pub fn frame_as_json(df: &DataFrame) -> PolarsResult<DataFrame> {
+    frame_as_text(df, needs_text)
+}
+
+/// [`frame_as_json`] with dates and datetimes kept in their own type: the cells
+/// a Markdown or HTML copy writes through [`crate::exact::value_text`], which
+/// spells one past the calendar as its stored number itself.
+pub fn frame_as_cells(df: &DataFrame) -> PolarsResult<DataFrame> {
+    frame_as_text(df, |dtype| needs_text(dtype) && !is_calendar(dtype))
+}
+
+fn frame_as_text(df: &DataFrame, converts: impl Fn(&DataType) -> bool) -> PolarsResult<DataFrame> {
     let mut out = df.clone();
     for column in df.columns() {
-        if needs_text(column.dtype()) {
+        if converts(column.dtype()) {
             out.with_column(column_as_text(column)?)?;
         }
     }
@@ -354,6 +452,179 @@ pub(crate) mod tests {
         text.clear();
         duration_iso(i64::MIN, TimeUnit::Nanoseconds, &mut text);
         assert_eq!(text, "-PT9223372036.854775808S");
+    }
+
+    /// Dates and datetimes in every unit, with and without a zone, and their
+    /// nulls, years before 0 and past 9999 among them; `past` adds the ends of
+    /// the stored range, which no writer takes.
+    pub(crate) fn calendar(past: bool) -> DataFrame {
+        let mut stamps = vec![
+            Some(0i64),
+            None,
+            Some(-1),
+            Some(1_700_000_000_123),
+            Some(-62_000_000_000_000),
+            Some(-100_000_000_000_000),
+            Some(300_000_000_000_000),
+        ];
+        let mut days = vec![
+            Some(0i32),
+            None,
+            Some(-1),
+            Some(19_724),
+            Some(-800_000),
+            Some(-1_000_000),
+            Some(3_000_000),
+        ];
+        if past {
+            stamps.extend([Some(i64::MIN + 1), Some(i64::MAX)]);
+            days.extend([Some(i32::MIN), Some(i32::MAX)]);
+        }
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let mut columns = vec![
+            Series::new("d".into(), days)
+                .cast(&DataType::Date)
+                .unwrap()
+                .into_column(),
+        ];
+        for (unit, name) in [
+            (TimeUnit::Milliseconds, "ms"),
+            (TimeUnit::Microseconds, "us"),
+            (TimeUnit::Nanoseconds, "ns"),
+        ] {
+            for (zone, suffix) in [(None, ""), (paris.clone(), "_tz")] {
+                columns.push(
+                    Series::new(format!("{name}{suffix}").into(), &stamps)
+                        .cast(&DataType::Datetime(unit, zone))
+                        .unwrap()
+                        .into_column(),
+                );
+            }
+        }
+        DataFrame::new_infer_height(columns).unwrap()
+    }
+
+    /// Given as text, dates and datetimes read exactly as the CSV and JSON
+    /// writers write them.
+    #[test]
+    fn dates_as_text_are_what_the_writers_write() {
+        let df = calendar(false);
+        let mut csv = Vec::new();
+        CsvWriter::new(&mut csv).finish(&mut df.clone()).unwrap();
+        let mut as_text = Vec::new();
+        CsvWriter::new(&mut as_text)
+            .finish(&mut frame_as_json(&df).unwrap())
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(as_text).unwrap(),
+            String::from_utf8(csv).unwrap()
+        );
+        let lazy = lazy_as_json(df.clone().lazy()).unwrap().collect().unwrap();
+        assert!(frame_as_json(&df).unwrap().equals_missing(&lazy));
+
+        let mut json = Vec::new();
+        JsonWriter::new(&mut json)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(&mut df.clone())
+            .unwrap();
+        let mut prepared = lazy_for_json(df.clone().lazy()).unwrap().collect().unwrap();
+        // Nanosecond datetimes go to the writer as they are.
+        assert!(
+            prepared
+                .columns()
+                .iter()
+                .all(|c| { (c.dtype() == &DataType::String) != c.name().starts_with("ns") })
+        );
+        let mut as_text = Vec::new();
+        JsonWriter::new(&mut as_text)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(&mut prepared)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(as_text).unwrap(),
+            String::from_utf8(json).unwrap()
+        );
+    }
+
+    /// The writers panic on a date past the calendar; as text it is its stored
+    /// number, alone or in a list, and the rest of its column is unchanged.
+    #[test]
+    fn a_date_past_the_calendar_is_written_as_its_stored_number() {
+        let df = calendar(true);
+        let fine = frame_as_json(&calendar(false)).unwrap();
+        let cells = frame_as_json(&df).unwrap();
+        assert!(cells.slice(0, fine.height()).equals_missing(&fine));
+        let text = |name: &str, row: usize| {
+            cells
+                .column(name)
+                .unwrap()
+                .str()
+                .unwrap()
+                .get(row)
+                .map(str::to_string)
+        };
+        let last = df.height() - 1;
+        assert_eq!(
+            text("d", last - 1).as_deref(),
+            Some("-2147483648 days since 1970-01-01")
+        );
+        assert_eq!(
+            text("ms_tz", last).as_deref(),
+            Some("9223372036854775807 ms since 1970-01-01 UTC")
+        );
+        assert_eq!(
+            text("us", last - 1).as_deref(),
+            Some("-9223372036854775807 us since 1970-01-01 UTC")
+        );
+        // Every nanosecond count is a date: the writer takes the column as it is.
+        assert_eq!(
+            cells.column("ns_tz").unwrap().dtype(),
+            df.column("ns_tz").unwrap().dtype()
+        );
+        let mut csv = Vec::new();
+        CsvWriter::new(&mut csv).finish(&mut cells.clone()).unwrap();
+        assert!(
+            String::from_utf8(csv)
+                .unwrap()
+                .contains(",2262-04-11T23:47:16.854775807,")
+        );
+        let lazy = lazy_as_json(df.clone().lazy()).unwrap().collect().unwrap();
+        assert!(cells.equals_missing(&lazy));
+
+        let mut json = Vec::new();
+        JsonWriter::new(&mut json)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(&mut lazy_for_json(df.clone().lazy()).unwrap().collect().unwrap())
+            .unwrap();
+        let json = String::from_utf8(json).unwrap();
+        assert!(
+            json.lines()
+                .last()
+                .unwrap()
+                .contains(r#""us_tz":"9223372036854775807 us since 1970-01-01 UTC""#),
+            "{json}"
+        );
+
+        let listed = df
+            .clone()
+            .lazy()
+            .select([col("us").implode(true), col("d").implode(true)])
+            .collect()
+            .unwrap();
+        let cells = frame_as_json(&listed).unwrap();
+        let us = cells
+            .column("us")
+            .unwrap()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .to_string();
+        assert!(
+            us.starts_with(r#"["1970-01-01 00:00:00",null,"#)
+                && us.ends_with(r#""-9223372036854775807 us since 1970-01-01 UTC","9223372036854775807 us since 1970-01-01 UTC"]"#),
+            "{us}"
+        );
     }
 
     fn nested() -> DataFrame {
@@ -499,8 +770,8 @@ pub(crate) mod tests {
                 .unwrap();
 
         for column in df.columns() {
-            let text = binary_as_base64(column.as_materialized_series()).unwrap();
-            assert_eq!(text.dtype(), &base64_dtype(column.dtype()));
+            let text = leaves_as_json_text(column.as_materialized_series()).unwrap();
+            assert_eq!(text.dtype(), &json_text_dtype(column.dtype()));
             assert_eq!(text.null_count(), 1, "{text}");
         }
 
@@ -516,12 +787,7 @@ pub(crate) mod tests {
         let mut ndjson = Vec::new();
         JsonWriter::new(&mut ndjson)
             .with_json_format(JsonFormat::JsonLines)
-            .finish(
-                &mut lazy_binary_as_base64(df.clone().lazy())
-                    .unwrap()
-                    .collect()
-                    .unwrap(),
-            )
+            .finish(&mut lazy_for_json(df.clone().lazy()).unwrap().collect().unwrap())
             .unwrap();
         assert_eq!(
             String::from_utf8(ndjson).unwrap().lines().next(),

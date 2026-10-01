@@ -18542,3 +18542,295 @@ fn test_inspector_refuses_a_field_over_the_terminal_cap_before_formatting_it() {
     );
     assert_eq!(copies.lock().unwrap().len(), 1, "the last copy stays");
 }
+
+/// A Parquet file whose dates and datetimes reach the ends of what they can
+/// store, as files hold sentinels like `i64::MIN + 1` microseconds: row 1 the
+/// least, row 2 the epoch, row 3 the greatest. Opened and loaded.
+fn open_out_of_range_dates(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let path = dir.join("oor.parquet");
+    let edges = [i64::MIN + 1, 0, i64::MAX];
+    let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+    let column = |name: &str, dtype: DataType| {
+        Series::new(name.into(), edges)
+            .cast(&dtype)
+            .unwrap()
+            .into_column()
+    };
+    let mut df = DataFrame::new(
+        3,
+        vec![
+            Column::new("id".into(), [1i64, 2, 3]),
+            Series::new("d".into(), [i32::MIN, 0, i32::MAX])
+                .cast(&DataType::Date)
+                .unwrap()
+                .into_column(),
+            column("t_ms", DataType::Datetime(TimeUnit::Milliseconds, None)),
+            column("t_us", DataType::Datetime(TimeUnit::Microseconds, None)),
+            column("t_ns", DataType::Datetime(TimeUnit::Nanoseconds, None)),
+            column("t_tz", DataType::Datetime(TimeUnit::Microseconds, paris)),
+            column("dur", DataType::Duration(TimeUnit::Microseconds)),
+        ],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// Press `code` and handle every event it chains to.
+fn press_through(app: &mut App, code: KeyCode) {
+    let mut next = app.event(&key(code));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+}
+
+/// The screen at 300×30, wide enough for every column; fails on an error dialog.
+#[track_caller]
+fn draw_wide(app: &mut App, what: &str) -> String {
+    let area = Rect::new(0, 0, 300, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(app.error_message(), None, "{what}:\n{screen}");
+    screen
+}
+
+/// A date or datetime past the calendar's range draws as its stored number on
+/// every screen that shows it, where Polars' formatting panicked (#494): the
+/// table, the inspector, Info, Describe, Distribution, Data Quality split by
+/// it, a chart over it, and a `by` query's lists.
+#[test]
+fn out_of_range_dates_draw_on_every_screen() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_out_of_range_dates(&dir);
+    let least = [
+        "-2147483648 days since 1970-01-01",
+        "-9223372036854775807 ms since 1970-01-01 UTC",
+        "-9223372036854775807 us since 1970-01-01 UTC",
+        // Every nanosecond count is a date.
+        "1677-09-21 00:12:43.145224193",
+    ];
+    let screen = draw_wide(&mut app, "table");
+    for text in least {
+        assert!(screen.contains(text), "{text}:\n{screen}");
+    }
+    assert!(
+        screen.contains("2147483647 days since 1970-01-01"),
+        "{screen}"
+    );
+
+    press_through(&mut app, KeyCode::Char(' '));
+    let screen = draw_wide(&mut app, "inspector");
+    assert!(screen.contains(least[2]), "{screen}");
+    press_through(&mut app, KeyCode::Esc);
+
+    press_through(&mut app, KeyCode::Char('i'));
+    pump_until_idle(&mut app, &rx, &tx);
+    for tab in 0..4 {
+        draw_wide(&mut app, &format!("info tab {tab}"));
+        press_through(&mut app, KeyCode::Tab);
+    }
+    press_through(&mut app, KeyCode::Esc);
+
+    // Describe, Distribution and Data Quality, each opened from the table.
+    for tool in [0, 1, 3] {
+        press_through(&mut app, KeyCode::Char('a'));
+        app.analysis_modal.sidebar_state.select(Some(tool));
+        // The first Enter shows the Sample form, unless a sample is already set.
+        press_through(&mut app, KeyCode::Enter);
+        if !app.is_busy() {
+            press_through(&mut app, KeyCode::Enter);
+        }
+        drain_events(&mut app, &rx);
+        let screen = draw_wide(&mut app, &format!("tool {tool}"));
+        if tool == 0 {
+            assert!(screen.contains(least[0]), "Describe's min:\n{screen}");
+        }
+        for _ in 0..6 {
+            if !app.analysis_modal.active {
+                break;
+            }
+            press_through(&mut app, KeyCode::Esc);
+        }
+        assert!(!app.analysis_modal.active);
+    }
+
+    // Data Quality split by a datetime: by partition each value is its own
+    // segment, named as the table names it; in time windows one past the
+    // calendar falls in none, as a null does, where truncating it overflowed.
+    use datui::data_quality::{QualityGrain, QualityPage};
+    for (grain, segment, segments) in [
+        (
+            QualityGrain::Partition("t_ms".into()),
+            format!("t_ms={}", least[1]),
+            3,
+        ),
+        (
+            QualityGrain::TimeWindows {
+                column: "t_us".into(),
+                every: "1d".into(),
+            },
+            "1970-01-01".to_string(),
+            2,
+        ),
+        (
+            QualityGrain::TimeWindows {
+                column: "d".into(),
+                every: "1w".into(),
+            },
+            "week of 1969-12-29".to_string(),
+            2,
+        ),
+    ] {
+        press_through(&mut app, KeyCode::Char('a'));
+        app.analysis_modal.sidebar_state.select(Some(3));
+        press_through(&mut app, KeyCode::Enter);
+        press_through(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+        // The time roles list a few of each column's values on screen.
+        app.analysis_modal.data_quality_page = QualityPage::TimeRoles;
+        let screen = draw_wide(&mut app, "time roles");
+        assert!(screen.contains(least[2]), "{screen}");
+        app.analysis_modal.data_quality_page = QualityPage::Setup;
+        app.analysis_modal.data_quality_plan.grain = grain.clone();
+        press_through(&mut app, KeyCode::Enter);
+        drain_events(&mut app, &rx);
+        let labels: Vec<String> = app
+            .analysis_modal
+            .data_quality_results
+            .as_ref()
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.label.clone())
+            .collect();
+        assert!(labels.contains(&segment), "{grain:?}: {labels:?}");
+        assert_eq!(labels.len(), segments, "{grain:?}: {labels:?}");
+        for page in [
+            QualityPage::Overview,
+            QualityPage::Columns,
+            QualityPage::Segments,
+            QualityPage::Trends,
+        ] {
+            app.analysis_modal.data_quality_page = page;
+            draw_wide(&mut app, &format!("{grain:?} {page:?}"));
+        }
+        for _ in 0..6 {
+            if !app.analysis_modal.active {
+                break;
+            }
+            press_through(&mut app, KeyCode::Esc);
+        }
+        assert!(!app.analysis_modal.active);
+    }
+
+    // A chart over the datetimes: the axis falls back to the stored numbers.
+    press_through(&mut app, KeyCode::Char('c'));
+    press_through(&mut app, KeyCode::Tab);
+    press_through(&mut app, KeyCode::Char(' '));
+    type_text(&mut app, "t_us");
+    press_through(&mut app, KeyCode::Enter);
+    press_through(&mut app, KeyCode::Tab);
+    press_through(&mut app, KeyCode::Char(' '));
+    type_text(&mut app, "id");
+    press_through(&mut app, KeyCode::Char(' '));
+    press_through(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart_modal.x_column.as_deref(), Some("t_us"));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    draw_wide(&mut app, "chart");
+    press_through(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    // Each group's datetimes as a list.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select t_us, d by id".to_string());
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = draw_wide(&mut app, "by");
+    assert!(screen.contains(&format!("[{}]", least[2])), "{screen}");
+}
+
+/// Copies and CSV and JSON exports write a date past the calendar as the table
+/// shows it, where Polars' writers panicked; the rest as they always did.
+#[test]
+fn out_of_range_dates_copy_and_export_as_their_stored_number() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_out_of_range_dates(&dir);
+    draw_wide(&mut app, "table");
+    let copies: Copies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+    press_through(&mut app, KeyCode::Char('y'));
+    press_through(&mut app, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        copies.lock().unwrap().last().unwrap(),
+        "1\t-2147483648 days since 1970-01-01\t-9223372036854775807 ms since 1970-01-01 UTC\t\
+         -9223372036854775807 us since 1970-01-01 UTC\t1677-09-21T00:12:43.145224193\t\
+         -9223372036854775807 us since 1970-01-01 UTC\t-PT9223372036854.775807S"
+    );
+
+    let out = dir.join("oor.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, false);
+    assert_eq!(
+        csv.lines().collect::<Vec<_>>(),
+        [
+            "id,d,t_ms,t_us,t_ns,t_tz,dur",
+            "1,-2147483648 days since 1970-01-01,-9223372036854775807 ms since 1970-01-01 UTC,\
+             -9223372036854775807 us since 1970-01-01 UTC,1677-09-21T00:12:43.145224193,\
+             -9223372036854775807 us since 1970-01-01 UTC,-PT9223372036854.775807S",
+            "2,1970-01-01,1970-01-01T00:00:00.000,1970-01-01T00:00:00.000000,\
+             1970-01-01T00:00:00.000000000,1970-01-01T01:00:00.000000+0100,P0D",
+            "3,2147483647 days since 1970-01-01,9223372036854775807 ms since 1970-01-01 UTC,\
+             9223372036854775807 us since 1970-01-01 UTC,2262-04-11T23:47:16.854775807,\
+             9223372036854775807 us since 1970-01-01 UTC,PT9223372036854.775807S",
+        ]
+    );
+
+    let out = dir.join("oor.ndjson");
+    export_as(
+        &mut app,
+        &rx,
+        &tx,
+        &out,
+        datui::export_modal::ExportFormat::Ndjson,
+        false,
+    );
+    assert_eq!(app.error_message(), None);
+    let ndjson = std::fs::read_to_string(&out).unwrap();
+    let lines: Vec<&str> = ndjson.lines().collect();
+    assert_eq!(
+        lines[1],
+        r#"{"id":2,"d":"1970-01-01","t_ms":"1970-01-01 00:00:00","t_us":"1970-01-01 00:00:00","t_ns":"1970-01-01 00:00:00","t_tz":"1970-01-01T01:00:00+01:00","dur":"P0D"}"#
+    );
+    assert!(
+        lines[2].contains(r#""t_tz":"9223372036854775807 us since 1970-01-01 UTC""#),
+        "{ndjson}"
+    );
+
+    // A `by` query's lists, as JSON in a CSV cell.
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select t_us by id".to_string());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_wide(&mut app, "by");
+    let csv = export_csv(&mut app, &rx, &tx, &dir.join("by.csv"), false);
+    assert!(
+        csv.contains(r#"1,"[""-9223372036854775807 us since 1970-01-01 UTC""]""#),
+        "{csv}"
+    );
+}

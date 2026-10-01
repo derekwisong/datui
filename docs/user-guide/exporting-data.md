@@ -80,6 +80,14 @@ a list or struct. It is exact in every unit, down to the nanosecond.
 
 Parquet and Arrow keep the duration type; Avro writes microseconds, below.
 
+## Dates past the calendar
+
+A date or datetime past the calendar's range, such as a sentinel of
+`i64::MIN + 1` microseconds, has no calendar text. CSV, JSON and NDJSON write
+its stored number, as the table shows it:
+`-9223372036854775807 us since 1970-01-01 UTC`. Parquet and Arrow keep the
+value.
+
 ## Avro types
 
 Avro keeps booleans, 32- and 64-bit integers and floats, strings, binary,

@@ -2088,7 +2088,7 @@ fn label_text(column: &str) -> Expr {
             let text = (0..values.len())
                 .map(|row| {
                     let value = values.get(row)?;
-                    Ok((!value.is_null()).then(|| value.str_value().into_owned()))
+                    Ok((!value.is_null()).then(|| crate::exact::str_value(&value).into_owned()))
                 })
                 .collect::<PolarsResult<StringChunked>>()?;
             Ok(text.with_name(values.name().clone()).into_column())
@@ -2114,8 +2114,9 @@ fn segment_predicate(
         }
         QualityGrain::TimeWindows { column, every } => {
             let value = plan.time_value(column);
+            // The rows in no window: nulls, and dates past the calendar.
             if label == time_window_label(column, every, None) {
-                return Some(Some(value.is_null()));
+                return Some(Some(time_window_start(value, every).is_null()));
             }
             let date = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok();
             let start = match every.as_str() {
@@ -3118,7 +3119,7 @@ fn roll_up_windows(finer: &SegmentCounts, every: &str) -> Result<SegmentCounts> 
     let (starts, rows) = (coarse.column("start")?, coarse.column("rows")?.u64()?);
     for (row, count) in rows.into_no_null_iter().enumerate() {
         let start = starts.get(row)?;
-        let key = (!start.is_null()).then(|| start.str_value().into_owned());
+        let key = (!start.is_null()).then(|| crate::exact::str_value(&start).into_owned());
         *rolled.entry(key).or_default() += count as usize;
     }
     Ok(rolled)
@@ -3364,7 +3365,7 @@ fn add_dominance_lazy(
             .get(0)
             .ok()
             .filter(|value| !value.is_null())
-            .map(|value| value.str_value().to_string());
+            .map(|value| crate::exact::str_value(&value).to_string());
         profile.dominant_count = counts
             .get(0)
             .ok()
@@ -3559,7 +3560,7 @@ fn example_text(value: &AnyValue<'_>) -> String {
         AnyValue::String(text) => crate::quality_report::quoted(text, 24),
         AnyValue::StringOwned(text) => crate::quality_report::quoted(text, 24),
         other => {
-            let text = other.str_value().to_string();
+            let text = crate::exact::str_value(other).to_string();
             if crate::glyphs::display_width(&text) > 24 {
                 format!(
                     "{}{}",
@@ -3781,7 +3782,7 @@ fn group_by_value(df: &DataFrame, column: &str, prefix: &str) -> Result<Vec<Segm
             missing.push(row as u32);
         } else {
             groups
-                .entry(format!("{prefix}{}", value.str_value()))
+                .entry(format!("{prefix}{}", crate::exact::str_value(&value)))
                 .or_default()
                 .push(row as u32);
         }
@@ -3804,9 +3805,19 @@ fn group_by_value(df: &DataFrame, column: &str, prefix: &str) -> Result<Vec<Segm
 
 /// Where a row's window starts. Both the sampled and the full-scan path bucket
 /// through this one expression, so a week never starts on a different day
-/// depending on how much of it was read.
+/// depending on how much of it was read. A date past the calendar's range falls
+/// in no window, as a null does: truncating it overflows.
 fn time_window_start(value: Expr, every: &str) -> Expr {
     value
+        .map(
+            |c| {
+                Ok(
+                    crate::exact::calendar_without_out_of_range(c.as_materialized_series())?
+                        .map_or(c, Column::from),
+                )
+            },
+            |_, field| Ok(field.clone()),
+        )
         .cast(DataType::Datetime(TimeUnit::Microseconds, None))
         .dt()
         .truncate(lit(every.to_string()))
@@ -3832,7 +3843,7 @@ fn group_by_time_window(
             missing.push(row as u32);
         } else {
             groups
-                .entry(value.str_value().into_owned())
+                .entry(crate::exact::str_value(&value).into_owned())
                 .or_default()
                 .push(row as u32);
         }
@@ -3920,7 +3931,7 @@ fn counted_segment_totals(
         let raw = keys.get(row)?;
         // Keyed as the key reads, as a streamed count keys it: named as a segment only
         // when a run asks, so a finer window's count can be summed into a coarser one.
-        let raw = (!raw.is_null()).then(|| raw.str_value().into_owned());
+        let raw = (!raw.is_null()).then(|| crate::exact::str_value(&raw).into_owned());
         totals.insert(raw, usize_value_at(&counts, ROWS, row));
     }
     Ok(totals)
@@ -5645,7 +5656,7 @@ fn string_value_at(df: &DataFrame, name: &str, row: usize) -> Option<String> {
     if value.is_null() {
         None
     } else {
-        Some(value.str_value().to_string())
+        Some(crate::exact::str_value(&value).to_string())
     }
 }
 
@@ -5663,6 +5674,72 @@ mod tests {
         )
         .unwrap()
         .lazy()
+    }
+
+    /// A date past the calendar's range splits like any other value: by
+    /// partition it is its own segment, named by its stored number, and in time
+    /// windows it falls in none, as a null does. Each segment's rows are the ones
+    /// it counted.
+    #[test]
+    fn dates_past_the_calendar_fall_in_segments_without_a_panic() {
+        let edges = [i64::MIN + 1, 0, i64::MAX];
+        let lf = DataFrame::new(
+            3,
+            vec![
+                Column::new("id".into(), [1i64, 2, 3]),
+                Series::new("t".into(), edges)
+                    .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+                    .unwrap()
+                    .into_column(),
+                Series::new("d".into(), [i32::MIN, 0, i32::MAX])
+                    .cast(&DataType::Date)
+                    .unwrap()
+                    .into_column(),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        for grain in [
+            QualityGrain::Partition("t".into()),
+            QualityGrain::Partition("d".into()),
+            QualityGrain::TimeWindows {
+                column: "t".into(),
+                every: "1d".into(),
+            },
+            QualityGrain::TimeWindows {
+                column: "d".into(),
+                every: "1w".into(),
+            },
+        ] {
+            let plan = DataQualityPlan {
+                compute: QualityCompute::Full,
+                grain: grain.clone(),
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&lf, Some(3), &plan, None, false).unwrap();
+            let labels: Vec<&str> = results.segments.iter().map(|s| s.label.as_str()).collect();
+            if let QualityGrain::Partition(column) = &grain {
+                assert!(
+                    labels.iter().any(|l| l.starts_with(&format!("{column}=-"))
+                        && l.contains(" since 1970-01-01")),
+                    "{grain:?}: {labels:?}"
+                );
+            } else {
+                assert_eq!(labels.len(), 2, "{grain:?}: {labels:?}");
+            }
+            for segment in &results.segments {
+                let predicate = segment_predicate(&plan, &grain, &segment.label)
+                    .unwrap()
+                    .unwrap();
+                let rows = lf.clone().filter(predicate).collect().unwrap().height();
+                assert_eq!(
+                    Some(rows),
+                    segment.total_rows,
+                    "{grain:?} {}",
+                    segment.label
+                );
+            }
+        }
     }
 
     /// A full run over the whole scope takes its one segment from the column profile

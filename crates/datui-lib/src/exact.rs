@@ -57,9 +57,9 @@ pub fn f32_text(v: f32) -> String {
     }
 }
 
-/// A date or datetime outside the calendar's range, as its stored number: Polars
-/// panics formatting one (a sentinel like `i64::MIN` microseconds is real data).
-/// A day of margin either side leaves room for a zone's offset.
+/// A date, datetime or time outside the calendar's range, as its stored number:
+/// Polars panics formatting one (a sentinel like `i64::MIN` microseconds is real
+/// data). A day of margin either side leaves room for a zone's offset.
 pub fn out_of_range(value: &AnyValue) -> Option<String> {
     use chrono::{DateTime, NaiveDate, TimeDelta};
     let fits = |dt: Option<DateTime<chrono::Utc>>| {
@@ -85,7 +85,116 @@ pub fn out_of_range(value: &AnyValue) -> Option<String> {
             };
             (!fits(dt)).then(|| format!("{v} {unit} since 1970-01-01 UTC"))
         }
+        AnyValue::Time(ns) => {
+            (!(0..NANOS_PER_DAY).contains(ns)).then(|| format!("{ns} ns since midnight"))
+        }
         _ => None,
+    }
+}
+
+const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+
+/// [`AnyValue::str_value`], which panics on a date past the calendar, with such a
+/// value written as its stored number, and a list or struct holding one written
+/// as [`nested_compact`] does.
+pub fn str_value<'a>(value: &AnyValue<'a>) -> Cow<'a, str> {
+    match past_calendar_text(value) {
+        Some(text) => Cow::Owned(text),
+        None => value.str_value(),
+    }
+}
+
+/// The text [`str_value`] gives a value Polars panics formatting: a date past
+/// the calendar, or a list or struct holding one. `None` for any other value,
+/// which Polars formats as usual.
+pub fn past_calendar_text(value: &AnyValue) -> Option<String> {
+    if let Some(text) = out_of_range(value) {
+        return Some(text);
+    }
+    nested_out_of_range(value).then(|| nested_compact(value, CELL_PREVIEW_BYTES).text)
+}
+
+/// Whether a list, array or struct holds a value [`out_of_range`] names. Only one
+/// whose type holds a date, datetime or time is looked into.
+fn nested_out_of_range(value: &AnyValue) -> bool {
+    let holds = |fields: &[Field]| fields.iter().any(|f| holds_calendar(f.dtype()));
+    match value {
+        AnyValue::List(s) | AnyValue::Array(s, _) => series_out_of_range(s),
+        AnyValue::Struct(_, _, fields) if !holds(fields) => false,
+        AnyValue::StructOwned(payload) if !holds(&payload.1) => false,
+        AnyValue::Struct(..) | AnyValue::StructOwned(_) => value
+            ._iter_struct_av()
+            .any(|field| out_of_range(&field).is_some() || nested_out_of_range(&field)),
+        _ => false,
+    }
+}
+
+/// Whether any value of `s` is one [`out_of_range`] names: a flat column by its
+/// least and greatest stored number, a nested one item by item.
+fn series_out_of_range(s: &Series) -> bool {
+    if !holds_calendar(s.dtype()) {
+        return false;
+    }
+    match s.dtype() {
+        DataType::Date | DataType::Datetime(..) | DataType::Time => {
+            let Ok(stored) = s.to_physical_repr().cast(&DataType::Int64) else {
+                return false;
+            };
+            let Ok(stored) = stored.i64() else {
+                return false;
+            };
+            [stored.min(), stored.max()]
+                .into_iter()
+                .flatten()
+                .any(|v| stored_out_of_range(s.dtype(), v).is_some())
+        }
+        _ => s.iter().any(|item| nested_out_of_range(&item)),
+    }
+}
+
+/// [`out_of_range`] for a value of `dtype` stored as the number `stored`.
+pub fn stored_out_of_range(dtype: &DataType, stored: i64) -> Option<String> {
+    let value = match dtype {
+        DataType::Date => AnyValue::Date(i32::try_from(stored).ok()?),
+        DataType::Datetime(unit, _) => AnyValue::Datetime(stored, *unit, None),
+        DataType::Time => AnyValue::Time(stored),
+        _ => return None,
+    };
+    out_of_range(&value)
+}
+
+/// A date, datetime or time column with each value [`out_of_range`] names as
+/// null, for the Polars operations that overflow or panic on one. `None` when
+/// it holds none, the common case, which costs a min and a max.
+pub fn calendar_without_out_of_range(series: &Series) -> PolarsResult<Option<Series>> {
+    let dtype = series.dtype();
+    if !matches!(
+        dtype,
+        DataType::Date | DataType::Datetime(..) | DataType::Time
+    ) {
+        return Ok(None);
+    }
+    let stored = series.to_physical_repr().cast(&DataType::Int64)?;
+    let stored = stored.i64()?;
+    let past = |v: i64| stored_out_of_range(dtype, v).is_some();
+    if ![stored.min(), stored.max()].into_iter().flatten().any(past) {
+        return Ok(None);
+    }
+    let kept = stored.apply(|v| v.filter(|v| !past(*v)));
+    Ok(Some(
+        kept.into_series()
+            .cast(dtype)?
+            .with_name(series.name().clone()),
+    ))
+}
+
+/// Whether `dtype` is, or holds, a date, datetime or time.
+pub fn holds_calendar(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::Date | DataType::Datetime(..) | DataType::Time => true,
+        DataType::List(inner) | DataType::Array(inner, _) => holds_calendar(inner),
+        DataType::Struct(fields) => fields.iter().any(|f| holds_calendar(f.dtype())),
+        _ => false,
     }
 }
 
@@ -857,6 +966,119 @@ mod tests {
             "2262-04-11 23:47:16.854775807"
         );
         assert_eq!(value_text(&AnyValue::Date(-800_000)), "-0221-09-04");
+    }
+
+    /// The table's text for a value is Polars' own, except where Polars panics:
+    /// a date, datetime or time past the calendar is its stored number, alone or
+    /// inside a list or struct. Durations never panic and keep Polars' text.
+    #[test]
+    fn str_value_never_panics_on_a_date_past_the_calendar() {
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris"))
+            .unwrap()
+            .unwrap();
+        for (unit, name) in [
+            (TimeUnit::Milliseconds, "ms"),
+            (TimeUnit::Microseconds, "us"),
+        ] {
+            for zone in [None, Some(&paris)] {
+                for v in [i64::MIN + 1, i64::MAX] {
+                    assert_eq!(
+                        str_value(&AnyValue::Datetime(v, unit, zone)),
+                        format!("{v} {name} since 1970-01-01 UTC"),
+                        "{unit:?} {zone:?}"
+                    );
+                }
+                let epoch = AnyValue::Datetime(0, unit, zone);
+                assert_eq!(str_value(&epoch), epoch.str_value());
+            }
+        }
+        // Every nanosecond count is a date, with or without a zone.
+        for zone in [None, Some(&paris)] {
+            for v in [i64::MIN + 1, i64::MAX] {
+                let value = AnyValue::Datetime(v, TimeUnit::Nanoseconds, zone);
+                assert_eq!(str_value(&value), value.str_value());
+            }
+        }
+        assert_eq!(
+            str_value(&AnyValue::Date(i32::MAX)),
+            "2147483647 days since 1970-01-01"
+        );
+        assert_eq!(
+            str_value(&AnyValue::Date(i32::MIN)),
+            "-2147483648 days since 1970-01-01"
+        );
+        assert_eq!(str_value(&AnyValue::Date(0)), "1970-01-01");
+        assert_eq!(str_value(&AnyValue::Time(-1)), "-1 ns since midnight");
+        assert_eq!(
+            str_value(&AnyValue::Time(NANOS_PER_DAY)),
+            "86400000000000 ns since midnight"
+        );
+        assert_eq!(
+            str_value(&AnyValue::Time(NANOS_PER_DAY - 1)),
+            "23:59:59.999999999"
+        );
+        for unit in [
+            TimeUnit::Milliseconds,
+            TimeUnit::Microseconds,
+            TimeUnit::Nanoseconds,
+        ] {
+            for v in [i64::MIN, i64::MIN + 1, i64::MAX] {
+                let value = AnyValue::Duration(v, unit);
+                assert_eq!(str_value(&value), value.str_value());
+            }
+        }
+
+        let stamps = |values: &[i64]| {
+            Series::new("".into(), values)
+                .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+                .unwrap()
+        };
+        let past = stamps(&[0, i64::MIN + 1]);
+        assert_eq!(
+            str_value(&AnyValue::List(past.clone())),
+            r#"["1970-01-01 00:00:00.000000", "-9223372036854775807 us since 1970-01-01 UTC"]"#
+        );
+        let fine = AnyValue::List(stamps(&[0]));
+        assert_eq!(str_value(&fine), fine.str_value());
+        let nested = AnyValue::List(Series::new("".into(), [past.clone()]));
+        assert!(str_value(&nested).contains("-9223372036854775807 us"));
+        let row = StructChunked::from_series(
+            "".into(),
+            2,
+            [
+                Series::new("id".into(), [1i64, 2]),
+                past.with_name("at".into()),
+            ]
+            .iter(),
+        )
+        .unwrap()
+        .into_series();
+        assert_eq!(
+            str_value(&row.get(1).unwrap()),
+            r#"{"id": 2, "at": "-9223372036854775807 us since 1970-01-01 UTC"}"#
+        );
+        assert_eq!(
+            str_value(&row.get(0).unwrap()),
+            row.get(0).unwrap().str_value()
+        );
+    }
+
+    /// Only the values past the calendar are taken out; a column with none is
+    /// left alone.
+    #[test]
+    fn values_past_the_calendar_become_null() {
+        let dates = Series::new("d".into(), [Some(i32::MIN), Some(0), None, Some(i32::MAX)])
+            .cast(&DataType::Date)
+            .unwrap();
+        let kept = calendar_without_out_of_range(&dates).unwrap().unwrap();
+        assert_eq!(kept.dtype(), &DataType::Date);
+        assert_eq!(kept.name().as_str(), "d");
+        assert_eq!(kept.null_count(), 3);
+        assert_eq!(kept.get(1).unwrap(), AnyValue::Date(0));
+        let fine = dates.slice(1, 2);
+        assert!(calendar_without_out_of_range(&fine).unwrap().is_none());
+        let numbers = Series::new("n".into(), [i64::MIN, i64::MAX]);
+        assert!(calendar_without_out_of_range(&numbers).unwrap().is_none());
     }
 
     #[test]

@@ -466,7 +466,7 @@ pub fn format_any_value<'v>(
         return Cow::Borrowed("");
     }
     let nf = match fmt {
-        CellFormatter::Passthrough => return value.str_value(),
+        CellFormatter::Passthrough => return crate::exact::str_value(value),
         CellFormatter::Number(nf) => nf,
     };
     let mut out = String::new();
@@ -490,7 +490,7 @@ pub fn format_any_value<'v>(
             Some(_) => nf.write_f64(f, scratch, &mut out),
             None => nf.regroup_decimal(&value.str_value(), &mut out),
         },
-        _ => return value.str_value(),
+        _ => return crate::exact::str_value(value),
     };
     Cow::Owned(out)
 }
@@ -643,6 +643,32 @@ mod tests {
         NumberFormat::preset("thousands").unwrap()
     }
 
+    /// A date past the calendar is its stored number in a cell, formatted or
+    /// not, and measured as that: Polars panics formatting it.
+    #[test]
+    fn a_date_past_the_calendar_is_its_stored_number_in_a_cell() {
+        let mut scratch = String::new();
+        let thousands = NumberFormatSettings {
+            format: NumberFormat::preset("thousands").unwrap(),
+            ..NumberFormatSettings::default()
+        };
+        let value = AnyValue::Datetime(i64::MIN + 1, polars::prelude::TimeUnit::Microseconds, None);
+        let dtype = DataType::Datetime(polars::prelude::TimeUnit::Microseconds, None);
+        for fmt in [
+            CellFormatter::Passthrough,
+            thousands.formatter_for("t", &dtype),
+            CellFormatter::Number(NumberFormat::preset("thousands").unwrap()),
+        ] {
+            let text = format_any_value(&fmt, &value, &mut scratch).into_owned();
+            assert_eq!(text, "-9223372036854775807 us since 1970-01-01 UTC");
+            assert_eq!(display_width(&fmt, &value, &mut scratch), text.len());
+        }
+        let date = AnyValue::Date(i32::MAX);
+        assert_eq!(
+            format_any_value(&CellFormatter::Passthrough, &date, &mut scratch),
+            "2147483647 days since 1970-01-01"
+        );
+    }
     #[test]
     fn digit_count_basics() {
         assert_eq!(digit_count(0), 1);

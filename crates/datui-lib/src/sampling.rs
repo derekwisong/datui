@@ -91,7 +91,7 @@ impl KeyCounter {
         let rows = counts.column("__datui_count_rows")?;
         for row in 0..counts.height() {
             let value = keys.get(row)?;
-            let key = (!value.is_null()).then(|| value.str_value().into_owned());
+            let key = (!value.is_null()).then(|| crate::exact::str_value(&value).into_owned());
             let n = rows.get(row)?.extract::<usize>().unwrap_or(0);
             *self.totals.entry(key).or_default() += n;
         }
@@ -679,7 +679,7 @@ impl GroupState {
         let mut by_key: HashMap<Option<String>, (Vec<IdxSize>, Vec<u64>)> = HashMap::new();
         for (index, (key, position)) in keys.iter().zip(positions.into_no_null_iter()).enumerate() {
             // Named as a segment names its value, so the counts line up with segments.
-            let key = (!key.is_null()).then(|| key.str_value().into_owned());
+            let key = (!key.is_null()).then(|| crate::exact::str_value(&key).into_owned());
             let entry = by_key.entry(key).or_default();
             entry.0.push(index as IdxSize);
             entry.1.push(sample_rank(self.seed, position as u64));

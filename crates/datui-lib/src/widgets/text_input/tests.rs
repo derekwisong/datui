@@ -509,6 +509,9 @@ fn moving_the_cursor_keeps_a_suggestion_and_edits_it() {
         (KeyCode::Left, KeyModifiers::NONE, "valu_xe"),
         (KeyCode::Char('e'), KeyModifiers::CONTROL, "value_x"),
         (KeyCode::Char('a'), KeyModifiers::CONTROL, "_xvalue"),
+        (KeyCode::Char('b'), KeyModifiers::ALT, "_xvalue"),
+        (KeyCode::Char('f'), KeyModifiers::ALT, "value_x"),
+        (KeyCode::Left, KeyModifiers::CONTROL, "_xvalue"),
     ] {
         let mut input = suggesting("value");
         press_with(&mut input, code, modifiers);
@@ -518,15 +521,37 @@ fn moving_the_cursor_keeps_a_suggestion_and_edits_it() {
 }
 
 #[test]
-fn backspace_delete_and_ctrl_u_clear_a_suggestion() {
+fn deletes_and_kills_clear_a_suggestion() {
     for (code, modifiers) in [
         (KeyCode::Backspace, KeyModifiers::NONE),
         (KeyCode::Delete, KeyModifiers::NONE),
         (KeyCode::Char('u'), KeyModifiers::CONTROL),
+        (KeyCode::Char('k'), KeyModifiers::CONTROL),
+        (KeyCode::Char('w'), KeyModifiers::CONTROL),
+        (KeyCode::Char('d'), KeyModifiers::ALT),
+        (KeyCode::Backspace, KeyModifiers::ALT),
+        (KeyCode::Char('x'), KeyModifiers::CONTROL),
+    ] {
+        let mut input = suggesting("two words");
+        press_with(&mut input, code, modifiers);
+        assert_eq!(input.value(), "", "{code:?} {modifiers:?}");
+        type_str(&mut input, "z");
+        assert_eq!(input.value(), "z", "{code:?} {modifiers:?}");
+    }
+}
+
+#[test]
+fn a_key_the_field_ignores_leaves_a_suggestion_standing() {
+    for (code, modifiers) in [
+        (KeyCode::F(5), KeyModifiers::NONE),
+        (KeyCode::Char('g'), KeyModifiers::CONTROL),
+        (KeyCode::End, KeyModifiers::SHIFT),
     ] {
         let mut input = suggesting("value");
         press_with(&mut input, code, modifiers);
-        assert_eq!(input.value(), "", "{code:?} {modifiers:?}");
+        assert!(input.is_suggested(), "{code:?} {modifiers:?}");
+        type_str(&mut input, "z");
+        assert_eq!(input.value(), "z", "{code:?} {modifiers:?}");
     }
 }
 
@@ -546,20 +571,23 @@ fn a_suggestion_is_selected_only_while_the_field_has_focus() {
     let mut input = TextInput::new().with_theme(&theme);
     input.suggest("ab");
     let rect = Rect::new(0, 0, 4, 1);
-    let draw = |input: &TextInput| {
+    // Whether the first character is drawn selected. The theme's selection is a
+    // tint or reversed video, depending on what the test's terminal supports.
+    let selection = theme.text_selection_style();
+    let selected = |input: &TextInput| {
         let mut buf = Buffer::empty(rect);
         input.render(rect, &mut buf);
-        buf[(0, 0)].style().bg
+        let style = buf[(0, 0)].style();
+        selection.bg.is_none_or(|bg| style.bg == Some(bg))
+            && style.add_modifier.contains(selection.add_modifier)
     };
-    let selected = theme.highlight_style().bg;
-    assert!(selected.is_some());
-    assert_ne!(draw(&input), selected, "unfocused: not selected");
+    assert!(!selected(&input), "unfocused: not selected");
     input.set_focused(true);
-    assert_eq!(draw(&input), selected, "focus arriving selects it");
+    assert!(selected(&input), "focus arriving selects it");
     // Leaving (Tab away) drops the selection and keeps the value; coming back
     // to an untouched suggestion selects it again.
     input.set_focused(false);
-    assert_ne!(draw(&input), selected);
+    assert!(!selected(&input));
     assert_eq!(input.value(), "ab");
     input.set_focused(true);
     type_str(&mut input, "c");

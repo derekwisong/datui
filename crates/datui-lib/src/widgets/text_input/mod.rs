@@ -71,7 +71,7 @@ pub struct TextInput {
     cursor_color: Option<Color>,
     /// Text under the cursor block; the theme picks it, never this widget.
     cursor_text: Option<Color>,
-    /// How selected text is drawn; the theme's highlight when there is one.
+    /// How selected text is drawn; the theme picks it.
     selection_style: Option<Style>,
     focused: bool,
     /// The value is one the form proposed, untouched since. While it holds,
@@ -154,7 +154,7 @@ impl TextInput {
         let cursor = theme.get("cursor_focused");
         self.cursor_color = Some(cursor);
         self.cursor_text = Some(theme.cursor_text_for(cursor));
-        self.selection_style = Some(theme.highlight_style());
+        self.selection_style = Some(theme.text_selection_style());
         self.apply_styles();
         self
     }
@@ -384,21 +384,34 @@ impl TextInput {
     /// `cache` is only needed by inputs that have a history; pass `None` when
     /// there is none or when the caller does not want disk access.
     pub fn handle_key(&mut self, event: &KeyEvent, cache: Option<&CacheManager>) -> TextInputEvent {
+        if event.code == KeyCode::Esc {
+            return TextInputEvent::Cancel;
+        }
+        if !std::mem::take(&mut self.suggested) {
+            return self.apply_key(event, cache);
+        }
+        // The first key settles a suggestion. It acts on the whole value even when
+        // focus never reached the field through `set_focused`.
+        self.textarea.select_all();
+        let selected = self.textarea.selection();
+        let before = self.value.clone();
+        let result = self.apply_key(event, cache);
+        // A key the editor has no use for changes nothing, so the value is still
+        // the form's proposal.
+        self.suggested = self.value == before && self.textarea.selection() == selected;
+        if self.suggested && !self.focused {
+            self.textarea.cancel_selection();
+        }
+        result
+    }
+
+    fn apply_key(&mut self, event: &KeyEvent, cache: Option<&CacheManager>) -> TextInputEvent {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         let alt = event.modifiers.contains(KeyModifiers::ALT);
         let single_line = self.is_single_line();
         let statement = self.mode == TextInputMode::Statement;
         let submits = self.submits_on_enter();
         let recall = self.history.is_enabled();
-
-        if event.code == KeyCode::Esc {
-            return TextInputEvent::Cancel;
-        }
-        // The first key settles a suggestion. It acts on the whole value even when
-        // focus never reached the field through `set_focused`.
-        if std::mem::take(&mut self.suggested) {
-            self.textarea.select_all();
-        }
 
         match event.code {
             // Alt, not Ctrl: legacy terminals send Ctrl+Enter as Ctrl+J, and both

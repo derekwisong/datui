@@ -82,12 +82,13 @@ on a sleep or a quiet channel.
 | `release-notes/vX.Y.Z.md` | Optional per-release notes, copied verbatim into the GitHub release and winget |
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
 
-Modules worth knowing: `query.rs` (the DSL parser), `widgets/datatable.rs`
-(`DataTableState`: the LazyFrame pipeline and the row buffer), `config.rs`
-(config structs, merging, theme), `home.rs` + `discover.rs` + `search.rs` (the
-home screen), `cloud_browse.rs` + `cloud_hive.rs` + `source.rs` (S3, GCS, HTTP),
-`statistics.rs` (analysis), `chart_data.rs` (chart preparation), `template.rs`,
-`cache.rs`, `glyphs.rs`, `numfmt.rs`, `fuzzy.rs`.
+Modules worth knowing: `query.rs` (the DSL parser), `jobs.rs` (background
+jobs), `widgets/datatable.rs` (`DataTableState`: the LazyFrame pipeline and the
+row buffer), `config.rs` (config structs, merging, theme), `home.rs` +
+`discover.rs` + `search.rs` (the home screen), `cloud_browse.rs` +
+`cloud_hive.rs` + `source.rs` (S3, GCS, HTTP), `statistics.rs` (analysis),
+`chart_data.rs` (chart preparation), `template.rs`, `cache.rs`, `glyphs.rs`,
+`numfmt.rs`, `fuzzy.rs`.
 
 ## How the app works
 
@@ -109,18 +110,24 @@ reader in `terminal_input.rs`), worker results and continuations all arrive as
 arrives or a deadline passes (spinner, flash), with no polling tick, and
 `App::event` handles each. A key is offered once the results behind it are
 handled, one key per frame. Anything polled rather than sent must wake the loop
-(`AppEvent::Wake`). Anything that touches data runs off the UI thread through
-`spawn_bg`, tagged with `task_generation`; a result whose generation is stale
-is dropped. Each spawn names its `Job`. A worker sends its result and returns
-`Ok`, or returns `Err` with the message for the user; `spawn_bg` reports that,
-or a panic, as one `BackgroundFailed`, and `background_failed` clears only what
-that job set. Home-screen workers, keyed by place rather than generation, run inside an
+(`AppEvent::Wake`). Anything that touches data runs off the UI thread as a job
+of `jobs::Jobs` (`App::spawn_job`), which keeps one record per job: what it is
+(`Job`, carrying whatever the app needs of it), whether the user waits on it
+(its keys and status line), and whether its answer is still wanted. A worker
+returns its `Answer` or `Err` with the message for the user; that, or a panic,
+is its one outcome, announced by `AppEvent::JobEnded`. `App::job_ended` takes
+the outcome and the record together, so a job holds the generation and the
+keys until its answer is handled. Advancing the generation, or
+`Jobs::supersede`, makes answers stale; App keeps no flags of its own for a
+job. Counts, the footer pass and chart preparation keep their own markers, and
+home-screen workers, keyed by place rather than generation, run inside an
 `OwedAnswer` that sends their in-flight marker an answer if they panic. Async
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
 collect inside a render function.
 
-**Keys typed while busy are queued.** While a background task runs, `busy` is
-set and the control bar shows a spinner. `EventPump` (`event_pump.rs`, owned by
+**Keys typed while busy are queued.** While a job the user waits on runs, or an
+errand is between phases, `App::is_busy` is true and the control bar shows a
+spinner. `EventPump` (`event_pump.rs`, owned by
 `run()`) holds the keys typed meanwhile and replays them in order, one per loop
 iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
 confirmation-modal keys act at once; so do `q`, column scroll and help at the

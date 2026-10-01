@@ -4762,10 +4762,13 @@ impl DataTableState {
         // numbers. Keep what is held and plan again. A fill that holds the first row
         // but not the whole view (the terminal grew while it was out) is kept, and the
         // rest fetched; a downloaded row group is too costly to throw away for a resize.
+        // A read that came back short ends the data, so a view past it is shown by the
+        // rows kept up to that end, and only by them: a cut may have dropped the end.
         let end = start + df.height();
         let view_end = self.start_row + self.visible_rows.max(1);
-        let shows_view =
-            start <= self.start_row && (self.start_row < end || returned_rows < requested_rows);
+        let reaches_end = end >= buffer_start + returned_rows;
+        let shows_view = start <= self.start_row
+            && (self.start_row < end || (returned_rows < requested_rows && reaches_end));
         if !shows_view {
             self.needs_recollect = true;
             return;
@@ -12390,26 +12393,31 @@ mod tests {
     #[test]
     fn a_fill_cut_around_a_view_since_left_is_not_installed() {
         // The worker cuts around the view the fill was planned for. A view that jumped
-        // past the rows kept, while it was out, keeps what is held and asks again.
+        // past the rows kept, while it was out, keeps what is held and asks again. So
+        // does a read that came back short, whose end the cut dropped.
         const N: usize = 10_000;
         let source = mixed_frame(0, N);
-        let mut state = trimming_state(source.clone().lazy());
-        state.num_rows = N;
-        state.num_rows_valid = true;
-        state.start_row = 300;
-        let result = state.fill_plan(0, N, N, true).fit(source);
-        assert!(
-            result.start + result.df.height() < 9_000,
-            "the fill was cut"
-        );
-        state.start_row = 9_000;
-        state.needs_recollect = false;
-        state.apply_async_collect(result);
-        assert!(
-            state.buffered_df.is_none(),
-            "nothing drawn under wrong numbers"
-        );
-        assert!(state.needs_recollect);
+        for short in [false, true] {
+            let mut state = trimming_state(source.clone().lazy());
+            state.num_rows = N;
+            state.num_rows_valid = !short;
+            state.start_row = 300;
+            let asked = if short { N + 5_000 } else { N };
+            let result = state.fill_plan(0, asked, asked, !short).fit(source.clone());
+            assert!(
+                result.start + result.df.height() < 9_000,
+                "the fill was cut"
+            );
+            state.start_row = 9_000;
+            state.needs_recollect = false;
+            state.apply_async_collect(result);
+            assert!(
+                state.buffered_df.is_none(),
+                "nothing drawn under wrong numbers (short {short})"
+            );
+            assert!(state.needs_recollect);
+            assert_eq!((state.num_rows, state.num_rows_valid), (N, true));
+        }
     }
 
     #[test]

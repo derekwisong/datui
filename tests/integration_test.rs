@@ -1030,6 +1030,8 @@ fn test_stale_background_events_are_ignored() {
             reads: None,
             examples: vec![],
             unsampled_segments: vec![],
+            intent: None,
+            source: None,
         },
         kept: None,
         plan: Box::default(),
@@ -4369,7 +4371,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     );
     // An edit waits for Enter; Esc puts back the plan the result was measured with.
     key(&mut app, KeyCode::Char('e'));
-    for _ in 0..4 {
+    for _ in 0..5 {
         key(&mut app, KeyCode::Down);
     }
     assert_eq!(

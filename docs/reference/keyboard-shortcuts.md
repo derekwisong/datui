@@ -205,13 +205,15 @@ In Data Quality Setup:
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values, Latency over or Window by in place; on another row, <kbd>→</kbd> opens it |
-| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles, Intervals or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
+| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles, Intervals, Column intent or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> | Run, from any row: the one key in Setup that reads. A full scan asks first; while a cancelled read finishes, Run waits and Setup says why |
 | <kbd>Esc</kbd> | Discard every staged change and go back to the report, or to the tool list before the first run |
 | In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date, time or text column there is nothing to assign, and the row says so |
 | In the Intervals editor | <kbd>↑</kbd> <kbd>↓</kbd> pick a start and end, <kbd>Space</kbd> (or <kbd>←</kbd> <kbd>→</kbd>) measure it or not, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. Needs two assigned roles |
+| In the Column intent editor | <kbd>↑</kbd> <kbd>↓</kbd> pick a column, <kbd>Space</kbd> (or <kbd>→</kbd>) open its form, <kbd>Enter</kbd> done, <kbd>Esc</kbd> put back the intent as it was |
+| In a column's intent form | <kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> move between rows, <kbd>Space</kbd> ticks Key or Required, <kbd>←</kbd> <kbd>→</kbd> change Read as, typing fills Allowed, Minimum and Maximum, <kbd>Enter</kbd> applies, <kbd>Esc</kbd> drops the edit |
 | In the Expected editor | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> move between Windows, From and Before; <kbd>←</kbd> <kbd>→</kbd> (or <kbd>Space</kbd>) choose the windows; typing fills From and Before; <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. Needs a time-window grain |
 
 In the Data Quality report:
@@ -238,6 +240,7 @@ In the Data Quality report:
 | <kbd>g</kbd> | In Trends, list the expected windows with no rows; offered once Setup states Expected |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | On a sampled report, run again with a new seed, for every tool |
+| <kbd>x</kbd> | Export the report on screen to JSON or Markdown: <kbd>Tab</kbd> moves between the path and the format, <kbd>←</kbd> <kbd>→</kbd> change the format, <kbd>Enter</kbd> writes (asking first over a file that exists), <kbd>Esc</kbd> cancels. Nothing is read |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
 | <kbd>Esc</kbd> | Back out one layer: a popup, a column's, a segment's, a bar's or an interval's detail and the gaps back to their list, an evidence drill back to the finding or count it came from, a narrowed Overview back to every finding, then Analysis itself. While a run reads, cancel it |
 

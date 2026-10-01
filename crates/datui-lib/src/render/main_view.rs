@@ -348,6 +348,14 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Cancel"),
         ];
     }
+    if let Some(form) = modal.data_quality_export.as_ref() {
+        let mut keys = vec![("Enter", "Export"), ("Tab", "Next")];
+        if form.on_format {
+            keys.push((g.updown_lr, "Format"));
+        }
+        keys.push(("Esc", "Cancel"));
+        return keys;
+    }
     if modal.data_quality_page == QualityPage::ExpectedWindows {
         let mut keys = vec![("Enter", "Done")];
         if modal
@@ -359,6 +367,27 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         }
         keys.extend([(g.updown, "Field"), ("Esc", "Cancel")]);
         return keys;
+    }
+    // The intent form over the list owns the keys: the rows, and what the focused
+    // one takes.
+    if let Some(form) = modal.data_quality_intent_form.as_ref() {
+        use crate::intent_modal::IntentField;
+        let mut keys = vec![("Enter", "Apply"), ("Tab", "Next")];
+        match form.field {
+            IntentField::Key | IntentField::Required => keys.push(("Space", "Toggle")),
+            IntentField::ReadAs if form.time.is_none() => keys.push((g.updown_lr, "Reading")),
+            _ => {}
+        }
+        keys.push(("Esc", "Cancel"));
+        return keys;
+    }
+    if modal.data_quality_page == QualityPage::Intent {
+        return vec![
+            ("Space", "Declare"),
+            ("Enter", "Done"),
+            (g.updown, "Column"),
+            ("Esc", "Cancel"),
+        ];
     }
     if modal.data_quality_page == QualityPage::IntervalPairs {
         let mut keys = Vec::new();
@@ -460,6 +489,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         (g.updown_lr, "Page"),
         ("v", "View Rows"),
     ]);
+    if results.is_some() {
+        keys.push(("x", "Export"));
+    }
     keys.extend(own);
     keys.extend([("Tab", "Focus"), ("?", "Help")]);
     keys
@@ -527,6 +559,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
             keys.push(("Space", "Expected"));
         }
         SetupRow::Expected => {}
+        SetupRow::Intent => keys.push(("Space", "Intent")),
         SetupRow::Latency if !choices => {}
         SetupRow::WindowBy if !modal.data_quality_plan.windows_intervals() => {}
         SetupRow::Grain

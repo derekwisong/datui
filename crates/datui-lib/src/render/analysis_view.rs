@@ -229,6 +229,8 @@ fn render_body(
                 focus: modal.focus,
                 theme: &app.theme,
                 ctx,
+                intent_form: modal.data_quality_intent_form.as_ref(),
+                export_form: modal.data_quality_export.as_ref(),
             };
             Clear.render(area, buf);
             data_quality::render(

@@ -75,6 +75,7 @@ pub mod gcloud;
 pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
+pub mod intent_modal;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
@@ -82,6 +83,8 @@ pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
+pub mod quality_export;
+pub mod quality_intent;
 pub mod quality_report;
 pub mod quality_trends;
 #[cfg(feature = "cloud")]
@@ -532,6 +535,7 @@ mod quality_memory_tests {
                 view_generation,
                 sample: plan(seed).sample(),
                 rows: std::sync::Arc::new(rows.unwrap()),
+                source: crate::quality_export::SourceIdentity::default(),
             };
             (results, kept)
         };
@@ -7152,6 +7156,15 @@ pub enum AppEvent {
     /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
     /// whether it is still wanted.
     BackgroundChartReady,
+    /// Write the Data Quality report on screen to a file, in a form. From the
+    /// results in memory: nothing is read.
+    QualityReportExport(PathBuf, crate::quality_export::ReportFormat),
+    /// Background task completed: the Data Quality report written to disk.
+    BackgroundQualityReportWritten {
+        generation: u64,
+        path: PathBuf,
+        result: Result<(), String>,
+    },
     /// Background task completed: chart written to disk.
     BackgroundChartExportWritten {
         generation: u64,
@@ -8434,6 +8447,10 @@ pub struct KeptQualitySample {
     view_generation: u64,
     sample: sampling::Sample,
     rows: std::sync::Arc<data_quality::QualitySample>,
+    /// The source as the run that read these rows found it, stated when it began: a
+    /// report measured on them later is labeled with this, not with the file as it
+    /// stands then.
+    source: crate::quality_export::SourceIdentity,
 }
 
 impl KeptQualitySample {
@@ -8625,6 +8642,8 @@ pub struct App {
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
     pending_chart_export: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
+    /// A Data Quality report export waiting on the overwrite confirmation.
+    pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
     /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation.
     /// Size is from HEAD when available.
     ///
@@ -9126,6 +9145,188 @@ impl App {
         columns
     }
 
+    /// The columns Column intent lists: the draft's scope's, from the schema.
+    pub(crate) fn quality_intent_columns(&self) -> Vec<(String, polars::prelude::DataType)> {
+        self.data_table_state
+            .as_ref()
+            .map(|state| {
+                crate::widgets::quality_intent::intent_columns(
+                    state.quality_schema(&self.analysis_modal.data_quality_plan.scope),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// Open the intent form on the column under the cursor of the Column intent list.
+    fn open_intent_form(&mut self) {
+        let columns = self.quality_intent_columns();
+        let modal = &mut self.analysis_modal;
+        let Some((column, dtype)) = columns.get(modal.data_quality_plan_field) else {
+            return;
+        };
+        let plan = &modal.data_quality_plan;
+        modal.data_quality_intent_form = Some(intent_modal::IntentForm::new(
+            column,
+            dtype.clone(),
+            plan.time_format(column).cloned(),
+            &plan.intent,
+            &self.theme,
+        ));
+    }
+
+    /// Keys while the intent form is open: Tab and ↑↓ walk its rows, Space and ←→
+    /// change a choice, text fields type, Enter stages the declaration in Setup's
+    /// draft and Esc drops the form's edits. Nothing here reads.
+    fn intent_form_key(&mut self, event: &KeyEvent) {
+        let modal = &mut self.analysis_modal;
+        let Some(form) = modal.data_quality_intent_form.as_mut() else {
+            return;
+        };
+        let typing = form.typing();
+        match event.code {
+            KeyCode::Esc => modal.data_quality_intent_form = None,
+            KeyCode::Enter => match form.apply(&mut modal.data_quality_plan.intent) {
+                Ok(()) => modal.data_quality_intent_form = None,
+                Err(error) => form.error = Some(error),
+            },
+            KeyCode::Tab | KeyCode::Down => form.move_field(true),
+            KeyCode::BackTab | KeyCode::Up => form.move_field(false),
+            KeyCode::Char('j') if !typing => form.move_field(true),
+            KeyCode::Char('k') if !typing => form.move_field(false),
+            KeyCode::Char(' ') if !typing => form.adjust(true),
+            KeyCode::Left | KeyCode::Char('h') if !typing => form.adjust(false),
+            KeyCode::Right | KeyCode::Char('l') if !typing => form.adjust(true),
+            _ if typing => {
+                if let Some(input) = form.input_mut() {
+                    let _ = input.handle_key(event, None);
+                }
+                form.error = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// What a Data Quality run reads from, as far as the app knows without reading:
+    /// where it was opened from, its files, and what the view does to the rows when
+    /// the scope is the view.
+    fn quality_source_identity(
+        &self,
+        state: &DataTableState,
+        scope: &data_quality::QualityScope,
+    ) -> crate::quality_export::SourceIdentity {
+        let format = self
+            .original_file_format
+            .map(|format| format.as_str().to_string())
+            .or_else(|| {
+                self.path
+                    .as_ref()
+                    .and_then(|path| path.extension())
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_string)
+            });
+        let mut view = Vec::new();
+        if !scope.uses_source() {
+            if !state.get_active_query().is_empty() {
+                view.push(format!("query: {}", state.get_active_query()));
+            }
+            if !state.get_active_sql_query().is_empty() {
+                view.push(format!("SQL: {}", state.get_active_sql_query()));
+            }
+            if !state.get_active_fuzzy_query().is_empty() {
+                view.push(format!("search: {}", state.get_active_fuzzy_query()));
+            }
+            for (index, filter) in state.view_filters().iter().enumerate() {
+                let join = if index == 0 {
+                    String::new()
+                } else {
+                    format!("{} ", filter.logical_op.as_str())
+                };
+                view.push(format!(
+                    "filter: {join}{} {} {}",
+                    filter.column,
+                    filter.operator.as_str(),
+                    filter.value
+                ));
+            }
+            if state.reshape_source().is_some() {
+                view.push("reshaped: pivot or melt".to_string());
+            }
+        }
+        let remote = state.is_remote_source();
+        // A local path made whole, so the report names the file wherever it is read;
+        // no file system access.
+        let location = self.path.as_ref().map(|path| {
+            match std::path::absolute(path).ok().filter(|_| !remote) {
+                Some(path) => path.display().to_string(),
+                None => path.display().to_string(),
+            }
+        });
+        crate::quality_export::SourceIdentity {
+            location,
+            remote,
+            format,
+            view,
+            ..crate::quality_export::SourceIdentity::default()
+        }
+        .with_files(state.quality_source_file_names())
+    }
+
+    /// The export dialog, on a name made from the dataset's.
+    fn open_quality_export(&mut self) {
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("data")
+            .to_string();
+        self.analysis_modal.data_quality_export =
+            Some(crate::quality_export::ExportForm::new(&stem, &self.theme));
+    }
+
+    /// Keys while the export dialog is open: Tab moves between the path and the
+    /// form, the arrows or Space change the form, Enter writes (asking first over a
+    /// file that exists), Esc closes it.
+    fn quality_export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let form = self.analysis_modal.data_quality_export.as_mut()?;
+        match event.code {
+            KeyCode::Esc => self.analysis_modal.data_quality_export = None,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => form.toggle_focus(),
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char(' ')
+            | KeyCode::Char('h')
+            | KeyCode::Char('l')
+                if form.on_format =>
+            {
+                form.cycle_format();
+            }
+            KeyCode::Enter => match form.target() {
+                Err(error) => form.error = Some(error),
+                Ok((path, format)) => {
+                    if path.exists() {
+                        let shown = path.display().to_string();
+                        self.pending_quality_export = Some((path, format));
+                        self.confirmation_modal.show_destructive(
+                            format!("File already exists:\n{shown}\n\nOverwrite it?"),
+                            "Overwrite",
+                        );
+                    } else {
+                        self.analysis_modal.data_quality_export = None;
+                        return Some(AppEvent::QualityReportExport(path, format));
+                    }
+                }
+            },
+            _ if !form.on_format => {
+                let _ = form.path.handle_key(event, None);
+                form.error = None;
+            }
+            _ => {}
+        }
+        None
+    }
+
     /// Space on a Setup row: the Sample form, the role editor, or the row's choices.
     fn open_setup_row(&mut self) -> Option<AppEvent> {
         use analysis_modal::SetupRow;
@@ -9139,6 +9340,15 @@ impl App {
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal
                         .set_quality_page(data_quality::QualityPage::TimeRoles);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            SetupRow::Intent => {
+                if !self.quality_intent_columns().is_empty() {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::Intent);
                     self.analysis_modal.data_quality_plan_field = 0;
                 }
             }
@@ -9431,15 +9641,17 @@ impl App {
         &self,
         sample: &sampling::Sample,
     ) -> Option<std::sync::Arc<data_quality::QualitySample>> {
-        let view_generation = self.data_table_state.as_ref()?.len_generation();
-        self.quality_samples
-            .iter()
-            .find(|kept| {
-                kept.dataset_generation == self.dataset_generation
-                    && kept.view_generation == view_generation
-                    && &kept.sample == sample
-            })
+        self.kept_quality_entry(sample)
             .map(|kept| kept.rows.clone())
+    }
+
+    fn kept_quality_entry(&self, sample: &sampling::Sample) -> Option<&KeptQualitySample> {
+        let view_generation = self.data_table_state.as_ref()?.len_generation();
+        self.quality_samples.iter().find(|kept| {
+            kept.dataset_generation == self.dataset_generation
+                && kept.view_generation == view_generation
+                && &kept.sample == sample
+        })
     }
 
     /// Keep what a run read, newest first, in place of any earlier copy of the same
@@ -10488,6 +10700,8 @@ impl App {
             InputMode::Normal => {
                 self.analysis_modal.sample_scope_typing()
                     || self.analysis_modal.quality_expected_typing()
+                    || self.analysis_modal.intent_typing()
+                    || self.analysis_modal.export_typing()
                     || (self.template_modal.active
                         && self.template_modal.mode != TemplateModalMode::List
                         && matches!(
@@ -11593,6 +11807,7 @@ impl App {
             pending_export: None,
             export_df: None,
             pending_chart_export: None,
+            pending_quality_export: None,
             #[cfg(any(feature = "http", feature = "cloud"))]
             pending_download: None,
             show_help: false,
@@ -16092,6 +16307,11 @@ impl App {
                             self.home.status = None;
                             return None;
                         }
+                        if let Some((path, format)) = self.pending_quality_export.take() {
+                            self.confirmation_modal.hide();
+                            self.analysis_modal.data_quality_export = None;
+                            return Some(AppEvent::QualityReportExport(path, format));
+                        }
                         // User confirmed overwrite: chart export first, then dataframe export
                         if let Some((path, format, title, width, height)) =
                             self.pending_chart_export.take()
@@ -16153,6 +16373,8 @@ impl App {
                         if self.pending_chart_export.take().is_some() {
                             self.chart_export_modal.resume();
                         }
+                        // The report's dialog stays open behind the question.
+                        self.pending_quality_export = None;
                         if self.pending_export.take().is_some() {
                             self.export_modal.resume();
                             self.input_mode = InputMode::Export;
@@ -16177,6 +16399,7 @@ impl App {
                     if self.pending_chart_export.take().is_some() {
                         self.chart_export_modal.resume();
                     }
+                    self.pending_quality_export = None;
                     if self.pending_export.take().is_some() {
                         self.export_modal.resume();
                         self.input_mode = InputMode::Export;
@@ -17465,6 +17688,70 @@ impl App {
                     }
                     return None;
                 }
+                // The export dialog owns every key while it is open, `?` included
+                // when the path types.
+                if self.analysis_modal.data_quality_export.is_some()
+                    && (event.code != KeyCode::Char('?') || self.analysis_modal.export_typing())
+                {
+                    return self.quality_export_key(event);
+                }
+                // The intent form owns every key while it is open, `?` included
+                // when it types.
+                if self.analysis_modal.data_quality_intent_form.is_some()
+                    && (event.code != KeyCode::Char('?') || self.analysis_modal.intent_typing())
+                {
+                    self.intent_form_key(event);
+                    return None;
+                }
+                // The intent list owns the keys: which column, and its form.
+                if self.analysis_modal.data_quality_page == QualityPage::Intent
+                    && event.code != KeyCode::Char('?')
+                {
+                    let columns = self.quality_intent_columns().len();
+                    let field = self
+                        .analysis_modal
+                        .data_quality_plan_field
+                        .min(columns.saturating_sub(1));
+                    match event.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            if event.code == KeyCode::Esc
+                                && let Some(plan) =
+                                    self.analysis_modal.data_quality_plan_before_edit.take()
+                            {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.analysis_modal.data_quality_setup_note = None;
+                            self.analysis_modal.set_quality_page(QualityPage::Setup);
+                            self.analysis_modal.data_quality_plan_field =
+                                analysis_modal::SetupRow::Intent.index();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 1).min(columns.saturating_sub(1));
+                        }
+                        KeyCode::PageUp => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 10).min(columns.saturating_sub(1));
+                        }
+                        KeyCode::Home => self.analysis_modal.data_quality_plan_field = 0,
+                        KeyCode::End => {
+                            self.analysis_modal.data_quality_plan_field = columns.saturating_sub(1);
+                        }
+                        KeyCode::Char(' ') | KeyCode::Right | KeyCode::Char('l') => {
+                            self.analysis_modal.data_quality_plan_field = field;
+                            self.open_intent_form();
+                        }
+                        _ => {}
+                    }
+                    return None;
+                }
                 // The role editor owns the keys: the role, and its column.
                 if self.analysis_modal.data_quality_page == QualityPage::TimeRoles
                     && event.code != KeyCode::Char('?')
@@ -17827,6 +18114,15 @@ impl App {
                             && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                     {
                         self.analysis_modal.clear_findings_narrowing();
+                        return None;
+                    }
+                    // Write the report on screen to a file: what was measured, never a
+                    // draft, and nothing read to do it.
+                    KeyCode::Char('x')
+                        if !self.analysis_modal.data_quality_page.is_setup()
+                            && self.analysis_modal.data_quality_results.is_some() =>
+                    {
+                        self.open_quality_export();
                         return None;
                     }
                     // Another sample, run at once: a new seed for every tool. On a sampled
@@ -20464,7 +20760,14 @@ impl App {
                     let streaming = state.polars_streaming;
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
-                    let kept = self.kept_quality_sample(&plan.sample());
+                    let kept_entry = self.kept_quality_entry(&plan.sample());
+                    let kept = kept_entry.map(|kept| kept.rows.clone());
+                    // A sampled run on rows already read is labeled as their read was:
+                    // the file may have changed since, and these rows did not.
+                    let kept_source = kept_entry
+                        .filter(|_| plan.compute == data_quality::QualityCompute::Sample)
+                        .map(|kept| kept.source.clone());
+                    let mut identity = self.quality_source_identity(state, &plan.scope);
                     // Only a confirmed full scan pays to read the values a type
                     // conflict hides, and only its access plan promised the read.
                     let mut source = source;
@@ -20485,6 +20788,11 @@ impl App {
                     }
                     self.quality_watch = Some(watch.clone());
                     self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
+                        // A stat of a local file as the run begins, not a read.
+                        match kept_source {
+                            Some(source) => identity = source,
+                            None => identity.stat(),
+                        }
                         let lf = if source_scope {
                             match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
                                 Ok(lf) => lf,
@@ -20527,9 +20835,11 @@ impl App {
                             view_generation,
                             sample: plan.sample(),
                             rows: std::sync::Arc::new(rows),
+                            source: identity.clone(),
                         });
                         match results {
-                            Ok(results) => {
+                            Ok(mut results) => {
+                                results.source = Some(Box::new(identity));
                                 let _ = tx.send(AppEvent::BackgroundDataQualityReady {
                                     generation: task_gen,
                                     results,
@@ -21476,6 +21786,40 @@ impl App {
                     self.busy = false;
                     None
                 }
+            }
+            AppEvent::QualityReportExport(path, format) => {
+                // The report on screen and the plan it was measured with, cloned into
+                // the writer: the file is built from memory and nothing is read.
+                let results = self.analysis_modal.data_quality_results.clone()?;
+                let plan = self.analysis_modal.quality_result_plan().clone();
+                let (path, format) = (path.clone(), *format);
+                self.spawn_bg("Writing the report...", move |generation, tx| {
+                    let result = crate::quality_export::write(&path, &results, &plan, format)
+                        .map_err(|error| {
+                            crate::error_display::user_message_from_report(&error, Some(&path))
+                        });
+                    let _ = tx.send(AppEvent::BackgroundQualityReportWritten {
+                        generation,
+                        path,
+                        result,
+                    });
+                });
+                None
+            }
+            AppEvent::BackgroundQualityReportWritten {
+                generation,
+                path,
+                result,
+            } => {
+                if *generation == self.task_generation {
+                    self.busy = false;
+                    self.status_message = None;
+                    match result {
+                        Ok(()) => self.flash_note(format!("Report written to {}", path.display())),
+                        Err(error) => self.error_modal.show(error.clone()),
+                    }
+                }
+                None
             }
             AppEvent::ChartExport(path, format, title, width, height) => {
                 self.busy = true;

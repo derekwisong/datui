@@ -5,8 +5,9 @@ Nothing in Setup reads the data; only Run does.
 
 Setup:
   Rows & sample:  The sample every tool reads
-  Columns:        Text read as time, time roles, and
-                  the intervals between them
+  Columns:        Text read as time, time roles, the
+                  intervals between them, and what
+                  each column must hold
   Study:          Grain, expected windows, comparison,
                   values, latency threshold, and the
                   window intervals go in
@@ -16,7 +17,7 @@ Setup:
   ← / →:        Change a short list's choice
   Space:        Open the row: the Sample form, a
                 list (type to narrow), Time roles,
-                Intervals or Expected
+                Intervals, Column intent or Expected
   s:            The Sample form; its Enter applies
                 to Setup and returns there
   p:            The access plan: what a run reads
@@ -61,6 +62,29 @@ Intervals in Setup:
   Enter:        Done
   Esc:          Put back the pairs as they were
 
+Column intent:
+  What a column must hold, declared: part of the
+  key, required, read as a whole number or decimal,
+  one of a set of values, or within a range. Run
+  counts what breaks each rule as a problem, from
+  the rows it reads; on a full scan the key is one
+  more pass. On a sample a key finds repeats among
+  the sampled rows only. Nothing here reads.
+
+  ↑ / ↓:        Choose the column
+  Space:        Declare its intent in a form
+  Enter:        Done
+  Esc:          Put back the intent as it was
+
+  In the form, Tab or ↑ / ↓ move between rows, Space
+  ticks Key or Required, ← / → change Read as,
+  Enter applies and Esc drops the edit. Allowed
+  values are separated by commas and match exactly,
+  case and spaces included; quote one that holds a
+  comma: "a, b". A range bound is a number, a date,
+  or a date and time, and counts as in range; a
+  date alone as a time's maximum takes its day.
+
 Expected in Setup:
   With a time-window grain: which windows rows
   belong in, every one or weekdays only, From and
@@ -102,6 +126,8 @@ Keys on the report:
   p:            Show the access plan: what a run reads
   r:            On a sample, run again with a new
                 seed
+  x:            Export the report to JSON or
+                Markdown; nothing is read
   Tab:          Move between the result and the tools
   Esc:          Back one level: all findings again,
                 then close

@@ -15627,10 +15627,13 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
         temp_dir: Some(dir.path().to_path_buf()),
         ..OpenOptions::default()
     };
+    // Sizes from the files, not their directory entries: Windows updates an entry's
+    // size only when the writer closes the file. One gone since the listing is gone.
     let files = || {
         std::fs::read_dir(dir.path())
             .unwrap()
-            .map(|f| f.unwrap().metadata().unwrap().len())
+            .filter_map(|f| std::fs::metadata(f.unwrap().path()).ok())
+            .map(|m| m.len())
             .collect::<Vec<_>>()
     };
 

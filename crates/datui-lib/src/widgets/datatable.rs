@@ -2437,7 +2437,7 @@ impl DataTableState {
     }
 
     /// Build a LazyFrame for hive-partitioned Parquet only (no schema collection, no partition discovery).
-    /// Use this for phased loading so "Scanning input" is instant; schema and partition handling happen in DoLoadSchema.
+    /// Use this for phased loading so "Scanning input" is instant; schema and partition handling are the schema phase's.
     pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');

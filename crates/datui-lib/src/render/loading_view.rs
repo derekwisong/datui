@@ -9,7 +9,8 @@
 //! input", "Caching schema", "Loading buffer"), unlike the percentage beside it in
 //! the control bar, which is a constant per phase.
 
-use crate::LoadingState;
+use std::path::Path;
+
 use crate::glyphs;
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
@@ -24,15 +25,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
         return;
     }
 
-    let (phase, path, size) = match &app.loading_state {
-        LoadingState::Loading {
-            current_phase,
-            file_path,
-            file_size,
-            ..
-        } => (current_phase.as_str(), file_path.clone(), *file_size),
-        // A load with no phase of its own yet — the frame between the keypress and
-        // the event that carries it out.
+    let (phase, path, size) = match app.load_shown() {
+        Some((phase, _, path, size)) => (phase, path.map(Path::to_path_buf), size),
         _ => ("Loading", None, 0),
     };
     // A directory of many files reads a footer from each before a row is shown, and on a
@@ -165,12 +159,12 @@ mod tests {
     fn the_footer_count_replaces_the_phase_while_it_is_running() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, test_runtime());
-        app.loading_state = LoadingState::Loading {
-            file_path: Some(std::path::PathBuf::from("/tmp/blocks")),
-            file_size: 2048,
-            current_phase: "Caching schema".to_string(),
-            progress_percent: 40,
-        };
+        app.loading_for_tests(
+            Some(std::path::PathBuf::from("/tmp/blocks")),
+            2048,
+            "Caching schema",
+            40,
+        );
         let area = Rect::new(0, 0, 60, 20);
         let painted = |app: &crate::App| {
             let mut buf = Buffer::empty(area);
@@ -183,9 +177,9 @@ mod tests {
             "the phase, while nothing is being counted"
         );
 
-        app.footer_progress.begin(6541);
+        app.footer_progress().begin(6541);
         for _ in 0..1203 {
-            app.footer_progress.advance();
+            app.footer_progress().advance();
         }
         // The count is taken once a frame rather than where it is shown; these tests
         // paint the body alone, so they do for themselves what a whole frame does
@@ -205,7 +199,7 @@ mod tests {
         // A new frame, because the count a frame shows is the one it started with: a
         // pass that lands halfway down the screen does not change what the bottom of
         // it says.
-        app.footer_progress.done();
+        app.footer_progress().done();
         app.begin_frame();
         assert!(
             painted(&app).contains("Caching schema"),
@@ -223,15 +217,15 @@ mod tests {
     fn the_footer_count_is_cut_with_a_mark_rather_than_by_the_edge() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, test_runtime());
-        app.loading_state = LoadingState::Loading {
-            file_path: Some(std::path::PathBuf::from("/tmp/blocks")),
-            file_size: 2048,
-            current_phase: "Caching schema".to_string(),
-            progress_percent: 40,
-        };
-        app.footer_progress.begin(6541);
+        app.loading_for_tests(
+            Some(std::path::PathBuf::from("/tmp/blocks")),
+            2048,
+            "Caching schema",
+            40,
+        );
+        app.footer_progress().begin(6541);
         for _ in 0..1203 {
-            app.footer_progress.advance();
+            app.footer_progress().advance();
         }
         app.begin_frame();
 
@@ -284,12 +278,12 @@ mod tests {
     fn the_phase_and_the_file_are_both_on_screen() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, test_runtime());
-        app.loading_state = LoadingState::Loading {
-            file_path: Some(std::path::PathBuf::from("/tmp/quarterly.parquet")),
-            file_size: 2048,
-            current_phase: "Caching schema".to_string(),
-            progress_percent: 40,
-        };
+        app.loading_for_tests(
+            Some(std::path::PathBuf::from("/tmp/quarterly.parquet")),
+            2048,
+            "Caching schema",
+            40,
+        );
 
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);

@@ -260,6 +260,48 @@ fn an_abandoned_download_stops_and_leaves_no_file() {
     wait_for_files(quit.path(), 0);
 }
 
+/// Opening something else while a download runs stops it and removes its file, as
+/// going home does; the other dataset opens, with no error for the open it replaced.
+#[test]
+fn an_open_replacing_a_download_stops_it_and_leaves_no_file() {
+    let s3 = serve(csv(1_000));
+    s3.slow_gets(5_000);
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    open_and_confirm(&mut app, &rx, dir.path());
+    wait_for_files(dir.path(), 1);
+
+    let local = tempfile::tempdir().unwrap();
+    let other = local.path().join("other.csv");
+    std::fs::write(&other, "a,b\n1,2\n").unwrap();
+    let began = Instant::now();
+    chain(
+        &mut app,
+        AppEvent::Open(vec![other.clone()], OpenOptions::default()),
+    );
+    wait_for_files(dir.path(), 0);
+    assert!(
+        began.elapsed() < Duration::from_secs(4),
+        "stopped before the store answered, after {:?}",
+        began.elapsed()
+    );
+    // The stopped worker's failure arrives for an open nobody is waiting on.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while app.background_work_in_flight() || app.is_busy() {
+        assert!(
+            Instant::now() < deadline,
+            "the stopped download never ended"
+        );
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
+            chain(&mut app, event);
+        }
+    }
+    settle(&mut app, &rx);
+    assert_eq!(app.error_message(), None);
+    assert_eq!(app.open_path(), Some(other.as_path()));
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1);
+}
+
 /// A finished download whose answer is discarded, or never delivered, takes its file
 /// with it.
 #[test]

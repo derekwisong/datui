@@ -50,8 +50,9 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use polars::prelude::{DataFrame, LazyFrame};
+use polars::prelude::DataFrame;
 
+use crate::loading::{LoadAnswer, LoadId};
 use crate::{AppEvent, OpenOptions, logging};
 
 /// Which kind of operation a [`Ticket`] names.
@@ -101,14 +102,15 @@ impl Ticket {
 /// ends; the record they sit in is its only marker.
 #[derive(Debug, Clone)]
 pub(crate) enum Job {
-    /// A phase of an open before its first rows: the size probe, a download, the scan,
-    /// a decompression, the schema.
-    Load,
+    /// A phase of the open it names, before its first rows: the size probe, a
+    /// download, the scan, a decompression, the schema. Its answer is the open's to
+    /// judge ([`crate::loading::Loader`]), not the generation's.
+    Load(LoadId),
     /// Whether the paths named on the command line are there, and which is a
-    /// directory.
-    OpenNamed,
-    /// The look at a directory named on the command line, before it is opened.
-    LookAtDirectory(PathBuf),
+    /// directory: the first phase of the open it names.
+    OpenNamed(LoadId),
+    /// The look at a directory named on the command line, before `load` opens it.
+    LookAtDirectory { load: LoadId, path: PathBuf },
     /// A look at a path chosen on the home screen.
     Classify(Classify),
     /// The table's rows: a page the table waits on, or a load-ahead.
@@ -176,9 +178,9 @@ pub(crate) struct AnalysisRun {
 impl Job {
     pub(crate) fn kind(&self) -> JobKind {
         match self {
-            Job::Load => JobKind::Load,
-            Job::OpenNamed => JobKind::OpenNamed,
-            Job::LookAtDirectory(_) => JobKind::LookAtDirectory,
+            Job::Load(_) => JobKind::Load,
+            Job::OpenNamed(_) => JobKind::OpenNamed,
+            Job::LookAtDirectory { .. } => JobKind::LookAtDirectory,
             Job::Classify(_) => JobKind::Classify,
             Job::Rows(_) | Job::OwedRows { .. } => JobKind::Rows,
             Job::Analysis(_) => JobKind::Analysis,
@@ -192,6 +194,16 @@ impl Job {
             Job::QualityReport => JobKind::QualityReport,
             Job::FileFacts { .. } => JobKind::FileFacts,
             Job::ChartExport { .. } => JobKind::ChartExport,
+        }
+    }
+
+    /// The open this job is a phase of, if it is one.
+    pub(crate) fn load(&self) -> Option<LoadId> {
+        match self {
+            Job::Load(load) | Job::OpenNamed(load) | Job::LookAtDirectory { load, .. } => {
+                Some(*load)
+            }
+            _ => None,
         }
     }
 
@@ -214,8 +226,8 @@ impl Job {
             self,
             Job::Rows(_)
                 | Job::OwedRows { .. }
-                | Job::OpenNamed
-                | Job::LookAtDirectory(_)
+                | Job::OpenNamed(_)
+                | Job::LookAtDirectory { .. }
                 | Job::FileFacts { .. }
         )
     }
@@ -233,29 +245,9 @@ impl Job {
 
 /// What a job's worker sends back when it succeeds. Each belongs to one [`Job`].
 pub(crate) enum Answer {
-    /// [`Job::Load`]: the scan's frame.
-    Scanned {
-        lf: LazyFrame,
-        path: Option<PathBuf>,
-        options: Box<OpenOptions>,
-    },
-    /// [`Job::Load`]: the dataset, its schema read.
-    SchemaRead {
-        state: Box<crate::widgets::datatable::DataTableState>,
-        path: Option<PathBuf>,
-        options: Box<OpenOptions>,
-        debug_label: Option<String>,
-    },
-    /// [`Job::Load`]: the remote file's size, to put the download to the user.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    RemoteSize(Box<crate::PendingDownload>),
-    /// [`Job::Load`]: the remote file, downloaded. Dropped unhandled, it removes the
+    /// [`Job::Load`]: what the phase found. Dropped unhandled, a download removes its
     /// file.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    Downloaded {
-        download: crate::download::TempDownload,
-        options: Box<OpenOptions>,
-    },
+    Load(Box<LoadAnswer>),
     /// [`Job::OpenNamed`]: the paths are there; `directory` is one to look at first.
     NamedPaths {
         paths: Vec<PathBuf>,
@@ -1269,8 +1261,10 @@ mod tests {
     fn replaceable_jobs_hold_no_lease() {
         let (mut jobs, _rx) = jobs();
         let rows = jobs.start(Job::Rows(crate::InflightCollect::for_tests(0, 100)), None);
-        let look = jobs.start(Job::LookAtDirectory(PathBuf::from("/data")), None);
-        let named = jobs.start(Job::OpenNamed, None);
+        let load = crate::loading::LoadId::for_tests(1);
+        let path = PathBuf::from("/data");
+        let look = jobs.start(Job::LookAtDirectory { load, path }, None);
+        let named = jobs.start(Job::OpenNamed(load), None);
         let facts = jobs.start(Job::FileFacts { dataset: 1 }, None);
         assert!(!jobs.would_strand());
         assert!(jobs.try_advance());

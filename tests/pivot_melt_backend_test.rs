@@ -32,7 +32,7 @@ fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: Path
     load_file_with(app, rx, path, OpenOptions::default());
 }
 
-/// TUI-like collect sequence before pivot: DoLoadBuffer → Collect → set visible_rows → collect.
+/// TUI-like collect sequence before pivot: the open's first rows → Collect → set visible_rows → collect.
 fn simulate_initial_tui_collects(app: &mut App, terminal_height: usize) {
     let state = match app.data_table_state.as_mut() {
         Some(s) => s,

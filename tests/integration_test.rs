@@ -720,13 +720,10 @@ fn test_open_s3_url_returns_crash_or_loads() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("s3://my-bucket/path/to/file.parquet");
-    let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-    let ev = next.expect("Open should emit DoLoadScanPaths");
-    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
-
     // The scan is spawned, so this returns nothing; the outcome comes over the channel.
     assert!(
-        app.event(&ev).is_none(),
+        app.event(&AppEvent::Open(vec![path], OpenOptions::default()))
+            .is_none(),
         "scan should be spawned, not run inline"
     );
 
@@ -752,40 +749,11 @@ fn test_open_http_url_attempts_load_or_returns_friendly_error() {
     let (tx, _) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("https://example.com/data.csv");
+    // The size is asked for, or the file scanned, on a worker: the open returns at once,
+    // waiting on it.
     let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-    let ev = next.expect("Open should emit DoLoadScanPaths");
-    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
-    let mut next = app.event(&ev);
-    while let Some(ref e) = next {
-        if matches!(
-            e,
-            AppEvent::Crash(_) | AppEvent::DoLoadSchema(..) | AppEvent::DoLoadSchemaBlocking(..)
-        ) {
-            break;
-        }
-        next = app.event(e);
-    }
-    match next.as_ref() {
-        Some(AppEvent::Crash(m)) => {
-            assert!(
-                m.contains("HTTP")
-                    || m.contains("HTTPS")
-                    || m.contains("download")
-                    || m.contains("Failed")
-                    || m.contains("failed")
-                    || m.contains("not yet supported"),
-                "error should mention HTTP/download/failure: {}",
-                m
-            );
-        }
-        Some(AppEvent::DoLoadSchema(..)) | Some(AppEvent::DoLoadSchemaBlocking(..)) => {
-            // With http feature: download can succeed; schema load is the next phase.
-        }
-        None => {
-            // DoLoadScanPaths shows download confirmation modal and returns None; app is waiting for user.
-        }
-        _ => panic!("expected Crash, DoLoadSchema, or None (confirmation) when opening HTTP URL"),
-    }
+    assert!(next.is_none(), "nothing is read on the event thread");
+    assert!(app.is_busy(), "the open is under way");
 }
 
 #[test]
@@ -797,9 +765,6 @@ fn test_multiple_remote_paths_returns_error() {
         PathBuf::from("s3://bucket/b.parquet"),
     ];
     let next = app.event(&AppEvent::Open(paths, OpenOptions::default()));
-    let ev = next.expect("Open should emit DoLoadScanPaths");
-    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
-    let next = app.event(&ev);
     match next.as_ref() {
         Some(AppEvent::Crash(m)) => assert!(
             m.contains("one S3") || m.contains("one at a time"),
@@ -815,8 +780,6 @@ fn test_multiple_remote_paths_returns_error() {
         PathBuf::from("https://example.com/b.csv"),
     ];
     let next = app.event(&AppEvent::Open(paths, OpenOptions::default()));
-    let ev = next.expect("Open should emit DoLoadScanPaths");
-    let next = app.event(&ev);
     match next.as_ref() {
         Some(AppEvent::Crash(m)) => assert!(
             m.contains("one") && (m.contains("HTTP") || m.contains("URL")),
@@ -832,12 +795,9 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("gs://my-bucket/path/file.parquet");
-    let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-    let ev = next.expect("Open should emit DoLoadScanPaths");
-    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
-
     assert!(
-        app.event(&ev).is_none(),
+        app.event(&AppEvent::Open(vec![path], OpenOptions::default()))
+            .is_none(),
         "scan should be spawned, not run inline"
     );
 
@@ -6760,17 +6720,17 @@ fn test_opening_a_directory_reports_its_footers_to_the_app() {
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
 
     assert_eq!(
-        app.footer_progress.last_pass().begun,
+        app.footer_progress().last_pass().begun,
         1,
         "the open ran its footer pass against the app's own counter"
     );
     assert_eq!(
-        app.footer_progress.last_pass().read,
+        app.footer_progress().last_pass().read,
         3,
         "and counted each of the three footers off it"
     );
     assert_eq!(
-        app.footer_progress.reading(),
+        app.footer_progress().reading(),
         None,
         "with nothing left on screen once they landed"
     );
@@ -6796,7 +6756,7 @@ fn test_each_open_counts_its_own_footers() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(first.path());
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
-    let counter_of_the_first = app.footer_progress.clone();
+    let counter_of_the_first = app.footer_progress().clone();
     assert_eq!(counter_of_the_first.last_pass().read, 3);
 
     pump_open_until_loaded(
@@ -6815,11 +6775,11 @@ fn test_each_open_counts_its_own_footers() {
     // fresh one and the count below reads 1 either way — it says what the counter
     // should hold, and the line under it is what makes holding it mean anything.
     assert!(
-        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
+        !Arc::ptr_eq(&counter_of_the_first, app.footer_progress()),
         "the second open has a counter of its own"
     );
     assert_eq!(
-        app.footer_progress.last_pass().read,
+        app.footer_progress().last_pass().read,
         1,
         "counting its one footer, not the three before it"
     );
@@ -6869,9 +6829,9 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.set_loading_phase("Caching schema", 40);
-    app.footer_progress.begin(6541);
+    app.footer_progress().begin(6541);
     for _ in 0..1203 {
-        app.footer_progress.advance();
+        app.footer_progress().advance();
     }
 
     let area = Rect::new(0, 0, 100, 24);
@@ -6924,9 +6884,9 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         .as_mut()
         .expect("a dataset")
         .set_footers_pending(std::sync::Arc::new(|_| None));
-    app.footer_progress.begin(6541);
+    app.footer_progress().begin(6541);
     for _ in 0..1203 {
-        app.footer_progress.advance();
+        app.footer_progress().advance();
     }
 
     let area = Rect::new(0, 0, 100, 24);
@@ -6970,7 +6930,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         .set_footers_pending(std::sync::Arc::new(|_| None));
 
     // And stops saying it the moment they have.
-    app.footer_progress.done();
+    app.footer_progress().done();
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let bar: String = (0..area.width)
@@ -6994,10 +6954,10 @@ fn test_one_frame_says_one_number_while_the_footers_are_still_arriving() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.set_loading_phase("Caching schema", 40);
-    app.footer_progress.begin(200_000);
+    app.footer_progress().begin(200_000);
 
     // A reader, going as fast as the real ones do between two paints.
-    let counter = app.footer_progress.clone();
+    let counter = app.footer_progress().clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopping = stop.clone();
     let reading = std::thread::spawn(move || {
@@ -15097,6 +15057,85 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
         app.home.browsing.is_none(),
         "nor browse them into the directory they left: {:?}",
         app.home.browsing
+    );
+}
+
+/// Going home while the paths named at startup are looked at puts the open down: the
+/// look's answer, landing after, opens nothing and does not take the user off the home
+/// screen.
+///
+/// The look is the open's first phase. It used to be quieted rather than put down, so
+/// its answer still carried the open on and pulled the user back from home to the file.
+#[test]
+fn test_going_home_during_the_look_at_named_paths_opens_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = tmp.path().join("named.csv");
+    std::fs::write(&file, "a,b\n1,2\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Scanning input", 10);
+    assert!(
+        app.event(&AppEvent::OpenNamed(vec![file], OpenOptions::default()))
+            .is_none(),
+        "the look goes to a worker"
+    );
+    app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(!app.is_busy(), "going home is immediate");
+
+    let mut landed = false;
+    for _ in ticks() {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            landed |= matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::OpenNamed);
+            let mut next = app.event(&ev);
+            while let Some(ev) = next {
+                next = app.event(&ev);
+            }
+            if landed {
+                break;
+            }
+        }
+    }
+    assert!(landed, "the look reports back");
+    drain_events(&mut app, &rx);
+    assert_eq!(app.input_mode, InputMode::Home, "the user stays home");
+    assert!(app.data_table_state.is_none(), "and nothing was opened");
+    assert!(app.error_message().is_none());
+}
+
+/// A dataset that is up owns the footer pass behind it: going home from it leaves the
+/// pass running, and an open replacing it is what stops it.
+///
+/// The counter used to be the open's, cancelled whenever the user went home while that
+/// open was still marked active — which it stayed after installing, so the first trip
+/// home stopped the pass of the dataset left on screen.
+#[test]
+fn test_going_home_leaves_the_dataset_s_footer_pass_alone() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = tmp.path().join("people.csv");
+    std::fs::write(&file, "name,age\nada,36\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![file.clone()], OpenOptions::default());
+    assert!(app.data_table_state.is_some());
+    let counter = app.footer_progress().clone();
+
+    app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(
+        !counter.is_cancelled(),
+        "the dataset on screen keeps reading what it still has to"
+    );
+
+    pump_open_until_loaded(&mut app, &rx, vec![file], OpenOptions::default());
+    assert!(
+        counter.is_cancelled(),
+        "the dataset that replaced it stopped it"
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&counter, app.footer_progress()),
+        "and counts on a counter of its own"
     );
 }
 

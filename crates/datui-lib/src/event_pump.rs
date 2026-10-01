@@ -167,7 +167,7 @@ impl EventPump {
         // The loading screen has nothing to type ahead into, so nothing is
         // held there: the allowed keys act, everything else is dropped. Held
         // once, a stray key would queue `q` behind it for the whole load.
-        if self.app.is_busy() && self.app.awaiting_dataset {
+        if self.app.is_busy() && self.app.awaiting_dataset() {
             if self.app.key_acts_while_busy(key) {
                 return Act::Now;
             }
@@ -630,7 +630,7 @@ fn is_navigation(key: &KeyEvent) -> bool {
 mod tests {
     use super::*;
     use crate::export_modal::{ExportFocus, ExportFormat};
-    use crate::{InputMode, LoadingState, OpenOptions};
+    use crate::{InputMode, OpenOptions};
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use std::io::Write;
     use std::sync::mpsc;
@@ -798,32 +798,23 @@ mod tests {
     /// This is the gap #221 was left short by. An errand of several phases hands off
     /// through a returned event, and the pump breaks there so a frame can be drawn —
     /// so for one iteration of the loop the phase that finished has let go of the
-    /// generation and the phase that follows has not taken it. A collect starting in that window
-    /// bumps `task_generation` out from under the errand, and `BackgroundSchemaReady`'s
-    /// mismatch branch then returns without resetting anything: the dataset never opens,
-    /// silently, for the rest of the session.
+    /// generation and the phase that follows has not taken it. A collect starting in
+    /// that window bumps `task_generation` out from under the errand, whose answer is
+    /// then thrown away and never asked for again.
     ///
-    /// The open is the errand used here because its first handoff is the one that costs
-    /// most, and because it needs no worker to reach: `Open` returns `DoLoadScanPaths`
-    /// before anything has been spawned at all.
+    /// An export is the errand used here: `Export` draws its progress and returns
+    /// `DoExport` before anything has been spawned at all.
     #[test]
     fn a_continuation_holds_the_generation_until_it_is_dispatched() {
-        crate::text_input_flows::isolate_cache();
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("people.csv");
-        let mut file = std::fs::File::create(&path).expect("create csv");
-        writeln!(file, "name,age\nada,36").expect("write csv");
-        drop(file);
-
-        let mut p = pump();
+        let (mut p, dir) = loaded_pump();
+        let out = dir.path().join("out.csv");
         assert!(!p.app.work_a_bump_would_strand(), "nothing is running yet");
 
-        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
-            .unwrap();
+        p.send(AppEvent::Export(csv_export(&out))).unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
 
-        // `Open` has returned `DoLoadScanPaths` and nothing has been spawned: this is
-        // the moment the loop draws a frame and reads the terminal.
+        // `Export` has returned `DoExport` and nothing has been spawned: this is the
+        // moment the loop draws a frame and reads the terminal.
         assert!(
             !p.next_up.is_empty(),
             "the continuation is waiting to be dispatched"
@@ -838,14 +829,11 @@ mod tests {
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
         assert!(
             p.app.work_a_bump_would_strand(),
-            "the scan it started is running now, and holds it in turn"
+            "the export it started is running now, and holds it in turn"
         );
 
         settle(&mut p);
-        assert!(
-            p.app.data_table_state.is_some(),
-            "and the open finishes, which is the point"
-        );
+        assert!(out.exists(), "and the export finishes, which is the point");
         assert!(
             !p.app.work_a_bump_would_strand(),
             "with the generation free again afterwards"
@@ -860,29 +848,15 @@ mod tests {
     /// deferred errands at its tail whatever the key was.
     #[test]
     fn a_key_in_the_handoff_window_does_not_find_the_generation_free() {
-        crate::text_input_flows::isolate_cache();
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("people.csv");
-        let mut file = std::fs::File::create(&path).expect("create csv");
-        writeln!(file, "name,age\nada,36").expect("write csv");
-        drop(file);
-
-        let mut p = pump();
-        p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
-            .unwrap();
-        settle(&mut p);
-        assert!(
-            p.app.data_table_state.is_some(),
-            "a dataset to owe a collect to"
-        );
+        let (mut p, dir) = loaded_pump();
+        let out = dir.path().join("out.csv");
 
         // An errand waiting for the generation to come free. Without one the tail of
         // `App::handle` has nothing to run, and the key below would prove nothing.
         p.app.owe_rows_for_tests("Loading buffer...");
 
-        // And the user opens something else, which after one drain is mid-handoff.
-        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
-            .unwrap();
+        // And the user exports, which after one drain is mid-handoff.
+        p.send(AppEvent::Export(csv_export(&out))).unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
         assert!(!p.next_up.is_empty(), "mid-handoff");
         let held_at = p.app.task_generation();
@@ -896,7 +870,7 @@ mod tests {
         );
         assert!(
             p.app.rows_owed(),
-            "it is still owed, waiting for the open in front of it"
+            "it is still owed, waiting for the export in front of it"
         );
     }
 
@@ -1004,7 +978,7 @@ mod tests {
         );
         assert!(!p.app.is_busy());
         assert!(p.app.status_message.is_none());
-        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+        assert!(p.app.nothing_loading());
         assert!(!out.exists());
         assert!(
             !p.app.work_a_bump_would_strand(),
@@ -1017,7 +991,7 @@ mod tests {
         settle(&mut p);
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
         assert!(out.exists(), "the next export writes its file");
-        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+        assert!(p.app.nothing_loading());
     }
 
     /// #455: a drill whose row read dies says so in one line, pointing at the log
@@ -1114,9 +1088,11 @@ mod tests {
         let (mut p, dir) = loaded_pump();
         let passed = p.app.task_generation();
         let shown = p.app.dataset_generation;
+        // An open long since replaced.
+        let gone = crate::loading::LoadId::for_tests(u64::MAX);
         let jobs = [
-            crate::Job::Load,
-            crate::Job::OpenNamed,
+            crate::Job::Load(gone),
+            crate::Job::OpenNamed(gone),
             crate::Job::Rows(crate::InflightCollect::for_tests(0, 3)),
             crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
             crate::Job::SampleRows,
@@ -1137,7 +1113,7 @@ mod tests {
         ))
         .unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
-        assert!(p.app.awaiting_dataset, "the open is under way");
+        assert!(p.app.awaiting_dataset(), "the open is under way");
         assert_ne!(p.app.task_generation(), passed);
         for job in running {
             job.end(crate::Outcome::Failed {
@@ -1148,14 +1124,15 @@ mod tests {
         settle(&mut p);
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
         assert_ne!(p.app.dataset_generation, shown, "the open finished");
-        assert!(!p.app.awaiting_dataset);
+        assert!(!p.app.awaiting_dataset());
         assert!(p.app.last_load_error.is_none());
-        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+        assert!(p.app.nothing_loading());
     }
 
-    /// #455: an open whose schema read dies — its second worker, after the scan and the
-    /// hand-offs between — is held at every hand-off, then ends where a failed open
-    /// ends: the reason shown, the dataset before it still up. Opening again works.
+    /// #455: an open whose schema read dies — its second worker, after the scan —
+    /// holds the keys and the generation in every frame drawn on the way, then ends
+    /// where a failed open ends: the reason shown, the dataset before it still up.
+    /// Opening again works.
     #[test]
     fn an_open_whose_schema_read_dies_ends_and_the_next_one_opens() {
         let (mut p, dir) = loaded_pump();
@@ -1164,27 +1141,23 @@ mod tests {
         // The scan is the first load job; the schema read is the second.
         let mut loads = 0;
         p.app.jobs.worker_dies = Some(Box::new(move |job| {
-            loads += usize::from(matches!(job, crate::Job::Load));
+            loads += usize::from(matches!(job, crate::Job::Load(_)));
             loads == 2
         }));
         p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
             .unwrap();
-        let mut handoffs = 0;
+        let mut frames = 0;
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
         while !p.app.error_modal.active {
             assert!(std::time::Instant::now() < deadline, "the open never ended");
             p.wait_and_drain(Duration::from_millis(50)).unwrap();
-            if !p.next_up.is_empty() {
-                handoffs += 1;
-                assert!(p.app.is_busy(), "busy at hand-off {handoffs}");
-                assert!(p.app.awaiting_dataset);
-                assert!(p.app.work_a_bump_would_strand());
+            if p.app.awaiting_dataset() {
+                frames += 1;
+                assert!(p.app.is_busy(), "busy at frame {frames}");
+                assert!(p.app.work_a_bump_would_strand(), "held at frame {frames}");
             }
         }
-        assert!(
-            handoffs >= 2,
-            "the open handed off between phases: {handoffs}"
-        );
+        assert!(frames >= 1, "the open was under way between frames");
         assert!(
             p.app.error_modal.message.contains("worker died"),
             "{}",
@@ -1192,8 +1165,8 @@ mod tests {
         );
         settle(&mut p);
         assert!(!p.app.is_busy());
-        assert!(!p.app.awaiting_dataset, "nothing is waited on");
-        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+        assert!(!p.app.awaiting_dataset(), "nothing is waited on");
+        assert!(p.app.nothing_loading());
         assert_eq!(
             p.app.dataset_generation, shown,
             "the dataset before it stays"
@@ -1207,26 +1180,19 @@ mod tests {
         assert_ne!(p.app.dataset_generation, shown, "the next open opens");
     }
 
-    /// A deferred collect that turns out to have nothing to do still takes the loading
-    /// screen down.
+    /// A deferred collect that turns out to have nothing to do still ends an open's
+    /// wait for its first rows.
     ///
-    /// `DoLoadBuffer` clears `loading_state` itself when `spawn_async_collect` finds the
-    /// buffer already serves the view. Deferred — and the open's last step is now always
-    /// deferred, because the pump holds a lease for the whole of that handler — the
-    /// branch that runs instead is the retry's, which knew nothing about the loading
-    /// screen. It read "Loading buffer... 70%" with the app idle, for the rest of the
-    /// session.
+    /// An open's first rows are owed rather than read when other work holds the
+    /// generation as the dataset installs. The retry that runs then finds the buffer
+    /// already serves the view; left to the open alone, the bar read "Loading
+    /// buffer... 70%" with the app idle, for the rest of the session.
     #[test]
     fn a_deferred_collect_with_nothing_to_do_takes_the_loading_screen_down() {
         let (mut p, _dir) = loaded_pump();
         // The buffer already holds every row, so the collect will find nothing to do.
         p.app.owe_rows_for_tests("Loading buffer...");
-        p.app.loading_state = crate::LoadingState::Loading {
-            file_path: None,
-            file_size: 0,
-            current_phase: "Loading buffer".to_string(),
-            progress_percent: 70,
-        };
+        p.app.loading.first_rows_for_tests();
         p.app.busy = true;
 
         p.send(AppEvent::Update).unwrap();
@@ -1234,7 +1200,7 @@ mod tests {
 
         assert!(!p.app.rows_owed(), "the errand is done either way");
         assert!(
-            matches!(p.app.loading_state, crate::LoadingState::Idle),
+            p.app.nothing_loading(),
             "and the loading screen is down rather than stuck at 70%"
         );
         assert!(!p.app.is_busy(), "with the keyboard back");
@@ -1892,12 +1858,7 @@ mod tests {
     fn ctrl_o_during_a_load_drops_the_held_keys() {
         let mut p = pump();
         p.app.busy = true;
-        p.app.loading_state = LoadingState::Loading {
-            file_path: None,
-            file_size: 0,
-            current_phase: "Scanning".to_string(),
-            progress_percent: 0,
-        };
+        p.app.loading.first_rows_for_tests();
         p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
         p.terminal_key(plain(KeyCode::Enter)).unwrap();
         assert_eq!(held(&p).len(), 2);
@@ -1908,6 +1869,40 @@ mod tests {
         assert!(held(&p).is_empty());
     }
 
+    /// A Ctrl+O typed while the settings were read is offered after the startup open
+    /// has begun, so it puts that open down: its look lands for nobody, and nothing opens
+    /// behind the home screen.
+    #[test]
+    fn ctrl_o_typed_before_the_app_existed_puts_the_startup_open_down() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
+
+        // As `run_impl` sets it up: the open announced, its look on the channel, and
+        // the keys from the settings read handed over first.
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.send(AppEvent::OpenNamed(vec![path], OpenOptions::default()))
+            .unwrap();
+        p.handle_first([AppEvent::Terminal(Event::Key(ctrl('o')))]);
+        settle(&mut p);
+        // The look was put down, not waited on: let its answer land.
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while p.app.background_work_in_flight() {
+            assert!(std::time::Instant::now() < deadline, "the look never ended");
+            p.wait_and_drain(Duration::from_millis(50)).unwrap();
+        }
+        settle(&mut p);
+
+        assert_eq!(p.app.input_mode, InputMode::Home);
+        assert!(
+            p.app.data_table_state.is_none(),
+            "nothing opened behind home"
+        );
+        assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+    }
+
     /// The loading screen has nothing to type ahead into, so nothing is held
     /// there. Held once, a stray key queued `q` behind it for the whole load.
     #[test]
@@ -1915,7 +1910,7 @@ mod tests {
         let mut p = pump();
         p.app.opened_from_home = true;
         p.app.set_loading_phase("Scanning input", 10);
-        assert!(p.app.awaiting_dataset && p.app.is_busy());
+        assert!(p.app.awaiting_dataset() && p.app.is_busy());
 
         // A stray key is dropped, not held.
         p.terminal_key(plain(KeyCode::Char('j'))).unwrap();

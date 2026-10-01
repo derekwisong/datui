@@ -450,6 +450,21 @@ mod export_format_tests {
             Some(ExportFormat::Parquet)
         );
     }
+
+    /// A destination refusal reads as one; an encoder's error of the same kind
+    /// does not borrow its wording.
+    #[test]
+    fn export_errors_name_a_refusal_only_for_a_refusal() {
+        let path = Path::new("out.csv.gz");
+        let refused: std::io::Error = crate::output_file::Refused::NotAFile.into();
+        assert_eq!(
+            App::format_export_error(&refused.into(), path),
+            "Cannot write to out.csv.gz: it is not a regular file."
+        );
+        let encoder = std::io::Error::new(std::io::ErrorKind::InvalidInput, "stream error");
+        let message = App::format_export_error(&encoder.into(), path);
+        assert!(!message.contains("regular file"), "{message}");
+    }
 }
 
 #[cfg(test)]
@@ -23670,19 +23685,13 @@ impl App {
 
         for cause in error.chain() {
             if let Some(io_err) = cause.downcast_ref::<io::Error>() {
-                // The OS's errors carry a code; the destination checks in
-                // `output_file` do not, and name what they found.
-                let ours = io_err.raw_os_error().is_none();
-                let msg = match io_err.kind() {
-                    ErrorKind::AlreadyExists => {
-                        "a file appeared there during the export and was left as it was."
-                            .to_string()
-                    }
-                    ErrorKind::PermissionDenied if ours => "the file is read-only.".to_string(),
-                    ErrorKind::PermissionDenied => "permission denied.".to_string(),
-                    ErrorKind::IsADirectory => "it is a directory.".to_string(),
-                    ErrorKind::InvalidInput if ours => "it is not a regular file.".to_string(),
-                    _ => crate::error_display::user_message_from_io(io_err, None),
+                // Matched by type, not kind: an encoder's own errors share
+                // kinds such as InvalidInput with the destination checks.
+                let msg = match (crate::output_file::Refused::of(io_err), io_err.kind()) {
+                    (Some(refused), _) => format!("{refused}."),
+                    (None, ErrorKind::PermissionDenied) => "permission denied.".to_string(),
+                    (None, ErrorKind::IsADirectory) => "it is a directory.".to_string(),
+                    (None, _) => crate::error_display::user_message_from_io(io_err, None),
                 };
                 return format!("Cannot write to {}: {}", path.display(), msg);
             }

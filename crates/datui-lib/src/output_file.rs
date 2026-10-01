@@ -27,6 +27,54 @@ pub enum Overwrite {
     Replace,
 }
 
+/// Why [`OutputFile`] would not write a destination. Carried inside the
+/// `io::Error`, whose kind says the same to code that matches on kinds; its
+/// text is for the user and leaves the path to the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// Something is at the path and replacing it was not agreed to: the
+    /// overwrite was not asked about, because nothing was there then.
+    Appeared,
+    ReadOnly,
+    Directory,
+    NotAFile,
+}
+
+impl Refused {
+    /// The refusal inside `error`, if it is one of these rather than the OS's.
+    pub fn of(error: &io::Error) -> Option<Self> {
+        error.get_ref()?.downcast_ref::<Self>().copied()
+    }
+
+    fn kind(self) -> io::ErrorKind {
+        match self {
+            Self::Appeared => io::ErrorKind::AlreadyExists,
+            Self::ReadOnly => io::ErrorKind::PermissionDenied,
+            Self::Directory => io::ErrorKind::IsADirectory,
+            Self::NotAFile => io::ErrorKind::InvalidInput,
+        }
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Appeared => "a file appeared there during the export and was left as it was",
+            Self::ReadOnly => "the file is read-only",
+            Self::Directory => "it is a directory",
+            Self::NotAFile => "it is not a regular file",
+        })
+    }
+}
+
+impl std::error::Error for Refused {}
+
+impl From<Refused> for io::Error {
+    fn from(refused: Refused) -> Self {
+        io::Error::new(refused.kind(), refused)
+    }
+}
+
 /// A file being written to a temporary sibling of its destination.
 #[derive(Debug)]
 pub struct OutputFile {
@@ -112,25 +160,17 @@ impl OutputFile {
     fn persist_new(temp: tempfile::NamedTempFile, target: &Path) -> io::Result<()> {
         match temp.persist_noclobber(target) {
             Ok(_) => Ok(()),
-            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => Err(appeared(target)),
+            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {
+                Err(Refused::Appeared.into())
+            }
             Err(e) => {
                 if fs::symlink_metadata(target).is_ok() {
-                    return Err(appeared(target));
+                    return Err(Refused::Appeared.into());
                 }
                 e.file.persist(target).map(drop).map_err(|e| e.error)
             }
         }
     }
-}
-
-fn appeared(target: &Path) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        format!(
-            "{} appeared while the file was being written",
-            target.display()
-        ),
-    )
 }
 
 /// `path`, or the file a symlink at `path` points to, followed to the end. A
@@ -158,8 +198,8 @@ fn resolve_link(path: &Path) -> io::Result<PathBuf> {
 
 /// The permissions of the regular, writable file at `target`, or None when
 /// nothing is there. Errors where `overwrite` forbids replacing what is there,
-/// or where it could not be written to in place before: a read-only file is
-/// refused rather than replaced by rename.
+/// or where it could not be written to in place before: a file datui may not
+/// write is refused rather than replaced by rename.
 fn replaceable(target: &Path, overwrite: Overwrite) -> io::Result<Option<fs::Permissions>> {
     let meta = match fs::metadata(target) {
         Ok(meta) => meta,
@@ -167,28 +207,16 @@ fn replaceable(target: &Path, overwrite: Overwrite) -> io::Result<Option<fs::Per
         Err(e) => return Err(e),
     };
     if overwrite == Overwrite::Forbid {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", target.display()),
-        ));
+        return Err(Refused::Appeared.into());
     }
     if meta.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::IsADirectory,
-            format!("{} is a directory", target.display()),
-        ));
+        return Err(Refused::Directory.into());
     }
     if !meta.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{} is not a regular file", target.display()),
-        ));
+        return Err(Refused::NotAFile.into());
     }
     if meta.permissions().readonly() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("{} is read-only", target.display()),
-        ));
+        return Err(Refused::ReadOnly.into());
     }
     Ok(Some(meta.permissions()))
 }

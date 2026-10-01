@@ -33,8 +33,8 @@ impl OnScreen {
     /// nothing on the bar as the numbers change.
     pub fn widest_label(&self, compact: bool) -> String {
         Self {
-            first: self.total,
-            last: self.total + 1,
+            first: self.total.saturating_sub(1),
+            last: self.total,
             total: self.total,
         }
         .label(compact)
@@ -187,6 +187,7 @@ mod tests {
         assert_eq!(on.label(true), "cols 41-47/300");
         let one = OnScreen { last: 41, ..on };
         assert_eq!(one.label(false), "cols 41 of 300");
+        assert_eq!(on.widest_label(true), "cols 299-300/300");
     }
 
     #[test]

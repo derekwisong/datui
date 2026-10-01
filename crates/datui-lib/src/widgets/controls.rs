@@ -252,14 +252,12 @@ impl Widget for &Controls {
         // The column range leads the count while some columns are off screen; a bar
         // short of room takes the compact form, so the keys keep theirs.
         let compact = area.width < 100;
-        let columns = self.columns.filter(|_| self.caption.is_none()).map(|on| {
+        let columns_on = self.columns.filter(|_| self.caption.is_none());
+        let with_gap = |label: String| {
             let gap = if compact { " " } else { "  " };
-            format!(
-                "{}{gap}{}{gap}",
-                on.label(compact),
-                crate::glyphs::get().middot
-            )
-        });
+            format!("{label}{gap}{}{gap}", crate::glyphs::get().middot)
+        };
+        let columns = columns_on.map(|on| with_gap(on.label(compact)));
         let row_count_text = |count: usize| -> String {
             if let Some(caption) = &self.caption {
                 return caption.clone();
@@ -267,6 +265,14 @@ impl Widget for &Controls {
             let columns = columns.as_deref().unwrap_or("");
             format!("{columns}{}", rows_text(count))
         };
+        // The room the range is given is its widest for this table, so paging changes
+        // the numbers and never which chips fit beside them.
+        let columns_room = columns_on
+            .map(|on| {
+                let widest = with_gap(on.widest_label(compact)).chars().count();
+                widest.saturating_sub(columns.as_deref().map_or(0, |c| c.chars().count()))
+            })
+            .unwrap_or(0) as u16;
 
         let throbber_style = if no_bg {
             Style::default().fg(self.throbber_color)
@@ -291,7 +297,7 @@ impl Widget for &Controls {
         // layout used to hardcode twenty-one here and truncate the caption itself.
         let trailing = self
             .row_count
-            .map(|count| (row_count_text(count).chars().count() as u16 + 1).max(20));
+            .map(|count| (row_count_text(count).chars().count() as u16 + 1 + columns_room).max(20));
 
         // The chip that says the row count is not the table's. Immediately left of the
         // count, because the count is what it is about.
@@ -806,6 +812,22 @@ mod tests {
         assert!(narrow.contains("q  Quit"), "got: {narrow:?}");
         let none = render_to_string(&with_row_count(200), 80);
         assert!(!none.contains("cols"), "got: {none:?}");
+
+        // Paging changes the numbers, never which chips fit beside them.
+        for width in [60, 80, 100, 120] {
+            let at = |first, last| {
+                let on = OnScreen {
+                    first,
+                    last,
+                    total: 300,
+                };
+                let bar = render_to_string(&with_row_count(200).with_columns(Some(on)), width);
+                let cut = bar.find("cols").expect("the range is drawn");
+                bar[..cut].trim_end().to_string()
+            };
+            assert_eq!(at(1, 6), at(295, 300), "at {width}");
+            assert_eq!(at(1, 6), at(41, 47), "at {width}");
+        }
     }
 
     /// Pending and unknown keep their say: no "of" beside a spinner or a "?".

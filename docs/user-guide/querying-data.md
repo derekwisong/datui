@@ -175,6 +175,9 @@ drill into. A result that drills has the keys that lead it frozen, as a q-style
 `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
 since Polars returns groups in no fixed order.
 
+Rows an `ORDER BY` ranks equal keep one order, so paging through the result
+never repeats a row or skips one.
+
 ## Search
 
 Type words on the **Search** tab and press <kbd>Enter</kbd>. A row matches

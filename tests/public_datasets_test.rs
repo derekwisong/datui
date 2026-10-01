@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::config::AppConfig;
 use datui::{App, AppEvent};
 
 fn key(code: KeyCode) -> AppEvent {
@@ -72,15 +71,12 @@ fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
             );
         }
     });
-    let mut config = AppConfig::default();
-    config.data.use_desktop_recents = false;
-    config.cloud.discover = Some(datui::config::CloudDiscover::None);
-    config.merge(
-        toml::from_str(&format!(
+    let config = common::layered_config(&[
+        "[data]\nuse_desktop_recents = false\n[cloud]\ndiscover = false\n",
+        &format!(
             "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Foods\"\nurl = {url:?}\n"
-        ))
-        .unwrap(),
-    );
+        ),
+    ]);
     config.validate().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new_with_config(

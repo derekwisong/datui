@@ -7941,8 +7941,8 @@ impl OpenOptions {
         cloud: &crate::config::CloudConfig,
     ) -> crate::config::CloudConfig {
         let mut merged = cloud.clone();
-        merged.merge(crate::config::CloudConfig::from_env(&crate::cloud_env::var));
-        merged.merge(crate::config::CloudConfig {
+        merged.overlay(crate::config::CloudConfig::from_env(&crate::cloud_env::var));
+        merged.overlay(crate::config::CloudConfig {
             s3_endpoint_url: self.s3_endpoint_url_override.clone(),
             s3_access_key_id: self.s3_access_key_id_override.clone(),
             s3_secret_access_key: self.s3_secret_access_key_override.clone(),

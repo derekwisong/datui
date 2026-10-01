@@ -2557,7 +2557,7 @@ mod tests {
     /// environment folded in.
     fn effective(config: &CloudConfig, env: &Environment<'_>) -> CloudConfig {
         let mut merged = config.clone();
-        merged.merge(CloudConfig::from_env(env.var));
+        merged.overlay(CloudConfig::from_env(env.var));
         merged
     }
 

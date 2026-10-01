@@ -194,8 +194,8 @@ impl ConfigManager {
         comments
     }
 
-    /// Comment out all fields in TOML and add comments
-    /// Also adds missing Option fields as commented-out `# field = null`
+    /// Comment out all fields in TOML and add comments, then add the settings that
+    /// are unset by default as commented examples
     fn comment_all_fields(
         toml: String,
         comments: std::collections::HashMap<String, String>,
@@ -276,75 +276,80 @@ impl ConfigManager {
             i += 1;
         }
 
-        // Second pass: add missing Option fields (those with comments but not in TOML)
-        result = Self::add_missing_option_fields(result, &comments, &seen_fields);
+        // Second pass: settings that are unset by default and so were not serialized
+        result = Self::add_unset_settings(result, &comments, &seen_fields);
 
         result
     }
 
-    /// Add missing Option fields that weren't serialized (because they're None)
-    fn add_missing_option_fields(
+    /// Add the documented settings that are unset by default, which serializing the
+    /// defaults leaves out, each as a commented example in its section. A section with
+    /// nothing serialized of its own, such as `[theme]` beside `[theme.colors]`, gets
+    /// its header placed before its first subsection.
+    fn add_unset_settings(
         mut result: String,
         comments: &std::collections::HashMap<String, String>,
         seen_fields: &std::collections::HashSet<String>,
     ) -> String {
-        // Option fields that should appear even when None
-        let option_fields = [
-            "cloud.s3_endpoint_url",
-            "cloud.s3_access_key_id",
-            "cloud.s3_secret_access_key",
-            "cloud.s3_region",
-            "file_loading.single_spine_schema",
-            "chart.row_limit",
-            "ui.controls.custom_controls",
-        ];
-
-        // Group missing fields by section
-        let mut missing_by_section: std::collections::HashMap<String, Vec<&str>> =
-            std::collections::HashMap::new();
-
-        for field_path in &option_fields {
-            if !seen_fields.contains(*field_path)
-                && comments.contains_key(*field_path)
-                && let Some(dot_pos) = field_path.find('.')
-            {
-                let section = &field_path[..dot_pos];
-                missing_by_section
-                    .entry(section.to_string())
-                    .or_default()
-                    .push(field_path);
+        let mut sections: Vec<(&str, String)> = Vec::new();
+        for (path, example) in UNSET_EXAMPLES {
+            if seen_fields.contains(*path) {
+                continue;
             }
+            let (section, field) = path
+                .rsplit_once('.')
+                .expect("an unset setting lives in a section");
+            let block = match sections.iter().position(|(s, _)| *s == section) {
+                Some(i) => &mut sections[i].1,
+                None => {
+                    sections.push((section, String::new()));
+                    &mut sections.last_mut().expect("just pushed").1
+                }
+            };
+            if let Some(comment) = comments.get(*path) {
+                for line in comment.lines() {
+                    if line.is_empty() {
+                        block.push_str("#\n");
+                    } else {
+                        block.push_str(&format!("# {line}\n"));
+                    }
+                }
+            }
+            block.push_str(&format!("# {field} = {example}\n"));
         }
 
-        // Insert missing fields into appropriate sections
-        for (section, fields) in &missing_by_section {
-            let section_header = format!("[{}]", section);
-            if let Some(section_pos) = result.find(&section_header) {
-                // Find the newline after the section header
-                let after_header_start = section_pos + section_header.len();
-                let after_header = &result[after_header_start..];
-
-                // Find the first newline after the section header
-                let newline_pos = after_header.find('\n').unwrap_or(0);
-                let insert_pos = after_header_start + newline_pos + 1;
-
-                // Build content to insert
-                let mut new_content = String::new();
-                for field_path in fields {
-                    if let Some(comment) = comments.get(*field_path) {
-                        for comment_line in comment.lines() {
-                            new_content.push_str("# ");
-                            new_content.push_str(comment_line);
-                            new_content.push('\n');
-                        }
-                    }
-                    let field_name = field_path.rsplit('.').next().unwrap_or(field_path);
-                    new_content.push_str(&format!("# {} = null\n", field_name));
-                    new_content.push('\n');
-                }
-
-                result.insert_str(insert_pos, &new_content);
+        for (section, block) in sections {
+            let header = format!("# [{section}]\n");
+            if let Some(pos) = result.find(&header) {
+                result.insert_str(pos + header.len(), &block);
+                continue;
             }
+            let mut at = result
+                .find(&format!("# [{section}."))
+                .unwrap_or(result.len());
+            // Keep a subsection's banner above the subsection.
+            let sub = Self::extract_section_name(
+                result[at..]
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim_start_matches("# "),
+            );
+            if let Some((_, banner)) =
+                sub.and_then(|sub| SECTION_HEADERS.iter().find(|(s, _)| *s == sub))
+                && result[..at].ends_with(&format!("{banner}\n"))
+            {
+                at -= banner.len() + 1;
+            }
+            let mut opened = String::new();
+            if let Some((_, banner)) = SECTION_HEADERS.iter().find(|(s, _)| *s == section) {
+                opened.push_str(banner);
+                opened.push('\n');
+            }
+            opened.push_str(&header);
+            opened.push_str(&block);
+            opened.push('\n');
+            result.insert_str(at, &opened);
         }
 
         result
@@ -1079,18 +1084,6 @@ impl SourceConfig {
         }
         Ok(())
     }
-
-    /// Resolve relative `path`s against `dir`, the directory of the file that named them.
-    fn anchor_paths(&mut self, dir: &Path) {
-        for dataset in &mut self.datasets {
-            if let Some(path) = &mut dataset.path
-                && !path.trim().is_empty()
-                && expand_path(path).is_relative()
-            {
-                *path = dir.join(expand_path(path)).to_string_lossy().into_owned();
-            }
-        }
-    }
 }
 
 impl DatasetConfig {
@@ -1336,6 +1329,39 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Documented settings that are unset by default, so serializing the defaults leaves
+/// them out, with the value the generated config shows for each. Every key here needs
+/// a comment, and every commented key must reach the generated config one way or the
+/// other; a test checks both.
+const UNSET_EXAMPLES: &[(&str, &str)] = &[
+    ("cloud.s3_endpoint_url", "\"http://localhost:9000\""),
+    ("cloud.s3_access_key_id", "\"\""),
+    ("cloud.s3_secret_access_key", "\"\""),
+    ("cloud.s3_region", "\"us-east-1\""),
+    ("cloud.azure_account_keys", "true"),
+    ("cloud.env_files", "[\".env\"]"),
+    ("cloud.instance_identity", "false"),
+    ("cloud.discover", "true"),
+    ("cloud.list_on_start", "false"),
+    ("cloud.hide", "[]"),
+    ("file_loading.null_values", "[\"NA\", \"amount=\"]"),
+    ("file_loading.parse_dates", "true"),
+    ("file_loading.parse_strings", "true"),
+    ("file_loading.parse_strings_sample_rows", "1000"),
+    ("file_loading.infer_schema_length", "1000"),
+    ("file_loading.ignore_errors", "false"),
+    ("file_loading.decompress_in_memory", "false"),
+    ("file_loading.temp_dir", "\"/tmp\""),
+    ("file_loading.single_spine_schema", "true"),
+    ("display.sidebar_width", "70"),
+    ("theme.mode", "\"auto\""),
+    (
+        "ui.controls.custom_controls",
+        "[[\"q\", \"Quit\"], [\"?\", \"Help\"]]",
+    ),
+    ("debug.log_file", "\"~/datui.log\""),
+];
+
 const CLOUD_COMMENTS: &[(&str, &str)] = &[
     (
         "s3_endpoint_url",
@@ -1352,6 +1378,32 @@ const CLOUD_COMMENTS: &[(&str, &str)] = &[
     (
         "s3_region",
         "Region (e.g. us-east-1). Required for custom endpoints; MinIO often uses us-east-1.",
+    ),
+    (
+        "azure_account_keys",
+        "Read an Azure account with its access keys when a sign-in has no data role (default: true)",
+    ),
+    (
+        "env_files",
+        "Files to read cloud variables from, relative to the working directory. None unless listed.\n\
+         Only known cloud variable names are taken, and nothing is exported. Adds up across imports.",
+    ),
+    (
+        "instance_identity",
+        "Use the identity of the cloud VM datui runs on: EC2, GCE or Azure (default: false)",
+    ),
+    (
+        "discover",
+        "Logins found on this machine that become home-screen sources:\n\
+         true or \"all\" (default), false or \"none\", or a list such as [\"s3\", \"gcs\", \"azure\"]",
+    ),
+    (
+        "list_on_start",
+        "List every source's buckets when the home screen opens, not when one is entered (default: false)",
+    ),
+    (
+        "hide",
+        "Cloud source IDs never shown on the home screen. Adds up across imports.",
     ),
 ];
 
@@ -1382,53 +1434,23 @@ impl CloudConfig {
         }
     }
 
-    /// `other` wins wherever it says something; a blank value says nothing. A source
-    /// with a name already present replaces that source, and hidden IDs accumulate.
-    pub fn merge(&mut self, other: Self) {
+    /// Lay the environment or the command line over the config file's settings: each
+    /// S3 setting and `discover` that `over` gives wins, and a blank value says
+    /// nothing. Nothing else in `over` is read; config files layer through
+    /// [`ConfigLayer`].
+    pub fn overlay(&mut self, over: Self) {
         for (slot, value) in [
-            (&mut self.s3_endpoint_url, other.s3_endpoint_url),
-            (&mut self.s3_access_key_id, other.s3_access_key_id),
-            (&mut self.s3_secret_access_key, other.s3_secret_access_key),
-            (&mut self.s3_region, other.s3_region),
+            (&mut self.s3_endpoint_url, over.s3_endpoint_url),
+            (&mut self.s3_access_key_id, over.s3_access_key_id),
+            (&mut self.s3_secret_access_key, over.s3_secret_access_key),
+            (&mut self.s3_region, over.s3_region),
         ] {
             if let Some(value) = value.and_then(non_blank) {
                 *slot = Some(value);
             }
         }
-        for connection in other.connections {
-            match self
-                .connections
-                .iter_mut()
-                .find(|c| c.name == connection.name)
-            {
-                Some(existing) => *existing = connection,
-                None => self.connections.push(connection),
-            }
-        }
-        for id in other.hide {
-            if !self.hide.contains(&id) {
-                self.hide.push(id);
-            }
-        }
-        if !other.dataset_access.is_empty() {
-            self.dataset_access = other.dataset_access;
-        }
-        if other.azure_account_keys.is_some() {
-            self.azure_account_keys = other.azure_account_keys;
-        }
-        for file in other.env_files {
-            if !self.env_files.contains(&file) {
-                self.env_files.push(file);
-            }
-        }
-        if other.instance_identity.is_some() {
-            self.instance_identity = other.instance_identity;
-        }
-        if other.discover.is_some() {
-            self.discover = other.discover;
-        }
-        if other.list_on_start.is_some() {
-            self.list_on_start = other.list_on_start;
+        if over.discover.is_some() {
+            self.discover = over.discover;
         }
     }
 
@@ -1457,7 +1479,7 @@ pub struct FileLoadingConfig {
     pub parse_dates: Option<bool>,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
     pub decompress_in_memory: Option<bool>,
-    /// Directory for decompression temp files. null = system default (e.g. TMPDIR).
+    /// Directory for decompression temp files. Unset = system default (e.g. TMPDIR).
     pub temp_dir: Option<String>,
     /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Caching schema". When false, use Polars collect_schema() over all files.
     pub single_spine_schema: Option<bool>,
@@ -1467,7 +1489,7 @@ pub struct FileLoadingConfig {
     pub parse_strings: Option<bool>,
     /// Number of rows to sample for parse_strings type inference (single file or multiple/partitioned). Default 1000.
     pub parse_strings_sample_rows: Option<usize>,
-    /// Number of rows to use when inferring CSV schema. null = use default (1000 in datui). Larger values reduce risk of wrong type (e.g. int then N/A).
+    /// Number of rows to use when inferring CSV schema. Unset = use default (1000 in datui). Larger values reduce risk of wrong type (e.g. int then N/A).
     pub infer_schema_length: Option<usize>,
     /// When true, CSV reader ignores parse errors and continues with the next batch. Default false.
     pub ignore_errors: Option<bool>,
@@ -1486,11 +1508,8 @@ const REMOVED_FILE_LOADING_KEYS: [(&str, &str); 5] = [
 
 /// The removed layout keys a config file still sets, so loading can say they are
 /// ignored rather than dropping them without a word.
-fn removed_file_loading_keys(content: &str) -> Vec<(&'static str, &'static str)> {
-    let Ok(value) = content.parse::<toml::Table>() else {
-        return Vec::new();
-    };
-    let Some(section) = value.get("file_loading").and_then(|v| v.as_table()) else {
+fn removed_file_loading_keys(layer: &toml::Table) -> Vec<(&'static str, &'static str)> {
+    let Some(section) = layer.get("file_loading").and_then(|v| v.as_table()) else {
         return Vec::new();
     };
     REMOVED_FILE_LOADING_KEYS
@@ -1512,7 +1531,7 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     ),
     (
         "temp_dir",
-        "Directory for decompression temp files. null = system default (e.g. TMPDIR)",
+        "Directory for decompression temp files. Unset = system default (e.g. TMPDIR)",
     ),
     (
         "single_spine_schema",
@@ -1896,28 +1915,20 @@ pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
 #[serde(default)]
 pub struct ChartConfig {
     /// Rows a chart reads: every row up to n, and a sample of n spread across the table past
-    /// it. None (null in TOML) = every row. Default 10000.
+    /// it. None = every row. Default 10000.
     pub row_limit: Option<usize>,
 }
 
 // Field comments for ChartConfig
 const CHART_COMMENTS: &[(&str, &str)] = &[(
     "row_limit",
-    "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nSet to null to read every row. Can also be changed in the chart view (Sample size). Example: row_limit = 10000",
+    "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nCan also be changed in the chart view (Sample size). Example: row_limit = 10000",
 )];
 
 impl Default for ChartConfig {
     fn default() -> Self {
         Self {
             row_limit: Some(DEFAULT_CHART_ROW_LIMIT),
-        }
-    }
-}
-
-impl ChartConfig {
-    pub fn merge(&mut self, other: Self) {
-        if other.row_limit.is_some() {
-            self.row_limit = other.row_limit;
         }
     }
 }
@@ -1986,7 +1997,7 @@ pub struct DataConfig {
     /// Whether the home screen lists files datui has no reader for, dimmed, from the
     /// start. `Ctrl+A` flips it for the session either way.
     pub show_unreadable_files: bool,
-    /// Whether the built-in `public` collection exists. Off in any layer turns it off.
+    /// Whether the built-in `public` collection exists.
     pub builtin_catalog: bool,
     /// Collection names never shown on the home screen, built-in or configured.
     pub hide_sources: Vec<String>,
@@ -2072,37 +2083,6 @@ impl Default for SearchConfig {
 }
 
 impl SearchConfig {
-    pub fn merge(&mut self, other: Self) {
-        let d = SearchConfig::default();
-        if other.enabled != d.enabled {
-            self.enabled = other.enabled;
-        }
-        if other.max_depth != d.max_depth {
-            self.max_depth = other.max_depth;
-        }
-        if other.max_results != d.max_results {
-            self.max_results = other.max_results;
-        }
-        if other.time_budget_ms != d.time_budget_ms {
-            self.time_budget_ms = other.time_budget_ms;
-        }
-        if other.cross_filesystems != d.cross_filesystems {
-            self.cross_filesystems = other.cross_filesystems;
-        }
-        if other.follow_gitignore != d.follow_gitignore {
-            self.follow_gitignore = other.follow_gitignore;
-        }
-        if other.skip != d.skip {
-            self.skip = other.skip;
-        }
-        if !other.skip_extra.is_empty() {
-            self.skip_extra = other.skip_extra;
-        }
-        if !other.extensions.is_empty() {
-            self.extensions = other.extensions;
-        }
-    }
-
     /// Every directory name to skip: the configured list plus the additions.
     pub fn skipped_dirs(&self) -> Vec<String> {
         let mut out = self.skip.clone();
@@ -2127,27 +2107,6 @@ impl Default for DataConfig {
 }
 
 impl DataConfig {
-    pub fn merge(&mut self, other: Self) {
-        if !other.directories.is_empty() {
-            self.directories = other.directories;
-        }
-        if other.use_desktop_recents != DataConfig::default().use_desktop_recents {
-            self.use_desktop_recents = other.use_desktop_recents;
-        }
-        if other.show_unreadable_files != DataConfig::default().show_unreadable_files {
-            self.show_unreadable_files = other.show_unreadable_files;
-        }
-        if other.builtin_catalog != DataConfig::default().builtin_catalog {
-            self.builtin_catalog = other.builtin_catalog;
-        }
-        for name in other.hide_sources {
-            if !self.hide_sources.contains(&name) {
-                self.hide_sources.push(name);
-            }
-        }
-        self.search.merge(other.search);
-    }
-
     /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
     /// the home screen shows an unavailable root rather than hiding it, because
     /// "the mount is down" is information.
@@ -2187,8 +2146,7 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
     (
         "builtin_catalog",
         "Offer the built-in \"public\" collection of datasets on the home screen.\n\
-         false in any config file turns it off. A [[sources]] entry named \"public\"\n\
-         replaces it instead.",
+         A [[sources]] entry named \"public\" replaces it instead.",
     ),
     (
         "hide_sources",
@@ -2621,18 +2579,6 @@ impl Default for ClipboardConfig {
     }
 }
 
-impl ClipboardConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = Self::default();
-        if other.backend != default.backend {
-            self.backend = other.backend;
-        }
-        if other.osc52_limit_kb != default.osc52_limit_kb {
-            self.osc52_limit_kb = other.osc52_limit_kb;
-        }
-    }
-}
-
 // Field comments for ClipboardConfig
 const CLIPBOARD_COMMENTS: &[(&str, &str)] = &[
     (
@@ -2659,13 +2605,6 @@ const CLIPBOARD_COMMENTS: &[(&str, &str)] = &[
 pub struct GlyphsConfig {
     #[serde(flatten)]
     pub overrides: std::collections::BTreeMap<String, crate::glyphs::SlotOverride>,
-}
-
-impl GlyphsConfig {
-    pub fn merge(&mut self, other: Self) {
-        // Per key, later layers win; a layer that says nothing changes nothing.
-        self.overrides.extend(other.overrides);
-    }
 }
 
 impl Default for AppConfig {
@@ -2965,7 +2904,192 @@ fn expand_path(raw: &str) -> PathBuf {
     PathBuf::from(expanded)
 }
 
-// Configuration loading and merging
+/// One config file's settings as written: the keys it sets and nothing else.
+///
+/// Keeping a layer partial is what lets a later file set a value back to its
+/// default: `notes_accent = true` in your config undoes an import's `false`, and a
+/// file that leaves the key out changes nothing. [`AppConfig::from_layers`] fills in
+/// the defaults once, after every layer is merged.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ConfigLayer {
+    table: toml::Table,
+    /// The files this one imports, as written. Never merged: a load-time directive.
+    imports: Vec<String>,
+}
+
+/// How a key combines across layers when a later layer does not simply replace it.
+#[derive(Debug, Clone, Copy)]
+enum Combine {
+    /// An array of tables matched by `name`: an entry replaces the earlier one of its
+    /// name whole, and a new name appends. Two of one name in one file are both kept,
+    /// for validation to name.
+    ByName,
+    /// A list that adds up across files, without repeats.
+    Union,
+}
+
+/// The keys that do not follow "a later layer's value replaces the earlier one".
+/// Tables merge key by key; everything else not listed here is replaced whole.
+const COMBINED_KEYS: &[(&str, Combine)] = &[
+    ("sources", Combine::ByName),
+    ("cloud.connections", Combine::ByName),
+    ("cloud.hide", Combine::Union),
+    ("cloud.env_files", Combine::Union),
+    ("data.hide_sources", Combine::Union),
+];
+
+/// `[cloud]` keys where a blank value says nothing, so `s3_region = ""` cannot erase
+/// an imported region. The same rule as for the environment and the command line.
+const CLOUD_BLANK_IS_UNSET: [&str; 4] = [
+    "s3_endpoint_url",
+    "s3_access_key_id",
+    "s3_secret_access_key",
+    "s3_region",
+];
+
+impl ConfigLayer {
+    /// A layer from TOML text. Types are checked here, so a mistake is reported
+    /// against the file that holds it rather than after merging.
+    pub fn parse(text: &str) -> Result<Self> {
+        let typed: AppConfig = toml::from_str(text)?;
+        let mut table: toml::Table = toml::from_str(text)?;
+        table.remove("import");
+        if let Some(cloud) = table.get_mut("cloud").and_then(toml::Value::as_table_mut) {
+            for key in CLOUD_BLANK_IS_UNSET {
+                if let Some(value) = cloud.get(key).and_then(toml::Value::as_str) {
+                    match non_blank(value.to_string()) {
+                        Some(trimmed) => cloud.insert(key.to_string(), trimmed.into()),
+                        None => cloud.remove(key),
+                    };
+                }
+            }
+        }
+        Ok(Self {
+            table,
+            imports: typed.import,
+        })
+    }
+
+    /// The layer in `path`, or `None` when there is no such file. A file that exists
+    /// but cannot be read or parsed is an error naming it.
+    fn read(path: &Path) -> Result<Option<Self>> {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(eyre!(
+                    "Failed to read config file at {}: {}",
+                    path.display(),
+                    e
+                ));
+            }
+        };
+        let mut layer = Self::parse(&content)
+            .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))?;
+        for (key, flag) in removed_file_loading_keys(&layer.table) {
+            eprintln!(
+                "datui: warning: {}: file_loading.{key} is no longer read; \
+                 pass {flag} when opening the file it describes",
+                path.display(),
+            );
+        }
+        layer.anchor_paths(path.parent().unwrap_or_else(|| Path::new(".")));
+        Ok(Some(layer))
+    }
+
+    /// Resolve relative dataset `path`s against `dir`, the directory of the file that
+    /// named them, before a layer from another directory can be merged with them.
+    fn anchor_paths(&mut self, dir: &Path) {
+        let Some(toml::Value::Array(sources)) = self.table.get_mut("sources") else {
+            return;
+        };
+        let datasets = sources
+            .iter_mut()
+            .filter_map(|s| s.get_mut("datasets"))
+            .filter_map(toml::Value::as_array_mut)
+            .flatten();
+        for dataset in datasets {
+            if let Some(toml::Value::String(path)) = dataset.get_mut("path")
+                && !path.trim().is_empty()
+                && expand_path(path).is_relative()
+            {
+                *path = dir.join(expand_path(path)).to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    /// Lay `upper` over this layer: every key `upper` writes wins, except the
+    /// combined keys in [`COMBINED_KEYS`], and keys it leaves out keep this layer's
+    /// value. `upper`'s imports are not carried over.
+    pub fn merge(&mut self, upper: ConfigLayer) {
+        merge_tables(&mut self.table, upper.table, "");
+    }
+}
+
+fn merge_tables(lower: &mut toml::Table, upper: toml::Table, prefix: &str) {
+    for (key, value) in upper {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        let combine = COMBINED_KEYS
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, c)| *c);
+        match (combine, value) {
+            (Some(combine), toml::Value::Array(upper)) => {
+                let mut combined = match lower.remove(&key) {
+                    Some(toml::Value::Array(lower)) => lower,
+                    _ => Vec::new(),
+                };
+                match combine {
+                    Combine::ByName => merge_by_name(&mut combined, upper),
+                    Combine::Union => {
+                        for item in upper {
+                            if !combined.contains(&item) {
+                                combined.push(item);
+                            }
+                        }
+                    }
+                }
+                lower.insert(key, toml::Value::Array(combined));
+            }
+            (None, toml::Value::Table(upper)) => match lower.get_mut(&key) {
+                Some(toml::Value::Table(lower)) => merge_tables(lower, upper, &path),
+                _ => {
+                    lower.insert(key, toml::Value::Table(upper));
+                }
+            },
+            (_, value) => {
+                lower.insert(key, value);
+            }
+        }
+    }
+}
+
+fn merge_by_name(lower: &mut Vec<toml::Value>, upper: Vec<toml::Value>) {
+    let name_of = |entry: &toml::Value| {
+        entry
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
+    let mut seen = std::collections::HashSet::new();
+    for entry in upper {
+        let name = name_of(&entry);
+        let first = name.clone().is_some_and(|n| seen.insert(n));
+        match lower
+            .iter()
+            .position(|e| name.is_some() && name_of(e) == name)
+        {
+            Some(i) if first => lower[i] = entry,
+            _ => lower.push(entry),
+        }
+    }
+}
+
+// Configuration loading and layering
 impl AppConfig {
     /// Load configuration from all layers (default → imports → user config)
     pub fn load(app_name: &str) -> Result<Self> {
@@ -2986,57 +3110,33 @@ impl AppConfig {
     ///
     /// Layers apply lowest precedence first: datui's defaults, then every file named
     /// by `import` in declaration order (depth-first, so an imported file's own
-    /// imports land before it), then `config_path`'s own values. An imported theme
-    /// therefore restyles datui while the user's explicit settings still win.
+    /// imports land before it), then `config_path`'s own values. Each layer changes
+    /// only the keys it writes, so an imported theme restyles datui while anything
+    /// the user writes, a default value included, still wins.
     ///
-    /// A missing import is skipped with a warning — the file is often generated by a
-    /// theme system that may not have run yet, and datui must still start. An import
-    /// that exists but cannot be read or parsed is an error: the user named that file
-    /// explicitly, so failing quietly would just look like the theme not applying.
+    /// A missing root file means defaults. A root file that exists but cannot be read
+    /// or parsed is an error naming it: running on defaults would quietly discard every
+    /// setting in it. A missing import is skipped with a warning — the file is often
+    /// generated by a theme system that may not have run yet — but an import that
+    /// exists and cannot be read or parsed is an error too.
     pub fn load_from_file(config_path: &Path) -> Result<Self> {
-        let mut layers: Vec<AppConfig> = Vec::new();
+        let mut layers: Vec<ConfigLayer> = Vec::new();
         let mut imports: Vec<String> = Vec::new();
 
-        if config_path.exists() {
-            // A user config that fails to parse falls back to defaults rather than
-            // blocking startup. Long-standing behaviour, preserved deliberately.
-            if let Ok(layer) = Self::read_layer(config_path) {
-                let root = crate::canonical::canonicalize(config_path)
-                    .unwrap_or_else(|_| config_path.to_path_buf());
-                let mut stack = vec![root];
-                imports = layer.import.clone();
-
-                Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
-                layers.push(layer);
-            }
+        if let Some(root) = ConfigLayer::read(config_path)? {
+            let canonical = crate::canonical::canonicalize(config_path)
+                .unwrap_or_else(|_| config_path.to_path_buf());
+            let mut stack = vec![canonical];
+            imports = root.imports.clone();
+            Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
+            layers.push(root);
         }
 
-        // Which built-in palette the layers merge *onto* depends on the mode, and the
-        // mode itself is declared in those layers — so resolve it before building the
-        // base. Last explicit declaration wins; `mode` is Option, so "absent" and
-        // "explicitly auto" stay distinguishable.
-        let declared = layers
-            .iter()
-            .rev()
-            .find_map(|l| l.theme.mode)
-            .unwrap_or_default();
-        let resolved = declared.resolve();
-
-        let mut config = AppConfig::default();
-        config.theme.colors = ColorConfig::for_mode(resolved);
-
-        for layer in layers {
-            config.merge(layer);
-        }
-
-        // `merge` deliberately ignores `import` (a load-time directive, already
-        // resolved above); restore the declared list so the loaded config still
-        // reports what it was built from. Record the resolved mode for the same
-        // reason — after the merge, so a layer's raw "auto" cannot overwrite it.
+        let mut config = Self::from_layers(layers)
+            .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
+        // `import` is a load-time directive, never merged; report what the root declared.
         config.import = imports;
-        config.theme.mode = Some(resolved);
 
-        // Validate configuration (e.g. color names); report config file path on error
         config
             .validate()
             .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
@@ -3046,9 +3146,6 @@ impl AppConfig {
 
     /// Append every file named by `imports` to `out`, depth-first, in order.
     ///
-    /// Collecting rather than merging in place lets the caller inspect the whole
-    /// chain (to resolve `theme.mode`) before choosing the base to merge onto.
-    ///
     /// `origin` is the file that declared them; relative paths resolve against its
     /// directory. `stack` holds the canonical paths currently being loaded, so a
     /// cycle is reported instead of followed.
@@ -3056,7 +3153,7 @@ impl AppConfig {
         imports: &[String],
         origin: &Path,
         stack: &mut Vec<PathBuf>,
-        out: &mut Vec<AppConfig>,
+        out: &mut Vec<ConfigLayer>,
     ) -> Result<()> {
         if imports.is_empty() {
             return Ok(());
@@ -3081,15 +3178,6 @@ impl AppConfig {
                 origin_dir.join(expanded)
             };
 
-            if !path.exists() {
-                eprintln!(
-                    "datui: warning: config import not found, skipping: {} (imported by {})",
-                    path.display(),
-                    origin.display()
-                );
-                continue;
-            }
-
             let canonical = crate::canonical::canonicalize(&path).unwrap_or_else(|_| path.clone());
             if stack.contains(&canonical) {
                 return Err(eyre!(
@@ -3099,12 +3187,19 @@ impl AppConfig {
                 ));
             }
 
-            let layer = Self::read_layer(&path)
-                .map_err(|e| eyre!("{} (imported by {})", e, origin.display()))?;
-            let nested = layer.import.clone();
+            let Some(layer) = ConfigLayer::read(&path)
+                .map_err(|e| eyre!("{} (imported by {})", e, origin.display()))?
+            else {
+                eprintln!(
+                    "datui: warning: config import not found, skipping: {} (imported by {})",
+                    path.display(),
+                    origin.display()
+                );
+                continue;
+            };
 
             stack.push(canonical);
-            Self::collect_imports(&nested, &path, stack, out)?;
+            Self::collect_imports(&layer.imports, &path, stack, out)?;
             stack.pop();
 
             out.push(layer);
@@ -3113,65 +3208,40 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Read and parse a single config file. No import resolution, no merging.
-    fn read_layer(path: &Path) -> Result<AppConfig> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| eyre!("Failed to read config file at {}: {}", path.display(), e))?;
-
-        for (key, flag) in removed_file_loading_keys(&content) {
-            eprintln!(
-                "datui: warning: {}: file_loading.{key} is no longer read; \
-                 pass {flag} when opening the file it describes",
-                path.display(),
-            );
-        }
-
-        let mut layer: AppConfig = toml::from_str(&content)
-            .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))?;
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        for source in &mut layer.sources {
-            source.anchor_paths(dir);
-        }
-        Ok(layer)
-    }
-
-    /// Merge another config into this one (other takes precedence)
+    /// The configuration `layers` describe, lowest precedence first, over datui's
+    /// defaults. Defaults are resolved here, once: a layer holds only what it wrote.
     ///
-    /// `import` is intentionally not merged: it is a load-time directive resolved by
-    /// `load_from_file`, not a setting a lower layer should be able to hand upward.
-    pub fn merge(&mut self, other: AppConfig) {
-        // Version: take other's version if present and different from default
-        if other.version != AppConfig::default().version {
-            self.version = other.version;
+    /// The colors start from the built-in palette for the `theme.mode` the layers
+    /// declare, so a light theme's unset slots take light values. `import` is left
+    /// empty; `load_from_file` follows imports and reports them. Not validated.
+    pub fn from_layers(layers: impl IntoIterator<Item = ConfigLayer>) -> Result<Self> {
+        let mut merged = ConfigLayer::default();
+        for layer in layers {
+            merged.merge(layer);
         }
+        let mut table = merged.table;
 
-        // A collection replaces the one of the same name whole: datasets are never
-        // merged across files, so a later file says exactly what the collection holds.
-        // Two of one name in one file are both kept, for validation to name.
-        let mut seen = std::collections::HashSet::new();
-        for source in other.sources {
-            let first = seen.insert(source.name.clone());
-            match self.sources.iter_mut().find(|s| s.name == source.name) {
-                Some(existing) if first => *existing = source,
-                _ => self.sources.push(source),
-            }
+        let theme = table.get_mut("theme").and_then(toml::Value::as_table_mut);
+        let mode: ThemeMode = match theme.as_ref().and_then(|t| t.get("mode")) {
+            Some(mode) => mode.clone().try_into()?,
+            None => ThemeMode::default(),
+        };
+        let resolved = mode.resolve();
+        let colors = theme.and_then(|t| t.remove("colors"));
+
+        let mut config: AppConfig = toml::Value::Table(table).try_into()?;
+
+        let mut palette = match toml::Value::try_from(ColorConfig::for_mode(resolved))? {
+            toml::Value::Table(palette) => palette,
+            _ => unreachable!("a struct serializes to a table"),
+        };
+        if let Some(toml::Value::Table(colors)) = colors {
+            palette.extend(colors);
         }
-
-        // Merge each section
-        self.cloud.merge(other.cloud);
-        self.file_loading.merge(other.file_loading);
-        self.display.merge(other.display);
-        self.performance.merge(other.performance);
-        self.chart.merge(other.chart);
-        self.theme.merge(other.theme);
-        self.glyphs.merge(other.glyphs);
-        self.clipboard.merge(other.clipboard);
-        self.data.merge(other.data);
-        self.ui.merge(other.ui);
-        self.query.merge(other.query);
-        self.templates.merge(other.templates);
-        self.debug.merge(other.debug);
-        self.sync_dataset_access();
+        config.theme.colors = toml::Value::Table(palette).try_into()?;
+        config.theme.mode = Some(resolved);
+        config.sync_dataset_access();
+        Ok(config)
     }
 
     /// Every collection: the configured ones in the order defined, imports first, then
@@ -3194,8 +3264,8 @@ impl AppConfig {
             .collect()
     }
 
-    /// Derive `[cloud]`'s view of how collection URLs are read. Called by `merge` and
-    /// `default`; call it after changing `sources` or `data` by hand.
+    /// Derive `[cloud]`'s view of how collection URLs are read. Called by
+    /// `from_layers` and `default`; call it after changing `sources` or `data` by hand.
     pub fn sync_dataset_access(&mut self) {
         self.cloud.dataset_access = self
             .collections()
@@ -3291,115 +3361,6 @@ impl AppConfig {
     }
 }
 
-// Merge implementations for each config section
-impl FileLoadingConfig {
-    pub fn merge(&mut self, other: Self) {
-        if other.parse_dates.is_some() {
-            self.parse_dates = other.parse_dates;
-        }
-        if other.decompress_in_memory.is_some() {
-            self.decompress_in_memory = other.decompress_in_memory;
-        }
-        if other.temp_dir.is_some() {
-            self.temp_dir = other.temp_dir.clone();
-        }
-        if other.single_spine_schema.is_some() {
-            self.single_spine_schema = other.single_spine_schema;
-        }
-        if other.null_values.is_some() {
-            self.null_values = other.null_values.clone();
-        }
-        if other.parse_strings.is_some() {
-            self.parse_strings = other.parse_strings;
-        }
-        if other.parse_strings_sample_rows.is_some() {
-            self.parse_strings_sample_rows = other.parse_strings_sample_rows;
-        }
-        if other.infer_schema_length.is_some() {
-            self.infer_schema_length = other.infer_schema_length;
-        }
-        if other.ignore_errors.is_some() {
-            self.ignore_errors = other.ignore_errors;
-        }
-    }
-}
-
-impl DisplayConfig {
-    pub fn merge(&mut self, other: Self) {
-        if other.unicode != crate::glyphs::UnicodeMode::default() {
-            self.unicode = other.unicode;
-        }
-        let default = DisplayConfig::default();
-        if other.pages_lookahead != default.pages_lookahead {
-            self.pages_lookahead = other.pages_lookahead;
-        }
-        if other.pages_lookback != default.pages_lookback {
-            self.pages_lookback = other.pages_lookback;
-        }
-        if other.max_buffered_rows != default.max_buffered_rows {
-            self.max_buffered_rows = other.max_buffered_rows;
-        }
-        if other.max_buffered_mb != default.max_buffered_mb {
-            self.max_buffered_mb = other.max_buffered_mb;
-        }
-        if other.row_numbers != default.row_numbers {
-            self.row_numbers = other.row_numbers;
-        }
-        if other.row_start_index != default.row_start_index {
-            self.row_start_index = other.row_start_index;
-        }
-        if other.table_cell_padding != default.table_cell_padding {
-            self.table_cell_padding = other.table_cell_padding;
-        }
-        if other.column_colors != default.column_colors {
-            self.column_colors = other.column_colors;
-        }
-        if other.dtype_row != default.dtype_row {
-            self.dtype_row = other.dtype_row;
-        }
-        if other.notes_accent != default.notes_accent {
-            self.notes_accent = other.notes_accent;
-        }
-        if other.sidebar_width != default.sidebar_width {
-            self.sidebar_width = other.sidebar_width;
-        }
-        if other.align_numeric_right != default.align_numeric_right {
-            self.align_numeric_right = other.align_numeric_right;
-        }
-        if other.number_format != default.number_format {
-            self.number_format = other.number_format;
-        }
-    }
-}
-
-impl PerformanceConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = PerformanceConfig::default();
-        if other.analysis_sample_rows != default.analysis_sample_rows {
-            self.analysis_sample_rows = other.analysis_sample_rows;
-        }
-        if other.event_poll_interval_ms != default.event_poll_interval_ms {
-            self.event_poll_interval_ms = other.event_poll_interval_ms;
-        }
-        if other.polars_streaming != default.polars_streaming {
-            self.polars_streaming = other.polars_streaming;
-        }
-        if other.quality_local_copy_mb != default.quality_local_copy_mb {
-            self.quality_local_copy_mb = other.quality_local_copy_mb;
-        }
-    }
-}
-
-impl ThemeConfig {
-    pub fn merge(&mut self, other: Self) {
-        // `mode` is Option, so presence is unambiguous: a later layer that names it wins.
-        if other.mode.is_some() {
-            self.mode = other.mode;
-        }
-        self.colors.merge(other.colors);
-    }
-}
-
 impl ColorConfig {
     /// Validate all color strings can be parsed
     fn validate(&self, parser: &ColorParser) -> Result<()> {
@@ -3474,219 +3435,6 @@ impl ColorConfig {
         validate_color!(&self.gradient_end, "gradient_end");
 
         Ok(())
-    }
-
-    pub fn merge(&mut self, other: Self) {
-        let default = ColorConfig::default();
-
-        // Macro would be nice here, but keeping it explicit for clarity
-        if other.keybind_hints != default.keybind_hints {
-            self.keybind_hints = other.keybind_hints;
-        }
-        if other.keybind_labels != default.keybind_labels {
-            self.keybind_labels = other.keybind_labels;
-        }
-        if other.throbber != default.throbber {
-            self.throbber = other.throbber;
-        }
-        if other.primary_chart_series_color != default.primary_chart_series_color {
-            self.primary_chart_series_color = other.primary_chart_series_color;
-        }
-        if other.secondary_chart_series_color != default.secondary_chart_series_color {
-            self.secondary_chart_series_color = other.secondary_chart_series_color;
-        }
-        if other.success != default.success {
-            self.success = other.success;
-        }
-        if other.error != default.error {
-            self.error = other.error;
-        }
-        if other.warning != default.warning {
-            self.warning = other.warning;
-        }
-        if other.dimmed != default.dimmed {
-            self.dimmed = other.dimmed;
-        }
-        if other.background != default.background {
-            self.background = other.background;
-        }
-        if other.surface != default.surface {
-            self.surface = other.surface;
-        }
-        if other.controls_bg != default.controls_bg {
-            self.controls_bg = other.controls_bg;
-        }
-        if other.text_primary != default.text_primary {
-            self.text_primary = other.text_primary;
-        }
-        if other.text_secondary != default.text_secondary {
-            self.text_secondary = other.text_secondary;
-        }
-        if other.text_inverse != default.text_inverse {
-            self.text_inverse = other.text_inverse;
-        }
-        if other.table_header != default.table_header {
-            self.table_header = other.table_header;
-        }
-        if other.table_header_bg != default.table_header_bg {
-            self.table_header_bg = other.table_header_bg;
-        }
-        if other.row_numbers != default.row_numbers {
-            self.row_numbers = other.row_numbers;
-        }
-        if other.column_separator != default.column_separator {
-            self.column_separator = other.column_separator;
-        }
-        if other.table_selected != default.table_selected {
-            self.table_selected = other.table_selected;
-        }
-        if other.sidebar_border != default.sidebar_border {
-            self.sidebar_border = other.sidebar_border;
-        }
-        if other.modal_border_active != default.modal_border_active {
-            self.modal_border_active = other.modal_border_active;
-        }
-        if other.modal_border_error != default.modal_border_error {
-            self.modal_border_error = other.modal_border_error;
-        }
-        if other.distribution_normal != default.distribution_normal {
-            self.distribution_normal = other.distribution_normal;
-        }
-        if other.distribution_skewed != default.distribution_skewed {
-            self.distribution_skewed = other.distribution_skewed;
-        }
-        if other.distribution_other != default.distribution_other {
-            self.distribution_other = other.distribution_other;
-        }
-        if other.outlier_marker != default.outlier_marker {
-            self.outlier_marker = other.outlier_marker;
-        }
-        if other.cursor_focused != default.cursor_focused {
-            self.cursor_focused = other.cursor_focused;
-        }
-        if other.cursor_dimmed != default.cursor_dimmed {
-            self.cursor_dimmed = other.cursor_dimmed;
-        }
-        if other.cursor_text != default.cursor_text {
-            self.cursor_text = other.cursor_text;
-        }
-        if other.alternate_row_color != default.alternate_row_color {
-            self.alternate_row_color = other.alternate_row_color;
-        }
-        if other.str_col != default.str_col {
-            self.str_col = other.str_col;
-        }
-        if other.int_col != default.int_col {
-            self.int_col = other.int_col;
-        }
-        if other.float_col != default.float_col {
-            self.float_col = other.float_col;
-        }
-        if other.bool_col != default.bool_col {
-            self.bool_col = other.bool_col;
-        }
-        if other.temporal_col != default.temporal_col {
-            self.temporal_col = other.temporal_col;
-        }
-        if other.binary_col != default.binary_col {
-            self.binary_col = other.binary_col;
-        }
-        if other.chart_series_color_1 != default.chart_series_color_1 {
-            self.chart_series_color_1 = other.chart_series_color_1;
-        }
-        if other.chart_series_color_2 != default.chart_series_color_2 {
-            self.chart_series_color_2 = other.chart_series_color_2;
-        }
-        if other.chart_series_color_3 != default.chart_series_color_3 {
-            self.chart_series_color_3 = other.chart_series_color_3;
-        }
-        if other.chart_series_color_4 != default.chart_series_color_4 {
-            self.chart_series_color_4 = other.chart_series_color_4;
-        }
-        if other.chart_series_color_5 != default.chart_series_color_5 {
-            self.chart_series_color_5 = other.chart_series_color_5;
-        }
-        if other.chart_series_color_6 != default.chart_series_color_6 {
-            self.chart_series_color_6 = other.chart_series_color_6;
-        }
-        if other.chart_series_color_7 != default.chart_series_color_7 {
-            self.chart_series_color_7 = other.chart_series_color_7;
-        }
-        if other.accent != default.accent {
-            self.accent = other.accent;
-        }
-        if other.accent_bright != default.accent_bright {
-            self.accent_bright = other.accent_bright;
-        }
-        if other.gradient_start != default.gradient_start {
-            self.gradient_start = other.gradient_start;
-        }
-        if other.gradient_end != default.gradient_end {
-            self.gradient_end = other.gradient_end;
-        }
-    }
-}
-
-impl UiConfig {
-    pub fn merge(&mut self, other: Self) {
-        self.controls.merge(other.controls);
-    }
-}
-
-impl ControlsConfig {
-    pub fn merge(&mut self, other: Self) {
-        if other.custom_controls.is_some() {
-            self.custom_controls = other.custom_controls;
-        }
-        let default = ControlsConfig::default();
-        if other.row_count_width != default.row_count_width {
-            self.row_count_width = other.row_count_width;
-        }
-    }
-}
-
-impl QueryConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = QueryConfig::default();
-        if other.history_limit != default.history_limit {
-            self.history_limit = other.history_limit;
-        }
-        if other.enable_history != default.enable_history {
-            self.enable_history = other.enable_history;
-        }
-        if other.default_mode != default.default_mode {
-            self.default_mode = other.default_mode;
-        }
-    }
-}
-
-impl TemplateConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = TemplateConfig::default();
-        if other.auto_apply != default.auto_apply {
-            self.auto_apply = other.auto_apply;
-        }
-    }
-}
-
-impl DebugConfig {
-    pub fn merge(&mut self, other: Self) {
-        let default = DebugConfig::default();
-        if other.enabled != default.enabled {
-            self.enabled = other.enabled;
-        }
-        if other.show_performance != default.show_performance {
-            self.show_performance = other.show_performance;
-        }
-        if other.show_query != default.show_query {
-            self.show_query = other.show_query;
-        }
-        if other.show_transformations != default.show_transformations {
-            self.show_transformations = other.show_transformations;
-        }
-        if other.log_file.is_some() {
-            self.log_file = other.log_file;
-        }
     }
 }
 
@@ -4274,15 +4022,12 @@ mod tests {
 
     #[test]
     fn a_config_that_still_sets_a_layout_key_is_told_so() {
-        let found = removed_file_loading_keys(
-            "[file_loading]\nskip_rows = 2\nhas_header = false\nparse_dates = true\n",
-        );
+        let found = |text: &str| removed_file_loading_keys(&toml::from_str(text).unwrap());
         assert_eq!(
-            found,
+            found("[file_loading]\nskip_rows = 2\nhas_header = false\nparse_dates = true\n"),
             [("has_header", "--no-header"), ("skip_rows", "--skip-rows")]
         );
-        assert!(removed_file_loading_keys("[display]\nskip_rows = 2\n").is_empty());
-        assert!(removed_file_loading_keys("not toml [").is_empty());
+        assert!(found("[display]\nskip_rows = 2\n").is_empty());
     }
 
     #[test]

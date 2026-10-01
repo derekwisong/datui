@@ -1,14 +1,13 @@
 # Add configuration options
 
 Start in `crates/datui-lib/src/config.rs`. Use an existing option in the same
-section as a model, and update all seven parts:
+section as a model, and update all six parts:
 
 | Part | Change |
 |---|---|
 | Struct | Add the field to the appropriate config section |
 | Default | Set its value in that section's `Default` implementation |
-| Merge | Handle it in the section's `merge()` method |
-| Generated comments | Add its description to the section's `*_COMMENTS` array |
+| Generated comments | Add its description to the section's `*_COMMENTS` array; if it is unset by default, add an example to `UNSET_EXAMPLES` |
 | Usage | Read the merged setting where the behavior is implemented |
 | Tests | Cover deserialization, defaults, merging and the affected behavior |
 | Documentation | Add it to the [settings reference](../reference/settings.md) and relevant guide |
@@ -27,11 +26,6 @@ notes_accent: true,
 
 // Entry in DISPLAY_COMMENTS:
 ("notes_accent", "Accent the i key when dataset notes are unread"),
-
-// Inside DisplayConfig::merge(), where default is DisplayConfig::default():
-if other.notes_accent != default.notes_accent {
-    self.notes_accent = other.notes_accent;
-}
 ```
 
 These are excerpts from separate locations, not one Rust block to paste.
@@ -44,18 +38,25 @@ dataset catalog is active TOML; preserve that distinction.
 
 ## Merge and validation rules
 
-| Field | Existing merge rule |
-|---|---|
-| `Option<T>` | Replace when the incoming value is `Some` |
-| Plain scalar | Replace when the incoming value differs from its default |
-| Color | Compare with the built-in default, then validate with `ColorParser` |
+Each config file is a `ConfigLayer`: the TOML keys it wrote, nothing filled in.
+Layers merge in import order, then `AppConfig::from_layers` applies the defaults
+once. A new field needs no merge code.
 
-A plain field set to its default cannot reliably override a non-default import.
-Do not assume the merge records whether a user explicitly wrote a value.
+| Key | Across layers |
+|---|---|
+| Any value | The last layer that writes it wins, even when it writes the default |
+| Table | Merged key by key |
+| `COMBINED_KEYS` lists | Added up (`Union`) or matched by `name` (`ByName`) |
+| `CLOUD_BLANK_IS_UNSET` | A blank string is no value |
+| `theme.colors` | Laid over the palette for the resolved `theme.mode` |
+
+Add a key to `COMBINED_KEYS` only when it is a list that should add up or a
+named array of tables. Environment and command-line cloud settings go through
+`CloudConfig::overlay` in `effective_cloud`, after the files.
 
 Add range or format checks to the appropriate validation method when needed.
-Test an omitted field, an explicit value, merging over an existing value, and
-invalid/boundary values where relevant. A test that only assigns a field and
+Test an omitted field, an explicit value, an explicit default over an
+imported value, and invalid/boundary values where relevant. A test that only assigns a field and
 reads it back does not check configuration loading.
 
 ## Add a CLI override
@@ -75,7 +76,7 @@ Check whether the Python options in `crates/datui-pyo3` should expose it too.
 ## Add a color
 
 In addition to the checklist, update `ColorConfig::validate`,
-`ColorConfig::merge`, `Theme::from_config`, and the theme's default values.
+`Theme::from_config`, and the theme's default values.
 Test both light and dark modes. Use the theme field in rendering code;
 do not put a hardcoded color in a widget.
 

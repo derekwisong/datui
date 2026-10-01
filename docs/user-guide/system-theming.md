@@ -56,9 +56,7 @@ import = ["~/.local/state/omarchy/current/theme/datui.toml"]
 int_col = "#ff8800"
 ```
 
-One catch: a color set to exactly datui's built-in default reads as unset and
-will not override the import. See
-[the caveat](../reference/settings.md#a-caveat-when-overriding-an-imported-color).
+A color you write wins even when it equals datui's built-in default.
 
 ### Overriding one theme only
 

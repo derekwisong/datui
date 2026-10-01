@@ -440,6 +440,8 @@ pub struct ViewRollback {
     active_fuzzy_query: String,
     column_order: Vec<String>,
     locked_columns_count: usize,
+    /// The frozen fit `df` was sliced for; a later layout may have changed it.
+    frozen_fit: (usize, usize),
     grouped: Option<GroupedView>,
     reshaped_lf: Option<LazyFrame>,
     last_pivot_spec: Option<PivotSpec>,
@@ -6381,6 +6383,7 @@ impl DataTableState {
             active_fuzzy_query: self.active_fuzzy_query.clone(),
             column_order: self.column_order.clone(),
             locked_columns_count: self.locked_columns_count,
+            frozen_fit: self.frozen_fit,
             grouped: self.grouped.clone(),
             reshaped_lf: self.reshaped_lf.clone(),
             last_pivot_spec: self.last_pivot_spec.clone(),
@@ -6437,6 +6440,7 @@ impl DataTableState {
         self.active_fuzzy_query = saved.active_fuzzy_query;
         self.column_order = saved.column_order;
         self.locked_columns_count = saved.locked_columns_count;
+        self.frozen_fit = saved.frozen_fit;
         self.grouped = saved.grouped;
         // A q-style query or a search forgets the pivot or melt it replaces.
         self.reshaped_lf = saved.reshaped_lf;
@@ -13905,6 +13909,26 @@ mod tests {
                     assert!(frozen.contains(name), "{rows:#?}");
                 }
             }
+        }
+    }
+
+    /// A rollback puts back the frozen fit its columns were sliced for: a wider
+    /// layout since then must re-slice them, or the columns that had to scroll show
+    /// twice, frozen and scrolling.
+    #[test]
+    fn a_rollback_keeps_the_frozen_fit_its_columns_were_sliced_for() {
+        let df = phonetic_frame();
+        let mut state = state_of(&df, 2);
+        state.set_locked_columns(4);
+        draw(DataTable::default(), &mut state, 60, 3);
+        assert!(state.frozen_shown() < 4);
+        let saved = state.rollback_point();
+        draw(DataTable::default(), &mut state, 200, 3);
+        assert_eq!(state.frozen_shown(), 4);
+        state.roll_back(saved);
+        let rows = draw(DataTable::default(), &mut state, 200, 3);
+        for name in PHONETIC {
+            assert_eq!(rows[0].matches(name).count(), 1, "{name}: {rows:#?}");
         }
     }
 

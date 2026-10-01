@@ -1113,6 +1113,185 @@ mod quality_sample_tests {
         assert!(!screen(&mut app).contains("Run waits"));
     }
 
+    /// A report, an error or a stage from a run that is no longer current changes
+    /// nothing on screen and nothing in the cache: the run in flight goes on, and its
+    /// own report is the one installed. The rows the stale run read are still kept,
+    /// keyed by what chose them, since a finished read is not thrown away.
+    #[test]
+    fn a_stale_report_never_replaces_the_current_one() {
+        let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: data_quality::QualityStage::ProfilingColumns,
+            reads_source: false,
+            interruptible: false,
+        });
+        let current = app.task_generation;
+        let stale = current.wrapping_sub(1);
+        let on_screen = app.analysis_modal.data_quality_results.clone().unwrap();
+        let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
+        let state = app.data_table_state.as_ref().unwrap();
+        let (dataset_generation, view_generation) =
+            (app.dataset_generation, state.len_generation());
+        let measured = |seed: u64| {
+            let plan = data_quality::DataQualityPlan {
+                dataset_rows: 2,
+                sample_seed: seed,
+                ..data_quality::DataQualityPlan::default()
+            };
+            let (results, rows) = data_quality::compute_data_quality_kept(
+                &polars::prelude::IntoLazy::lazy(df.clone()),
+                None,
+                &plan,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+            let kept = KeptQualitySample {
+                dataset_generation,
+                view_generation,
+                sample: plan.sample(),
+                rows: std::sync::Arc::new(rows.unwrap()),
+                source: crate::quality_export::SourceIdentity::default(),
+            };
+            (plan, results, kept)
+        };
+
+        let (old_plan, old_results, old_rows) = measured(1);
+        app.event(&AppEvent::BackgroundQualityPhase {
+            generation: stale,
+            phase: data_quality::QualityPhase {
+                stage: data_quality::QualityStage::Assembling,
+                reads_source: false,
+                interruptible: false,
+            },
+        });
+        app.event(&AppEvent::BackgroundDataQualityReady {
+            generation: stale,
+            results: old_results,
+            kept: Some(old_rows),
+            plan: Box::new(old_plan.clone()),
+        });
+        app.event(&AppEvent::BackgroundError {
+            generation: stale,
+            message: "the stale run failed".to_string(),
+        });
+        assert_eq!(
+            format!("{:?}", app.analysis_modal.data_quality_results),
+            format!("{:?}", Some(&on_screen)),
+            "the report on screen stays"
+        );
+        assert_eq!(
+            app.analysis_modal
+                .computing
+                .as_ref()
+                .map(|p| p.phase.as_str()),
+            Some("Profiling columns"),
+            "the run in flight goes on"
+        );
+        assert!(app.is_busy() && !app.error_modal.active);
+        assert!(!app.quality_cached(&old_plan), "nothing cached from it");
+        assert!(app.quality_kept_serves(&old_plan), "its rows are kept");
+
+        let (new_plan, new_results, new_rows) = measured(2);
+        app.event(&AppEvent::BackgroundDataQualityReady {
+            generation: current,
+            results: new_results.clone(),
+            kept: Some(new_rows),
+            plan: Box::new(new_plan.clone()),
+        });
+        assert_eq!(
+            format!("{:?}", app.analysis_modal.data_quality_results),
+            format!("{:?}", Some(&new_results))
+        );
+        assert_eq!(
+            app.analysis_modal.data_quality_last_plan.as_ref(),
+            Some(&new_plan)
+        );
+        assert!(app.analysis_modal.computing.is_none() && !app.is_busy());
+        assert!(app.quality_cached(&new_plan));
+        drop(worker);
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
+    }
+
+    /// The progress view holds still while a run goes through its stages: a new
+    /// stage, a spinner frame, the clock and a row count change the words on two
+    /// lines, and no cell outside them moves, at 80x24 and 60x20.
+    #[test]
+    fn stages_and_spinner_frames_do_not_move_the_layout() {
+        use data_quality::QualityStage;
+        let (mut app, _rx, _worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: QualityStage::Preparing,
+            reads_source: false,
+            interruptible: false,
+        });
+        let frames = [
+            (QualityStage::Preparing, None, 0, 0),
+            (QualityStage::ReadingSample, Some(true), 1, 0),
+            (QualityStage::ReadingSample, Some(true), 2, 9),
+            (QualityStage::CountingSegments, Some(true), 3, 75),
+            (QualityStage::ProfilingColumns, Some(false), 4, 3_700),
+            (QualityStage::CheckingSharedNulls, Some(false), 5, 3_700),
+            (QualityStage::Assembling, Some(false), 6, 3_700),
+        ];
+        for (width, height) in [(80, 24), (60, 20)] {
+            let area = ratatui::layout::Rect::new(0, 0, width, height);
+            let mut drawn = Vec::new();
+            for (stage, reads, frame, seconds) in frames {
+                let watch = crate::sampling::ReadWatch::default();
+                if reads == Some(true) {
+                    watch.saw(1_234_567 * frame as usize);
+                }
+                let progress = app.analysis_modal.computing.as_mut().unwrap();
+                progress.phase = stage.label().to_string();
+                progress.reads_source = reads;
+                progress.read = Some(watch);
+                progress.started =
+                    std::time::Instant::now() - std::time::Duration::from_secs(seconds);
+                app.throbber_frame = frame;
+                let mut buffer = ratatui::buffer::Buffer::empty(area);
+                app.render(area, &mut buffer);
+                let rows = (0..height)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buffer[(x, y)].symbol().to_string())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>();
+                let at = rows
+                    .iter()
+                    .enumerate()
+                    .find_map(|(y, row)| row.find(stage.label()).map(|x| (y, x)))
+                    .unwrap_or_else(|| panic!("{} on screen: {rows:#?}", stage.label()));
+                let clock =
+                    crate::render::analysis_view::elapsed(std::time::Duration::from_secs(seconds));
+                assert!(rows[at.0].contains(&clock), "the clock beside the stage");
+                drawn.push((rows, at));
+            }
+            let (first, at) = &drawn[0];
+            for (rows, stage_at) in &drawn[1..] {
+                assert_eq!(stage_at, at, "the stage starts in one place");
+                for (y, (row, before)) in rows.iter().zip(first).enumerate() {
+                    // The stage's line and the one under it, which says what it
+                    // reads, are the words that change.
+                    if y != at.0 && y != at.0 + 2 && row != before {
+                        // The control bar's spinner turns in its one cell.
+                        let moved = row
+                            .chars()
+                            .zip(before.chars())
+                            .filter(|(now, then)| now != then)
+                            .count();
+                        assert!(
+                            y + 1 == height as usize && moved <= 1,
+                            "row {y} moved at {width}x{height}:\n{before}\n{row}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// No other way in starts a read beside a cancelled run still reading: not the
     /// rows a finding stages, not `v` on a sample no longer kept, not another tool.
     /// Each waits, says why, and stays as it was; once the worker exits, each reads.

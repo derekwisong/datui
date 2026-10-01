@@ -8372,6 +8372,68 @@ mod tests {
             }
         }
     }
+
+    /// A grain finer than a report can show: past 1,000,000 keys the count the
+    /// sampling pass takes is dropped rather than grown with the table, the run
+    /// names the remedy, and the rows the pass read are kept, so a coarser grain
+    /// reads nothing. A count pass of its own stops at the same limit.
+    #[test]
+    fn a_count_past_a_million_keys_gives_up_and_keeps_the_rows() {
+        let rows = crate::sampling::MAX_COUNTED_KEYS + 1;
+        let df = df!("id" => (0..rows as i64).collect::<Vec<_>>()).unwrap();
+        let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&read);
+        let lf = df.lazy().filter(col("id").map(
+            move |column| {
+                counter.fetch_add(column.len(), std::sync::atomic::Ordering::Relaxed);
+                Ok(column.is_not_null().into_column())
+            },
+            |_, field| Ok(Field::new(field.name().clone(), DataType::Boolean)),
+        ));
+        let by_id = DataQualityPlan {
+            dataset_rows: 1_000,
+            grain: QualityGrain::Partition("id".into()),
+            ..DataQualityPlan::default()
+        };
+        let watch = QualityWatch::default();
+        let (results, kept) =
+            compute_data_quality_watched(&lf, None, &by_id, None, false, None, &watch);
+        let error = results.unwrap_err().to_string();
+        assert!(
+            error.contains("More than 1,000,000 segments") && error.contains("coarser grain"),
+            "{error}"
+        );
+        let kept = kept.expect("the rows the pass read are kept");
+        assert_eq!(kept.df.height(), 1_000);
+        assert_eq!(kept.segment_count(&by_id), SegmentCount::TooMany);
+        assert!(
+            kept.estimated_bytes() < 1_000_000,
+            "no map of a million keys kept"
+        );
+
+        read.store(0, std::sync::atomic::Ordering::Relaxed);
+        let dataset = DataQualityPlan {
+            grain: QualityGrain::Dataset,
+            ..by_id.clone()
+        };
+        let (results, _) =
+            compute_data_quality_kept(&lf, None, &dataset, None, false, Some(&kept)).unwrap();
+        assert_eq!(results.evaluated_rows, 1_000);
+        assert_eq!(read.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        // Rows kept without a count, a first-rows sample, count the grain in a pass
+        // of their own, which gives up at the same limit.
+        let head = DataQualityPlan {
+            method: crate::sampling::SampleMethod::FirstRows,
+            ..by_id
+        };
+        let (results, kept) =
+            compute_data_quality_watched(&lf, None, &head, None, false, None, &watch);
+        let error = results.unwrap_err().to_string();
+        assert!(error.contains("More than 1,000,000 segments"), "{error}");
+        let kept = kept.expect("the head is kept");
+        assert_eq!(kept.segment_count(&head), SegmentCount::TooMany);
+    }
 }
 
 /// Intervals between time roles: what they count, and out of what.

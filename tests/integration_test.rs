@@ -60,6 +60,8 @@ fn pump_until(
                 let _ = tx.send(next);
             }
         }
+        // As `run()` paints after every update.
+        app.frame_painted();
         if done(app) {
             return;
         }
@@ -5015,6 +5017,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
         for _ in ticks() {
             let mut buf = Buffer::empty(terminal_area);
             app.render(terminal_area, &mut buf);
+            app.frame_painted();
             let needs = app
                 .data_table_state
                 .as_mut()
@@ -5111,6 +5114,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
     for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);
+        app.frame_painted();
         let needs = app
             .data_table_state
             .as_mut()
@@ -5178,6 +5182,7 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);
+        app.frame_painted();
         let needs = app
             .data_table_state
             .as_mut()
@@ -5262,6 +5267,7 @@ fn painted(
     let mut buf = Buffer::empty(area);
     for _ in ticks() {
         app.render(area, &mut buf);
+        app.frame_painted();
         let mut handled = false;
         while let Ok(ev) = rx.try_recv() {
             handled = true;
@@ -8918,6 +8924,7 @@ fn test_abandoned_load_does_not_corrupt_the_next_open() {
         let drained = drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
+        app.frame_painted();
         let needs = app
             .data_table_state
             .as_mut()
@@ -9483,6 +9490,7 @@ fn pump_home(
     for _ in ticks() {
         buf.reset();
         Widget::render(&mut *app, area, buf);
+        app.frame_painted();
         app.request_what_the_frame_needs();
         if done(app) {
             return;

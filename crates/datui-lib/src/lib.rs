@@ -364,6 +364,347 @@ mod export_format_tests {
         assert_eq!(state.num_rows_if_valid(), Some(1_000));
     }
 
+    /// A local frame of `rows` rows of `a`, filtered to `a < keep`, with no count yet.
+    fn filtered_local(rows: i32, keep: i32) -> (App, std::sync::mpsc::Receiver<AppEvent>, u64) {
+        use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+        use polars::prelude::IntoLazy;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let lf = polars::df!("a" => (0..rows).collect::<Vec<i32>>())
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
+        state.visible_rows = 10;
+        state.deferred(|s| {
+            s.filter(vec![FilterStatement {
+                column: "a".to_string(),
+                operator: FilterOperator::Lt,
+                value: keep.to_string(),
+                logical_op: LogicalOperator::And,
+            }])
+        });
+        assert!(!state.is_num_rows_valid());
+        let dataset = state.len_generation();
+        app.data_table_state = Some(state);
+        (app, rx, dataset)
+    }
+
+    fn recv(rx: &std::sync::mpsc::Receiver<AppEvent>) -> AppEvent {
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("background work reports back")
+    }
+
+    /// Handle events until the count for `dataset` lands, and return it with what its
+    /// handling asked for next.
+    fn until_counted(
+        app: &mut App,
+        rx: &std::sync::mpsc::Receiver<AppEvent>,
+        dataset: u64,
+    ) -> (usize, Option<AppEvent>) {
+        loop {
+            let event = recv(rx);
+            if let AppEvent::BackgroundLenFailed { len_generation } = &event {
+                assert_ne!(*len_generation, dataset, "the count failed");
+            }
+            let counted = match &event {
+                AppEvent::BackgroundLenReady {
+                    len_generation,
+                    num_rows,
+                    ..
+                } if *len_generation == dataset => Some(*num_rows),
+                _ => None,
+            };
+            let next = app.event(&event);
+            if let Some(rows) = counted {
+                return (rows, next);
+            }
+        }
+    }
+
+    /// A full count of a local filtered frame does not start until its first page is
+    /// in and painted, and starts once however often the view asks for rows.
+    #[test]
+    fn a_local_count_waits_for_its_page_to_be_painted() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        assert!(app.spawn_async_collect("Filtering..."));
+        assert_eq!(app.len_count_inflight, Some(dataset), "a count is coming");
+        assert_eq!(app.count_after_paint, Some(dataset));
+        assert!(app.row_count_pending());
+        // Frames painted, and the view asking again, while the page is read.
+        app.frame_painted();
+        assert!(app.spawn_async_collect("Filtering..."));
+        app.frame_painted();
+        assert!(!app.count_waits_for_a_frame());
+        assert_eq!(app.counts_spawned.get(), 0);
+
+        let ready = recv(&rx);
+        assert!(matches!(ready, AppEvent::BackgroundCollectReady { .. }));
+        app.event(&ready);
+        assert_eq!(
+            app.counts_spawned.get(),
+            0,
+            "the rows are in, not yet painted"
+        );
+        assert!(app.count_waits_for_a_frame());
+
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 1);
+        // Scrolling and painting again do not start another.
+        for _ in 0..3 {
+            app.handle_scroll(|state| state.half_page_down());
+            app.frame_painted();
+        }
+        assert_eq!(app.counts_spawned.get(), 1);
+        assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows_if_valid(), Some(50_000));
+        assert_eq!(app.len_count_inflight, None);
+        assert!(!app.row_count_pending());
+    }
+
+    /// A first page that comes back short is the count: none is taken, for some rows
+    /// or for none at all.
+    #[test]
+    fn a_short_first_page_is_the_count_of_a_local_frame() {
+        for keep in [30, 0] {
+            let (mut app, rx, dataset) = filtered_local(100_000, keep);
+            assert!(app.spawn_async_collect("Filtering..."));
+            let ready = recv(&rx);
+            assert!(matches!(ready, AppEvent::BackgroundCollectReady { .. }));
+            app.event(&ready);
+            let state = app.data_table_state.as_ref().unwrap();
+            assert_eq!(state.len_generation(), dataset);
+            assert_eq!(state.num_rows_if_valid(), Some(keep as usize));
+            assert_eq!(app.count_after_paint, None);
+            assert_eq!(app.len_count_inflight, None);
+            assert!(!app.row_count_pending());
+            app.frame_painted();
+            assert_eq!(app.counts_spawned.get(), 0, "{keep} rows");
+        }
+    }
+
+    /// A first page exactly as long as the frame cannot say it is the end: the count
+    /// is taken after the paint, and it is exact.
+    #[test]
+    fn a_page_that_fills_exactly_is_still_counted() {
+        let (mut probe, _rx, _) = filtered_local(100_000, 50_000);
+        probe.spawn_async_collect("Filtering...");
+        let inflight = probe.collect_inflight.expect("a page is read");
+        let page = inflight.end - inflight.start;
+
+        let (mut app, rx, dataset) = filtered_local(100_000, page as i32);
+        app.spawn_async_collect("Filtering...");
+        app.event(&recv(&rx));
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
+            None
+        );
+        assert!(app.count_waits_for_a_frame());
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 1);
+        assert_eq!(until_counted(&mut app, &rx, dataset).0, page);
+    }
+
+    /// End on a local frame not yet counted waits for the count rather than going to
+    /// the end of the rows read so far, and starts it at once if it was waiting on the
+    /// paint.
+    #[test]
+    fn end_before_the_paint_starts_the_count_and_waits_for_it() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        app.spawn_async_collect("Filtering...");
+        app.event(&recv(&rx));
+        assert_eq!(app.counts_spawned.get(), 0);
+
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        assert_eq!(app.end_after_count, Some(dataset));
+        assert_eq!(app.counts_spawned.get(), 1, "started for the End");
+        assert_eq!(app.status_message.as_deref(), Some(App::COUNTING_FOR_END));
+        assert!(app.row_count_pending(), "the bar spins while it counts");
+        assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
+        // The paint that follows, and End again, do not start a second.
+        app.frame_painted();
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        assert_eq!(app.counts_spawned.get(), 1);
+
+        let (rows, next) = until_counted(&mut app, &rx, dataset);
+        assert_eq!(rows, 50_000);
+        assert!(
+            matches!(next, Some(AppEvent::DoScrollEnd)),
+            "the jump follows"
+        );
+        assert_eq!(app.end_after_count, None);
+    }
+
+    /// A held count that End starts is marked running, whatever cleared the marker
+    /// meanwhile (a return from Data Quality's rows does): a second End waits on it
+    /// rather than starting another.
+    #[test]
+    fn a_count_end_starts_is_marked_running() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        app.spawn_async_collect("Filtering...");
+        app.event(&recv(&rx));
+        app.len_count_inflight = None;
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        assert_eq!(app.len_count_inflight, Some(dataset));
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 1);
+        assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
+    }
+
+    /// A count that failed is not started again by scrolling or painting; End asks
+    /// for it again.
+    #[test]
+    fn a_failed_count_is_retried_by_end_not_by_scrolling() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        app.len_count_failed = Some(dataset);
+        app.spawn_async_collect("Filtering...");
+        assert_eq!(app.len_count_inflight, None);
+        assert_eq!(app.count_after_paint, None);
+        app.event(&recv(&rx));
+        app.frame_painted();
+        app.handle_scroll(|state| state.half_page_down());
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 0);
+        assert!(!app.row_count_pending());
+
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        assert_eq!(app.counts_spawned.get(), 1);
+        let (rows, _) = until_counted(&mut app, &rx, dataset);
+        assert_eq!(rows, 50_000);
+        assert_eq!(app.len_count_failed, None);
+    }
+
+    /// A page that fails to read takes the count waiting on it down with it, marked
+    /// failed, and never starts it.
+    #[test]
+    fn a_page_that_fails_fails_the_count_waiting_on_it() {
+        use polars::prelude::*;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let values: Vec<String> = (0..1_000)
+            .map(|i| {
+                if i == 5 {
+                    "x".to_string()
+                } else {
+                    i.to_string()
+                }
+            })
+            .collect();
+        let lf = df!("s" => values)
+            .unwrap()
+            .lazy()
+            .with_column(col("s").strict_cast(DataType::Int64));
+        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
+        state.visible_rows = 10;
+        state.invalidate_num_rows();
+        let dataset = state.len_generation();
+        app.data_table_state = Some(state);
+
+        app.spawn_async_collect(App::LOADING_BUFFER);
+        assert_eq!(app.count_after_paint, Some(dataset));
+        let failed = recv(&rx);
+        assert!(matches!(failed, AppEvent::BackgroundCollectFailed { .. }));
+        app.event(&failed);
+        assert_eq!(app.count_after_paint, None);
+        assert_eq!(app.len_count_inflight, None);
+        assert_eq!(app.len_count_failed, Some(dataset));
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 0);
+    }
+
+    /// A page whose worker dies takes the count waiting on it down too, as a page that
+    /// fails to read does.
+    #[test]
+    fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == Job::Rows);
+        app.spawn_async_collect(App::LOADING_BUFFER);
+        assert_eq!(app.count_after_paint, Some(dataset));
+        let died = recv(&rx);
+        assert!(matches!(
+            died,
+            AppEvent::BackgroundFailed { job: Job::Rows, .. }
+        ));
+        app.event(&died);
+        assert_eq!(app.count_after_paint, None);
+        assert_eq!(app.len_count_inflight, None);
+        assert_eq!(app.len_count_failed, Some(dataset));
+        assert!(!app.count_waits_for_a_frame());
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 0);
+    }
+
+    /// A count waiting on a paint for a frame the view has left is never started:
+    /// the frame that replaced it gets the one count.
+    #[test]
+    fn a_count_for_a_replaced_frame_never_starts() {
+        use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+        let (mut app, rx, first) = filtered_local(100_000, 50_000);
+        app.spawn_async_collect("Filtering...");
+        assert_eq!(app.count_after_paint, Some(first));
+        app.event(&AppEvent::Filter(vec![FilterStatement {
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "40000".to_string(),
+            logical_op: LogicalOperator::And,
+        }]));
+        let second = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(second, first);
+        assert_eq!(app.count_after_paint, Some(second));
+        assert_eq!(app.len_count_inflight, Some(second));
+        while !app.count_waits_for_a_frame() {
+            let event = recv(&rx);
+            app.event(&event);
+        }
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 1);
+        assert_eq!(until_counted(&mut app, &rx, second).0, 40_000);
+
+        // Another dataset put on screen retires a count still waiting on the last.
+        let (mut app, _rx, dataset) = filtered_local(100_000, 50_000);
+        app.spawn_async_collect("Filtering...");
+        let other = DataTableState::from_lazyframe(
+            polars::prelude::IntoLazy::lazy(polars::df!("b" => [1, 2, 3]).unwrap()),
+            &opts(),
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(other, None, &opts(), None);
+        assert_ne!(app.count_after_paint, Some(dataset));
+        assert_ne!(app.len_count_inflight, Some(dataset));
+        app.frame_painted();
+        assert_eq!(
+            app.counts_spawned.get(),
+            0,
+            "the old dataset is not counted"
+        );
+    }
+
+    /// A count that reads only footers is not held for the paint: it reads no data.
+    #[test]
+    fn a_footer_count_starts_with_the_page() {
+        use polars::prelude::*;
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = std::fs::File::create(dir.path().join("part.parquet")).unwrap();
+        let mut df = df!("a" => (0..700).collect::<Vec<i32>>()).unwrap();
+        ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &opts()).unwrap();
+        state.visible_rows = 10;
+        state.set_parquet_count_dir(dir.path().to_path_buf());
+        state.invalidate_num_rows();
+        let dataset = state.len_generation();
+        app.data_table_state = Some(state);
+
+        app.spawn_async_collect(App::LOADING_BUFFER);
+        assert_eq!(app.counts_spawned.get(), 1, "started beside the page");
+        assert_eq!(app.count_after_paint, None);
+        assert_eq!(until_counted(&mut app, &rx, dataset).0, 700);
+    }
+
     #[test]
     fn a_filter_applied_from_the_end_shows_its_rows() {
         // End on a 10,000-row remote object, then a filter matching 100 rows: the view
@@ -1915,6 +2256,8 @@ mod chart_prepare_tests {
                     let _ = tx.send(next);
                 }
             }
+            // As the run loop paints after every update.
+            app.frame_painted();
             if done(app) {
                 return;
             }
@@ -8047,11 +8390,14 @@ pub enum AppEvent {
         /// from their footers.
         file_row_groups: Option<Vec<Vec<usize>>>,
     },
-    /// Background row count failed. Clears the in-flight marker so the count can be retried
-    /// on a later interaction; the total stays provisional in the meantime.
+    /// Background row count failed. Clears the in-flight marker; the total stays
+    /// provisional and is shown as unknown. Scrolling does not count again; End does.
     BackgroundLenFailed {
         len_generation: u64,
     },
+    /// A frame was painted. The run loop calls [`App::frame_painted`] itself; a harness
+    /// that paints nothing sends this when [`App::count_waits_for_a_frame`].
+    FramePainted,
     /// Every footer of a dataset that opened from two of them has now been read. What
     /// they say is in `App::pending_footers_result`; the columns they add join the
     /// dataset already on screen.
@@ -8454,6 +8800,7 @@ struct QueryRun {
     /// A count of that frame still running when the query began lands while the
     /// query's frame is installed; its answer goes into `rollback`.
     len_count_inflight: Option<u64>,
+    count_after_paint: Option<u64>,
     len_count_failed: Option<u64>,
     /// Rows `df` holds, when known, so a failure can say "of N".
     rows: Option<usize>,
@@ -9347,6 +9694,33 @@ impl LenCount {
 
     /// Count the rows. Blocks; `Err` when the count could not be taken.
     fn run(&self) -> Result<Counted, ()> {
+        let kind = if self.reads_footers() {
+            "footers"
+        } else {
+            "scan"
+        };
+        let began = std::time::Instant::now();
+        log::debug!(target: "datui", "row count {} ({kind}): started", self.len_generation);
+        let counted = self.count();
+        match &counted {
+            Ok(counted) => log::debug!(
+                target: "datui",
+                "row count {} ({kind}): {} rows in {:.1?}",
+                self.len_generation,
+                counted.rows,
+                began.elapsed()
+            ),
+            Err(()) => log::debug!(
+                target: "datui",
+                "row count {} ({kind}): failed after {:.1?}",
+                self.len_generation,
+                began.elapsed()
+            ),
+        }
+        counted
+    }
+
+    fn count(&self) -> Result<Counted, ()> {
         // A dataset's footers, many at once. Should one not read, the scan counts itself.
         if let Some(count) = &self.files
             && let Ok(groups) = count()
@@ -9806,6 +10180,14 @@ pub struct App {
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
     // the (potentially minutes-long) count on every scroll while it's still running.
     len_count_inflight: Option<u64>,
+    /// The `len_generation` of a count `len_count_inflight` promises that has not
+    /// started. A full count of a local frame competes with reading its first page for
+    /// the disk and the Polars workers, and that page's rows can make it unnecessary,
+    /// so it starts once a frame has painted them. See [`App::frame_painted`].
+    count_after_paint: Option<u64>,
+    /// Counts started, so a test can say none began before the page was painted.
+    #[cfg(test)]
+    counts_spawned: std::cell::Cell<usize>,
     // `len_generation` whose background row-count failed. While this matches the current
     // generation (and the count is still invalid) the row count is shown as "?" rather than a
     // misleading provisional total.
@@ -12656,6 +13038,8 @@ impl App {
         self.parquet_metadata_cache = None;
         self.export_df = None;
         self.data_table_state = Some(state);
+        // A count still waiting for the last dataset's rows to paint is not owed now.
+        self.retire_a_count_the_rows_answered();
         self.path = path.clone();
         if let Some(ref p) = path {
             self.original_file_format = Self::export_format_for(p, options);
@@ -12752,38 +13136,37 @@ impl App {
             return false;
         };
 
-        // The exact row count, when it isn't known and none is already running for
-        // this data version. Independent of `task_generation` (a scroll must not
-        // restart it) and does not set `busy`. On a local file it runs alongside the
-        // buffer collect; on an object store it rides in the collect spawned below,
-        // which answers it outright when the read comes back short and otherwise
-        // gets the row groups to itself first — unless no collect is spawned, when it
-        // runs on its own after all.
+        // The exact row count, when it isn't known and none is already coming for this
+        // data version. Independent of `task_generation` (a scroll must not restart it)
+        // and does not set `busy`. A count that reads only footers runs now: it reads no
+        // data. On an object store a data count rides in the collect spawned below,
+        // which answers it outright when the read comes back short and otherwise gets
+        // the row groups to itself first. On a local frame it waits until the page is
+        // painted (`count_after_paint`), and is not needed at all when that page came
+        // back short.
         let mut count = None;
-        if !state.is_num_rows_valid() && self.len_count_inflight != Some(state.len_generation()) {
-            let job = LenCount::for_state(state);
+        let generation = state.len_generation();
+        if !state.is_num_rows_valid()
+            && self.len_count_inflight != Some(generation)
             // Marked as running only once it is going to run. A dataset still reading
             // its own footers declines this count, because that pass is bringing it —
             // and the marker is cleared by a count coming back, so setting it for one
             // that was never started leaves it set for the rest of the session: a
             // spinner where the row count goes, a redraw on its account every frame,
             // and `End` waiting on nothing.
-            if state.counts_itself_later() {
-                count = None;
-            } else {
-                self.len_count_inflight = Some(job.len_generation);
-                // A fresh attempt for this generation clears any prior failure marker.
-                if self.len_count_failed == Some(job.len_generation) {
-                    self.len_count_failed = None;
-                }
-                count = Some(job);
-            }
+            && !state.counts_itself_later()
+            // A count that failed is not tried again on every scroll. End asks again.
+            && self.len_count_failed != Some(generation)
+        {
+            self.len_count_inflight = Some(generation);
+            count = Some(LenCount::for_state(state));
         }
-        // A footer count runs now too, remote or not: it reads no data.
-        if let Some(job) = count.take_if(|job| !state.is_remote_source() || job.reads_footers()) {
-            let count = OwedCount::new(job, self.events.clone());
-            self.runtime
-                .spawn_blocking(move || count.answer(LenCount::run));
+        let footers = count.take_if(|job| job.reads_footers());
+        if count.take_if(|_| !state.is_remote_source()).is_some() {
+            self.count_after_paint = Some(generation);
+        }
+        if let Some(job) = footers {
+            self.spawn_count(job);
         }
 
         // Read before the frame is borrowed: the predicate is over the whole App.
@@ -12812,9 +13195,7 @@ impl App {
         let Some(Some(request)) = request else {
             // Nothing to ride in: the view is covered, or the buffer on hand serves it.
             if let Some(job) = count {
-                let count = OwedCount::new(job, self.events.clone());
-                self.runtime
-                    .spawn_blocking(move || count.answer(LenCount::run));
+                self.spawn_count(job);
             }
             return covered;
         };
@@ -12909,6 +13290,84 @@ impl App {
             Ok(())
         });
         true
+    }
+
+    /// Count the rows off the UI thread; the answer comes back as `BackgroundLenReady`
+    /// or `BackgroundLenFailed`.
+    fn spawn_count(&self, job: LenCount) {
+        #[cfg(test)]
+        self.counts_spawned.set(self.counts_spawned.get() + 1);
+        let count = OwedCount::new(job, self.events.clone());
+        self.runtime
+            .spawn_blocking(move || count.answer(LenCount::run));
+    }
+
+    /// Whether the rows of the frame on screen that someone is waiting for are still
+    /// being read: the page an open, a query or a scroll asked for. A load-ahead is
+    /// nobody's wait, so a count does not queue behind one.
+    fn waited_on_rows_pending(&self, generation: u64) -> bool {
+        self.awaiting_dataset
+            || self.collect_owed.is_some()
+            || self.collect_inflight.is_some_and(|inflight| {
+                inflight.waited_on
+                    && inflight.dataset == generation
+                    && inflight.generation == self.task_generation
+            })
+    }
+
+    /// Whether a frame painted now would start, or retire, the count waiting on one.
+    /// The run loop paints after every update; a test harness, which paints nothing,
+    /// asks this to know when to say a frame was painted.
+    pub fn count_waits_for_a_frame(&self) -> bool {
+        self.count_after_paint
+            .is_some_and(|generation| !self.waited_on_rows_pending(generation))
+    }
+
+    /// A frame has been painted. Start the count that was waiting for its rows to be on
+    /// screen, unless they are still being read; retire it if the frame it was for has
+    /// gone or its rows already said how many there are.
+    pub fn frame_painted(&mut self) {
+        let Some(generation) = self.count_after_paint else {
+            return;
+        };
+        if self.waited_on_rows_pending(generation) {
+            return;
+        }
+        self.count_after_paint = None;
+        let wanted = self
+            .data_table_state
+            .as_ref()
+            .filter(|state| state.len_generation() == generation && !state.is_num_rows_valid());
+        match wanted {
+            Some(state) => {
+                self.len_count_inflight = Some(generation);
+                self.spawn_count(LenCount::for_state(state));
+            }
+            None => {
+                if self.len_count_inflight == Some(generation) {
+                    self.len_count_inflight = None;
+                }
+            }
+        }
+    }
+
+    /// The page just installed may have said how many rows there are, or belong to a
+    /// frame other than the one a count is waiting on: either way that count is not
+    /// owed any more.
+    fn retire_a_count_the_rows_answered(&mut self) {
+        let Some(generation) = self.count_after_paint else {
+            return;
+        };
+        let answered = self
+            .data_table_state
+            .as_ref()
+            .is_none_or(|state| state.len_generation() != generation || state.is_num_rows_valid());
+        if answered {
+            self.count_after_paint = None;
+            if self.len_count_inflight == Some(generation) {
+                self.len_count_inflight = None;
+            }
+        }
     }
 
     /// Spawn `job` on a worker. Captures the current generation and event sender for the
@@ -13058,19 +13517,23 @@ impl App {
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
+        // Any other frame whose end is not known yet waits for its count too, rather than
+        // jumping to the end of the rows read so far. A count waiting on a paint starts
+        // now; one already running or riding in a collect is waited on.
         if matches!(jump, AppEvent::DoScrollEnd)
             && let Some(state) = self.data_table_state.as_ref()
-            && state.is_remote_source()
             && !state.is_num_rows_valid()
         {
             let generation = state.len_generation();
             self.end_after_count = Some(generation);
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
-            if self.len_count_inflight != Some(generation) {
-                let count = OwedCount::new(LenCount::for_state(state), self.events.clone());
+            let held = self.count_after_paint == Some(generation);
+            if held {
+                self.count_after_paint = None;
+            }
+            if held || self.len_count_inflight != Some(generation) {
                 self.len_count_inflight = Some(generation);
-                self.runtime
-                    .spawn_blocking(move || count.answer(LenCount::run));
+                self.spawn_count(LenCount::for_state(state));
             }
             return None;
         }
@@ -13361,6 +13824,9 @@ impl App {
             collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
+            count_after_paint: None,
+            #[cfg(test)]
+            counts_spawned: std::cell::Cell::new(0),
             collect_inflight: None,
             len_count_failed: None,
             end_after_count: None,
@@ -22499,6 +22965,10 @@ impl App {
                 }
                 None
             }
+            AppEvent::FramePainted => {
+                self.frame_painted();
+                None
+            }
             AppEvent::BackgroundLenFailed { len_generation } => {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
@@ -22565,9 +23035,15 @@ impl App {
                     if let Some(inflight) = self.collect_inflight.take()
                         && let Some(state) = self.data_table_state.as_ref()
                     {
-                        state
-                            .measurements()
-                            .read_page(inflight.began.elapsed(), inflight.files);
+                        let took = inflight.began.elapsed();
+                        log::debug!(
+                            target: "datui",
+                            "rows {}..{} of {}: read in {took:.1?}",
+                            inflight.start,
+                            inflight.end,
+                            inflight.dataset
+                        );
+                        state.measurements().read_page(took, inflight.files);
                     }
                     let taken = self
                         .pending_collect_result
@@ -22580,6 +23056,7 @@ impl App {
                     {
                         state.apply_async_collect(result);
                     }
+                    self.retire_a_count_the_rows_answered();
                     // The query's first rows are in: it stands.
                     let ran = self.take_query_run();
                     if waited_on {
@@ -24060,6 +24537,7 @@ impl App {
             frame: state.len_generation(),
             rollback,
             len_count_inflight: self.len_count_inflight,
+            count_after_paint: self.count_after_paint,
             len_count_failed: self.len_count_failed,
             rows: None,
         });
@@ -24285,6 +24763,20 @@ impl App {
         if !waited_on {
             return;
         }
+        // A count waiting for this page to paint would read the frame that just
+        // failed to: it fails with it, the way a count riding in the collect does.
+        if let Some(generation) = self.count_after_paint.take() {
+            if self.len_count_inflight == Some(generation) {
+                self.len_count_inflight = None;
+            }
+            if self
+                .data_table_state
+                .as_ref()
+                .is_some_and(|state| state.len_generation() == generation)
+            {
+                self.len_count_failed = Some(generation);
+            }
+        }
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
         }
@@ -24345,6 +24837,7 @@ impl App {
             state.roll_back(run.rollback);
         }
         self.len_count_inflight = run.len_count_inflight;
+        self.count_after_paint = run.count_after_paint;
         self.len_count_failed = run.len_count_failed;
         if let RunOrigin::View { previous } = &run.origin {
             self.active_template_id = previous.clone();
@@ -24830,6 +25323,7 @@ impl App {
             frame: state.len_generation(),
             rollback,
             len_count_inflight: self.len_count_inflight,
+            count_after_paint: self.count_after_paint,
             len_count_failed: self.len_count_failed,
             rows,
         });
@@ -25746,6 +26240,7 @@ fn run_impl(
 
         if updated {
             terminal.draw(|frame| frame.render_widget(&mut *app, frame.area()))?;
+            app.frame_painted();
             // After render, check if visible_rows changed and trigger async buffer re-collect.
             if let Some(state) = &mut app.data_table_state
                 && state.needs_recollect

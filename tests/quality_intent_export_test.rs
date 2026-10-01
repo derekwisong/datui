@@ -29,6 +29,9 @@ fn next_event(app: &App, rx: &mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
         if let Ok(event) = rx.try_recv() {
             return Some(event);
         }
+        if app.count_waits_for_a_frame() {
+            return Some(AppEvent::FramePainted);
+        }
         if !work_pending(app) {
             return None;
         }

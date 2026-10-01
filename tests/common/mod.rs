@@ -48,6 +48,11 @@ pub fn next_event_within(app: &App, rx: &Receiver<AppEvent>, guard: Duration) ->
         if let Ok(event) = rx.try_recv() {
             return Some(event);
         }
+        // The run loop paints after every update; a count waiting for the rows to be
+        // painted starts then.
+        if app.count_waits_for_a_frame() {
+            return Some(AppEvent::FramePainted);
+        }
         if !work_pending(app) {
             return None;
         }

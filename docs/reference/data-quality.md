@@ -497,7 +497,7 @@ changed in meaning is a new version.
 | `format`, `version` | `datui-data-quality-report`, `1` |
 | `datui_version` | The datui that wrote it |
 | `exported_at` | When the file was written, RFC 3339 in UTC; not when the data was read |
-| `source` | `location` (the path or URL as opened), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run began, and `view`: the query, SQL, search, filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
+| `source` | `location` (the URL as opened, or the local path made absolute), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run that read the rows began (a report remade from rows a run kept keeps that run's), and `view`: the query, SQL, search, filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
 | `setup` | `scope`, `values` (`sample`, `full` or `metadata`), `sample` (`method`, `rows`, `seed`), `grain`, `comparison`, `baseline_segment`, `time_formats` (`column`, `kind`, `format`), `time_roles` (`role`, `column`), `intervals`, `window_by`, `latency_threshold_seconds`, and `intent` (`key`, and per column `column`, `required`, `allowed`, `min`, `max`, `read_as`) |
 | `run` | `precision` (`exact`, `sampled` or `metadata`), `total_rows`, `evaluated_rows`, `per_value`, `source_files`, `footers_read`, and `reads` (`source_reads`, `counted`, `rows_traversed`) when the run's reads were watched |
 | `verdict` | The headline, as on screen |

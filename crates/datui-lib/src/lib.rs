@@ -535,6 +535,7 @@ mod quality_memory_tests {
                 view_generation,
                 sample: plan(seed).sample(),
                 rows: std::sync::Arc::new(rows.unwrap()),
+                source: crate::quality_export::SourceIdentity::default(),
             };
             (results, kept)
         };
@@ -8446,6 +8447,10 @@ pub struct KeptQualitySample {
     view_generation: u64,
     sample: sampling::Sample,
     rows: std::sync::Arc<data_quality::QualitySample>,
+    /// The source as the run that read these rows found it, stated when it began: a
+    /// report measured on them later is labeled with this, not with the file as it
+    /// stands then.
+    source: crate::quality_export::SourceIdentity,
 }
 
 impl KeptQualitySample {
@@ -9247,9 +9252,18 @@ impl App {
                 view.push("reshaped: pivot or melt".to_string());
             }
         }
+        let remote = state.is_remote_source();
+        // A local path made whole, so the report names the file wherever it is read;
+        // no file system access.
+        let location = self.path.as_ref().map(|path| {
+            match std::path::absolute(path).ok().filter(|_| !remote) {
+                Some(path) => path.display().to_string(),
+                None => path.display().to_string(),
+            }
+        });
         crate::quality_export::SourceIdentity {
-            location: self.path.as_ref().map(|path| path.display().to_string()),
-            remote: state.is_remote_source(),
+            location,
+            remote,
             format,
             view,
             ..crate::quality_export::SourceIdentity::default()
@@ -9627,15 +9641,17 @@ impl App {
         &self,
         sample: &sampling::Sample,
     ) -> Option<std::sync::Arc<data_quality::QualitySample>> {
-        let view_generation = self.data_table_state.as_ref()?.len_generation();
-        self.quality_samples
-            .iter()
-            .find(|kept| {
-                kept.dataset_generation == self.dataset_generation
-                    && kept.view_generation == view_generation
-                    && &kept.sample == sample
-            })
+        self.kept_quality_entry(sample)
             .map(|kept| kept.rows.clone())
+    }
+
+    fn kept_quality_entry(&self, sample: &sampling::Sample) -> Option<&KeptQualitySample> {
+        let view_generation = self.data_table_state.as_ref()?.len_generation();
+        self.quality_samples.iter().find(|kept| {
+            kept.dataset_generation == self.dataset_generation
+                && kept.view_generation == view_generation
+                && &kept.sample == sample
+        })
     }
 
     /// Keep what a run read, newest first, in place of any earlier copy of the same
@@ -20744,7 +20760,13 @@ impl App {
                     let streaming = state.polars_streaming;
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
-                    let kept = self.kept_quality_sample(&plan.sample());
+                    let kept_entry = self.kept_quality_entry(&plan.sample());
+                    let kept = kept_entry.map(|kept| kept.rows.clone());
+                    // A sampled run on rows already read is labeled as their read was:
+                    // the file may have changed since, and these rows did not.
+                    let kept_source = kept_entry
+                        .filter(|_| plan.compute == data_quality::QualityCompute::Sample)
+                        .map(|kept| kept.source.clone());
                     let mut identity = self.quality_source_identity(state, &plan.scope);
                     // Only a confirmed full scan pays to read the values a type
                     // conflict hides, and only its access plan promised the read.
@@ -20767,7 +20789,10 @@ impl App {
                     self.quality_watch = Some(watch.clone());
                     self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
                         // A stat of a local file as the run begins, not a read.
-                        identity.stat();
+                        match kept_source {
+                            Some(source) => identity = source,
+                            None => identity.stat(),
+                        }
                         let lf = if source_scope {
                             match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
                                 Ok(lf) => lf,
@@ -20810,6 +20835,7 @@ impl App {
                             view_generation,
                             sample: plan.sample(),
                             rows: std::sync::Arc::new(rows),
+                            source: identity.clone(),
                         });
                         match results {
                             Ok(mut results) => {

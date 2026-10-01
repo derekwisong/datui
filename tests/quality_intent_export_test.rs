@@ -201,7 +201,7 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("orders.parquet");
     write_orders(&path, 5_000);
-    let (mut app, rx) = open_setup(path, 1_000);
+    let (mut app, rx) = open_setup(path.clone(), 1_000);
     let next = press(&mut app, KeyCode::Enter);
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     assert_eq!(drain(&mut app, &rx, next), 1);
@@ -212,6 +212,18 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
         "the first run reads its sample"
     );
     assert!(first.intent.is_none());
+    let source = *first.source.clone().unwrap();
+    assert!(source.modified.is_some());
+    assert!(std::path::Path::new(source.location.as_deref().unwrap()).is_absolute());
+
+    // The file changes on disk after its rows were read: a report on those rows
+    // still names the file as they were read from it.
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 << 31))
+        .unwrap();
 
     press(&mut app, KeyCode::Char('e'));
     app.analysis_modal.data_quality_plan_field = SetupRow::Intent.index();
@@ -227,6 +239,11 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
     assert_eq!(drain(&mut app, &rx, next), 1);
     let results = app.analysis_modal.data_quality_results.clone().unwrap();
     assert_eq!(results.reads.unwrap().reads, 0, "no source read");
+    assert_eq!(
+        results.source.as_deref(),
+        Some(&source),
+        "labeled as its rows were read"
+    );
     let intent = results.intent.as_ref().unwrap();
     assert_eq!(intent.precision, QualityPrecision::Sampled);
     assert_eq!(intent.evaluated_rows, 1_000);

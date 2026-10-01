@@ -450,6 +450,43 @@ mod quality_memory_tests {
     use polars::prelude::IntoLazy;
     use std::sync::mpsc;
 
+    /// A cached report serves a plan that only expects other windows: Run shows it
+    /// under that plan, reading nothing, and the cache keeps one report for both.
+    #[test]
+    fn a_cached_report_serves_other_expected_windows() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = polars::df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap();
+        app.data_table_state = Some(
+            crate::widgets::datatable::DataTableState::new(
+                df.clone().lazy(),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        );
+        let plan = data_quality::DataQualityPlan::default();
+        let report =
+            data_quality::compute_data_quality(&df.lazy(), None, &plan, None, false).unwrap();
+        app.cache_quality_result(&report, plan.clone());
+        let expecting = data_quality::DataQualityPlan {
+            expected: Some(data_quality::ExpectedWindows::default()),
+            ..plan
+        };
+        assert!(app.quality_cached(&expecting));
+        app.analysis_modal.data_quality_plan = expecting.clone();
+        assert!(app.restore_cached_quality(), "no run");
+        assert_eq!(
+            app.analysis_modal.data_quality_last_plan.as_ref(),
+            Some(&expecting)
+        );
+        assert_eq!(app.quality_cache.len(), 1);
+        assert_eq!(app.quality_cache[0].plan, expecting);
+    }
+
     /// Past the budget a report that retained rows can remake goes first, then the
     /// oldest rows, which Setup then names as released; the newest rows and the newest
     /// report stay. Rows read again are no longer released.
@@ -9371,7 +9408,8 @@ impl App {
                 ))
     }
 
-    /// Whether the session cache holds a report for exactly `plan` on this view.
+    /// Whether the session cache holds a report measuring what `plan` measures on
+    /// this view: the windows it expects are checked against the report, not read.
     pub(crate) fn quality_cached(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(view_generation) = self
             .data_table_state
@@ -9383,7 +9421,7 @@ impl App {
         self.quality_cache.iter().any(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
-                && &entry.plan == plan
+                && entry.plan.same_measurement(plan)
         })
     }
 
@@ -9487,16 +9525,21 @@ impl App {
         else {
             return false;
         };
-        let plan = &self.analysis_modal.data_quality_plan;
+        let plan = self.analysis_modal.data_quality_plan.clone();
         let Some(cached) = self.quality_cache.iter().find(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
-                && &entry.plan == plan
+                && entry.plan.same_measurement(&plan)
         }) else {
             return false;
         };
-        self.analysis_modal.data_quality_results = Some(cached.results.clone());
-        self.analysis_modal.data_quality_last_plan = Some(plan.clone());
+        let results = cached.results.clone();
+        if cached.plan != plan {
+            // Kept under the windows it expects now.
+            self.cache_quality_result(&results, plan.clone());
+        }
+        self.analysis_modal.data_quality_results = Some(results);
+        self.analysis_modal.data_quality_last_plan = Some(plan);
         self.analysis_modal.data_quality_from_cache = true;
         self.analysis_modal
             .set_quality_page(data_quality::QualityPage::Overview);
@@ -9515,10 +9558,12 @@ impl App {
         else {
             return;
         };
+        // One report per measurement: a plan that only expects other windows
+        // replaces it.
         self.quality_cache.retain(|entry| {
             !(entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
-                && entry.plan == plan)
+                && entry.plan.same_measurement(&plan))
         });
         self.quality_cache.insert(
             0,

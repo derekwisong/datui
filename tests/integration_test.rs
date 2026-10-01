@@ -5224,6 +5224,31 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     );
 }
 
+/// The open's worker, not the install, finds out that a hive path is a directory, so
+/// the dataset arrives already counting by its footers (#457).
+#[test]
+fn test_hive_dir_is_known_from_the_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let part = dir.path().join("year=2020");
+    std::fs::create_dir_all(&part).unwrap();
+    let mut df = df!("v" => [1i64, 2, 3]).unwrap();
+    ParquetWriter::new(File::create(part.join("data.parquet")).unwrap())
+        .finish(&mut df)
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().parquet_count_dir(),
+        Some(dir.path().to_path_buf())
+    );
+}
+
 /// Open a local directory of Parquet files and return the loaded app, or `None` if the
 /// open never finished.
 fn open_local_dataset(dir: &std::path::Path) -> App {
@@ -16241,6 +16266,79 @@ fn test_info_panel_arrows_switch_tabs_from_the_body() {
 
     press(&mut app, KeyCode::Left);
     assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
+}
+
+/// The Info panel's file size and Parquet footer are read on a worker after `i`, and
+/// drawn once they land; a file gone since it was opened says so instead (#457).
+#[test]
+fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
+    use datui::widgets::info::FileFacts;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("facts.parquet");
+    let mut frame = df!("id" => (0..50i64).collect::<Vec<_>>()).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut frame)
+        .unwrap();
+    let size = std::fs::metadata(&path).unwrap().len();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    let area = Rect::new(0, 0, 80, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert!(
+        app.file_facts().is_none(),
+        "nothing is read before it is asked"
+    );
+
+    for k in [KeyCode::Char('i'), KeyCode::Right] {
+        if let Some(next) = app.event(&key(k)) {
+            let _ = tx.send(next);
+        }
+    }
+    assert!(!app.is_busy(), "the read holds no keys");
+    pump_until(&mut app, &rx, &tx, |app| {
+        !matches!(app.file_facts(), Some(FileFacts::Reading))
+    });
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
+        text.contains(&datui::widgets::info::format_bytes(size)),
+        "the Resources tab shows the file's size; got:\n{text}"
+    );
+    assert!(
+        text.contains("Row groups:") && text.contains("Parquet version:"),
+        "and what its footer says; got:\n{text}"
+    );
+
+    // The same file, gone before the panel asks: the next open's read fails, once.
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    let _ = painted(&mut app, &rx, &tx, area);
+    std::fs::remove_file(&path).unwrap();
+    for k in [KeyCode::Char('i'), KeyCode::Right] {
+        if let Some(next) = app.event(&key(k)) {
+            let _ = tx.send(next);
+        }
+    }
+    pump_until(&mut app, &rx, &tx, |app| {
+        !matches!(app.file_facts(), Some(FileFacts::Reading))
+    });
+    assert!(
+        matches!(app.file_facts(), Some(FileFacts::Failed(_))),
+        "a file that is gone is a failed read: {:?}",
+        app.file_facts()
+    );
+    assert!(!app.is_busy() && !app.modal_showing());
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
+        text.contains("File size:") && !text.contains("reading..."),
+        "the panel stops waiting; got:\n{text}"
+    );
 }
 
 /// The control bar's "of" total: none while pristine, the dataset's count under a

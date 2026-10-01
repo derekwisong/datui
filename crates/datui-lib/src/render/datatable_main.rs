@@ -1,5 +1,6 @@
 //! Datatable main view: table content, input strip, sidebars (sort/filter, template, pivot/melt), export modal.
 
+use crate::export_modal::ExportFormat;
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
 use crate::render::main_view::MainViewContent;
@@ -139,10 +140,15 @@ pub fn render(
             }
             StatefulWidget::render(dt, table_area, buf, state);
             if app.info_modal.active {
+                let facts = app.file_facts.as_ref().map(|(_, facts)| facts);
+                // A hive dataset is a directory, whatever its format: no footer is coming.
+                let hive = app.opened.as_ref().is_some_and(|(_, options)| options.hive);
                 let info_ctx = InfoContext {
-                    path: app.path.as_deref(),
                     format: app.original_file_format,
-                    parquet_metadata: app.parquet_metadata_cache.as_ref(),
+                    facts,
+                    parquet_file: facts.is_some()
+                        && !hive
+                        && app.original_file_format == Some(ExportFormat::Parquet),
                 };
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.render(sort_area, buf);

@@ -369,14 +369,102 @@ impl InfoModal {
     }
 }
 
-/// Context for the info panel: path, format, and optional Parquet metadata.
+/// What the open file says about itself beyond its rows: its size on disk and, for a
+/// Parquet file, its footer.
+///
+/// Read on a worker, once per dataset, and drawn from here. A stat or a footer read on a
+/// mount that has stopped answering hangs the thread that makes it, so neither is made
+/// where keys are read or frames drawn (#457).
+#[derive(Debug, Clone)]
+pub enum FileFacts {
+    /// Asked for; the worker has not answered.
+    Reading,
+    /// What the worker found.
+    Read {
+        /// `None` for a directory, whose own size is not the data's.
+        size: Option<u64>,
+        /// The footer of a Parquet file; `None` for any other format.
+        parquet: Option<ParquetMetadataCache>,
+    },
+    /// The read failed, and why. Kept for the dataset rather than asked again: a file
+    /// that could not be read a moment ago is not worth a read per frame.
+    Failed(String),
+}
+
+impl FileFacts {
+    /// Stat `path` and, when `parquet`, read its footer. Blocking: call it on a worker.
+    ///
+    /// The reason for a failure is short enough for the panel's one line; the whole
+    /// error goes to the log.
+    pub fn read(path: &Path, parquet: bool) -> std::result::Result<Self, String> {
+        let io = |e: std::io::Error| {
+            log::warn!(target: "datui", "file size of {}: {e}", path.display());
+            match e.kind() {
+                std::io::ErrorKind::NotFound => "file not found".to_string(),
+                std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+                // The OS's own words, without the errno the log already has.
+                _ => {
+                    let said = e.to_string();
+                    match said.rsplit_once(" (os error") {
+                        Some((words, _)) => words.to_string(),
+                        None => said,
+                    }
+                }
+            }
+        };
+        let meta = std::fs::metadata(path).map_err(io)?;
+        if meta.is_dir() {
+            return Ok(Self::Read {
+                size: None,
+                parquet: None,
+            });
+        }
+        let parquet = if parquet {
+            let mut file = std::fs::File::open(path).map_err(io)?;
+            let footer = read_metadata(&mut file).map_err(|e| {
+                log::warn!(target: "datui", "Parquet footer of {}: {e}", path.display());
+                "unreadable Parquet footer".to_string()
+            })?;
+            Some(Arc::new(footer))
+        } else {
+            None
+        };
+        Ok(Self::Read {
+            size: Some(meta.len()),
+            parquet,
+        })
+    }
+}
+
+/// `text` cut to `room` columns, with the ellipsis glyph saying where.
+fn clip(text: &str, room: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= room {
+        return text.to_string();
+    }
+    let mark = crate::glyphs::get().ellipsis;
+    let mut kept = String::new();
+    for ch in text.chars() {
+        if kept.width() + ch.width().unwrap_or(0) + mark.width() > room {
+            break;
+        }
+        kept.push(ch);
+    }
+    kept + mark
+}
+
+/// Context for the info panel: the format, and what the file says about itself.
 ///
 /// What the open cost is not here: it belongs to the dataset, and the panel already
 /// has the dataset.
 pub struct InfoContext<'a> {
-    pub path: Option<&'a Path>,
     pub format: Option<ExportFormat>,
-    pub parquet_metadata: Option<&'a ParquetMetadataCache>,
+    /// `None` when there is no one file on this machine to ask: a remote source, a
+    /// glob, or a dataset opened from several paths.
+    pub facts: Option<&'a FileFacts>,
+    /// The facts are one Parquet file's, so its footer's rows and Compression column
+    /// keep their room while it is read: nothing moves when it lands.
+    pub parquet_file: bool,
 }
 
 impl<'a> InfoContext<'a> {
@@ -389,10 +477,17 @@ impl<'a> InfoContext<'a> {
         }
     }
 
-    pub fn file_size_bytes(&self) -> Option<u64> {
-        self.path
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
+    /// The Parquet footer, once it has been read.
+    pub fn parquet_metadata(&self) -> Option<&'a ParquetMetadataCache> {
+        match self.facts? {
+            FileFacts::Read { parquet, .. } => parquet.as_ref(),
+            FileFacts::Reading | FileFacts::Failed(_) => None,
+        }
+    }
+
+    /// Whether the worker has yet to answer.
+    fn reading(&self) -> bool {
+        matches!(self.facts, Some(FileFacts::Reading))
     }
 }
 
@@ -547,9 +642,11 @@ impl<'a> DataTableInfo<'a> {
         let has_files = presence.is_some();
         let compression = self
             .ctx
-            .parquet_metadata
+            .parquet_metadata()
             .map(|m| parquet_column_compression(m.as_ref(), self.state.schema().as_ref()));
-        let has_comp = compression.as_ref().is_some_and(|c| !c.is_empty());
+        // Kept for a Parquet file whose footer is still out, so the columns do not
+        // re-proportion when it lands.
+        let has_comp = self.ctx.parquet_file || compression.as_ref().is_some_and(|c| !c.is_empty());
         let mut header_cells = vec!["Column", "Type"];
         if has_files {
             header_cells.push("Files");
@@ -611,13 +708,14 @@ impl<'a> DataTableInfo<'a> {
                 cells.push(files_str);
             }
             if has_comp {
-                let comp_str = compression
-                    .as_ref()
-                    .and_then(|c| c.get(name_str))
-                    .map(|(codec, ratio)| {
+                let comp_str = match compression.as_ref().map(|c| c.get(name_str)) {
+                    Some(Some((codec, ratio))) => {
                         format!("{} {:.1}{}", codec, ratio, crate::glyphs::get().times)
-                    })
-                    .unwrap_or_else(|| crate::glyphs::get().dash.to_string());
+                    }
+                    // Blank until the footer lands, rather than a dash that says it did.
+                    None if self.ctx.reading() => String::new(),
+                    _ => crate::glyphs::get().dash.to_string(),
+                };
                 cells.push(comp_str);
             }
             rows.push(Row::new(cells));
@@ -710,20 +808,32 @@ impl<'a> DataTableInfo<'a> {
         if y >= area.y + h {
             return;
         }
-        let file_size = self.ctx.file_size_bytes().map(format_bytes);
-        let file_size_str = file_size.as_deref().unwrap_or(crate::glyphs::get().dash);
-        label_value_row(
-            "File size:",
-            file_size_str,
-            Rect {
+        let size_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([label_constraint, value_constraint])
+            .split(Rect {
                 y,
                 width: w,
                 height: 1,
                 ..area
-            },
-            buf,
-            LABEL_WIDTH,
-        );
+            });
+        // Drawn from what the worker left; reading the file here would hang the frame
+        // on a mount that has stopped answering.
+        let file_size = match self.ctx.facts {
+            None | Some(FileFacts::Read { size: None, .. }) => Span::raw(crate::glyphs::get().dash),
+            Some(FileFacts::Read {
+                size: Some(size), ..
+            }) => Span::raw(format_bytes(*size)),
+            Some(FileFacts::Reading) => {
+                Span::styled("reading...", Style::default().fg(self.theme.dimmed))
+            }
+            Some(FileFacts::Failed(why)) => Span::styled(
+                clip(why, size_chunks[1].width as usize),
+                Style::default().fg(self.theme.error),
+            ),
+        };
+        Paragraph::new("File size:").render(size_chunks[0], buf);
+        Paragraph::new(Line::from(file_size)).render(size_chunks[1], buf);
         y += 1;
 
         if y >= area.y + h {
@@ -821,66 +931,49 @@ impl<'a> DataTableInfo<'a> {
         }
         y += 1;
 
-        if let Some(ref meta) = self.ctx.parquet_metadata {
-            let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
-            if comp > 0 && uncomp > 0 && y < area.y + h {
-                let ratio = uncomp as f64 / comp as f64;
-                let value = format!(
-                    "{:.1}{} (uncomp. {})",
-                    ratio,
-                    crate::glyphs::get().times,
-                    format_bytes(uncomp)
-                );
-                label_value_row(
-                    "Parquet comp.:",
-                    &value,
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-            if y < area.y + h {
-                label_value_row(
+        // Always four rows, laid out before the footer lands, so Measurements below
+        // stays put; a value the footer does not have is a dash.
+        let meta = self.ctx.parquet_metadata();
+        if meta.is_some() || self.ctx.parquet_file {
+            let dash = crate::glyphs::get().dash;
+            let value = |known: Option<String>| match known {
+                Some(v) => v,
+                None if self.ctx.reading() => String::new(),
+                None => dash.to_string(),
+            };
+            let comp = meta.and_then(|meta| {
+                let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
+                (comp > 0 && uncomp > 0).then(|| {
+                    format!(
+                        "{:.1}{} (uncomp. {})",
+                        uncomp as f64 / comp as f64,
+                        crate::glyphs::get().times,
+                        format_bytes(uncomp)
+                    )
+                })
+            });
+            let rows = [
+                ("Parquet comp.:", value(comp)),
+                (
                     "Row groups:",
-                    &meta.row_groups.len().to_string(),
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-            if y < area.y + h {
-                label_value_row(
+                    value(meta.map(|m| m.row_groups.len().to_string())),
+                ),
+                (
                     "Parquet version:",
-                    &meta.version.to_string(),
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-            if let Some(ref cb) = meta.created_by
-                && y < area.y + h
-            {
-                label_value_row(
+                    value(meta.map(|m| m.version.to_string())),
+                ),
+                (
                     "Created by:",
-                    cb,
+                    value(meta.and_then(|m| m.created_by.clone())),
+                ),
+            ];
+            for (label, value) in rows {
+                if y >= area.y + h {
+                    break;
+                }
+                label_value_row(
+                    label,
+                    &value,
                     Rect {
                         y,
                         width: w,
@@ -1349,7 +1442,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
     }
 }
 
-/// Read Parquet metadata from path. Returns `None` on error.
+/// Read Parquet metadata from path. Returns `None` on error. Blocking.
 pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
     let mut f = std::fs::File::open(path).ok()?;
     let meta = read_metadata(&mut f).ok()?;
@@ -1359,6 +1452,56 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a file says about itself: a size and, for Parquet, a footer; a directory
+    /// has no size of its own to give; a file that is gone, or whose footer is not
+    /// one, is a reason rather than a blank.
+    #[test]
+    fn file_facts_read_what_each_source_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("rows.csv");
+        std::fs::write(&csv, "a\n1\n").unwrap();
+        let parquet = dir.path().join("rows.parquet");
+        let mut df = df!("a" => &[1i64, 2, 3]).unwrap();
+        ParquetWriter::new(std::fs::File::create(&parquet).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        let parquet_len = std::fs::metadata(&parquet).unwrap().len();
+
+        assert!(matches!(
+            FileFacts::read(&csv, false),
+            Ok(FileFacts::Read {
+                size: Some(4),
+                parquet: None
+            })
+        ));
+        match FileFacts::read(&parquet, true) {
+            Ok(FileFacts::Read {
+                size: Some(size),
+                parquet: Some(footer),
+            }) => {
+                assert_eq!(size, parquet_len);
+                assert_eq!(footer.num_rows, 3);
+            }
+            other => panic!("a Parquet file's size and footer: {other:?}"),
+        }
+        assert!(matches!(
+            FileFacts::read(dir.path(), true),
+            Ok(FileFacts::Read {
+                size: None,
+                parquet: None
+            })
+        ));
+        // Reasons short enough for the panel's one line.
+        assert_eq!(
+            FileFacts::read(&dir.path().join("gone.parquet"), true).unwrap_err(),
+            "file not found"
+        );
+        assert_eq!(
+            FileFacts::read(&csv, true).expect_err("a CSV has no footer"),
+            "unreadable Parquet footer"
+        );
+    }
 
     /// A dataset that has not been counted says so rather than showing how far it got.
     ///
@@ -1392,9 +1535,9 @@ mod tests {
             let panel = DataTableInfo::new(
                 state,
                 InfoContext {
-                    path: None,
                     format: None,
-                    parquet_metadata: None,
+                    facts: None,
+                    parquet_file: false,
                 },
                 &mut modal,
                 &theme,
@@ -1460,9 +1603,9 @@ mod tests {
         let mut panel = DataTableInfo::new(
             &state,
             InfoContext {
-                path: None,
                 format: None,
-                parquet_metadata: None,
+                facts: None,
+                parquet_file: false,
             },
             &mut modal,
             &theme,
@@ -1556,9 +1699,9 @@ mod tests {
             let panel = DataTableInfo::new(
                 &state,
                 InfoContext {
-                    path: None,
                     format: None,
-                    parquet_metadata: None,
+                    facts: None,
+                    parquet_file: false,
                 },
                 &mut modal,
                 &theme,
@@ -1731,9 +1874,9 @@ mod tests {
             let mut panel = DataTableInfo::new(
                 &state,
                 InfoContext {
-                    path: None,
                     format: None,
-                    parquet_metadata: None,
+                    facts: None,
+                    parquet_file: false,
                 },
                 &mut modal,
                 &theme,

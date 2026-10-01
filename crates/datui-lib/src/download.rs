@@ -87,7 +87,8 @@ enum Piece<B> {
 /// `write` on this thread, in order. Returns the bytes written.
 ///
 /// `open` gives the stream and its length, when known. `stop` is checked between
-/// chunks, and every [`STALL_CHECK`] while the store is silent. Ends in an error,
+/// chunks, and every [`STALL_CHECK`] while the store is silent; so is whether this
+/// side has stopped listening. Ends in an error,
 /// never a short success, when the open or a chunk fails, `write` refuses one, `stop`
 /// says so, or the runtime shuts down mid-transfer; the request is dropped with the
 /// stream then. Must not be called on a runtime worker: it blocks.
@@ -110,7 +111,10 @@ where
     // closed channel ends the wait below, where a future polled on this thread would
     // touch a runtime that is gone.
     runtime.spawn(async move {
-        let (stream, len) = match until_stopped(open, &stopped).await {
+        // A writer that gave up has dropped the queue; a store gone quiet would
+        // otherwise hold the request open until it answered.
+        let gone = || stopped() || tx.is_closed();
+        let (stream, len) = match until_stopped(open, &gone).await {
             Some(Ok(opened)) => opened,
             Some(Err(error)) => {
                 let _ = tx.send(Piece::Refused(error)).await;
@@ -124,7 +128,7 @@ where
         let mut stream = std::pin::pin!(stream);
         loop {
             let next = futures::StreamExt::next(&mut stream);
-            let piece = match until_stopped(next, &stopped).await {
+            let piece = match until_stopped(next, &gone).await {
                 None => return,
                 Some(Some(Ok(chunk))) => Piece::Chunk(chunk),
                 Some(Some(Err(error))) => Piece::Failed(error.to_string()),
@@ -261,6 +265,15 @@ mod tests {
     impl AsRef<[u8]> for Tracked {
         fn as_ref(&self) -> &[u8] {
             &self.0
+        }
+    }
+
+    /// Sets its flag when dropped: when a stream holding it was let go.
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
         }
     }
 
@@ -435,6 +448,32 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
         let pulled = pulled.load(Ordering::SeqCst);
         assert!(pulled <= 3 + QUEUED_CHUNKS + 2, "{pulled} chunks read");
+
+        // A store that goes quiet after the refused chunk is let go all the same,
+        // rather than held open until it answers.
+        let dropped = Arc::new(AtomicBool::new(false));
+        let stream = {
+            let guard = DropFlag(dropped.clone());
+            futures::stream::iter(vec![Ok::<_, String>(chunk(0, 1024))])
+                .chain(futures::stream::pending())
+                .map(move |chunk| {
+                    let _ = &guard;
+                    chunk
+                })
+        };
+        let error = stream_into(rt.handle(), opened(stream, None), never(), |_| {
+            Err(eyre!("No space left on device"))
+        })
+        .unwrap_err();
+        assert!(matches!(error, StreamError::Write(_)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !dropped.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the request is still open"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // And a file that cannot be created is the same refusal, before any request.
         let missing = tempfile::tempdir().unwrap().path().join("gone");

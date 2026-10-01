@@ -157,8 +157,7 @@ fn test_full_workflow() {
     let mut app = App::new(tx, common::test_runtime());
 
     // 1. Create test CSV file inline
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("large_test.csv");
 
     let mut df = df!(
@@ -257,8 +256,7 @@ fn test_chart_open_and_esc_back() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
 
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("chart_integration_test.csv");
 
     let mut df = df!(
@@ -294,8 +292,7 @@ fn test_chart_q_does_not_exit() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
 
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("chart_q_test.csv");
 
     let mut df = df!("a" => &[1_i32], "b" => &[2_i32]).unwrap();
@@ -462,8 +459,7 @@ fn test_chart_export_path_expands_tilde() {
 
 /// Opens a small x/y dataset in the chart view. Nothing is selected yet.
 fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join(name);
     let mut df = df!(
         "x" => (0..5).collect::<Vec<i32>>(),
@@ -864,8 +860,7 @@ fn test_csv_null_values_global() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
 
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("null_values_test.csv");
     std::fs::write(&csv_path, "x,y\n1,NA\n2,3\n4,N/A\n").unwrap();
 
@@ -891,8 +886,7 @@ fn test_csv_null_values_per_column() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
 
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("null_values_per_col_test.csv");
     std::fs::write(&csv_path, "a,b\nx,1\nempty,2\nz,3\n").unwrap();
 
@@ -1941,8 +1935,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
 fn data_quality_reads_as_a_report() {
     use datui::data_quality::QualityPage;
 
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join("dq_report.parquet");
     let gap = |row: i64| row % 50 == 7;
     let mut df = df!(
@@ -2266,8 +2259,7 @@ fn data_quality_reads_as_a_report() {
 fn a_long_finding_scrolls() {
     use datui::data_quality::QualityPage;
 
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join("dq_long_finding.parquet");
     // Sixty names, each also written in capitals; name 0 has the most rows.
     let names = (0..3_000usize)
@@ -2337,8 +2329,7 @@ fn a_long_finding_scrolls() {
 fn a_sampled_finding_opens_its_sampled_rows() {
     use datui::data_quality::{QualityPage, QualityPrecision};
 
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join("dq_sampled_evidence.parquet");
     let mut df = df!(
         "id" => (0..5_000i64).collect::<Vec<_>>(),
@@ -2424,9 +2415,15 @@ fn a_sampled_finding_opens_its_sampled_rows() {
 
 /// A table with whole rows copied (but for their bytes), text that parses but for a
 /// few values, codes that all parse, and two columns missing at different rates.
-fn open_findings_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+fn open_findings_fixture(
+    name: &str,
+) -> (
+    App,
+    mpsc::Receiver<AppEvent>,
+    mpsc::Sender<AppEvent>,
+    PathBuf,
+) {
+    let dir = common::fixture_dir();
     let path = dir.join(name);
     // A thousand distinct rows, then two more copies of the first three hundred.
     let rows = (0..1_000i64)
@@ -2452,9 +2449,9 @@ fn open_findings_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Se
         .unwrap();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
-    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
-    (app, rx, tx)
+    (app, rx, tx, path)
 }
 
 /// Nothing was started: the app is idle and nothing but the run before's lease
@@ -2510,7 +2507,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     use datui::quality_report::FindingOrder;
 
     let name = "dq_findings_kept.parquet";
-    let (mut app, rx, tx) = open_findings_fixture(name);
+    let (mut app, rx, tx, path) = open_findings_fixture(name);
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
@@ -2620,7 +2617,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
 
     // From here on only the kept rows can answer.
-    std::fs::remove_file(PathBuf::from("tests/sample-data").join(name)).unwrap();
+    std::fs::remove_file(&path).unwrap();
     let open = |app: &mut App, check: &'static str| {
         app.analysis_modal.data_quality_findings.check = Some(check);
         app.analysis_modal.data_quality_table_state.select(Some(0));
@@ -2708,7 +2705,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
 fn full_scan_evidence_is_read_only_on_confirm() {
     use datui::data_quality::QualityPrecision;
 
-    let (mut app, rx, tx) = open_findings_fixture("dq_findings_full.parquet");
+    let (mut app, rx, tx, _path) = open_findings_fixture("dq_findings_full.parquet");
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
@@ -2796,8 +2793,7 @@ fn one_sample_serves_every_analysis_tool() {
     use datui::analysis_modal::AnalysisTool;
     use datui::data_quality::QualityScope;
 
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join("shared_sample.parquet");
     let sizes = [("a", 900usize), ("b", 90), ("c", 10)];
     let part: Vec<&str> = sizes
@@ -3123,9 +3119,15 @@ fn r_from_the_sidebar_runs_a_sampled_report_again() {
 
 /// A table whose times are text in a US format, the way many CSV exports write
 /// them: nothing reads them as time until Setup is told how.
-fn open_text_times_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+fn open_text_times_fixture(
+    name: &str,
+) -> (
+    App,
+    mpsc::Receiver<AppEvent>,
+    mpsc::Sender<AppEvent>,
+    PathBuf,
+) {
+    let dir = common::fixture_dir();
     let path = dir.join(name);
     let rows = 600i64;
     let created = (0..rows)
@@ -3164,9 +3166,9 @@ fn open_text_times_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::
         .unwrap();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
-    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
-    (app, rx, tx)
+    (app, rx, tx, path)
 }
 
 /// Handle events until the work is done, counting the Data Quality runs that
@@ -3211,7 +3213,7 @@ fn data_quality_reads_nothing_until_setup_runs() {
     use datui::analysis_modal::SetupRow;
     use datui::data_quality::{QualityGrain, QualityPage};
 
-    let (mut app, rx, _tx) = open_text_times_fixture("dq_setup_reads_nothing.parquet");
+    let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_setup_reads_nothing.parquet");
     press(&mut app, KeyCode::Char('a'));
     // Describe first: its sample is the one every tool reads from now on.
     app.analysis_modal.sidebar_state.select(Some(0));
@@ -3372,8 +3374,7 @@ fn data_quality_edits_read_only_what_they_must() {
         QualityGrain, QualityScope, QualityStage, TemporalRole, TemporalRoleAssignment,
     };
 
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join("dq_reuse_reads.csv");
     // Every 97 minutes from 2024-01-01, across weeks and months.
     let minute = 60_000_000i64;
@@ -3529,8 +3530,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
     use datui::data_quality::{QualityGrain, QualityScope, QualityStage};
     use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join("dq_reuse_blocks.parquet");
     let minute = 60_000_000i64;
     let start = 1_704_067_200_000_000i64;
@@ -3631,7 +3631,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
 fn data_quality_coverage_sits_under_every_verdict() {
     use datui::data_quality::{QualityCompute, QualityPage};
 
-    let (mut app, rx, _tx) = open_text_times_fixture("dq_coverage.parquet");
+    let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_coverage.parquet");
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     assert!(press(&mut app, KeyCode::Enter).is_none());
@@ -3691,7 +3691,7 @@ fn data_quality_setup_edits_never_outlive_esc() {
     use datui::analysis_modal::{AnalysisFocus, SetupRow};
     use datui::data_quality::{QualityComparison, QualityPage};
 
-    let (mut app, rx, _tx) = open_text_times_fixture("dq_setup_esc_discards.parquet");
+    let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_setup_esc_discards.parquet");
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
@@ -3766,7 +3766,7 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
     use datui::analysis_modal::SetupRow;
     use datui::data_quality::{ObservationKind, QualityPage};
 
-    let (mut app, rx, _tx) = open_text_times_fixture("dq_setup_text_times.parquet");
+    let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_setup_text_times.parquet");
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
@@ -3891,7 +3891,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     use datui::data_quality::{IntervalClock, IntervalFact, QualityPage, QualityPrecision};
 
     let name = "dq_intervals_detail.parquet";
-    let (mut app, rx, tx) = open_text_times_fixture(name);
+    let (mut app, rx, tx, path) = open_text_times_fixture(name);
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
@@ -4060,7 +4060,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     }
     assert_eq!(app.analysis_modal.selected_interval_fact(), Some(fact));
     assert!(render(&mut app, 100, 30).contains("Show Rows"));
-    std::fs::remove_file(PathBuf::from("tests/sample-data").join(name)).unwrap();
+    std::fs::remove_file(&path).unwrap();
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
         next = app.event(&event);
@@ -4088,8 +4088,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
 /// Weekday rows over eight weeks, forty a day, the second week missing: what a
 /// business feed looks like. Written as CSV, which the sampler streams.
 fn open_weekday_feed(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixture_dir();
     let path = dir.join(name);
     // 2024-01-01 is a Monday.
     let days = (0..56)
@@ -4345,7 +4344,7 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
     );
 }
 
-/// `rows` rows written to `tests/sample-data/<name>`, as CSV or Parquet by its
+/// `rows` rows written to `<name>` in a fresh fixture directory, as CSV or Parquet by its
 /// extension: an id, a region, and an amount missing on every `gap`th row (never
 /// with a gap of 0). Opened, with Data Quality's Setup on screen.
 fn open_quality_fixture(
@@ -4358,7 +4357,7 @@ fn open_quality_fixture(
     mpsc::Sender<AppEvent>,
     PathBuf,
 ) {
-    let path = PathBuf::from("tests/sample-data").join(name);
+    let path = common::fixture_dir().join(name);
     write_quality_fixture(&path, rows, gap);
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
@@ -4998,8 +4997,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
 #[test]
 fn test_scroll_past_end_does_not_hang_busy() {
     // Inline 200-row CSV so the test stays cheap and self-contained.
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("scroll_past_end_test.csv");
     let mut df = polars::df!(
         "id" => (0..200i64).collect::<Vec<_>>(),
@@ -5083,8 +5081,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
 fn test_async_collect_handles_invalidated_num_rows() {
     use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("invalidated_num_rows_test.csv");
     let mut df = polars::df!(
         "id" => (0..500i64).collect::<Vec<_>>(),
@@ -9381,15 +9378,11 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     );
 
     // Opened from the home screen: q returns there.
-    let (mut app, rx, _tx) = open_query_filter_fixture("q_from_home.csv");
+    let path = common::fixture_dir().join("q_from_home.csv");
+    let (mut app, rx, _tx) = open_query_filter_fixture_at(&path, datui::AppConfig::default());
     app.enter_home();
     assert_eq!(app.input_mode, InputMode::Home);
-    pump_open_until_loaded(
-        &mut app,
-        &rx,
-        vec![PathBuf::from("tests/sample-data/q_from_home.csv")],
-        OpenOptions::default(),
-    );
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     // As `home_open_path` does before it emits the `Open`.
     app.input_mode = InputMode::Normal;
 
@@ -9409,12 +9402,7 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     assert_eq!(app.input_mode, InputMode::Home, "q pops to home");
 
     // Q stays unconditional, from the same stack.
-    pump_open_until_loaded(
-        &mut app,
-        &rx,
-        vec![PathBuf::from("tests/sample-data/q_from_home.csv")],
-        OpenOptions::default(),
-    );
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     app.input_mode = InputMode::Normal;
     let out = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('Q'),
@@ -10059,9 +10047,14 @@ fn open_query_filter_fixture_with(
     name: &str,
     config: datui::AppConfig,
 ) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
-    let csv_path = test_data_dir.join(name);
+    open_query_filter_fixture_at(&common::fixture_dir().join(name), config)
+}
+
+/// The same table, written at `csv_path`.
+fn open_query_filter_fixture_at(
+    csv_path: &Path,
+    config: datui::AppConfig,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let mut df = df!(
         "a" => (0..100i64).collect::<Vec<_>>(),
         "c" => (0..100i64).map(|i| i % 3).collect::<Vec<_>>(),
@@ -10070,13 +10063,18 @@ fn open_query_filter_fixture_with(
             .collect::<Vec<_>>(),
     )
     .unwrap();
-    let mut file = File::create(&csv_path).unwrap();
+    let mut file = File::create(csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
     let (tx, rx) = mpsc::channel();
     let theme = datui::Theme::from_config(&config.theme).unwrap();
     let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
-    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![csv_path.to_path_buf()],
+        OpenOptions::default(),
+    );
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 100);
     (app, rx, tx)
@@ -10288,13 +10286,19 @@ fn open_csv_with(
     contents: &str,
     options: OpenOptions,
 ) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
-    let csv_path = test_data_dir.join(name);
-    std::fs::write(&csv_path, contents).unwrap();
+    open_csv_at(&common::fixture_dir().join(name), contents, options)
+}
+
+/// The same, written at `csv_path`.
+fn open_csv_at(
+    csv_path: &Path,
+    contents: &str,
+    options: OpenOptions,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    std::fs::write(csv_path, contents).unwrap();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
-    pump_open_until_loaded(&mut app, &rx, vec![csv_path], options);
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path.to_path_buf()], options);
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.is_some());
     (app, rx, tx)
@@ -10949,8 +10953,7 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
 /// and nulls of each.
 #[test]
 fn test_drill_from_an_aggregate_by_typed_keys() {
-    let dir = PathBuf::from("tests/sample-data/drill_typed_keys");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::fixture_dir().join("drill_typed_keys");
     let tz = TimeZone::opt_try_new(Some("America/New_York")).unwrap();
     let df = df!(
         "f" => [Some(1.5), Some(1.5), Some(f64::NAN), Some(f64::NAN), None, Some(-0.0), Some(0.0), Some(0.1 + 0.2)],
@@ -11154,8 +11157,7 @@ fn test_enter_with_nothing_to_drill_into_flashes() {
 /// Salaries by department, 40 rows: `dept` cycles eng, ops, sales and a null every
 /// fourth row; `salary` climbs by 5,000 from 60,000; `ts` is the hour `i % 24`.
 fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
-    let dir = PathBuf::from("tests/sample-data").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::fixture_dir().join(name);
     let n = 40i64;
     let df = df!(
         "id" => (0..n).collect::<Vec<_>>(),
@@ -15825,8 +15827,7 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
 #[test]
 fn a_freeze_survives_a_narrow_window() {
     let names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("frozen_narrow_window.csv");
     let columns: Vec<Column> = names
         .iter()
@@ -16266,8 +16267,7 @@ fn test_export_format_follows_typed_extension() {
     assert!(app.export_modal.active);
     app.export_modal.selected_format = ExportFormat::Parquet;
 
-    let out = PathBuf::from("tests/sample-data/export_ext_follows_out.csv");
-    let _ = std::fs::remove_file(&out);
+    let out = common::fixture_dir().join("export_ext_follows_out.csv");
     for ch in out.to_str().unwrap().chars() {
         press(&mut app, KeyCode::Char(ch));
     }
@@ -16310,8 +16310,7 @@ fn test_export_enter_applies_from_any_row() {
 
     press(&mut app, KeyCode::Char('e'));
     assert!(app.export_modal.active);
-    let out = PathBuf::from("tests/sample-data/export_enter_anywhere_out.csv");
-    let _ = std::fs::remove_file(&out);
+    let out = common::fixture_dir().join("export_enter_anywhere_out.csv");
     for ch in out.to_str().unwrap().chars() {
         press(&mut app, KeyCode::Char(ch));
     }
@@ -17350,8 +17349,7 @@ fn view_and_steps_on_the_next_file(
     name: &str,
     steps: &[AppEvent],
 ) -> (datui::Template, DataFrame, DataFrame) {
-    let next_name = format!("{name}_next.csv");
-    let next_path = PathBuf::from("tests/sample-data").join(&next_name);
+    let next_path = common::fixture_dir().join(format!("{name}_next.csv"));
     let run = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>| {
         for step in steps {
             app.event(step);
@@ -17365,7 +17363,7 @@ fn view_and_steps_on_the_next_file(
         state.visible_lf().collect().unwrap()
     };
 
-    let (mut by_hand, rx, tx) = open_csv_with(&next_name, &long_csv(3), OpenOptions::default());
+    let (mut by_hand, rx, tx) = open_csv_at(&next_path, &long_csv(3), OpenOptions::default());
     run(&mut by_hand, &rx, &tx);
     let expected = shown(&by_hand);
 
@@ -17505,7 +17503,7 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
             value_name: "value".to_string(),
         }),
     ];
-    let next_path = PathBuf::from("tests/sample-data/view_pivot_melt_next.csv");
+    let next_path = common::fixture_dir().join("view_pivot_melt_next.csv");
     std::fs::write(&next_path, long_csv(3)).unwrap();
     let (mut app, rx, tx) = open_csv_with(
         "view_pivot_melt_first.csv",

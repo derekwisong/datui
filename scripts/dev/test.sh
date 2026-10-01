@@ -44,6 +44,32 @@ run() {
     fi
 }
 
+# Tests read tests/sample-data and write their own files elsewhere: another test
+# process may have these memory-mapped, and rewriting one kills it with SIGBUS
+# (#486). Fail a run that wrote there, unless the generator ran: it rewrites
+# every fixture, people.parquet among them.
+run_tests() {
+    if $print_only; then
+        run "$@"
+        return
+    fi
+    local written status=0
+    marker=$(mktemp)
+    trap 'rm -f "$marker"' EXIT
+    "$@" || status=$?
+    # -H: worktrees often link tests/sample-data to one shared copy.
+    written=$(find -H tests/sample-data -newer "$marker" 2>/dev/null) || true
+    if [[ tests/sample-data/people.parquet -nt $marker ]]; then
+        written=
+    fi
+    if [[ -n $written ]]; then
+        printf 'Tests wrote into tests/sample-data (use common::fixture_dir() or a tempdir):\n%s\n' \
+            "$written" >&2
+        (( status != 0 )) || status=1
+    fi
+    return "$status"
+}
+
 command=${1:-}
 if [[ -z $command || $command == --help || $command == -h ]]; then
     usage
@@ -57,7 +83,7 @@ case "$command" in
         run cargo check --locked -p "${1:-datui-lib}"
         ;;
     unit)
-        run cargo test --locked -p datui-lib --lib "$@"
+        run_tests cargo test --locked -p datui-lib --lib "$@"
         ;;
     integration)
         target=${1:-}
@@ -66,10 +92,10 @@ case "$command" in
             exit 2
         fi
         shift
-        run cargo test --locked -p datui --test "$target" "$@"
+        run_tests cargo test --locked -p datui --test "$target" "$@"
         ;;
     cli)
-        run cargo test --locked -p datui-cli --lib "$@"
+        run_tests cargo test --locked -p datui-cli --lib "$@"
         ;;
     preflight)
         if (( $# != 0 )); then usage >&2; exit 2; fi
@@ -79,7 +105,7 @@ case "$command" in
         ;;
     full)
         if (( $# != 0 )); then usage >&2; exit 2; fi
-        run cargo test --workspace --locked --no-fail-fast
+        run_tests cargo test --workspace --locked --no-fail-fast
         ;;
     *)
         usage >&2

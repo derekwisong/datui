@@ -1031,10 +1031,12 @@ impl DataTableState {
     }
 
     /// Make `lf` the data as loaded, with `schema`: the root, the base and the frame
-    /// shown, until the caller lays the filters and sort back on. The rows read through
-    /// the old root are dropped, and checkpoints taken over it no longer apply.
+    /// shown, until the caller lays the filters and sort back on. The rows and count
+    /// read through the old root are dropped, and checkpoints taken over it no longer
+    /// apply.
     fn replace_root(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
         self.root_generation = next_len_generation();
+        self.invalidate_num_rows();
         self.original_schema = schema.clone();
         self.schema = schema;
         self.original_lf = lf.clone();

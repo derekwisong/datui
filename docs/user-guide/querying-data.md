@@ -148,6 +148,15 @@ ORDER BY flight_date
 365 rows, one per day of 2013. Chart `flight_date` against `delay` as a line
 and 2013-03-08 stands out at 83.5 minutes.
 
+A date or datetime past the calendar's range, such as a sentinel of
+`i64::MIN + 1` microseconds, has no calendar text:
+
+| In a query | A date past the calendar |
+|---|---|
+| `.str`, `.format`, `like`, `.part`, `.slice`, `.replace`, `.strip` | Its stored number, as the table shows it: `-9223372036854775807 us since 1970-01-01 UTC` |
+| SQL `CAST(... AS VARCHAR)`, `\|\|`, `CONCAT`, `STRFTIME` | Its stored number |
+| `.date`, `.time`, `.year`, `.month_start` and the other date parts | Null |
+
 ## Drill into a GROUP BY
 
 Press <kbd>Enter</kbd> on a row of a `GROUP BY` result to see the rows behind

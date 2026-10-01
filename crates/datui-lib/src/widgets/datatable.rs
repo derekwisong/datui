@@ -112,6 +112,7 @@ impl PivotJob {
             .unique(None, UniqueKeepStrategy::Any)
             .sort([on], SortMultipleOptions::default().with_nulls_last(true))
             .collect()?;
+        let (cells, on_columns) = Self::pivot_dates_as_text(cells, on_columns, on)?;
         // One row per index and pivot value now, so `first` is that cell. A count sums
         // instead, so a pair with no rows counts 0 rather than null, as it always did.
         let cell = match self.spec.aggregation {
@@ -132,6 +133,31 @@ impl PivotJob {
             )
             .collect()?;
         Ok(pivoted)
+    }
+
+    /// Polars names the new columns by casting the pivot values to text, which
+    /// panics on a date past the calendar. When one is there, the values become
+    /// their text first, such a date its stored number, after they are ordered as
+    /// dates. Both frames are already in memory.
+    fn pivot_dates_as_text(
+        cells: DataFrame,
+        on_columns: DataFrame,
+        on: &str,
+    ) -> Result<(DataFrame, DataFrame)> {
+        let values = on_columns.column(on)?.as_materialized_series();
+        if crate::exact::calendar_without_out_of_range(values)?.is_none() {
+            return Ok((cells, on_columns));
+        }
+        let text = |mut df: DataFrame| -> Result<DataFrame> {
+            let values = df.column(on)?.as_materialized_series();
+            let values = crate::past_calendar::cast_text(
+                values,
+                polars::chunked_array::cast::CastOptions::NonStrict,
+            )?;
+            df.with_column(values.into_column())?;
+            Ok(df)
+        };
+        Ok((text(cells)?, text(on_columns)?))
     }
 }
 
@@ -8094,11 +8120,46 @@ impl DataTableState {
             variable_name: Some(PlSmallStr::from(spec.variable_name.as_str())),
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
         };
-        let lf = self.visible_lf().unpivot(args);
+        let lf = Self::melt_dates_as_text(self.visible_lf(), spec, &args)?.unpivot(args);
         self.last_melt_spec = Some(spec.clone());
         self.last_pivot_spec = None;
         self.replace_lf_after_reshape(lf)?;
         Ok(())
+    }
+
+    /// A melt of dates with text casts the dates to text, which panics on one past
+    /// the calendar. Those columns become text first, such a date its stored
+    /// number, as the rows are read.
+    fn melt_dates_as_text(
+        view: LazyFrame,
+        spec: &MeltSpec,
+        args: &UnpivotArgsDSL,
+    ) -> Result<LazyFrame> {
+        let schema = view.clone().collect_schema()?;
+        let melted = view.clone().unpivot(args.clone()).collect_schema()?;
+        if melted.get(spec.value_name.as_str()) != Some(&DataType::String) {
+            return Ok(view);
+        }
+        let texts: Vec<Expr> = spec
+            .value_columns
+            .iter()
+            .filter(|name| {
+                schema
+                    .get(name.as_str())
+                    .is_some_and(crate::past_calendar::can_leave_calendar)
+            })
+            .map(|name| {
+                crate::past_calendar::text_expr(
+                    Expr::Column(PlSmallStr::from(name.as_str())),
+                    polars::chunked_array::cast::CastOptions::NonStrict,
+                )
+            })
+            .collect();
+        Ok(if texts.is_empty() {
+            view
+        } else {
+            view.with_columns(texts)
+        })
     }
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
@@ -8313,7 +8374,11 @@ impl DataTableState {
             return;
         }
 
-        match parse_query(&query) {
+        let parsed = parse_query(&query).map(|parsed| {
+            let schema = self.query_source().collect_schema().ok();
+            parsed.past_calendar_safe(schema.as_deref())
+        });
+        match parsed {
             Ok(ParsedQuery {
                 cols,
                 filter,
@@ -8464,6 +8529,7 @@ impl DataTableState {
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
+                    crate::past_calendar::guard_plan(&mut result_lf.logical_plan);
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -8515,7 +8581,8 @@ impl DataTableState {
         let columns = root.clone().collect_schema().ok()?;
         let names: Vec<&str> = columns.iter_names().map(|n| n.as_str()).collect();
         let plan = crate::sql_group::plan(sql, &names, result.len())?;
-        let rows = ctx.execute(&plan.source_sql).ok()?;
+        let mut rows = ctx.execute(&plan.source_sql).ok()?;
+        crate::past_calendar::guard_plan(&mut rows.logical_plan);
         let source_schema = rows.clone().collect_schema().ok()?;
         let mut scratch = Vec::new();
         let mut keys = Vec::with_capacity(plan.keys.len());
@@ -12355,6 +12422,139 @@ mod tests {
         assert!(names.contains(&"value"));
         assert!(names.contains(&"id"));
         assert!(names.contains(&"date"));
+    }
+
+    /// Dates past the calendar in the second row: a date, and datetimes in ms and
+    /// us with and without a zone. The first row is 1970-01-01.
+    fn past_calendar_lf() -> LazyFrame {
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let datetime = |name: &str, unit, zone: Option<TimeZone>| {
+            Series::new(name.into(), [0, i64::MIN + 1])
+                .cast(&DataType::Datetime(unit, zone))
+                .unwrap()
+                .into_column()
+        };
+        DataFrame::new_infer_height(vec![
+            Column::new("id".into(), [1i32, 2]),
+            Column::new("s".into(), ["a", "b"]),
+            Series::new("d".into(), [0, i32::MAX])
+                .cast(&DataType::Date)
+                .unwrap()
+                .into_column(),
+            datetime("t_ms", TimeUnit::Milliseconds, None),
+            datetime("t_us", TimeUnit::Microseconds, None),
+            datetime("t_ms_tz", TimeUnit::Milliseconds, paris.clone()),
+            datetime("t_us_tz", TimeUnit::Microseconds, paris),
+        ])
+        .unwrap()
+        .lazy()
+    }
+
+    const PAST_CALENDAR: [&str; 5] = ["d", "t_ms", "t_us", "t_ms_tz", "t_us_tz"];
+
+    /// `column`'s two values as text: Polars' own for the first, and the stored
+    /// number the table shows for the one past the calendar.
+    fn past_calendar_text(column: &str) -> [String; 2] {
+        let df = past_calendar_lf().collect().unwrap();
+        let values = df.column(column).unwrap();
+        let first = values
+            .slice(0, 1)
+            .cast(&DataType::String)
+            .unwrap()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .to_string();
+        let past = crate::exact::past_calendar_text(&values.get(1).unwrap()).unwrap();
+        [first, past]
+    }
+
+    /// Pivoted on a date past the calendar, its new column is named by the stored
+    /// number, the columns still in date order; Polars' own naming panicked (#506).
+    /// Without one, the columns are named as they always were.
+    #[test]
+    fn a_pivot_on_a_date_past_the_calendar_names_it_by_its_stored_number() {
+        for on in PAST_CALENDAR {
+            let [first, past] = past_calendar_text(on);
+            for with_past in [true, false] {
+                let lf = past_calendar_lf()
+                    .filter(col("id").eq(lit(1)).or(lit(with_past)))
+                    .select([col("id"), col(on), col("s")]);
+                let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+                state
+                    .pivot(&PivotSpec {
+                        index: vec!["id".to_string()],
+                        pivot_column: on.to_string(),
+                        value_column: "s".to_string(),
+                        aggregation: PivotAggregation::First,
+                        sort_columns: None,
+                    })
+                    .unwrap();
+                let df = state.lf.clone().collect().unwrap();
+                let names: Vec<&str> = df.get_column_names().iter().map(|n| n.as_str()).collect();
+                let dates = match (with_past, on) {
+                    (false, _) => vec![first.as_str()],
+                    // i32::MAX days is after 1970, i64::MIN + 1 before it.
+                    (true, "d") => vec![first.as_str(), past.as_str()],
+                    (true, _) => vec![past.as_str(), first.as_str()],
+                };
+                assert_eq!(names[1..], dates, "{on}");
+                assert_eq!(
+                    df.column(&first).unwrap().str().unwrap().get(0),
+                    Some("a"),
+                    "{on}"
+                );
+                if with_past {
+                    assert_eq!(
+                        df.column(&past).unwrap().str().unwrap().get(1),
+                        Some("b"),
+                        "{on}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Melted with text, a date past the calendar is its stored number, where the
+    /// cast to text panicked (#506), and one in range Polars' own text. Melted with
+    /// dates only, the values stay dates.
+    #[test]
+    fn a_melt_of_dates_with_text_writes_a_date_past_the_calendar_as_its_number() {
+        let melt = |columns: [&str; 2]| {
+            let mut state =
+                DataTableState::new(past_calendar_lf(), None, None, None, None, true).unwrap();
+            state
+                .melt(&MeltSpec {
+                    index: vec!["id".to_string()],
+                    value_columns: columns.map(String::from).to_vec(),
+                    variable_name: "variable".to_string(),
+                    value_name: "value".to_string(),
+                })
+                .unwrap();
+            state.lf.clone().collect().unwrap()
+        };
+        for column in PAST_CALENDAR {
+            let [first, past] = past_calendar_text(column);
+            let df = melt([column, "s"]);
+            let values: Vec<Option<&str>> =
+                df.column("value").unwrap().str().unwrap().iter().collect();
+            assert_eq!(
+                values,
+                [
+                    Some(first.as_str()),
+                    Some(past.as_str()),
+                    Some("a"),
+                    Some("b")
+                ],
+                "{column}"
+            );
+        }
+        let df = melt(["t_ms", "t_us"]);
+        assert!(matches!(
+            df.column("value").unwrap().dtype(),
+            DataType::Datetime(..)
+        ));
     }
 
     /// A q-style query forgets the melt it replaces; rolled back, the melt is

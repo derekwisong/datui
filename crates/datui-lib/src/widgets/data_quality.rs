@@ -5412,6 +5412,122 @@ mod interval_tests {
         assert!(!text.contains("of those passes for intervals"), "{text}");
     }
 
+    /// A full scan's Read says how it gets the rows of a remote source before Run:
+    /// one fetch into a copy, a copy fetched earlier, or the source in every pass
+    /// with the reason there is no copy.
+    #[test]
+    fn setup_says_how_a_full_scan_reads_a_remote_source() {
+        const MIB: u64 = 1024 * 1024;
+        let lines = |copy: CopyPlan, copy_released: bool| {
+            let view = SetupView {
+                copy,
+                copy_released,
+                ..SetupView::default()
+            };
+            copy_lines(&view, 7).join("\n")
+        };
+        let fetch = CopyPlan::Fetch {
+            bytes: 17 * MIB,
+            objects: 8,
+        };
+        let text = lines(fetch, false);
+        assert!(
+            text.starts_with(
+                "One fetch of 8 objects (17.0 MiB) into a local copy, then up to 7 passes over it"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("until d releases it"), "{text}");
+        assert!(!text.contains("released, so"), "{text}");
+        assert!(lines(fetch, true).contains("Copied before; released, so fetched again"));
+        let one = CopyPlan::Fetch {
+            bytes: MIB,
+            objects: 1,
+        };
+        assert!(lines(one, false).starts_with("One fetch of 1 object (1.0 MiB)"));
+        assert_eq!(
+            lines(
+                CopyPlan::Kept {
+                    bytes: 17 * MIB,
+                    objects: 8
+                },
+                false
+            ),
+            "Every eligible row, in up to 7 passes over the local copy (17.0 MiB): no source read"
+        );
+        assert!(lines(CopyPlan::NotApplicable, false).contains("passes over the scope"));
+        for (why, says) in [
+            (
+                NoCopy::Off,
+                "Local copies are off: quality_local_copy_mb is 0",
+            ),
+            (
+                NoCopy::SizeUnknown,
+                "Object sizes unknown when it opened, so no local copy",
+            ),
+            (
+                NoCopy::PartOfTheSource,
+                "The scope reads part of the source, so no local copy",
+            ),
+            (
+                NoCopy::TooLarge {
+                    bytes: 3 * 1024 * MIB,
+                    limit: 2 * 1024 * MIB,
+                },
+                "Too large to keep a local copy: 3.0 GiB over the 2.0 GiB limit",
+            ),
+            (
+                NoCopy::NoRoom {
+                    bytes: 17 * MIB,
+                    free: Some(MIB),
+                },
+                "No local copy: 17.0 MiB is more than the 1.0 MiB free on disk",
+            ),
+            (
+                NoCopy::NoRoom {
+                    bytes: 17 * MIB,
+                    free: None,
+                },
+                "No local copy: free disk space unknown",
+            ),
+        ] {
+            let text = lines(CopyPlan::Passes(why), false);
+            assert!(
+                text.starts_with("Every eligible row, in up to 7 passes over the source"),
+                "{text}"
+            );
+            assert!(text.ends_with(says), "{text}");
+        }
+    }
+
+    /// The Read rule names a kept copy beside kept rows, or alone.
+    #[test]
+    fn the_read_rule_names_a_kept_copy() {
+        let rows = KeptRows {
+            samples: 1,
+            rows: 100_000,
+            bytes: 13 * 1024 * 1024,
+            copy_bytes: 0,
+        };
+        let middot = glyphs::get().middot;
+        assert_eq!(rows.label(), format!("100,000 rows kept {middot} 13.0 MiB"));
+        let both = KeptRows {
+            copy_bytes: 17 * 1024 * 1024,
+            ..rows
+        };
+        assert_eq!(
+            both.label(),
+            format!("100,000 rows kept {middot} 13.0 MiB, local copy {middot} 17.0 MiB")
+        );
+        let copy = KeptRows {
+            samples: 0,
+            rows: 0,
+            bytes: 0,
+            ..both
+        };
+        assert_eq!(copy.label(), format!("local copy {middot} 17.0 MiB"));
+    }
+
     /// Valid from to valid to is a validity period: no end is open, an end before
     /// the start ends first.
     #[test]

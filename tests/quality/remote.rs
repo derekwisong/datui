@@ -716,3 +716,58 @@ fn a_failed_fetch_leaves_no_copy() {
     );
     assert_eq!(app.quality_copy_bytes(), 0);
 }
+
+/// One object opened from a bucket is copied too, its size from the footer read
+/// that opened it: one GET for the copy, then every pass reads it.
+#[test]
+fn one_remote_object_is_copied_once() {
+    let object = remote_events()
+        .remove("events/part-0.parquet")
+        .expect("the first object");
+    let size = object.len() as u64;
+    let s3 = FakeS3::serve(
+        "lake",
+        BTreeMap::from([("one.parquet".to_string(), object)]),
+    );
+    let cache = tempfile::tempdir().unwrap();
+    let config = AppConfig {
+        cloud: s3.cloud_config(),
+        ..AppConfig::default()
+    };
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new_with_config(tx, crate::common::test_runtime(), theme, config);
+    app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+    settle(
+        &mut app,
+        &rx,
+        Some(AppEvent::Open(
+            vec![PathBuf::from("s3://lake/one.parquet")],
+            OpenOptions::default(),
+        )),
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().map(|state| state.num_rows),
+        Some(ROWS)
+    );
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    press(&mut app, KeyCode::Enter);
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| {
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = QualityCompute::Full;
+    });
+    assert_eq!(reads, [QualityStage::CopyingSource]);
+    assert_eq!(
+        wire,
+        WireCount {
+            lists: 0,
+            heads: 0,
+            gets: 1,
+            bytes: size,
+        }
+    );
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.evaluated_rows, ROWS);
+    assert_eq!(copies(cache.path()).len(), 1);
+}

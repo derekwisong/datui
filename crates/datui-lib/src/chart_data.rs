@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 use color_eyre::Result;
+use polars::chunked_array::cast::CastOptions;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
 use std::f64::consts::PI;
@@ -1290,7 +1291,7 @@ pub fn prepare_bar_data(
 ) -> Result<BarData> {
     let (df, rows) = read_columns(lf, &[category, value], sampling)?;
     let categories = df.column(category)?.as_materialized_series().clone();
-    let labels_series = categories.cast(&DataType::String)?;
+    let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
     let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
 
     let mut seen: std::collections::HashMap<Option<&str>, usize> =
@@ -1462,7 +1463,7 @@ fn count_bars(
         .collect();
     let counts = counts.take(&IdxCa::from_vec("order".into(), by_label))?;
     let categories = counts.column(category)?.as_materialized_series().clone();
-    let labels_series = categories.cast(&DataType::String)?;
+    let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
     let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
     let values: Vec<Option<f64>> = counts
         .column(COUNT_COLUMN)?
@@ -2278,6 +2279,55 @@ mod tests {
             [None, Some("9"), Some("10"), Some("2")],
             "ties keep table order"
         );
+    }
+
+    /// A date category past the calendar is labeled by its stored number, as the
+    /// table shows it, where the cast to text panicked (#506); bars still order as
+    /// dates.
+    #[test]
+    fn a_date_category_past_the_calendar_is_labeled_by_its_stored_number() {
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let datetime = |unit, zone: Option<TimeZone>| {
+            Series::new("at".into(), [i64::MIN + 1, 0])
+                .cast(&DataType::Datetime(unit, zone))
+                .unwrap()
+        };
+        for (at, labels_in_order) in [
+            (
+                Series::new("at".into(), [i32::MAX, 0])
+                    .cast(&DataType::Date)
+                    .unwrap(),
+                ["1970-01-01", "2147483647 days since 1970-01-01"],
+            ),
+            (
+                datetime(TimeUnit::Milliseconds, None),
+                [
+                    "-9223372036854775807 ms since 1970-01-01 UTC",
+                    "1970-01-01 00:00:00.000",
+                ],
+            ),
+            (
+                datetime(TimeUnit::Microseconds, paris),
+                [
+                    "-9223372036854775807 us since 1970-01-01 UTC",
+                    "1970-01-01 01:00:00.000000+01:00",
+                ],
+            ),
+        ] {
+            let lf = DataFrame::new_infer_height(vec![
+                at.into_column(),
+                Column::new("n".into(), [1i64, 2]),
+            ])
+            .unwrap()
+            .lazy();
+            let by_value =
+                prepare_bar_data(&lf, "at", "n", BarOrder::Label, BAR_CAP, &all_rows()).unwrap();
+            let counted =
+                prepare_bar_counts(&lf, "at", BarOrder::Label, BAR_CAP, &all_rows()).unwrap();
+            for data in [by_value, counted] {
+                assert_eq!(labels(&data), labels_in_order.map(Some));
+            }
+        }
     }
 
     /// A category that repeats is refused with the way out, not summed or averaged.

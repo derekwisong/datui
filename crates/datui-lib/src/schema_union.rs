@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use polars::chunked_array::cast::CastOptions;
 use polars::prelude::{
     DataType, Field, LazyFrame, PlRefPath, PlSmallStr, PolarsResult, Schema, TimeUnit, UnionArgs,
     concat,
@@ -1964,10 +1965,14 @@ fn scan_run(
     if !read_as.is_empty() {
         // Now the values are in hand, they become text. Every run casts, including one
         // whose files already agree: they are all being shown as text, and a run that
-        // skipped the cast would not concatenate with the rest.
+        // skipped the cast would not concatenate with the rest. A date past the
+        // calendar, on which Polars' cast panics, becomes its stored number.
         let texts: Vec<Expr> = read_as
             .iter()
-            .map(|(name, _)| col(name.clone()).cast(DataType::String).alias(name.clone()))
+            .map(|(name, _)| {
+                crate::past_calendar::text_expr(col(name.clone()), CastOptions::NonStrict)
+                    .alias(name.clone())
+            })
             .collect();
         lf = lf.with_columns(texts);
     }
@@ -2379,6 +2384,78 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1, 2, 3, 4],
             "and each row still knows its place in the dataset"
+        );
+    }
+
+    /// Read as text, a date past the calendar is its stored number, as the table
+    /// shows it, where Polars' cast panicked and failed the whole read (#506).
+    #[test]
+    fn a_date_past_the_calendar_read_as_text_is_its_stored_number() {
+        use polars::prelude::{NamedFrom, ParquetWriter, Series, TimeZone};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, n: Series| {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            let mut frame = polars::prelude::DataFrame::new_infer_height(vec![n.into()]).unwrap();
+            ParquetWriter::new(file).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let stamps = |dtype: DataType| {
+            Series::new("n".into(), [0, i64::MIN + 1])
+                .cast(&dtype)
+                .unwrap()
+        };
+        let types = [
+            DataType::Date,
+            DataType::Datetime(TimeUnit::Milliseconds, None),
+            DataType::Datetime(TimeUnit::Microseconds, paris),
+        ];
+        // The text file has the most rows, so `n` is text.
+        write("a.parquet", Series::new("n".into(), ["x", "y", "z"]));
+        write(
+            "b.parquet",
+            Series::new("n".into(), [0, i32::MAX])
+                .cast(&types[0])
+                .unwrap(),
+        );
+        write("c.parquet", stamps(types[1].clone()));
+        write("d.parquet", stamps(types[2].clone()));
+
+        let footers: Vec<Option<FileSchema>> = [DataType::String]
+            .into_iter()
+            .chain(types)
+            .enumerate()
+            .map(|(i, dtype)| file(&[("n", dtype)], if i == 0 { 3 } else { 2 }))
+            .collect();
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(4));
+        assert_eq!(dataset.schema.get("n"), Some(&DataType::String));
+        let drift = ScanDrift::new(&paths, &dataset, &[3, 2, 2, 2]).expect("the files disagree");
+        let as_text = [PlSmallStr::from("n")];
+        let text = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(
+            text.column("n")
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>(),
+            [
+                Some("x"),
+                Some("y"),
+                Some("z"),
+                Some("1970-01-01"),
+                Some("2147483647 days since 1970-01-01"),
+                Some("1970-01-01 00:00:00.000"),
+                Some("-9223372036854775807 ms since 1970-01-01 UTC"),
+                Some("1970-01-01 01:00:00.000000+01:00"),
+                Some("-9223372036854775807 us since 1970-01-01 UTC"),
+            ]
         );
     }
 

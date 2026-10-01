@@ -518,6 +518,8 @@ mod export_format_tests {
         assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
         assert_eq!(app.end_after_count, Some(dataset));
         assert_eq!(app.counts_spawned.get(), 1, "started for the End");
+        assert_eq!(app.status_message.as_deref(), Some(App::COUNTING_FOR_END));
+        assert!(app.row_count_pending(), "the bar spins while it counts");
         assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
         // The paint that follows, and End again, do not start a second.
         app.frame_painted();
@@ -531,6 +533,23 @@ mod export_format_tests {
             "the jump follows"
         );
         assert_eq!(app.end_after_count, None);
+    }
+
+    /// A held count that End starts is marked running, whatever cleared the marker
+    /// meanwhile (a return from Data Quality's rows does): a second End waits on it
+    /// rather than starting another.
+    #[test]
+    fn a_count_end_starts_is_marked_running() {
+        let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
+        app.spawn_async_collect("Filtering...");
+        app.event(&recv(&rx));
+        app.len_count_inflight = None;
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        assert_eq!(app.len_count_inflight, Some(dataset));
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        app.frame_painted();
+        assert_eq!(app.counts_spawned.get(), 1);
+        assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
     }
 
     /// A count that failed is not started again by scrolling or painting; End asks
@@ -632,6 +651,12 @@ mod export_format_tests {
         app.apply_schema_ready(other, None, &opts(), None);
         assert_ne!(app.count_after_paint, Some(dataset));
         assert_ne!(app.len_count_inflight, Some(dataset));
+        app.frame_painted();
+        assert_eq!(
+            app.counts_spawned.get(),
+            0,
+            "the old dataset is not counted"
+        );
     }
 
     /// A count that reads only footers is not held for the paint: it reads no data.
@@ -13480,13 +13505,13 @@ impl App {
             let generation = state.len_generation();
             self.end_after_count = Some(generation);
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
-            if self.count_after_paint == Some(generation) {
+            let held = self.count_after_paint == Some(generation);
+            if held {
                 self.count_after_paint = None;
-                self.spawn_count(LenCount::for_state(state));
-            } else if self.len_count_inflight != Some(generation) {
-                let job = LenCount::for_state(state);
+            }
+            if held || self.len_count_inflight != Some(generation) {
                 self.len_count_inflight = Some(generation);
-                self.spawn_count(job);
+                self.spawn_count(LenCount::for_state(state));
             }
             return None;
         }

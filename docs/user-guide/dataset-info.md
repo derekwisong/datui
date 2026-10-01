@@ -12,6 +12,11 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
 
+The file size and Parquet metadata are read in the background the first time
+the panel opens for a dataset. Until they arrive the size reads `reading...`;
+a file that cannot be read shows why in its place. Remote sources and
+directories have no file size.
+
 ## Keys
 
 | Key | Action |

@@ -369,14 +369,61 @@ impl InfoModal {
     }
 }
 
-/// Context for the info panel: path, format, and optional Parquet metadata.
+/// What the open file says about itself beyond its rows: its size on disk and, for a
+/// Parquet file, its footer.
+///
+/// Read on a worker, once per dataset, and drawn from here. A stat or a footer read on a
+/// mount that has stopped answering hangs the thread that makes it, so neither is made
+/// where keys are read or frames drawn (#457).
+#[derive(Debug, Clone)]
+pub enum FileFacts {
+    /// Asked for; the worker has not answered.
+    Reading,
+    /// What the worker found.
+    Read {
+        /// `None` for a directory, whose own size is not the data's.
+        size: Option<u64>,
+        /// The footer of a Parquet file; `None` for any other format.
+        parquet: Option<ParquetMetadataCache>,
+    },
+    /// The read failed, and why. Kept for the dataset rather than asked again: a file
+    /// that could not be read a moment ago is not worth a read per frame.
+    Failed(String),
+}
+
+impl FileFacts {
+    /// Stat `path` and, when `parquet`, read its footer. Blocking: call it on a worker.
+    pub fn read(path: &Path, parquet: bool) -> std::result::Result<Self, String> {
+        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        if meta.is_dir() {
+            return Ok(Self::Read {
+                size: None,
+                parquet: None,
+            });
+        }
+        let parquet = if parquet {
+            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let footer = read_metadata(&mut file).map_err(|e| format!("Parquet footer: {e}"))?;
+            Some(Arc::new(footer))
+        } else {
+            None
+        };
+        Ok(Self::Read {
+            size: Some(meta.len()),
+            parquet,
+        })
+    }
+}
+
+/// Context for the info panel: the format, and what the file says about itself.
 ///
 /// What the open cost is not here: it belongs to the dataset, and the panel already
 /// has the dataset.
 pub struct InfoContext<'a> {
-    pub path: Option<&'a Path>,
     pub format: Option<ExportFormat>,
-    pub parquet_metadata: Option<&'a ParquetMetadataCache>,
+    /// `None` when there is no file on this machine to ask: a remote source, or a
+    /// dataset opened from several paths.
+    pub facts: Option<&'a FileFacts>,
 }
 
 impl<'a> InfoContext<'a> {
@@ -389,10 +436,12 @@ impl<'a> InfoContext<'a> {
         }
     }
 
-    pub fn file_size_bytes(&self) -> Option<u64> {
-        self.path
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
+    /// The Parquet footer, once it has been read.
+    pub fn parquet_metadata(&self) -> Option<&'a ParquetMetadataCache> {
+        match self.facts? {
+            FileFacts::Read { parquet, .. } => parquet.as_ref(),
+            FileFacts::Reading | FileFacts::Failed(_) => None,
+        }
     }
 }
 
@@ -547,7 +596,7 @@ impl<'a> DataTableInfo<'a> {
         let has_files = presence.is_some();
         let compression = self
             .ctx
-            .parquet_metadata
+            .parquet_metadata()
             .map(|m| parquet_column_compression(m.as_ref(), self.state.schema().as_ref()));
         let has_comp = compression.as_ref().is_some_and(|c| !c.is_empty());
         let mut header_cells = vec!["Column", "Type"];
@@ -710,20 +759,31 @@ impl<'a> DataTableInfo<'a> {
         if y >= area.y + h {
             return;
         }
-        let file_size = self.ctx.file_size_bytes().map(format_bytes);
-        let file_size_str = file_size.as_deref().unwrap_or(crate::glyphs::get().dash);
-        label_value_row(
-            "File size:",
-            file_size_str,
-            Rect {
+        // Drawn from what the worker left; reading the file here would hang the frame
+        // on a mount that has stopped answering.
+        let file_size = match self.ctx.facts {
+            None | Some(FileFacts::Read { size: None, .. }) => Span::raw(crate::glyphs::get().dash),
+            Some(FileFacts::Read {
+                size: Some(size), ..
+            }) => Span::raw(format_bytes(*size)),
+            Some(FileFacts::Reading) => {
+                Span::styled("reading...", Style::default().fg(self.theme.dimmed))
+            }
+            Some(FileFacts::Failed(why)) => {
+                Span::styled(why.as_str(), Style::default().fg(self.theme.error))
+            }
+        };
+        let size_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([label_constraint, value_constraint])
+            .split(Rect {
                 y,
                 width: w,
                 height: 1,
                 ..area
-            },
-            buf,
-            LABEL_WIDTH,
-        );
+            });
+        Paragraph::new("File size:").render(size_chunks[0], buf);
+        Paragraph::new(Line::from(file_size)).render(size_chunks[1], buf);
         y += 1;
 
         if y >= area.y + h {
@@ -821,7 +881,7 @@ impl<'a> DataTableInfo<'a> {
         }
         y += 1;
 
-        if let Some(ref meta) = self.ctx.parquet_metadata {
+        if let Some(meta) = self.ctx.parquet_metadata() {
             let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
             if comp > 0 && uncomp > 0 && y < area.y + h {
                 let ratio = uncomp as f64 / comp as f64;
@@ -1349,7 +1409,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
     }
 }
 
-/// Read Parquet metadata from path. Returns `None` on error.
+/// Read Parquet metadata from path. Returns `None` on error. Blocking.
 pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
     let mut f = std::fs::File::open(path).ok()?;
     let meta = read_metadata(&mut f).ok()?;
@@ -1359,6 +1419,50 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a file says about itself: a size and, for Parquet, a footer; a directory
+    /// has no size of its own to give; a file that is gone, or whose footer is not
+    /// one, is a reason rather than a blank.
+    #[test]
+    fn file_facts_read_what_each_source_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("rows.csv");
+        std::fs::write(&csv, "a\n1\n").unwrap();
+        let parquet = dir.path().join("rows.parquet");
+        let mut df = df!("a" => &[1i64, 2, 3]).unwrap();
+        ParquetWriter::new(std::fs::File::create(&parquet).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        let parquet_len = std::fs::metadata(&parquet).unwrap().len();
+
+        assert!(matches!(
+            FileFacts::read(&csv, false),
+            Ok(FileFacts::Read {
+                size: Some(4),
+                parquet: None
+            })
+        ));
+        match FileFacts::read(&parquet, true) {
+            Ok(FileFacts::Read {
+                size: Some(size),
+                parquet: Some(footer),
+            }) => {
+                assert_eq!(size, parquet_len);
+                assert_eq!(footer.num_rows, 3);
+            }
+            other => panic!("a Parquet file's size and footer: {other:?}"),
+        }
+        assert!(matches!(
+            FileFacts::read(dir.path(), true),
+            Ok(FileFacts::Read {
+                size: None,
+                parquet: None
+            })
+        ));
+        assert!(FileFacts::read(&dir.path().join("gone.parquet"), true).is_err());
+        let not_parquet = FileFacts::read(&csv, true).expect_err("a CSV has no footer");
+        assert!(not_parquet.starts_with("Parquet footer"), "{not_parquet}");
+    }
 
     /// A dataset that has not been counted says so rather than showing how far it got.
     ///
@@ -1392,9 +1496,8 @@ mod tests {
             let panel = DataTableInfo::new(
                 state,
                 InfoContext {
-                    path: None,
                     format: None,
-                    parquet_metadata: None,
+                    facts: None,
                 },
                 &mut modal,
                 &theme,
@@ -1460,9 +1563,8 @@ mod tests {
         let mut panel = DataTableInfo::new(
             &state,
             InfoContext {
-                path: None,
                 format: None,
-                parquet_metadata: None,
+                facts: None,
             },
             &mut modal,
             &theme,
@@ -1556,9 +1658,8 @@ mod tests {
             let panel = DataTableInfo::new(
                 &state,
                 InfoContext {
-                    path: None,
                     format: None,
-                    parquet_metadata: None,
+                    facts: None,
                 },
                 &mut modal,
                 &theme,
@@ -1731,9 +1832,8 @@ mod tests {
             let mut panel = DataTableInfo::new(
                 &state,
                 InfoContext {
-                    path: None,
                     format: None,
-                    parquet_metadata: None,
+                    facts: None,
                 },
                 &mut modal,
                 &theme,

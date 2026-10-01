@@ -30,7 +30,7 @@ const CLASSIFY_BATCH: usize = 16;
 const MAX_CONCURRENT_PROBES: usize = 4;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc::Sender};
-use widgets::info::{InfoFocus, InfoModal, InfoTab, ParquetMetadataCache, read_parquet_metadata};
+use widgets::info::{FileFacts, InfoFocus, InfoModal, InfoTab};
 
 use ratatui::style::{Color, Style};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
@@ -6345,7 +6345,7 @@ pub mod tests {
     fn an_unleased_spawn_is_a_deliberate_act() {
         // Split so this test's own needles are not among the things it finds.
         let needles = [
-            (concat!("spawn_bg_", "replaceable("), 2usize),
+            (concat!("spawn_bg_", "replaceable("), 3usize),
             (concat!("spawn_bg_", "inner("), 2usize),
         ];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -6370,11 +6370,13 @@ pub mod tests {
             let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
             assert_eq!(
                 found, expected,
-                "`{needle}` appears {found} times, not {expected}. Two spawns skip the \
+                "`{needle}` appears {found} times, not {expected}. Three spawns skip the \
                  lease on purpose: the buffer collect, whose answer is asked for again \
-                 if a bump throws it away, and the look at a directory named on the \
-                 command line, whose answer is meant to be thrown away. Anything else \
-                 that skips it can be stranded by a bump, silently. See GenerationLease."
+                 if a bump throws it away; the look at a directory named on the \
+                 command line, whose answer is meant to be thrown away; and the Info \
+                 panel's file facts, whose answer is judged by the dataset, not the \
+                 generation. Anything else that skips it can be stranded by a bump, \
+                 silently. See GenerationLease."
             );
         }
     }
@@ -8258,7 +8260,6 @@ pub enum AppEvent {
     DoExportCollect(ExportRequest),
     /// Write the collected frame and commit it over the destination.
     DoExportWrite(ExportRequest),
-    DoLoadParquetMetadata, // Load Parquet metadata when info panel is opened (deferred from render)
     Exit,
     Crash(String),
     Search(String),
@@ -8513,6 +8514,13 @@ pub enum AppEvent {
         group_index: usize,
         row: DataFrame,
     },
+    /// What the Info panel's worker read about the open file. A failure is
+    /// [`Job::FileFacts`]'s.
+    FileFactsRead {
+        /// The `dataset_generation` it was read for. A newer dataset makes it stale.
+        dataset: u64,
+        facts: FileFacts,
+    },
     /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
     /// there.
     BackgroundKindReady {
@@ -8580,6 +8588,10 @@ pub enum Job {
     Copy,
     /// Writing the Data Quality report.
     QualityReport,
+    /// Reading the open file's size and footer for the Info panel. `dataset` is the
+    /// `dataset_generation` it was read for: the generation does not tell one dataset's
+    /// read from the next.
+    FileFacts { dataset: u64 },
     /// Writing a chart. `generation` is `chart_export_generation`'s; the path and
     /// format reopen the form on a failure.
     ChartExport {
@@ -8597,6 +8609,11 @@ type WorkerDies = Box<dyn FnMut(&Job) -> bool + Send>;
 /// they would owe; see `App::home_worker_dies`.
 #[cfg(test)]
 type HomeWorkerDies = Box<dyn FnMut(&AppEvent) -> bool + Send>;
+
+/// Stands in for [`FileFacts::read`]; see `App::file_facts_reader`.
+#[cfg(test)]
+type FileFactsReader =
+    Arc<dyn Fn(&Path, bool) -> std::result::Result<FileFacts, String> + Send + Sync>;
 
 /// A lease on the current `task_generation`, held by background work whose answer
 /// arrives once.
@@ -10005,7 +10022,10 @@ pub struct App {
     events: Sender<AppEvent>,
     debug: DebugState,
     pub info_modal: InfoModal,
-    parquet_metadata_cache: Option<ParquetMetadataCache>,
+    /// What the Info panel knows about the open file, and the `dataset_generation` it
+    /// belongs to. Asked for when the panel opens, read on a worker, and kept for the
+    /// dataset however the read ended, so neither drawing nor reopening reads again.
+    file_facts: Option<(u64, FileFacts)>,
     // One input per query mode, each with its own history. The history ids
     // ("query", "sql", "fuzzy") name files already on disk; they stay as they
     // are so no history is lost or read as another mode's.
@@ -10236,6 +10256,10 @@ pub struct App {
     /// The same, for the home screen's workers.
     #[cfg(test)]
     home_worker_dies: Option<HomeWorkerDies>,
+    /// Reads the open file's facts in place of [`FileFacts::read`], for tests of a
+    /// read that is slow or fails.
+    #[cfg(test)]
+    file_facts_reader: Option<FileFactsReader>,
     /// A buffer collect that was asked for while a lease was outstanding, and the
     /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
     /// dropped when the dataset it belonged to is replaced.
@@ -13035,7 +13059,7 @@ impl App {
             std::thread::spawn(move || cache.push_recent(&path));
         }
         self.collect_inflight = None;
-        self.parquet_metadata_cache = None;
+        self.file_facts = None;
         self.export_df = None;
         self.data_table_state = Some(state);
         // A count still waiting for the last dataset's rows to paint is not owed now.
@@ -13049,6 +13073,10 @@ impl App {
         } else {
             self.original_file_format = None;
             self.original_file_delimiter = None;
+        }
+        // A panel still up says what it says about the dataset on screen.
+        if self.info_modal.active {
+            self.read_file_facts();
         }
         // Enable the cheap footer-sum row count for a local Parquet hive directory.
         if options.hive
@@ -13386,15 +13414,17 @@ impl App {
         self.spawn_bg_inner(job, Some(status), Some(lease), work);
     }
 
-    /// Spawn background work whose answer, thrown away by a bump, is simply asked for
-    /// again — the buffer collect, and only that.
+    /// Spawn background work that holds no [`GenerationLease`]: work whose answer a bump
+    /// cannot strand, and which a lease would only make others wait behind.
     ///
-    /// It holds no [`GenerationLease`], because the collect is what a lease makes wait:
-    /// leased, the next collect would queue behind the last one and scrolling would go
-    /// a page per round trip. Supersession is `InflightCollect::covers`'s job instead.
+    /// The buffer collect: its answer, thrown away by a bump, is simply asked for again,
+    /// and leased, the next collect would queue behind the last one and scrolling would
+    /// go a page per round trip. Supersession is `InflightCollect::covers`'s job instead.
+    /// The look at a directory named on the command line, whose answer is meant to be
+    /// thrown away. And the Info panel's file facts, judged by the dataset rather than
+    /// the generation.
     ///
-    /// This is the one exemption, and `an_unleased_spawn_is_a_deliberate_act` fails if
-    /// a second one appears.
+    /// `an_unleased_spawn_is_a_deliberate_act` fails if another caller appears.
     ///
     /// With no `status` it sets neither `busy` nor a message: a load-ahead.
     fn spawn_bg_replaceable<F>(&mut self, job: Job, status: Option<&str>, work: F)
@@ -13710,7 +13740,7 @@ impl App {
             events,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
-            parquet_metadata_cache: None,
+            file_facts: None,
             query_input: TextInput::new()
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
@@ -13821,6 +13851,8 @@ impl App {
             worker_dies: None,
             #[cfg(test)]
             home_worker_dies: None,
+            #[cfg(test)]
+            file_facts_reader: None,
             collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
@@ -21336,14 +21368,7 @@ impl App {
                         self.info_modal.open();
                     }
                     self.input_mode = InputMode::Info;
-                    // Defer Parquet metadata load so UI can show throbber; avoid blocking in render
-                    if self.path.is_some()
-                        && self.original_file_format == Some(ExportFormat::Parquet)
-                        && self.parquet_metadata_cache.is_none()
-                    {
-                        self.busy = true;
-                        return Some(AppEvent::DoLoadParquetMetadata);
-                    }
+                    self.read_file_facts();
                 }
                 None
             }
@@ -23983,14 +24008,8 @@ impl App {
                 }
                 None
             }
-            AppEvent::DoLoadParquetMetadata => {
-                let path = self.path.clone();
-                if let Some(p) = &path
-                    && let Some(meta) = read_parquet_metadata(p)
-                {
-                    self.parquet_metadata_cache = Some(meta);
-                }
-                self.busy = false;
+            AppEvent::FileFactsRead { dataset, facts } => {
+                self.file_facts_landed(*dataset, facts.clone());
                 None
             }
             _ => None,
@@ -24716,7 +24735,75 @@ impl App {
                     self.finish_chart_export(path, *format, Err(message.to_string()));
                 }
             }
+            // Judged by the dataset, as its answer is; it set no busy state to clear.
+            Job::FileFacts { dataset } => {
+                // The panel has one line for it, and a panic's message is an internal
+                // error with the log's path under it.
+                let why = if panicked {
+                    "could not read; see the log".to_string()
+                } else {
+                    message.to_string()
+                };
+                self.file_facts_landed(*dataset, FileFacts::Failed(why));
+            }
         }
+    }
+
+    /// Ask a worker for the open file's size and footer, unless this dataset has
+    /// already asked. A source with no file on this machine has none to ask for.
+    ///
+    /// No lease and no busy state. The answer is judged by `dataset_generation`, which
+    /// a bump does not change, so a bump cannot strand it; leased, a slow stat would
+    /// hold the next buffer collect behind it. And busy would hold the keys typed at
+    /// the panel, Esc included, behind a read the panel already says it is waiting on.
+    fn read_file_facts(&mut self) {
+        let dataset = self.dataset_generation;
+        if self.data_table_state.is_none()
+            || self
+                .file_facts
+                .as_ref()
+                .is_some_and(|(asked, _)| *asked == dataset)
+        {
+            return;
+        }
+        let Some(path) = self
+            .path
+            .clone()
+            .filter(|path| !source::is_remote_url(path))
+        else {
+            return;
+        };
+        let parquet = self.original_file_format == Some(ExportFormat::Parquet);
+        self.file_facts = Some((dataset, FileFacts::Reading));
+        #[cfg(test)]
+        let read: FileFactsReader = self
+            .file_facts_reader
+            .clone()
+            .unwrap_or_else(|| Arc::new(FileFacts::read));
+        #[cfg(not(test))]
+        let read = FileFacts::read;
+        self.spawn_bg_replaceable(Job::FileFacts { dataset }, None, move |_, tx| {
+            let facts = read(&path, parquet)?;
+            let _ = tx.send(AppEvent::FileFactsRead { dataset, facts });
+            Ok(())
+        });
+    }
+
+    /// The file facts read for `dataset`, kept if that is still the dataset waiting on
+    /// them. An answer for one replaced since is about a file no longer on screen.
+    fn file_facts_landed(&mut self, dataset: u64, facts: FileFacts) {
+        if let Some((asked, waiting @ FileFacts::Reading)) = self.file_facts.as_mut()
+            && *asked == dataset
+        {
+            *waiting = facts;
+        }
+    }
+
+    /// What the Info panel knows about the open file: `None` until it is asked, and
+    /// for a source with no file on this machine. Installing a dataset clears it, so
+    /// what is here is the open dataset's.
+    pub fn file_facts(&self) -> Option<&FileFacts> {
+        self.file_facts.as_ref().map(|(_, facts)| facts)
     }
 
     /// An open failed before its first rows. The dataset already up is the current one
@@ -26717,5 +26804,321 @@ mod background_read_tests {
             .map(|name| name.to_string())
             .collect();
         assert_eq!(shown, ["b", "a"]);
+    }
+}
+
+#[cfg(test)]
+mod file_facts_tests {
+    use super::*;
+    use crate::widgets::datatable::DataTableState;
+    use polars::prelude::IntoLazy;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+
+    type Answer = std::result::Result<FileFacts, String>;
+
+    /// A reader that counts its calls, notes any made on the test's own thread, and
+    /// answers only when the test sends it an answer.
+    struct Gate {
+        calls: Arc<AtomicUsize>,
+        on_ui_thread: Arc<AtomicUsize>,
+        answer: mpsc::Sender<Answer>,
+    }
+
+    fn gated(app: &mut App) -> Gate {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let on_ui_thread = Arc::new(AtomicUsize::new(0));
+        let (answer, answers) = mpsc::channel::<Answer>();
+        let answers = Mutex::new(answers);
+        let ui = std::thread::current().id();
+        let (counted, misplaced) = (calls.clone(), on_ui_thread.clone());
+        app.file_facts_reader = Some(Arc::new(move |_path: &Path, _parquet: bool| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            if std::thread::current().id() == ui {
+                misplaced.fetch_add(1, Ordering::SeqCst);
+            }
+            answers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv()
+                .unwrap_or_else(|_| Err("the test ended".to_string()))
+        }));
+        Gate {
+            calls,
+            on_ui_thread,
+            answer,
+        }
+    }
+
+    fn app() -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let app = App::new(tx.clone(), crate::tests::test_runtime());
+        (app, rx, tx)
+    }
+
+    /// Install a three-row dataset as though it was opened from `path`, which nothing
+    /// here reads: the reader is the test's.
+    fn install(app: &mut App, path: &str) {
+        let lf = polars::df!("a" => [1i64, 2, 3]).unwrap().lazy();
+        let state = DataTableState::from_lazyframe(lf, &OpenOptions::default()).unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(
+            state,
+            Some(PathBuf::from(path)),
+            &OpenOptions::default(),
+            None,
+        );
+        app.status_message = None;
+        app.input_mode = InputMode::Normal;
+    }
+
+    fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Option<AppEvent> {
+        app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)))
+    }
+
+    /// `i`, then → to the Resources tab, where the file size is.
+    fn open_resources(app: &mut App) {
+        press(app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(app.input_mode, InputMode::Info);
+        press(app, KeyCode::Right, KeyModifiers::NONE);
+    }
+
+    /// A frame at 80×24, as text.
+    fn screen(app: &mut App) -> String {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn file_size_line(text: &str) -> &str {
+        text.lines()
+            .find(|line| line.contains("File size:"))
+            .unwrap_or_else(|| panic!("no File size row:\n{text}"))
+    }
+
+    fn reading(app: &App) -> bool {
+        matches!(app.file_facts(), Some(FileFacts::Reading))
+    }
+
+    fn read(size: u64) -> Answer {
+        Ok(FileFacts::Read {
+            size: Some(size),
+            parquet: None,
+        })
+    }
+
+    /// Opening Info reads nothing where keys are handled or frames drawn. While the
+    /// read waits, frames draw the wait, keys act without being held, and asking
+    /// again — reopening the panel, drawing more frames — starts no second read.
+    #[test]
+    fn info_draws_and_answers_keys_while_its_read_waits() {
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "/nowhere/facts.parquet");
+
+        open_resources(&mut app);
+        assert!(reading(&app), "the read was asked for");
+        assert!(!app.is_busy(), "and nothing waits on it: no key is held");
+
+        for _ in 0..3 {
+            let text = screen(&mut app);
+            assert!(
+                file_size_line(&text).contains("reading..."),
+                "the panel draws the wait:\n{text}"
+            );
+        }
+        // Esc and `i` act at once, and the panel opened again asks nothing new.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        open_resources(&mut app);
+        let _ = screen(&mut app);
+
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |_| {
+            gate.calls.load(Ordering::SeqCst) == 1
+        });
+        assert_eq!(
+            gate.on_ui_thread.load(Ordering::SeqCst),
+            0,
+            "the read was made on a worker"
+        );
+
+        gate.answer.send(read(2048)).unwrap();
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        let text = screen(&mut app);
+        assert!(
+            file_size_line(&text).contains("2.0 KiB"),
+            "and draws the answer once it lands:\n{text}"
+        );
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        open_resources(&mut app);
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "one read per dataset");
+    }
+
+    /// Quit and home act at once from the panel while the read is still out, and its
+    /// answer landing later moves nothing.
+    #[test]
+    fn quit_and_home_do_not_wait_on_the_read() {
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "/nowhere/facts.parquet");
+        open_resources(&mut app);
+        assert!(reading(&app));
+
+        assert!(matches!(
+            press(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL),
+            Some(AppEvent::Exit)
+        ));
+        press(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.input_mode, InputMode::Home, "home, without waiting");
+        assert!(!app.is_busy());
+
+        gate.answer.send(read(1)).unwrap();
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        assert_eq!(app.input_mode, InputMode::Home);
+    }
+
+    /// A read that fails says why on the panel, once: drawing does not ask again, and
+    /// neither does reopening the panel. The next dataset does.
+    #[test]
+    fn a_failed_read_is_shown_and_not_retried() {
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "/nowhere/facts.parquet");
+        open_resources(&mut app);
+        gate.answer
+            .send(Err("Permission denied (os error 13)".to_string()))
+            .unwrap();
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        assert!(!app.is_busy(), "the failure leaves nothing pending");
+        assert!(!app.error_modal.active, "the panel says it; no modal");
+
+        for _ in 0..3 {
+            let text = screen(&mut app);
+            assert!(
+                file_size_line(&text).contains("Permission denied"),
+                "the panel says why:\n{text}"
+            );
+        }
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        open_resources(&mut app);
+        let _ = screen(&mut app);
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "not asked again");
+
+        // The panel is still up as the next dataset arrives, so that one is asked.
+        install(&mut app, "/nowhere/next.parquet");
+        assert!(reading(&app), "a new dataset is a new read");
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |_| {
+            gate.calls.load(Ordering::SeqCst) == 2
+        });
+    }
+
+    /// An answer for a dataset that has since been replaced is dropped, whether it is
+    /// a result or a failure; the dataset on screen keeps waiting on its own.
+    #[test]
+    fn an_answer_for_a_replaced_dataset_is_dropped() {
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "/nowhere/old.parquet");
+        let old = app.dataset_generation;
+        open_resources(&mut app);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+        install(&mut app, "/nowhere/new.parquet");
+        assert!(
+            app.file_facts().is_none(),
+            "the old read is not the new one's"
+        );
+        // The old worker answers into a dataset that is gone.
+        gate.answer.send(read(1)).unwrap();
+        loop {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(300))
+                .expect("the old read answers");
+            let answered =
+                matches!(event, AppEvent::FileFactsRead { dataset, .. } if dataset == old);
+            app.event(&event);
+            if answered {
+                break;
+            }
+        }
+        assert!(app.file_facts().is_none(), "and its answer is dropped");
+
+        open_resources(&mut app);
+        assert!(reading(&app));
+        // Late answers for the old dataset, of either kind, leave the new read waiting.
+        app.event(&AppEvent::FileFactsRead {
+            dataset: old,
+            facts: FileFacts::Read {
+                size: Some(1),
+                parquet: None,
+            },
+        });
+        app.event(&AppEvent::BackgroundFailed {
+            generation: app.task_generation,
+            job: Job::FileFacts { dataset: old },
+            message: "not this one".to_string(),
+            panicked: false,
+        });
+        assert!(reading(&app), "the new dataset is still waiting on its own");
+
+        gate.answer.send(read(5)).unwrap();
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        assert!(matches!(
+            app.file_facts(),
+            Some(FileFacts::Read { size: Some(5), .. })
+        ));
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A worker that panics ends the read the way a failure does: the panel says so,
+    /// nothing stays pending, and nothing asks again.
+    #[test]
+    fn a_read_whose_worker_dies_fails_once() {
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        app.worker_dies =
+            crate::tests::worker_dies_once(|job| matches!(job, Job::FileFacts { .. }));
+        install(&mut app, "/nowhere/facts.parquet");
+        open_resources(&mut app);
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        assert!(matches!(app.file_facts(), Some(FileFacts::Failed(_))));
+        assert!(!app.is_busy());
+        assert!(!app.error_modal.active);
+        let text = screen(&mut app);
+        assert!(
+            file_size_line(&text).contains("see the log"),
+            "the panel says it could not read:\n{text}"
+        );
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        open_resources(&mut app);
+        assert!(matches!(app.file_facts(), Some(FileFacts::Failed(_))));
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 0, "no second read");
+    }
+
+    /// A source with no file on this machine has nothing to read: the panel shows no
+    /// size and starts no read.
+    #[test]
+    fn a_remote_source_reads_nothing() {
+        let (mut app, _rx, _tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "s3://bucket/facts.parquet");
+        open_resources(&mut app);
+        assert!(app.file_facts().is_none());
+        assert!(!app.is_busy());
+        let text = screen(&mut app);
+        let line = file_size_line(&text);
+        assert!(
+            line.contains(crate::glyphs::get().dash) && !line.contains("reading"),
+            "no size, and no wait for one: {line}"
+        );
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
     }
 }

@@ -140,9 +140,8 @@ pub fn render(
             StatefulWidget::render(dt, table_area, buf, state);
             if app.info_modal.active {
                 let info_ctx = InfoContext {
-                    path: app.path.as_deref(),
                     format: app.original_file_format,
-                    parquet_metadata: app.parquet_metadata_cache.as_ref(),
+                    facts: app.file_facts.as_ref().map(|(_, facts)| facts),
                 };
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.render(sort_area, buf);

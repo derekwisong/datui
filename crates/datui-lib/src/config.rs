@@ -2924,21 +2924,26 @@ impl ConfigLayer {
     }
 
     /// The layer in `path`, or `None` when there is no such file. A file that exists
-    /// but cannot be read or parsed is an error naming it.
-    fn read(path: &Path) -> Result<Option<Self>> {
+    /// but cannot be read or parsed is an error naming it, and `importer`, the file
+    /// that imported it, if any.
+    fn read(path: &Path, importer: Option<&Path>) -> Result<Option<Self>> {
+        // On the first line, ahead of a parse error's excerpt of the file.
+        let named = match importer {
+            Some(importer) => format!("{} (imported by {})", path.display(), importer.display()),
+            None => path.display().to_string(),
+        };
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(eyre!(
-                    "Failed to read config file at {}: {}",
-                    path.display(),
-                    e
-                ));
-            }
+            Err(e) => return Err(eyre!("Failed to read config file at {named}: {e}")),
         };
-        let mut layer = Self::parse(&content)
-            .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))?;
+        let mut layer = Self::parse(&content).map_err(|e| {
+            let reason = e.to_string();
+            eyre!(
+                "Failed to parse config file at {named}: {}",
+                reason.trim_end()
+            )
+        })?;
         for (key, flag) in removed_file_loading_keys(&layer.table) {
             eprintln!(
                 "datui: warning: {}: file_loading.{key} is no longer read; \
@@ -3076,7 +3081,7 @@ impl AppConfig {
         let mut layers: Vec<ConfigLayer> = Vec::new();
         let mut imports: Vec<String> = Vec::new();
 
-        if let Some(root) = ConfigLayer::read(config_path)? {
+        if let Some(root) = ConfigLayer::read(config_path, None)? {
             let canonical = crate::canonical::canonicalize(config_path)
                 .unwrap_or_else(|_| config_path.to_path_buf());
             let mut stack = vec![canonical];
@@ -3140,9 +3145,7 @@ impl AppConfig {
                 ));
             }
 
-            let Some(layer) = ConfigLayer::read(&path)
-                .map_err(|e| eyre!("{} (imported by {})", e, origin.display()))?
-            else {
+            let Some(layer) = ConfigLayer::read(&path, Some(origin))? else {
                 eprintln!(
                     "datui: warning: config import not found, skipping: {} (imported by {})",
                     path.display(),

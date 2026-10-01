@@ -919,20 +919,99 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
         }
         _ => {}
     }
-    let into = |input: &mut Arc<DslPlan>| stable_order(Arc::make_mut(input), below);
-    let each = |inputs: &mut [DslPlan]| {
-        for input in inputs {
-            stable_order(input, below);
+    if let DslPlan::IR { dsl, .. } = plan {
+        // A plan asked for its schema is wrapped as IR, which would run as converted:
+        // rewrite the plan it came from, and leave the IR behind.
+        let mut inner = Arc::unwrap_or_clone(dsl.clone());
+        stable_order(&mut inner, below);
+        *plan = inner;
+        return;
+    }
+    for_each_input(plan, &mut |input| stable_order(input, below));
+}
+
+/// `plan` with an `IN (SELECT …)` subquery's values counted once instead of once per
+/// row. polars-sql adds the values as a one-row list column and filters on
+/// `col.first().list.len()` and `col.first().list.contains(NULL)`. The streaming
+/// engine repeats that `first()` for every row of a batch and the list kernels copy
+/// the list into each: rows times values, 26 GB for a page of a 100k-row table where
+/// a third of the rows match (#509). Asked of the values exploded, the questions read
+/// the one list. Only filters asking them are rewritten.
+#[cfg(feature = "sql")]
+fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
+    use polars::lazy::dsl::{DslPlan, FunctionExpr, ListFunction};
+    fn ask_once(e: Expr) -> Expr {
+        if !asks_of_subquery_values(&e) {
+            return e;
         }
+        let Expr::Function {
+            mut input,
+            function: FunctionExpr::ListExpr(function),
+        } = e
+        else {
+            return e;
+        };
+        let values = input.swap_remove(0).explode(ExplodeOptions {
+            empty_as_null: false,
+            keep_nulls: true,
+        });
+        match function {
+            ListFunction::Length => values.len(),
+            _ => values.null_count().gt(lit(0)),
+        }
+    }
+    let asks = |node: &DslPlan| match node {
+        DslPlan::Filter { predicate, .. } => predicate.into_iter().any(asks_of_subquery_values),
+        _ => false,
     };
+    if !plan.into_iter().any(asks) {
+        return;
+    }
     match plan {
         // A plan asked for its schema is wrapped as IR, which would run as converted:
         // rewrite the plan it came from, and leave the IR behind.
         DslPlan::IR { dsl, .. } => {
             let mut inner = Arc::unwrap_or_clone(dsl.clone());
-            stable_order(&mut inner, below);
+            count_subquery_values_once(&mut inner);
             *plan = inner;
+            return;
         }
+        DslPlan::Filter { predicate, .. } => *predicate = predicate.clone().map_expr(ask_once),
+        _ => {}
+    }
+    for_each_input(plan, &mut count_subquery_values_once);
+}
+
+/// Whether `e` is polars-sql asking how many values an `IN` subquery returned, or
+/// whether one is NULL: `list.len` or `list.contains(NULL)` of `col(name).first()`.
+#[cfg(feature = "sql")]
+fn asks_of_subquery_values(e: &Expr) -> bool {
+    use polars::lazy::dsl::{FunctionExpr, ListFunction};
+    let values =
+        |e: &Expr| matches!(e, Expr::Agg(AggExpr::First(c)) if matches!(**c, Expr::Column(_)));
+    match e {
+        Expr::Function {
+            input,
+            function: FunctionExpr::ListExpr(ListFunction::Length),
+        } => matches!(input.as_slice(), [set] if values(set)),
+        Expr::Function {
+            input,
+            function: FunctionExpr::ListExpr(ListFunction::Contains { nulls_equal: true }),
+        } => {
+            matches!(input.as_slice(), [set, Expr::Literal(item)] if values(set) && item.is_null())
+        }
+        _ => false,
+    }
+}
+
+/// Calls `f` on each plan `plan` reads from.
+#[cfg(feature = "sql")]
+fn for_each_input(
+    plan: &mut polars::lazy::dsl::DslPlan,
+    f: &mut dyn FnMut(&mut polars::lazy::dsl::DslPlan),
+) {
+    use polars::lazy::dsl::DslPlan;
+    match plan {
         DslPlan::Sort { input, .. }
         | DslPlan::Select { input, .. }
         | DslPlan::GroupBy { input, .. }
@@ -944,13 +1023,13 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
         | DslPlan::MapFunction { input, .. }
         | DslPlan::Sink { input, .. }
         | DslPlan::Cache { input, .. }
-        | DslPlan::Pivot { input, .. } => into(input),
+        | DslPlan::Pivot { input, .. } => f(Arc::make_mut(input)),
         DslPlan::Union { inputs, .. }
         | DslPlan::HConcat { inputs, .. }
-        | DslPlan::SinkMultiple { inputs } => each(inputs),
+        | DslPlan::SinkMultiple { inputs } => inputs.iter_mut().for_each(f),
         DslPlan::PipeWithSchema { input, .. } => {
             let mut inputs = input.to_vec();
-            each(&mut inputs);
+            inputs.iter_mut().for_each(&mut *f);
             *input = inputs.into();
         }
         DslPlan::Join {
@@ -958,16 +1037,16 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
             input_right,
             ..
         } => {
-            into(input_left);
-            into(input_right);
+            f(Arc::make_mut(input_left));
+            f(Arc::make_mut(input_right));
         }
         DslPlan::Gather { input, idxs, .. } => {
-            into(input);
-            into(idxs);
+            f(Arc::make_mut(input));
+            f(Arc::make_mut(idxs));
         }
         DslPlan::ExtContext { input, contexts } => {
-            into(input);
-            each(contexts);
+            f(Arc::make_mut(input));
+            contexts.iter_mut().for_each(f);
         }
         _ => {}
     }
@@ -8234,6 +8313,7 @@ impl DataTableState {
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
                     stable_order(&mut result_lf.logical_plan, false);
+                    count_subquery_values_once(&mut result_lf.logical_plan);
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -11591,6 +11671,84 @@ mod tests {
         assert!(top.slice(100, 100).equals(&below));
         let one = sorted.slice(5, 1).collect().unwrap();
         assert!(top.slice(5, 1).equals(&one));
+    }
+
+    /// `IN (SELECT …)` reads the subquery's values once rather than once per row,
+    /// which on the streaming engine ran out of memory for a page of 100k rows
+    /// (#509), and still returns what polars-sql's own plan does, NULLs included.
+    /// The data is small, so that without the fix the test fails on the plan rather
+    /// than on memory.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_in_subquery_reads_its_values_once() {
+        let df = df!(
+            "k" => (0..3000i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "v" => (0..3000i64).map(|i| (i % 7 != 0).then_some(i)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let n = df.height();
+        for (sql, rows) in [
+            (
+                "SELECT * FROM df WHERE v IN (SELECT v FROM df WHERE k = 1)",
+                None,
+            ),
+            // The values hold a NULL, so no row is NOT IN them.
+            (
+                "SELECT * FROM df WHERE v NOT IN (SELECT v FROM df WHERE k = 1)",
+                Some(0),
+            ),
+            (
+                "SELECT * FROM df WHERE v NOT IN (SELECT v FROM df WHERE k = 1 AND v IS NOT NULL)",
+                None,
+            ),
+            // No values: every row, a NULL `v` too.
+            (
+                "SELECT * FROM df WHERE v NOT IN (SELECT v FROM df WHERE k = 5)",
+                Some(n),
+            ),
+            (
+                "SELECT * FROM df WHERE v IN (SELECT v FROM df WHERE k = 5)",
+                Some(0),
+            ),
+            (
+                "SELECT * FROM df WHERE k = 2 OR v IN (SELECT v FROM df WHERE k = 1 LIMIT 100)",
+                None,
+            ),
+            (
+                "SELECT * FROM df WHERE v IN (SELECT MIN(v) FROM df GROUP BY v % 100)",
+                None,
+            ),
+            (
+                "SELECT * FROM df WHERE v IN (SELECT v FROM df WHERE v NOT IN (SELECT v FROM df WHERE k = 0 AND v IS NOT NULL))",
+                None,
+            ),
+        ] {
+            let mut ctx = polars_sql::SQLContext::new();
+            ctx.register("df", df.clone().lazy());
+            let expected = ctx.execute(sql).unwrap().collect().unwrap();
+            if let Some(rows) = rows {
+                assert_eq!(expected.height(), rows, "{sql}");
+            }
+            let mut state =
+                DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+            state.sql_query(sql.to_string());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            let per_row = (&state.lf.logical_plan).into_iter().any(|node| {
+                matches!(
+                    node,
+                    polars::lazy::dsl::DslPlan::Filter { predicate, .. }
+                        if predicate.into_iter().any(asks_of_subquery_values)
+                )
+            });
+            assert!(!per_row, "{sql}");
+            for streaming in [false, cfg!(feature = "streaming")] {
+                let got = collect_lazy(state.lf.clone(), streaming).unwrap();
+                assert!(
+                    got.equals_missing(&expected),
+                    "{sql}, streaming {streaming}"
+                );
+            }
+        }
     }
 
     /// A SQL ORDER BY keeps tied rows in order, as the sidebar's sort does: the page

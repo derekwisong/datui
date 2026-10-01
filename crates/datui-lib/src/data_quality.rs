@@ -1329,17 +1329,23 @@ impl DataQualityPlan {
         }
     }
 
-    /// Whether `other` measures what this plan measures: they differ, if at all, only
-    /// in the windows they expect, which a report checks against the counts it
-    /// already holds.
+    /// Whether `other` measures what this plan measures: they differ, if at all, in
+    /// the windows they expect, which a report checks against the counts it already
+    /// holds, or in what its segments are compared with, which is worked out from the
+    /// segments it holds ([`DataQualityResults::compare_segments`]).
     pub fn same_measurement(&self, other: &Self) -> bool {
-        Self {
+        let measured = |plan: &Self| Self {
             expected: None,
-            ..self.clone()
-        } == Self {
-            expected: None,
-            ..other.clone()
-        }
+            comparison: QualityComparison::None,
+            baseline_segment: None,
+            ..plan.clone()
+        };
+        measured(self) == measured(other)
+    }
+
+    /// Whether `other` compares segments differently from this plan.
+    pub fn compares_differently(&self, other: &Self) -> bool {
+        self.comparison != other.comparison || self.baseline_segment != other.baseline_segment
     }
 
     /// The windows this plan expects rows in: only on a time-window grain.

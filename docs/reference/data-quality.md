@@ -153,7 +153,7 @@ The Read section says what Run will do, before it does it:
 | Read | When |
 |---|---|
 | No read: the report is already here | The setup is the report's, or the session cache holds it |
-| Only Expected changed: no read | The setup differs from the report on screen only in its expected windows; Run checks them against the counts the report holds |
+| Only Compare or Expected changed: no read | The setup differs from the report on screen only in its comparison or expected windows; Run compares the segments the report holds, and checks the windows against its counts, after a full scan too |
 | Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
 | Seeded runs of the file | A random sample of one Parquet or IPC file: the whole source, or a view with no filter, query or reshape (a sort is fine); a few dozen short reads |
 | One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
@@ -412,8 +412,8 @@ else in Setup belongs to the report.
 
 | Edit | Reads |
 |---|---|
-| Time roles, text as time on a role, column intent, compare, latency threshold | Nothing: the retained rows are measured again |
-| Expected windows | Nothing: checked against the report on screen |
+| Time roles, text as time on a role, column intent, latency threshold | Nothing: the retained rows are measured again |
+| Compare, expected windows | Nothing: worked out from the report on screen, whether sampled or a full scan |
 | Row chunks | Nothing: each row's position was kept |
 | A coarser window of a grain already counted | Nothing: hours sum into days, weeks and months, and days into weeks and months |
 | Another partition, a finer window, or a window on newly read text | One count of the grain's column, kept with the rows |

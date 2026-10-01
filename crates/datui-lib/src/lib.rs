@@ -9745,9 +9745,12 @@ impl App {
         }) else {
             return false;
         };
-        let results = cached.results.clone();
+        let mut results = cached.results.clone();
         if cached.plan != plan {
-            // Kept under the windows it expects now.
+            // Compared as the plan compares, and kept under the windows it expects now.
+            if cached.plan.compares_differently(&plan) {
+                results.compare_segments(&plan);
+            }
             self.cache_quality_result(&results, plan.clone());
         }
         self.analysis_modal.data_quality_results = Some(results);
@@ -10318,17 +10321,25 @@ impl App {
             modal.set_quality_page(back);
             return None;
         }
-        // Only the expected windows changed: the report on screen holds every count
-        // they are checked against, so it is relabeled, not read again.
+        // Only the expected windows or the comparison changed: the report on screen
+        // holds every count the windows are checked against and every segment the
+        // comparison is worked out from, so it is relabeled, not read again.
         if let (Some(results), Some(last)) = (
             modal.data_quality_results.as_ref(),
             modal.data_quality_last_plan.as_ref(),
         ) && last.same_measurement(&modal.data_quality_plan)
         {
-            let results = results.clone();
+            let mut results = results.clone();
             let plan = modal.data_quality_plan.clone();
+            let page = if last.compares_differently(&plan) {
+                results.compare_segments(&plan);
+                QualityPage::Segments
+            } else {
+                QualityPage::Trends
+            };
+            modal.data_quality_results = Some(results.clone());
             modal.data_quality_last_plan = Some(plan.clone());
-            modal.set_quality_page(QualityPage::Trends);
+            modal.set_quality_page(page);
             self.cache_quality_result(&results, plan);
             return None;
         }

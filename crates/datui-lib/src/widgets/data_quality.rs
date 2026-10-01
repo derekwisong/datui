@@ -45,9 +45,9 @@ pub struct SetupView<'a> {
     pub cached: bool,
     /// The report on screen was measured with exactly this draft.
     pub unchanged: bool,
-    /// The draft differs from the report on screen only in the windows it expects,
-    /// which Run checks against the counts the report holds.
-    pub expectation_only: bool,
+    /// The draft differs from the report on screen only in the windows it expects or
+    /// what its segments are compared with: Run works both out from the report.
+    pub relabel_only: bool,
     /// Setup holds edits Esc would discard.
     pub edited: bool,
     /// Why Enter did not run.
@@ -670,10 +670,20 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         lines.push("The report on screen is this setup's: Run shows it, no read".to_string());
         return lines;
     }
-    if view.expectation_only {
+    if view.relabel_only {
+        let compare = config.measured.compares_differently(plan);
+        let expected = config.measured.expected != plan.expected;
         lines.push(
-            "Only Expected changed: Run checks the report on screen against it, no read"
-                .to_string(),
+            match (compare, expected) {
+                (true, true) => {
+                    "Only Compare and Expected changed: Run updates the report on screen, no read"
+                }
+                (true, false) => {
+                    "Only Compare changed: Run compares the report's segments again, no read"
+                }
+                _ => "Only Expected changed: Run checks the report on screen against it, no read",
+            }
+            .to_string(),
         );
         return lines;
     }

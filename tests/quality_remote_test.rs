@@ -12,7 +12,8 @@ mod fake_s3;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::data_quality::{
-    QualityComparison, QualityGrain, QualityStage, TemporalRole, TemporalRoleAssignment,
+    QualityComparison, QualityCompute, QualityGrain, QualityStage, TemporalRole,
+    TemporalRoleAssignment,
 };
 use datui::{App, AppConfig, AppEvent, OpenOptions};
 use fake_s3::{FakeS3, WireCount};
@@ -298,5 +299,82 @@ fn a_remote_prefix_is_sampled_once_and_its_edits_ask_the_bucket_for_nothing() {
 
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.sample_seed = 8);
     assert_eq!(reads, [QualityStage::ReadingSample], "a new sample");
+    assert!(wire.requests() > 0, "{wire:?}");
+}
+
+/// A full scan keeps no rows, so a full report's comparison is all it can change for
+/// free: Compare and a baseline chosen in Setup are worked out from the segments the
+/// report holds, with no confirmation and no request. A role is a new measurement:
+/// it asks, and reads.
+#[test]
+fn a_full_scan_is_compared_again_without_a_request() {
+    let s3 = FakeS3::serve("lake", remote_events());
+    let (mut app, rx) = open_remote(&s3);
+
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| {
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = QualityCompute::Full;
+        plan.grain = QualityGrain::File;
+    });
+    assert!(reads.contains(&QualityStage::ProfilingColumns), "{reads:?}");
+    assert!(wire.gets > 0 && wire.bytes > 0, "{wire:?}");
+    let full = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert_eq!(full.evaluated_rows, FILES * ROWS);
+    assert!(full.segments.iter().all(|s| s.compared_with.is_none()));
+
+    let before = s3.wire.count();
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.comparison = QualityComparison::Previous;
+    let text = screen(&mut app);
+    assert!(text.contains("Only Compare changed"), "{text}");
+    assert!(press(&mut app, KeyCode::Enter).is_none(), "nothing to run");
+    assert!(
+        !app.analysis_modal.data_quality_confirm_run,
+        "nothing to ask"
+    );
+    assert!(!app.is_busy());
+    let compared = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert_eq!(compared.evaluated_rows, full.evaluated_rows);
+    assert!(compared.segments[0].compared_with.is_none());
+    assert_eq!(
+        compared.segments[1].compared_with.as_deref(),
+        Some(compared.segments[0].label.as_str())
+    );
+    assert_eq!(
+        app.analysis_modal
+            .data_quality_last_plan
+            .as_ref()
+            .unwrap()
+            .comparison,
+        QualityComparison::Previous,
+        "the report is labeled with the comparison it shows"
+    );
+
+    let baseline = compared.segments[2].label.clone();
+    press(&mut app, KeyCode::Char('e'));
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.comparison = QualityComparison::Baseline;
+        plan.baseline_segment = Some(baseline.clone());
+    }
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    let against = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert_eq!(
+        against.segments[0].compared_with.as_deref(),
+        Some(baseline.as_str())
+    );
+    assert_eq!(s3.wire.count().since(&before), WireCount::default());
+
+    // Back to the comparison the cache holds a report for: still no read.
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.comparison = QualityComparison::None;
+    app.analysis_modal.data_quality_plan.baseline_segment = None;
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    let none = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert!(none.segments.iter().all(|s| s.compared_with.is_none()));
+    assert_eq!(s3.wire.count().since(&before), WireCount::default());
+
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.temporal_roles = roles());
+    assert!(!reads.is_empty(), "roles on a full scan read again");
     assert!(wire.requests() > 0, "{wire:?}");
 }

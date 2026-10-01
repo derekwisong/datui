@@ -4456,6 +4456,96 @@ fn metadata_only_reads_no_values() {
     assert_eq!(results.columns.len(), 3);
 }
 
+/// Conflict evidence costs a read only where one was promised. Footers name the
+/// file that stores a column in another type, and the file missing a column, on
+/// every run; the values the conflict hides are read only by a full scan, which
+/// says so in its stages, and are shown beside their file.
+#[test]
+fn conflict_evidence_is_read_only_by_a_full_scan() {
+    use datui::data_quality::{ObservationKind, QualityCompute, QualityStage};
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "day=1",
+        df!("id" => &[1i64, 2], "n" => &[10i64, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "day=2",
+        df!("id" => &[3i64, 4], "n" => &["sixty", "seventy"], "extra" => &["x", "y"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "day=3",
+        df!("id" => &[5i64, 6], "n" => &[50i64, 60], "extra" => &[Some("z"), None]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    pump_until_idle(&mut app, &rx, &tx);
+    open_quality_setup(&mut app);
+    let finding = |app: &App, kind: ObservationKind| {
+        app.analysis_modal
+            .data_quality_results
+            .as_ref()
+            .unwrap()
+            .observations
+            .iter()
+            .find(|observation| observation.kind == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("a {kind:?} finding"))
+    };
+
+    let reads = run_quality_reads(&mut app, &rx);
+    assert!(
+        !reads.contains(&QualityStage::ReadingConflicts),
+        "{reads:?}"
+    );
+    let conflict = finding(&app, ObservationKind::TypeConflict);
+    assert_eq!(conflict.column, "n");
+    assert_eq!(conflict.files.len(), 1);
+    assert_eq!(conflict.files[0].number, 2);
+    assert!(
+        conflict.files[0].examples.is_empty(),
+        "not read on a sample"
+    );
+    let absent = finding(&app, ObservationKind::Absent);
+    assert_eq!(absent.column, "extra");
+    assert_eq!(absent.files[0].number, 1);
+
+    press(&mut app, KeyCode::Char('e'));
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = QualityCompute::Full;
+    }
+    assert!(
+        press(&mut app, KeyCode::Enter).is_none(),
+        "a full scan asks"
+    );
+    let first = press(&mut app, KeyCode::Enter);
+    let mut reads = Vec::new();
+    let mut next = first;
+    loop {
+        match next.take() {
+            Some(event) => {
+                if let AppEvent::BackgroundQualityPhase { generation, phase } = &event
+                    && *generation == app.task_generation()
+                    && phase.reads_source
+                {
+                    reads.push(phase.stage);
+                }
+                next = app.event(&event);
+            }
+            None => match next_event(&app, &rx) {
+                Some(event) => next = Some(event),
+                None => break,
+            },
+        }
+    }
+    assert!(reads.contains(&QualityStage::ReadingConflicts), "{reads:?}");
+    let conflict = finding(&app, ObservationKind::TypeConflict);
+    assert_eq!(conflict.files[0].examples, ["sixty", "seventy"]);
+}
+
 /// An empty scope is never a clean report. Rows chosen past the table's end are
 /// an error naming them, a second Run included, and no report. A dataset with no
 /// rows at all, sampled or scanned, reports that nothing about its values is known:

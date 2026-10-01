@@ -7041,17 +7041,14 @@ impl DataTableState {
         (len > 0).then(|| selected.slice(offset as i64, len))
     }
 
-    /// The selected row's raw value in one column. A null is an empty string,
-    /// like a null in an export — never the UI's glyph. A list or struct is
-    /// JSON, as in a CSV export.
+    /// The selected row's value in one column, exactly as stored (see
+    /// [`crate::exact`]): a float as the decimal that reads back to it, never
+    /// the table's rounded preview. A null is an empty string, like a null in
+    /// an export — never the UI's glyph. A list or struct is JSON, as in a CSV
+    /// export.
     pub fn copy_cell_value(&self, column: &str) -> Option<String> {
         let row = self.copy_row_df()?;
-        let row = crate::nested_json::frame_as_json(&row.select([column]).ok()?).ok()?;
-        let series = row.column(column).ok()?.as_materialized_series();
-        Some(match series.get(0).ok()? {
-            AnyValue::Null => String::new(),
-            v => v.str_value().into_owned(),
-        })
+        crate::exact::copy_text(row.column(column).ok()?).ok()
     }
 
     /// The selected row's number as the row-numbers column would print it.
@@ -8720,7 +8717,9 @@ impl DataTable {
                 cells.push(SliceCell::Null(glyph));
                 continue;
             }
-            let text = numfmt::format_any_value(&col_fmt, &value, scratch).into_owned();
+            let text = numfmt::format_any_value(&col_fmt, &value, scratch);
+            // A break or a tab would vanish from a cell and run the text together.
+            let text = crate::exact::preview(&text, g).into_owned();
             value_width = value_width.max(crate::glyphs::cell_width(&text));
             cells.push(SliceCell::Value(text));
         }
@@ -12126,6 +12125,26 @@ mod tests {
         let mut ts = TableState::default();
         table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
         assert!(row_string(&buf, area, 1).starts_with(binary_stub()));
+    }
+
+    /// A line break or a tab in a value is marked in the one-line cell; drawn as
+    /// is, ratatui drops it and `line1\nline2` reads `line1line2`.
+    #[test]
+    fn breaks_tabs_and_controls_are_marked_in_a_cell() {
+        let table = DataTable::default();
+        let df = df!("s" => ["line1\nline2", "tab\tseparated", "esc\u{1b}[0m"]).unwrap();
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let g = table.glyphs;
+        assert!(
+            row_string(&buf, area, 1).starts_with(&format!("line1{}line2", g.newline_mark)),
+            "{:?}",
+            row_string(&buf, area, 1)
+        );
+        assert!(row_string(&buf, area, 2).starts_with(&format!("tab{}separated", g.tab_mark)));
+        assert!(row_string(&buf, area, 3).starts_with(&format!("esc{}[0m", g.control_mark)));
     }
 
     #[test]

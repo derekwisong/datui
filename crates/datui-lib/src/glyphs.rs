@@ -133,6 +133,12 @@ pub struct Glyphs {
     pub scroll_thumb: &'static str,
     /// Stands in for a value that is bytes, not text.
     pub binary_stub: &'static str,
+    /// In a one-line preview of text, where the value has a line break, a tab, or
+    /// another control character, which a terminal cell cannot draw. One column
+    /// wide in both sets. The inspector shows the characters themselves.
+    pub newline_mark: &'static str,
+    pub tab_mark: &'static str,
+    pub control_mark: &'static str,
     /// Eight compact levels for inline charts (lowest to highest).
     pub mini_bars: &'static [&'static str; 8],
     /// In a line of `mini_bars`, a place with nothing measured: segments a sample
@@ -353,6 +359,11 @@ const UNICODE: Glyphs = Glyphs {
     warning: "▲",
     scroll_thumb: "█",
     binary_stub: "‹binary›",
+    // Latin-1, which every floor font carries; the arrows and control pictures
+    // (↵ ⇥ ␊) are missing from Liberation Mono and Noto Sans Mono.
+    newline_mark: "¶",
+    tab_mark: "»",
+    control_mark: "¤",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
     unsampled: "·",
     pointer: "▲",
@@ -421,6 +432,10 @@ const ASCII: Glyphs = Glyphs {
     warning: "!",
     scroll_thumb: "#",
     binary_stub: "<binary>",
+    // vim's `list` marks: `$` ends a line, `>` is a tab.
+    newline_mark: "$",
+    tab_mark: ">",
+    control_mark: "?",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
     unsampled: "?",
     pointer: "^",
@@ -531,6 +546,9 @@ macro_rules! with_string_slots {
             warning,
             scroll_thumb,
             binary_stub,
+            newline_mark,
+            tab_mark,
+            control_mark,
             unsampled,
             pointer
         )
@@ -786,6 +804,9 @@ fn ascii_twin(c: char) -> Option<&'static str> {
         '≠' => Some("!"),
         '│' => Some("|"),
         '┆' => Some(":"),
+        '¶' => Some("$"),
+        '»' => Some(">"),
+        '¤' => Some("?"),
         _ => None,
     }
 }

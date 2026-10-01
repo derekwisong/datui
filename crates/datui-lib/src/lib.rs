@@ -69,6 +69,7 @@ pub mod distribution_fit;
 pub mod download;
 pub mod error_display;
 pub mod event_pump;
+pub mod exact;
 pub mod export;
 pub mod export_modal;
 pub mod filter_modal;

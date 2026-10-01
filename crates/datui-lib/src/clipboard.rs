@@ -371,7 +371,9 @@ fn markdown_escape(s: &str) -> String {
 fn markdown_cell(series: &Series, row: usize) -> Result<String, String> {
     Ok(match series.get(row).map_err(|e| e.to_string())? {
         AnyValue::Null => String::new(),
-        v => markdown_escape(&v.str_value()),
+        // Exact, as the TSV and CSV writers are: Polars' own display would
+        // round a float to its compact preview.
+        v => markdown_escape(&crate::exact::value_text(&v)),
     })
 }
 
@@ -404,7 +406,7 @@ pub fn html_table(df: &DataFrame, header: bool) -> Result<String, String> {
                 .map_err(|e| e.to_string())?;
             let text = match value {
                 AnyValue::Null => String::new(),
-                v => v.str_value().into_owned(),
+                v => crate::exact::value_text(&v),
             };
             out.push_str(&format!("<td>{}</td>", escape(&text)));
         }
@@ -593,8 +595,8 @@ impl BoundedText {
 mod tests {
     use super::*;
 
-    /// The Markdown writer as it was, holding every cell: what the bounded one
-    /// must write, byte for byte.
+    /// The Markdown writer as it was, holding every cell, with each value as
+    /// exact text: what the bounded one must write, byte for byte.
     fn markdown_reference(df: &DataFrame) -> Result<String, String> {
         let column_names = df.get_column_names_owned();
         let escape = |s: &str| s.replace('|', "\\|").replace(['\n', '\r'], " ");
@@ -611,7 +613,7 @@ mod tests {
                 let value = series.get(i).map_err(|e| e.to_string())?;
                 body.push(match value {
                     AnyValue::Null => String::new(),
-                    v => escape(&v.str_value()),
+                    v => escape(&crate::exact::value_text(&v)),
                 });
             }
             cells.push(body);
@@ -736,6 +738,24 @@ mod tests {
         let text_only = tabular_payload(&tricky(), CopyFormat::Csv, true, false).unwrap();
         assert!(text_only.html.is_none(), "not built where it cannot go");
         assert_eq!(text_only.text, delimited(&tricky(), b',', true).unwrap());
+    }
+
+    /// Every format copies a float as stored, not as Polars' compact display
+    /// (`1.0000e6`) rounds it for the screen.
+    #[test]
+    fn every_format_copies_floats_exactly() {
+        let df = df!("x" => [1000000.125f64, -0.0]).unwrap();
+        for format in [CopyFormat::Tsv, CopyFormat::Csv, CopyFormat::Markdown] {
+            let payload = tabular_payload(&df, format, false, true).unwrap();
+            assert!(
+                payload.text.contains("1000000.125"),
+                "{format:?}: {payload:?}"
+            );
+            assert!(!payload.text.contains("e6"), "{format:?}: {payload:?}");
+            if let Some(html) = payload.html {
+                assert!(html.contains("<td>1000000.125</td>"), "{html}");
+            }
+        }
     }
 
     /// Every kind of cell a copy meets: quoting, nulls, wide characters, numbers

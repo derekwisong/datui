@@ -72,6 +72,9 @@ fn a_full_scan_leaves_no_temporary_files() {
     for dir in [&spill, &temp, &data] {
         std::fs::create_dir_all(dir).unwrap();
     }
+    // The cache lives outside `temp`: opening records a recent on its own thread,
+    // and that write landing mid-snapshot is not a file the scan left behind.
+    common::isolate_cache();
     // SAFETY: the only test in this binary, before Polars reads its configuration
     // and before any thread that reads the environment starts.
     unsafe {

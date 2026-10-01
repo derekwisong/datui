@@ -616,22 +616,10 @@ jobs:
 
       # Every feature alone and none at all. The full powerset would be sixteen polars
       # builds to catch interactions that have never actually broken; each feature on its
-      # own is where the missing dependencies show up.
-      - name: Check each feature in isolation
-        run: |
-          set -euo pipefail
-          failed=0
-          for f in "" cloud http sql streaming; do
-            echo "::group::datui-lib [${f:-no features}]"
-            if [ -z "$f" ]; then
-              cargo check -p datui-lib --no-default-features || failed=1
-            else
-              cargo check -p datui-lib --no-default-features --features "$f" || failed=1
-            fi
-            echo "::endgroup::"
-          done
-          cargo check --no-default-features || failed=1
-          exit $failed
+      # own is where the missing dependencies show up. Clippy over all targets, for the
+      # binary and the library: test code gated on the wrong feature fails here (#481).
+      - name: Lint each feature in isolation
+        run: ./scripts/dev/test.sh features
 
       # A check compiles the configuration; it does not run it. The `(all files)` row
       # was behind `feature = "cloud"` long after it stopped being a cloud row, so a

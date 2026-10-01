@@ -15,6 +15,8 @@ Usage: scripts/dev/test.sh [--print] COMMAND [ARGS...]
                           Run one root integration target, with optional filter/flags
   cli [FILTER...]          Run datui-cli's library tests
   preflight               Check formatting and lint all workspace targets
+  features [FEATURE...]    Lint datui and datui-lib with no default features, then
+                          each feature alone (default: none cloud http sql streaming)
   full                    Run the full workspace suite, as CI does
 
 Examples:
@@ -102,6 +104,23 @@ case "$command" in
         # Both workspaces: the fuzz targets are their own, and CI checks them too.
         run scripts/code/check_format.sh
         run cargo clippy --workspace --all-targets --locked -- -D warnings
+        ;;
+    features)
+        # The binary and datui-lib share feature names; datui-cli has none.
+        features=("$@")
+        if (( ${#features[@]} == 0 )); then
+            features=(none cloud http sql streaming)
+        fi
+        # Every combination runs, so one failure does not hide the next.
+        failed=0
+        for feature in "${features[@]}"; do
+            args=(-p datui -p datui-lib --all-targets --locked --no-default-features)
+            if [[ $feature != none ]]; then
+                args+=(--features "$feature")
+            fi
+            run cargo clippy "${args[@]}" -- -D warnings || failed=1
+        done
+        exit "$failed"
         ;;
     full)
         if (( $# != 0 )); then usage >&2; exit 2; fi

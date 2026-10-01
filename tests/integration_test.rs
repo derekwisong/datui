@@ -8042,6 +8042,7 @@ fn test_copy_writes_list_cells_as_json() {
 /// A query builds its own rows, and its schema becomes the column order — so a query
 /// root that still carried the hidden drift column turned it into one of the data's,
 /// visible in the table and the sidebar.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -8092,6 +8093,7 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
 
 /// A reset returns to the data as opened, so the cells that stand for a file the
 /// column was never in read as absent again.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_reset_brings_back_the_absent_cells() {
     let g = datui::glyphs::get();
@@ -8239,6 +8241,7 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
 
 /// A query builds its own rows, so notes about the files behind the dataset no longer
 /// describe what is on screen. They come back on a reset.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -8636,6 +8639,7 @@ fn test_naming_source_files_never_overwrites_a_column_of_that_name() {
 ///
 /// The option is on but the dataset cannot honor it, so the export plans the view
 /// without the index at all.
+#[cfg(feature = "sql")]
 #[test]
 fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -10221,6 +10225,7 @@ fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
 }
 
 /// And for SQL.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sidebar_filter_keeps_sql_query() {
     use datui::filter_modal::FilterOperator;
@@ -10249,6 +10254,7 @@ fn test_sidebar_filter_keeps_sql_query() {
 /// SQL runs against the data as loaded, like the DSL and fuzzy queries: a sidebar filter
 /// that was active when the SQL ran is not baked into its result, so clearing the
 /// filters afterwards shows the SQL result over the whole table.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
     use datui::filter_modal::FilterOperator;
@@ -10483,6 +10489,7 @@ fn test_datetimes_of_mixed_precision_stay_text() {
 
 /// SQL after a pivot sees the pivoted columns: the reshape is the root the query runs
 /// against, so `SELECT` of a pivoted column works and the reshape stays in the view.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_after_pivot_sees_the_pivoted_columns() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
@@ -10612,6 +10619,7 @@ fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
 
 /// A DSL query after a pivot shows the loaded columns again, so SQL afterwards must run
 /// against the loaded data, not against a pivot the user no longer sees.
+#[cfg(feature = "sql")]
 #[test]
 fn test_query_after_pivot_drops_the_reshape_for_sql() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
@@ -11156,6 +11164,7 @@ fn test_enter_with_nothing_to_drill_into_flashes() {
 
 /// Salaries by department, 40 rows: `dept` cycles eng, ops, sales and a null every
 /// fourth row; `salary` climbs by 5,000 from 60,000; `ts` is the hour `i % 24`.
+#[cfg(feature = "sql")]
 fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let dir = common::fixture_dir().join(name);
     let n = 40i64;
@@ -11186,6 +11195,7 @@ fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
 }
 
 /// Run `sql` as the SQL prompt would and wait for its rows.
+#[cfg(feature = "sql")]
 fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>, sql: &str) {
     app.event(&AppEvent::SqlSearch(sql.to_string()));
     pump_until_idle(app, rx, tx);
@@ -11196,6 +11206,7 @@ fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEv
 /// The acceptance case: Enter on a department of a SQL `GROUP BY` shows that
 /// department's rows that passed the `WHERE`, key first, and Esc brings the grouped
 /// rows back with the cursor on the department.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_group_by_drills_into_rows_after_where() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_where");
@@ -11257,6 +11268,7 @@ fn test_sql_group_by_drills_into_rows_after_where() {
 /// Every group of a SQL aggregate drills into as many rows as it counted, whatever the
 /// key: a null, a renamed column, a computed key named by its alias, by its expression
 /// or by ordinal, several keys, and with HAVING, ORDER BY and LIMIT on the result.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_group_by_drills_by_null_computed_and_aliased_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_keys");
@@ -11303,6 +11315,7 @@ fn test_sql_group_by_drills_by_null_computed_and_aliased_keys() {
 
 /// A null key drills into the rows whose key is null, and a computed key into the
 /// rows that compute it, with the source's own columns.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_group_by_null_and_computed_key_rows() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_null");
@@ -11352,6 +11365,7 @@ fn test_sql_group_by_null_and_computed_key_rows() {
 
 /// `ARRAY_AGG` lists are values the statement computed, not the group's rows: a drill
 /// still shows the source rows.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_group_by_with_lists_drills_into_source_rows() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_lists");
@@ -11371,6 +11385,7 @@ fn test_sql_group_by_with_lists_drills_into_source_rows() {
 
 /// A statement whose rows cannot be traced back reliably does not drill: Enter says
 /// there is nothing to drill into.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_shapes_without_a_source_do_not_drill() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_unsupported");
@@ -11397,6 +11412,7 @@ fn test_sql_shapes_without_a_source_do_not_drill() {
 
 /// Enter on a grouped result with no rows says there is nothing to drill into rather
 /// than doing nothing.
+#[cfg(feature = "sql")]
 #[test]
 fn test_enter_on_an_empty_sql_group_by_flashes() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_empty");
@@ -11418,6 +11434,7 @@ fn test_enter_on_an_empty_sql_group_by_flashes() {
 /// Polars returns groups in any order. A grouping without ORDER BY comes back sorted by
 /// its keys, as a `by` result does, so each read of it (a page, the count, Esc from a
 /// drill) shows the same rows in the same places; ORDER BY is left as written.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_group_order");
@@ -11487,6 +11504,7 @@ fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
 /// A GROUP BY that fails once it runs is not applied, and the view left in place drills
 /// as before: not at all over the rows as loaded, and by its own keys, not the failed
 /// statement's, over a grouped view.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_rollback");
@@ -11517,6 +11535,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
 
 /// SQL inside a drill-down runs on the group, like the sidebar does, not on the whole
 /// loaded table.
+#[cfg(feature = "sql")]
 #[test]
 fn test_sql_inside_a_drill_down_stays_in_the_group() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sql.csv");
@@ -15372,6 +15391,7 @@ fn h_does_nothing_on_parquet() {
 
 /// Serve `body` at `http://127.0.0.1:<port>/<name>` to every request. Returns the URL
 /// and a count of the GETs, which is how many downloads there were.
+#[cfg(feature = "http")]
 fn serve_over_http(
     name: &str,
     body: Vec<u8>,
@@ -15381,6 +15401,7 @@ fn serve_over_http(
 
 /// [`serve_over_http`], going quiet for `stall.1` after the first `stall.0` bytes of
 /// each body.
+#[cfg(feature = "http")]
 fn serve_over_http_stalling(
     name: &str,
     body: Vec<u8>,
@@ -15427,6 +15448,7 @@ fn serve_over_http_stalling(
 
 /// Ctrl+O while an HTTP server has gone quiet mid-body stops the download and
 /// removes its file, long before the server would have sent the rest.
+#[cfg(feature = "http")]
 #[test]
 fn an_abandoned_http_download_stops_while_the_server_is_silent() {
     use std::time::{Duration, Instant};
@@ -15491,6 +15513,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
 }
 
 /// A CSV over HTTP is read again from the copy already downloaded, not fetched again.
+#[cfg(feature = "http")]
 #[test]
 fn h_rereads_a_download_from_the_copy_on_hand() {
     use std::sync::atomic::Ordering;
@@ -15519,6 +15542,7 @@ fn h_rereads_a_download_from_the_copy_on_hand() {
 
 /// A compressed CSV over HTTP is downloaded and decompressed into temporary files, but
 /// the dataset is the URL: the header, the Info panel and a view saved on it name that.
+#[cfg(feature = "http")]
 #[test]
 fn a_compressed_csv_over_http_is_its_url() {
     use flate2::{Compression, write::GzEncoder};
@@ -16742,6 +16766,7 @@ fn type_text(app: &mut App, text: &str) {
     }
 }
 
+#[cfg(feature = "sql")]
 fn screen_at(app: &mut App, width: u16, height: u16) -> String {
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
@@ -17443,6 +17468,7 @@ fn test_sort_digits_stage_zero_and_explain_out_of_range() {
 
 /// `id,key,val` in long form: ten ids, each with a `k1` and a `k2` row, values scaled by
 /// `scale` so two files with the same columns give different results.
+#[cfg(feature = "sql")]
 fn long_csv(scale: i64) -> String {
     let mut csv = String::from("id,key,val\n");
     for id in 0..10 {
@@ -17458,6 +17484,7 @@ fn long_csv(scale: i64) -> String {
 /// Run `steps` on one file and save a view matching a second; then apply the view to
 /// the second file and, in another app, run the same steps on it by hand. Returns the
 /// view, what applying it showed, and what the steps showed.
+#[cfg(feature = "sql")]
 fn view_and_steps_on_the_next_file(
     name: &str,
     steps: &[AppEvent],
@@ -17511,6 +17538,7 @@ fn view_and_steps_on_the_next_file(
 
 /// A view saved after a query, a filter and then a pivot replays all three: the pivot
 /// clears the query bar, but the view keeps what the pivot ran over and runs it first.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_view_replays_the_query_before_the_pivot() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
@@ -17548,6 +17576,7 @@ fn test_a_view_replays_the_query_before_the_pivot() {
 
 /// SQL after a pivot runs on the pivot's result, so the view replays it after the
 /// pivot.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_view_replays_sql_on_the_pivot_after_it() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
@@ -17572,6 +17601,7 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
 }
 
 /// The same for a melt: the query it ran over comes first.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_view_replays_the_query_before_the_melt() {
     use datui::pivot_melt_modal::MeltSpec;
@@ -17597,6 +17627,7 @@ fn test_a_view_replays_the_query_before_the_melt() {
 /// A reshape over another keeps no source: a view saved after a pivot then a melt holds
 /// only the melt. Applying it fails on the next file, whose columns the melt never saw,
 /// and leaves the table as it was rather than showing a melt of the wrong data.
+#[cfg(feature = "sql")]
 #[test]
 fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
     use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};

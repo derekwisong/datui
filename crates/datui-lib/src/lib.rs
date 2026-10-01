@@ -1405,8 +1405,11 @@ mod quality_sample_tests {
             etag: None,
         }];
         // The scan reads an object the copy does not hold.
-        let lf = LazyFrame::scan_parquet(PlRefPath::new("s3://lake/b.parquet"), Default::default())
-            .unwrap();
+        let lf = LazyFrame::scan_parquet(
+            polars::prelude::PlRefPath::new("s3://lake/b.parquet"),
+            Default::default(),
+        )
+        .unwrap();
         let mut heard = None;
         let (read, held) = App::quality_scope_on_copy(
             lf,
@@ -6579,7 +6582,7 @@ pub mod tests {
     /// running, the open is very much unfinished, and the wait is as long as the user
     /// takes to answer. A collect starting meanwhile bumps `task_generation`, and the
     /// download they are about to agree to then answers a generation nothing matches.
-    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[cfg(feature = "http")]
     #[test]
     fn a_download_waiting_on_the_user_holds_the_generation() {
         use crate::{App, AppEvent, OpenOptions, PendingDownload};
@@ -17740,6 +17743,9 @@ impl App {
         options: &OpenOptions,
         report: &mut ReadReport,
     ) -> Result<LazyFrame> {
+        // Only the cloud readers below take the settings.
+        #[cfg(not(feature = "cloud"))]
+        let _ = cloud;
         let path = &paths[0];
         match source::input_source(path) {
             source::InputSource::Http(_url) => {
@@ -17901,6 +17907,17 @@ impl App {
             }
             source::InputSource::Local(_) => {}
         }
+        Self::build_local_lazyframe(paths, options, report)
+    }
+
+    /// The local half of `build_lazyframe_from_paths_with`. A directory resolves to
+    /// local files, so the recursion stays here and needs no cloud settings.
+    fn build_local_lazyframe(
+        paths: &[PathBuf],
+        options: &OpenOptions,
+        report: &mut ReadReport,
+    ) -> Result<LazyFrame> {
+        let path = &paths[0];
 
         // One path that is a directory, whether or not `--hive` said so: naming a
         // directory is the request to read it, and the dispatch below is what picks the
@@ -17961,9 +17978,7 @@ impl App {
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
-                            return Self::build_lazyframe_from_paths_with(
-                                cloud, &files, &nested, report,
-                            );
+                            return Self::build_local_lazyframe(&files, &nested, report);
                         }
                         crate::discover::DirectoryFormat::Mixed {
                             format: found,
@@ -17981,9 +17996,7 @@ impl App {
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
-                            let lf = Self::build_lazyframe_from_paths_with(
-                                cloud, &files, &nested, report,
-                            )?;
+                            let lf = Self::build_local_lazyframe(&files, &nested, report)?;
                             // After the call, which reads a flat directory of one format
                             // and leaves nothing out of its own.
                             report.left_out = passed_over;

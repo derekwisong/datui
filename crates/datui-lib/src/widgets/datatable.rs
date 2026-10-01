@@ -287,7 +287,7 @@ pub struct DataTableState {
     not_the_table: Option<&'static str>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
-    column_widths: Vec<(String, usize)>,
+    column_bytes: Vec<(String, usize)>,
     /// Bytes per row of the last buffer collected, which outranks the estimate from
     /// the schema.
     observed_bytes_per_row: Option<usize>,
@@ -826,16 +826,16 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
 const STRING_BYTES_GUESS: usize = 40;
 
 /// Bytes a row of `columns` takes in memory, estimated from the schema: the width of
-/// each fixed-size type; for a string the footer's average in `column_widths` (or a
+/// each fixed-size type; for a string the footer's average in `column_bytes` (or a
 /// guess) plus its view; for a nested column the footer's average, else a guess.
 /// Binary columns are buffered as a stub (see `binary_stub_exprs`).
 fn estimate_bytes_per_row(
     schema: &Schema,
     columns: &[String],
-    column_widths: &[(String, usize)],
+    column_bytes: &[(String, usize)],
 ) -> usize {
     let footer_width = |name: &String| {
-        column_widths
+        column_bytes
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, w)| *w)
@@ -1155,7 +1155,7 @@ impl DataTableState {
             drift_dataset_rows: 0,
             dataset_at_open: None,
             read_as_text: Vec::new(),
-            column_widths: Vec::new(),
+            column_bytes: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
             buffered_end_row: 0,
@@ -1279,7 +1279,7 @@ impl DataTableState {
             drift_dataset_rows: 0,
             dataset_at_open: None,
             read_as_text: Vec::new(),
-            column_widths: Vec::new(),
+            column_bytes: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
             buffered_end_row: 0,
@@ -5834,15 +5834,15 @@ impl DataTableState {
 
     /// Record the footer's average uncompressed width of each column, for the byte
     /// estimate of a buffer before one has been collected.
-    pub fn set_column_widths(&mut self, widths: Vec<(String, usize)>) {
-        self.column_widths = widths;
+    pub fn set_column_bytes(&mut self, bytes: Vec<(String, usize)>) {
+        self.column_bytes = bytes;
     }
 
     /// Bytes a buffered row takes: measured on the last buffer collected, or until
     /// then estimated from the schema.
     fn bytes_per_row(&self) -> usize {
         self.observed_bytes_per_row.unwrap_or_else(|| {
-            estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_widths)
+            estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_bytes)
         })
     }
 
@@ -7023,7 +7023,7 @@ impl DataTableState {
         }
         let base64 = |bytes: usize| bytes.div_ceil(3) * 4;
         let footer_width = |name: &str| {
-            self.column_widths
+            self.column_bytes
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, w)| *w)
@@ -13404,10 +13404,10 @@ mod tests {
             true,
         )
         .unwrap();
-        tiny.set_column_widths(vec![("a".to_string(), 2_000)]);
+        tiny.set_column_bytes(vec![("a".to_string(), 2_000)]);
         tiny.visible_rows = 40;
         assert_eq!(tiny.byte_cap_rows(), 1024 * 1024 / 2_016);
-        tiny.set_column_widths(vec![("a".to_string(), 1 << 20)]);
+        tiny.set_column_bytes(vec![("a".to_string(), 1 << 20)]);
         assert_eq!(tiny.byte_cap_rows(), 40);
     }
 
@@ -13614,7 +13614,7 @@ mod tests {
         let mut state = DataTableState::new(lf, None, None, None, Some(64), true).unwrap();
         state.set_remote_source();
         state.set_row_groups(&[G; 5]);
-        state.set_column_widths(vec![("a".to_string(), 1_000)]);
+        state.set_column_bytes(vec![("a".to_string(), 1_000)]);
         state.visible_rows = 40;
         let cap = state.byte_cap_rows();
         assert!(

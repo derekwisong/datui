@@ -6790,7 +6790,7 @@ pub mod tests {
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
-                state.set_column_widths(vec![("blob".to_string(), width)]);
+                state.set_column_bytes(vec![("blob".to_string(), width)]);
             }
             app.set_clipboard_destination(Box::new(TestClipboard(Some(limit))));
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
@@ -6883,7 +6883,7 @@ pub mod tests {
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
-                state.set_column_widths(vec![("blob".to_string(), width)]);
+                state.set_column_bytes(vec![("blob".to_string(), width)]);
             }
             uncapped_clipboard(&mut app);
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
@@ -16674,7 +16674,7 @@ impl App {
                 .ok()?;
         // The footers just read say how wide each column is, as the cloud object's do:
         // a binary column's width is known nowhere else.
-        state.set_column_widths(crate::schema_union::column_bytes_per_row(&footers));
+        state.set_column_bytes(crate::schema_union::column_bytes_per_row(&footers));
         state.set_dataset_schema(
             dataset
                 .with_partition_layouts(&p.to_string_lossy(), &paths)
@@ -17588,7 +17588,7 @@ impl App {
         // The commonest cloud open, and the one the dataset index never heard about:
         // the prefix route records what it read, and this one read a footer too.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
-        state.set_column_widths(footer.column_bytes_per_row);
+        state.set_column_bytes(footer.column_bytes_per_row);
         Ok(state)
     }
 
